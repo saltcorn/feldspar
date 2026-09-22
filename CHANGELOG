@@ -2,6 +2,51 @@
 
 Changes in reverse chronological order.
 
+## Static directories, walked by hand: an edit now reaches the running mount
+
+The last phase of the static-directories milestone is its documentation and its definition of
+done, run against a real server. **Design §13.2** gained the rule the code has been keeping: an
+application request resolves API → static directory → framework, in that order and for the
+reason the order is forced; a mount is **not a grant**, so every path is read through the same
+`sc_files::check_access` as the request's role and every refusal — an escape, a closed file, a
+store outside the app's subset, a missing file — is the one 404; the declared store subset is the
+whole truth, which is why `save_application` refuses a directory outside it and why the admin
+form's `store` column is a drop-down; and what *describes* a URL (`list_assets_*`, the agent's
+session header) builds it with `StaticDir::url_for`, `resolve`'s inverse, so it cannot describe a
+URL the router does not answer. `docs/tutorial-code-framework.md` gained **Step 7**: put an image
+in a store, mount it at `/img`, write `<img src="/img/hero.png">`, and note that the next file is
+live with no rebuild because the server serves the store rather than the bundler.
+
+**What the walk found, and what it fixed.** Everything the definition of done names happened
+against a running `feldspar serve` — the bytes, the content type, the ETag and its 304, the two
+`..` spellings, the role-gated folder, both save refusals, and an API at `/api` still winning
+over a directory at `/` — except one thing:
+
+**A static directory added by an *edit* did not serve until a build or a `SIGHUP`.**
+`updateApplication` re-mounted only a **constructed** framework (Saltcorn UI). A built one — every
+`code` and `react` application — went on serving with the `Application` record its mount was made
+with, and the router resolves static directories off that record. So the new mount's path was
+answered by the framework's SPA fallback: **200 with `index.html`**, which is worse than the 404
+this milestone set out to remove, because it looks like it worked. The same staleness covered the
+app's CSP.
+
+The fix is the mechanism the locale set already had: `AppMounts::refresh_mount` rebuilds the
+record and the API providers and **keeps the bundle**. `updateApplication` now calls it for every
+framework (`refresh_mounted_app`) instead of re-mounting only the constructed ones — a save is
+not a build, and re-running a bundler on every edit would be the bug this is the cheap
+alternative to. An application nobody has built yet is not mounted, and that stays a no-op.
+
+Tested in `crates/sc-server/tests/admin_applications_api.rs`
+(`a_static_directory_added_by_an_edit_serves_without_a_rebuild`): create, serve, edit in a
+directory, fetch it — asserting the **bytes**, not the status, because the bug's signature is a
+200. The file's fixture now bootstraps `_fd_file_stores`, which a static directory reads a
+store's floor from before it serves anything.
+
+**Carried:** the agent half of the definition of done. This machine has no LLM provider — the
+create response said so — so a model reading the session header and writing the `<img>` itself is
+unwalked. What it would be told is pinned by `app_static_dirs.rs`, which fetches every URL
+`list_assets` hands the model through the real router.
+
 ## The coding agent is told the URLs of the application's images
 
 An application's images are in a file store; the page that shows them is in the source tree the

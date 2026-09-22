@@ -4597,6 +4597,60 @@ subdirectories. This is the whole configuration path; embedding `sc-server` in a
 binary to declare an `Application` in Rust is not one. `sc-cli` may grow app commands for
 scripted deployment, but the admin UI is the primary and complete surface.
 
+**Static directories: a mount, not a grant.** A `StaticDir` says *where in the URL space* a
+subdirectory of a file store appears under the application. It does not say that everything
+under it is public. So an application request resolves in three steps, and the directory is the
+middle one:
+
+1. **An API provider**, by longest matching mount (`MountedApp::provider_for`).
+2. **A static directory**, by longest matching mount (`Application::static_dir_for`).
+3. **The framework**, which serves the built bundle and whose SPA fallback claims `/*`.
+
+The order is forced. The framework must be last because its fallback answers every path, so a
+directory behind it would never be reached; APIs must be first because an API is the thing an
+application cannot work without, and an admin who mounts a directory over one finds that out at
+*save* time (below) rather than by watching their data layer stop answering.
+
+The remainder of the path after the mount is resolved under `StaticDir::path` inside
+`StaticDir::store` — percent-decoded first, then `.` dropped and `..` popped, so an escape
+written `%2e%2e` is the same escape — and read through the **same `sc_files::check_access`**
+every other reader in this system goes through, as the request's user role. A file whose store
+or path is closed to a guest is not served to a guest, and *every* refusal is the 404 an unknown
+path gets: an escaping path, a store outside the app's subset, a missing file, a file the viewer
+may not read. A 403 would confirm to somebody not allowed to know that the file exists.
+
+The content type is `asset_content_type`, the same function the code framework answers the same
+question with, so a `.png` in a bundle and a `.png` in a static directory are served identically.
+The ETag is over the bytes and a matching `If-None-Match` is a 304 — these are images, requested
+on every page load and rarely changed — and the response carries the app's CSP like every other
+app response, which needs no policy change because the directory is on the application's own
+origin that `default-src 'self'` already allows. Previews come free: a preview is a `MountedApp`
+over the same `Application` record, so it serves the same images. A new file in the store is live
+at once, because the server serves the store rather than a bundler's output.
+
+**The store subset is the whole truth.** `save_application` refuses (in `validate_static_dirs`,
+beside `validate_api_mounts`) a static directory whose `store` is not in `Application::file_stores`,
+naming both, and refuses a mount that falls under an API's. The first refusal is what makes the
+subset mean something: `applications_using_file_store` counts a static directory as a reference
+that blocks deleting a store, so an unvalidated store name could pin a store the application was
+never granted, and the declared subset would stop being the whole truth about which stores the
+application touches. The router re-checks the subset anyway before serving, because a rule worth
+refusing a save over is worth not trusting a stored row about.
+
+This is why the admin UI's `store` column is a **drop-down over the application's own declared
+file stores** rather than a text field (`ApplicationForm.tsx`): the set is short, known and
+already on the screen, and a typo in a text field is silent until a 404. A stored value the list
+no longer offers is still shown and still selected, the pattern the framework picker on the same
+form uses, because a form must never silently discard what it was given to edit.
+
+**The URL is app-root-relative.** The public URL is `//<subdomain>.<host><mount>/<path within the
+directory>`, but what anything *describing* a URL hands out — `list_assets_*`, the coding agent's
+session header — is the `/img/hero.png` half, built by `StaticDir::url_for`, which is
+`resolve`'s inverse on purpose: the router answers by resolving, so a describer that built URLs
+any other way round would describe URLs the router does not answer. Relative for the reason
+`preview_pane_url` is relative — an absolute URL baked into a component follows the application
+from `localhost:3000` to production as a broken link.
+
 **Applications are stored in `_fd_applications`** (§9) and so obey the §9 rules: UUID `id`,
 `name`, `description`, `attributes`. Note what this is *not*: `_fd_tables`/`_fd_fields` are
 **overlays** — introspection already yields the tables, so a row only adds to what the
@@ -4620,7 +4674,15 @@ one, so mounting is a runtime operation, not a boot-time one:
 - **At boot**, `sc-server` loads every row of `_fd_applications` and mounts each app.
 - **On create/edit**, the admin UI's call persists the row, then builds (for a framework with
   a build step, §13.3) and mounts or re-mounts *that app alone*. Other apps keep serving; the
-  admin never goes away; the process does not restart.
+  admin never goes away; the process does not restart. An **edit** re-mounts without building:
+  `AppMounts::refresh_mount` puts the new record and the providers projected from it in front of
+  the running mount and keeps the bundle, so a static directory, a CSP or a locale set an admin
+  changes on the Applications screen is live on the next request. That matters most where it is
+  least visible: the router resolves static directories off the mount's record, and the
+  framework's SPA fallback claims `/*`, so a mount holding yesterday's record answers a new
+  static directory's path with `index.html` and a 200 — a wrong answer that looks like a right
+  one. A framework that is *constructed* rather than built (Saltcorn UI) is re-made through its
+  factory instead, which costs no bundler either.
 - **On delete**, the app is unmounted and its row removed; its subdomain stops resolving.
 - The mount registry is therefore **live**, not a value fixed at router construction: it is
   shared mutable state behind the router, keyed by subdomain.

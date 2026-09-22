@@ -152,6 +152,62 @@ this one hands you a typed client and stays out of the way.
 Rebuild after changes (**Build** again — no server restart), then visit
 `http://todo.localhost:3032`.
 
+## Step 7 — Serve images from a file store
+
+The bundle is your code. Images are not code: a logo, a hero shot, a folder of screenshots that
+a non-developer replaces on a Tuesday. Putting those through the bundler means a rebuild every
+time one changes. Instead, mount a directory of a file store under the application.
+
+Put a file in the store — through **Files** in the admin UI, or on the host:
+
+```bash
+mkdir -p /srv/apps/media && cp ~/hero.png /srv/apps/media/hero.png
+```
+
+Then edit the application and add a row under **Static directories**:
+
+| Mount | Store | Path |
+|---|---|---|
+| `/img` | `apps` | `media` |
+
+**Store is a drop-down of the stores this application declares**, not a box to type a name into.
+That subset is the **File stores** picker further up the same form, and it is a different thing
+from the framework's own **File store** setting in Step 3 — so if the drop-down is empty, or does
+not offer `apps`, tick `apps` there first. A directory can only serve a store the application
+declares access to, and the server refuses to save one that does not, naming the store.
+
+Save. `http://todo.localhost:3032/img/hero.png` now serves `media/hero.png`, with the content
+type its extension implies and an ETag, so a second page load is a 304. Use it from a page as an
+ordinary relative URL:
+
+```tsx
+<img src="/img/hero.png" alt="" />
+```
+
+Relative, not `http://todo.localhost:3032/img/hero.png` — an absolute URL baked into a component
+follows the application to production as a broken link.
+
+**No rebuild.** Drop a second file into `/srv/apps/media` and it is live on the next request: the
+server is serving the store, not something the bundler copied out of it. That is the whole point
+of a static directory, and it is the difference from putting the image in `public/`.
+
+**A mount is not a grant.** It says where in the URL space the store's subdirectory appears; it
+does not make everything under it public. Each request is checked against the file's own access
+as the viewer's role, exactly as a download through the file manager would be, and a file the
+viewer may not read is the same 404 an unknown path gets. So a mount over a store with private
+files is safe; it just serves fewer of them to a stranger.
+
+Two ordering rules follow from where the directory sits in the request path: it is matched
+**after** the app's APIs and **before** the framework's SPA fallback. So a mount under an API's
+sub-path (`/api/img` when `rest` is at `/api`) would never be reached, and saving one is refused
+with that as the reason. Anything the directory does not claim still falls through to your
+bundle.
+
+**The application's coding agent knows.** If you built this app with an agent (see
+[the agents tutorial](tutorial-agents.md)), its session header lists the mounts, and its
+`list_assets_*` tool returns each file with the URL the server actually answers — so "put the
+hero image on the landing page" does not need you to paste a URL into the chat.
+
 ## Notes
 
 - **The client is regenerated on every build** and reflects the tables the *application*

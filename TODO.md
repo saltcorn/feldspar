@@ -210,15 +210,58 @@ and this milestone does not invent it.
 
 ## Phase 4 — The documentation and the walk-through
 
-- [ ] 4.1 `docs/TECHNICAL_DESIGN.md` §13.2: the request path of §2, the mount-not-a-grant rule
+- [x] 4.1 `docs/TECHNICAL_DESIGN.md` §13.2: the request path of §2, the mount-not-a-grant rule
       of §3, and the store-subset rule of §5.
-- [ ] 4.2 `docs/tutorial-code-framework.md`: a short section — put an image in a store, mount
+- [x] 4.2 `docs/tutorial-code-framework.md`: a short section — put an image in a store, mount
       it, use it from a page — and the note that a new file is live without a rebuild, because
       the server serves it rather than the bundler.
-- [ ] 4.3 Walk the definition of done by hand against a running server, and record what it
+- [x] 4.3 Walk the definition of done by hand against a running server, and record what it
       showed. The agent half needs an API key and spends money; if that is not available, it is
       carried, and the `cargo test` half still stands.
-- [ ] 4.4 `CHANGELOG`.
+- [x] 4.4 `CHANGELOG`.
+
+### What running it by hand found
+
+Walked on 2026-09-22 against a debug `feldspar serve --base-domain localhost --bind
+127.0.0.1:3032 --sqlite … --file-store apps=…`, driving the admin API with `curl` as the first
+admin user: an application `todo` on the `code` framework, one file store, a static directory
+`/img → apps (store/media)`, and a `hero.png` on disk. Everything §3 promises happened —
+`http://todo.localhost:3032/img/hero.png` served the exact bytes as `image/png` with
+`etag: "bae263a2d70f2c71"`, the same request carrying that ETag was a `304`, `/img/../…` and
+`/img/%2e%2e/…` were both `404`, a second file dropped into the store served **with no rebuild
+and no restart**, a folder given `min_role: 1` through `setFileMeta` was `404` to a guest and
+`200` to the signed-in admin, and both save refusals fired with the sentences §5 asks for (an
+undeclared store, and a mount under an API's). On a second application with an API at `/api` and
+a directory at `/`, `GET /api/whoami` was the **API's** `401` rather than the directory's 404,
+and `GET /hero.png` was the image: the §2 order holds in the running server. Three things it
+found:
+
+1. **A static directory added by an *edit* did not serve until a build or a `SIGHUP`, and that
+   is fixed.** `updateApplication` re-mounted only a *constructed* framework (Saltcorn UI);
+   a built one — every `code` and `react` application — kept the `Application` record its mount
+   was made with, and the router resolves static directories off that record. So the admin
+   filled the form in, saved it, and the new mount's path was answered by the framework's **SPA
+   fallback**: `200` with `index.html`, which is worse than the 404 this milestone set out to
+   remove, because it looks like it worked. The mechanism to fix it already existed for the
+   locale set — `AppMounts::refresh_mount`, which rebuilds the record and the providers and
+   **keeps the bundle** — so the update handler now calls it (`refresh_mounted_app`) for every
+   framework rather than re-mounting only the constructed ones. The same edit-and-it-is-live
+   rule now covers the app's CSP, which was stale in exactly the same way and by the same
+   sentence of §13.2. Asserted in `admin_applications_api.rs`, against the bytes rather than the
+   status, because the bug's signature is a 200. Re-walked against the rebuilt server: removing
+   the directory hands its path back to the SPA fallback, adding it serves the file on the very
+   next request, and an edited CSP is on the next response — no build, no signal, no restart.
+2. **The agent half is carried: this machine has no API key.** `POST /api/applications` said so
+   itself — `no LLM provider is connected, so the `build-todo` agent that builds this
+   application was not created`. What the agent would be told is pinned by
+   `app_static_dirs.rs`'s `list_assets_returns_the_urls_the_router_serves`, which fetches every
+   URL the tool hands the model through the real router; what is unwalked is a model reading the
+   session header and writing the `<img>` itself.
+3. **`feldspar serve --sqlite` still announces the config file's Postgres environment.** The
+   line `database configured from the `production` environment of …/feldspar.toml` is printed
+   before `--sqlite` overrides it; the server does use the SQLite file (its `_fd_*` tables were
+   created there and the production database was untouched). Cosmetic, out of this milestone,
+   and noted because the first reading of that line is alarming.
 
 ## Explicitly OUT of scope for this milestone
 

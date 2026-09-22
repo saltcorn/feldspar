@@ -221,6 +221,9 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<(Router, Arc<Catalog>, TestDb)
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
+    // A static directory reads its store's floor off this table before it serves
+    // a byte, so an application that mounts one needs it bootstrapped.
+    sc_catalog::bootstrap_file_stores(&catalog).await?;
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;
 
     // With the base domain the real server gives it: it is what a preview host
@@ -837,5 +840,94 @@ async fn non_admins_are_rejected_from_every_application_endpoint() -> sc_error::
     );
     let (status, _) = reader.send("GET", "/api/applications", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+/// **A static directory added on the Applications screen serves at once** —
+/// without a rebuild and without a restart (TODO "Static directories" §2, design
+/// §13.2).
+///
+/// Everything the router reads off an application's row — its static
+/// directories, its CSP, its locales — belongs to the `Application` the mount
+/// was made with, and until an edit reached the mount it changed nothing a
+/// browser could see. Worse than nothing, in this case: the framework's SPA
+/// fallback claims `/*`, so the new mount's path answered **200 with
+/// `index.html`**, which looks like it worked. That is what this asserts
+/// against, which is why it checks the bytes rather than the status.
+#[tokio::test]
+async fn a_static_directory_added_by_an_edit_serves_without_a_rebuild() -> sc_error::Result<()> {
+    let tmp = TempDir::new("edit-static-dir");
+    let (router, catalog, _db) = setup(&tmp).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    let mut admin = Client::new(router.clone(), BASE_DOMAIN);
+    admin.login("admin@example.com", "correct-horse").await;
+
+    write_bundler(tmp.path(), "before", true);
+    let (status, created) = admin
+        .send("POST", "/api/applications", Some(blog_body()))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    // The image an admin drops into the store, and the SPA that is serving.
+    const HERO: &[u8] = b"\x89PNG\r\n\x1a\nhero-pixels";
+    std::fs::create_dir_all(tmp.path().join("media")).map_err(sc_error::Error::from)?;
+    std::fs::write(tmp.path().join("media/hero.png"), HERO).map_err(sc_error::Error::from)?;
+
+    let mut app = Client::new(router.clone(), APP_HOST);
+    let mut serving = false;
+    for _ in 0..200 {
+        let (status, body) = app.raw("GET", "/", None).await;
+        if status == StatusCode::OK && body == b"<!doctype html><div id=root>before</div>" {
+            serving = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(serving, "the created application serves its bundle");
+
+    // Nothing claims the path yet, so the SPA fallback answers it: a 200 that is
+    // the wrong file.
+    let (status, body) = app.raw("GET", "/img/hero.png", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(&body[..], HERO, "no directory is mounted yet");
+
+    // --- the edit -------------------------------------------------------------
+    let mut edited = blog_body();
+    edited["static_dirs"] = json!([{ "mount": "/img", "store": "apps", "path": "media" }]);
+    let (status, updated) = admin
+        .send("PUT", &format!("/api/applications/{id}"), Some(edited))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert!(
+        updated.get("mount_error").is_none(),
+        "the running mount took the edit: {updated}"
+    );
+
+    // No build was run and no signal was sent: the next request is the one that
+    // sees it.
+    let (status, body) = app.raw("GET", "/img/hero.png", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        &body[..],
+        HERO,
+        "the directory an admin just added serves the file"
+    );
+
+    // The bundle is still the one that was built — a record refresh is not a
+    // build, and re-running the bundler on every save would be the bug this is
+    // the cheap alternative to.
+    let (status, body) = app.raw("GET", "/", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&body[..], b"<!doctype html><div id=root>before</div>");
+
+    // --- and it goes away the same way ----------------------------------------
+    let (status, _) = admin
+        .send("PUT", &format!("/api/applications/{id}"), Some(blog_body()))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = app.raw("GET", "/img/hero.png", None).await;
+    assert_ne!(&body[..], HERO, "the directory an admin removed is gone");
+
     Ok(())
 }

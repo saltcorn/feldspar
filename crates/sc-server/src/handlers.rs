@@ -4106,6 +4106,44 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
         }
     }
 
+    /// Put an **edited** record in front of the running mount, as part of
+    /// saving it.
+    ///
+    /// Everything an application's row says that the router reads — its static
+    /// directories (§13.2), its CSP, its locales, the subsets its providers are
+    /// projected from — is read off the `Application` the mount was made with.
+    /// So without this a directory added on the Applications screen changes
+    /// nothing a browser can see: the mount goes on resolving against the record
+    /// it was built with, and the framework's SPA fallback answers the new
+    /// mount's path with `index.html` — a 200 that is the wrong file, which is
+    /// worse than a 404 because it looks like it worked.
+    ///
+    /// **Not a build.** An application served from a bundle keeps its bundle;
+    /// only the record and the providers are rebuilt, which is why this is
+    /// cheap enough to run on every save. A *constructed* framework (Saltcorn
+    /// UI) is re-mounted through its factory instead, which is what
+    /// [`AppMounts::refresh_mount`] does with one and costs no bundler either.
+    /// An application nobody has built yet is not mounted, and that is not an
+    /// error — saving one is an ordinary thing to do.
+    async fn refresh_mounted_app(apps: &AppMounts, app: &sc_app::Application, body: &mut Json) {
+        let constructed = sc_app::framework_factory(&app.framework.name).is_some();
+        match apps.refresh_mount(app.clone()).await {
+            // `mounted` is the constructed framework's contract: for it, saving
+            // is the deployment and the screen says so.
+            Ok(()) if constructed => {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("mounted".to_owned(), json!(true));
+                }
+            }
+            Ok(()) => {}
+            Err(e) => {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("mount_error".to_owned(), json!(e.causes()));
+                }
+            }
+        }
+    }
+
     reg.register("createApplication", {
         let catalog = catalog.clone();
         let apps = apps.clone();
@@ -4189,7 +4227,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                 // reason to report that it was not.
                 reemit_app_client(&catalog, &app, apps.triggers()).await;
                 let mut body = application_json(&app);
-                mount_if_constructed(&apps, &app, &mut body).await;
+                refresh_mounted_app(&apps, &app, &mut body).await;
                 Ok(HandlerResponse::ok(body))
             }
         }
