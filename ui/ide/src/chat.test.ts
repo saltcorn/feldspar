@@ -467,6 +467,16 @@ describe("one event, relayed", () => {
     expect(changedPaths("view_app_todoapp_app", { path: "/tasks" })).toEqual([]);
   });
 
+  it("shows listing the application's assets, and writes nothing", () => {
+    expect(toolProgress("list_assets_todoapp_app", {})).toBe(
+      "Listing the application's assets",
+    );
+    expect(toolProgress("list_assets_todoapp_app", { pattern: "*.png" })).toBe(
+      "Listing assets: *.png",
+    );
+    expect(changedPaths("list_assets_todoapp_app", { pattern: "*.png" })).toEqual([]);
+  });
+
   it("names a tool it does not know rather than inventing a verb for it", () => {
     expect(toolProgress("query_rows_books", { table: "books" })).toBe(
       "query_rows_books",

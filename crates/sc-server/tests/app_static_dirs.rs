@@ -471,3 +471,228 @@ async fn a_directory_naming_an_undeclared_store_serves_nothing() -> sc_error::Re
     assert_ne!(&body[..], HERO);
     Ok(())
 }
+
+/// **The tool and the router agree, over the same fixture** (TODO "Static
+/// directories" §6, 3.3).
+///
+/// This is the half of the milestone's definition of done that `cargo test`
+/// can reach: the application's coding agent calls `list_assets_*`, is told
+/// `/img/hero.png`, and that URL — fetched through the real router with no
+/// human having typed it — is the file. The two halves share this file's
+/// fixture deliberately: a URL the tool invents and a URL the router answers
+/// cannot drift apart while one test asserts both.
+///
+/// And the access rule travels with it. The folder closed to a guest is not
+/// *named* to a guest either, because listing goes through the same
+/// `check_access` the serving does — a mount is not a grant on the way out or
+/// on the way in.
+#[tokio::test]
+async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()> {
+    use sc_agent::{RunCaller, RunId, RunMode, ToolsContext, TraitContext};
+    use sc_core_traits::builtin_traits;
+    use sc_files::ROLE_PUBLIC;
+    use sc_types::Attrs;
+
+    let tmp = TempDir::new("list-assets");
+    let (router, catalog, assets, _db) = setup(&tmp).await?;
+    // The tool resolves the application from its stored row, as `check` does.
+    // Stored without the fixture's deliberately-shadowed `/api` directory,
+    // because `save_application` refuses that one (§5) — which is the point:
+    // the only directories a *saved* application has are ones the router can
+    // reach, so the tool cannot be handed a mount that an API has taken.
+    sc_app::bootstrap(&catalog).await?;
+    let stored = {
+        let mut app = blog_app();
+        app.static_dirs.retain(|d| d.mount != "/api");
+        app
+    };
+    sc_app::save_application(&catalog, &stored).await?;
+    // Closed to everyone below role 40 — the same folder the serving half uses.
+    assets
+        .set_meta(
+            "media/private",
+            &FileMeta {
+                min_role: Some(40),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let traits = builtin_traits()?;
+    let coding = traits.require("coding")?.clone();
+    let config: Attrs = [
+        ("store".to_owned(), json!("apps")),
+        ("root".to_owned(), json!("web")),
+        (sc_core_traits::CFG_APPLICATION.to_owned(), json!("blog")),
+    ]
+    .into_iter()
+    .collect();
+
+    // Offered because the trait names an application — and named after the
+    // scope, like every other tool this trait contributes.
+    let tool = sc_core_traits::tool_names::list_assets(&sc_core_traits::FileScope {
+        store: "apps".to_owned(),
+        root: "web".to_owned(),
+    });
+    assert_eq!(tool, "list_assets_apps_web");
+    static CAPABILITIES: std::sync::LazyLock<sc_llm::ModelCapabilities> =
+        std::sync::LazyLock::new(|| sc_llm::ModelCapabilities::built_in("", ""));
+    let offered: Vec<String> = coding
+        .tools(
+            &ToolsContext::new(&catalog, RunMode::Act, &CAPABILITIES),
+            &config,
+        )
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert!(offered.contains(&tool), "{offered:?}");
+
+    // …and absent from a trait that names no application: there is nothing for
+    // it to list.
+    let no_app: Attrs = [
+        ("store".to_owned(), json!("apps")),
+        ("root".to_owned(), json!("web")),
+    ]
+    .into_iter()
+    .collect();
+    let without: Vec<String> = coding
+        .tools(
+            &ToolsContext::new(&catalog, RunMode::Act, &CAPABILITIES),
+            &no_app,
+        )
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert!(!without.contains(&tool), "{without:?}");
+
+    let call = async |args: serde_json::Value, role: u8| -> sc_error::Result<serde_json::Value> {
+        let caller = RunCaller {
+            role,
+            ..RunCaller::system()
+        };
+        let mut state = serde_json::Value::Null;
+        let mut ctx = TraitContext {
+            catalog: &catalog,
+            caller: &caller,
+            agent: "builder",
+            run: RunId::new(),
+            mode: RunMode::Act,
+            trait_state: &mut state,
+            evaluator: None,
+            triggers: None,
+            delegate: None,
+            previews: None,
+            browser: None,
+            signals: Vec::new(),
+            images: Vec::new(),
+        };
+        coding.call(&config, &tool, &args, &mut ctx).await
+    };
+
+    // --- what a guest is told, and what the router then serves ----------------
+    let listed = call(json!({}), ROLE_PUBLIC).await?;
+    let rows = listed["assets"].as_array().unwrap().clone();
+    assert_eq!(listed["truncated"], json!(false), "{listed}");
+    let urls: Vec<&str> = rows.iter().map(|r| r["url"].as_str().unwrap()).collect();
+    assert!(urls.contains(&"/img/hero.png"), "{listed}");
+    // The file behind the closed folder is not named to somebody who may not
+    // read it, and neither is the one under the `/api` mount's own store path
+    // by any URL that is not that mount's.
+    assert!(
+        !urls.iter().any(|u| u.contains("plans.txt")),
+        "a closed file was listed: {listed}"
+    );
+
+    let hero = rows
+        .iter()
+        .find(|r| r["url"] == json!("/img/hero.png"))
+        .expect("the hero image");
+    assert_eq!(hero["path"], json!("media/hero.png"));
+    assert_eq!(hero["store"], json!("assets"));
+    assert_eq!(hero["content_type"], json!("image/png"));
+    assert_eq!(hero["size"], json!(HERO.len()));
+
+    // **The point of the milestone**: every URL the tool handed the model is a
+    // URL the router answers with the bytes the tool described.
+    let mut visitor = Client::new(router.clone(), APP_HOST);
+    for row in &rows {
+        let url = row["url"].as_str().unwrap();
+        let (status, headers, body) = visitor.get(url).await;
+        assert_eq!(status, StatusCode::OK, "the tool named {url}");
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).unwrap(),
+            row["content_type"].as_str().unwrap(),
+            "{url}"
+        );
+        assert_eq!(body.len() as u64, row["size"].as_u64().unwrap(), "{url}");
+    }
+    assert_eq!(
+        visitor.get("/img/hero.png").await.2,
+        HERO.to_vec(),
+        "the URL the agent would write into the JSX"
+    );
+
+    // --- an admin sees the closed file, and its URL works for them -------------
+    let listed = call(json!({}), ROLE_ADMIN).await?;
+    let urls: Vec<&str> = listed["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["url"].as_str().unwrap())
+        .collect();
+    assert!(
+        urls.contains(&"/img/private/plans.txt"),
+        "role 1 clears the folder's rule: {listed}"
+    );
+
+    // --- the glob and the cap behave as `find_files`' do -----------------------
+    let pngs = call(json!({"pattern": "*.png"}), ROLE_ADMIN).await?;
+    let urls: Vec<&str> = pngs["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(urls, ["/img/hero.png"], "{pngs}");
+    // A directory narrows it the same way.
+    let under = call(json!({"dir": "private"}), ROLE_ADMIN).await?;
+    let urls: Vec<&str> = under["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(urls, ["/img/private/plans.txt"], "{under}");
+
+    // The cap says how many there were and how to narrow, as `find_files` does.
+    let mut capped = config.clone();
+    capped.insert("max_results".to_owned(), json!(1));
+    let caller = RunCaller {
+        role: ROLE_ADMIN,
+        ..RunCaller::system()
+    };
+    let mut state = serde_json::Value::Null;
+    let mut ctx = TraitContext {
+        catalog: &catalog,
+        caller: &caller,
+        agent: "builder",
+        run: RunId::new(),
+        mode: RunMode::Act,
+        trait_state: &mut state,
+        evaluator: None,
+        triggers: None,
+        delegate: None,
+        previews: None,
+        browser: None,
+        signals: Vec::new(),
+        images: Vec::new(),
+    };
+    let one = coding.call(&capped, &tool, &json!({}), &mut ctx).await?;
+    assert_eq!(one["assets"].as_array().unwrap().len(), 1, "{one}");
+    assert_eq!(one["truncated"], json!(true), "{one}");
+    assert!(
+        one["note"].as_str().unwrap().contains("Narrow the list"),
+        "{one}"
+    );
+    Ok(())
+}

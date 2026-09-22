@@ -2,6 +2,58 @@
 
 Changes in reverse chronological order.
 
+## The coding agent is told the URLs of the application's images
+
+An application's images are in a file store; the page that shows them is in the source tree the
+agent edits. `find_files` walks the **coding scope**, so it cannot see them — and it could not
+answer the question even if it could, because **a path is not a URL**. A model handed
+`media/hero.png` invents `/media/hero.png`, or `/files/serve/Assets/media/hero.png`, and the page
+404s. That was the last thing standing between "the server serves static directories" (last
+entry) and an agent that can put the hero image on the landing page without a human typing the
+URL for it.
+
+**`list_assets_<scope>`** (`sc_core_traits::coding::assets`) walks the **application's** static
+directories — not the coding scope — and returns, per file, the app-root-relative URL, the store
+path, the store, the content type, the size and the modification time, newest first and capped
+like `find_files`, with `pattern` and `dir` to narrow it. It is offered when the `coding` trait's
+`application` setting names one, in every mode, and is not behind `may_edit`: it reads names and
+sizes. Reading only — uploading an image through an agent is a grant an admin gives on purpose.
+
+**The URL is built by `StaticDir::url_for`, the inverse of the `resolve` the router serves
+through** — so the tool cannot describe a URL the router does not answer. `app_static_dirs`
+pins the two against **one fixture**: every URL the tool hands the model is then fetched through
+the real router and must come back with the bytes and the content type the tool described.
+
+**A mount is not a grant on the way in either.** The walk goes through the same
+`sc_files::check_access`, as the run's caller, so a folder closed to a guest is not *named* to a
+guest — the same rule that refuses to serve it. A directory naming a store outside the
+application's declared subset is skipped, because the router refuses it too.
+
+**And the mounts open the session** (`coding/header.rs`), beside `AGENTS.md` and the repo map:
+
+```
+<static_dirs>
+These URLs are served by `blog`; use them as they are.
+/img → store "media" (images), 2 files
+/docs → store "media" (handbook), 1 file
+</static_dirs>
+```
+
+A model that does not know the tool exists will not call it, and finding out costs a turn and
+the admin's money. Nothing here fails a run: an application that cannot be read, a store that is
+not connected or a directory this caller may not open leaves the section out.
+
+**The stable-prefix budget went from 1 500 tokens to 1 600.** R§4's 1 500 was spent to the last
+token — `act` measured 1 496 — and a tenth tool costs about a hundred. `list_assets` is the
+smallest spec in the set at 279 characters, and the number went up rather than an existing tool
+losing its description. It is still a test, and the next tool has the same argument to make.
+
+Tested in `crates/sc-core-traits/tests/coding_assets.rs` (the listing, the glob, the header's
+lines, an application with no directories, a store closed to the caller, and the tool's absence
+without an `application` setting), `crates/sc-server/tests/app_static_dirs.rs` (the tool and the
+router over one fixture, plus the cap), `sc-app`'s `url_for`/`resolve` round trip, and
+`ui/ide/src/chat.test.ts` for the progress line.
+
 ## A static directory's store is picked, and checked on save
 
 `Static directories` was three text inputs, and one of them — the store — was a store's name typed

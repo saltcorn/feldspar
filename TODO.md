@@ -190,17 +190,23 @@ and this milestone does not invent it.
 
 ## Phase 3 — `list_assets` and the session header
 
-- [ ] 3.1 `sc-core-traits/src/coding/assets.rs`: the tool spec and call of §6, offered when
+- [x] 3.1 `sc-core-traits/src/coding/assets.rs`: the tool spec and call of §6, offered when
       `CFG_APPLICATION` is set and absent when it is not. The URL is built by the same `sc-app`
       helper Phase 1 serves through, so the tool cannot describe a URL the router does not
       answer.
-- [ ] 3.2 `coding/header.rs`: one line per static directory in the session header (§6), left
+- [x] 3.2 `coding/header.rs`: one line per static directory in the session header (§6), left
       out silently when the application has none or cannot be read — nothing in the header
       fails a run.
-- [ ] 3.3 Tests: `list_assets_*` over a fixture application returns the URL Phase 1 actually
+- [x] 3.3 Tests: `list_assets_*` over a fixture application returns the URL Phase 1 actually
       serves (same fixture, so the two cannot drift); the glob and the cap behave as
       `find_files`' do; a file the caller may not read is not listed; with no `application`
       setting the tool is not in the spec list; the header names the mounts.
+
+      **Deviation:** the stable-prefix budget (8.3) went from 1 500 estimated tokens to 1 600.
+      R§4's 1 500 was already spent to the last token — `act` measured 1 496 — and a tenth tool
+      costs about a hundred whatever it says, so the choice was this or taking a description off
+      one of the other nine. `list_assets` is the smallest spec in the set at 279 characters.
+      `docs/TECHNICAL_DESIGN.md`'s sentence on the budget says so, and it is still a test.
 
 ## Phase 4 — The documentation and the walk-through
 

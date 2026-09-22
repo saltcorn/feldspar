@@ -563,11 +563,13 @@ async fn a_trait_configured_against_a_store_that_is_gone_is_invalid_with_a_reaso
     let cfg = at("code", "web");
     env.check("coding", &cfg).await?;
     // Every tool but `apply_patch`, which this model's edit format leaves out,
-    // `check`, `view_app`, `shell` and `process`, whose grants are off, and
-    // the plan tools, which only a `plan` run is offered.
+    // `check`, `view_app`, `shell` and `process`, whose grants are off,
+    // `list_assets`, which needs an `application` setting this one has not got,
+    // and the plan tools, which only a `plan` run is offered.
     let mut all = tool_names::coding(&scope("code", "web"));
     all.retain(|name| {
         name != &tool_names::apply_patch(&scope("code", "web"))
+            && name != &tool_names::list_assets(&scope("code", "web"))
             && name != &tool_names::save_plan(&scope("code", "web"))
             && name != &tool_names::implement_feature(&scope("code", "web"))
             && name != &tool_names::check(&scope("code", "web"))

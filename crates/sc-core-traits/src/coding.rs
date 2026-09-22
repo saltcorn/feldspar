@@ -63,6 +63,7 @@
 //! directories and the same directory twice is a collision refused on save
 //! (§11.2).
 
+mod assets;
 mod change;
 mod check;
 mod commit;
@@ -105,6 +106,7 @@ use crate::files::{
 };
 use crate::table::config_str;
 
+pub use assets::tool_name as list_assets_tool_name;
 pub use check::{Baseline, CFG_CHECKS, tool_name as check_checks_tool_name};
 pub use commit::CFG_COMMIT;
 pub use edit::tool_name as edit_file_tool_name;
@@ -209,6 +211,7 @@ pub fn tool_names(scope: &FileScope) -> Vec<String> {
         find::tool_name(scope),
         search::tool_name(scope),
         repo_map::tool_name(scope),
+        assets::tool_name(scope),
         plan::tool_name(scope),
         feature::tool_name(scope),
         explore::tool_name(scope),
@@ -405,6 +408,12 @@ impl AgentTrait for Coding {
             search::spec(&scope, config),
             repo_map::spec(&scope),
         ];
+        // The application's assets, in every mode: it reads names and sizes,
+        // which is not a grant, and a `plan` that does not know the images
+        // exist plans around them.
+        if assets::offered(config) {
+            tools.push(assets::spec(&scope, config));
+        }
         match cx.mode {
             RunMode::Explore => return tools,
             RunMode::Plan => {
@@ -457,6 +466,7 @@ impl AgentTrait for Coding {
             _ if tool == repo_map::tool_name(&scope) => {
                 repo_map::call(&scope, config, args, ctx).await
             }
+            _ if tool == assets::tool_name(&scope) => assets::call(config, args, ctx).await,
             _ if tool == plan::tool_name(&scope) => {
                 permit_mode(&[RunMode::Plan], "write a plan", ctx)?;
                 plan::call(args, ctx).await
@@ -671,6 +681,7 @@ mod tests {
                 "find_files_app_src_web",
                 "search_files_app_src_web",
                 "repo_map_app_src_web",
+                "list_assets_app_src_web",
                 "save_plan_app_src_web",
                 "implement_feature_app_src_web",
                 "explore_app_src_web",

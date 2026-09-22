@@ -10,7 +10,11 @@
 //!    at [`MAX_AGENTS_CHARS`].
 //! 2. **The repo map** at `repo_map_tokens`, focused on what the brief mentions
 //!    ([`super::repo_map::header`]).
-//! 3. **The recent git log**, when the scope is inside a git work tree that
+//! 3. **The application's static directories**, when the `application` setting
+//!    names one: a line per mount, with the store and how many files are under
+//!    it ([`super::assets`]). A model that does not know `list_assets` exists
+//!    will not call it, and finding out costs a turn and the admin's money.
+//! 4. **The recent git log**, when the scope is inside a git work tree that
 //!    belongs to the store: the last [`GIT_LOG_ENTRIES`] commits touching the
 //!    scope. For a new chat this is the history a plan does not carry (§8).
 //!
@@ -33,6 +37,7 @@ use sc_agent::SessionContext;
 use sc_files::check_access;
 use sc_types::Attrs;
 
+use super::assets;
 use super::repo_map::{self, focus_of, source_files, terms_of};
 use crate::files::FileScope;
 
@@ -73,6 +78,9 @@ pub async fn header(
         && let Some(map) = repo_map::header(scope, config, &files, truncated, cx.brief)
     {
         parts.push(map);
+    }
+    if let Some(mounts) = assets::header(config, cx.catalog, role).await {
+        parts.push(mounts);
     }
     if let Some(log) = git_log(scope, cx).await {
         parts.push(log);

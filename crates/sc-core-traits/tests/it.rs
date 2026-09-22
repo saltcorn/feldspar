@@ -32,6 +32,8 @@ mod build_application;
 mod builder_agent_traits;
 #[path = "coding_agent.rs"]
 mod coding_agent;
+#[path = "coding_assets.rs"]
+mod coding_assets;
 #[path = "coding_check.rs"]
 mod coding_check;
 #[path = "coding_edits.rs"]

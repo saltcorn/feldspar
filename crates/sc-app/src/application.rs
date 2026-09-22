@@ -253,6 +253,40 @@ impl StaticDir {
             (false, false) => format!("{base}/{within}"),
         })
     }
+
+    /// The **app-root-relative** URL that serves the store path `store_path`
+    /// through this directory, or `None` when that path is not inside it
+    /// (design §13.2).
+    ///
+    /// [`resolve`](StaticDir::resolve)'s inverse, and its inverse on purpose:
+    /// the router answers a request by resolving, so anything that *describes*
+    /// a URL — `list_assets`, the agent's session header — has to build it the
+    /// same way round or it will describe URLs the router does not answer.
+    /// Segments are percent-encoded, because `resolve` decodes them.
+    ///
+    /// Relative rather than absolute for the reason `preview_pane_url` gives:
+    /// an absolute URL baked into a page follows the application from
+    /// `localhost` to production as a broken link.
+    pub fn url_for(&self, store_path: &str) -> Option<String> {
+        let base = self.path.trim_matches('/');
+        let path = store_path.trim_matches('/');
+        let within = match base.is_empty() {
+            true => path,
+            false if path == base => "",
+            false => path.strip_prefix(&format!("{base}/"))?,
+        };
+        let rest = within
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(percent_encode)
+            .collect::<Vec<_>>()
+            .join("/");
+        Some(match (self.mount.as_str(), rest.is_empty()) {
+            ("/", _) => format!("/{rest}"),
+            (mount, true) => mount.to_owned(),
+            (mount, false) => format!("{mount}/{rest}"),
+        })
+    }
 }
 
 /// Decode a path segment's `%XX` escapes, as UTF-8. A malformed escape stays as
@@ -277,6 +311,22 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Encode a path segment for a URL, keeping the RFC 3986 unreserved characters
+/// and `~`. The inverse of [`percent_decode`], so a name with a space or a `#`
+/// in it survives the round trip through a request path.
+fn percent_encode(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(byte));
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 /// Whether `path` falls under `mount` — the mount itself, or anything below it.
@@ -696,6 +746,46 @@ mod tests {
         assert!(app.static_dir_for("/about").is_none());
         // A mount is not a prefix match on text: `/imgur` is not under `/img`.
         assert!(app.static_dir_for("/imgur/x.png").is_none());
+    }
+
+    /// The URL a tool tells an agent about is the URL the router answers: what
+    /// `url_for` builds, `static_dir_for` and `resolve` take back to the same
+    /// store path.
+    #[test]
+    fn a_static_dirs_url_is_the_inverse_of_resolving_one() {
+        let app = Application::new("A", "a", FrameworkRef::new("code"))
+            .with_static_dir(StaticDir::new(
+                "/img",
+                FileStoreId("Assets".to_owned()),
+                "media",
+            ))
+            .with_static_dir(StaticDir::new("/", FileStoreId("Assets".to_owned()), ""));
+
+        let dir = &app.static_dirs[0];
+        for store_path in ["media/hero.png", "media/icons/save.png", "media/a b/#1.png"] {
+            let url = dir.url_for(store_path).expect("inside the directory");
+            let (found, rest) = app.static_dir_for(&url).expect("a mount claims it");
+            assert_eq!(found.mount, "/img", "{url}");
+            assert_eq!(found.resolve(rest).as_deref(), Some(store_path), "{url}");
+        }
+        assert_eq!(
+            dir.url_for("media/hero.png").as_deref(),
+            Some("/img/hero.png")
+        );
+        // A name a URL cannot carry as it stands is encoded, because `resolve`
+        // decodes.
+        assert_eq!(
+            dir.url_for("media/a b/#1.png").as_deref(),
+            Some("/img/a%20b/%231.png")
+        );
+        // The directory itself, and a path outside it.
+        assert_eq!(dir.url_for("media").as_deref(), Some("/img"));
+        assert_eq!(dir.url_for("elsewhere/hero.png"), None);
+        // A store-root directory at the app root.
+        assert_eq!(
+            app.static_dirs[1].url_for("hero.png").as_deref(),
+            Some("/hero.png")
+        );
     }
 
     #[test]

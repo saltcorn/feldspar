@@ -3495,9 +3495,12 @@ scope, so what it changed enters the change ledger and the model's reads of it g
   `<workflow>`/`<rules>`/`<edit_format>` blocks. The scope is named **once**, in the prompt,
   rather than in fifteen tool descriptions. The size test (8.3) is the reason several of these
   texts are as short as they are: the React builder's stable prefix plus tool definitions is
-  ≤ 1 500 estimated tokens in both `act` and `plan`, and it took cutting every tool description
-  and dropping `SHARED_PROMPT`'s workflow to get there (`act` measures 1 496 with `explore`
-  declared).
+  ≤ 1 600 estimated tokens in both `act` and `plan`, and it took cutting every tool description
+  and dropping `SHARED_PROMPT`'s workflow to get there. The budget was 1 500 and `act` measured
+  1 496 — spent to the last token — until `list_assets` made the set ten tools
+  (TODO "Static directories" §6); a tenth tool costs about a hundred, so the number went up
+  rather than an existing description coming off. It is still a **test**, and the next tool has
+  the same argument to make.
 - **`planned` is a workflow setting, not a second trait.** `workflow = planned` starts the run in
   `plan` mode (the new `AgentTrait::starting_mode` hook, read by `Runner::new`), where the tools
   are the read-only four plus `save_plan`, `implement_feature` and `explore`. The plan — an

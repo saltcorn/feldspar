@@ -323,6 +323,14 @@ export function toolProgress(tool: string, args: unknown): string {
       name == null ? `Process: ${action}` : `Process ${name}: ${action}`;
     return command == null ? head : `${head} \`${command}\``;
   }
+  // The application's static directories (TODO "Static directories" §6): a
+  // read over a store the panel is *not* open on, so there is no scope to drop.
+  if (tool.startsWith("list_assets_")) {
+    const pattern = firstString(args, ["pattern", "dir"]);
+    return pattern == null
+      ? "Listing the application's assets"
+      : `Listing assets: ${pattern}`;
+  }
   if (tool.startsWith("save_plan_")) return "Saving the plan";
   if (tool.startsWith("implement_feature_")) {
     const id = firstString(args, ["id"]);

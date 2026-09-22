@@ -172,11 +172,11 @@ pub mod tool_names {
         apply_patch_tool_name as apply_patch, check_checks_tool_name as check,
         edit_file_tool_name as edit_file, explore_tool_name as explore,
         find_files_tool_name as find_files, implement_feature_tool_name as implement_feature,
-        process_tool_name as process, read_file_tool_name as read_file,
-        repo_map_tool_name as repo_map, run_script_tool_name as run_project_script,
-        save_plan_tool_name as save_plan, search_files_tool_name as search_files,
-        shell_tool_name as shell, view_app_tool_name as view_app,
-        write_file_tool_name as write_file,
+        list_assets_tool_name as list_assets, process_tool_name as process,
+        read_file_tool_name as read_file, repo_map_tool_name as repo_map,
+        run_script_tool_name as run_project_script, save_plan_tool_name as save_plan,
+        search_files_tool_name as search_files, shell_tool_name as shell,
+        view_app_tool_name as view_app, write_file_tool_name as write_file,
     };
     pub use crate::delete_rows::tool_name as delete_rows;
     pub use crate::insert_row::tool_name as insert_row;
@@ -409,6 +409,7 @@ mod tests {
             tool_names::apply_patch(&scope),
             tool_names::search_files(&scope),
             tool_names::repo_map(&scope),
+            tool_names::list_assets(&scope),
             tool_names::run_project_script(&scope),
             tool_names::check(&scope),
             tool_names::view_app(&scope),
@@ -435,6 +436,7 @@ mod tests {
                 "apply_patch_app_src_web",
                 "search_files_app_src_web",
                 "repo_map_app_src_web",
+                "list_assets_app_src_web",
                 "run_script_app_src_web",
                 "check_app_src_web",
                 "view_app_app_src_web",
@@ -448,7 +450,7 @@ mod tests {
         );
         let unique: std::collections::BTreeSet<&String> = names.iter().collect();
         assert_eq!(unique.len(), names.len());
-        // The fifteen file names above are `coding`'s whole set, which is what the
+        // The sixteen file names above are `coding`'s whole set, which is what the
         // collision check compares when the trait is enabled twice: two
         // instances over one scope produce these same names and are refused.
         assert_eq!(
@@ -458,6 +460,7 @@ mod tests {
                 tool_names::find_files(&scope),
                 tool_names::search_files(&scope),
                 tool_names::repo_map(&scope),
+                tool_names::list_assets(&scope),
                 tool_names::save_plan(&scope),
                 tool_names::implement_feature(&scope),
                 tool_names::explore(&scope),
