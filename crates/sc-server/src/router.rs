@@ -1005,6 +1005,17 @@ async fn dispatch_app(
         };
     }
 
+    // The app's assets: a static directory that claims this path (§13.2). It
+    // sits between the providers and the framework because the framework's SPA
+    // fallback answers every path, so a directory behind it would never be
+    // reached.
+    if let Some((dir, rest)) = app.app.static_dir_for(path) {
+        return with_csp(
+            serve_static_dir(state, app, dir, rest, &method, headers, &jar).await,
+            &csp,
+        );
+    }
+
     // The app's UI: its framework serves the built bundle. No catalog access
     // happens here for a code framework — the app reaches data only through the
     // API above.
@@ -1087,6 +1098,123 @@ async fn dispatch_app(
             &csp,
         ),
     }
+}
+
+/// One of an application's static directories: the bytes of a file under
+/// [`StaticDir::path`] in [`StaticDir::store`] (design §13.2).
+///
+/// A mount is **not a grant**. It says where in the URL space a store's
+/// subdirectory appears; it does not say that everything under it is public.
+/// Every read goes through the same [`sc_files::check_access`] the file manager
+/// and the REST provider go through, as the *request's* user — so a file (or a
+/// folder) closed to a guest is not served to one, and the refusal is the same
+/// 404 an unknown path gets, because a 403 would confirm the file exists to
+/// somebody not allowed to know.
+///
+/// The content type is [`sc_app::asset_content_type`], the code framework's own
+/// answer, so a `.png` in a bundle and a `.png` in a static directory are served
+/// identically. The ETag is over the bytes: these are images, they are requested
+/// on every page load, and they do not change.
+async fn serve_static_dir(
+    state: &AppState,
+    app: &MountedApp,
+    dir: &sc_app::StaticDir,
+    rest: &str,
+    method: &axum::http::Method,
+    headers: &axum::http::HeaderMap,
+    jar: &CookieJar,
+) -> Response {
+    // Every refusal below is this one: a path that escapes, a store this
+    // application does not have, a file that is not there, and a file the
+    // viewer may not read all say the same thing to the same stranger.
+    let missing = || json_error(StatusCode::NOT_FOUND, "not found");
+
+    if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+        return json_error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "a static directory is read, not written",
+        );
+    }
+    let Some(path) = dir.resolve(rest) else {
+        return missing();
+    };
+    // The application's declared subset is the whole truth about which stores it
+    // touches (§13.2): a directory naming a store outside it serves nothing,
+    // whatever the record says. `save_application` refuses to store one.
+    if !app.app.can_access_file_store(&dir.store) {
+        return missing();
+    }
+    let Some(catalog) = state.apps.catalog() else {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
+    };
+    let Ok(store) = catalog.require_file_store(&dir.store.0) else {
+        return missing();
+    };
+
+    let user = match jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) {
+        Some(token) => match state.sessions.user_for(&token).await {
+            Ok(user) => user,
+            Err(e) => {
+                log_failure("session lookup failed", &e);
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed");
+            }
+        },
+        None => None,
+    };
+    let role = user.as_ref().map_or(sc_files::ROLE_PUBLIC, |u| u.role);
+
+    let floor = match sc_catalog::load_file_store_by_name(catalog, &dir.store.0).await {
+        Ok(def) => def.and_then(|def| def.min_role),
+        Err(e) => {
+            log_failure("reading a static directory's file store", &e);
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "file store unreadable");
+        }
+    };
+    if sc_files::check_access(store.as_ref(), floor, &path, role)
+        .await
+        .is_err()
+    {
+        return missing();
+    }
+
+    let bytes = match store.read(&path).await {
+        Ok(bytes) => bytes,
+        Err(e) if matches!(e.repr(), Repr::NotFound(_)) => return missing(),
+        Err(e) => {
+            log_failure("reading a static directory's file", &e);
+            return missing();
+        }
+    };
+
+    let etag = crate::apps::etag_of(&bytes);
+    let matched = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
+
+    let mut response = if matched {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else if method == axum::http::Method::HEAD {
+        StatusCode::OK.into_response()
+    } else {
+        (StatusCode::OK, bytes).into_response()
+    };
+    let out = response.headers_mut();
+    if let Ok(etag) = HeaderValue::from_str(&etag) {
+        out.insert(header::ETAG, etag);
+    }
+    out.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(sc_app::asset_content_type(&path)),
+    );
+    // Revalidated rather than cached blind: an admin who replaces a logo must
+    // not have to explain a stale one, and the ETag makes the second request
+    // cheap anyway.
+    out.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, must-revalidate"),
+    );
+    response
 }
 
 /// An application's catalogue: `GET {mount}/i18n/{locale}.json` (§16.1, D7).

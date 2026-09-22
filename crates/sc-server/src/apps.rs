@@ -63,14 +63,24 @@ impl ServedCatalog {
     /// The bytes, tagged. The tag is a hash of the body, so an edit that
     /// happens to restore a previous catalogue is correctly not a change.
     pub fn new(body: bytes::Bytes) -> ServedCatalog {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        body.hash(&mut hasher);
         ServedCatalog {
-            etag: format!("\"{:016x}\"", hasher.finish()),
+            etag: etag_of(&body),
             body,
         }
     }
+}
+
+/// The quoted entity tag for a body: a hash of the bytes, so two responses with
+/// the same content have the same tag and a change to either is a new one.
+///
+/// Shared by everything this server serves out of a store rather than off disk —
+/// an application's catalogue and its static directories — so `If-None-Match`
+/// means one thing across them.
+pub fn etag_of(body: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut hasher);
+    format!("\"{:016x}\"", hasher.finish())
 }
 
 impl MountedApp {

@@ -216,6 +216,75 @@ impl StaticDir {
             path: path.into(),
         }
     }
+
+    /// The path **within the store** that `rest` — the remainder of a request
+    /// path after the mount — names, or `None` if it escapes the directory
+    /// (design §13.2).
+    ///
+    /// The remainder is resolved rather than string-matched: each segment is
+    /// percent-decoded first, `.` is dropped, and `..` pops the segment before
+    /// it. That order is the point — an escape written `%2e%2e` is the same
+    /// escape, and a check that ran before decoding would miss it. Popping past
+    /// the directory's own root is `None`, which is the caller's 404: a mount
+    /// is a window onto a subdirectory, not onto the store.
+    pub fn resolve(&self, rest: &str) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        for segment in rest.split('/') {
+            let segment = percent_decode(segment);
+            match segment.as_str() {
+                "" | "." => continue,
+                ".." => {
+                    // Nothing left to pop means the request has walked out of
+                    // the directory it was served from.
+                    parts.pop()?;
+                }
+                // A decoded separator or a NUL would turn one segment into two,
+                // or into something the backend reads differently. Neither is a
+                // filename.
+                _ if segment.contains(['/', '\\', '\0']) => return None,
+                _ => parts.push(segment),
+            }
+        }
+        let base = self.path.trim_matches('/');
+        let within = parts.join("/");
+        Some(match (base.is_empty(), within.is_empty()) {
+            (true, _) => within,
+            (false, true) => base.to_owned(),
+            (false, false) => format!("{base}/{within}"),
+        })
+    }
+}
+
+/// Decode a path segment's `%XX` escapes, as UTF-8. A malformed escape stays as
+/// it is; `+` is a plus, because it is a space only in a query.
+fn percent_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_owned();
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether `path` falls under `mount` — the mount itself, or anything below it.
+fn path_under_mount(mount: &str, path: &str) -> bool {
+    if mount == "/" {
+        return true;
+    }
+    path == mount || path.starts_with(&format!("{mount}/"))
 }
 
 /// Normalise a mount/sub-path to a single leading slash and no trailing slash;
@@ -481,6 +550,29 @@ impl Application {
     pub fn exposes_stream(&self, name: &str) -> bool {
         self.streams.iter().any(|s| s.0 == name)
     }
+
+    /// The static directory whose mount claims `path`, with the remainder of
+    /// the path after that mount (design §13.2).
+    ///
+    /// The longest mount wins — the rule `MountedApp::provider_for` applies to
+    /// API providers, for the same reason: a directory at `/img/icons` must
+    /// take precedence over one at `/img` whatever order they were saved in.
+    /// The remainder still has to be [`StaticDir::resolve`]d before it names a
+    /// file, and a remainder that escapes is this directory's 404 rather than
+    /// somebody else's hit, which is why the two are separate steps.
+    pub fn static_dir_for<'a>(&'a self, path: &'a str) -> Option<(&'a StaticDir, &'a str)> {
+        let dir = self
+            .static_dirs
+            .iter()
+            .filter(|d| path_under_mount(&d.mount, path))
+            .max_by_key(|d| d.mount.len())?;
+        let rest = if dir.mount == "/" {
+            path
+        } else {
+            &path[dir.mount.len()..]
+        };
+        Some((dir, rest.trim_start_matches('/')))
+    }
 }
 
 #[cfg(test)]
@@ -574,6 +666,60 @@ mod tests {
             StaticDir::new("docs/", FileStoreId("s".to_owned()), "d").mount,
             "/docs"
         );
+    }
+
+    #[test]
+    fn the_longest_mount_claims_a_static_path() {
+        let app = Application::new("A", "a", FrameworkRef::new("code"))
+            .with_static_dir(StaticDir::new(
+                "/img",
+                FileStoreId("Assets".to_owned()),
+                "media",
+            ))
+            .with_static_dir(StaticDir::new(
+                "/img/icons",
+                FileStoreId("Assets".to_owned()),
+                "media/icons",
+            ));
+
+        // Registration order does not decide it: the longer mount wins.
+        let (dir, rest) = app.static_dir_for("/img/icons/save.png").unwrap();
+        assert_eq!(dir.mount, "/img/icons");
+        assert_eq!(rest, "save.png");
+        assert_eq!(dir.resolve(rest).as_deref(), Some("media/icons/save.png"));
+
+        let (dir, rest) = app.static_dir_for("/img/hero.png").unwrap();
+        assert_eq!(dir.mount, "/img");
+        assert_eq!(dir.resolve(rest).as_deref(), Some("media/hero.png"));
+
+        // A path no mount claims belongs to the framework.
+        assert!(app.static_dir_for("/about").is_none());
+        // A mount is not a prefix match on text: `/imgur` is not under `/img`.
+        assert!(app.static_dir_for("/imgur/x.png").is_none());
+    }
+
+    #[test]
+    fn a_static_path_cannot_escape_its_directory() {
+        let dir = StaticDir::new("/img", FileStoreId("Assets".to_owned()), "media");
+
+        assert_eq!(dir.resolve("a/b.png").as_deref(), Some("media/a/b.png"));
+        // `.` and empty segments are noise, and `..` pops what it can.
+        assert_eq!(dir.resolve("a/./../b.png").as_deref(), Some("media/b.png"));
+        // Out of the directory is `None` — decoded first, so an encoded escape
+        // is the same escape.
+        assert!(dir.resolve("../secrets.txt").is_none());
+        assert!(dir.resolve("a/../../secrets.txt").is_none());
+        assert!(dir.resolve("%2e%2e/secrets.txt").is_none());
+        // A decoded separator would turn one segment into two.
+        assert!(dir.resolve("a%2f..%2f..%2fsecrets.txt").is_none());
+        // The mount itself resolves to the directory, which is not a file.
+        assert_eq!(dir.resolve("").as_deref(), Some("media"));
+
+        // A directory at the store's root has no prefix to add, and still
+        // cannot be escaped.
+        let root = StaticDir::new("/img", FileStoreId("Assets".to_owned()), "");
+        assert_eq!(root.resolve("hero.png").as_deref(), Some("hero.png"));
+        assert!(root.resolve("../hero.png").is_none());
     }
 
     #[test]

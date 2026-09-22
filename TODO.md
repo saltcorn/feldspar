@@ -159,17 +159,17 @@ and this milestone does not invent it.
 
 ## Phase 1 — Serving a static directory
 
-- [ ] 1.1 `sc-server/src/router.rs`: after the API-provider match and before
+- [x] 1.1 `sc-server/src/router.rs`: after the API-provider match and before
       `app.framework.handle`, resolve the request against `app.static_dirs` by longest matching
       mount (§2). The remainder under `StaticDir::path` in `StaticDir::store`, read through
       `sc_files::check_access` as the request's user role; a closed file and an escaping path
       are both the 404 an unknown path gets (§3). Factor the match itself into `sc-app`
       (`Application::static_dir_for(path)`) so it is testable without a server and so the
       longest-mount rule has one implementation, as `provider_for` does.
-- [ ] 1.2 The response: `sc_app::asset_content_type`, an ETag over the bytes, `304` on a
+- [x] 1.2 The response: `sc_app::asset_content_type`, an ETag over the bytes, `304` on a
       matching `If-None-Match`, and the app's CSP applied by `with_csp` like every other app
       response.
-- [ ] 1.3 `sc-server/tests/`: a static directory serves a file with the right content type; a
+- [x] 1.3 `sc-server/tests/`: a static directory serves a file with the right content type; a
       second request with the ETag is a 304; `..` does not escape; a file closed to a guest is
       404 for a guest and served to an admin; an API mounted under the same prefix still wins;
       the framework's SPA fallback still answers a path no static directory claims.
