@@ -25,7 +25,9 @@ use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
 use serde_json::{Value as Json, json};
 
-use crate::api::{describe_api_queries, validate_api_config, validate_api_mounts};
+use crate::api::{
+    describe_api_queries, validate_api_config, validate_api_mounts, validate_static_dirs,
+};
 use crate::application::{
     ApiConfig, AppId, Application, CspPolicy, FrameworkRef, StaticDir, StreamRef, TriggerRef,
 };
@@ -75,6 +77,9 @@ pub async fn save_application(catalog: &Catalog, app: &Application) -> Result<Ap
     // serve it. Same reasoning as the framework config above: caught on save,
     // where the admin can fix it, rather than at build or serve time.
     validate_api_mounts(app)?;
+    // …and the static directories, against the same two things: the store subset
+    // this app declares, and the mounts the APIs above have just claimed (§13.2).
+    validate_static_dirs(app)?;
     // …and each provider's own settings, against the spec that provider
     // declares. An unknown key is refused rather than stored and ignored: the
     // form renders exactly the spec, so a key outside it is a typo or a stale

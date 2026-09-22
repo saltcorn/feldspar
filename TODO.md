@@ -176,15 +176,15 @@ and this milestone does not invent it.
 
 ## Phase 2 — The store is a pick-list
 
-- [ ] 2.1 `sc-app/src/store.rs`: `save_application` refuses a static directory whose store is
+- [x] 2.1 `sc-app/src/store.rs`: `save_application` refuses a static directory whose store is
       not in `Application::file_stores`, naming the store and the application, beside
       `validate_api_mounts`. Refuse a mount colliding with an API mount there too (§2), for the
       reason the API-at-`/` check is already made on save.
-- [ ] 2.2 `ApplicationForm.tsx`: `RepeatableRows` grows a column kind — a `select` beside its
+- [x] 2.2 `ApplicationForm.tsx`: `RepeatableRows` grows a column kind — a `select` beside its
       text inputs — and `Static directories`' `store` column becomes one, its options the
       form's live `fileStores` state, a stored-but-unoffered value kept and selected, and an
       empty state that says to add a file store above (§5).
-- [ ] 2.3 Tests: a `sc-app` test for each refusal in 2.1; a vitest that the drop-down offers
+- [x] 2.3 Tests: a `sc-app` test for each refusal in 2.1; a vitest that the drop-down offers
       the declared subset, that changing the subset changes the options, and that a stored value
       outside it survives a render and a save untouched.
 

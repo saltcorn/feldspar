@@ -364,6 +364,51 @@ fn check_api_mounts(app: &Application, serves_ui: bool) -> Result<()> {
     Ok(())
 }
 
+/// Check that every static directory names a store the app declares, and that
+/// none is mounted where an API provider would answer first (§13.2).
+///
+/// Two rules, one reason each, and both are checked here rather than at serve
+/// time because at serve time the symptom is a 404 with nothing to say why.
+///
+/// **The store must be in [`Application::file_stores`].** The subset is the
+/// whole truth about which stores an application touches — it is what
+/// `applications_using_file_store` counts and what every other reader of the
+/// app checks — so a static directory naming a store outside it would quietly
+/// widen the app's reach, and (before this check) pin a store the app was never
+/// granted against deletion. A typo is the same thing by accident: nothing
+/// resolved the name, so a misspelled store was stored and turned up as a 404.
+///
+/// **The mount must not sit at or under an API provider's mount.** A request
+/// resolves to a provider first (§13.2, step 1), so a directory at `/api/img`
+/// behind an API at `/api` is served by the API — which has no endpoint there —
+/// and never by the directory. Same shape as the API-at-`/` refusal above: the
+/// admin is standing in front of the form, and this is where they can be told.
+pub fn validate_static_dirs(app: &Application) -> Result<()> {
+    for dir in &app.static_dirs {
+        if !app.file_stores.contains(&dir.store) {
+            return Err(Error::invalid(format!(
+                "application `{}` serves `{}` from file store `{}`, which it does not \
+                 declare access to; add the store to the application's file stores, or \
+                 pick one it already has",
+                app.name, dir.mount, dir.store.0
+            )));
+        }
+        if let Some(api) = app
+            .apis
+            .iter()
+            .find(|api| crate::application::path_under_mount(&api.mount, &dir.mount))
+        {
+            return Err(Error::invalid(format!(
+                "application `{}` mounts its static directory at `{}`, under the `{}` API \
+                 at `{}`; a request resolves to the API first, so the directory would never \
+                 be served — mount it outside the API's sub-path",
+                app.name, dir.mount, api.provider, api.mount
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The tables an application declares, resolved against the catalog.
 ///
 /// An app sees only its declared subset (§13.2), so this is the *whole* of the
@@ -691,7 +736,9 @@ pub fn app_client_with(
 #[cfg(test)]
 mod mount_tests {
     use super::*;
-    use crate::application::{ApiConfig, FrameworkRef};
+    use sc_catalog::FileStoreId;
+
+    use crate::application::{ApiConfig, FrameworkRef, StaticDir};
     use crate::framework::{CODE_FRAMEWORK, framework_serves_ui};
     use crate::react::REACT_FRAMEWORK;
 
@@ -765,6 +812,68 @@ mod mount_tests {
             .with_api(ApiConfig::new(REST_PROVIDER, "/"))
             .with_api(ApiConfig::new(GRAPHQL_PROVIDER, "/"));
         assert!(check_api_mounts(&app, false).is_err());
+    }
+
+    /// A static directory whose store is outside the app's declared subset is
+    /// refused, naming both. The subset is the whole truth about which stores an
+    /// application reaches, and a typed store name was the one way round it.
+    #[test]
+    fn a_static_dir_outside_the_store_subset_is_refused() {
+        let app = Application::new("myapp", "myapp", FrameworkRef::new(REACT_FRAMEWORK))
+            .with_file_store(FileStoreId("Assets".to_owned()))
+            .with_static_dir(StaticDir::new(
+                "/img",
+                FileStoreId("Asets".to_owned()),
+                "media",
+            ));
+        let msg = validate_static_dirs(&app).unwrap_err().to_string();
+        assert!(msg.contains("Asets"), "{msg}");
+        assert!(msg.contains("myapp"), "{msg}");
+    }
+
+    #[test]
+    fn a_static_dir_in_the_subset_is_accepted() {
+        let app = Application::new("myapp", "myapp", FrameworkRef::new(REACT_FRAMEWORK))
+            .with_file_store(FileStoreId("Assets".to_owned()))
+            .with_api(ApiConfig::new(REST_PROVIDER, "/api"))
+            .with_static_dir(StaticDir::new(
+                "/img",
+                FileStoreId("Assets".to_owned()),
+                "media",
+            ));
+        validate_static_dirs(&app).unwrap();
+    }
+
+    /// A directory under an API's mount is never served — the request resolves
+    /// to the provider first — so it is refused at save time rather than found
+    /// as a 404 from an API that has no endpoint there.
+    #[test]
+    fn a_static_dir_under_an_api_mount_is_refused() {
+        let app = Application::new("myapp", "myapp", FrameworkRef::new(REACT_FRAMEWORK))
+            .with_file_store(FileStoreId("Assets".to_owned()))
+            .with_api(ApiConfig::new(REST_PROVIDER, "/api"))
+            .with_static_dir(StaticDir::new(
+                "/api/img",
+                FileStoreId("Assets".to_owned()),
+                "media",
+            ));
+        let msg = validate_static_dirs(&app).unwrap_err().to_string();
+        assert!(msg.contains("/api/img"), "{msg}");
+        assert!(msg.contains(REST_PROVIDER), "{msg}");
+
+        // The mount itself, not only what is below it.
+        let same = Application::new("myapp", "myapp", FrameworkRef::new(REACT_FRAMEWORK))
+            .with_file_store(FileStoreId("Assets".to_owned()))
+            .with_api(ApiConfig::new(REST_PROVIDER, "/api"))
+            .with_static_dir(StaticDir::new("/api", FileStoreId("Assets".to_owned()), ""));
+        assert!(validate_static_dirs(&same).is_err());
+
+        // …and an API-only app's root mount claims every directory there is.
+        let rooted = Application::new("myapp", "myapp", FrameworkRef::new("headless"))
+            .with_file_store(FileStoreId("Assets".to_owned()))
+            .with_api(ApiConfig::new(REST_PROVIDER, "/"))
+            .with_static_dir(StaticDir::new("/img", FileStoreId("Assets".to_owned()), ""));
+        assert!(validate_static_dirs(&rooted).is_err());
     }
 
     /// Every offered provider is a provider that mounts. The list drives the

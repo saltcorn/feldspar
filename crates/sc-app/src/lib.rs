@@ -70,7 +70,7 @@ pub use api::{
     ApiProviderInfo, AppGraphql, api_provider_config_spec, app_client, app_client_with,
     app_endpoints, app_endpoints_with, app_graphql, app_providers, app_providers_with,
     app_schema_sql, app_tables, app_triggers, registered_api_provider_info, select_api,
-    serves_custom_queries, validate_api_config, validate_api_mounts,
+    serves_custom_queries, validate_api_config, validate_api_mounts, validate_static_dirs,
 };
 pub use application::{
     ApiConfig, AppId, Application, CspPolicy, FRAME_ANCESTORS, FrameworkRef, StaticDir, StreamRef,

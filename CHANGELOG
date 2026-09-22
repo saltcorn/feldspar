@@ -2,6 +2,40 @@
 
 Changes in reverse chronological order.
 
+## A static directory's store is picked, and checked on save
+
+`Static directories` was three text inputs, and one of them — the store — was a store's name typed
+from memory. Nothing validated it: a misspelled store was saved in silence, and the first sign of
+it was a 404. Worse, a typed name quietly widened what the application reached, because
+`applications_using_file_store` counts a static directory as a reference that blocks deleting a
+store — so a name the application was never granted could pin a store, and the declared subset
+stopped being the whole truth about which stores an application touches.
+
+**The store is now a drop-down over the application's own declared file stores**
+(`ui/admin/src/staticDirs.ts`, `ApplicationForm.tsx`). The subset is ticked twenty lines above on
+the same screen, so the fix for an empty drop-down is visible without scrolling, and the empty
+state says so: *"Tick a file store above to serve a directory from it."* Options come from the
+form's **live** state rather than from the server's full list, so ticking a store makes it
+pickable immediately, and a stored value the subset no longer offers is still shown and still
+selected — marked `(not a declared store)` — because a form must never silently discard what it
+was given to edit. It is the pattern the framework picker on this same form already uses.
+`RepeatableRows` grew the column kind that makes this possible: a column that declares `options`
+renders a `<select>`, everything else stays the text box it was.
+
+**And `save_application` refuses two things it used to store** (`sc_app::validate_static_dirs`,
+beside `validate_api_mounts`):
+
+- a static directory whose store is **not in the application's `file_stores`**, naming the store
+  and the application — the subset is the bound, and a typo is the same mistake by accident;
+- a mount at or under an **API provider's mount**. A request resolves to a provider first, so a
+  directory at `/api/img` behind an API at `/api` is answered by an API that has no endpoint
+  there and is never served. Same reasoning as the API-at-`/` refusal: the admin is standing in
+  front of the form, which is where they can be told.
+
+Tested in `crates/sc-app/src/api.rs` (each refusal, including an API-only app whose root mount
+claims every directory there is) and `ui/admin/src/staticDirs.test.ts` (the drop-down offers the
+declared subset, follows a change to it, and keeps a value outside it through a render and a save).
+
 ## An application's static directories are served
 
 `Application::static_dirs` has been stored, edited and validated-on-delete since the first

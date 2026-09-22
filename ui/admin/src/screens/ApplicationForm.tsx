@@ -48,6 +48,12 @@ import {
   type ApiRow,
 } from "../apiRows";
 import { MultiSelect } from "../multiSelect";
+import {
+  blankStaticRow,
+  staticDirsToRequest,
+  storeOptions,
+  type StaticRow,
+} from "../staticDirs";
 import { CustomQueries } from "./CustomQueries";
 import { ApplicationTabs } from "./ApplicationViews";
 import { appTabs, settingsOnOwnTab } from "../views";
@@ -61,7 +67,6 @@ type ApiProviderInfo = ListApiProvidersResponse[number];
 type TableItem = ListTablesResponse[number];
 type FileStoreItem = ListFileStoresResponse[number];
 /** A `{ mount, store, path }` static-directory row. */
-type StaticRow = { mount: string; store: string; path: string };
 
 /** Render a CSP object as `directive: src1 src2` lines for the textarea. */
 function cspToText(csp: unknown): string {
@@ -242,7 +247,7 @@ export function ApplicationForm({
         triggers,
         streams,
         apis: apiRowsToRequest(apis, allProviders),
-        static_dirs: staticDirs.filter((d) => d.mount.trim() || d.path.trim()),
+        static_dirs: staticDirsToRequest(staticDirs),
         // An empty box means "no opinion", and is sent as no field at all so the
         // *framework's* default policy applies (§2.2) — a React app gets the one
         // fitted to what Vite emits. Sending `default-src 'self'` because a
@@ -694,13 +699,33 @@ export function ApplicationForm({
               title={t("Static directories")}
               rows={staticDirs}
               columns={[
-                { key: "mount", label: "Mount", placeholder: "/docs" },
-                { key: "store", label: "Store", placeholder: "apps" },
-                { key: "path", label: "Path", placeholder: "handbook" },
+                { key: "mount", label: t("Mount"), placeholder: "/docs" },
+                {
+                  key: "store",
+                  label: t("Store"),
+                  // The stores *this application* declares, from the picker
+                  // twenty lines above rather than from the server's full list:
+                  // the server refuses a static directory outside the subset, so
+                  // anything else here would be a choice that cannot be saved.
+                  options: (value) =>
+                    storeOptions(fileStores, value).map((o) => ({
+                      value: o.value,
+                      label: o.declared
+                        ? o.value
+                        : t("{name} (not a declared store)", { name: o.value }),
+                    })),
+                  emptyText: t(
+                    "Tick a file store above to serve a directory from it.",
+                  ),
+                },
+                { key: "path", label: t("Path"), placeholder: "handbook" },
               ]}
               onChange={setStaticDirs}
-              blank={{ mount: "", store: "", path: "" }}
+              blank={blankStaticRow()}
             />
+            <Form.Text muted className="d-block mb-3">
+              <T text="A directory is served at the app's own sub-path — `/docs/guide.png` for the store's `handbook/guide.png`. A file still has to be readable by whoever asks: a mount says where files appear, not that they are public." />
+            </Form.Text>
 
             <Form.Group className="mb-3" controlId="appCsp">
               <Form.Label>Content-Security-Policy</Form.Label>
@@ -890,6 +915,20 @@ function ApiRows({
   );
 }
 
+/** One column of a {@link RepeatableRows} list. A plain text box, unless it
+ * declares `options` — then a drop-down over them, computed from the row's
+ * current value so a stored value the list no longer offers can be kept and
+ * shown rather than silently dropped. */
+type RepeatableColumn<T> = {
+  key: keyof T & string;
+  label: string;
+  placeholder?: string;
+  /** The drop-down's options for a cell currently holding `value`. */
+  options?: (value: string) => { value: string; label: string }[];
+  /** Shown under a drop-down that offers nothing, saying where to fix it. */
+  emptyText?: string;
+};
+
 /** A repeatable list of uniform string-field rows (static dirs), with
  * add/remove. Generic over the row shape. */
 function RepeatableRows<T extends Record<string, string>>({
@@ -901,10 +940,11 @@ function RepeatableRows<T extends Record<string, string>>({
 }: {
   title: string;
   rows: T[];
-  columns: { key: keyof T & string; label: string; placeholder?: string }[];
+  columns: RepeatableColumn<T>[];
   blank: T;
   onChange: (rows: T[]) => void;
 }) {
+  const { t } = useT();
   const setCell = (index: number, key: keyof T & string, value: string) => {
     onChange(
       rows.map((r, i) => (i === index ? ({ ...r, [key]: value } as T) : r)),
@@ -926,16 +966,41 @@ function RepeatableRows<T extends Record<string, string>>({
         {rows.length === 0 && <div className="text-muted">None.</div>}
         {rows.map((row, index) => (
           <Row key={index} className="mb-2 align-items-end">
-            {columns.map((col) => (
-              <Col key={col.key}>
-                <Form.Label className="small mb-1">{col.label}</Form.Label>
-                <Form.Control
-                  value={row[col.key]}
-                  placeholder={col.placeholder}
-                  onChange={(e) => setCell(index, col.key, e.target.value)}
-                />
-              </Col>
-            ))}
+            {columns.map((col) => {
+              // A column with `options` is a drop-down: the set is short, known
+              // and already on the screen, so typing one of its members into a
+              // box is asking a question whose answer is visible.
+              const options = col.options?.(row[col.key]);
+              return (
+                <Col key={col.key}>
+                  <Form.Label className="small mb-1">{col.label}</Form.Label>
+                  {options ? (
+                    <>
+                      <Form.Select
+                        value={row[col.key]}
+                        onChange={(e) => setCell(index, col.key, e.target.value)}
+                      >
+                        <option value="">{t("Choose…")}</option>
+                        {options.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </Form.Select>
+                      {options.length === 0 && col.emptyText && (
+                        <Form.Text muted>{col.emptyText}</Form.Text>
+                      )}
+                    </>
+                  ) : (
+                    <Form.Control
+                      value={row[col.key]}
+                      placeholder={col.placeholder}
+                      onChange={(e) => setCell(index, col.key, e.target.value)}
+                    />
+                  )}
+                </Col>
+              );
+            })}
             <Col xs="auto">
               <Button
                 variant="outline-danger"

@@ -280,7 +280,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 /// Whether `path` falls under `mount` — the mount itself, or anything below it.
-fn path_under_mount(mount: &str, path: &str) -> bool {
+pub(crate) fn path_under_mount(mount: &str, path: &str) -> bool {
     if mount == "/" {
         return true;
     }
