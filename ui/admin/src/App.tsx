@@ -192,10 +192,36 @@ export const NAV: NavItem[] = [
     matches: ["/tables", "/db-connections"],
   },
   {
+    href: "#/file-stores",
+    label: "Files",
+    icon: <IconFolder />,
+    matches: ["/file-stores", "/files"],
+  },
+  {
     href: "#/triggers",
-    label: "Triggers",
+    label: "Actions",
     icon: <IconBolt />,
     matches: ["/triggers"],
+  },
+  {
+    href: "#/agents",
+    label: "Agents",
+    icon: <IconRobot />,
+    // The providers list is part of this section rather than one of its own: an
+    // LLM provider exists to be pointed at by an agent, and nothing else in the
+    // admin UI has any use for one.
+    matches: ["/agents", "/llm-providers"],
+  },
+  {
+    href: "#/models",
+    label: "Predictive models",
+    icon: <IconChartHistogram />,
+    // Beside Agents rather than under Tables: a model is a question asked *of*
+    // a table, and the section it belongs to is the one about answering
+    // questions rather than the one about storing rows. A dataset has no entry
+    // of its own on purpose — it belongs to its model and has no life without
+    // one (§3).
+    matches: ["/models", "/model-instances"],
   },
   {
     href: "#/streams",
@@ -207,32 +233,6 @@ export const NAV: NavItem[] = [
     // rest — a table has rows, a file has bytes — and a stream is the one entry
     // that moves on its own.
     matches: ["/streams"],
-  },
-  {
-    href: "#/file-stores",
-    label: "Files",
-    icon: <IconFolder />,
-    matches: ["/file-stores", "/files"],
-  },
-  {
-    href: "#/models",
-    label: "Models",
-    icon: <IconChartHistogram />,
-    // Beside Agents rather than under Tables: a model is a question asked *of*
-    // a table, and the section it belongs to is the one about answering
-    // questions rather than the one about storing rows. A dataset has no entry
-    // of its own on purpose — it belongs to its model and has no life without
-    // one (§3).
-    matches: ["/models", "/model-instances"],
-  },
-  {
-    href: "#/agents",
-    label: "Agents",
-    icon: <IconRobot />,
-    // The providers list is part of this section rather than one of its own: an
-    // LLM provider exists to be pointed at by an agent, and nothing else in the
-    // admin UI has any use for one.
-    matches: ["/agents", "/llm-providers"],
   },
   {
     href: "#/users",
@@ -315,9 +315,8 @@ function Shell({
           which springs open under a passing pointer. Tabler owns both numbers,
           which is why nothing here (or in `admin.css`) restates the geometry. */}
       <aside
-        className={`navbar navbar-vertical navbar-expand-lg${
-          folded ? " navbar-folded" : ""
-        }`}
+        className={`navbar navbar-vertical navbar-expand-lg${folded ? " navbar-folded" : ""
+          }`}
         data-bs-theme="dark"
       >
         <div className="container-fluid">
@@ -424,9 +423,8 @@ function Shell({
                 class swap here rather than a rule in `admin.css`: Bootstrap's
                 spacing utilities are `!important`. */}
             <div
-              className={`d-none d-lg-flex pb-2 ${
-                folded ? "justify-content-center px-0" : "justify-content-end px-3"
-              }`}
+              className={`d-none d-lg-flex pb-2 ${folded ? "justify-content-center px-0" : "justify-content-end px-3"
+                }`}
             >
               <button
                 type="button"
@@ -444,9 +442,8 @@ function Shell({
               </button>
             </div>
             <div
-              className={`d-none d-lg-block py-3 border-top ${
-                folded ? "px-0" : "px-3"
-              }`}
+              className={`d-none d-lg-block py-3 border-top ${folded ? "px-0" : "px-3"
+                }`}
             >
               {/* Folded there is no room for an address, so the email moves
                   into the log-out button's tooltip (see `admin.css`). */}
