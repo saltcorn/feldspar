@@ -2,6 +2,10 @@
 
 Changes in reverse chronological order.
 
+## Admin UI UX tweaks
+
+Reorder and relabel the menu, remove translation link for applications, fix CSS for button menu items.
+
 ## The IDE's find-in-files searches the whole store, not only the open tabs
 
 Searching in the IDE's Search view found matches only in files already open in an editor tab. The
