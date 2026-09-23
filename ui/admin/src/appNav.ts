@@ -22,15 +22,15 @@ const BUILD_TRAIT_APPLICATION = "application";
 /** One link under the application picker. */
 export type AppNavLink = {
   id:
-    | "edit-code"
-    | "update-client"
-    | "build"
-    | "chat"
-    | "views"
-    | "pages"
-    | "library"
-    | "translations"
-    | "settings";
+  | "edit-code"
+  | "update-client"
+  | "build"
+  | "chat"
+  | "views"
+  | "pages"
+  | "library"
+  | "translations"
+  | "settings";
   label: string;
   /** Where it goes. Absent for the two links that *do* something (build, update
    * client) rather than go somewhere. */
@@ -107,22 +107,13 @@ export function appNavLinks(
   if (agent) {
     links.push({
       id: "chat",
-      label: "New chat",
+      label: "Coding agent",
       href: `#/agents/${encodeURIComponent(agent)}/chat`,
       // A new chat is a thing to start, not a place to be: the chat screen
       // belongs to Agents, which is what lights up once it is open.
       matches: [],
     });
   }
-  // Every application has strings a person reads, whatever its framework
-  // writes them in, so this is not conditional on one (§16.1, 4.4). It sits
-  // above Settings because Settings is always last.
-  links.push({
-    id: "translations",
-    label: "Translations",
-    href: `#${base}/translations`,
-    matches: [`${base}/translations`],
-  });
   links.push({
     id: "settings",
     label: "Settings",
