@@ -26,7 +26,8 @@ use serde_json::{Map, Value as Json};
 use super::dimension::{
     Coordinates, DesignCoordinates, Dimension, DimensionCoordinates, cell_text, key_text,
 };
-use super::spec::{Binding, DimensionSpec, Policy, Spec, Step, parse_instant};
+use super::spec::{Aggregate, Binding, DimensionSpec, Edges, Policy, Spec, Step, parse_instant};
+use super::structured::{self, Graph, MAX_DISTANCE_SITES, MAX_ICAR_NODES, Optional};
 use super::tensor::{Tensor, Values};
 use super::{LABEL_COLUMN, check_bindings_declared};
 use crate::encode::{apply_encoding, fit_encoding};
@@ -64,6 +65,11 @@ pub struct BindReport {
     pub variables: Vec<VariableReport>,
     /// The number of values in the data file.
     pub values: u64,
+    /// What the preview should say although nothing was refused: a region
+    /// with no neighbour, which a plain ICAR over a disconnected graph makes
+    /// improper.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl BindReport {
@@ -184,6 +190,67 @@ pub(crate) fn dimension_source<'a>(
     }
 }
 
+/// A dataset's rows looked up in a dimension: an `index`, each axis of a
+/// `series` or `cells`, each end of an edge. What the `unknown` policy and the
+/// resolution order are about.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Lookup<'a> {
+    /// The dataset's column holding each row's value.
+    column: &'a str,
+    /// The dimension it is looked up in.
+    dimension: &'a str,
+    /// For a rows dimension, the column of its dataset compared with.
+    match_column: Option<&'a str>,
+}
+
+/// Every lookup `binding` makes. An axis with no column reads its declared
+/// dimension's own column.
+pub(crate) fn lookups<'a>(spec: &'a Spec, binding: &'a Binding) -> Vec<Lookup<'a>> {
+    if let Binding::Index {
+        column,
+        dimension,
+        match_column,
+        ..
+    } = binding
+    {
+        return vec![Lookup {
+            column,
+            dimension,
+            match_column: match_column.as_deref(),
+        }];
+    }
+    if let Some(e) = binding.edges() {
+        return [&e.from, &e.to]
+            .map(|column| Lookup {
+                column,
+                dimension: &e.dimension,
+                match_column: e.match_column.as_deref(),
+            })
+            .to_vec();
+    }
+    binding
+        .along()
+        .into_iter()
+        .filter_map(|a| {
+            Some(Lookup {
+                column: match &a.column {
+                    Some(c) => c,
+                    None => declared(spec, &a.dimension)?.column(),
+                },
+                dimension: &a.dimension,
+                match_column: a.match_column.as_deref(),
+            })
+        })
+        .collect()
+}
+
+/// The declared dimension called `name`, or whose `.future` it is.
+fn declared<'a>(spec: &'a Spec, name: &str) -> Option<&'a DimensionSpec> {
+    spec.dimensions
+        .get(name)
+        .or_else(|| spec.dimensions.get(name.strip_suffix(".future")?))
+}
+
 /// Everything about the bindings that can be checked without reading data
 /// (§10's save-time half), answering the order the datasets resolve in.
 pub(crate) fn check_structure<'a>(
@@ -286,42 +353,128 @@ pub(crate) fn check_structure<'a>(
                 }
             }
         }
+        // Every dimension it names exists, and every `match` is against a
+        // dataset's rows and one of its columns.
+        let mut named: Vec<(&str, Option<&str>)> = match binding {
+            Binding::Size { dimension } => vec![(dimension.as_str(), None)],
+            Binding::Index {
+                dimension,
+                match_column,
+                ..
+            } => vec![(dimension.as_str(), match_column.as_deref())],
+            _ => Vec::new(),
+        };
+        named.extend(
+            binding
+                .along()
+                .into_iter()
+                .map(|a| (a.dimension.as_str(), a.match_column.as_deref())),
+        );
+        if let Some(e) = binding.edges() {
+            named.push((&e.dimension, e.match_column.as_deref()));
+        }
+        for (dimension, match_column) in named {
+            let Some(source) = dimension_source(spec, datasets, dimension) else {
+                return Err(at(format!(
+                    "there is no dimension `{dimension}` (the datasets are dimensions of their \
+                     rows: {}; the others are declared under `{}`)",
+                    listed(),
+                    super::DIMENSIONS_KEY
+                )));
+            };
+            if let Some(m) = match_column {
+                if !source.rows {
+                    return Err(at(format!(
+                        "`match` compares with a column of a dataset's rows, and `{dimension}` \
+                         is not a dataset"
+                    )));
+                }
+                let Some(target) = dataset(source.dataset) else {
+                    return Err(internal("a rows dimension without its dataset"));
+                };
+                if !has_column(target, m) {
+                    return Err(at(format!(
+                        "`match`: `{}` has no column `{m}`",
+                        target.name
+                    )));
+                }
+            }
+        }
+        for along in binding.along() {
+            if along.column.is_some() {
+                continue;
+            }
+            let over = binding.dataset().unwrap_or_default();
+            match declared(spec, &along.dimension) {
+                Some(d) if d.dataset() == over => {}
+                Some(d) => {
+                    return Err(at(format!(
+                        "`{}` is over `{}`, not `{over}`, so give the `column` of `{over}` that \
+                         places its rows in it",
+                        along.dimension,
+                        d.dataset()
+                    )));
+                }
+                None => {
+                    return Err(at(format!(
+                        "`{}` is a dataset's rows, so give the `column` of `{over}` holding \
+                         their keys",
+                        along.dimension
+                    )));
+                }
+            }
+        }
         match binding {
             Binding::Columns { columns, .. } | Binding::Design { columns, .. }
                 if columns.is_empty() =>
             {
                 return Err(at("it lists no columns".to_owned()));
             }
-            Binding::Size { dimension } | Binding::Index { dimension, .. } => {
-                let Some(source) = dimension_source(spec, datasets, dimension) else {
-                    return Err(at(format!(
-                        "there is no dimension `{dimension}` (the datasets are dimensions of \
-                         their rows: {}; the others are declared under `{}`)",
-                        listed(),
-                        super::DIMENSIONS_KEY
-                    )));
-                };
-                if let Binding::Index {
-                    match_column: Some(m),
-                    ..
-                } = binding
-                {
-                    if !source.rows {
+            Binding::Series {
+                column,
+                aggregate,
+                fill,
+                ..
+            }
+            | Binding::Cells {
+                column,
+                aggregate,
+                fill,
+                ..
+            } => {
+                if let (None, Some(a)) = (column, aggregate) {
+                    if *a != Aggregate::Count {
                         return Err(at(format!(
-                            "`match` compares with a column of a dataset's rows, and \
-                             `{dimension}` is not a dataset"
-                        )));
-                    }
-                    let Some(target) = dataset(source.dataset) else {
-                        return Err(internal("a rows dimension without its dataset"));
-                    };
-                    if !has_column(target, m) {
-                        return Err(at(format!(
-                            "`match`: `{}` has no column `{m}`",
-                            target.name
+                            "`{}` needs a `column` to aggregate; with none, rows are counted",
+                            a.name()
                         )));
                     }
                 }
+                if let Some(fill) = fill {
+                    if binding.aggregate() == Aggregate::Count {
+                        return Err(at(
+                            "a count of no rows is 0, so a count takes no `fill`".to_owned()
+                        ));
+                    }
+                    let scalar = Tensor::from_literal(fill).ok().and_then(|t| t.as_number());
+                    if scalar.is_none() {
+                        return Err(at(format!(
+                            "`fill` is `{fill}`, and it must be a number or `\"NaN\"`"
+                        )));
+                    }
+                }
+            }
+            Binding::Adjacency(Edges { symmetric, .. })
+            | Binding::Components(Edges { symmetric, .. })
+            | Binding::Component(Edges { symmetric, .. })
+            | Binding::IcarScale(Edges { symmetric, .. })
+                if *symmetric != super::spec::Symmetric::Dedupe =>
+            {
+                return Err(at(format!(
+                    "`symmetric` is for an edge list (`edge_count`, `edge_from`, `edge_to`); \
+                     a `{}` treats the graph as undirected",
+                    binding.kind()
+                )));
             }
             Binding::Width { of } => {
                 if !matches!(spec.bindings.get(of), Some(Binding::Design { .. })) {
@@ -415,29 +568,28 @@ fn resolution_order<'a>(spec: &Spec, datasets: &'a [DatasetColumns<'a>]) -> Resu
     // `edges[a]` holds each dataset `a` indexes into, with the variable.
     let mut edges: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
     for (var, binding) in &spec.bindings {
-        let Binding::Index {
-            dataset, dimension, ..
-        } = binding
-        else {
+        let Some(dataset) = binding.dataset() else {
             continue;
         };
-        let Some(source) = dimension_source(spec, datasets, dimension) else {
-            continue;
-        };
-        if source.dataset == dataset {
-            if source.rows {
-                return Err(Error::invalid(format!(
-                    "`{var}` indexes `{dataset}` into its own rows, so its rows would depend on \
-                     what indexes them: index into a related dataset over the same table \
-                     instead"
-                )));
+        for lookup in lookups(spec, binding) {
+            let Some(source) = dimension_source(spec, datasets, lookup.dimension) else {
+                continue;
+            };
+            if source.dataset == dataset {
+                if source.rows {
+                    return Err(Error::invalid(format!(
+                        "`{var}` indexes `{dataset}` into its own rows, so its rows would \
+                         depend on what indexes them: index into a related dataset over the \
+                         same table instead"
+                    )));
+                }
+                continue;
             }
-            continue;
+            edges
+                .entry(dataset)
+                .or_default()
+                .push((source.dataset, var.as_str()));
         }
-        edges
-            .entry(dataset.as_str())
-            .or_default()
-            .push((source.dataset, var.as_str()));
     }
     let mut order: Vec<&str> = Vec::with_capacity(datasets.len());
     let mut remaining: Vec<&str> = datasets.iter().map(|d| d.name).collect();
@@ -627,6 +779,7 @@ pub fn bind_data(
         unknowns(
             name,
             policies.unknown,
+            &spec,
             &bindings,
             &work,
             &dims,
@@ -648,6 +801,7 @@ pub fn bind_data(
         unknowns(
             name,
             policies.unknown,
+            &spec,
             &bindings,
             &work,
             &dims,
@@ -690,7 +844,7 @@ pub fn bind_data(
                 declared(index).ok_or_else(|| internal("an undeclared index"))?,
                 &spec.bindings[*index],
             );
-            let positions = index_positions(decl, binding, &work, &dims)?;
+            let positions = index_positions(decl, binding, &spec, &work, &dims)?;
             let mut order: Vec<usize> = (0..positions.len()).collect();
             order.sort_by_key(|i| positions[*i]);
             working(&mut work, name)?.keep(&order)?;
@@ -706,6 +860,7 @@ pub fn bind_data(
     // Every binding, evaluated: the ones that depend on another binding last.
     let mut bound: HashMap<&str, Bound> = HashMap::new();
     let mut designs = BTreeMap::new();
+    let mut warnings: Vec<String> = Vec::new();
     for pass in 0..2 {
         for (decl, binding) in &bindings {
             let dependent = matches!(
@@ -715,7 +870,16 @@ pub fn bind_data(
             if dependent != (pass == 1) {
                 continue;
             }
-            let value = evaluate(decl, binding, &work, &dims, &bound, &mut designs)?;
+            let value = evaluate(
+                decl,
+                binding,
+                &spec,
+                &work,
+                &dims,
+                &bound,
+                &mut designs,
+                &mut warnings,
+            )?;
             bound.insert(decl.name.as_str(), value);
         }
     }
@@ -802,6 +966,7 @@ pub fn bind_data(
         drops,
         variables,
         values: total,
+        warnings,
     };
     Ok(BoundData {
         json: Json::Object(json),
@@ -898,25 +1063,18 @@ fn build_dimensions(
     Ok(())
 }
 
-/// The dimension an `index` binding looks its values up in: the dimension
-/// itself, or — with `match` — its dataset's rows found by another column.
-fn index_dimension(
-    binding: &Binding,
+/// The dimension a lookup finds its values in: the dimension itself, or —
+/// with `match` — its dataset's rows found by another column. `None` while
+/// it is not built yet.
+fn lookup_dimension(
+    lookup: &Lookup<'_>,
     work: &BTreeMap<&str, Working>,
     dims: &HashMap<String, Dimension>,
 ) -> Result<Option<Dimension>> {
-    let Binding::Index {
-        dimension,
-        match_column,
-        ..
-    } = binding
-    else {
+    let Some(dim) = dims.get(lookup.dimension) else {
         return Ok(None);
     };
-    let Some(dim) = dims.get(dimension) else {
-        return Ok(None);
-    };
-    match match_column {
+    match lookup.match_column {
         None => Ok(Some(dim.clone())),
         Some(m) => {
             let target = &work[dim.coords.dataset.as_str()];
@@ -926,13 +1084,13 @@ fn index_dimension(
     }
 }
 
-/// Apply the `unknown` policy to `dataset`'s `index` bindings — into other
-/// datasets' dimensions (`own` false) or into the dimensions over itself
-/// (`own` true).
+/// Apply the `unknown` policy to `dataset`'s lookups — into other datasets'
+/// dimensions (`own` false) or into the dimensions over itself (`own` true).
 #[allow(clippy::too_many_arguments)]
 fn unknowns(
     dataset: &str,
     policy: Policy,
+    spec: &Spec,
     bindings: &[(&Declaration, &Binding)],
     work: &BTreeMap<&str, Working>,
     dims: &HashMap<String, Dimension>,
@@ -942,20 +1100,13 @@ fn unknowns(
     own: bool,
 ) -> Result<()> {
     let w = &work[dataset];
-    for (decl, binding) in bindings {
-        let Binding::Index {
-            dataset: d,
-            column: column_name,
-            dimension,
-            ..
-        } = binding
-        else {
-            continue;
-        };
-        if d != dataset {
-            continue;
-        }
-        let Some(dim) = index_dimension(binding, work, dims)? else {
+    let each = bindings
+        .iter()
+        .filter(|(_, b)| b.dataset() == Some(dataset))
+        .flat_map(|(decl, b)| lookups(spec, b).into_iter().map(move |l| (*decl, *b, l)));
+    for (decl, binding, lookup) in each {
+        let (column_name, dimension) = (lookup.column, lookup.dimension);
+        let Some(dim) = lookup_dimension(&lookup, work, dims)? else {
             // Not built yet: a dimension over this dataset, on the other pass.
             continue;
         };
@@ -1004,8 +1155,8 @@ fn unknowns(
                 }
                 drops.push(DropReport {
                     dataset: dataset.to_owned(),
-                    column: column_name.clone(),
-                    dimension: Some(dimension.clone()),
+                    column: column_name.to_owned(),
+                    dimension: Some(dimension.to_owned()),
                     rows: missing.len(),
                     first: first_name.clone(),
                     sentence: format!(
@@ -1025,22 +1176,52 @@ fn unknowns(
 fn index_positions(
     decl: &Declaration,
     binding: &Binding,
+    spec: &Spec,
     work: &BTreeMap<&str, Working>,
     dims: &HashMap<String, Dimension>,
 ) -> Result<Vec<i64>> {
-    let Binding::Index {
-        dataset, column, ..
-    } = binding
-    else {
-        unreachable!("only an index has positions")
+    let lookups = lookups(spec, binding);
+    let (Some(dataset), [lookup]) = (binding.dataset(), lookups.as_slice()) else {
+        return Err(internal("an index without its one lookup"));
     };
-    let dim = index_dimension(binding, work, dims)?
-        .ok_or_else(|| internal("an index into a dimension not yet resolved"))?;
-    let w = &work[dataset.as_str()];
-    let values = column_of(&w.frame, column)?;
-    (0..w.frame.rows)
+    let (dim, positions) = positions(decl, binding, dataset, lookup, work, dims)?;
+    positions
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            p.map(|p| p as i64 + 1).ok_or_else(|| {
+                Error::invalid(format!(
+                    "{}: row `{}` has no position in `{}`",
+                    about(decl, binding),
+                    work[dataset].row_name(i),
+                    dim.coords.name
+                ))
+            })
+        })
+        .collect()
+}
+
+/// Each row's 0-based position in a lookup's dimension, `None` where its value
+/// is null. A value that is not a position was dealt with by the `unknown`
+/// policy before anything was bound, so one here is a binder bug.
+fn positions(
+    decl: &Declaration,
+    binding: &Binding,
+    dataset: &str,
+    lookup: &Lookup<'_>,
+    work: &BTreeMap<&str, Working>,
+    dims: &HashMap<String, Dimension>,
+) -> Result<(Dimension, Vec<Option<usize>>)> {
+    let dim = lookup_dimension(lookup, work, dims)?
+        .ok_or_else(|| internal("a lookup into a dimension not yet resolved"))?;
+    let w = &work[dataset];
+    let values = column_of(&w.frame, lookup.column)?;
+    let positions = (0..w.frame.rows)
         .map(|i| {
-            dim.position(values, i).map(|p| p as i64).ok_or_else(|| {
+            if values.is_null_at(i) {
+                return Ok(None);
+            }
+            dim.position(values, i).map(|p| Some(p - 1)).ok_or_else(|| {
                 Error::invalid(format!(
                     "{}: row `{}` has no position in `{}`",
                     about(decl, binding),
@@ -1049,7 +1230,8 @@ fn index_positions(
                 ))
             })
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    Ok((dim, positions))
 }
 
 /// One column's values as numbers — ints stay ints, booleans are 0 and 1, a
@@ -1110,13 +1292,16 @@ fn numbers(
 }
 
 /// One binding's value.
+#[allow(clippy::too_many_arguments)]
 fn evaluate(
     decl: &Declaration,
     binding: &Binding,
+    spec: &Spec,
     work: &BTreeMap<&str, Working>,
     dims: &HashMap<String, Dimension>,
     bound: &HashMap<&str, Bound>,
     designs: &mut BTreeMap<String, DesignCoordinates>,
+    warnings: &mut Vec<String>,
 ) -> Result<Bound> {
     let at = |msg: String| Error::invalid(format!("{}: {msg}", about(decl, binding)));
     let frame = |dataset: &str| &work[dataset].frame;
@@ -1266,7 +1451,7 @@ fn evaluate(
         } => Bound {
             groups: Some(dims[dimension.as_str()].size()),
             ..over(
-                Tensor::ints(index_positions(decl, binding, work, dims)?),
+                Tensor::ints(index_positions(decl, binding, spec, work, dims)?),
                 dataset,
             )
         },
@@ -1338,7 +1523,319 @@ fn evaluate(
                 plain(Tensor::ints(start))
             }
         }
+        Binding::Series {
+            dataset, column, ..
+        }
+        | Binding::SeriesPresent {
+            dataset, column, ..
+        }
+        | Binding::Cells {
+            dataset, column, ..
+        }
+        | Binding::CellsPresent {
+            dataset, column, ..
+        } => plain(series(
+            decl,
+            binding,
+            dataset,
+            column.as_deref(),
+            spec,
+            work,
+            dims,
+        )?),
+        Binding::EdgeCount(e)
+        | Binding::EdgeFrom(e)
+        | Binding::EdgeTo(e)
+        | Binding::Adjacency(e)
+        | Binding::Components(e)
+        | Binding::Component(e)
+        | Binding::IcarScale(e) => {
+            let graph = graph(decl, binding, e, spec, work, dims, warnings)?;
+            let n = graph.nodes;
+            match binding {
+                Binding::EdgeCount(_) => sized(
+                    graph.edges(e.symmetric).len(),
+                    format!("the number of edges in `{}`", e.dataset),
+                ),
+                Binding::EdgeFrom(_) | Binding::EdgeTo(_) => {
+                    let from = matches!(binding, Binding::EdgeFrom(_));
+                    plain(Tensor::ints(
+                        graph
+                            .edges(e.symmetric)
+                            .into_iter()
+                            .map(|(a, b)| if from { a } else { b })
+                            .collect(),
+                    ))
+                }
+                Binding::Adjacency(_) => plain(Tensor {
+                    shape: vec![n, n],
+                    values: Values::Int(graph.adjacency()),
+                }),
+                Binding::Components(_) => sized(
+                    graph.components().into_iter().max().map_or(0, |c| c + 1),
+                    format!(
+                        "the number of connected components of `{}` in `{}`",
+                        e.dimension, e.dataset
+                    ),
+                ),
+                Binding::Component(_) => plain(Tensor::ints(
+                    graph
+                        .components()
+                        .into_iter()
+                        .map(|c| c as i64 + 1)
+                        .collect(),
+                )),
+                _ => {
+                    if n > MAX_ICAR_NODES {
+                        return Err(at(format!(
+                            "`{}` has {n} positions, and the scaling factor is computed for at \
+                             most {MAX_ICAR_NODES}: its eigendecomposition is cubic in them",
+                            e.dimension
+                        )));
+                    }
+                    plain(Tensor {
+                        shape: Vec::new(),
+                        values: Values::Real(vec![graph.icar_scale()]),
+                    })
+                }
+            }
+        }
+        Binding::Points(p) | Binding::Distances(p) => {
+            let sites = sites(decl, binding, p, work)?;
+            let n = sites.len();
+            if matches!(binding, Binding::Points(_)) {
+                over(
+                    Tensor {
+                        shape: vec![n, 2],
+                        values: Values::Real(structured::points(&sites, p.project)),
+                    },
+                    &p.dataset,
+                )
+            } else {
+                if n > MAX_DISTANCE_SITES {
+                    return Err(at(format!(
+                        "`{}` has {n} rows, and distances are computed between at most \
+                         {MAX_DISTANCE_SITES} sites: they are n² values",
+                        p.dataset
+                    )));
+                }
+                plain(Tensor {
+                    shape: vec![n, n],
+                    values: Values::Real(structured::distances(&sites)),
+                })
+            }
+        }
     })
+}
+
+/// A column's values as numbers with its nulls kept, for a `series` to
+/// aggregate — ints stay ints, booleans are 0 and 1, and a date or text is
+/// refused.
+fn optional_numbers(
+    decl: &Declaration,
+    binding: &Binding,
+    dataset: &str,
+    name: &str,
+    column: &Column,
+) -> Result<Optional> {
+    let at = |msg: String| Error::invalid(format!("{}: {msg}", about(decl, binding)));
+    match column {
+        Column::Int(v) => Ok(Optional::Int(v.clone())),
+        Column::Bool(v) => Ok(Optional::Int(v.iter().map(|b| b.map(i64::from)).collect())),
+        Column::Float(v) => Ok(Optional::Real(v.clone())),
+        Column::Null(n) => Ok(Optional::Real(vec![None; *n])),
+        Column::Date(_) | Column::Str(_) => Err(at(format!(
+            "`{name}` of `{dataset}` is {}, and a series aggregates numbers",
+            column.kind().name()
+        ))),
+    }
+}
+
+/// A `series` or `cells` (or its mask): each row placed in its cell, and the
+/// cells aggregated.
+fn series(
+    decl: &Declaration,
+    binding: &Binding,
+    dataset: &str,
+    column: Option<&str>,
+    spec: &Spec,
+    work: &BTreeMap<&str, Working>,
+    dims: &HashMap<String, Dimension>,
+) -> Result<Tensor> {
+    let at = |msg: String| Error::invalid(format!("{}: {msg}", about(decl, binding)));
+    let w = &work[dataset];
+    let mut axes: Vec<(Dimension, Vec<Option<usize>>)> = Vec::new();
+    for lookup in lookups(spec, binding) {
+        axes.push(positions(decl, binding, dataset, &lookup, work, dims)?);
+    }
+    let shape: Vec<usize> = axes.iter().map(|(d, _)| d.size()).collect();
+    let cell_of: Vec<Option<usize>> = (0..w.frame.rows)
+        .map(|i| {
+            axes.iter()
+                .try_fold(0, |cell, (d, p)| Some(cell * d.size() + p[i]?))
+        })
+        .collect();
+    let cell_name = |mut cell: usize| {
+        let mut labels = vec![String::new(); axes.len()];
+        for (k, (d, _)) in axes.iter().enumerate().rev() {
+            labels[k] = d.coords.labels[cell % d.size()].clone();
+            cell /= d.size();
+        }
+        let names: Vec<&str> = axes.iter().map(|(d, _)| d.coords.name.as_str()).collect();
+        match labels.as_slice() {
+            [one] => format!("`{one}` of `{}`", names[0]),
+            _ => format!("(`{}`) of `{}`", labels.join("`, `"), names.join("` × `")),
+        }
+    };
+    let row_name = |i: usize| w.row_name(i);
+    let cells = structured::Cells {
+        count: shape.iter().product(),
+        cell_of: &cell_of,
+        cell_name: &cell_name,
+        row_name: &row_name,
+        dataset,
+    };
+    let values = match column {
+        Some(name) => Some(optional_numbers(
+            decl,
+            binding,
+            dataset,
+            name,
+            column_of(&w.frame, name)?,
+        )?),
+        None => None,
+    };
+    let values = match binding {
+        Binding::SeriesPresent { .. } | Binding::CellsPresent { .. } => {
+            structured::present(&cells, values.as_ref())
+        }
+        Binding::Series { fill, .. } | Binding::Cells { fill, .. } => {
+            let fill = fill
+                .as_ref()
+                .and_then(|f| Tensor::from_literal(f).ok()?.as_number());
+            structured::aggregate(&cells, values.as_ref(), binding.aggregate(), fill).map_err(at)?
+        }
+        _ => return Err(internal("a series that is not one")),
+    };
+    Ok(Tensor { shape, values })
+}
+
+/// The graph an edge binding is over: each row of its junction dataset, both
+/// ends looked up in the dimension. A null end and a self-loop are refused by
+/// row; a position with no neighbour is warned about, once.
+fn graph(
+    decl: &Declaration,
+    binding: &Binding,
+    edges: &Edges,
+    spec: &Spec,
+    work: &BTreeMap<&str, Working>,
+    dims: &HashMap<String, Dimension>,
+    warnings: &mut Vec<String>,
+) -> Result<Graph> {
+    let at = |msg: String| Error::invalid(format!("{}: {msg}", about(decl, binding)));
+    let dataset = edges.dataset.as_str();
+    let w = &work[dataset];
+    let mut ends: Vec<(Dimension, Vec<Option<usize>>)> = Vec::new();
+    for lookup in lookups(spec, binding) {
+        ends.push(positions(decl, binding, dataset, &lookup, work, dims)?);
+    }
+    let [(dim, from), (_, to)] = ends.as_slice() else {
+        return Err(internal("an edge without its two ends"));
+    };
+    let mut rows = Vec::with_capacity(w.frame.rows);
+    for i in 0..w.frame.rows {
+        let (Some(a), Some(b)) = (from[i], to[i]) else {
+            let end = if from[i].is_none() {
+                &edges.from
+            } else {
+                &edges.to
+            };
+            return Err(at(format!(
+                "row `{}` of `{dataset}` has a null `{end}`, and an edge has two ends; filter \
+                 such rows out of the dataset",
+                w.row_name(i)
+            )));
+        };
+        if a == b {
+            return Err(at(format!(
+                "row `{}` of `{dataset}` joins `{}` to itself, and a region is not its own \
+                 neighbour; filter self-loops out of the dataset",
+                w.row_name(i),
+                dim.coords.labels[a]
+            )));
+        }
+        rows.push((a, b));
+    }
+    let graph = Graph {
+        nodes: dim.size(),
+        rows,
+    };
+    let isolated = graph.isolated();
+    if let Some(&first) = isolated.first() {
+        let others = match isolated.len() - 1 {
+            0 => String::new(),
+            k => format!(" and {k} more"),
+        };
+        let warning = format!(
+            "`{}` `{}`{others} {} no neighbour in `{dataset}`, so each is a connected component \
+             of its own: a plain ICAR over a disconnected graph is improper — constrain it per \
+             component (`components`, `component`) or give those regions an independent effect",
+            dim.coords.name,
+            dim.coords.labels[first],
+            if isolated.len() == 1 { "has" } else { "have" },
+        );
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
+    }
+    Ok(graph)
+}
+
+/// The sites of `points` and `distances`: each row's latitude and longitude in
+/// degrees, a null or a value off the globe refused by row.
+fn sites(
+    decl: &Declaration,
+    binding: &Binding,
+    points: &super::spec::Points,
+    work: &BTreeMap<&str, Working>,
+) -> Result<Vec<(f64, f64)>> {
+    let at = |msg: String| Error::invalid(format!("{}: {msg}", about(decl, binding)));
+    let dataset = points.dataset.as_str();
+    let w = &work[dataset];
+    let degrees = |name: &str, limit: f64| -> Result<Vec<f64>> {
+        let column = column_of(&w.frame, name)?;
+        (0..w.frame.rows)
+            .map(|i| {
+                let value = match column {
+                    Column::Float(v) => v[i],
+                    Column::Int(v) => v[i].map(|x| x as f64),
+                    Column::Null(_) => None,
+                    other => {
+                        return Err(at(format!(
+                            "`{name}` of `{dataset}` is {}, and a coordinate is a number of \
+                             degrees",
+                            other.kind().name()
+                        )));
+                    }
+                };
+                match value {
+                    None => Err(at(format!(
+                        "`{name}` of `{dataset}` is null on row `{}`; a site needs both \
+                         coordinates — filter such rows out of the dataset",
+                        w.row_name(i)
+                    ))),
+                    Some(x) if !(-limit..=limit).contains(&x) => Err(at(format!(
+                        "`{name}` of `{dataset}` is {x} on row `{}`, outside ±{limit} degrees",
+                        w.row_name(i)
+                    ))),
+                    Some(x) => Ok(x),
+                }
+            })
+            .collect()
+    };
+    let lat = degrees(&points.lat, 90.0)?;
+    let lon = degrees(&points.lon, 180.0)?;
+    Ok(lat.into_iter().zip(lon).collect())
 }
 
 /// Each bound integer scalar, and what it is the size of.

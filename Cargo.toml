@@ -649,6 +649,11 @@ smartcore = { version = "0.6", default-features = false, features = ["serde"] }
 # linear-algebra dependency of a statistics crate is not a cost this workspace
 # should pay for them.
 statrs = { version = "0.19", default-features = false, features = ["std"] }
+# BYM2's scaling factor (Stan TODO §12): the diagonal of the generalised inverse
+# of a graph Laplacian, from a symmetric eigendecomposition. It was already in
+# `Cargo.lock` as statrs's optional dependency (the feature is off above), so
+# this is the version that resolves — but it is compiled for `sc-model` alone.
+nalgebra = { version = "0.35", default-features = false, features = ["std"] }
 
 # Workspace-wide lints. Principle 5 (no silent failures): library code must not
 # `unwrap()`/`expect()` on fallible paths — return a `sc-error::Result` instead.

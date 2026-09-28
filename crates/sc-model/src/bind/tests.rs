@@ -9,20 +9,20 @@ use super::*;
 use crate::frame::{Column, Frame};
 use crate::interface::{Declaration, Element, SizeExpr};
 
-fn ints(v: &[i64]) -> Column {
+pub(super) fn ints(v: &[i64]) -> Column {
     Column::Int(v.iter().map(|x| Some(*x)).collect())
 }
 
-fn reals(v: &[f64]) -> Column {
+pub(super) fn reals(v: &[f64]) -> Column {
     Column::Float(v.iter().map(|x| Some(*x)).collect())
 }
 
-fn texts(v: &[&str]) -> Column {
+pub(super) fn texts(v: &[&str]) -> Column {
     Column::Str(v.iter().map(|x| Some((*x).to_owned())).collect())
 }
 
 /// A frame whose rows have the integer primary keys `keys`.
-fn frame(keys: &[i64], columns: Vec<(&str, Column)>) -> Frame {
+pub(super) fn frame(keys: &[i64], columns: Vec<(&str, Column)>) -> Frame {
     Frame::new(
         columns
             .into_iter()
@@ -33,12 +33,12 @@ fn frame(keys: &[i64], columns: Vec<(&str, Column)>) -> Frame {
     .expect("frame")
 }
 
-fn int(name: &str) -> Declaration {
+pub(super) fn int(name: &str) -> Declaration {
     Declaration::new(name, Element::Int, vec![], "int")
 }
 
 /// `array[size] int<lower=1, upper=upper> name`.
-fn index(name: &str, size: &str, upper: &str) -> Declaration {
+pub(super) fn index(name: &str, size: &str, upper: &str) -> Declaration {
     Declaration::new(
         name,
         Element::Int,
@@ -49,7 +49,7 @@ fn index(name: &str, size: &str, upper: &str) -> Declaration {
 }
 
 /// `vector[size] name`.
-fn vector(name: &str, size: &str) -> Declaration {
+pub(super) fn vector(name: &str, size: &str) -> Declaration {
     Declaration::new(
         name,
         Element::Real,
@@ -58,25 +58,29 @@ fn vector(name: &str, size: &str) -> Declaration {
     )
 }
 
-fn interface(data: Vec<Declaration>) -> Interface {
+pub(super) fn interface(data: Vec<Declaration>) -> Interface {
     Interface {
         data,
         ..Interface::default()
     }
 }
 
-fn config(bindings: Json) -> Attrs {
+pub(super) fn config(bindings: Json) -> Attrs {
     let mut attrs = Attrs::new();
     attrs.insert(BINDINGS_KEY.to_owned(), bindings);
     attrs
 }
 
-fn with(mut attrs: Attrs, key: &str, value: Json) -> Attrs {
+pub(super) fn with(mut attrs: Attrs, key: &str, value: Json) -> Attrs {
     attrs.insert(key.to_owned(), value);
     attrs
 }
 
-fn bind(interface: &Interface, config: &Attrs, datasets: Vec<(&str, Frame)>) -> Result<BoundData> {
+pub(super) fn bind(
+    interface: &Interface,
+    config: &Attrs,
+    datasets: Vec<(&str, Frame)>,
+) -> Result<BoundData> {
     let datasets: Vec<(String, Frame)> = datasets
         .into_iter()
         .map(|(n, f)| (n.to_owned(), f))
@@ -84,7 +88,7 @@ fn bind(interface: &Interface, config: &Attrs, datasets: Vec<(&str, Frame)>) -> 
     bind_data(interface, config, &datasets, DEFAULT_MAX_DATA_VALUES)
 }
 
-fn refused(result: Result<BoundData>) -> String {
+pub(super) fn refused(result: Result<BoundData>) -> String {
     result.expect_err("refused").to_string()
 }
 
@@ -703,7 +707,7 @@ fn a_value_is_bound_as_written() {
     );
 }
 
-fn day(text: &str) -> i64 {
+pub(super) fn day(text: &str) -> i64 {
     spec::parse_instant(text).expect(text)
 }
 

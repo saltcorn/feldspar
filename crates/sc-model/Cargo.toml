@@ -70,6 +70,10 @@ smartcore = { workspace = true, optional = true }
 # Student's *t* and Fisher–Snedecor's *F*, for `t_test`, `anova` and a
 # regression coefficient's *p*. Not optional: see the feature comment above.
 statrs.workspace = true
+# The symmetric eigendecomposition behind `icar_scale`, BYM2's scaling factor
+# (Stan TODO §12). Not behind the `smartcore` feature: binding is the host's,
+# whichever providers are compiled in.
+nalgebra.workspace = true
 
 [dev-dependencies]
 # The dataset's `Select` is asserted as rendered SQL rather than as a tree: the

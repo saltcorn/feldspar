@@ -98,12 +98,13 @@ mod summary;
 mod validate;
 
 pub use bind::{
-    Axis, BINDINGS_KEY, BindReport, Binding, BoundData, Coordinates, DEFAULT_MAX_DATA_VALUES,
-    DIMENSIONS_KEY, DatasetReport, DesignCoordinates, DimensionCoordinates, DimensionKind,
-    DimensionSpec, DropReport, EXCLUDE_VARIABLES_KEY, KEEP_DRAWS_KEY, LABEL_COLUMN, LABELS_KEY,
-    Labeller, MAX_GRID_STEPS, POLICIES_KEY, Policies, Policy, TimeScale, VariableReport, bind_data,
-    binding_dataset, check_bindings, check_bindings_declared, element_label, excluded_variables,
-    keeps_draws,
+    Aggregate, Along, Axis, BINDINGS_KEY, BindReport, Binding, BoundData, Coordinates,
+    DEFAULT_MAX_DATA_VALUES, DIMENSIONS_KEY, DatasetReport, DesignCoordinates,
+    DimensionCoordinates, DimensionKind, DimensionSpec, DropReport, EXCLUDE_VARIABLES_KEY, Edges,
+    KEEP_DRAWS_KEY, LABEL_COLUMN, LABELS_KEY, Labeller, MAX_DISTANCE_SITES, MAX_GRID_STEPS,
+    MAX_ICAR_NODES, POLICIES_KEY, Points, Policies, Policy, Symmetric, TimeScale, VariableReport,
+    bind_data, binding_dataset, check_bindings, check_bindings_declared, element_label,
+    excluded_variables, keeps_draws,
 };
 pub use dataset::{
     Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape, translate_filter,

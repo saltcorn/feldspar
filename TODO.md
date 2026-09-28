@@ -883,18 +883,29 @@ else.
 
 ## Phase 6 — Time series and space
 
-- [ ] 6.1 `series` and `series_present`: one value per step of a grid (or position of any
+- [x] 6.1 `series` and `series_present`: one value per step of a grid (or position of any
       dimension), `fill`, and the aggregations `count sum mean min max first last` or `refuse`.
-- [ ] 6.2 `cells` and `cells_present`: the two-axis version into `matrix[R, C]` /
-      `array[R, C] int`.
-- [ ] 6.3 The edge bindings: `edge_count`, `edge_from`, `edge_to` (with `symmetric: dedupe`),
+      *(The axis is `over: { dimension, column?, match? }`; with no column it is the declared
+      dimension's own, which must be over the same dataset. A null value leaves its row out of
+      its position; an empty position needs `fill` except under `count`. Every lookup — an
+      `index`, a series axis, an edge end — shares the `unknown` policy and the resolution
+      order.)*
+- [x] 6.2 `cells` and `cells_present`: the two-axis version into `matrix[R, C]` /
+      `array[R, C] int`. *(`rows` and `cols`, each shaped like `over`.)*
+- [x] 6.3 The edge bindings: `edge_count`, `edge_from`, `edge_to` (with `symmetric: dedupe`),
       `adjacency`, `components`, `component`; self-loops refused, isolated regions warned.
-- [ ] 6.4 `icar_scale` with `nalgebra` per connected component, singleton components as 1,
+      *(`symmetric: keep` gives the rows as stored; a null end is refused by row; the warning
+      is `BindReport::warnings`, new, for the preview.)*
+- [x] 6.4 `icar_scale` with `nalgebra` per connected component, singleton components as 1,
       the `R ≤ 5 000` cap; tested against the scaling factors published for a small graph
-      (and a 4 × 4 lattice computed independently, pasted as a constant).
-- [ ] 6.5 `points` (with the optional projection) and `distances` (great-circle km), with
-      their caps.
-- [ ] 6.6 Unit tests, one per row of §12's tables: gaps on a daily grid both ways, events
+      (and a 4 × 4 lattice computed independently, pasted as a constant). *(Against closed
+      forms — K₄, C₆, P₃ — rather than a published table, and the lattice by exact rational
+      arithmetic with no eigendecomposition. `nalgebra` was only in `Cargo.lock` as an
+      optional dependency of statrs; it is now compiled, for this.)*
+- [x] 6.5 `points` (with the optional projection) and `distances` (great-circle km), with
+      their caps. *(Both over `lat` and `lon`; planar x/y is a `columns` binding. Only
+      `distances` has a cap of its own, `N ≤ 3 000`.)*
+- [x] 6.6 Unit tests, one per row of §12's tables: gaps on a daily grid both ways, events
       counted into days, a monthly grid across a year boundary, a horizon labelled with future
       dates, a weather table aligned to the grid, a panel long and wide, and a
       region/week spatiotemporal binding.

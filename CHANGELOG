@@ -2,6 +2,81 @@
 
 Changes in reverse chronological order.
 
+## Time series and space: the structured binding kinds
+
+This is Phase 6 of the Stan milestone (TODO "Bayesian models with Stan", §12). The binder now
+has the thirteen structured kinds that were refused as "not available yet". They put rows onto
+a time grid or a pair of dimensions, turn a junction table into a graph, and turn latitude and
+longitude into points and distances. All of it is in `sc-model` (`bind::structured` for the
+arithmetic, `bind::resolve` for the wiring), so no CmdStan is needed to test it.
+
+- **`series` and `series_present`** (6.1).
+  - `series` gives one value per position of a dimension, usually a time grid's steps. Its
+    `over` is `{ dimension, column?, match? }`.
+  - `column` says which column of the dataset places each row. When it is absent, the
+    dimension's own column is used. That only works when the dimension is declared over the
+    same dataset; a related dataset like `weather` is told to give its column.
+  - The rows of one position combine by `aggregate`: `count`, `sum`, `mean`, `min`, `max`,
+    `first`, `last` or `refuse`. The default is `count` with no value column and `refuse` with
+    one. `refuse` names the two rows that share a position.
+  - A position no row falls in takes `fill` (a number or `"NaN"`). Without a `fill`, it is
+    refused by its label, and the sentence names both ways out: a fill with a mask, or the
+    missing-data idiom. A count needs no fill, and takes none.
+  - A row with a null value is simply not in its position. `series_present` is the 0/1 mask.
+  - Counts, and sums, extremes and picks of an int column, stay ints. A mean, or a fractional
+    fill, makes the series real.
+- **`cells` and `cells_present`** (6.2). The same thing over `rows` and `cols`, into
+  `matrix[R, C]` or `array[R, C] int`. An empty cell is named by both labels:
+  "(`cellar`, `2024-03-01T01:00:00Z`) of `sensors` × `hour`".
+- **Lookups are one mechanism.** An `index`, each axis of a `series` or `cells`, and each end
+  of an edge are all "a column of this dataset looked up in that dimension". So they share:
+  - the `unknown` policy (a weather row before the grid, or an edge to a region not in
+    `regions`, is refused or dropped exactly as an orphan key is);
+  - the resolution order (a `weather` series over `main`'s grid resolves after `main`);
+  - `match`.
+- **The edge bindings** (6.3). They all take `{ dataset, from, to, dimension, match? }` over a
+  junction table:
+  - `edge_count`, `edge_from` and `edge_to` build the ICAR edge list. `symmetric: dedupe` (the
+    default) keeps each unordered pair once, the lesser position first, sorted, so a table
+    storing both directions gives the same list. `keep` gives every row as stored.
+  - `adjacency` gives the symmetric 0/1 matrix.
+  - `components` and `component` number the components by their first region.
+  - A self-loop and a null end are refused by row. `symmetric` on a non-list kind is refused
+    at save.
+  - A region with no neighbour goes into `BindReport::warnings`, by name, once. That field is
+    new, and is for the preview.
+- **`icar_scale`** (6.4). This is BYM2's scaling factor: the geometric mean of the diagonal
+  of the Laplacian's Moore–Penrose inverse.
+  - The inverse comes from `nalgebra`'s symmetric eigendecomposition, per connected
+    component, dropping each component's one zero eigenvalue. A singleton component
+    contributes 1.
+  - It is capped at `MAX_ICAR_NODES` = 5 000.
+  - It is tested against closed forms: K₄ is 3/16, C₆ is 35/72, P₃ is (50/729)^⅓, and two
+    pairs plus an island is 0.25^0.8.
+  - It is also tested against a 4 × 4 lattice (0.4716296437256453), computed exactly in
+    rational arithmetic as (L + J/n)⁻¹ − J/n, which uses no eigendecomposition.
+  - `nalgebra` 0.35 is a new workspace dependency. It was in `Cargo.lock` only as statrs's
+    optional dependency, and nothing compiled it before.
+- **`points` and `distances`** (6.5). Both take `{ dataset, lat, lon }`.
+  - `points` gives `[lon, lat]` in degrees. With `project: true` it gives kilometres east and
+    north of the centroid (equirectangular: good at city-to-country scale).
+  - `distances` gives the `matrix[N, N]` of haversine distances on the mean Earth radius. It
+    is capped at `MAX_DISTANCE_SITES` = 3 000, and its n² values count against the data cap.
+  - A null or out-of-range coordinate is refused by row. Planar x/y needs no new kind: it is a
+    `columns` binding.
+- **Tests** (6.6). `bind/structured_tests.rs` has one test per row of §12's tables:
+  - gaps on a daily grid, both as the missing-data idiom and as a filled series with its mask;
+  - visits counted into days, and two in one day refused, then summed;
+  - a monthly grid across a year boundary;
+  - a horizon whose `y_future` is labelled with its three dates through `Labeller`;
+  - a weather table aligned to the grid, with its out-of-grid day refused and then dropped;
+  - a sensor panel, long and wide, with the wide matrix labelled `Y[cellar,…]`;
+  - a region × week model: the edge list, adjacency, components, the scaling factor of a
+    square plus an island, weekly counts, and the island's warning.
+
+  There are also tests for every refusal. The arithmetic has its own unit tests in
+  `bind/structured.rs`.
+
 ## Draws, summary and diagnostics: a fitted posterior says what it found and how far to trust it
 
 This is Phase 5 of the Stan milestone (TODO "Bayesian models with Stan"). A posterior's

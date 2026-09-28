@@ -8692,6 +8692,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "nalgebra",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",

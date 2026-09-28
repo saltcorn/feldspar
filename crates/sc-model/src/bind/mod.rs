@@ -29,6 +29,9 @@ mod dimension;
 mod labels;
 mod resolve;
 mod spec;
+mod structured;
+#[cfg(test)]
+mod structured_tests;
 mod tensor;
 #[cfg(test)]
 mod tests;
@@ -54,7 +57,10 @@ pub use resolve::{
     BindReport, BoundData, DEFAULT_MAX_DATA_VALUES, DatasetReport, DropReport, VariableReport,
     bind_data,
 };
-pub use spec::{Binding, DimensionSpec, Policies, Policy, TimeScale};
+pub use spec::{
+    Aggregate, Along, Binding, DimensionSpec, Edges, Points, Policies, Policy, Symmetric, TimeScale,
+};
+pub use structured::{MAX_DISTANCE_SITES, MAX_ICAR_NODES};
 
 /// The configuration key holding the bindings: an object from each `data`
 /// variable's name to its binding.
