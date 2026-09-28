@@ -32,7 +32,6 @@ use sc_catalog::{Catalog, TableProviderHosts};
 use sc_core_actions::CodeSurfaces;
 use sc_error::{Context, Error, Result};
 use sc_expr::ModuleFnHosts;
-use sc_model::builtin_registry;
 use sc_module::{
     BundledModules, Installer, ModuleFrameworks, ModuleFunctions, ModuleHost, ModuleModelProviders,
     ModuleSet, ModuleStreamProviders, ModuleTableProviders, ModuleViewRuntime, bootstrap_modules,
@@ -284,8 +283,8 @@ impl ModuleServices {
             );
         }
         // And the **model providers**, which is the third source the model
-        // registry composes: the built-ins, whatever the JavaScript modules
-        // supply, and whatever the Python ones do. Rebuilt from the built-ins
+        // registry composes: the built-ins (and Stan), whatever the JavaScript
+        // modules supply, and whatever the Python ones do. Rebuilt from the base
         // rather than mutated, and swapped in whole — so a fit that is already
         // running keeps the registry it started with, which is the rule the
         // action registry follows for the same reason.
@@ -295,7 +294,7 @@ impl ModuleServices {
         // rest kept**: the registry refuses the duplicate naming both sources,
         // and a server that dropped every other estimator over one clash would
         // be answering a name collision with an outage.
-        match builtin_registry() {
+        match self.models.base_registry() {
             Ok(mut providers) => {
                 for (what, outcome) in [
                     (

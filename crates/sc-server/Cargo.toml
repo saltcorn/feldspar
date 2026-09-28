@@ -75,6 +75,10 @@ sc-workflow.workspace = true
 # dataset's rows is `sc_api::rows`' job, and `sc-model` sits below it so a module
 # can supply a model provider.
 sc-model.workspace = true
+# Bayesian models (the Stan TODO): `StanProvider` is registered here beside the
+# built-ins, over the catalog's file stores, with whatever CmdStan discovery
+# found at startup — always compiled, because availability is a runtime fact.
+sc-stan.workspace = true
 # Streams (TODO "Streams"): the `_fd_streams` table, the provider registry and
 # the supervisor that keeps subscriptions running. This crate is where a
 # delivered element becomes a **trigger event** — `sc-stream` sits at layer 6

@@ -37,11 +37,14 @@ use sc_api::rows::{RowQuery, count_rows_where, list_row_values};
 use sc_catalog::Catalog;
 use sc_error::{Context, Error, Result};
 use sc_model::{
-    Column, Dataset, DatasetSource, Frame, InstanceId, Model, ModelInstance, ModelRegistry, Read,
-    SPLIT_KEY, bootstrap_model_draws, bootstrap_model_instances, bootstrap_models,
-    builtin_registry, canonical_key, fit_model, reap_fitting_instances, save_model_instance,
+    Column, Dataset, DatasetSource, Frame, InstanceId, Model, ModelInstance, ModelProvider,
+    ModelRegistry, Read, SPLIT_KEY, bootstrap_model_draws, bootstrap_model_instances,
+    bootstrap_models, builtin_registry, canonical_key, fit_model, reap_fitting_instances,
+    save_model_instance,
 };
 use sc_query::{Expr, Projection, Value};
+use sc_stan::StanProvider;
+use sc_stan::cmdstan::{Locations, discover};
 
 /// The [`DatasetSource`] a running server has: the catalog, read through
 /// `sc_api::rows`.
@@ -215,20 +218,37 @@ pub struct ModelServices {
     registry: Arc<RwLock<Arc<ModelRegistry>>>,
     source: Arc<dyn DatasetSource>,
     max_rows: u64,
+    /// The Stan provider, built once: CmdStan is discovered when the server
+    /// starts, not on every module change that rebuilds the registry.
+    stan: Arc<StanProvider>,
 }
 
 impl ModelServices {
     /// The services over `catalog`, with the built-in providers and the catalog
     /// as the dataset source.
     pub fn new(catalog: &Arc<Catalog>, max_rows: u64) -> Result<ModelServices> {
+        let stan = Arc::new(stan_provider(catalog));
         Ok(ModelServices {
             catalog: Arc::clone(catalog),
             registry: Arc::new(RwLock::new(Arc::new(
-                builtin_registry().context("registering the built-in model providers")?,
+                base_registry(&stan).context("registering the built-in model providers")?,
             ))),
             source: Arc::new(CatalogDatasetSource::new(Arc::clone(catalog))),
             max_rows,
+            stan,
         })
+    }
+
+    /// The providers this server has before any module adds its own: the
+    /// built-ins and Stan. What a module change rebuilds the registry from.
+    pub fn base_registry(&self) -> Result<ModelRegistry> {
+        base_registry(&self.stan)
+    }
+
+    /// The Stan provider — for what only it answers, such as checking a
+    /// program with `stanc`.
+    pub fn stan(&self) -> &Arc<StanProvider> {
+        &self.stan
     }
 
     /// The provider registry as it stands.
@@ -295,6 +315,25 @@ impl ModelServices {
         });
         Ok(instance)
     }
+}
+
+/// The built-in providers and `stan`.
+fn base_registry(stan: &Arc<StanProvider>) -> Result<ModelRegistry> {
+    let mut registry = builtin_registry()?;
+    registry.register(Arc::clone(stan) as Arc<dyn ModelProvider>)?;
+    Ok(registry)
+}
+
+/// The Stan provider over `catalog`'s file stores, with the CmdStan this
+/// process finds (`$CMDSTAN`, else the newest `~/.cmdstan/cmdstan-*`). Not
+/// finding one is not an error: the provider is listed saying so (Stan TODO
+/// §4, §20).
+fn stan_provider(catalog: &Arc<Catalog>) -> StanProvider {
+    let stores = Arc::clone(catalog);
+    StanProvider::new(
+        Arc::new(move |name: &str| stores.require_file_store(name)),
+        discover(&Locations::from_env(None)),
+    )
 }
 
 /// Ensure the three model tables exist, **reap every fit that was running when

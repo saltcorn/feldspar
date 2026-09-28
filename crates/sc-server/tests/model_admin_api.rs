@@ -649,3 +649,138 @@ fn urlencoding(raw: &str) -> String {
         })
         .collect()
 }
+
+/// A varying-intercept-free model of `price`, the smallest program with a
+/// `data` block worth binding.
+const PRICES_STAN: &str = "
+data {
+  int<lower=1> N;
+  vector[N] y;
+}
+parameters {
+  real mu;
+  real<lower=0> sigma;
+}
+model {
+  y ~ normal(mu, sigma);
+}
+";
+
+/// The Stan provider is registered beside the built-ins whether or not this
+/// machine has a CmdStan, reads its program out of a connected file store, and
+/// a Stan model saves only once every `data` variable of that program is bound
+/// (Stan TODO 2.5 and §10's save-time checks).
+#[tokio::test]
+async fn a_stan_model_saves_only_with_its_programs_data_bound() -> sc_error::Result<()> {
+    let mut server = setup().await?;
+    let dir = std::env::temp_dir().join(format!("sc-server-stan-models-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("prices.stan"), PRICES_STAN).unwrap();
+    server
+        .catalog
+        .connect_file_store(Arc::new(sc_files::LocalFileStore::new("models", &dir)?))?;
+
+    let (status, listed) = server
+        .client
+        .send("GET", "/api/model-providers", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let stan = listed["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == json!("stan"))
+        .unwrap_or_else(|| panic!("no stan provider in {listed}"))
+        .clone();
+    assert_eq!(stan["outcome_spec"]["kind"], json!("posterior"), "{stan}");
+    // The program's store is a picker over the connected stores.
+    let store = stan["config_spec"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == json!("program_store"))
+        .unwrap()
+        .clone();
+    assert!(
+        store["options"]
+            .as_array()
+            .is_some_and(|o| o.contains(&json!("models"))),
+        "{store}"
+    );
+
+    let body = |bindings: Value| {
+        let mut body = model_body("price posterior");
+        body["provider"] = json!("stan");
+        body["configuration"] = json!({
+            "program_store": "models",
+            "program": "prices.stan",
+            "bindings": bindings,
+        });
+        body
+    };
+
+    let (status, refused) = server
+        .client
+        .send(
+            "POST",
+            "/api/models",
+            Some(body(json!({ "N": { "kind": "count", "dataset": "main" } }))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("the data variable `y` (vector[N]) has no binding"),
+        "{refused}"
+    );
+
+    let (status, refused) = server
+        .client
+        .send(
+            "POST",
+            "/api/models",
+            Some(body(json!({
+                "N": { "kind": "count", "dataset": "main" },
+                "y": { "kind": "column", "dataset": "main", "column": "price" },
+                "z": { "kind": "value", "value": 1 },
+            }))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("binds `z`, which the program's `data` block does not declare"),
+        "{refused}"
+    );
+
+    let (status, saved) = server
+        .client
+        .send(
+            "POST",
+            "/api/models",
+            Some(body(json!({
+                "N": { "kind": "count", "dataset": "main" },
+                "y": { "kind": "column", "dataset": "main", "column": "price" },
+            }))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{saved}");
+    assert_eq!(saved["error"], Value::Null, "{saved}");
+
+    // The program is read afresh: removed from its store, the model is listed
+    // with that reason and stays editable.
+    std::fs::remove_file(dir.join("prices.stan")).unwrap();
+    let (status, models) = server.client.send("GET", "/api/models", None).await;
+    assert_eq!(status, StatusCode::OK, "{models}");
+    assert!(
+        models
+            .to_string()
+            .contains("the program `prices.stan` is not in the file store `models`"),
+        "{models}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    Ok(())
+}

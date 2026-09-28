@@ -3,5 +3,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "programs.rs"]
+mod programs;
+#[path = "provider.rs"]
+mod provider;
 #[path = "real_cmdstan.rs"]
 mod real_cmdstan;
+#[path = "stanc.rs"]
+mod stanc;

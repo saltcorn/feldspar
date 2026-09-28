@@ -2,6 +2,132 @@
 
 Changes in reverse chronological order.
 
+## The program: a Stan parser, `stanc`, and `StanProvider`
+
+This is Phase 2 of the Stan milestone (TODO "Bayesian models with Stan"). A Stan program in a
+file store can now be read with its `#include`s, parsed into the host's `Interface`, checked by
+the real `stanc`, and named by a model whose provider is **`stan`**. Nothing is compiled or
+sampled yet (Phase 4), and nothing is bound yet (Phase 3).
+
+- **The program** (`sc_stan::program`, 2.1). `Program::load(store, name, path)` reads the main
+  file, then every file it `#include`s.
+  - Includes are found by the lexer, so an `#include` inside a comment is not one. All three
+    spellings work: bare, `"quoted"` and `<angled>`.
+  - An include is resolved **relative to the including file, inside the same store**. `..` may
+    climb within the store. Climbing out of it, or an absolute path, is refused by name. So is a
+    missing file, quoting the line that included it.
+  - A cycle is refused naming the chain (`a.stan → b.stan → a.stan`).
+  - Every file is kept with its text and SHA-256 (`Program::hashes`), which is the snapshot a
+    fit will record (§6).
+  - A program is at most 64 files of at most 1 MiB each.
+- **The lexer and block splitter** (2.1). The lexer handles comments, strings (a `}` in
+  `print("}")` does not close a block), numbers, the operators, and `#include`.
+  - A `#` comment is refused with a sentence, because Stan 2.33 removed them.
+  - The splitter finds the seven blocks by brace matching. It refuses an unknown block, a block
+    out of order, a second block of the same kind, and an unclosed brace.
+  - Every sentence names `path:line:col` in the file the token came from, including files
+    reached through `#include`.
+- **The declaration parser** (2.2). It reads the top-level declarations of `data`,
+  `parameters`, `transformed parameters` and `generated quantities`, and skips everything else.
+  - Statements are skipped to their `;`, or across a braced block or a
+    `for`/`while`/`if…else`/`profile` statement. So a declaration nested in a block is a local
+    variable, not an output.
+  - It knows every type of §5: `int` and `real`; `complex` and its vector and matrix forms;
+    `vector`, `row_vector` and `matrix`; every constrained type; `array[…]`; and `tuple(…)`.
+    It also knows three newer ones: `sum_to_zero_matrix`, `column_stochastic_matrix` and
+    `row_stochastic_matrix`.
+  - It reads multi-name declarations (`real a, b;`) and initial values.
+  - `dims` is the full shape outer to inner. `cov_matrix[K]` is `[K, K]`, and
+    `cholesky_factor_cov[M]` is `[M, M]`.
+  - Bounds are kept as text. `lower=` and `upper=` are recorded. `offset=` and `multiplier=`
+    are accepted and are not bounds.
+  - `stan_type` is the type as written, with comments dropped.
+  - A size is a `SizeTree` when it is identifiers, integer literals, `+ - * %/% %` and
+    parentheses. Anything else (`num_elements(y)`) is kept opaque.
+  - Refused by name:
+    - a tuple or a complex number in `data` ("bind a tuple's parts as separate variables");
+    - the old array syntax `real y[N]`, with the new spelling in the sentence;
+    - `array[…] array[…]`;
+    - a container with the wrong number of sizes;
+    - an unknown bound key;
+    - a missing `;`.
+- **`stanc`** (`sc_stan::stanc`, 2.4). `run_stanc` lays the program out in a scratch directory
+  at its store paths, with each `#include` rewritten, on its own line, to the resolved store
+  path. It runs `stanc --info --include-paths=.` there.
+  - The environment is scrubbed to `PATH`, `HOME` and `TMPDIR`. The process is killed on drop
+    and after 60 s.
+  - Because stanc runs in the layout directory, its diagnostics already name store paths. What
+    is left of the scratch directory, and any `./`, is stripped.
+  - `check_program` refuses a program with stanc's own words. It then compares `--info` with
+    our parse: names, base type and number of dimensions for every variable of the four
+    blocks. A disagreement is refused as "a bug in Feldspar's Stan parser — please report it".
+    It is not silently resolved either way.
+  - stanc searches only its include paths and never beside the including file. That is why
+    the includes are rewritten rather than handing stanc every directory.
+- **`StanProvider`** (2.5). It is registered as `stan` in `ModelServices` beside the built-ins,
+  and it survives the module-change rebuild through the new `ModelServices::base_registry()`.
+  - It reads programs through a `StoreLookup`. In the server that is the catalog's connected
+    file stores.
+  - CmdStan is discovered once at startup (`$CMDSTAN`, else `~/.cmdstan`; the `--cmdstan` flag
+    is Phase 10). When none is found, the provider is still listed, and its description ends
+    "— CmdStan was not found: …".
+  - It declares the whole form:
+    - the program: `program_store` (a file-store picker) and `program`;
+    - the binding: `dimensions`, `bindings` and `labels`;
+    - the sampler, with §13's defaults: `method` (sample/optimize/pathfinder), `chains`,
+      `parallel_chains`, `iter_warmup`, `iter_sampling`, `thin`, `adapt_delta`,
+      `max_treedepth`, `seed`, `init`, `save_warmup` and `max_runtime_minutes`;
+    - the output: `runs_store`, `runs_dir`, `exclude_variables` and `keep_draws`.
+  - Its outcome is a posterior, it `binds_data`, and it has no hyperparameters.
+  - `validate` checks what only it knows: ranges (a seed must fit in 32 bits), `parallel_chains
+    ≤ chains`, `0 < adapt_delta < 1`, the shapes of the JSON settings, `runs_dir` without
+    `runs_store`, and a program path with `..`.
+  - `interface()` reads and parses the program as it is **now**.
+  - `check_program(config)` is for the "Check program" button. It runs `stanc` when CmdStan is
+    available. Otherwise it returns our parse with a notice that the program has not been
+    checked.
+  - `fit_posterior` is refused: with the not-found sentence (a configuration error) when there
+    is no CmdStan, and as not implemented yet otherwise.
+- **The save-time binding checks, in the host** (`sc_model::bind`). `BINDINGS_KEY`,
+  `DIMENSIONS_KEY` and `LABELS_KEY` are `sc-model`'s constants, because the binder that reads
+  them is the host's.
+  - `check_bindings_declared` checks three things. Every `data` variable has a binding
+    (missing ones are named with their types). Every binding names a declared variable (a typo
+    lists the declared ones). Every binding is an object with a `kind`.
+  - `validate_model` runs it for any provider that `binds_data`, through
+    `provider.interface()`. So a Stan model saves only when its program's data block is fully
+    bound.
+  - This also runs at load, so a model whose program has gone from its store is listed with
+    that reason and stays editable.
+  - The per-kind checks against declarations and datasets are Phase 3.
+
+**Deviations from the TODO.**
+- §10's structural checks run in `validate_model`, not in `StanProvider::validate`. The
+  provider's `validate` is synchronous and never sees the program, and the binder is the
+  host's.
+- `stanc` is **not** run on save yet. `validate_model` also runs when the models are loaded,
+  and must not start a subprocess per model. Wiring `check_program` into `saveModel` and the
+  Check button is now written into TODO 7.1.
+- `listModelProviders` does not carry `binds_data` yet (7.1). No generated client changed.
+
+**Tests.**
+- The five programs of 2.3 each have their whole `Interface` asserted: radon, eight schools,
+  an AR(1), BYM2 (Morris et al.), and one of every type and statement form.
+- There are tests for includes through a real `LocalFileStore`, for each refusal and its
+  sentence, and for the lexer, layout and path mapping.
+- A fake-`stanc` script checks the arguments, layout, scrubbed environment, refusal,
+  disagreement and non-JSON output.
+- The provider is tested for its kind, its interface from a store, its configuration checks,
+  the no-CmdStan notice, and a fake CmdStan directory's `stanc`.
+- A Postgres API test (`model_admin_api`) covers the server end to end. `stan` is listed, with
+  the connected store offered for `program_store`. A save is refused for a missing binding and
+  for a stray one, and accepted when fully bound. After the program is deleted, the model is
+  listed with the reason.
+- **Against the real CmdStan 2.40** (`#[ignore]`d without one, run here): `stanc`'s `--info`
+  agrees with our parse for every test program. A program with nested includes passes. A
+  syntax error in an included file comes back naming `models/lib/f.stan`, with no scratch path
+  in the message.
+
 ## Many datasets, an order and a posterior: the `sc-model` groundwork for Stan
 
 This is Phase 1 of the Stan milestone (TODO "Bayesian models with Stan"). Nothing here runs

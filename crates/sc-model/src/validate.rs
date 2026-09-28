@@ -42,6 +42,7 @@ use sc_error::{Error, Result};
 use sc_types::validate_attrs;
 use serde_json::Value as Json;
 
+use crate::bind::check_bindings_declared;
 use crate::dataset::{DatasetShape, validate_dataset, validate_label};
 use crate::model::{MAIN_DATASET, Model};
 use crate::provider::{ModelProvider, OutcomeSpec};
@@ -105,6 +106,21 @@ pub async fn validate_model(
     // declaration alone, so it is refused here rather than inside the job.
     if matches!(provider.outcome_spec(), OutcomeSpec::Posterior { .. }) && model.searches() {
         return Err(problem(NO_POSTERIOR_SEARCH.to_owned()));
+    }
+
+    // A provider that binds data: its program's `data` block against the
+    // bindings (Stan TODO §10, the save-time half). Reading the program is not
+    // reading the data, so this runs with or without a shape — and a program
+    // that is gone from its store lists the model with that reason.
+    if provider.binds_data() {
+        let interface = provider
+            .interface(&model.configuration)
+            .await
+            .map_err(|e| problem(e.to_string()))?;
+        if let Some(interface) = interface {
+            check_bindings_declared(&interface, &model.configuration)
+                .map_err(|e| problem(e.to_string()))?;
+        }
     }
 
     if let Some(shape) = shape {

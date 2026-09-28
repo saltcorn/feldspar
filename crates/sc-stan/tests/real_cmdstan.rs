@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use sc_stan::cmdstan::{CmdStan, Locations, Toolchain, discover};
+use sc_stan::program::{Program, ProgramFile};
+use sc_stan::stanc::check_program;
+
+use crate::programs::{AR1, BYM2, EIGHT_SCHOOLS, EVERY_TYPE, RADON};
 
 /// The CmdStan on this machine, ready to compile with; a failure says why not.
 fn cmdstan() -> CmdStan {
@@ -101,5 +105,75 @@ fn the_bernoulli_example_compiles_and_samples() {
         (mean - 0.25).abs() < 0.03,
         "posterior mean of theta was {mean}"
     );
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+/// Every program of `programs.rs` through the real `stanc`: each accepted, and
+/// its `--info` in agreement with our parse (TODO 2.4). A disagreement here is
+/// a bug in our parser that the fake-`stanc` tests cannot see.
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn stanc_agrees_with_our_reading_of_every_test_program() {
+    let cmdstan = cmdstan();
+    let work = scratch("stanc-agrees");
+    for (name, text) in [
+        ("radon", RADON),
+        ("eight_schools", EIGHT_SCHOOLS),
+        ("ar1", AR1),
+        ("bym2", BYM2),
+        ("every_type", EVERY_TYPE),
+    ] {
+        let program = Program::from_files(
+            "models",
+            vec![ProgramFile::new(format!("models/{name}.stan"), text)],
+        )
+        .unwrap();
+        let checked = check_program(&cmdstan.stanc(), &program, &work)
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(checked.interface, program.interface().unwrap(), "{name}");
+    }
+
+    // With an include, laid out and rewritten so stanc finds it where we did.
+    let program = Program::from_files(
+        "models",
+        vec![
+            ProgramFile::new(
+                "models/m.stan",
+                "functions {\n#include lib/f.stan\n}\ndata {\n#include data.stan\n}\n\
+                 parameters { real mu; }\nmodel { mu ~ normal(f(0.0), 1); }\n",
+            ),
+            ProgramFile::new(
+                "models/lib/f.stan",
+                "#include ../g.stan\nreal f(real x) { return g(x); }\n",
+            ),
+            ProgramFile::new("models/g.stan", "real g(real x) { return x; }\n"),
+            ProgramFile::new("models/data.stan", "int<lower=0> N;\nvector[N] y;\n"),
+        ],
+    )
+    .unwrap();
+    check_program(&cmdstan.stanc(), &program, &work)
+        .await
+        .unwrap();
+
+    // A refusal, in stanc's words, naming the included file by its store path.
+    let broken = Program::from_files(
+        "models",
+        vec![
+            ProgramFile::new("models/m.stan", "functions {\n#include lib/f.stan\n}\n"),
+            ProgramFile::new("models/lib/f.stan", "real f(real x) { return x }\n"),
+        ],
+    )
+    .unwrap();
+    let err = check_program(&cmdstan.stanc(), &broken, &work)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("stanc refused the program `models/m.stan`"),
+        "{err}"
+    );
+    assert!(err.contains("'models/lib/f.stan', line 1"), "{err}");
+    assert!(!err.contains(&work.display().to_string()), "{err}");
     std::fs::remove_dir_all(&work).unwrap();
 }

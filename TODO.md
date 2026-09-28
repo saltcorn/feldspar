@@ -791,18 +791,18 @@ else.
 
 ## Phase 2 — The program: the parser and `stanc`
 
-- [ ] 2.1 The lexer and block splitter: comments, strings, braces, the seven block names;
+- [x] 2.1 The lexer and block splitter: comments, strings, braces, the seven block names;
       `#include` resolved through the store relative to the including file, cycles and
       escapes refused (§5).
-- [ ] 2.2 The declaration parser: every type of §5, constraints kept as text, the full shape
+- [x] 2.2 The declaration parser: every type of §5, constraints kept as text, the full shape
       outer-to-inner, `SizeExpr` with its evaluator; tuples and complex in `data` refused.
-- [ ] 2.3 Unit tests over real programs: the radon model, eight schools, an AR(1), the ICAR/BYM2
+- [x] 2.3 Unit tests over real programs: the radon model, eight schools, an AR(1), the ICAR/BYM2
       program of Morris et al., one with `#include`, and one of every constrained type — each
       asserting the `Interface` it should produce; and each refusal with its sentence.
-- [ ] 2.4 `stanc` against the discovered CmdStan (Phase 0): its diagnostics mapped back to store
+- [x] 2.4 `stanc` against the discovered CmdStan (Phase 0): its diagnostics mapped back to store
       paths, and `--info` compared against our parse. Tests with a fake `stanc` script, and
       one against the real CmdStan (`#[ignore]`d without one).
-- [ ] 2.5 `StanProvider`: `kind()` (the configuration fields of §§6, 13, 14 — program store and
+- [x] 2.5 `StanProvider`: `kind()` (the configuration fields of §§6, 13, 14 — program store and
       path, datasets are the model's, `dimensions`, `bindings`, `labels`, sampler settings,
       `runs_store`, `runs_dir`, `exclude_variables`, `keep_draws`), `interface()`, `validate()` running the
       save-time checks of §10; registered in `ModelServices`; listed with "CmdStan was not
@@ -894,6 +894,10 @@ else.
 - [ ] 7.1 `listModelProviders` carries `binds_data` and CmdStan's availability;
       `getProgramInterface(store, path)` (the parse and `stanc`'s diagnostics);
       `previewModelData(model)`; `suggestBindings(model)` (§18); `compileModel(model)`.
+      `saveModel` of a Stan model runs `StanProvider::check_program` (§5: `stanc` when
+      CmdStan is available, and its warnings or the "not checked" notice in the answer) —
+      the check exists since 2.4/2.5 but nothing on the save path calls it yet, because
+      `validate_model` also runs at load and must not start a subprocess per model.
 - [ ] 7.2 `cancelModelFit(instance)` (§13), refused for a provider that cannot cancel.
 - [ ] 7.3 `getModelDraws`, `getPosteriorSummary` and `downloadModelRun` (§16) with the response
       cap and selection by key or label.

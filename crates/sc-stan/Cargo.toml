@@ -1,6 +1,6 @@
 [package]
 name = "sc-stan"
-description = "Bayesian models with Stan: CmdStan discovery and installation (layer 6)"
+description = "Bayesian models with Stan: the program parser, stanc, CmdStan and the provider (layer 6)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,15 +10,26 @@ rust-version.workspace = true
 # One integration-test binary per crate, as everywhere in the workspace.
 autotests = false
 
-# Only the `cmdstan` module exists yet (TODO Phase 0): finding a CmdStan on this
-# machine and installing one. `sc-model` and `sc-files` join the dependencies
-# with the provider and the program store (Phases 1–4); until then nothing here
-# needs them.
 [dependencies]
 sc-error.workspace = true
+# The seam this crate implements: `ModelProvider`, and the `Interface` the
+# program parser produces for the host's binder (TODO §4).
+sc-model.workspace = true
+# The program lives in a file store and nowhere else (TODO §6).
+sc-files.workspace = true
+# `FormField`/`Attrs`: the provider's configuration, declared the way every
+# configurable extension point declares its settings.
+sc-types.workspace = true
+# The file-store pick-list's server-query name, `QUERY_FILE_STORES`.
+sc-catalog.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+# Every file of a program is hashed, so an instance can say "the program has
+# changed since this fit" (TODO §6).
+sha2.workspace = true
 # `make build` is a subprocess awaited without blocking a runtime thread, and
 # the download is written to disk as it arrives.
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "process", "time"] }
 # The release tarball and the "latest release" lookup, over the workspace's one
 # rustls reqwest.
 reqwest.workspace = true
@@ -30,6 +41,7 @@ libc.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["fs", "rt-multi-thread", "macros"] }
+bytes.workspace = true
 
 [lints]
 workspace = true

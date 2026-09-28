@@ -8840,6 +8840,7 @@ dependencies = [
  "sc-module",
  "sc-python",
  "sc-query",
+ "sc-stan",
  "sc-stream",
  "sc-test-harness",
  "sc-types",
@@ -8859,10 +8860,18 @@ dependencies = [
 name = "sc-stan"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "bytes",
  "libc",
  "reqwest",
+ "sc-catalog",
  "sc-error",
+ "sc-files",
+ "sc-model",
+ "sc-types",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
 ]
 

@@ -74,6 +74,7 @@
 //!   hold in memory — so [`DatasetSource::materialise`] takes a cap and refuses
 //!   by name rather than by the OOM killer. See [`DEFAULT_MAX_ROWS`].
 
+mod bind;
 mod dataset;
 mod draws;
 mod encode;
@@ -94,6 +95,7 @@ mod split;
 mod store;
 mod validate;
 
+pub use bind::{BINDINGS_KEY, DIMENSIONS_KEY, LABELS_KEY, check_bindings_declared};
 pub use dataset::{
     Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape, translate_filter,
     validate_dataset,
