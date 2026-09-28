@@ -89,6 +89,10 @@ sc-core-traits.workspace = true
 # every other seam in this workspace is declared with.
 async-trait.workspace = true
 
+# `feldspar cmdstan status | install`: finding CmdStan on this machine, and
+# downloading and building one (TODO "Bayesian models with Stan" §20).
+sc-stan.workspace = true
+
 [dev-dependencies]
 # The scripted provider (`sc-agent`'s `testing` feature, decision 7): the eval
 # harness's self-test drives two whole runs, and §13 says no test may spend a
@@ -98,6 +102,8 @@ sc-agent = { workspace = true, features = ["testing"] }
 # server, which needs an HTTP client; nothing in the command itself does any more.
 reqwest.workspace = true
 sc-test-harness.workspace = true
+# The status report's tests build a `CmdStan` and a `Toolchain` by hand.
+sc-stan.workspace = true
 axum.workspace = true
 tower.workspace = true
 serde_json.workspace = true

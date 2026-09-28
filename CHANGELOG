@@ -2,6 +2,72 @@
 
 Changes in reverse chronological order.
 
+## CmdStan on the machine, first: `sc-stan`, `feldspar cmdstan status | install`
+
+This is Phase 0 of the Stan milestone (TODO "Bayesian models with Stan"). The integration tests
+of the later phases need a real CmdStan, and building one takes a while, so the installer is
+built before anything else.
+
+- **A new crate, `crates/sc-stan`**, at layer 6 beside `sc-model`. It is in the workspace, the
+  design's crate tree, the dependency graph and the crate table. For now it holds only its
+  `cmdstan` module and depends only on `sc-error`. `sc-model` and `sc-files` join when the
+  provider does. There is no Cargo feature: nothing is linked, so whether Stan is available is
+  something discovered at run time.
+- **Discovery** (`sc_stan::cmdstan::discover`). It tries `--cmdstan <dir>`, then `$CMDSTAN`,
+  then the newest `~/.cmdstan/cmdstan-*` (cmdstanpy's convention, so an existing install is
+  picked up).
+  - The version is read from the `CMDSTAN_VERSION :=` line of the makefile, and anything older
+    than **2.33** is refused by name.
+  - A directory the operator named that is wrong (missing, not CmdStan, too old) is an
+    **error**. Discovery does not fall through to a CmdStan nobody chose.
+  - Under `~/.cmdstan`, the newest *supported* install wins, and a **built** one is preferred.
+    An unfinished 2.40 does not hide a working 2.37.
+  - "Built" means `bin/stanc`, `stansummary`, `print` and `diagnose` all exist. `stanc` alone
+    does not count, because `make build` fetches it first and an interrupted build has it.
+  - `Toolchain::find` looks for `make` and a C++ compiler on `PATH`. The compiler is `$CXX` if
+    that is set (it is what CmdStan's makefiles use), otherwise `g++`, `clang++` or `c++`.
+  - Every input goes through `Locations`, so the tests run against fake directories and a fake
+    `PATH`.
+- **`feldspar cmdstan status [--cmdstan DIR]`** prints what was found, where it came from,
+  whether it is built, and where `make` and the compiler are. It exits non-zero when Stan cannot
+  be used, so a provisioning script can test for it.
+- **`feldspar cmdstan install [--version V] [--dir D] [--jobs J]`**:
+  - It downloads the release tarball from GitHub. That is the latest release (from GitHub's API)
+    unless `--version` is given, and the Linux arm64/armhf/ppc64el/s390x assets are chosen as
+    cmdstanpy chooses them.
+  - The tarball is unpacked with the system `tar` into `~/.cmdstan/cmdstan-<version>`, and
+    `make build -jJ` runs inside it. `J` defaults to **1**, because each job is a 1–2 GB C++
+    compile.
+  - Progress is printed as it goes: the download every 5 %, then each line of `make`'s output.
+    A failed build quotes its last 40 lines.
+  - Running it again for an installed version does nothing. A directory already there that is
+    not a built CmdStan is refused rather than overwritten.
+  - **A half-finished install is removed**: the partial download, the unpacking directory and
+    the install directory. This happens on failure *and* on Ctrl-C. `make` runs in its own
+    process group, and the whole group is killed first, so no compiler is left writing into the
+    directory being removed.
+  - None of this touches a database. The server never downloads or builds anything on its own.
+- **Run here**:
+  - CmdStan **2.40.0** was installed into `~/.cmdstan` with `--jobs 1`.
+  - `feldspar cmdstan status` finds it and reports it ready.
+  - Interrupting a second install mid-build left an empty directory and no stray compiler.
+  - The `bernoulli` example compiles outside the CmdStan tree and samples in about 7 s.
+- **README §3** has a new "Stan, which is found at run time" section and a row in the
+  prerequisites table.
+- Tests:
+  - `sc-stan`, 15 unit tests: version parsing and ordering (a release candidate sorts before its
+    release), the makefile line, and discovery in each case: found, the order of authority, a
+    wrong named directory, too old, absent, built and unbuilt, no compiler, `$CXX`. Also the
+    release URL per platform, the target directory, refusals before any download, an existing
+    install left alone, and the cleanup guard.
+  - `sc-stan/tests/real_cmdstan.rs`, `#[ignore]`d: it compiles CmdStan's `bernoulli` example
+    and samples it with the discovered CmdStan. It checks the progress line the runner will
+    parse, and that θ's posterior mean is Beta(3, 9)'s 0.25. It runs with
+    `cargo test -p sc-stan -- --ignored`. `$CMDSTAN` is not needed when an install is under
+    `~/.cmdstan`.
+  - `sc-cli/tests/cmdstan.rs`: the arguments of both subcommands and their refusals, the
+    install directory, and the status report for not built, ready, no compiler and not found.
+
 ## A git file store's operations look like VS Code's Source Control view
 
 A git store's edit screen used to show its operations as a column of generic forms: a

@@ -49,6 +49,16 @@ members = [
     # a trait declared below it. The cost is that this crate cannot read a row:
     # it declares `DatasetSource` and `sc-server` fills it in (TODO §4).
     "crates/sc-model",
+    # Bayesian models with Stan (TODO "Bayesian models with Stan" §4): CmdStan
+    # discovery and installation, and — as the milestone lands — the program's
+    # declaration parser, the compile cache, the runner and `StanProvider`.
+    # Beside `sc-model` and above it, not inside it: everything that is not
+    # Stan-specific (the binder, the draws, the posterior summary) is
+    # `sc-model`'s, so a second Bayesian provider would not reimplement it, and
+    # what is Stan-specific is a subprocess and its files, which no other crate
+    # needs to know about. There is no Cargo feature: nothing is linked, so
+    # whether Stan is available is a runtime fact.
+    "crates/sc-stan",
     # Streams: dataflows as an entity — the provider seam, the element type and
     # the supervisor that keeps a subscription running (TODO "Streams"). At
     # `sc-model`'s layer for `sc-model`'s reason: a module supplies stream
@@ -132,6 +142,7 @@ sc-repomap = { path = "crates/sc-repomap" }
 sc-config = { path = "crates/sc-config" }
 sc-action = { path = "crates/sc-action" }
 sc-model = { path = "crates/sc-model" }
+sc-stan = { path = "crates/sc-stan" }
 sc-stream = { path = "crates/sc-stream" }
 sc-module = { path = "crates/sc-module" }
 sc-llm = { path = "crates/sc-llm" }

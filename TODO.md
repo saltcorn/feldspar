@@ -745,17 +745,17 @@ The integration tests of Phases 4, 9 and 11 need a real CmdStan, and building on
 so the installer is the first thing written and this machine gets a CmdStan before anything
 else.
 
-- [ ] 0.1 `crates/sc-stan`, layer 6 beside `sc-model`, in the workspace and the design's crate
+- [x] 0.1 `crates/sc-stan`, layer 6 beside `sc-model`, in the workspace and the design's crate
       table with the layering comment (§4) — only its `cmdstan` module for now.
-- [ ] 0.2 CmdStan discovery (§20): `--cmdstan`, `$CMDSTAN`, the newest `~/.cmdstan/cmdstan-*`;
+- [x] 0.2 CmdStan discovery (§20): `--cmdstan`, `$CMDSTAN`, the newest `~/.cmdstan/cmdstan-*`;
       the version read and ≥ 2.33 enforced; `make` and a C++ compiler looked for. Tests
       against a fake CmdStan directory — found, too old, absent, no compiler.
-- [ ] 0.3 `feldspar cmdstan status` and `feldspar cmdstan install [--version V] [--dir D]
+- [x] 0.3 `feldspar cmdstan status` and `feldspar cmdstan install [--version V] [--dir D]
       [--jobs J]` (§20): the release tarball from GitHub, unpacked into `~/.cmdstan` by
       default, `make build -jJ` with `J` = 1 by default, progress printed, a half-finished
       install removed on failure. Unit tests for the URL, the target directory and the
       version parsing; the download itself is exercised by 0.4.
-- [ ] 0.4 Run it here: install the latest CmdStan into `~/.cmdstan` with `--jobs 1` (this
+- [x] 0.4 Run it here: install the latest CmdStan into `~/.cmdstan` with `--jobs 1` (this
       machine's `systemd-oomd` kills heavy parallel builds), confirm `feldspar cmdstan status`
       finds it and compiles and samples the `bernoulli` example that ships with CmdStan, and
       record in the project memory how the ignored tests find it (`CMDSTAN`, or the default

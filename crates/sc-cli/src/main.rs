@@ -53,6 +53,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("auth") => auth_command(&args[1..]).await,
         Some("agent") => agent_command(&args[1..]).await,
         Some("i18n") => i18n_command(&args[1..]).await,
+        Some("cmdstan") => cmdstan_command(&args[1..]).await,
         Some(other) => Err(sc_error::Error::config(format!(
             "unknown command `{other}`"
         ))),
@@ -1165,6 +1166,19 @@ async fn i18n_command(args: &[String]) -> Result<()> {
     }
 }
 
+/// `feldspar cmdstan status | install` (TODO "Bayesian models with Stan" §20).
+///
+/// No database: `status` reports what is on this machine, and `install` is a
+/// download and a build the operator asked for.
+async fn cmdstan_command(args: &[String]) -> Result<()> {
+    use sc_cli::cmdstan::{CmdStanArgs, install, status};
+
+    match CmdStanArgs::parse(args)? {
+        CmdStanArgs::Status { cmdstan } => status(cmdstan),
+        CmdStanArgs::Install { version, dir, jobs } => install(version, dir, jobs).await,
+    }
+}
+
 /// The trees a command reads: the bare paths when there are any, else the
 /// domains'.
 ///
@@ -1460,6 +1474,8 @@ fn print_usage() {
     );
     eprintln!("                          [database flags]");
     eprintln!("  feldspar auth token --app SUBDOMAIN (--email EMAIL | --admin | --role NAME)");
+    eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
+    eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
     eprintln!("                      [--format playwright|netscape] [--out PATH] [--url ORIGIN]");
     eprintln!();
     eprintln!("  database (or the DATABASE_URL / PG* environment variables):");

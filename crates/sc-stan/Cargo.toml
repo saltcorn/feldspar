@@ -1,0 +1,39 @@
+[package]
+name = "sc-stan"
+description = "Bayesian models with Stan: CmdStan discovery and installation (layer 6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary per crate, as everywhere in the workspace.
+autotests = false
+
+# Only the `cmdstan` module exists yet (TODO Phase 0): finding a CmdStan on this
+# machine and installing one. `sc-model` and `sc-files` join the dependencies
+# with the provider and the program store (Phases 1–4); until then nothing here
+# needs them.
+[dependencies]
+sc-error.workspace = true
+# `make build` is a subprocess awaited without blocking a runtime thread, and
+# the download is written to disk as it arrives.
+tokio = { workspace = true, features = ["fs"] }
+# The release tarball and the "latest release" lookup, over the workspace's one
+# rustls reqwest.
+reqwest.workspace = true
+serde_json.workspace = true
+# Killing `make`'s whole process group when an install is abandoned: `make -jJ`
+# is a tree of compilers, and killing `make` alone leaves them writing into the
+# directory being removed.
+libc.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["fs", "rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

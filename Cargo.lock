@@ -8416,6 +8416,7 @@ dependencies = [
  "sc-log",
  "sc-query",
  "sc-server",
+ "sc-stan",
  "sc-test-harness",
  "sc-types",
  "sc-viewpattern",
@@ -8851,6 +8852,17 @@ dependencies = [
  "tower-http",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "sc-stan"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "reqwest",
+ "sc-error",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

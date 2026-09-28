@@ -103,6 +103,13 @@ feldspar/
 │  │                              #    `_fd_model_instances`. Beside sc-action rather than
 │  │                              #    above the row layer it reads through, because a module
 │  │                              #    supplies model providers (TODO "Predictive models" §4)
+│  ├─ sc-stan/                    # 6. Bayesian models with Stan, beside sc-model: CmdStan
+│  │                              #    discovery (`--cmdstan`, `$CMDSTAN`, `~/.cmdstan`) and
+│  │                              #    `feldspar cmdstan install`; the declaration parser, the
+│  │                              #    compile cache, the runner and StanProvider as they land.
+│  │                              #    What is not Stan-specific (the binder, the draws, the
+│  │                              #    posterior summary) is sc-model's. No Cargo feature:
+│  │                              #    nothing is linked, availability is a runtime fact
 │  ├─ sc-stream/                  # 6. Streams: dataflows as an entity (§14.3). The
 │  │                              #    StreamProvider seam and its registry, the element
 │  │                              #    type and the envelope, `_fd_streams`, the supervisor
@@ -171,6 +178,7 @@ graph TD
   server --> module["sc-module"]
   viewpattern["sc-viewpattern"] --> app
   server --> model["sc-model"]
+  cli --> stan["sc-stan"]
   coreact --> model
   server --> stream["sc-stream"]
   app --> stream
@@ -240,6 +248,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-action` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-model` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-stream` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
+| `sc-stan` | `sc-error` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-query` `sc-types` |
@@ -250,7 +259,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-repomap` `sc-types` |
 | `sc-server` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-query` `sc-server` `sc-types` `sc-viewpattern` |
+| `sc-cli` | `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 

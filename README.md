@@ -498,6 +498,7 @@ database (§7).
 | **libclang** (`libclang-dev`) | any recent | building the module runtime (`deno_runtime` → `bindgen`); build time only |
 | **npm** (and the Node.js it ships with) | **npm 9.3.0+** (Node 18+) | building the four front-end bundles — the admin UI, the IDE, Saltcorn UI and its builder (optional; see §6), **and** *installing* modules (Settings → Modules). Debian's and Ubuntu's own package is npm 9.2.0, which cannot install a module at all — install Node from NodeSource (§2.1) or `npm install -g npm@latest` |
 | **CPython** + `pip`, and `python3-dev` to build against | 3.11+ | **only** for a server that runs Python trigger bodies or installs Python modules — and only in a build that has the `python` feature (below) |
+| **CmdStan**, `make` and a C++ compiler (`g++` or `clang++`) | CmdStan 2.33+ | **only** for Bayesian models with the Stan provider; `feldspar cmdstan install` fetches and builds CmdStan (below) |
 
 **The built-in model providers are a cargo feature, and it is on.** `sc-model`'s
 `smartcore` feature (default) carries `linear_regression`, `logistic_regression`,
@@ -550,6 +551,27 @@ use, so a Saltcorn UI application needs no `node`, no npm and no build step of i
 saving a view is the deployment. A binary built without the UI bundles (`SC_BUILD_ADMIN=0`,
 or `build-static.sh --no-ui`) has no Saltcorn UI and no builder, and there is no run-time flag
 that adds either back. See [`docs/tutorial-saltcorn-ui.md`](docs/tutorial-saltcorn-ui.md).
+
+### Stan, which is found at run time
+
+Bayesian models are Stan programs, compiled and run by
+[CmdStan](https://mc-stan.org/docs/cmdstan-guide/). Nothing of it is linked into the
+binary — CmdStan is a directory, a `make` and a C++ compiler — so every build can fit a
+Stan model, and whether *this machine* can is a run-time fact:
+
+```bash
+feldspar cmdstan status                       # what was found, its version, make and the compiler
+feldspar cmdstan install                      # the latest release, into ~/.cmdstan, `make build -j1`
+feldspar cmdstan install --version 2.40.0 --dir /opt/cmdstan --jobs 4
+```
+
+CmdStan is looked for at `--cmdstan DIR`, else `$CMDSTAN`, else the newest
+`~/.cmdstan/cmdstan-*` — cmdstanpy's convention, so one it installed is picked up — and
+anything older than 2.33 is refused by name. An install outside `~/.cmdstan` (`--dir`) is
+not searched, so point `$CMDSTAN` or `--cmdstan` at its `cmdstan-<version>` directory. `install` is a download from GitHub and a
+C++ build of several minutes that an operator runs on purpose; the server never does
+either on its own. `--jobs` defaults to 1 because each job of that build takes 1–2 GB of
+memory. An install that fails or is interrupted removes what it had unpacked.
 
 ### Python, which is a build and not a flag
 
