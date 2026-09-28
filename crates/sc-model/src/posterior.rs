@@ -20,6 +20,7 @@
 //!   through a [`FitContext`], so the provider never learns how the host
 //!   records either.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value as Json;
@@ -53,6 +54,11 @@ pub struct PosteriorInput {
     /// provider writes beside a raw run (`coordinates.json`, Stan TODO §14).
     /// Empty when nothing was bound.
     pub coordinates: Coordinates,
+    /// Output variables whose draws the host will neither keep nor summarise —
+    /// excluded (or not kept) generated quantities too large for the stored
+    /// summary. A provider may skip reading them, and one that reads them
+    /// anyway only costs memory.
+    pub unread: BTreeSet<String>,
 }
 
 impl PosteriorInput {
@@ -140,6 +146,85 @@ pub struct PosteriorResult {
     pub draws: Vec<DrawSeries>,
     /// Anything the provider wants shown beyond the host's summary.
     pub parameters: Vec<ParameterBlock>,
+    /// How the draws were made, and what the host needs to know about the run
+    /// to diagnose it.
+    pub run: PosteriorRun,
+}
+
+/// How a posterior's draws were made — which decides what the host can say
+/// about them (Stan TODO §15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PosteriorMethod {
+    /// Markov chains (NUTS): R̂, effective sample sizes and the sampler's
+    /// diagnostics all apply.
+    #[default]
+    Mcmc,
+    /// One point, the posterior mode (an optimiser): the summary is the
+    /// estimate alone.
+    Mode,
+    /// Independent approximate draws (Pathfinder): summarised, but with no R̂,
+    /// because they are not chains that could disagree.
+    Approximation,
+}
+
+/// What the host needs to know about a run beyond its draws.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PosteriorRun {
+    /// How the draws were made.
+    pub method: PosteriorMethod,
+    /// The sampler's maximum tree depth, so the host can count the iterations
+    /// that hit it (`treedepth__` ≥ it). `None` when there is no such limit.
+    pub max_treedepth: Option<u32>,
+    /// Wall time of each process (each chain, for MCMC), in seconds.
+    pub wall_seconds: Vec<f64>,
+    /// An optimiser's iterations, when it reported them.
+    pub iterations: Option<u64>,
+}
+
+/// How many draws a fit will store, from its configuration alone — what the
+/// host sizes the draws by **before** sampling (Stan TODO §14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrawPlan {
+    /// Chains (1 for an optimiser or an approximation).
+    pub chains: u64,
+    /// Draws stored per chain and element, warmup included when it is kept.
+    pub draws_per_chain: u64,
+    /// The provider's own scalar variables written with every draw (`lp__`,
+    /// `accept_stat__`, …), beyond the program's.
+    pub sampler_variables: u64,
+}
+
+/// The default ceiling on a fit's stored draws, in bytes
+/// (`--stan-max-draws-bytes`): 1 GB.
+pub const DEFAULT_MAX_DRAWS_BYTES: u64 = 1_000_000_000;
+
+/// The default ceiling on the elements of a generated quantity whose summary is
+/// stored with the instance (`--stan-summary-max-elements`). Larger ones are
+/// summarised on demand.
+pub const DEFAULT_SUMMARY_MAX_ELEMENTS: usize = 1_000;
+
+/// The machine's limits on a posterior fit — server flags, carried by the
+/// [`FitContext`] so the fit reads them where it needs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PosteriorLimits {
+    /// The most values a bound data file may hold (`--stan-max-data-values`).
+    pub max_data_values: u64,
+    /// The most bytes of draws a fit may store (`--stan-max-draws-bytes`).
+    pub max_draws_bytes: u64,
+    /// The most elements a generated quantity may have and still be summarised
+    /// with the instance (`--stan-summary-max-elements`).
+    pub summary_max_elements: usize,
+}
+
+impl Default for PosteriorLimits {
+    fn default() -> PosteriorLimits {
+        PosteriorLimits {
+            max_data_values: crate::bind::DEFAULT_MAX_DATA_VALUES,
+            max_draws_bytes: DEFAULT_MAX_DRAWS_BYTES,
+            summary_max_elements: DEFAULT_SUMMARY_MAX_ELEMENTS,
+        }
+    }
 }
 
 /// Where a long fit has got to, as a whole.
@@ -229,6 +314,7 @@ pub struct FitContext<'a> {
     pub progress: &'a dyn FitProgress,
     cancel: Option<&'a AtomicBool>,
     instance: Option<InstanceId>,
+    limits: PosteriorLimits,
 }
 
 impl<'a> FitContext<'a> {
@@ -238,6 +324,7 @@ impl<'a> FitContext<'a> {
             progress,
             cancel: Some(cancel),
             instance: None,
+            limits: PosteriorLimits::default(),
         }
     }
 
@@ -252,6 +339,17 @@ impl<'a> FitContext<'a> {
         self.instance
     }
 
+    /// The same context, under the machine's `limits`.
+    pub fn with_limits(mut self, limits: PosteriorLimits) -> FitContext<'a> {
+        self.limits = limits;
+        self
+    }
+
+    /// The limits the fit runs under.
+    pub fn limits(&self) -> PosteriorLimits {
+        self.limits
+    }
+
     /// A context nobody watches and nobody can cancel — what a fit that is not
     /// a posterior, and a test, is run with.
     pub fn detached() -> FitContext<'static> {
@@ -259,6 +357,7 @@ impl<'a> FitContext<'a> {
             progress: &NoProgress,
             cancel: None,
             instance: None,
+            limits: PosteriorLimits::default(),
         }
     }
 

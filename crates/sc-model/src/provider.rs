@@ -46,7 +46,7 @@ use serde_json::Value as Json;
 use crate::dataset::DatasetShape;
 use crate::frame::{ColumnType, Frame};
 use crate::interface::Interface;
-use crate::posterior::{FitContext, PosteriorInput, PosteriorResult};
+use crate::posterior::{DrawPlan, FitContext, PosteriorInput, PosteriorResult};
 
 /// The [`OptionsSource::ServerQuery`] name meaning "every column of the
 /// dataset".
@@ -865,6 +865,15 @@ pub trait ModelProvider: Send + Sync {
             "the model provider `{}` does not sample a posterior",
             self.name()
         )))
+    }
+
+    /// How many draws a posterior fit of `config` will store, before it runs —
+    /// what the host checks the draws' size against `--stan-max-draws-bytes`
+    /// with (Stan TODO §14). `None` (the default) when the provider cannot say,
+    /// and then only the draws that come back are measured.
+    fn draw_plan(&self, config: &Attrs) -> Result<Option<DrawPlan>> {
+        let _ = config;
+        Ok(None)
     }
 
     /// Release whatever a fitted `state` holds outside the database — a raw run

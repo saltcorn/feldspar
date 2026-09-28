@@ -69,6 +69,7 @@ impl ModelProvider for Sampler {
             state: json!({ "run": "stan-runs/radon/1" }),
             draws: canned(),
             parameters: vec![sc_model::ParameterBlock::scalar("rows", rows as f64)],
+            run: Default::default(),
         })
     }
     async fn discard(&self, state: &Json) -> Result<()> {
@@ -411,7 +412,11 @@ async fn a_posterior_fit_job_stores_its_draws_with_its_row(cat: &Catalog) -> Res
     let stored = require_model_instance(cat, started.id).await?;
     assert_eq!(stored.status, FitStatus::Fitted);
     assert_eq!(stored.attributes["outcome"]["outcome"], "posterior");
-    assert_eq!(stored.parameters[0].name(), "rows");
+    // The host's summary tables, one per variable, then the provider's own.
+    let names: Vec<&str> = stored.parameters.iter().map(|p| p.name()).collect();
+    assert_eq!(names, ["alpha", "Sigma", "rows"]);
+    assert_eq!(stored.metrics["train"]["metrics"], "posterior");
+    assert_eq!(stored.metrics["train"]["chains"], 2);
     assert_eq!(DrawsReader::new(cat, started.id).count().await?, 10);
     Ok(())
 }

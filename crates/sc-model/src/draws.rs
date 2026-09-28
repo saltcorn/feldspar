@@ -33,8 +33,9 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::instance::InstanceId;
+use crate::interface::{Declaration, Interface};
 use crate::model::ModelId;
-use crate::posterior::DrawSeries;
+use crate::posterior::{DrawPlan, DrawSeries};
 use crate::store::{bad_column, rows, text};
 
 /// Name of the draws table in the primary database.
@@ -199,6 +200,130 @@ async fn delete_on(tx: &mut dyn Transaction, filter: Expr) -> Result<()> {
         .try_collect()
         .await?;
     Ok(())
+}
+
+/// What a stored draw is budgeted at, in bytes: with CmdStan's `sig_figs` at 9
+/// the shortest representation of a draw is at most about a dozen characters
+/// of JSON (Stan TODO §14).
+pub const BYTES_PER_DRAW: u64 = 12;
+
+/// What a row is budgeted at beyond its draws: two UUIDs, the variable, the
+/// element, the chain and the flag, and the backend's row overhead.
+pub const BYTES_PER_ROW: u64 = 120;
+
+/// About how many bytes `draws` take in `_fd_model_draws`.
+pub fn stored_bytes(draws: &[DrawSeries]) -> u64 {
+    draws
+        .iter()
+        .map(|s| BYTES_PER_ROW + BYTES_PER_DRAW * s.draws.len() as u64)
+        .sum()
+}
+
+/// The draws a fit is expected to store, sized before it samples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedDraws {
+    /// About how many bytes.
+    pub bytes: u64,
+    /// Elements per chain, the sampler's variables included.
+    pub elements: u64,
+    /// The largest variable and its elements.
+    pub largest: Option<(String, u64)>,
+    /// Variables whose size does not evaluate here and are not counted — the
+    /// draws that come back are measured again.
+    pub unmeasured: Vec<String>,
+}
+
+/// The expected size of the draws `plan` stores of `interface`'s outputs, less
+/// `excluded`, with each declared size evaluated against the bound `sizes`.
+pub fn plan_draws(
+    interface: &Interface,
+    sizes: &dyn Fn(&str) -> Option<i64>,
+    excluded: &BTreeSet<String>,
+    plan: DrawPlan,
+) -> PlannedDraws {
+    let mut elements = plan.sampler_variables;
+    let mut largest: Option<(String, u64)> = None;
+    let mut unmeasured = Vec::new();
+    for decl in interface.outputs().filter(|d| !excluded.contains(&d.name)) {
+        let Some(n) = declared_elements(decl, sizes) else {
+            unmeasured.push(decl.name.clone());
+            continue;
+        };
+        elements = elements.saturating_add(n);
+        if largest.as_ref().is_none_or(|(_, m)| n > *m) {
+            largest = Some((decl.name.clone(), n));
+        }
+    }
+    let rows = elements.saturating_mul(plan.chains);
+    PlannedDraws {
+        bytes: rows.saturating_mul(
+            BYTES_PER_ROW.saturating_add(BYTES_PER_DRAW.saturating_mul(plan.draws_per_chain)),
+        ),
+        elements,
+        largest,
+        unmeasured,
+    }
+}
+
+/// How many elements `decl` has, when every size evaluates.
+pub fn declared_elements(decl: &Declaration, sizes: &dyn Fn(&str) -> Option<i64>) -> Option<u64> {
+    decl.dims.iter().try_fold(1u64, |n, size| {
+        let d = u64::try_from(size.eval(sizes)?).ok()?;
+        n.checked_mul(d)
+    })
+}
+
+/// Refuse a fit whose draws would exceed `limit` bytes, before it samples —
+/// naming the arithmetic and the four ways out.
+pub fn check_planned_draws(planned: &PlannedDraws, plan: DrawPlan, limit: u64) -> Result<()> {
+    if planned.bytes <= limit {
+        return Ok(());
+    }
+    let largest = match &planned.largest {
+        Some((name, n)) => format!("; the largest variable is `{name}`, {} elements", group(*n)),
+        None => String::new(),
+    };
+    Err(Error::invalid(format!(
+        "the draws of this fit would take about {} ({} × {} draws × {} elements){largest}, over \
+         the limit of {} (`--stan-max-draws-bytes`): keep every n-th draw (`thin`), draw fewer \
+         iterations, leave the largest variables out (`exclude_variables`), or keep only the \
+         summary (`keep_draws: false`)",
+        human_bytes(planned.bytes),
+        match plan.chains {
+            1 => "1 chain".to_owned(),
+            n => format!("{n} chains"),
+        },
+        group(plan.draws_per_chain),
+        group(planned.elements),
+        human_bytes(limit)
+    )))
+}
+
+/// `1.3 GB`, `52 MB`, `900 bytes`.
+pub fn human_bytes(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b >= 1e9 {
+        format!("{:.1} GB", b / 1e9)
+    } else if b >= 1e6 {
+        format!("{:.0} MB", b / 1e6)
+    } else if b >= 1e3 {
+        format!("{:.0} kB", b / 1e3)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// `50 000` — digits in groups of three, as the sentences write numbers.
+fn group(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Refuse draws the table cannot hold faithfully, naming the first offender.
@@ -467,6 +592,68 @@ mod tests {
         );
         // The same element as warmup is a different series.
         check_draws(&[ok.clone(), ok.warmup()]).expect("warmup is its own series");
+    }
+
+    #[test]
+    fn the_draws_are_sized_before_sampling_and_refused_with_the_arithmetic() {
+        use crate::interface::{Element, SizeExpr};
+        let interface = Interface {
+            parameters: vec![Declaration::new(
+                "alpha",
+                Element::Real,
+                vec![SizeExpr::var("J")],
+                "vector[J]",
+            )],
+            generated: vec![
+                Declaration::new(
+                    "y_rep",
+                    Element::Real,
+                    vec![SizeExpr::var("N")],
+                    "vector[N]",
+                ),
+                Declaration::new(
+                    "z",
+                    Element::Real,
+                    vec![SizeExpr::opaque("rows(X)")],
+                    "vector[rows(X)]",
+                ),
+            ],
+            ..Interface::default()
+        };
+        let sizes = |n: &str| match n {
+            "J" => Some(85),
+            "N" => Some(50_000),
+            _ => None,
+        };
+        let plan = DrawPlan {
+            chains: 4,
+            draws_per_chain: 1000,
+            sampler_variables: 7,
+        };
+        let planned = plan_draws(&interface, &sizes, &BTreeSet::new(), plan);
+        assert_eq!(planned.elements, 7 + 85 + 50_000);
+        assert_eq!(planned.largest, Some(("y_rep".to_owned(), 50_000)));
+        assert_eq!(planned.unmeasured, ["z"]);
+        assert_eq!(planned.bytes, 4 * 50_092 * (120 + 12_000));
+        let err = check_planned_draws(&planned, plan, 1_000_000_000).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "would take about 2.4 GB (4 chains × 1 000 draws × 50 092 elements); the largest \
+                 variable is `y_rep`, 50 000 elements, over the limit of 1.0 GB \
+                 (`--stan-max-draws-bytes`)"
+            ),
+            "{err}"
+        );
+        assert!(err.to_string().contains("`keep_draws: false`"), "{err}");
+        // Leaving `y_rep` out brings it well under.
+        let excluded = BTreeSet::from(["y_rep".to_owned()]);
+        let planned = plan_draws(&interface, &sizes, &excluded, plan);
+        assert_eq!(planned.elements, 92);
+        check_planned_draws(&planned, plan, 1_000_000_000).unwrap();
+        // What came back is measured the same way.
+        let series = DrawSeries::new("alpha", vec![1], 1, vec![0.0; 1000]);
+        assert_eq!(stored_bytes(&[series]), 120 + 12_000);
+        assert_eq!(human_bytes(52_000_000), "52 MB");
     }
 
     #[test]

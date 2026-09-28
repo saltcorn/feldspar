@@ -54,15 +54,23 @@
 //! Instead: materialise the **related** datasets beside the main one, ask the
 //! provider for the program's interface, **bind** the data to it, sample, and
 //! keep the draws — which [`fit_model`] writes in the transaction that marks the
-//! instance fitted.
+//! instance fitted. The summary, the diagnostics and the warnings are the
+//! host's, computed from the draws before `exclude_variables` and `keep_draws`
+//! decide which of them are kept (Stan TODO §15).
+
+use std::collections::BTreeSet;
 
 use sc_catalog::Catalog;
 use sc_error::{Context, Error, Result};
 use sc_types::Attrs;
 use serde_json::Value as Json;
 
-use crate::bind::{BindReport, Coordinates, DEFAULT_MAX_DATA_VALUES, bind_data, binding_dataset};
+use crate::bind::{
+    BindReport, Coordinates, Labeller, bind_data, binding_dataset, excluded_variables, keeps_draws,
+};
 use crate::dataset::DatasetShape;
+use crate::diagnose;
+use crate::draws::{check_planned_draws, declared_elements, human_bytes, plan_draws, stored_bytes};
 use crate::encode::{Encoded, Encoding, apply_encoding_dropping, fit_encoding};
 use crate::frame::Frame;
 use crate::instance::{InstanceId, ModelInstance};
@@ -174,6 +182,9 @@ pub struct Fit {
     /// A posterior's binding: every dimension's coordinates and the report.
     /// Written to [`ATTR_COORDINATES`] and [`ATTR_BINDING`].
     pub binding: Option<(Coordinates, BindReport)>,
+    /// A posterior's warnings, as sentences. Written to [`ATTR_WARNINGS`]
+    /// when there are any.
+    pub warnings: Vec<String>,
 }
 
 impl Fit {
@@ -207,6 +218,11 @@ impl Fit {
                 serde_json::to_value(report)
                     .map_err(|e| Error::msg(format!("binding report: {e}")))?,
             );
+        }
+        if !self.warnings.is_empty() {
+            instance
+                .attributes
+                .insert(ATTR_WARNINGS.to_owned(), Json::from(self.warnings.clone()));
         }
         if !self.search.is_empty() {
             instance.attributes.insert(
@@ -407,6 +423,7 @@ pub async fn run_fit_with(
         search,
         draws: Vec::new(),
         binding: None,
+        warnings: Vec::new(),
     })
 }
 
@@ -451,6 +468,7 @@ async fn fit_test(
         search: Vec::new(),
         draws: Vec::new(),
         binding: None,
+        warnings: Vec::new(),
     })
 }
 
@@ -490,44 +508,111 @@ async fn fit_posterior(
         datasets.push((related.name.clone(), frame));
     }
 
-    let interface = provider.interface(&model.configuration).await?;
+    let config = &model.configuration;
+    let limits = ctx.limits();
+    let interface = provider.interface(config).await?;
     let bound = match &interface {
         Some(interface) => Some(bind_data(
             interface,
-            &model.configuration,
+            config,
             &datasets,
-            DEFAULT_MAX_DATA_VALUES,
+            limits.max_data_values,
         )?),
         None => None,
     };
     let dropped = bound.as_ref().map_or(0, |b| b.report.dropped(MAIN_DATASET));
+    let data = bound
+        .as_ref()
+        .map_or_else(|| Json::Object(serde_json::Map::new()), |b| b.json.clone());
+    let coordinates = bound
+        .as_ref()
+        .map(|b| b.coordinates.clone())
+        .unwrap_or_default();
+    // Every size the program declares its outputs with is a bound integer.
+    let sizes = |name: &str| data.get(name).and_then(Json::as_i64);
+
+    // Before anything is compiled or sampled (Stan TODO §§14–15): the labels
+    // fit, the draws fit, and which variables nobody will read.
+    let excluded = excluded_variables(config)?;
+    let keep = keeps_draws(config)?;
+    let labeller = Labeller::new(config, &coordinates)?;
+    let mut unread = BTreeSet::new();
+    if let Some(interface) = &interface {
+        labeller.check_lengths(interface, &sizes)?;
+        if keep {
+            if let Some(plan) = provider.draw_plan(config)? {
+                check_planned_draws(
+                    &plan_draws(interface, &sizes, &excluded, plan),
+                    plan,
+                    limits.max_draws_bytes,
+                )?;
+            }
+        }
+        // A generated quantity that is neither kept nor small enough to be
+        // summarised need not even be read back.
+        for decl in &interface.generated {
+            let too_big = declared_elements(decl, &sizes)
+                .is_some_and(|n| n > limits.summary_max_elements as u64);
+            if too_big && (!keep || excluded.contains(&decl.name)) {
+                unread.insert(decl.name.clone());
+            }
+        }
+    }
     let input = PosteriorInput {
         model: model.name.clone(),
         instance: ctx.instance(),
         datasets,
         interface,
-        data: bound
-            .as_ref()
-            .map_or_else(|| Json::Object(serde_json::Map::new()), |b| b.json.clone()),
-        coordinates: bound
-            .as_ref()
-            .map(|b| b.coordinates.clone())
-            .unwrap_or_default(),
+        data: data.clone(),
+        coordinates: coordinates.clone(),
+        unread,
     };
 
-    let result = provider
-        .fit_posterior(&input, &model.configuration, ctx)
-        .await?;
-    // The summary and the diagnostics are computed here from the draws
-    // (Stan TODO §15, Phase 5); until then the provider's own blocks stand.
+    let result = provider.fit_posterior(&input, config, ctx).await?;
     ctx.report(&Progress::stage(FitStage::Summarising));
+
+    // The host's: the summary, the diagnostics and the warnings, from every
+    // draw — before any of them is discarded.
+    let report = diagnose::report(
+        &result.draws,
+        &result.run,
+        input.interface.as_ref(),
+        &labeller,
+        limits.summary_max_elements,
+    )?;
+    let mut warnings = report.warnings;
+    let mut draws = result.draws;
+    if keep {
+        draws.retain(|s| !excluded.contains(&s.variable));
+        // A size the plan could not evaluate is measured now. Over the limit,
+        // the draws go and the summary stays: an hour of sampling is not
+        // thrown away over its storage.
+        let bytes = stored_bytes(&draws);
+        if bytes > limits.max_draws_bytes {
+            draws.clear();
+            warnings.push(format!(
+                "the draws came to about {}, over the limit of {} (`--stan-max-draws-bytes`), \
+                 so they were not kept — the summary and the diagnostics were computed from them \
+                 first; to keep them, thin them (`thin`) or leave the largest variables out \
+                 (`exclude_variables`)",
+                human_bytes(bytes),
+                human_bytes(limits.max_draws_bytes)
+            ));
+        }
+    } else {
+        draws.clear();
+    }
+    let mut metrics = SplitMetrics::default();
+    metrics.set(Part::Train, report.metrics);
+    let mut parameters = report.tables;
+    parameters.extend(result.parameters);
 
     Ok(Fit {
         outcome,
         state: result.state,
-        parameters: result.parameters,
+        parameters,
         encoding: None,
-        metrics: SplitMetrics::default(),
+        metrics,
         hyperparameters: chosen,
         rows: RowCounts {
             selected,
@@ -539,8 +624,9 @@ async fn fit_posterior(
             dropped,
         },
         search: Vec::new(),
-        draws: result.draws,
+        draws,
         binding: bound.map(|b| (b.coordinates, b.report)),
+        warnings,
     })
 }
 
@@ -1038,6 +1124,7 @@ mod tests {
     /// can only arrive if the context did.
     struct Sampler {
         interface: Option<Interface>,
+        plan: Option<crate::posterior::DrawPlan>,
     }
 
     #[async_trait]
@@ -1069,6 +1156,9 @@ mod tests {
         async fn interface(&self, _config: &Attrs) -> Result<Option<Interface>> {
             Ok(self.interface.clone())
         }
+        fn draw_plan(&self, _config: &Attrs) -> Result<Option<crate::posterior::DrawPlan>> {
+            Ok(self.plan)
+        }
         async fn fit_posterior(
             &self,
             input: &PosteriorInput,
@@ -1082,27 +1172,37 @@ mod tests {
                 .ok_or_else(|| Error::msg(format!("no `groups` among {names:?}")))?;
             let mut draws = Vec::new();
             for chain in 1..=2u32 {
+                // Six draws a chain, drifting: enough for a split-R̂, and
+                // one that says the chains have not mixed.
                 for j in 1..=groups.rows {
-                    draws.push(DrawSeries::new(
-                        "alpha",
-                        vec![j],
-                        chain,
-                        vec![j as f64, j as f64 + 0.5],
-                    ));
+                    let drift = (0..6).map(|i| j as f64 + 0.1 * f64::from(i)).collect();
+                    draws.push(DrawSeries::new("alpha", vec![j], chain, drift));
                 }
-                draws.push(DrawSeries::new("lp__", vec![], chain, vec![-1.0, -2.0]));
+                let lp = (0..6).map(|i| -f64::from(i)).collect();
+                draws.push(DrawSeries::new("lp__", vec![], chain, lp));
+            }
+            if self.interface.is_some() {
+                for chain in 1..=2u32 {
+                    let y = (0..6).map(|i| f64::from(i % 2)).collect();
+                    draws.push(DrawSeries::new("y_rep", vec![1], chain, y));
+                }
             }
             Ok(PosteriorResult {
-                state: serde_json::json!({ "datasets": names, "data": input.data }),
+                state: serde_json::json!({
+                    "datasets": names,
+                    "data": input.data,
+                    "unread": input.unread,
+                }),
                 draws,
                 parameters: Vec::new(),
+                run: crate::posterior::PosteriorRun::default(),
             })
         }
     }
 
     use crate::interface::{Declaration, Element, Interface, SizeExpr};
     use crate::model::NamedDataset;
-    use crate::posterior::{DrawSeries, PosteriorResult};
+    use crate::posterior::{DrawSeries, NoProgress, PosteriorLimits, PosteriorResult};
     use crate::provider::OutcomeSpec as Spec;
     use std::sync::Mutex;
 
@@ -1140,7 +1240,10 @@ mod tests {
     fn sampler(interface: Option<Interface>) -> ModelRegistry {
         let mut registry = ModelRegistry::new();
         registry
-            .register(Arc::new(Sampler { interface }))
+            .register(Arc::new(Sampler {
+                interface,
+                plan: None,
+            }))
             .expect("register");
         registry
     }
@@ -1172,7 +1275,7 @@ mod tests {
         // object, not a refusal.
         assert_eq!(
             fit.state,
-            serde_json::json!({ "datasets": ["main", "groups"], "data": {} })
+            serde_json::json!({ "datasets": ["main", "groups"], "data": {}, "unread": [] })
         );
         // Three groups × two chains of `alpha`, plus `lp__` per chain.
         assert_eq!(fit.draws.len(), 8);
@@ -1236,8 +1339,25 @@ mod tests {
                 vec![SizeExpr::var("J")],
                 "vector[J]",
             )],
+            generated: vec![Declaration::new(
+                "y_rep",
+                Element::Real,
+                vec![SizeExpr::var("N")],
+                "vector[N]",
+            )],
             ..Interface::default()
         }
+    }
+
+    fn bound_radon() -> Model {
+        radon().config(
+            crate::bind::BINDINGS_KEY,
+            serde_json::json!({
+                "N": {"kind": "count", "dataset": "main"},
+                "J": {"kind": "size", "dimension": "groups"},
+                "u": {"kind": "column", "dataset": "groups", "column": "u"},
+            }),
+        )
     }
 
     #[tokio::test]
@@ -1255,14 +1375,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bound_program_is_handed_its_data_and_the_instance_keeps_the_coordinates() {
-        let model = radon().config(
-            crate::bind::BINDINGS_KEY,
-            serde_json::json!({
-                "N": {"kind": "count", "dataset": "main"},
-                "J": {"kind": "size", "dimension": "groups"},
-                "u": {"kind": "column", "dataset": "groups", "column": "u"},
-            }),
-        );
+        let model = bound_radon();
         let fit = run_fit(&sampler(Some(grouped_program())), &ByTable, &model, 1000)
             .await
             .expect("fit");
@@ -1281,6 +1394,165 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_host_summarises_the_draws_by_label_and_scores_them() {
+        let model = bound_radon();
+        let fit = run_fit(&sampler(Some(grouped_program())), &ByTable, &model, 1000)
+            .await
+            .expect("fit");
+        // One table per variable, the program's order, the groups' labels
+        // (their keys, as `groups` has no label formula) first.
+        let names: Vec<&str> = fit.parameters.iter().map(ParameterBlock::name).collect();
+        assert_eq!(names, ["alpha", "y_rep"]);
+        let ParameterBlock::Table { columns, rows, .. } = &fit.parameters[0] else {
+            panic!("{:?}", fit.parameters[0]);
+        };
+        assert_eq!(columns[0], "groups");
+        assert_eq!(columns[1], "mean");
+        assert_eq!(rows[2].cells[0], serde_json::json!("3"));
+        // alpha[3] runs 3.0 … 3.5 in both chains.
+        let mean = rows[2].cells[1].as_f64().expect("mean");
+        assert!((mean - 3.25).abs() < 1e-12, "{mean}");
+        let Some(Metrics::Posterior(m)) = fit.metrics.get(Part::Train) else {
+            panic!("{:?}", fit.metrics);
+        };
+        assert_eq!((m.chains, m.draws_per_chain), (2, 6));
+        // Chains that drift disagree with their own halves: said, and still
+        // fitted.
+        assert!(m.max_rhat > 1.01, "{m:?}");
+        assert!(
+            fit.warnings.iter().any(|w| w.contains("for `alpha[")),
+            "{:?}",
+            fit.warnings
+        );
+        let instance = fit.apply(ModelInstance::starting(model.id)).expect("apply");
+        assert!(instance.is_usable());
+        assert!(instance.attributes[ATTR_WARNINGS].as_array().is_some());
+        assert_eq!(instance.metrics["train"]["metrics"], "posterior");
+    }
+
+    #[tokio::test]
+    async fn excluded_variables_and_keep_draws_decide_what_is_kept_but_not_what_is_summarised() {
+        let excluded = bound_radon().config(
+            crate::bind::EXCLUDE_VARIABLES_KEY,
+            serde_json::json!(["y_rep"]),
+        );
+        let fit = run_fit(&sampler(Some(grouped_program())), &ByTable, &excluded, 1000)
+            .await
+            .expect("fit");
+        assert!(fit.draws.iter().all(|d| d.variable != "y_rep"));
+        assert!(fit.draws.iter().any(|d| d.variable == "alpha"));
+        assert!(fit.parameters.iter().any(|p| p.name() == "y_rep"));
+        // Small enough to summarise, so still read.
+        assert_eq!(fit.state["unread"], serde_json::json!([]));
+
+        let summary_only = bound_radon().config(crate::bind::KEEP_DRAWS_KEY, false);
+        let fit = run_fit(
+            &sampler(Some(grouped_program())),
+            &ByTable,
+            &summary_only,
+            1000,
+        )
+        .await
+        .expect("fit");
+        assert!(fit.draws.is_empty());
+        assert_eq!(fit.parameters.len(), 2);
+        assert!(fit.metrics.get(Part::Train).is_some());
+
+        // `y_rep` has N = 50 elements: over a summary cap of 10, and neither
+        // kept nor summarised, so the provider is told it need not read it.
+        let reports = Reports::default();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let ctx = FitContext::new(&reports, &cancel).with_limits(PosteriorLimits {
+            summary_max_elements: 10,
+            ..PosteriorLimits::default()
+        });
+        let fit = run_fit_with(
+            &sampler(Some(grouped_program())),
+            &ByTable,
+            &summary_only,
+            1000,
+            &ctx,
+        )
+        .await
+        .expect("fit");
+        assert_eq!(fit.state["unread"], serde_json::json!(["y_rep"]));
+    }
+
+    #[tokio::test]
+    async fn draws_over_the_limit_are_refused_before_sampling_or_dropped_after() {
+        let mut registry = ModelRegistry::new();
+        registry
+            .register(Arc::new(Sampler {
+                interface: Some(grouped_program()),
+                plan: Some(crate::posterior::DrawPlan {
+                    chains: 4,
+                    draws_per_chain: 1000,
+                    sampler_variables: 7,
+                }),
+            }))
+            .expect("register");
+        let limited = |bytes| PosteriorLimits {
+            max_draws_bytes: bytes,
+            ..PosteriorLimits::default()
+        };
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let ctx = FitContext::new(&NoProgress, &cancel).with_limits(limited(100_000));
+        // 7 + 3 + 50 elements × 4 chains × 1 000 draws is about 2.9 MB.
+        let err = run_fit_with(&registry, &ByTable, &bound_radon(), 1000, &ctx)
+            .await
+            .expect_err("over the limit");
+        assert!(
+            err.to_string()
+                .contains("4 chains × 1 000 draws × 60 elements"),
+            "{err}"
+        );
+        // Keeping only the summary is always within it.
+        let summary_only = bound_radon().config(crate::bind::KEEP_DRAWS_KEY, false);
+        run_fit_with(&registry, &ByTable, &summary_only, 1000, &ctx)
+            .await
+            .expect("nothing stored");
+
+        // A provider with no plan is measured afterwards: the canned draws
+        // (10 series of 6) are about 1.9 kB, so a limit of 1 kB drops them and
+        // says so, and the summary stays.
+        let ctx = FitContext::new(&NoProgress, &cancel).with_limits(limited(1_000));
+        let fit = run_fit_with(
+            &sampler(Some(grouped_program())),
+            &ByTable,
+            &bound_radon(),
+            1000,
+            &ctx,
+        )
+        .await
+        .expect("fitted without its draws");
+        assert!(fit.draws.is_empty());
+        assert!(!fit.parameters.is_empty());
+        assert!(
+            fit.warnings
+                .iter()
+                .any(|w| w.contains("so they were not kept")),
+            "{:?}",
+            fit.warnings
+        );
+    }
+
+    #[tokio::test]
+    async fn labels_that_do_not_fit_the_bound_sizes_are_refused_before_sampling() {
+        let model = bound_radon().config(
+            crate::bind::LABELS_KEY,
+            serde_json::json!({ "alpha": ["main"] }),
+        );
+        let err = run_fit(&sampler(Some(grouped_program())), &ByTable, &model, 1000)
+            .await
+            .expect_err("alpha has J = 3 positions, main has 50");
+        assert!(
+            err.to_string()
+                .contains("with `main`, which has 50 positions, but `J` is 3 here"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_provider_that_is_not_a_sampler_refuses_to_sample() {
         let fits = Arc::new(AtomicUsize::new(0));
         let mean = Mean { fits };
@@ -1291,6 +1563,7 @@ mod tests {
             interface: None,
             data: Json::Null,
             coordinates: Default::default(),
+            unread: Default::default(),
         };
         let err = mean
             .fit_posterior(&input, &Attrs::new(), &FitContext::detached())
@@ -1301,10 +1574,11 @@ mod tests {
             "{err}"
         );
         assert!(!mean.kind().binds_data);
-        assert!(Sampler { interface: None }.kind().binds_data);
-        assert_eq!(
-            Sampler { interface: None }.outcome_spec(),
-            Spec::Posterior { prediction: None }
-        );
+        let sampler = Sampler {
+            interface: None,
+            plan: None,
+        };
+        assert!(sampler.kind().binds_data);
+        assert_eq!(sampler.outcome_spec(), Spec::Posterior { prediction: None });
     }
 }

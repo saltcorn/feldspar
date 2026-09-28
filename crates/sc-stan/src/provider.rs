@@ -26,16 +26,16 @@ use async_trait::async_trait;
 use sc_error::{Context, Error, Result};
 use sc_files::FileStore;
 use sc_model::{
-    BINDINGS_KEY, DIMENSIONS_KEY, DatasetShape, FitContext, FitResult, FitStage, Frame, Interface,
-    LABELS_KEY, ModelProvider, OutcomeSpec, POLICIES_KEY, PosteriorInput, PosteriorResult,
-    Prediction, Progress,
+    BINDINGS_KEY, DIMENSIONS_KEY, DatasetShape, DrawPlan, FitContext, FitResult, FitStage, Frame,
+    Interface, LABELS_KEY, ModelProvider, OutcomeSpec, POLICIES_KEY, PosteriorInput,
+    PosteriorMethod, PosteriorResult, PosteriorRun, Prediction, Progress,
 };
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
 use crate::cmdstan::{CmdStan, Locations, Toolchain};
 use crate::compile::CompileCache;
-use crate::output::read_draws_file;
+use crate::output::{optimizer_iterations, read_output_file};
 use crate::process::Watch;
 use crate::program::Program;
 use crate::run::{DATA_FILE, Method, ProcessBudget, Run, RunSettings, run_chains};
@@ -81,10 +81,12 @@ pub mod config_keys {
     pub const RUNS_STORE: &str = "runs_store";
     /// The directory in that store.
     pub const RUNS_DIR: &str = "runs_dir";
-    /// Output variables whose draws are not kept.
-    pub const EXCLUDE_VARIABLES: &str = "exclude_variables";
-    /// Whether the draws are kept at all (the summary always is).
-    pub const KEEP_DRAWS: &str = "keep_draws";
+    /// Output variables whose draws are not kept — the host's key, since the
+    /// host decides what is kept after it has summarised everything.
+    pub const EXCLUDE_VARIABLES: &str = sc_model::EXCLUDE_VARIABLES_KEY;
+    /// Whether the draws are kept at all (the summary always is) — the
+    /// host's key.
+    pub const KEEP_DRAWS: &str = sc_model::KEEP_DRAWS_KEY;
 }
 
 use config_keys::*;
@@ -491,10 +493,28 @@ impl ModelProvider for StanProvider {
             }
             _ => 0,
         };
+        // Chain by chain, each file a line at a time, the variables the host
+        // will not read skipped as they go past (§14).
+        let skip = |variable: &str| input.unread.contains(variable);
         let mut draws = Vec::new();
+        let mut records = Vec::with_capacity(chains.len());
         for chain in &chains {
-            draws.extend(read_draws_file(&chain.csv, chain.chain, warmup_rows)?);
+            let output = read_output_file(&chain.csv, chain.chain, warmup_rows, &skip)?;
+            draws.extend(output.draws);
+            records.push(json!({
+                "chain": chain.chain,
+                "wall_seconds": chain.wall.as_secs_f64(),
+                "step_size": output.adaptation.as_ref().map(|a| a.step_size),
+                "timing": output.timing,
+            }));
         }
+        let iterations = match settings.method {
+            Method::Optimize => chains
+                .first()
+                .and_then(|c| std::fs::read_to_string(&c.log).ok())
+                .and_then(|log| optimizer_iterations(&log)),
+            Method::Sample | Method::Pathfinder => None,
+        };
 
         let run = match text(config, RUNS_STORE) {
             None => None,
@@ -531,17 +551,57 @@ impl ModelProvider for StanProvider {
             "cmdstan": cmdstan.version.to_string(),
             "compiled": compiled.key,
             "interface": input.interface,
-            "chains": chains.iter().map(|c| json!({
-                "chain": c.chain,
-                "wall_seconds": c.wall.as_secs_f64(),
-            })).collect::<Vec<_>>(),
+            "chains": records,
             "run": run,
         });
         Ok(PosteriorResult {
             state,
             draws,
             parameters: Vec::new(),
+            run: PosteriorRun {
+                method: match settings.method {
+                    Method::Sample => PosteriorMethod::Mcmc,
+                    Method::Optimize => PosteriorMethod::Mode,
+                    Method::Pathfinder => PosteriorMethod::Approximation,
+                },
+                max_treedepth: (settings.method == Method::Sample)
+                    .then_some(settings.max_treedepth),
+                wall_seconds: chains.iter().map(|c| c.wall.as_secs_f64()).collect(),
+                iterations,
+            },
         })
+    }
+
+    /// Chains × kept iterations × (the program's outputs + CmdStan's own
+    /// columns), from the settings alone (§14).
+    fn draw_plan(&self, config: &Attrs) -> Result<Option<DrawPlan>> {
+        let settings = RunSettings::from_config(config, || 0)?;
+        Ok(Some(match settings.method {
+            Method::Sample => DrawPlan {
+                chains: u64::from(settings.chains),
+                draws_per_chain: settings.iter_sampling.div_ceil(settings.thin)
+                    + if settings.save_warmup {
+                        settings.iter_warmup.div_ceil(settings.thin)
+                    } else {
+                        0
+                    },
+                // lp__, accept_stat__, stepsize__, treedepth__, n_leapfrog__,
+                // divergent__, energy__.
+                sampler_variables: 7,
+            },
+            // lp__ and converged__.
+            Method::Optimize => DrawPlan {
+                chains: 1,
+                draws_per_chain: 1,
+                sampler_variables: 2,
+            },
+            // lp_approx__, lp__ and path__.
+            Method::Pathfinder => DrawPlan {
+                chains: 1,
+                draws_per_chain: settings.iter_sampling,
+                sampler_variables: 3,
+            },
+        }))
     }
 
     /// Delete the published raw run, when the fit kept one (§14).

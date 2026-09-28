@@ -855,22 +855,29 @@ else.
 
 ## Phase 5 — Draws, summary and diagnostics
 
-- [~] 5.1 The CmdStan CSV reader: comment lines (adaptation, timing), the header, element
+- [x] 5.1 The CmdStan CSV reader: comment lines (adaptation, timing), the header, element
       indices from the **names** (a column-major matrix read back correctly), sampler columns,
-      warmup rows when saved. *(Phase 4 needed the draws, so `sc_stan::output` already reads
-      the header, the names, the sampler columns and the warmup rows; the adaptation and
-      timing comments remain.)*
-- [ ] 5.2 Loading the draws (§14): the CSVs read chain by chain into `_fd_model_draws` rows
+      warmup rows when saved. *(Read a line at a time, skipping the columns of variables the
+      host will not read; the step size and CmdStan's timing are recorded per chain in the
+      state, and the optimiser's iterations are read from its log.)*
+- [x] 5.2 Loading the draws (§14): the CSVs read chain by chain into `_fd_model_draws` rows
       (Phase 1.5), `exclude_variables`, `keep_draws: false`, and the size estimate with its
-      `--stan-max-draws-bytes` refusal before sampling.
-- [ ] 5.3 The summary (§15): mean, sd, MCSE, quantiles, rank-normalised split-R̂, bulk- and
+      `--stan-max-draws-bytes` refusal before sampling. *(Both keys are the host's now; the
+      limits ride on `FitContext` as `PosteriorLimits`, whose server flags are Phase 10. A
+      size the plan cannot evaluate is measured after sampling, and draws over the limit are
+      then dropped with a warning rather than failing the fit.)*
+- [x] 5.3 The summary (§15): mean, sd, MCSE, quantiles, rank-normalised split-R̂, bulk- and
       tail-ESS, with the FFT in-crate. Tested against reference numbers from `posterior`
       (R) or ArviZ, pasted as constants with the command that made them in a comment — on a
       well-mixed normal, on an AR(1) chain with high autocorrelation, and on four chains
-      where one is stuck (R̂ must be large).
-- [ ] 5.4 `Metrics::Posterior` and the warnings with their sentences (§15); the `optimize` and
-      `pathfinder` variants.
-- [ ] 5.5 Labels (§15): axes matched to dimensions through the size expressions, the `labels`
+      where one is stuck (R̂ must be large). *(Neither R nor ArviZ is on this machine; the
+      reference is CmdStan 2.40's `stansummary`, which implements the same definitions. It
+      agrees to 1e-7 on the first two; on the stuck chains R̂ agrees and the ESS is not
+      compared, because there the implementations truncate Geyer's sequence differently.)*
+- [x] 5.4 `Metrics::Posterior` and the warnings with their sentences (§15); the `optimize` and
+      `pathfinder` variants. *(`Metrics::PosteriorMode` and
+      `Metrics::PosteriorApproximation`.)*
+- [x] 5.5 Labels (§15): axes matched to dimensions through the size expressions, the `labels`
       override checked against lengths, and the per-variable `ParameterBlock::Table`s with
       the label columns first.
 

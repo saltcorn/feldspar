@@ -20,7 +20,7 @@ use sc_error::{Error, Result};
 use sc_files::{FileStore, LocalFileStore};
 use sc_model::{
     ChainPhase, DrawSeries, FitContext, FitProgress, FitStage, InstanceId, ModelProvider,
-    PosteriorInput, PosteriorResult, Progress,
+    PosteriorInput, PosteriorMethod, PosteriorResult, Progress,
 };
 use sc_stan::cmdstan::{CmdStan, Source};
 use sc_stan::compile::CompileCache;
@@ -135,7 +135,7 @@ fn fake_model(dir: &Path) -> String {
         r##"#!/bin/sh
 here='{dir}'
 echo "$*" >> "$here/calls.log"
-id=1; out=; prev=; samples=10; warmup=10; save_warmup=0
+id=1; out=; prev=; samples=10; warmup=10; save_warmup=0; opt=0
 for a in "$@"; do
   case "$a" in
     id=*) id="${{a#id=}}";;
@@ -143,7 +143,7 @@ for a in "$@"; do
     num_samples=*) samples="${{a#num_samples=}}";;
     num_warmup=*) warmup="${{a#num_warmup=}}";;
     save_warmup=*) save_warmup="${{a#save_warmup=}}";;
-    method=optimize) samples=1; warmup=0;;
+    method=optimize) samples=1; warmup=0; opt=1;;
   esac
   prev="$a"
 done
@@ -175,14 +175,26 @@ while [ $i -le $total ]; do
   echo "Iteration: $i / $total [ 50%]  ($ph)"
   i=$((i+1))
 done
+if [ $opt = 1 ]; then
+  echo "    Iter      log prob        ||dx||      ||grad||       alpha      alpha0  # evals  Notes "
+  echo "       6      -5.00402   0.000103557   2.55062e-07           1           1        9   "
+  echo "Optimization terminated normally: "
+fi
 rows=$samples
 if [ "$save_warmup" = 1 ]; then rows=$((samples + warmup)); fi
 {{
   echo "# model = fake_model"
   echo "lp__,accept_stat__,mu,theta.1,theta.2"
+  echo "# Adaptation terminated"
+  echo "# Step size = 0.$id"
+  echo "# Diagonal elements of inverse mass matrix:"
+  echo "# 1, 0.5, 0.25"
   n=1
   while [ $n -le $rows ]; do echo "-$n,0.9,$id.$n,1,2"; n=$((n+1)); done
-  echo "# Elapsed Time: 0.01 seconds (Sampling)"
+  echo "# "
+  echo "#  Elapsed Time: 0.01 seconds (Warm-up)"
+  echo "#                0.02 seconds (Sampling)"
+  echo "#                0.03 seconds (Total)"
 }} > "$out"
 "##,
         dir = dir.display()
@@ -234,6 +246,7 @@ fn input(instance: InstanceId) -> PosteriorInput {
         interface: None,
         data: json!({ "N": 2, "y": [1.5, 2.5] }),
         coordinates: Default::default(),
+        unread: Default::default(),
     }
 }
 
@@ -345,7 +358,18 @@ async fn a_fit_compiles_once_runs_every_chain_with_cmdstans_arguments_and_reads_
         assert_eq!(chain.phase, ChainPhase::Sampling);
     }
 
-    // The state: the seed, the toolchain, the cache key, the program; no run.
+    // What the host is told about the run, to diagnose it by.
+    assert_eq!(result.run.method, PosteriorMethod::Mcmc);
+    assert_eq!(result.run.max_treedepth, Some(10));
+    assert_eq!(result.run.wall_seconds.len(), 2);
+    assert_eq!(result.run.iterations, None);
+
+    // The state: the seed, the toolchain, the cache key, the program, each
+    // chain's adaptation and timing; no run.
+    assert_eq!(result.state["chains"][1]["chain"], 2);
+    assert_eq!(result.state["chains"][1]["step_size"], 0.2);
+    assert_eq!(result.state["chains"][0]["timing"]["Total"], 0.03);
+    assert_eq!(result.state["chains"][0]["timing"]["Warm-up"], 0.01);
     assert_eq!(result.state["seed"], 7);
     assert_eq!(result.state["cmdstan"], "2.36.0");
     assert_eq!(result.state["compiled"].as_str().unwrap().len(), 64);
@@ -664,7 +688,9 @@ async fn a_raw_run_is_published_to_the_runs_store_and_discarded_with_the_instanc
     let csv = gunzip(&std::fs::read(run.join("chain-2.csv.gz")).unwrap());
     assert!(
         csv.starts_with(
-            "# model = fake_model\nlp__,accept_stat__,mu,theta.1,theta.2\n-1,0.9,2.1,1,2\n"
+            "# model = fake_model\nlp__,accept_stat__,mu,theta.1,theta.2\n\
+             # Adaptation terminated\n# Step size = 0.2\n\
+             # Diagonal elements of inverse mass matrix:\n# 1, 0.5, 0.25\n-1,0.9,2.1,1,2\n"
         ),
         "{csv}"
     );
@@ -704,6 +730,9 @@ async fn optimize_and_pathfinder_run_as_one_process_through_the_same_runner() {
     assert!(fx.read("calls.log").trim_end().ends_with("method=optimize"));
     assert_eq!(series(&result.draws, "mu", 1).draws, vec![1.1]);
     assert_eq!(result.state["method"], "optimize");
+    assert_eq!(result.run.method, PosteriorMethod::Mode);
+    assert_eq!(result.run.iterations, Some(6));
+    assert_eq!(result.run.max_treedepth, None);
 
     std::fs::remove_file(fx.dir.join("calls.log")).unwrap();
     let result = fit(
@@ -718,4 +747,58 @@ async fn optimize_and_pathfinder_run_as_one_process_through_the_same_runner() {
     assert_eq!(calls.lines().count(), 1);
     assert!(calls.contains("method=pathfinder num_paths=4 num_draws=4 num_psis_draws=4"));
     assert!(result.draws.iter().all(|s| s.chain == 1));
+    assert_eq!(result.run.method, PosteriorMethod::Approximation);
+}
+
+#[tokio::test]
+async fn a_variable_the_host_will_not_read_is_skipped_as_the_csv_is_read() {
+    let fx = Fixture::new("unread");
+    fx.behave("ok");
+    let provider = fx.provider(4);
+    let cancel = AtomicBool::new(false);
+    let mut unread = input(InstanceId::new());
+    unread.unread.insert("theta".to_owned());
+    let result = provider
+        .fit_posterior(
+            &unread,
+            &config(json!({})),
+            &FitContext::new(&Reports::default(), &cancel),
+        )
+        .await
+        .unwrap();
+    let variables: std::collections::BTreeSet<&str> =
+        result.draws.iter().map(|s| s.variable.as_str()).collect();
+    assert_eq!(
+        variables,
+        std::collections::BTreeSet::from(["lp__", "accept_stat__", "mu"])
+    );
+}
+
+#[test]
+fn the_draw_plan_counts_what_the_settings_will_store() {
+    let fx = Fixture::new("plan");
+    let provider = fx.provider(1);
+    let plan = |extra| provider.draw_plan(&config(extra)).unwrap().unwrap();
+    let sample = plan(json!({
+        "chains": 4, "iter_warmup": 500, "iter_sampling": 1000, "thin": 2, "save_warmup": true,
+    }));
+    assert_eq!(
+        (
+            sample.chains,
+            sample.draws_per_chain,
+            sample.sampler_variables
+        ),
+        (4, 250 + 500, 7)
+    );
+    let optimum = plan(json!({ "method": "optimize", "chains": 4 }));
+    assert_eq!((optimum.chains, optimum.draws_per_chain), (1, 1));
+    let pathfinder = plan(json!({ "method": "pathfinder", "iter_sampling": 300 }));
+    assert_eq!(
+        (
+            pathfinder.chains,
+            pathfinder.draws_per_chain,
+            pathfinder.sampler_variables
+        ),
+        (1, 300, 3)
+    );
 }

@@ -26,6 +26,7 @@
 //! per variable.
 
 mod dimension;
+mod labels;
 mod resolve;
 mod spec;
 mod tensor;
@@ -44,6 +45,10 @@ use crate::model::{MAIN_DATASET, Model, NamedDataset};
 
 pub use dimension::{
     Coordinates, DesignCoordinates, DimensionCoordinates, DimensionKind, MAX_GRID_STEPS,
+};
+pub use labels::{
+    Axis, EXCLUDE_VARIABLES_KEY, KEEP_DRAWS_KEY, Labeller, element_label, excluded_variables,
+    keeps_draws,
 };
 pub use resolve::{
     BindReport, BoundData, DEFAULT_MAX_DATA_VALUES, DatasetReport, DropReport, VariableReport,
@@ -84,6 +89,8 @@ pub fn binding_dataset(related: &NamedDataset) -> Dataset {
 /// columns and dimensions each names exist; each kind can produce its
 /// declaration's rank and element type; a `width` names a `design` and a
 /// `segment_*` an `index`; and the datasets have an order to be resolved in.
+/// And the outputs' configuration (§§14–15): `exclude_variables` and `labels`
+/// name output variables, and each label names a dimension.
 pub fn check_bindings(interface: &Interface, model: &Model) -> Result<()> {
     let spec = spec::Spec::parse(&model.configuration)?;
     let mut datasets = vec![resolve::DatasetColumns {
@@ -106,7 +113,10 @@ pub fn check_bindings(interface: &Interface, model: &Model) -> Result<()> {
                 .collect(),
         });
     }
-    resolve::check_structure(interface, &model.configuration, &spec, &datasets).map(|_| ())
+    resolve::check_structure(interface, &model.configuration, &spec, &datasets)?;
+    labels::check_outputs(interface, &model.configuration, &spec, &|name| {
+        resolve::dimension_source(&spec, &datasets, name).is_some()
+    })
 }
 
 /// Every `data` variable of `interface` has a binding in `config`, and every

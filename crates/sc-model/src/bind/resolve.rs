@@ -150,14 +150,14 @@ pub(crate) struct DatasetColumns<'a> {
 
 /// Where a dimension's positions come from.
 #[derive(Debug, Clone, Copy)]
-struct DimensionSource<'a> {
+pub(crate) struct DimensionSource<'a> {
     dataset: &'a str,
     rows: bool,
 }
 
 /// The dimension called `name`: a dataset's rows, a declared one, or a time
 /// grid's `.future`.
-fn dimension_source<'a>(
+pub(crate) fn dimension_source<'a>(
     spec: &'a Spec,
     datasets: &'a [DatasetColumns<'a>],
     name: &'a str,

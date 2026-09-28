@@ -76,6 +76,7 @@
 
 mod bind;
 mod dataset;
+mod diagnose;
 mod draws;
 mod encode;
 mod fit;
@@ -93,20 +94,30 @@ mod registry;
 mod source;
 mod split;
 mod store;
+mod summary;
 mod validate;
 
 pub use bind::{
-    BINDINGS_KEY, BindReport, Binding, BoundData, Coordinates, DEFAULT_MAX_DATA_VALUES,
+    Axis, BINDINGS_KEY, BindReport, Binding, BoundData, Coordinates, DEFAULT_MAX_DATA_VALUES,
     DIMENSIONS_KEY, DatasetReport, DesignCoordinates, DimensionCoordinates, DimensionKind,
-    DimensionSpec, DropReport, LABEL_COLUMN, LABELS_KEY, MAX_GRID_STEPS, POLICIES_KEY, Policies,
-    Policy, TimeScale, VariableReport, bind_data, binding_dataset, check_bindings,
-    check_bindings_declared,
+    DimensionSpec, DropReport, EXCLUDE_VARIABLES_KEY, KEEP_DRAWS_KEY, LABEL_COLUMN, LABELS_KEY,
+    Labeller, MAX_GRID_STEPS, POLICIES_KEY, Policies, Policy, TimeScale, VariableReport, bind_data,
+    binding_dataset, check_bindings, check_bindings_declared, element_label, excluded_variables,
+    keeps_draws,
 };
 pub use dataset::{
     Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape, translate_filter,
     validate_dataset,
 };
-pub use draws::{DRAWS_TABLE, DrawsQuery, DrawsReader, bootstrap_model_draws};
+pub use diagnose::{
+    EBFMI_THRESHOLD, ESS_PER_CHAIN_THRESHOLD, PosteriorReport, RHAT_THRESHOLD, ebfmi,
+    report as diagnose_posterior,
+};
+pub use draws::{
+    BYTES_PER_DRAW, BYTES_PER_ROW, DRAWS_TABLE, DrawsQuery, DrawsReader, PlannedDraws,
+    bootstrap_model_draws, check_planned_draws, declared_elements, human_bytes, plan_draws,
+    stored_bytes,
+};
 pub use encode::{
     ColumnEncoding, Encoded, Encoding, Matrix, TargetEncoding, apply_encoding,
     apply_encoding_dropping, fit_encoding,
@@ -125,11 +136,14 @@ pub use instance_store::{
     save_fitted_instance, save_model_instance,
 };
 pub use interface::{Declaration, Element, Interface, SizeExpr, SizeOp, SizeTree};
-pub use metrics::{ClassMetrics, Metrics, PosteriorMetrics, SplitMetrics};
+pub use metrics::{
+    ApproximationMetrics, ClassMetrics, Metrics, ModeMetrics, PosteriorMetrics, SplitMetrics,
+};
 pub use model::{MAIN_DATASET, Model, ModelId, NamedDataset};
 pub use posterior::{
-    ChainPhase, ChainProgress, DrawSeries, FitContext, FitProgress, FitStage, NoProgress,
-    PosteriorInput, PosteriorResult, Progress,
+    ChainPhase, ChainProgress, DEFAULT_MAX_DRAWS_BYTES, DEFAULT_SUMMARY_MAX_ELEMENTS, DrawPlan,
+    DrawSeries, FitContext, FitProgress, FitStage, NoProgress, PosteriorInput, PosteriorLimits,
+    PosteriorMethod, PosteriorResult, PosteriorRun, Progress,
 };
 pub use predict::{
     Predictions, Subject, name_classes, predict_rows, predict_subject, prediction_values,
@@ -148,4 +162,5 @@ pub use store::{
     MODELS_QUERY, MODELS_TABLE, bootstrap_models, delete_model, list_models, load_model,
     load_model_by_name, models_for_table, require_model, save_model,
 };
+pub use summary::{ElementSummary, ess_bulk, ess_mean, ess_tail, quantile, rhat};
 pub use validate::{ModelIssue, Models, validate_model};

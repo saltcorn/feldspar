@@ -242,6 +242,7 @@ async fn without_cmdstan_a_program_is_checked_on_our_parse_with_a_notice() {
                 interface: None,
                 data: json!({}),
                 coordinates: Default::default(),
+                unread: Default::default(),
             },
             &radon_config(),
             &FitContext::detached(),

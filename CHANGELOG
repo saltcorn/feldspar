@@ -2,6 +2,105 @@
 
 Changes in reverse chronological order.
 
+## Draws, summary and diagnostics: a fitted posterior says what it found and how far to trust it
+
+This is Phase 5 of the Stan milestone (TODO "Bayesian models with Stan"). A posterior's
+instance now has a summary table per variable, labelled by the database, and metrics for its
+method. Warnings say what is wrong and what to do about it. `exclude_variables` and
+`keep_draws` decide which draws are kept, and a fit whose draws would be too large is refused
+before it samples. Everything here is the host's (`sc-model`), so a second Bayesian provider
+would be summarised and diagnosed by the same code.
+
+- **The summary** (`sc_model::summary`, 5.3).
+  - Per element it gives mean, sd, MCSE of the mean, the 5 %, 50 % and 95 % quantiles,
+    rank-normalised split-R̂, and bulk- and tail-ESS. The definitions are Vehtari et al.
+    (2021), as `posterior`, ArviZ and `stansummary` implement them.
+  - The autocovariances go through a small radix-2 FFT in the crate, and the normal quantile
+    comes from `statrs`. No new dependency.
+  - The MCSE divides by the ESS of the split chains, as `posterior` and ArviZ do.
+    `stansummary` divides by the unsplit ESS, which differs in the third significant figure.
+  - When only one tail indicator is constant, the tail-ESS is the other one, as Stan does.
+  - An undefined statistic (the R̂ of a constant, anything over a NaN draw) is NaN, stored as
+    `null`.
+- **Labels** (`sc_model::bind::labels`, 5.5).
+  - An output axis whose size is a bare identifier bound by `size(d)` or `count(d)` gets
+    dimension `d`'s labels and keys. One sized by `width(X)` gets the design's column names.
+    Anything else is numbered.
+  - The `labels` override takes one entry per axis: a dimension, a `design`-bound variable,
+    or `null`.
+  - The override is checked on save (the names, and one entry per axis). It is checked again
+    before sampling, against every declared size that evaluates. If the draws still do not
+    fit it, the axis is left numbered and a warning says so.
+  - `Labeller`, `Axis` and `element_label` are public, for the draws API of Phase 7.
+- **Metrics and warnings** (`sc_model::diagnose`, 5.4).
+  - `sample` gives `Metrics::Posterior`: chains, draws per chain, divergences (total and per
+    chain), tree-depth hits, E-BFMI per chain, the worst R̂, the smallest bulk- and tail-ESS
+    over the parameters and transformed parameters, and wall time per chain.
+  - `optimize` gives the new `Metrics::PosteriorMode`: the log density, the optimiser's
+    iterations and the wall time. Its tables have one `estimate` column.
+  - `pathfinder` gives `Metrics::PosteriorApproximation`, and its tables have no R̂.
+  - Warnings use the published thresholds: any divergence, any tree-depth hit, E-BFMI below
+    0.3, R̂ above 1.01, and ESS below 100 per chain. Each is a sentence naming the worst
+    element by its label ("R̂ is 1.070 for `alpha[Anoka]` (and 3 other elements), above
+    1.01: …") and the remedy. They are stored in `attributes.warnings`. The instance is still
+    `fitted`.
+  - Every parameter and transformed parameter is summarised. A generated quantity is
+    summarised when it has at most `--stan-summary-max-elements` elements (1 000).
+- **What is kept** (5.2).
+  - `exclude_variables` and `keep_draws` are now host keys (`EXCLUDE_VARIABLES_KEY`,
+    `KEEP_DRAWS_KEY`), because the host summarises every draw before deciding which to keep.
+    An excluded variable still has its summary. `keep_draws: false` keeps the summary and the
+    diagnostics and stores no draws.
+  - Both are checked against the program on save.
+- **The size bound** (5.2).
+  - A new `ModelProvider::draw_plan(config)` gives chains, draws per chain and the sampler's
+    own variables. The Stan provider fills it from its settings: 7 sampler columns for
+    `sample`, 2 for `optimize`, 3 for `pathfinder`.
+  - Before sampling, the host multiplies the plan by the declared sizes, evaluated against the
+    bound data. It refuses a fit over `--stan-max-draws-bytes` (1 GB), with the arithmetic and
+    the four ways out ("about 2.4 GB (4 chains × 1 000 draws × 50 092 elements); the largest
+    variable is `y_rep`…").
+  - A size that does not evaluate is measured after sampling. If the draws are then over the
+    limit, they are dropped with a warning and the summary is kept.
+- **Unread variables.** A generated quantity that is too large to summarise, and is not kept,
+  goes into `PosteriorInput::unread`. The provider skips its CSV columns.
+- **Limits.** `PosteriorLimits` (data values, draws bytes, summary elements) rides on
+  `FitContext::with_limits`, with the defaults the TODO names. The server flags are Phase 10.
+- **The CSV reader** (`sc_stan::output`, 5.1).
+  - It reads a line at a time, skipping unread columns.
+  - It also reads the adaptation (the step size, and a diagonal or dense inverse metric) and
+    CmdStan's timing (`Warm-up`/`Sampling`/`Total`, and Pathfinder's labels).
+  - The state records each chain's step size and timing.
+  - `optimizer_iterations` reads the optimiser's last iteration from its log.
+  - It accepts the spaces 2.40's Pathfinder writes after its commas, and the new
+    `converged__` and `path__` columns.
+- **The seam.**
+  - `PosteriorResult` gains `run: PosteriorRun`: the method (`Mcmc`, `Mode`,
+    `Approximation`), the maximum tree depth, wall seconds, and iterations.
+  - `PosteriorInput` gains `unread`, and the `Fit` gains `warnings`.
+  - The host's summary tables come before the provider's own parameter blocks.
+- **Tests.**
+  - `summary`: reference numbers from `stansummary --sig_figs 9` (CmdStan 2.40.0), with the
+    command in the comment and an ignored test that writes the CSVs. The inputs are a
+    well-mixed normal, an AR(1) at 0.9 and four chains with one stuck. Mean, sd, quantiles,
+    R̂, both ESS and Stan's MCSE agree to 1e-7 on the first two. On the stuck chains R̂
+    agrees and is 1.50. The FFT is checked against the direct sum.
+  - `diagnose`: labelled tables; every warning's sentence; the summary cap; the mode and
+    approximation variants; and E-BFMI.
+  - `labels`: automatic, `width` and override labels; the length checks; the save-time
+    refusals.
+  - `draws`: the estimate and its sentence.
+  - `fit`: labelled tables through `run_fit`, `exclude_variables`, `keep_draws: false`,
+    `unread`, the refusal before sampling, the drop after it, and a mislabelled axis refused
+    before sampling.
+  - `posterior_store` (Postgres and SQLite): the stored instance has its tables and metrics.
+  - `sc-stan`:
+    - the fake model now writes adaptation and timing comments and an optimiser table;
+    - the runner tests check `run`, the per-chain state, `unread` skipping and `draw_plan`;
+    - `real_cmdstan.rs` runs the host's diagnostics on CmdStan 2.40's real output: 4 × 1 000
+      draws, R̂ < 1.01, ESS > 400, no divergences, no warnings, the optimiser's iterations,
+      and Pathfinder's approximation metrics. It passes on this machine.
+
 ## Compiling and running: a Stan model is fitted with CmdStan
 
 This is Phase 4 of the Stan milestone (TODO "Bayesian models with Stan"). A Stan model's fit

@@ -246,6 +246,7 @@ async fn a_program_is_compiled_sampled_and_published_through_the_provider() {
         interface: None,
         data: json!({ "N": 10, "y": [0, 1, 0, 0, 0, 0, 0, 0, 0, 1] }),
         coordinates: Default::default(),
+        unread: Default::default(),
     };
     let config = |extra: serde_json::Value| -> sc_types::Attrs {
         let mut c = json!({
@@ -309,6 +310,32 @@ async fn a_program_is_compiled_sampled_and_published_through_the_provider() {
             "{sampler}"
         );
     }
+    // The host's summary and diagnostics over CmdStan's real output: a
+    // Beta(3, 9) posterior sampled well mixes, and says nothing is wrong.
+    let coordinates = sc_model::Coordinates::default();
+    let labeller = sc_model::Labeller::new(&sc_types::Attrs::new(), &coordinates).unwrap();
+    let report =
+        sc_model::diagnose_posterior(&fitted.draws, &fitted.run, None, &labeller, 1000).unwrap();
+    let sc_model::Metrics::Posterior(m) = &report.metrics else {
+        panic!("{:?}", report.metrics);
+    };
+    assert_eq!((m.chains, m.draws_per_chain), (4, 1000));
+    assert_eq!(m.divergent, 0);
+    assert!(m.max_rhat < 1.01, "{m:?}");
+    assert!(m.min_ess_bulk > 400.0 && m.min_ess_tail > 400.0, "{m:?}");
+    assert!(m.ebfmi.iter().all(|e| *e > 0.3), "{m:?}");
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let sc_model::ParameterBlock::Table { columns, rows, .. } = &report.tables[0] else {
+        panic!("{:?}", report.tables);
+    };
+    assert_eq!(columns[0], "mean");
+    let summary_mean = rows[0].cells[0].as_f64().unwrap();
+    assert!((summary_mean - mean).abs() < 1e-12);
+    // Each chain's adaptation and CmdStan's own timing.
+    let chain = &fitted.state["chains"][0];
+    assert!(chain["step_size"].as_f64().unwrap() > 0.0, "{chain}");
+    assert!(chain["timing"]["Total"].as_f64().is_some(), "{chain}");
+
     let run = work
         .join("runs/stan-runs/Bernoulli")
         .join(instance.to_string());
@@ -337,6 +364,12 @@ async fn a_program_is_compiled_sampled_and_published_through_the_provider() {
         .unwrap();
     // Beta(3, 9)'s mode is 0.2.
     assert!((mode.draws[0] - 0.2).abs() < 1e-3, "mode {:?}", mode.draws);
+    assert_eq!(optimum.run.method, sc_model::PosteriorMethod::Mode);
+    assert!(
+        optimum.run.iterations.is_some_and(|n| n > 0),
+        "{:?}",
+        optimum.run
+    );
     let approx = provider
         .fit_posterior(
             &input(InstanceId::new()),
@@ -350,6 +383,13 @@ async fn a_program_is_compiled_sampled_and_published_through_the_provider() {
             .draws
             .iter()
             .any(|s| s.variable == "theta" && s.draws.len() == 1000)
+    );
+    let report =
+        sc_model::diagnose_posterior(&approx.draws, &approx.run, None, &labeller, 1000).unwrap();
+    assert!(
+        matches!(report.metrics, sc_model::Metrics::PosteriorApproximation(_)),
+        "{:?}",
+        report.metrics
     );
     assert_eq!(
         std::fs::read_dir(work.join("cache")).unwrap().count(),
