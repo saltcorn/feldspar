@@ -42,7 +42,7 @@ use sc_error::{Error, Result};
 use sc_types::validate_attrs;
 use serde_json::Value as Json;
 
-use crate::bind::check_bindings_declared;
+use crate::bind::check_bindings;
 use crate::dataset::{DatasetShape, validate_dataset, validate_label};
 use crate::model::{MAIN_DATASET, Model};
 use crate::provider::{ModelProvider, OutcomeSpec};
@@ -109,7 +109,9 @@ pub async fn validate_model(
     }
 
     // A provider that binds data: its program's `data` block against the
-    // bindings (Stan TODO §10, the save-time half). Reading the program is not
+    // bindings — every variable bound, every name a binding uses real, every
+    // kind able to produce its declaration's rank and type, and an order to
+    // resolve the datasets in (Stan TODO §10, the save-time half). Reading the program is not
     // reading the data, so this runs with or without a shape — and a program
     // that is gone from its store lists the model with that reason.
     if provider.binds_data() {
@@ -118,8 +120,7 @@ pub async fn validate_model(
             .await
             .map_err(|e| problem(e.to_string()))?;
         if let Some(interface) = interface {
-            check_bindings_declared(&interface, &model.configuration)
-                .map_err(|e| problem(e.to_string()))?;
+            check_bindings(&interface, model).map_err(|e| problem(e.to_string()))?;
         }
     }
 

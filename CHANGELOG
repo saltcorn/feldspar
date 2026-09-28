@@ -2,6 +2,105 @@
 
 Changes in reverse chronological order.
 
+## Binding: a Stan program's `data` block tied to the tables
+
+This is Phase 3 of the Stan milestone (TODO "Bayesian models with Stan"). The host can now turn
+a model's datasets into the data file a Stan program reads, checked against the program's
+declared types and sizes, with every position recorded as a key and a label. A fit of a program
+that declares data no longer stops with "not implemented yet": it binds the data and hands it to
+the provider. Sampling is still Phase 4.
+
+- **The binder** (`sc_model::bind_data`). It takes the interface, the configuration and the
+  materialised datasets (`main` first, then each related one). It answers `BoundData`: the
+  CmdStan JSON, the `Coordinates` and a `BindReport`. It lives in `sc-model`, not `sc-stan`, so a
+  second Bayesian provider gets it for free (§4).
+- **Dimensions** (3.1). Each dimension maps positions `1..n` to keys.
+  - **Rows**: every dataset is one, under its own name. Its keys are the primary keys.
+  - A related dataset's labels come from its label formula. That formula is read with the rows
+    as the reserved column `_fd_label` (`binding_dataset`), then taken out of the frame. Rows
+    without a label formula are labelled by their key.
+  - **Values** (`{"kind": "values", "dataset", "column"}` under `dimensions`): the distinct
+    non-null values, sorted. Numbers sort numerically, text by code point (never by locale), and
+    `false` before `true`.
+  - **Time grids** (`{"kind": "time_grid", "dataset", "column", "step", "start"?, "end"?,
+    "horizon"?}`).
+    - `step` is `day`, `3 hours`, `1 month` and so on.
+    - The start is the first value floored to the step: to the minute, hour, day, Monday,
+      month, quarter or year, in UTC.
+    - Months, quarters and years step by the calendar.
+    - A grid also exposes `name.future`, the horizon alone.
+    - A grid is capped at 1 000 000 steps.
+  - `Coordinates` serialises every dimension's keys and labels, plus every `design`'s column
+    names and encoding. A fitted posterior stores it as the instance attribute `coordinates`.
+    The report is stored as `binding`.
+- **The core binding kinds** (3.2): `value`, `count`, `size`, `column`, `columns`, `design`,
+  `width`, `index`, `present`, `absent`, `count_present`, `count_absent`, `present_values`,
+  `segment_start` and `segment_size`.
+  - All of them are `sc_model::Binding`, parsed from the JSON under `bindings`.
+  - A `column` over a date needs `time: {unit, origin}`. The unit is seconds to weeks. The origin
+    is `min`, `epoch` or an instant.
+  - `design` goes through `fit_encoding`/`apply_encoding`, so text is one-hot and
+    reference-coded.
+  - `index` matches the target's primary key by default, or another column with `match`. A
+    `match` column that has a value on two rows is refused.
+  - A `segment_*` binding sorts its dataset stably by the index before anything of the dataset
+    is bound. The dataset's own rows dimension follows that sort.
+  - The Phase 6 kinds (`series`, `cells`, the edge kinds…) are refused as "not available yet".
+- **The checks** (3.3). Every refusal starts "`y`, declared `vector[N]` and bound to
+  `main.log_radon`: …".
+  - **At save** (`check_bindings`, called from `validate_model` in place of the "declared"
+    check), with no data read:
+    - every variable is bound and every binding is declared;
+    - the datasets, columns and dimensions a binding names exist;
+    - the kind can produce the declaration's rank, and a `design` or a scaled date is not bound
+      into an `int`;
+    - `width` names a `design`, and `segment_*` names an `index` on the same dataset;
+    - `match` is used only with a rows dimension;
+    - dimension and policy declarations are well formed;
+    - the datasets have a resolution order. Indexing into each other is refused as a cycle,
+      naming the bindings. So is a dataset indexing its own rows.
+  - **At bind time**:
+    - **Policies.** The new configuration key `policies` gives each dataset
+      `{"nulls": "refuse"|"drop", "unknown": "refuse"|"drop"}`; both default to `refuse`.
+      Datasets resolve in dependency order, so a county dropped for a null is an unknown key to
+      its homes, and the sentence says both.
+    - **Element types.** A float is refused into an `int` ("round it in the dataset"). Text
+      reaches Stan only through `index` or `design`. A boolean becomes 0/1.
+    - **Sizes.** Every size expression that evaluates is checked: "`y` is declared `vector[N]`
+      with `N` = 919 (the row count of `main`), but its binding `counties.log_uranium` has 85
+      values".
+    - **Bounds.** Every bound that evaluates is checked. That is numbers, bound scalars,
+      `+ - * /` and parentheses. The sentence names the element and the row's key, so a
+      zero-based index is caught by `lower=1`.
+    - **The cap.** The data-values cap (`DEFAULT_MAX_DATA_VALUES`, 20 million, not yet a server
+      flag) is refused naming the three largest variables.
+- **`BoundData`** (3.4). The CmdStan JSON writes ints as ints. Reals are reals, with
+  `"NaN"`/`"Inf"`/`"-Inf"` strings. Values nest row-major, and empty axes are empty arrays
+  (`array[3] vector[0]` is `[[], [], []]`). A `real` declaration gets its ints as reals.
+- **The fit** now reads each related dataset with its label column, and binds when the provider
+  declares an interface.
+  - `PosteriorInput` gains `coordinates`.
+  - `Fit` gains `binding`.
+  - `RowCounts.dropped` counts `main`'s rows dropped by the policies.
+- `StanProvider` declares `policies` in its form and requires it to be an object.
+- **Tests** (3.5): 39 in `sc_model::bind`. One per row of §11's table:
+  - two-level radon, with a county that has no homes;
+  - three levels, both ways;
+  - a values dimension;
+  - crossed IRT indices;
+  - a weighted junction;
+  - segments;
+  - a code matched with `match`;
+  - a design with its width;
+  - the missing-data idiom;
+  - a time grid with its future.
+
+  And every refusal: a size mismatch, a zero-based index, a null under `refuse` and the same row
+  dropped under `drop`, an orphan key (refused and dropped), the cascade, a cycle, the cap, and
+  the type refusals. Plus the save-time sentences. Two fit tests replace the old "refused until
+  there is a binder" test: an unbound program is refused by name, and a bound one is handed its
+  data while the instance keeps the coordinates.
+
 ## The program: a Stan parser, `stanc`, and `StanProvider`
 
 This is Phase 2 of the Stan milestone (TODO "Bayesian models with Stan"). A Stan program in a

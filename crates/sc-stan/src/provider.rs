@@ -2,7 +2,7 @@
 //!
 //! What it declares is the whole of the Stan model form: where the program is
 //! (a file store and a path in it — §6, the only place a program lives), how
-//! its `data` block is bound (`dimensions`, `bindings`, `labels`, whose keys
+//! its `data` block is bound (`dimensions`, `bindings`, `policies`, `labels`, whose keys
 //! are the host's, [`sc_model::BINDINGS_KEY`] and its siblings), the sampler's
 //! settings (§13 — the provider's configuration, not hyperparameters, since
 //! there is no grid search over a posterior) and where the raw run and the
@@ -27,7 +27,8 @@ use sc_error::{Error, Result};
 use sc_files::FileStore;
 use sc_model::{
     BINDINGS_KEY, DIMENSIONS_KEY, DatasetShape, FitContext, FitResult, Frame, Interface,
-    LABELS_KEY, ModelProvider, OutcomeSpec, PosteriorInput, PosteriorResult, Prediction,
+    LABELS_KEY, ModelProvider, OutcomeSpec, POLICIES_KEY, PosteriorInput, PosteriorResult,
+    Prediction,
 };
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::Value as Json;
@@ -241,6 +242,8 @@ impl ModelProvider for StanProvider {
                 .required(),
             FormField::new(DIMENSIONS_KEY, BasicType::Json).label("Dimensions"),
             FormField::new(BINDINGS_KEY, BasicType::Json).label("Bindings"),
+            FormField::new(POLICIES_KEY, BasicType::Json)
+                .label("Per dataset: what a null, or an unknown key, does"),
             FormField::new(LABELS_KEY, BasicType::Json).label("Labels"),
             FormField::new(METHOD, BasicType::Text)
                 .label("Method")
@@ -338,7 +341,7 @@ impl ModelProvider for StanProvider {
                 )));
             }
         }
-        for key in [DIMENSIONS_KEY, BINDINGS_KEY, LABELS_KEY] {
+        for key in [DIMENSIONS_KEY, BINDINGS_KEY, POLICIES_KEY, LABELS_KEY] {
             if config
                 .get(key)
                 .is_some_and(|v| !v.is_null() && !v.is_object())

@@ -309,7 +309,8 @@ else of that dataset is bound, and every binding of that dataset sees the same o
 - **Declared bounds that evaluate.** `int<lower=1, upper=J>` checked against the values, so a
   zero-based mistake is caught here rather than as a Stan exception.
 - **Nulls.** A `column`, `columns`, `design` or `index` over a column holding nulls follows the
-  dataset's **`nulls`** policy — `refuse` (the default; names the column, the count, and the
+  dataset's **`nulls`** policy (both policies live in the configuration's `policies`, per
+  dataset name: `{"main": {"nulls": "drop", "unknown": "refuse"}}`) — `refuse` (the default; names the column, the count, and the
   first row's key) or `drop` (the row leaves the dataset before anything of it is counted,
   indexed or bound, and the count is recorded). `present`/`absent`/`present_values` and the
   structured kinds handle nulls themselves and never trigger the policy.
@@ -810,21 +811,21 @@ else.
 
 ## Phase 3 — Binding: the data block tied to the tables
 
-- [ ] 3.1 `sc_model::bind`: dimensions — rows (implicit per dataset, key and label), values
+- [x] 3.1 `sc_model::bind`: dimensions — rows (implicit per dataset, key and label), values
       (sorted as §8 says), time grid with its calendar steps, start/end/horizon and the
       `.future` slice (§8) — and `Coordinates`, serialisable for the instance.
-- [ ] 3.2 The core binding kinds of §9, each producing a typed value with a shape; `value`,
+- [x] 3.2 The core binding kinds of §9, each producing a typed value with a shape; `value`,
       `count`, `size`, `column` (with `time` for dates), `columns`, `design` (via
       `sc_model::encode`, encoding recorded, column names kept), `width`, `index` (with
       `match`), `present`, `absent`, `count_present`, `count_absent`, `present_values`,
       `segment_start`, `segment_size` (with the stable sort).
-- [ ] 3.3 The save-time checks and the data-time checks of §10: sizes against evaluated
+- [x] 3.3 The save-time checks and the data-time checks of §10: sizes against evaluated
       expressions, element types, evaluable bounds, the `nulls` and `unknown` policies,
       resolution order and cycles, the data-values cap — every failure a sentence naming the
       variable, its declaration and its binding.
-- [ ] 3.4 `BoundData`: the CmdStan JSON (ints, reals, `"NaN"`/`"Inf"`, row-major nesting,
+- [x] 3.4 `BoundData`: the CmdStan JSON (ints, reals, `"NaN"`/`"Inf"`, row-major nesting,
       empty arrays), the coordinates and the report.
-- [ ] 3.5 Unit tests, one per row of §11's table, over hand-built frames: two-level radon with
+- [x] 3.5 Unit tests, one per row of §11's table, over hand-built frames: two-level radon with
       an empty county, three-level nesting both ways, a values dimension, crossed IRT indices,
       a weighted junction, segments; plus every refusal: a size mismatch, a zero-based index
       caught by `lower=1`, a null under `refuse` and the same row dropped under `drop`, an

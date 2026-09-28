@@ -1,17 +1,36 @@
-//! The binder's vocabulary, and the first of its checks (Stan TODO §§9–10).
+//! The binder: a program's `data` block tied to the tables (Stan TODO §§8–11).
 //!
 //! A provider that [binds data](crate::ModelProvider::binds_data) declares an
 //! [`Interface`], and its configuration says how each `data` variable is
 //! computed from the datasets: one **binding** per variable, under
-//! [`BINDINGS_KEY`], with the extra dimensions under [`DIMENSIONS_KEY`] and the
+//! [`BINDINGS_KEY`], with the extra dimensions under [`DIMENSIONS_KEY`], each
+//! dataset's `nulls` and `unknown` policies under [`POLICIES_KEY`], and the
 //! output labels under [`LABELS_KEY`]. The key names are the host's, not the
 //! provider's, because the binder that reads them is the host's (§4): a second
 //! Bayesian provider must not be able to spell them differently.
 //!
-//! What is here is the part of §10's **save-time** checks that needs only the
-//! interface and the configuration's keys: every declared `data` variable has a
-//! binding, and every binding names a declared variable. The binding kinds, and
-//! the checks of each against its declaration and the datasets, are Phase 3's.
+//! - [`Binding`] and [`DimensionSpec`] are the configuration, as types.
+//! - A [`Dimension`](DimensionCoordinates) maps the positions `1..n` a Stan
+//!   index lives in to the keys a database has: a dataset's rows, a column's
+//!   values, a time grid's steps. Its [`Coordinates`] are stored on the
+//!   instance, because positions are the instance's private business and
+//!   everything that leaves the host speaks keys.
+//! - [`check_bindings`] is §10's save-time half — structure only, no data.
+//! - [`bind_data`] is the whole of it at preview and fit time: the policies,
+//!   the resolution order, every binding evaluated, every declaration checked
+//!   against its value, and the result as [`BoundData`] — CmdStan's JSON, the
+//!   coordinates and the report.
+//!
+//! Every refusal is a sentence naming the variable, its declaration and its
+//! binding, because the admin reading it is looking at a table with one row
+//! per variable.
+
+mod dimension;
+mod resolve;
+mod spec;
+mod tensor;
+#[cfg(test)]
+mod tests;
 
 use std::collections::BTreeSet;
 
@@ -19,7 +38,18 @@ use sc_error::{Error, Result};
 use sc_types::Attrs;
 use serde_json::Value as Json;
 
+use crate::dataset::Dataset;
 use crate::interface::Interface;
+use crate::model::{MAIN_DATASET, Model, NamedDataset};
+
+pub use dimension::{
+    Coordinates, DesignCoordinates, DimensionCoordinates, DimensionKind, MAX_GRID_STEPS,
+};
+pub use resolve::{
+    BindReport, BoundData, DEFAULT_MAX_DATA_VALUES, DatasetReport, DropReport, VariableReport,
+    bind_data,
+};
+pub use spec::{Binding, DimensionSpec, Policies, Policy, TimeScale};
 
 /// The configuration key holding the bindings: an object from each `data`
 /// variable's name to its binding.
@@ -27,8 +57,57 @@ pub const BINDINGS_KEY: &str = "bindings";
 /// The configuration key holding the declared dimensions — values and time
 /// grids; every dataset is a rows dimension without being declared (§8).
 pub const DIMENSIONS_KEY: &str = "dimensions";
+/// The configuration key holding each dataset's policies: an object from a
+/// dataset's name to `{ "nulls": "refuse" | "drop", "unknown": "refuse" |
+/// "drop" }`, both `refuse` when absent (§10).
+pub const POLICIES_KEY: &str = "policies";
 /// The configuration key holding explicit labels for output variables (§15).
 pub const LABELS_KEY: &str = "labels";
+
+/// The column a related dataset's read carries its label formula's value in
+/// (see [`binding_dataset`]). Reserved, like the split key.
+pub const LABEL_COLUMN: &str = "_fd_label";
+
+/// The dataset a related dataset is **read** as for binding: its own, plus its
+/// label formula as [`LABEL_COLUMN`] when it has one — so the labels are the
+/// row layer's answer, read with the rows, and [`bind_data`] turns them into
+/// the labels of that dataset's rows dimension.
+pub fn binding_dataset(related: &NamedDataset) -> Dataset {
+    match &related.label {
+        Some(label) => related.dataset.clone().column(LABEL_COLUMN, label.clone()),
+        None => related.dataset.clone(),
+    }
+}
+
+/// §10's save-time checks of `model`'s bindings against `interface`, with no
+/// data read: every variable bound and every binding declared; the datasets,
+/// columns and dimensions each names exist; each kind can produce its
+/// declaration's rank and element type; a `width` names a `design` and a
+/// `segment_*` an `index`; and the datasets have an order to be resolved in.
+pub fn check_bindings(interface: &Interface, model: &Model) -> Result<()> {
+    let spec = spec::Spec::parse(&model.configuration)?;
+    let mut datasets = vec![resolve::DatasetColumns {
+        name: MAIN_DATASET,
+        columns: model
+            .dataset
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect(),
+    }];
+    for related in &model.related {
+        datasets.push(resolve::DatasetColumns {
+            name: related.name.as_str(),
+            columns: related
+                .dataset
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect(),
+        });
+    }
+    resolve::check_structure(interface, &model.configuration, &spec, &datasets).map(|_| ())
+}
 
 /// Every `data` variable of `interface` has a binding in `config`, and every
 /// binding names one — each refused with a sentence naming the variables.
@@ -101,7 +180,7 @@ pub fn check_bindings_declared(interface: &Interface, config: &Attrs) -> Result<
 }
 
 #[cfg(test)]
-mod tests {
+mod declared_tests {
     use super::*;
     use crate::interface::{Declaration, Element, SizeExpr};
     use serde_json::json;

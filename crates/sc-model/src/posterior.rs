@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value as Json;
 
+use crate::bind::Coordinates;
 use crate::frame::Frame;
 use crate::interface::Interface;
 use crate::provider::ParameterBlock;
@@ -41,6 +42,10 @@ pub struct PosteriorInput {
     /// convention (Stan TODO §10). An empty object for a program that declares
     /// no data.
     pub data: Json,
+    /// Every dimension's keys and labels as the binder numbered them — what a
+    /// provider writes beside a raw run (`coordinates.json`, Stan TODO §14).
+    /// Empty when nothing was bound.
+    pub coordinates: Coordinates,
 }
 
 impl PosteriorInput {

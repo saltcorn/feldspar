@@ -95,7 +95,13 @@ mod split;
 mod store;
 mod validate;
 
-pub use bind::{BINDINGS_KEY, DIMENSIONS_KEY, LABELS_KEY, check_bindings_declared};
+pub use bind::{
+    BINDINGS_KEY, BindReport, Binding, BoundData, Coordinates, DEFAULT_MAX_DATA_VALUES,
+    DIMENSIONS_KEY, DatasetReport, DesignCoordinates, DimensionCoordinates, DimensionKind,
+    DimensionSpec, DropReport, LABEL_COLUMN, LABELS_KEY, MAX_GRID_STEPS, POLICIES_KEY, Policies,
+    Policy, TimeScale, VariableReport, bind_data, binding_dataset, check_bindings,
+    check_bindings_declared,
+};
 pub use dataset::{
     Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape, translate_filter,
     validate_dataset,
@@ -106,8 +112,9 @@ pub use encode::{
     apply_encoding_dropping, fit_encoding,
 };
 pub use fit::{
-    ATTR_CANCEL_REQUESTED, ATTR_OUTCOME, ATTR_PROGRESS, ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Fit,
-    GridPoint, MAX_GRID_POINTS, RowCounts, fit_model, fit_model_with, grid, run_fit, run_fit_with,
+    ATTR_BINDING, ATTR_CANCEL_REQUESTED, ATTR_COORDINATES, ATTR_OUTCOME, ATTR_PROGRESS, ATTR_ROWS,
+    ATTR_SEARCH, ATTR_WARNINGS, Fit, GridPoint, MAX_GRID_POINTS, RowCounts, fit_model,
+    fit_model_with, grid, run_fit, run_fit_with,
 };
 pub use frame::{Column, ColumnType, Frame, canonical_key};
 pub use instance::{ATTR_ERROR, FitStatus, InstanceId, ModelInstance, RESTARTED};

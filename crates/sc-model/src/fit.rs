@@ -61,12 +61,12 @@ use sc_error::{Context, Error, Result};
 use sc_types::Attrs;
 use serde_json::Value as Json;
 
+use crate::bind::{BindReport, Coordinates, DEFAULT_MAX_DATA_VALUES, bind_data, binding_dataset};
 use crate::dataset::DatasetShape;
 use crate::encode::{Encoded, Encoding, apply_encoding_dropping, fit_encoding};
 use crate::frame::Frame;
 use crate::instance::{InstanceId, ModelInstance};
 use crate::instance_store::{require_model_instance, save_fitted_instance, save_model_instance};
-use crate::interface::Interface;
 use crate::metrics::{Metrics, SplitMetrics};
 use crate::model::{MAIN_DATASET, Model};
 use crate::posterior::{DrawSeries, FitContext, FitStage, PosteriorInput, Progress};
@@ -100,6 +100,16 @@ pub const ATTR_PROGRESS: &str = "progress";
 /// registry: a cancel then works from any node, and the job reads it back each
 /// time it writes its progress.
 pub const ATTR_CANCEL_REQUESTED: &str = "cancel_requested";
+
+/// The attribute holding a posterior's [`Coordinates`]: every dimension's keys
+/// and labels as this instance numbered them (Stan TODO §8). Positions are the
+/// instance's private business, so the only way to speak of `alpha[37]` outside
+/// it is through these.
+pub const ATTR_COORDINATES: &str = "coordinates";
+
+/// The attribute holding a posterior's [`BindReport`]: rows read and bound,
+/// what the policies dropped, and a line per bound variable (Stan TODO §10).
+pub const ATTR_BINDING: &str = "binding";
 
 /// The attribute holding a posterior's diagnostic warnings, as sentences that
 /// say what to do (Stan TODO §15). A fit with warnings is still `fitted`.
@@ -161,6 +171,9 @@ pub struct Fit {
     /// [`apply`](Fit::apply): they go to `_fd_model_draws`, in the transaction
     /// that saves the instance ([`save_fitted_instance`]).
     pub draws: Vec<DrawSeries>,
+    /// A posterior's binding: every dimension's coordinates and the report.
+    /// Written to [`ATTR_COORDINATES`] and [`ATTR_BINDING`].
+    pub binding: Option<(Coordinates, BindReport)>,
 }
 
 impl Fit {
@@ -183,6 +196,18 @@ impl Fit {
             ATTR_ROWS.to_owned(),
             serde_json::to_value(self.rows).map_err(|e| Error::msg(format!("row counts: {e}")))?,
         );
+        if let Some((coordinates, report)) = &self.binding {
+            instance.attributes.insert(
+                ATTR_COORDINATES.to_owned(),
+                serde_json::to_value(coordinates)
+                    .map_err(|e| Error::msg(format!("coordinates: {e}")))?,
+            );
+            instance.attributes.insert(
+                ATTR_BINDING.to_owned(),
+                serde_json::to_value(report)
+                    .map_err(|e| Error::msg(format!("binding report: {e}")))?,
+            );
+        }
         if !self.search.is_empty() {
             instance.attributes.insert(
                 ATTR_SEARCH.to_owned(),
@@ -373,6 +398,7 @@ pub async fn run_fit_with(
         },
         search,
         draws: Vec::new(),
+        binding: None,
     })
 }
 
@@ -416,6 +442,7 @@ async fn fit_test(
         },
         search: Vec::new(),
         draws: Vec::new(),
+        binding: None,
     })
 }
 
@@ -445,19 +472,37 @@ async fn fit_posterior(
     let mut datasets = Vec::with_capacity(1 + model.related.len());
     datasets.push((MAIN_DATASET.to_owned(), main));
     for related in &model.related {
+        // Read with its label formula beside its columns, so the labels of its
+        // rows are the row layer's answer (the binder takes the column back
+        // out).
         let frame = source
-            .materialise(&related.dataset, cap)
+            .materialise(&binding_dataset(related), cap)
             .await
             .with_context(|| format!("reading the related dataset `{}`", related.name))?;
         datasets.push((related.name.clone(), frame));
     }
 
     let interface = provider.interface(&model.configuration).await?;
-    let data = bind(interface.as_ref())?;
+    let bound = match &interface {
+        Some(interface) => Some(bind_data(
+            interface,
+            &model.configuration,
+            &datasets,
+            DEFAULT_MAX_DATA_VALUES,
+        )?),
+        None => None,
+    };
+    let dropped = bound.as_ref().map_or(0, |b| b.report.dropped(MAIN_DATASET));
     let input = PosteriorInput {
         datasets,
         interface,
-        data,
+        data: bound
+            .as_ref()
+            .map_or_else(|| Json::Object(serde_json::Map::new()), |b| b.json.clone()),
+        coordinates: bound
+            .as_ref()
+            .map(|b| b.coordinates.clone())
+            .unwrap_or_default(),
     };
 
     let result = provider
@@ -477,37 +522,16 @@ async fn fit_posterior(
         rows: RowCounts {
             selected,
             split: SplitCounts {
-                train: selected,
+                train: selected - dropped,
                 validation: 0,
                 test: 0,
             },
-            dropped: 0,
+            dropped,
         },
         search: Vec::new(),
         draws: result.draws,
+        binding: bound.map(|b| (b.coordinates, b.report)),
     })
-}
-
-/// The data bound to a program's `data` block (Stan TODO §§8–12).
-///
-/// The binder is the next milestone phase; until it exists, a program that
-/// declares data is refused by name rather than sampled against an empty data
-/// file, which CmdStan would refuse a minute later in words about a variable
-/// nobody knew was missing.
-fn bind(interface: Option<&Interface>) -> Result<Json> {
-    match interface {
-        Some(interface) if !interface.data.is_empty() => Err(Error::invalid(format!(
-            "this program declares data ({}), and binding a `data` block to datasets is not \
-             implemented yet",
-            interface
-                .data
-                .iter()
-                .map(|d| format!("`{}`", d.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-        _ => Ok(Json::Object(serde_json::Map::new())),
-    }
 }
 
 /// Pick the grid point that scores best on the validation rows (§11).
@@ -1066,7 +1090,7 @@ mod tests {
         }
     }
 
-    use crate::interface::{Declaration, Element, SizeExpr};
+    use crate::interface::{Declaration, Element, Interface, SizeExpr};
     use crate::model::NamedDataset;
     use crate::posterior::{DrawSeries, PosteriorResult};
     use crate::provider::OutcomeSpec as Spec;
@@ -1189,10 +1213,13 @@ mod tests {
         assert!(said.contains("related dataset `gone`"), "{said}");
     }
 
-    #[tokio::test]
-    async fn a_program_that_declares_data_is_refused_until_there_is_a_binder() {
-        let interface = Interface {
-            data: vec![Declaration::new("N", Element::Int, vec![], "int")],
+    fn grouped_program() -> Interface {
+        Interface {
+            data: vec![
+                Declaration::new("N", Element::Int, vec![], "int"),
+                Declaration::new("J", Element::Int, vec![], "int"),
+                Declaration::new("u", Element::Real, vec![SizeExpr::var("J")], "vector[J]"),
+            ],
             parameters: vec![Declaration::new(
                 "alpha",
                 Element::Real,
@@ -1200,11 +1227,47 @@ mod tests {
                 "vector[J]",
             )],
             ..Interface::default()
-        };
-        let err = run_fit(&sampler(Some(interface)), &ByTable, &radon(), 1000)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_program_whose_data_is_unbound_is_refused_by_name() {
+        let err = run_fit(&sampler(Some(grouped_program())), &ByTable, &radon(), 1000)
             .await
-            .expect_err("no binder yet");
-        assert!(err.to_string().contains("`N`"), "{err}");
+            .expect_err("no bindings");
+        assert!(
+            err.to_string().contains(
+                "the data variables `N` (int), `J` (int), `u` (vector[J]) have no binding"
+            ),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bound_program_is_handed_its_data_and_the_instance_keeps_the_coordinates() {
+        let model = radon().config(
+            crate::bind::BINDINGS_KEY,
+            serde_json::json!({
+                "N": {"kind": "count", "dataset": "main"},
+                "J": {"kind": "size", "dimension": "groups"},
+                "u": {"kind": "column", "dataset": "groups", "column": "u"},
+            }),
+        );
+        let fit = run_fit(&sampler(Some(grouped_program())), &ByTable, &model, 1000)
+            .await
+            .expect("fit");
+        assert_eq!(
+            fit.state["data"],
+            serde_json::json!({ "N": 50, "J": 3, "u": [0.1, 0.2, 0.3] })
+        );
+        let instance = fit.apply(ModelInstance::starting(model.id)).expect("apply");
+        let groups = &instance.attributes[ATTR_COORDINATES]["dimensions"][1];
+        assert_eq!(groups["name"], "groups");
+        assert_eq!(groups["keys"], serde_json::json!([1, 2, 3]));
+        assert_eq!(
+            instance.attributes[ATTR_BINDING]["datasets"][0],
+            serde_json::json!({ "name": "main", "read": 50, "bound": 50 })
+        );
     }
 
     #[tokio::test]
@@ -1215,6 +1278,7 @@ mod tests {
             datasets: Vec::new(),
             interface: None,
             data: Json::Null,
+            coordinates: Default::default(),
         };
         let err = mean
             .fit_posterior(&input, &Attrs::new(), &FitContext::detached())

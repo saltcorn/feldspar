@@ -78,6 +78,7 @@ fn it_declares_a_posterior_that_binds_data_and_the_whole_form() {
             "program",
             "dimensions",
             "bindings",
+            "policies",
             "labels",
             "method",
             "chains",
@@ -200,6 +201,7 @@ fn the_configuration_is_checked_for_what_only_the_provider_knows() {
             "`init` must be zero or a positive number",
         ),
         (json!({"bindings": ["N"]}), "`bindings` must be an object"),
+        (json!({"policies": "drop"}), "`policies` must be an object"),
         (
             json!({"exclude_variables": "log_lik"}),
             "`exclude_variables` must be a list",
@@ -237,6 +239,7 @@ async fn without_cmdstan_a_program_is_checked_on_our_parse_with_a_notice() {
                 datasets: vec![],
                 interface: None,
                 data: json!({}),
+                coordinates: Default::default(),
             },
             &radon_config(),
             &FitContext::detached(),
