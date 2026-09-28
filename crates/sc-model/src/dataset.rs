@@ -37,7 +37,7 @@ use sc_error::{Error, Result};
 use sc_expr::{
     Ambient, Env, Formula, SchemaShape, TranslateError, UserEnv, translate, translate_value,
 };
-use sc_query::{Expr, Projection, Select, Source};
+use sc_query::{Expr, Nulls, OrderBy, Projection, Select, Source};
 
 use crate::frame::{ColumnType, Frame};
 
@@ -61,6 +61,40 @@ impl DatasetColumn {
     }
 }
 
+/// One key of a dataset's order: a formula, and which way it sorts (Stan
+/// TODO §7).
+///
+/// A formula for the reason a column is one — `taken_at`, `countyⱵname` and
+/// `-price` are all things somebody sorts by, and a second vocabulary for "a
+/// field, or a join, or an expression" would be the one this crate refuses for
+/// columns.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DatasetOrder {
+    /// The `sc-expr` formula sorted by, over the dataset's table.
+    pub expr: String,
+    /// Largest first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub descending: bool,
+}
+
+impl DatasetOrder {
+    /// Ascending by `expr`.
+    pub fn asc(expr: impl Into<String>) -> DatasetOrder {
+        DatasetOrder {
+            expr: expr.into(),
+            descending: false,
+        }
+    }
+
+    /// Descending by `expr`.
+    pub fn desc(expr: impl Into<String>) -> DatasetOrder {
+        DatasetOrder {
+            expr: expr.into(),
+            descending: true,
+        }
+    }
+}
+
 /// Which rows and which derived values make up a model's data.
 ///
 /// Stored as the `dataset` JSON column of `_fd_models`, so this is the wire
@@ -74,6 +108,15 @@ pub struct Dataset {
     /// One boolean formula restricting the rows, or none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// The order the rows come back in, **always followed by the primary key**
+    /// (see [`order_by`](Dataset::order_by)).
+    ///
+    /// Nothing that splits by hash cares; a posterior does, twice over. A time
+    /// series *is* an order, and MCMC with the same seed over the same rows in a
+    /// different order gives different draws — so a total, deterministic order is
+    /// what makes "same data, same seed, same draws" true.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<DatasetOrder>,
 }
 
 /// A dataset's columns and their types — what a provider's `config_spec` is
@@ -140,6 +183,7 @@ impl Dataset {
             table: table.into(),
             columns: Vec::new(),
             filter: None,
+            order: Vec::new(),
         }
     }
 
@@ -152,6 +196,12 @@ impl Dataset {
     /// This dataset restricted by `filter`.
     pub fn filtered(mut self, filter: impl Into<String>) -> Dataset {
         self.filter = Some(filter.into());
+        self
+    }
+
+    /// This dataset with `order` appended to its sort keys.
+    pub fn ordered(mut self, order: DatasetOrder) -> Dataset {
+        self.order.push(order);
         self
     }
 
@@ -193,8 +243,57 @@ impl Dataset {
             .map_err(|e| self.on_filter(&e))
     }
 
+    /// The `ORDER BY` this dataset's order becomes: each declared key, then the
+    /// table's primary key.
+    ///
+    /// **The primary key always comes last**, so the order is total: two rows
+    /// that tie on every declared key still come back the same way round on
+    /// every read, on every backend. A table with no single primary key gets
+    /// the declared keys alone — it reads, and only its ties are unordered.
+    ///
+    /// Nulls go **last** in both directions, stated rather than left to the
+    /// backend: Postgres and SQLite disagree about where an ascending sort puts
+    /// them, and an order that changed with the database would not be one.
+    ///
+    /// Like a filter and unlike a column, a key that does not translate is an
+    /// error: there is no reified evaluator in front of an `ORDER BY`.
+    pub fn order_by(&self, shape: &SchemaShape) -> Result<Vec<OrderBy>> {
+        let user = UserEnv::Inline(None);
+        let env = Env::new(&user);
+        let mut out = Vec::with_capacity(self.order.len() + 1);
+        for key in &self.order {
+            let formula = Formula::parse(&key.expr).map_err(|e| self.on_order(&key.expr, &e))?;
+            let expr =
+                translate_value(&formula, &env, shape, &self.table).map_err(|e| match e {
+                    TranslateError::Untranslatable(what) => self.on_order(
+                        &key.expr,
+                        &Error::invalid(format!(
+                            "an order must become an `ORDER BY`, and this one {what}"
+                        )),
+                    ),
+                    TranslateError::Error(e) => self.on_order(&key.expr, &e),
+                })?;
+            out.push(OrderBy {
+                nulls: Some(Nulls::Last),
+                ..if key.descending {
+                    OrderBy::desc(expr)
+                } else {
+                    OrderBy::asc(expr)
+                }
+            });
+        }
+        if let Some(pk) = shape
+            .tables
+            .get(&self.table)
+            .and_then(|t| t.primary_key.clone())
+        {
+            out.push(OrderBy::asc(Expr::qcol(self.table.clone(), pk)));
+        }
+        Ok(out)
+    }
+
     /// The `Select` this dataset is — its columns projected, its filter folded
-    /// into the `WHERE`, over its own table.
+    /// into the `WHERE`, its order into the `ORDER BY`, over its own table.
     ///
     /// The row layer builds the statement it actually runs (that is what applies
     /// calculated fields, ownership and row-level security); this is the same
@@ -203,6 +302,7 @@ impl Dataset {
         let mut select =
             Select::from(Source::table(self.table.clone())).columns(self.projections(shape)?);
         select.filter = self.filter_expr(shape)?;
+        select.order = self.order_by(shape)?;
         Ok(select)
     }
 
@@ -252,6 +352,11 @@ impl Dataset {
     /// Prefix an error with the fact that it is the filter's.
     fn on_filter(&self, e: &Error) -> Error {
         Error::invalid(format!("dataset filter on `{}`: {e}", self.table))
+    }
+
+    /// Prefix an error with the order key it is about.
+    fn on_order(&self, expr: &str, e: &Error) -> Error {
+        Error::invalid(format!("dataset order `{expr}` on `{}`: {e}", self.table))
     }
 }
 
@@ -334,7 +439,37 @@ pub fn validate_dataset(dataset: &Dataset, shape: &SchemaShape) -> Result<()> {
         // `filter_expr`.
         dataset.filter_expr(shape)?;
     }
+    for key in &dataset.order {
+        check_formula(dataset, &key.expr, shape, &format!("order `{}`", key.expr))?;
+    }
+    // Translated as a whole, because an order key that does not become SQL has
+    // nowhere to go (see `order_by`).
+    dataset.order_by(shape)?;
     Ok(())
+}
+
+/// Validate `label` — the formula naming each row of a related dataset on the
+/// screen (Stan TODO §7) — against `dataset`'s table.
+///
+/// Checked like a column, and then held to a filter's standard: it must become
+/// SQL, because a label is read beside the row and there is no reified fallback
+/// on that path either.
+pub(crate) fn validate_label(dataset: &Dataset, label: &str, shape: &SchemaShape) -> Result<()> {
+    check_formula(dataset, label, shape, "label")?;
+    let user = UserEnv::Inline(None);
+    let formula = Formula::parse(label)?;
+    match translate_value(&formula, &Env::new(&user), shape, &dataset.table) {
+        Ok(_) => Ok(()),
+        Err(TranslateError::Untranslatable(what)) => Err(Error::invalid(format!(
+            "dataset label on `{}`: a label is read with the row and must become SQL, and \
+             this one {what}",
+            dataset.table
+        ))),
+        Err(TranslateError::Error(e)) => Err(Error::invalid(format!(
+            "dataset label on `{}`: {e}",
+            dataset.table
+        ))),
+    }
 }
 
 /// One formula of a dataset, parsed and resolved like a calculated field's —
@@ -522,6 +657,73 @@ mod tests {
         // the model asked, and says so.
         let arrived = BTreeSet::from(["price"]);
         assert_eq!(ds.missing(&arrived), vec!["kind"]);
+    }
+
+    #[test]
+    fn the_order_becomes_the_order_by_with_the_primary_key_last() {
+        let ds = Dataset::new("houses")
+            .column("price", "price")
+            .ordered(DatasetOrder::desc("price / bedrooms"))
+            .ordered(DatasetOrder::asc("neighbourhoodⱵaverage_income"));
+        validate_dataset(&ds, &shape()).expect("valid");
+        let rendered = sql(&ds.select(&shape()).expect("select"));
+        let (_, order) = rendered.split_once("ORDER BY").expect("an ORDER BY");
+        let first = order
+            .find(r#"("houses"."price" / "houses"."bedrooms") DESC NULLS LAST"#)
+            .unwrap_or_else(|| panic!("the declared key first: {rendered}"));
+        let second = order
+            .find("ASC NULLS LAST")
+            .unwrap_or_else(|| panic!("the join-path key second: {rendered}"));
+        let key = order
+            .rfind(r#""houses"."id""#)
+            .unwrap_or_else(|| panic!("the primary key last: {rendered}"));
+        assert!(first < second && second < key, "{rendered}");
+    }
+
+    #[test]
+    fn a_dataset_with_no_order_is_still_ordered_by_its_key_and_a_keyless_one_is_not() {
+        let ds = Dataset::new("houses").column("price", "price");
+        let order = ds.order_by(&shape()).expect("order");
+        assert_eq!(order, vec![OrderBy::asc(Expr::qcol("houses", "id"))]);
+
+        let keyless = SchemaShape::new().table("readings", TableShape::new().field("taken_at"));
+        let ds = Dataset::new("readings")
+            .column("t", "taken_at")
+            .ordered(DatasetOrder::asc("taken_at"));
+        assert_eq!(ds.order_by(&keyless).expect("order").len(), 1);
+    }
+
+    #[test]
+    fn an_order_key_is_validated_like_a_column_and_must_translate() {
+        let ds = Dataset::new("houses")
+            .column("price", "price")
+            .ordered(DatasetOrder::asc("no_such_field"));
+        let err = validate_dataset(&ds, &shape()).expect_err("unknown field");
+        assert!(err.to_string().contains("order `no_such_field`"), "{err}");
+
+        let ds = Dataset::new("houses")
+            .column("price", "price")
+            .ordered(DatasetOrder::asc("typeof price"));
+        let err = validate_dataset(&ds, &shape()).expect_err("untranslatable order");
+        assert!(
+            err.to_string().contains("must become an `ORDER BY`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_empty_order_is_not_written_and_an_absent_one_reads_as_empty() {
+        let ds = Dataset::new("houses").column("price", "price");
+        let json = serde_json::to_value(&ds).expect("json");
+        assert!(json.get("order").is_none(), "{json}");
+        let back: Dataset = serde_json::from_value(json).expect("back");
+        assert!(back.order.is_empty());
+        let ordered = ds.ordered(DatasetOrder::desc("price"));
+        let json = serde_json::to_value(&ordered).expect("json");
+        assert_eq!(
+            json["order"],
+            serde_json::json!([{ "expr": "price", "descending": true }])
+        );
     }
 
     #[test]

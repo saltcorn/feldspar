@@ -36,7 +36,7 @@ use sc_types::{Attrs, BasicType, TypeRef};
 use serde_json::Value as Json;
 
 use crate::dataset::{Dataset, DatasetShape};
-use crate::model::{Model, ModelId};
+use crate::model::{Model, ModelId, NamedDataset};
 use crate::registry::ModelRegistry;
 use crate::split::Split;
 
@@ -72,6 +72,13 @@ pub const COL_HYPERPARAMETERS: &str = "hyperparameters";
 pub const COL_SPLIT: &str = "split";
 /// The sparse per-model values column (§9) — JSON, always an object.
 pub const COL_ATTRIBUTES: &str = "attributes";
+/// The related datasets, as a JSON array of [`NamedDataset`](crate::NamedDataset)s
+/// (Stan TODO §7).
+///
+/// **Nullable**, and last, so that `bootstrap_table` can add it to an
+/// installation whose `_fd_models` already has rows — a required column could
+/// not be added there without a value for each. NULL reads as "none".
+pub const COL_RELATED: &str = "related";
 
 /// The fields of the `_fd_models` table, in declaration order.
 fn model_fields() -> Vec<DataField> {
@@ -93,6 +100,7 @@ fn model_fields() -> Vec<DataField> {
         DataField::plain(COL_HYPERPARAMETERS, json()).required(),
         DataField::plain(COL_SPLIT, json()).required(),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
+        DataField::plain(COL_RELATED, json()),
     ]
 }
 
@@ -219,13 +227,37 @@ pub async fn models_for_table(catalog: &Catalog, table: &str) -> Result<Vec<Mode
 /// nothing without the dataset they were fitted over and which nothing can list,
 /// read or apply once its model is gone. Leaving them would be leaving rows
 /// nobody can reach.
-pub async fn delete_model(catalog: &Catalog, id: ModelId) -> Result<bool> {
-    if load_model(catalog, id).await?.is_none() {
+///
+/// The model, its instances and their draws go in **one transaction**; then the
+/// provider [`discard`](crate::ModelProvider::discard)s what each fit kept
+/// outside the database, which is why the registry is a parameter.
+pub async fn delete_model(
+    catalog: &Catalog,
+    registry: &ModelRegistry,
+    id: ModelId,
+) -> Result<bool> {
+    let Some(model) = load_model(catalog, id).await? else {
         return Ok(false);
+    };
+    let states: Vec<Json> = crate::list_model_instances(catalog, id)
+        .await?
+        .into_iter()
+        .map(|i| i.state)
+        .collect();
+    let mut tx = catalog.primary().begin().await?;
+    let deleted = async {
+        crate::instance_store::delete_instances_on(catalog, tx.as_mut(), id).await?;
+        let delete = Delete::from(MODELS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
+        crate::instance_store::run(tx.as_mut(), Statement::from(delete))
+            .await
+            .map(drop)
     }
-    crate::delete_model_instances(catalog, id).await?;
-    let delete = Delete::from(MODELS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
-    exec(catalog, Statement::from(delete)).await?;
+    .await;
+    crate::instance_store::finish(tx, deleted).await?;
+    // The model row is gone, so the provider is asked for by the name it had.
+    if let Some(provider) = registry.get(model.provider.trim()) {
+        crate::instance_store::discard_with(provider.as_ref(), &states).await?;
+    }
     Ok(true)
 }
 
@@ -242,6 +274,7 @@ fn model_columns() -> Vec<String> {
         COL_HYPERPARAMETERS,
         COL_SPLIT,
         COL_ATTRIBUTES,
+        COL_RELATED,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -262,6 +295,14 @@ fn model_values(model: &Model) -> Result<Vec<Value>> {
         Value::Json(Json::Object(model.hyperparameters.clone())),
         Value::Json(to_json(&model.split, "split")?),
         Value::Json(Json::Object(model.attributes.clone())),
+        // None is SQL NULL rather than `[]`, so a model that never had related
+        // datasets reads the same whether it was written before the column
+        // existed or after.
+        if model.related.is_empty() {
+            Value::Null
+        } else {
+            Value::Json(to_json(&model.related, "related datasets")?)
+        },
     ])
 }
 
@@ -283,6 +324,23 @@ fn model_from_row(row: &Row) -> Result<Model> {
 
     let dataset: Dataset = structured(row, COL_DATASET).map_err(|e| at(e.to_string()))?;
     let split: Split = structured(row, COL_SPLIT).map_err(|e| at(e.to_string()))?;
+    // Strict like every other column: a NULL (or an absent column, which is a
+    // table `bootstrap_models` has not yet reached) is "none", and anything that
+    // is not an array of named datasets is refused by name — a posterior bound
+    // against half its datasets would be sampled.
+    let related: Vec<NamedDataset> = match row.get(COL_RELATED) {
+        None | Some(Value::Null) | Some(Value::Json(Json::Null)) => Vec::new(),
+        Some(Value::Json(Json::Array(_))) => {
+            structured(row, COL_RELATED).map_err(|e| at(e.to_string()))?
+        }
+        Some(Value::Json(other)) => {
+            return Err(at(format!(
+                "{COL_RELATED} should be a json array, got {}",
+                kind_of(other)
+            )));
+        }
+        other => return Err(at(bad_column(COL_RELATED, "json", other).to_string())),
+    };
 
     // The derived column and the dataset must agree. They cannot drift through
     // this code — `model_values` writes one from the other — so a disagreement
@@ -304,6 +362,7 @@ fn model_from_row(row: &Row) -> Result<Model> {
         description: optional_text(row, COL_DESCRIPTION)?,
         provider: text(row, COL_PROVIDER)?,
         dataset,
+        related,
         configuration: object(row, COL_CONFIGURATION).map_err(|e| at(e.to_string()))?,
         hyperparameters: object(row, COL_HYPERPARAMETERS).map_err(|e| at(e.to_string()))?,
         split,
@@ -429,6 +488,24 @@ mod tests {
         for column in [COL_DATASET, COL_PROVIDER, COL_SPLIT, COL_CONFIGURATION] {
             assert!(by_name(column).required, "{column}");
         }
+        // Added after installations existed, so nullable: `bootstrap_table`
+        // can add it to a table with rows.
+        assert!(!by_name(COL_RELATED).required);
+    }
+
+    #[test]
+    fn no_related_datasets_is_sql_null_and_some_is_an_array() {
+        let model = Model::new("m", "stan", Dataset::new("homes"));
+        let at = model_columns()
+            .iter()
+            .position(|c| c == COL_RELATED)
+            .unwrap();
+        assert_eq!(model_values(&model).unwrap()[at], Value::Null);
+        let model = model.related(NamedDataset::new("counties", Dataset::new("counties")));
+        let Value::Json(Json::Array(related)) = &model_values(&model).unwrap()[at] else {
+            panic!("an array");
+        };
+        assert_eq!(related[0]["name"], "counties");
     }
 
     #[test]

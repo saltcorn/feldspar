@@ -27,6 +27,49 @@ use uuid::Uuid;
 use crate::dataset::Dataset;
 use crate::split::Split;
 
+/// What bindings call the model's own dataset (Stan TODO §7), and therefore the
+/// one name a related dataset may not have.
+pub const MAIN_DATASET: &str = "main";
+
+/// A dataset **beside** the model's main one, under a name bindings address it
+/// by — `counties` beside `homes` (Stan TODO §7).
+///
+/// The model's [`dataset`](Model::dataset) is one rectangle and every provider
+/// until the posterior one wanted exactly that. A hierarchical model wants the
+/// groups as well as the observations, and the groups have a table of their
+/// own: a county with no homes is a row of `counties`, and a numbering built
+/// from the homes would drop exactly the county partial pooling is most
+/// informative about.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NamedDataset {
+    /// What bindings call it: an identifier, unique among the model's related
+    /// datasets, and never [`MAIN_DATASET`].
+    pub name: String,
+    /// Which rows and which derived values, exactly as the main dataset says it.
+    pub dataset: Dataset,
+    /// A formula over the dataset's table whose value names a row on the screen
+    /// — `name` for `counties`. `None` names a row by its primary key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl NamedDataset {
+    /// A related dataset called `name`, labelled by its primary key.
+    pub fn new(name: impl Into<String>, dataset: Dataset) -> NamedDataset {
+        NamedDataset {
+            name: name.into(),
+            dataset,
+            label: None,
+        }
+    }
+
+    /// Label its rows by `formula`.
+    pub fn labelled(mut self, formula: impl Into<String>) -> NamedDataset {
+        self.label = Some(formula.into());
+        self
+    }
+}
+
 /// Identifies a model: the UUID primary key of its `_fd_models` row (§15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ModelId(pub Uuid);
@@ -66,8 +109,12 @@ pub struct Model {
     /// The registered [`ModelProvider`](crate::ModelProvider) name.
     pub provider: String,
     /// Which rows and which derived values (§2). Stored as the `dataset` JSON
-    /// column.
+    /// column. Bindings call it [`MAIN_DATASET`].
     pub dataset: Dataset,
+    /// The datasets beside it, in the order the form shows them (Stan TODO §7).
+    /// Stored as the nullable `related` JSON column; every provider but a
+    /// posterior one ignores them.
+    pub related: Vec<NamedDataset>,
     /// The provider's configuration, keyed by its
     /// [`config_spec`](crate::ModelProvider::config_spec) field names.
     pub configuration: Attrs,
@@ -106,6 +153,7 @@ impl Model {
             description: String::new(),
             provider: provider.into(),
             dataset,
+            related: Vec::new(),
             configuration: Attrs::new(),
             hyperparameters: Attrs::new(),
             split: Split::default(),
@@ -141,6 +189,17 @@ impl Model {
     pub fn hyperparameter(mut self, key: impl Into<String>, value: impl Into<Json>) -> Model {
         self.hyperparameters.insert(key.into(), value.into());
         self
+    }
+
+    /// Add a related dataset, returning `self` for chaining.
+    pub fn related(mut self, related: NamedDataset) -> Model {
+        self.related.push(related);
+        self
+    }
+
+    /// The related dataset called `name`.
+    pub fn related_dataset(&self, name: &str) -> Option<&NamedDataset> {
+        self.related.iter().find(|r| r.name == name)
     }
 
     /// Set the split.

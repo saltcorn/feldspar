@@ -8695,6 +8695,7 @@ dependencies = [
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",
+ "sc-db-sqlite",
  "sc-error",
  "sc-expr",
  "sc-query",

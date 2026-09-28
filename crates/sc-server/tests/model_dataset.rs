@@ -26,7 +26,9 @@ use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
-use sc_model::{Column, ColumnType, Dataset, DatasetShape, DatasetSource, Split};
+use sc_model::{
+    Column, ColumnType, Dataset, DatasetOrder, DatasetShape, DatasetSource, Read, Split,
+};
 use sc_server::CatalogDatasetSource;
 use sc_test_harness::TestDb;
 
@@ -176,6 +178,31 @@ async fn a_keyless_table_reads_but_cannot_be_split() -> Result<()> {
     // … the split is not, and it says why.
     let err = frame.split(&Split::default()).expect_err("no primary key");
     assert!(err.to_string().contains("nothing stable to hash"), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_frame_comes_back_in_the_declared_order_with_ties_broken_by_the_key() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = setup(&db).await?;
+    let source = CatalogDatasetSource::new(Arc::new(catalog));
+
+    // `region` ties in pairs (north: 1, 3; south: 2, 4), so the key decides
+    // within each — ascending, whichever way the region sorts.
+    let ds = house_prices().ordered(DatasetOrder::desc("region"));
+    let frame = source.materialise(&ds, 1000).await?;
+    assert_eq!(frame.keys, vec!["int:2", "int:4", "int:1", "int:3"]);
+
+    // A join path sorts like a column: neighbourhood 1 (40 000) before 2.
+    let ds = house_prices()
+        .ordered(DatasetOrder::asc("neighbourhoodⱵaverage_income"))
+        .ordered(DatasetOrder::desc("price"));
+    let frame = source.materialise(&ds, 1000).await?;
+    assert_eq!(frame.keys, vec!["int:4", "int:1", "int:2", "int:3"]);
+
+    // And a preview's `LIMIT` takes the first rows of *that* order.
+    let first = source.read(&ds, &Read::all(1000).first(2)).await?;
+    assert_eq!(first.keys, vec!["int:4", "int:1"]);
     Ok(())
 }
 

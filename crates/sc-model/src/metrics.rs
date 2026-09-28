@@ -172,6 +172,45 @@ pub enum Metrics {
     },
     /// A hypothesis test scores nothing: its parameters are the answer.
     None,
+    /// A posterior's sampler diagnostics (Stan TODO §15), computed by the host
+    /// from the stored draws — stored under the `train` split, because every
+    /// row the posterior was fitted from is one it saw.
+    Posterior(PosteriorMetrics),
+}
+
+/// The convergence diagnostics of one posterior fit (Stan TODO §15).
+///
+/// The host's, like every metric: a second Bayesian provider is scored by the
+/// same code. What computes them arrives with the summary (Phase 5); the type
+/// is here so the instance's `metrics` column has one shape from the start.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PosteriorMetrics {
+    /// How many chains ran.
+    pub chains: usize,
+    /// Post-warmup draws per chain.
+    pub draws_per_chain: usize,
+    /// Divergent transitions after warmup, across all chains.
+    pub divergent: usize,
+    /// The same, chain by chain.
+    #[serde(default)]
+    pub divergent_per_chain: Vec<usize>,
+    /// Iterations that stopped at `max_treedepth`.
+    pub max_treedepth_hits: usize,
+    /// Energy Bayesian fraction of missing information, per chain.
+    #[serde(default, with = "nullable_list")]
+    pub ebfmi: Vec<f64>,
+    /// The worst rank-normalised split-R̂ across the parameters.
+    #[serde(with = "nullable")]
+    pub max_rhat: f64,
+    /// The smallest bulk effective sample size.
+    #[serde(with = "nullable")]
+    pub min_ess_bulk: f64,
+    /// The smallest tail effective sample size.
+    #[serde(with = "nullable")]
+    pub min_ess_tail: f64,
+    /// Wall time per chain, in seconds.
+    #[serde(default, with = "nullable_list")]
+    pub wall_seconds: Vec<f64>,
 }
 
 impl Metrics {
@@ -188,7 +227,8 @@ impl Metrics {
             Metrics::Embedding {
                 explained_variance, ..
             } => Some(explained_variance.iter().sum()),
-            Metrics::None => None,
+            // A posterior is not searched, so there is nothing to rank.
+            Metrics::None | Metrics::Posterior(_) => None,
         }
     }
 
@@ -200,7 +240,7 @@ impl Metrics {
             Metrics::Classification { .. } => Some("accuracy"),
             Metrics::Clustering { .. } => Some("-wcss"),
             Metrics::Embedding { .. } => Some("explained variance"),
-            Metrics::None => None,
+            Metrics::None | Metrics::Posterior(_) => None,
         }
     }
 
@@ -211,7 +251,9 @@ impl Metrics {
             | Metrics::Classification { rows, .. }
             | Metrics::Clustering { rows, .. }
             | Metrics::Embedding { rows, .. } => *rows,
-            Metrics::None => 0,
+            // Rows of which dataset? A posterior's data is several, and what it
+            // counts is draws.
+            Metrics::None | Metrics::Posterior(_) => 0,
         }
     }
 
@@ -222,7 +264,8 @@ impl Metrics {
     /// forest over a text label get" is answered in exactly one place: by its
     /// [`Outcome`].
     pub fn of(outcome: &Outcome, predictions: &[Prediction], encoded: &Encoded) -> Result<Metrics> {
-        if !outcome.predicts() {
+        // A posterior is scored by its draws, not by predictions over a split.
+        if !outcome.predicts() || outcome.is_posterior() {
             return Ok(Metrics::None);
         }
         if predictions.len() != encoded.len() {
@@ -261,7 +304,7 @@ impl Metrics {
                 let vectors = vectors(predictions)?;
                 Ok(embedding(&vectors, &encoded.features))
             }
-            Outcome::Test => Ok(Metrics::None),
+            Outcome::Test | Outcome::Posterior { .. } => Ok(Metrics::None),
         }
     }
 }
@@ -770,5 +813,35 @@ mod tests {
             SplitMetrics::from_json(&Json::Null).unwrap(),
             SplitMetrics::default()
         );
+    }
+
+    #[test]
+    fn a_posteriors_diagnostics_sit_under_train_and_rank_nothing() {
+        let posterior = Metrics::Posterior(PosteriorMetrics {
+            chains: 4,
+            draws_per_chain: 1000,
+            divergent: 3,
+            divergent_per_chain: vec![0, 3, 0, 0],
+            max_treedepth_hits: 0,
+            ebfmi: vec![0.9, 0.8, f64::NAN, 1.1],
+            max_rhat: 1.004,
+            min_ess_bulk: 812.0,
+            min_ess_tail: f64::NAN,
+            wall_seconds: vec![1.5, 1.6, 1.4, 1.5],
+        });
+        assert_eq!(posterior.primary(), None);
+        assert_eq!(posterior.rows(), 0);
+        let mut metrics = SplitMetrics::default();
+        metrics.set(Part::Train, posterior);
+        let json = metrics.to_json().expect("json");
+        assert_eq!(json["train"]["metrics"], "posterior");
+        assert_eq!(json["train"]["divergent"], 3);
+        assert_eq!(json["train"]["min_ess_tail"], Json::Null);
+        let back = SplitMetrics::from_json(&json).expect("read");
+        let Some(Metrics::Posterior(read)) = back.get(Part::Train) else {
+            panic!("wrong set: {back:?}");
+        };
+        assert_eq!(read.divergent_per_chain, vec![0, 3, 0, 0]);
+        assert!(read.ebfmi[2].is_nan() && read.min_ess_tail.is_nan());
     }
 }

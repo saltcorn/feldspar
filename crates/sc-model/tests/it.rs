@@ -16,3 +16,6 @@ mod fit_job;
 
 #[path = "model_store.rs"]
 mod model_store;
+
+#[path = "posterior_store.rs"]
+mod posterior_store;

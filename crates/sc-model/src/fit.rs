@@ -39,10 +39,25 @@
 //! [`ATTR_OUTCOME`] (what this fit produces, so a prediction does not have to
 //! re-read the dataset to find out), [`ATTR_ROWS`] (what the split came to and
 //! what the encoding dropped) and [`ATTR_SEARCH`] (every grid point and its
-//! score, so the search is inspectable and not a number that appeared).
+//! score, so the search is inspectable and not a number that appeared). A
+//! posterior adds three more: [`ATTR_PROGRESS`] while it runs,
+//! [`ATTR_CANCEL_REQUESTED`] when somebody asks it to stop, and
+//! [`ATTR_WARNINGS`] when its diagnostics say it should not be trusted as it
+//! stands.
+//!
+//! ## A posterior takes another road (Stan TODO §2)
+//!
+//! After the outcome is resolved, a [`Posterior`](Outcome::Posterior) leaves
+//! the path above at step 3. There is no split (every row is data, and the
+//! diagnostics are the draws'), no encoding (the program says what it wants,
+//! variable by variable), no grid (it is sampled, not searched) and no scoring.
+//! Instead: materialise the **related** datasets beside the main one, ask the
+//! provider for the program's interface, **bind** the data to it, sample, and
+//! keep the draws — which [`fit_model`] writes in the transaction that marks the
+//! instance fitted.
 
 use sc_catalog::Catalog;
-use sc_error::{Error, Result};
+use sc_error::{Context, Error, Result};
 use sc_types::Attrs;
 use serde_json::Value as Json;
 
@@ -50,13 +65,16 @@ use crate::dataset::DatasetShape;
 use crate::encode::{Encoded, Encoding, apply_encoding_dropping, fit_encoding};
 use crate::frame::Frame;
 use crate::instance::{InstanceId, ModelInstance};
-use crate::instance_store::{require_model_instance, save_model_instance};
+use crate::instance_store::{require_model_instance, save_fitted_instance, save_model_instance};
+use crate::interface::Interface;
 use crate::metrics::{Metrics, SplitMetrics};
-use crate::model::Model;
+use crate::model::{MAIN_DATASET, Model};
+use crate::posterior::{DrawSeries, FitContext, FitStage, PosteriorInput, Progress};
 use crate::provider::{ModelProvider, Outcome, ParameterBlock};
 use crate::registry::ModelRegistry;
 use crate::source::DatasetSource;
 use crate::split::{Part, SplitCounts};
+use crate::validate::NO_POSTERIOR_SEARCH;
 
 /// The attribute holding this fit's resolved [`Outcome`].
 ///
@@ -71,6 +89,21 @@ pub const ATTR_ROWS: &str = "rows";
 
 /// The attribute holding every hyperparameter point tried and what it scored.
 pub const ATTR_SEARCH: &str = "search";
+
+/// The attribute a running posterior fit's [`Progress`] is written to, at most
+/// once a second, for the screen to poll (Stan TODO §13).
+pub const ATTR_PROGRESS: &str = "progress";
+
+/// The attribute `cancelModelFit` sets on a running instance (Stan TODO §13).
+///
+/// On the row rather than in memory for the reason the row is the job
+/// registry: a cancel then works from any node, and the job reads it back each
+/// time it writes its progress.
+pub const ATTR_CANCEL_REQUESTED: &str = "cancel_requested";
+
+/// The attribute holding a posterior's diagnostic warnings, as sentences that
+/// say what to do (Stan TODO §15). A fit with warnings is still `fitted`.
+pub const ATTR_WARNINGS: &str = "warnings";
 
 /// One point of the hyperparameter grid and what it scored on the validation
 /// rows (§11).
@@ -124,6 +157,10 @@ pub struct Fit {
     pub rows: RowCounts,
     /// Every grid point tried, empty when there was no search.
     pub search: Vec<GridPoint>,
+    /// A posterior's draws, empty for every other outcome. Not written by
+    /// [`apply`](Fit::apply): they go to `_fd_model_draws`, in the transaction
+    /// that saves the instance ([`save_fitted_instance`]).
+    pub draws: Vec<DrawSeries>,
 }
 
 impl Fit {
@@ -173,14 +210,46 @@ pub async fn fit_model(
     instance: InstanceId,
     cap: u64,
 ) -> Result<ModelInstance> {
+    fit_model_with(
+        catalog,
+        registry,
+        source,
+        model,
+        instance,
+        cap,
+        &FitContext::detached(),
+    )
+    .await
+}
+
+/// [`fit_model`], reporting progress to and cancelled through `ctx` — what a
+/// posterior fit, which is minutes long, is run with.
+pub async fn fit_model_with(
+    catalog: &Catalog,
+    registry: &ModelRegistry,
+    source: &dyn DatasetSource,
+    model: &Model,
+    instance: InstanceId,
+    cap: u64,
+    ctx: &FitContext<'_>,
+) -> Result<ModelInstance> {
     let row = require_model_instance(catalog, instance).await?;
-    let finished = match run_fit(registry, source, model, cap).await {
+    let failed_to_record = |row: ModelInstance, e: &Error| {
+        row.failed(format!("the fit finished but could not be recorded: {e}"))
+    };
+    let finished = match run_fit_with(registry, source, model, cap, ctx).await {
         Ok(fit) => match fit.apply(row.clone()) {
-            Ok(finished) => finished,
+            // The draws and the row in one transaction: a fitted instance has
+            // all of its draws, and a write that failed half way has none of
+            // them and is recorded as the failure it is.
+            Ok(finished) => match save_fitted_instance(catalog, &finished, &fit.draws).await {
+                Ok(()) => return Ok(finished),
+                Err(e) => failed_to_record(row, &e),
+            },
             // The fit itself worked and only writing it down did not — which is
             // still a failed instance, and the sentence should say which half
             // broke rather than pretending the optimiser was at fault.
-            Err(e) => row.failed(format!("the fit finished but could not be recorded: {e}")),
+            Err(e) => failed_to_record(row, &e),
         },
         // The **chain**, not just the outermost sentence: a fit fails at the
         // bottom of a stack of contexts ("counting the rows of dataset table
@@ -202,6 +271,17 @@ pub async fn run_fit(
     model: &Model,
     cap: u64,
 ) -> Result<Fit> {
+    run_fit_with(registry, source, model, cap, &FitContext::detached()).await
+}
+
+/// [`run_fit`] with a [`FitContext`], which only a posterior reads.
+pub async fn run_fit_with(
+    registry: &ModelRegistry,
+    source: &dyn DatasetSource,
+    model: &Model,
+    cap: u64,
+    ctx: &FitContext<'_>,
+) -> Result<Fit> {
     let provider = registry.require(model.provider.trim())?;
     let frame = source.materialise(&model.dataset, cap).await?;
     if frame.rows == 0 {
@@ -213,6 +293,22 @@ pub async fn run_fit(
     provider.validate(&shape, &model.configuration)?;
     let outcome = provider.outcome(&shape, &model.configuration)?;
     let points = grid(&model.hyperparameters)?;
+
+    // Before `predicts()`: a posterior that names no prediction does not
+    // predict, and is still not a hypothesis test.
+    if outcome.is_posterior() {
+        return fit_posterior(
+            provider.as_ref(),
+            source,
+            model,
+            frame,
+            outcome,
+            points,
+            cap,
+            ctx,
+        )
+        .await;
+    }
 
     if !outcome.predicts() {
         return fit_test(provider.as_ref(), model, &frame, outcome, points).await;
@@ -276,6 +372,7 @@ pub async fn run_fit(
             dropped: train.dropped + validation.dropped + test.dropped,
         },
         search,
+        draws: Vec::new(),
     })
 }
 
@@ -318,7 +415,99 @@ async fn fit_test(
             dropped: 0,
         },
         search: Vec::new(),
+        draws: Vec::new(),
     })
+}
+
+/// A posterior (Stan TODO §2): every dataset, the program's interface, the data
+/// bound to it, the provider's draws.
+///
+/// No split and no encoding — see the module docs. The main frame has already
+/// been read (the outcome needed its shape); the related ones are read here,
+/// each under the same row cap, each named in the sentence when it fails.
+#[allow(clippy::too_many_arguments)]
+async fn fit_posterior(
+    provider: &dyn ModelProvider,
+    source: &dyn DatasetSource,
+    model: &Model,
+    main: Frame,
+    outcome: Outcome,
+    points: Vec<Attrs>,
+    cap: u64,
+    ctx: &FitContext<'_>,
+) -> Result<Fit> {
+    if points.len() > 1 {
+        return Err(Error::invalid(NO_POSTERIOR_SEARCH));
+    }
+    let chosen = points.into_iter().next().unwrap_or_default();
+    let selected = main.rows;
+
+    let mut datasets = Vec::with_capacity(1 + model.related.len());
+    datasets.push((MAIN_DATASET.to_owned(), main));
+    for related in &model.related {
+        let frame = source
+            .materialise(&related.dataset, cap)
+            .await
+            .with_context(|| format!("reading the related dataset `{}`", related.name))?;
+        datasets.push((related.name.clone(), frame));
+    }
+
+    let interface = provider.interface(&model.configuration).await?;
+    let data = bind(interface.as_ref())?;
+    let input = PosteriorInput {
+        datasets,
+        interface,
+        data,
+    };
+
+    let result = provider
+        .fit_posterior(&input, &model.configuration, ctx)
+        .await?;
+    // The summary and the diagnostics are computed here from the draws
+    // (Stan TODO §15, Phase 5); until then the provider's own blocks stand.
+    ctx.report(&Progress::stage(FitStage::Summarising));
+
+    Ok(Fit {
+        outcome,
+        state: result.state,
+        parameters: result.parameters,
+        encoding: None,
+        metrics: SplitMetrics::default(),
+        hyperparameters: chosen,
+        rows: RowCounts {
+            selected,
+            split: SplitCounts {
+                train: selected,
+                validation: 0,
+                test: 0,
+            },
+            dropped: 0,
+        },
+        search: Vec::new(),
+        draws: result.draws,
+    })
+}
+
+/// The data bound to a program's `data` block (Stan TODO §§8–12).
+///
+/// The binder is the next milestone phase; until it exists, a program that
+/// declares data is refused by name rather than sampled against an empty data
+/// file, which CmdStan would refuse a minute later in words about a variable
+/// nobody knew was missing.
+fn bind(interface: Option<&Interface>) -> Result<Json> {
+    match interface {
+        Some(interface) if !interface.data.is_empty() => Err(Error::invalid(format!(
+            "this program declares data ({}), and binding a `data` block to datasets is not \
+             implemented yet",
+            interface
+                .data
+                .iter()
+                .map(|d| format!("`{}`", d.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+        _ => Ok(Json::Object(serde_json::Map::new())),
+    }
 }
 
 /// Pick the grid point that scores best on the validation rows (§11).
@@ -805,5 +994,241 @@ mod tests {
         assert_eq!(fits.load(Ordering::SeqCst), 0);
         // And the schema-level validation is unchanged by any of this.
         let _ = SchemaShape::default();
+    }
+
+    /// A sampler that answers canned draws: `alpha[j]` for each row of the
+    /// related `groups` dataset, in each of two chains, and `lp__`.
+    ///
+    /// Enough to test the orchestration: the draws can only be sized by the
+    /// groups if the related dataset reached the provider, and the progress
+    /// can only arrive if the context did.
+    struct Sampler {
+        interface: Option<Interface>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for Sampler {
+        fn name(&self) -> &str {
+            "sampler"
+        }
+        fn description(&self) -> &str {
+            "answers canned draws"
+        }
+        fn config_declaration(&self) -> Vec<FormField> {
+            Vec::new()
+        }
+        fn hyperparameters(&self) -> Vec<FormField> {
+            vec![FormField::new("bias", BasicType::Float)]
+        }
+        fn outcome_spec(&self) -> OutcomeSpec {
+            OutcomeSpec::Posterior { prediction: None }
+        }
+        fn binds_data(&self) -> bool {
+            true
+        }
+        async fn fit(&self, _f: &Frame, _c: &Attrs, _h: &Attrs) -> Result<FitResult> {
+            Err(Error::msg("a sampler is never fitted".to_owned()))
+        }
+        async fn predict(&self, _s: &Json, _f: &Frame) -> Result<Vec<Prediction>> {
+            Err(Error::msg("a sampler is never asked to predict".to_owned()))
+        }
+        async fn interface(&self, _config: &Attrs) -> Result<Option<Interface>> {
+            Ok(self.interface.clone())
+        }
+        async fn fit_posterior(
+            &self,
+            input: &PosteriorInput,
+            _config: &Attrs,
+            ctx: &FitContext<'_>,
+        ) -> Result<PosteriorResult> {
+            ctx.report(&Progress::stage(FitStage::Sampling));
+            let names: Vec<&str> = input.datasets.iter().map(|(n, _)| n.as_str()).collect();
+            let groups = input
+                .dataset("groups")
+                .ok_or_else(|| Error::msg(format!("no `groups` among {names:?}")))?;
+            let mut draws = Vec::new();
+            for chain in 1..=2u32 {
+                for j in 1..=groups.rows {
+                    draws.push(DrawSeries::new(
+                        "alpha",
+                        vec![j],
+                        chain,
+                        vec![j as f64, j as f64 + 0.5],
+                    ));
+                }
+                draws.push(DrawSeries::new("lp__", vec![], chain, vec![-1.0, -2.0]));
+            }
+            Ok(PosteriorResult {
+                state: serde_json::json!({ "datasets": names, "data": input.data }),
+                draws,
+                parameters: Vec::new(),
+            })
+        }
+    }
+
+    use crate::interface::{Declaration, Element, SizeExpr};
+    use crate::model::NamedDataset;
+    use crate::posterior::{DrawSeries, PosteriorResult};
+    use crate::provider::OutcomeSpec as Spec;
+    use std::sync::Mutex;
+
+    /// A source that answers a different frame per table — `groups` has three
+    /// rows and everything else fifty.
+    struct ByTable;
+
+    #[async_trait]
+    impl DatasetSource for ByTable {
+        async fn read(&self, ds: &Dataset, _how: &Read<'_>) -> Result<Frame> {
+            match ds.table.as_str() {
+                "groups" => Frame::new(
+                    vec![(
+                        "u".to_owned(),
+                        Column::Float(vec![Some(0.1), Some(0.2), Some(0.3)]),
+                    )],
+                    vec!["int:1".into(), "int:2".into(), "int:3".into()],
+                ),
+                "missing" => Err(Error::invalid("no such table".to_owned())),
+                _ => Ok(rows(50)),
+            }
+        }
+    }
+
+    /// Collects every report.
+    #[derive(Default)]
+    struct Reports(Mutex<Vec<FitStage>>);
+
+    impl crate::posterior::FitProgress for Reports {
+        fn report(&self, progress: &Progress) {
+            self.0.lock().expect("lock").push(progress.stage);
+        }
+    }
+
+    fn sampler(interface: Option<Interface>) -> ModelRegistry {
+        let mut registry = ModelRegistry::new();
+        registry
+            .register(Arc::new(Sampler { interface }))
+            .expect("register");
+        registry
+    }
+
+    fn radon() -> Model {
+        Model::new(
+            "radon",
+            "sampler",
+            Dataset::new("homes").column("x", "x").column("y", "y"),
+        )
+        .related(NamedDataset::new(
+            "groups",
+            Dataset::new("groups").column("u", "u"),
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_posterior_is_sampled_over_every_dataset_and_keeps_its_draws() {
+        let reports = Reports::default();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let ctx = FitContext::new(&reports, &cancel);
+        let fit = run_fit_with(&sampler(None), &ByTable, &radon(), 1000, &ctx)
+            .await
+            .expect("fit");
+
+        assert_eq!(fit.outcome, Outcome::Posterior { prediction: None });
+        // The main dataset first and under its reserved name, then the related
+        // one under its own; and no program data declared means an empty data
+        // object, not a refusal.
+        assert_eq!(
+            fit.state,
+            serde_json::json!({ "datasets": ["main", "groups"], "data": {} })
+        );
+        // Three groups × two chains of `alpha`, plus `lp__` per chain.
+        assert_eq!(fit.draws.len(), 8);
+        assert!(
+            fit.draws
+                .iter()
+                .any(|d| d.label() == "alpha[3]" && d.chain == 2)
+        );
+        // No split, no encoding, no search: a posterior is none of those.
+        assert!(fit.encoding.is_none());
+        assert!(fit.search.is_empty());
+        assert_eq!(fit.rows.selected, 50);
+        assert_eq!(fit.rows.split.train, 50);
+        // The provider's progress and then the host's.
+        assert_eq!(
+            *reports.0.lock().expect("lock"),
+            vec![FitStage::Sampling, FitStage::Summarising]
+        );
+        // The instance records the outcome; the draws go elsewhere.
+        let instance = fit
+            .apply(ModelInstance::starting(radon().id))
+            .expect("apply");
+        assert_eq!(instance.attributes[ATTR_OUTCOME]["outcome"], "posterior");
+        assert!(instance.encoding.is_null());
+    }
+
+    #[tokio::test]
+    async fn a_posterior_refuses_a_grid_as_a_test_does() {
+        let model = radon().hyperparameter("bias", serde_json::json!([0.0, 1.0]));
+        let err = run_fit(&sampler(None), &ByTable, &model, 1000)
+            .await
+            .expect_err("a grid over a posterior");
+        assert!(err.to_string().contains("sampled, not searched"), "{err}");
+        // One value is not a search, and is fine.
+        let model = radon().hyperparameter("bias", 0.0);
+        run_fit(&sampler(None), &ByTable, &model, 1000)
+            .await
+            .expect("one point");
+    }
+
+    #[tokio::test]
+    async fn a_related_dataset_that_cannot_be_read_is_named() {
+        let model = radon().related(NamedDataset::new("gone", Dataset::new("missing")));
+        let err = run_fit(&sampler(None), &ByTable, &model, 1000)
+            .await
+            .expect_err("unreadable related dataset");
+        let said = sc_error::format_chain(&err);
+        assert!(said.contains("related dataset `gone`"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn a_program_that_declares_data_is_refused_until_there_is_a_binder() {
+        let interface = Interface {
+            data: vec![Declaration::new("N", Element::Int, vec![], "int")],
+            parameters: vec![Declaration::new(
+                "alpha",
+                Element::Real,
+                vec![SizeExpr::var("J")],
+                "vector[J]",
+            )],
+            ..Interface::default()
+        };
+        let err = run_fit(&sampler(Some(interface)), &ByTable, &radon(), 1000)
+            .await
+            .expect_err("no binder yet");
+        assert!(err.to_string().contains("`N`"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_is_not_a_sampler_refuses_to_sample() {
+        let fits = Arc::new(AtomicUsize::new(0));
+        let mean = Mean { fits };
+        let input = PosteriorInput {
+            datasets: Vec::new(),
+            interface: None,
+            data: Json::Null,
+        };
+        let err = mean
+            .fit_posterior(&input, &Attrs::new(), &FitContext::detached())
+            .await
+            .expect_err("not a sampler");
+        assert!(
+            err.to_string().contains("does not sample a posterior"),
+            "{err}"
+        );
+        assert!(!mean.kind().binds_data);
+        assert!(Sampler { interface: None }.kind().binds_data);
+        assert_eq!(
+            Sampler { interface: None }.outcome_spec(),
+            Spec::Posterior { prediction: None }
+        );
     }
 }

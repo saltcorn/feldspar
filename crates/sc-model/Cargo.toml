@@ -78,6 +78,10 @@ statrs.workspace = true
 # because what a save writes and a load reads back is the whole of whether a
 # configured model survives a restart.
 sc-db-postgres.workspace = true
+# `_fd_model_draws` is written in the transaction that marks an instance fitted,
+# and whether that is atomic is a property of the backend's transactions — so
+# the draws store is pinned on SQLite as well as Postgres.
+sc-db-sqlite.workspace = true
 sc-test-harness.workspace = true
 tokio = { workspace = true }
 

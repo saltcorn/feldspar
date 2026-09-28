@@ -2,6 +2,131 @@
 
 Changes in reverse chronological order.
 
+## Many datasets, an order and a posterior: the `sc-model` groundwork for Stan
+
+This is Phase 1 of the Stan milestone (TODO "Bayesian models with Stan"). Nothing here runs
+Stan. It widens `sc-model` so that a Bayesian provider has somewhere to plug in: several
+datasets, a row order, an outcome that is a posterior, a seam that hands over data and gets draws
+back, and a table to keep the draws in.
+
+- **`Dataset::order`** (1.1). This is a list of `DatasetOrder { expr, descending }`.
+  - Each key is a formula, validated like a column. It must also translate to SQL, because an
+    `ORDER BY` has no reified fallback.
+  - `Dataset::order_by` gives the keys with nulls last in both directions, then **the primary
+    key**, so the order is total and is the same on Postgres and SQLite. A keyless table gets
+    the declared keys alone.
+  - `CatalogDatasetSource` applies it to every read: fits, previews and predictions. A dataset
+    with no declared order is now read in primary-key order. That costs the hash-split
+    providers nothing, and it makes a posterior's input reproducible.
+  - An empty order is not serialised, so existing datasets are unchanged on the wire.
+- **Related datasets** (1.2). This is `Model::related: Vec<NamedDataset { name, dataset, label
+  }>`, stored in a new **nullable** `_fd_models.related` column. `bootstrap_models` adds the
+  column to an installation whose table already has rows, so `TABLE_RENAME.sql` needs nothing.
+  - No related datasets is stored as SQL NULL. A NULL or absent column reads as none. Anything
+    other than an array is refused by name, as every column of that table is.
+  - `validate_model` validates each one against **its own** table, and requires its primary
+    key.
+  - A related dataset's `label` must be a formula that resolves and translates.
+  - Names must be identifiers, unique, and not `main` (`MAIN_DATASET`, which is what bindings
+    call the model's own dataset).
+  - The admin API's model JSON carries `related` both ways. The three generated `client.ts`
+    copies were regenerated.
+- **A posterior outcome** (1.3):
+  - `OutcomeSpec::Posterior { prediction }`, where `prediction` is the configuration key that
+    names the generated quantity a prediction reads.
+  - `Outcome::Posterior { prediction }`. It `predicts()` only when a prediction is named, and
+    only then is its `prediction_type()` Float. `Outcome::is_posterior()` is new.
+  - `Metrics::Posterior(PosteriorMetrics)`. It has the §15 fields and nothing computes them yet.
+    It ranks nothing and counts no rows.
+  - A hyperparameter **list** on a posterior model is refused **on save** (the outcome spec is
+    known without data) and again in the fit: "a posterior is sampled, not searched".
+- **The seam** (1.4):
+  - `Interface`, `Declaration`, `Element` and `SizeExpr`/`SizeTree` (the §5 types) are in
+    `sc_model::interface`. They differ from the spec in one place: a declaration's bounds are
+    two optional fields, `lower` and `upper`, not one `Option<(String, String)>`, because
+    `int<lower=0>` has only one. `SizeExpr::eval` does Stan's integer arithmetic (`%/%` and `%`
+    truncate toward zero). An unknown name, a zero divisor or an overflow answer `None`, which
+    means "not checked here" and never a panic.
+  - `ModelProvider` gains `interface(cfg)` (async, `None` by default) and
+    `fit_posterior(input, cfg, ctx)` (refused by name by default). It also gains
+    `discard(state)`, which does nothing by default, and `binds_data()`. The last is surfaced as
+    `ModelProviderKind::binds_data` and forwarded by a module's `HostProvider`.
+  - `PosteriorInput { datasets, interface, data }` puts `main` first, then each related dataset
+    by name.
+  - `PosteriorResult { state, draws, parameters }`, where each draw is a `DrawSeries { variable,
+    element, chain, warmup, draws }`.
+  - `FitContext { progress, cancelled() }` carries a `FitProgress` sink, `Progress { stage,
+    chains }` and `NoProgress`. `FitContext::detached()` is the context for fits nobody watches.
+  - `run_fit` branches on a posterior **before** `predicts()`. That branch has no split, no
+    encoding and no grid. It reads each related dataset under the row cap, and a failed read is
+    named. Then it asks for the interface, binds, calls `fit_posterior`, and reports
+    `summarising`.
+  - The binder is Phase 3. Until then a program that declares `data` is refused, naming the
+    variables. A program that declares none gets `{}`.
+  - `run_fit_with` and `fit_model_with` take the context. `run_fit` and `fit_model` are
+    unchanged and run detached.
+  - `Fit` carries the draws.
+- **`_fd_model_draws`** (1.5). It has one row per element per chain: `id`, `instance`,
+  `variable`, `element` (JSON index array), `chain`, `warmup` and `draws` (JSON; NaN and ±Inf
+  are stored as CmdStan's `"NaN"`, `"Inf"` and `"-Inf"`).
+  - `bootstrap_model_draws` creates it with an `(instance, variable)` index using `CREATE INDEX
+    IF NOT EXISTS`, which is idempotent on both backends. `install_models` calls it at boot.
+  - The new **`save_fitted_instance(catalog, instance, draws)`** writes the draws in batched
+    multi-row `INSERT`s (250 rows each), replacing any the instance had, and then writes the
+    instance row. Both happen in **one transaction**.
+  - Draws on an instance that is not fitted are refused. So are malformed series (index 0,
+    chain 0, a duplicate), which are refused before anything is written.
+  - `fit_model` saves through it. A write that fails is recorded as a failed instance ("the fit
+    finished but could not be recorded").
+  - `save_model_instance` is now transactional too: the row and the deactivation of the other
+    instances happen together.
+  - `DrawsReader` reads one variable, optionally only some elements (compared as JSON, `IN`
+    lists of at most 500) and some chains, with or without warmup. It orders by element, then
+    chain, with warmup first. `count()` is new.
+- **Deletion and `discard`** (1.6):
+  - `delete_model_instance` and `delete_model` now take the `ModelRegistry`.
+  - Each one deletes the rows and their draws in one transaction. Then it asks the provider to
+    `discard` each non-null state.
+  - A missing model or provider skips the discard. A failed discard is reported, and the
+    message says that the rows were already deleted.
+  - The admin handlers pass `models.registry()`.
+  - `delete_model_instances` is no longer public, because it deleted rows without the discard.
+- **New attribute constants.** `ATTR_PROGRESS`, `ATTR_CANCEL_REQUESTED` and `ATTR_WARNINGS`
+  are beside `ATTR_OUTCOME`.
+- Tests:
+  - Unit tests:
+    - The rendered `ORDER BY` puts the declared keys first and the primary key last. With no
+      order there is a key-only order, and a keyless table gets no tiebreak.
+    - Order keys are validated, and the wire shape of an order is checked.
+    - Size-expression evaluation, including truncation, overflow, a zero divisor and opaque
+      expressions. An interface JSON round trip.
+    - The posterior outcome: it predicts only with a named prediction, and its spec resolves
+      from the configuration.
+    - `Metrics::Posterior` JSON with NaNs.
+    - `Progress` JSON, the cancel flag, and draw-series checks.
+    - The posterior fit path against a stub sampler: every dataset reaches the provider under
+      its name, the draws are kept, progress arrives, and there is no encoding and no search.
+    - The same path refuses a grid, names a related dataset that cannot be read, refuses a
+      program that declares data, and refuses a non-sampler.
+  - `sc-model/tests/posterior_store.rs` runs each scenario on **Postgres and SQLite**:
+    - The draws round trip covers selection by variable, element, chain and warmup. It also
+      covers NaN and ±Inf, scalar and two-index elements, replacement on re-save, and isolation
+      between instances.
+    - **Atomicity.** A database constraint or trigger refuses the last batch after 600 good
+      series. The instance is still `fitting`, with zero draws.
+    - Deletion of an instance and then of its model: the draws go with them, and `discard`
+      receives exactly the fitted states.
+    - A full `fit_model` job with a stub sampler stores its draws beside its row.
+    - A posterior grid is refused on save.
+  - `model_store.rs`:
+    - Related datasets round trip. Each wrong case is refused by name: `main`, a
+      non-identifier, a duplicate, an unresolvable label, a column of the wrong table.
+    - **An existing `_fd_models` with rows but without `related` gains the column on
+      bootstrap**, and its rows read back with no related datasets (before and after).
+  - `sc-server/tests/model_dataset.rs`: a frame comes back in the declared order, including by a
+    join path and descending, with ties broken by the key. A preview's `LIMIT` takes the first
+    rows of that order.
+
 ## CmdStan on the machine, first: `sc-stan`, `feldspar cmdstan status | install`
 
 This is Phase 0 of the Stan milestone (TODO "Bayesian models with Stan"). The integration tests

@@ -38,8 +38,8 @@ use sc_catalog::Catalog;
 use sc_error::{Context, Error, Result};
 use sc_model::{
     Column, Dataset, DatasetSource, Frame, InstanceId, Model, ModelInstance, ModelRegistry, Read,
-    SPLIT_KEY, bootstrap_model_instances, bootstrap_models, builtin_registry, canonical_key,
-    fit_model, reap_fitting_instances, save_model_instance,
+    SPLIT_KEY, bootstrap_model_draws, bootstrap_model_instances, bootstrap_models,
+    builtin_registry, canonical_key, fit_model, reap_fitting_instances, save_model_instance,
 };
 use sc_query::{Expr, Projection, Value};
 
@@ -119,7 +119,14 @@ impl DatasetSource for CatalogDatasetSource {
             ));
         }
 
-        let mut query = RowQuery::new().where_(filter).projecting(projections);
+        // The dataset's order, then its primary key, on every read — a fit, a
+        // preview and a prediction alike. A posterior needs it (the same seed
+        // over the same rows in another order is another set of draws, Stan
+        // TODO §7), and a hash-split provider is indifferent to it.
+        let mut query = RowQuery::new()
+            .where_(filter)
+            .projecting(projections)
+            .order_by(ds.order_by(&shape)?);
         if how.limit.is_some() {
             // Never above the cap, even when the caller asked for more: the cap
             // is what this process can hold, and a limit is what this caller
@@ -290,7 +297,7 @@ impl ModelServices {
     }
 }
 
-/// Ensure the two model tables exist, **reap every fit that was running when
+/// Ensure the three model tables exist, **reap every fit that was running when
 /// this process last stopped** (§8), and assemble the services.
 ///
 /// A fit is a job whose registry is its row: `fitModel` writes the instance
@@ -310,6 +317,9 @@ pub async fn install_models(catalog: &Arc<Catalog>, max_rows: u64) -> Result<Mod
     bootstrap_model_instances(catalog)
         .await
         .context("ensuring the model instances table exists")?;
+    bootstrap_model_draws(catalog)
+        .await
+        .context("ensuring the model draws table exists")?;
     let reaped = reap_fitting_instances(catalog)
         .await
         .context("failing the fits that were running at the last shutdown")?;

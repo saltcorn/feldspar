@@ -5413,6 +5413,9 @@ fn model_schema() -> TypeSchema {
         StructField::new("provider", TypeSchema::text()),
         StructField::new("table_name", TypeSchema::text()),
         StructField::new("dataset", TypeSchema::json()),
+        // The datasets beside the main one, each under the name bindings
+        // address it by (Stan TODO §7); `[]` for every model that has none.
+        StructField::new("related", TypeSchema::json()),
         StructField::new("configuration", TypeSchema::json()),
         StructField::new("hyperparameters", TypeSchema::json()),
         StructField::new("split", TypeSchema::json()),
@@ -5435,6 +5438,7 @@ fn model_input_schema() -> TypeSchema {
         StructField::new("description", TypeSchema::optional(TypeSchema::text())),
         StructField::new("provider", TypeSchema::text()),
         StructField::new("dataset", TypeSchema::json()),
+        StructField::new("related", TypeSchema::optional(TypeSchema::json())),
         StructField::new("configuration", TypeSchema::optional(TypeSchema::json())),
         // Per hyperparameter either a value or a **list** of values, and a fit
         // runs the grid of the lists (§11). One field rather than two, because a

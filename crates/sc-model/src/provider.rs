@@ -45,6 +45,8 @@ use serde_json::Value as Json;
 
 use crate::dataset::DatasetShape;
 use crate::frame::{ColumnType, Frame};
+use crate::interface::Interface;
+use crate::posterior::{FitContext, PosteriorInput, PosteriorResult};
 
 /// The [`OptionsSource::ServerQuery`] name meaning "every column of the
 /// dataset".
@@ -128,6 +130,15 @@ pub enum Outcome {
     },
     /// **No per-row output**: the parameters are the result. A hypothesis test.
     Test,
+    /// A posterior: draws of every declared parameter, which *are* the result
+    /// (Stan TODO §1). It answers per row only when the program was written to
+    /// and the configuration names the generated quantity that does (§19).
+    Posterior {
+        /// The generated-quantities variable a prediction reads, or `None` for
+        /// a program that is inspected rather than applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prediction: Option<String>,
+    },
 }
 
 impl Outcome {
@@ -139,6 +150,7 @@ impl Outcome {
             Outcome::Cluster => "cluster",
             Outcome::Embedding { .. } => "embedding",
             Outcome::Test => "test",
+            Outcome::Posterior { .. } => "posterior",
         }
     }
 
@@ -154,9 +166,21 @@ impl Outcome {
     /// prediction means anything at all.
     ///
     /// False for [`Test`](Outcome::Test), which is the whole reason the variant
-    /// exists: an ANOVA has an answer, and the answer is not a column.
+    /// exists: an ANOVA has an answer, and the answer is not a column. False
+    /// for a [`Posterior`](Outcome::Posterior) too, unless it names the
+    /// generated quantity a prediction reads.
     pub fn predicts(&self) -> bool {
-        !matches!(self, Outcome::Test)
+        match self {
+            Outcome::Test => false,
+            Outcome::Posterior { prediction } => prediction.is_some(),
+            _ => true,
+        }
+    }
+
+    /// Whether this is a posterior — which is fitted by sampling rather than by
+    /// splitting, encoding and scoring, and so goes down its own path.
+    pub fn is_posterior(&self) -> bool {
+        matches!(self, Outcome::Posterior { .. })
     }
 
     /// The type of field a prediction of this outcome can be written into —
@@ -165,7 +189,8 @@ impl Outcome {
     ///
     /// An embedding is [`Json`](BasicType::Json) because a vector is not a
     /// scalar and rendering it as text would make it unreadable by anything that
-    /// wanted to use it.
+    /// wanted to use it. A posterior's prediction is a distribution whose value
+    /// in a row is its mean (Stan TODO §19).
     pub fn prediction_type(&self) -> Option<BasicType> {
         match self {
             Outcome::Regression { .. } => Some(BasicType::Float),
@@ -173,6 +198,7 @@ impl Outcome {
             Outcome::Cluster => Some(BasicType::Int),
             Outcome::Embedding { .. } => Some(BasicType::Json),
             Outcome::Test => None,
+            Outcome::Posterior { prediction } => prediction.as_ref().map(|_| BasicType::Float),
         }
     }
 }
@@ -217,6 +243,14 @@ pub enum OutcomeSpec {
     },
     /// A hypothesis test: no per-row output.
     Test,
+    /// A posterior (Stan TODO §1): fitted by
+    /// [`fit_posterior`](ModelProvider::fit_posterior), not by `fit`.
+    Posterior {
+        /// The configuration key naming the generated quantity a prediction
+        /// reads, for a provider that can predict at all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prediction: Option<String>,
+    },
 }
 
 impl OutcomeSpec {
@@ -274,6 +308,15 @@ impl OutcomeSpec {
                 })
             }
             OutcomeSpec::Test => Ok(Outcome::Test),
+            OutcomeSpec::Posterior { prediction } => Ok(Outcome::Posterior {
+                prediction: prediction
+                    .as_ref()
+                    .and_then(|key| config.get(key))
+                    .and_then(Json::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+            }),
         }
     }
 
@@ -302,6 +345,10 @@ impl OutcomeSpec {
             OutcomeSpec::Cluster => vec![BasicType::Int],
             OutcomeSpec::Embedding { .. } => vec![BasicType::Json],
             OutcomeSpec::Test => Vec::new(),
+            // Only when the configuration names a prediction — which a
+            // declaration cannot see, so the fire-time check against the
+            // recorded outcome is the one that refuses a program that does not.
+            OutcomeSpec::Posterior { .. } => vec![BasicType::Float],
         }
     }
 }
@@ -614,6 +661,14 @@ pub struct ModelProviderKind {
     /// a regression says no, because a coefficient in the data's own units is
     /// what somebody is reading it for.
     pub standardise: bool,
+    /// Whether the provider takes **bound data** — a program's declared
+    /// variables tied to datasets — rather than one encoded frame (Stan TODO
+    /// §18).
+    ///
+    /// A capability rather than a provider name, so the model form renders the
+    /// binding editor for any provider that declares it and none of the admin
+    /// UI names Stan.
+    pub binds_data: bool,
 }
 
 impl ModelProviderKind {
@@ -631,6 +686,7 @@ impl ModelProviderKind {
             hyperparameters: Vec::new(),
             outcome,
             standardise: false,
+            binds_data: false,
         }
     }
 
@@ -649,6 +705,12 @@ impl ModelProviderKind {
     /// Ask the host to standardise the numeric features.
     pub fn standardised(mut self) -> ModelProviderKind {
         self.standardise = true;
+        self
+    }
+
+    /// Declare that it takes bound data.
+    pub fn binding_data(mut self) -> ModelProviderKind {
+        self.binds_data = true;
         self
     }
 
@@ -719,6 +781,12 @@ pub trait ModelProvider: Send + Sync {
         false
     }
 
+    /// Whether this provider takes bound data — see
+    /// [`ModelProviderKind::binds_data`].
+    fn binds_data(&self) -> bool {
+        false
+    }
+
     /// What a fit of *this configuration* over *this dataset* will produce.
     ///
     /// Not a constant: a random forest is a regressor or a classifier depending
@@ -752,6 +820,7 @@ pub trait ModelProvider: Send + Sync {
             hyperparameters: self.hyperparameters(),
             outcome: self.outcome_spec(),
             standardise: self.standardise(),
+            binds_data: self.binds_data(),
         }
     }
 
@@ -765,6 +834,46 @@ pub trait ModelProvider: Send + Sync {
     /// A frame, not a row: a single row is a frame of one, and batching is what
     /// makes a provider in another language usable at all.
     async fn predict(&self, state: &Json, frame: &Frame) -> Result<Vec<Prediction>>;
+
+    /// What the program this configuration names declares (Stan TODO §5), or
+    /// `None` for a provider with no program.
+    ///
+    /// Async because answering reads the program — out of a file store, for a
+    /// Stan model. A provider that answers `None` gets no binding: its
+    /// [`fit_posterior`](ModelProvider::fit_posterior) is handed the datasets and
+    /// an empty data object.
+    async fn interface(&self, config: &Attrs) -> Result<Option<Interface>> {
+        let _ = config;
+        Ok(None)
+    }
+
+    /// Sample a posterior (Stan TODO §2): the datasets and the data bound from
+    /// them in, the draws out.
+    ///
+    /// Called instead of [`fit`](ModelProvider::fit) for a provider whose
+    /// outcome is a [`Posterior`](Outcome::Posterior), and never otherwise. The
+    /// default refuses by name, which is what every provider that is not a
+    /// sampler wants.
+    async fn fit_posterior(
+        &self,
+        input: &PosteriorInput,
+        config: &Attrs,
+        ctx: &FitContext<'_>,
+    ) -> Result<PosteriorResult> {
+        let _ = (input, config, ctx);
+        Err(Error::invalid(format!(
+            "the model provider `{}` does not sample a posterior",
+            self.name()
+        )))
+    }
+
+    /// Release whatever a fitted `state` holds outside the database — a raw run
+    /// directory in a file store (Stan TODO §14). Called when the instance is
+    /// deleted, after its rows are gone. The default holds nothing.
+    async fn discard(&self, state: &Json) -> Result<()> {
+        let _ = state;
+        Ok(())
+    }
 }
 
 /// The model providers a module supplies: the seam `sc-module` and `sc-python`
@@ -862,6 +971,10 @@ impl ModelProvider for HostProvider {
 
     fn standardise(&self) -> bool {
         self.kind.standardise
+    }
+
+    fn binds_data(&self) -> bool {
+        self.kind.binds_data
     }
 
     fn kind(&self) -> ModelProviderKind {
@@ -1085,5 +1198,43 @@ mod tests {
         assert_eq!(Outcome::Test.prediction_type(), None);
         assert!(!Outcome::Test.predicts());
         assert_eq!(Outcome::Cluster.name(), "cluster");
+    }
+
+    #[test]
+    fn a_posterior_predicts_only_when_it_names_the_quantity_a_prediction_reads() {
+        let inspected = Outcome::Posterior { prediction: None };
+        assert!(!inspected.predicts());
+        assert_eq!(inspected.prediction_type(), None);
+        assert!(inspected.is_posterior());
+        assert_eq!(inspected.name(), "posterior");
+
+        let applied = Outcome::Posterior {
+            prediction: Some("y_new".to_owned()),
+        };
+        assert!(applied.predicts());
+        assert_eq!(applied.prediction_type(), Some(BasicType::Float));
+
+        // The declaration names the key; the configuration names the variable.
+        let spec = OutcomeSpec::Posterior {
+            prediction: Some("prediction".to_owned()),
+        };
+        assert_eq!(
+            spec.resolve(&shape(), &config(&[("prediction", json!("y_new"))]))
+                .unwrap(),
+            applied
+        );
+        assert_eq!(
+            spec.resolve(&shape(), &config(&[("prediction", json!("  "))]))
+                .unwrap(),
+            inspected
+        );
+        assert_eq!(
+            serde_json::to_value(&applied).unwrap(),
+            json!({ "outcome": "posterior", "prediction": "y_new" })
+        );
+        assert_eq!(
+            serde_json::from_value::<Outcome>(json!({ "outcome": "posterior" })).unwrap(),
+            inspected
+        );
     }
 }

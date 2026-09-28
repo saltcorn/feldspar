@@ -16,12 +16,12 @@ use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_model::{
-    Dataset, FitResult, FitStatus, Frame, INSTANCES_TABLE, MODELS_TABLE, Model, ModelInstance,
-    ModelProvider, ModelProviderKind, ModelRegistry, Models, OutcomeSpec, ParameterBlock,
-    ParameterRow, Prediction, RESTARTED, Split, active_model_instance, bootstrap_model_instances,
-    bootstrap_models, delete_model, delete_model_instance, list_model_instances, list_models,
-    load_model, load_model_by_name, models_for_table, numeric_column_field, reap_fitting_instances,
-    require_model, save_model, save_model_instance,
+    Dataset, DatasetOrder, FitResult, FitStatus, Frame, INSTANCES_TABLE, MODELS_TABLE, Model,
+    ModelInstance, ModelProvider, ModelProviderKind, ModelRegistry, Models, NamedDataset,
+    OutcomeSpec, ParameterBlock, ParameterRow, Prediction, RESTARTED, Split, active_model_instance,
+    bootstrap_model_instances, bootstrap_models, delete_model, delete_model_instance,
+    list_model_instances, list_models, load_model, load_model_by_name, models_for_table,
+    numeric_column_field, reap_fitting_instances, require_model, save_model, save_model_instance,
 };
 use sc_query::{Assignment, Expr, Statement, Update, Value};
 use sc_test_harness::TestDb;
@@ -170,8 +170,8 @@ async fn an_edit_updates_in_place_and_a_delete_removes_it() -> Result<()> {
     assert_eq!(loaded.description, "revised");
     assert_eq!(loaded.dataset.columns.len(), 4);
 
-    assert!(delete_model(&cat, model.id).await?);
-    assert!(!delete_model(&cat, model.id).await?);
+    assert!(delete_model(&cat, &reg, model.id).await?);
+    assert!(!delete_model(&cat, &reg, model.id).await?);
     assert!(list_models(&cat).await?.is_empty());
     Ok(())
 }
@@ -513,7 +513,7 @@ async fn deleting_a_model_takes_its_instances_with_it() -> Result<()> {
     let instance = a_fit(&model)?;
     save_model_instance(&cat, &instance).await?;
 
-    assert!(delete_model(&cat, model.id).await?);
+    assert!(delete_model(&cat, &reg, model.id).await?);
     // An instance whose model is gone is a row nothing can list, read or apply
     // — unlike a run, which is a transcript of something that happened.
     assert!(list_model_instances(&cat, model.id).await?.is_empty());
@@ -530,8 +530,8 @@ async fn an_instance_can_be_deleted_on_its_own() -> Result<()> {
     let instance = a_fit(&model)?;
     save_model_instance(&cat, &instance).await?;
 
-    assert!(delete_model_instance(&cat, instance.id).await?);
-    assert!(!delete_model_instance(&cat, instance.id).await?);
+    assert!(delete_model_instance(&cat, &reg, instance.id).await?);
+    assert!(!delete_model_instance(&cat, &reg, instance.id).await?);
     assert!(list_model_instances(&cat, model.id).await?.is_empty());
     assert!(load_model(&cat, model.id).await?.is_some());
     Ok(())
@@ -624,5 +624,132 @@ async fn a_modules_provider_is_saved_against_like_any_other() -> Result<()> {
         "gradient_boosting"
     );
     assert_eq!(Models::load(&cat, &reg).await?.all().len(), 1);
+    Ok(())
+}
+
+/// A `counties` table beside `houses`, for related datasets to be over.
+async fn with_counties(cat: &Catalog) -> Result<()> {
+    cat.create_table(
+        "counties",
+        &[
+            DataField::plain("id", TypeRef::Basic(BasicType::Int))
+                .required()
+                .primary_key(),
+            DataField::plain("name", TypeRef::Basic(BasicType::Text)),
+            DataField::plain("log_uranium", TypeRef::Basic(BasicType::Float)),
+        ],
+    )
+    .await?;
+    cat.reload().await
+}
+
+fn counties() -> NamedDataset {
+    NamedDataset::new(
+        "counties",
+        Dataset::new("counties")
+            .column("u", "log_uranium")
+            .ordered(DatasetOrder::asc("name")),
+    )
+    .labelled("name")
+}
+
+#[tokio::test]
+async fn related_datasets_round_trip_and_validate_against_their_own_tables() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    with_counties(&cat).await?;
+    let reg = registry()?;
+
+    let model = house_prices().related(counties());
+    save_model(&cat, &reg, &model, None).await?;
+    let loaded = load_model(&cat, model.id).await?.expect("stored");
+    assert_eq!(loaded.related, vec![counties()]);
+    assert_eq!(loaded, model);
+
+    // Each way a related dataset can be wrong, refused by name.
+    let refused = |model: Model, expected: &'static str| {
+        let cat = &cat;
+        let reg = &reg;
+        async move {
+            let err = save_model(cat, reg, &model, None)
+                .await
+                .expect_err(expected);
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+    };
+    let rename = |name: &str| {
+        let mut related = counties();
+        related.name = name.to_owned();
+        related
+    };
+    refused(
+        house_prices().related(rename("main")),
+        "cannot be called `main`",
+    )
+    .await;
+    refused(
+        house_prices().related(rename("2nd")),
+        "must be an identifier",
+    )
+    .await;
+    refused(
+        house_prices().related(counties()).related(counties()),
+        "two related datasets are called `counties`",
+    )
+    .await;
+    refused(
+        house_prices().related(counties().labelled("no_such_field")),
+        "dataset label on `counties`",
+    )
+    .await;
+    // Validated against its *own* table: `price` is a column of houses, not
+    // of counties.
+    refused(
+        house_prices().related(NamedDataset::new(
+            "counties",
+            Dataset::new("counties").column("p", "price"),
+        )),
+        "dataset column `p` on `counties`",
+    )
+    .await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_existing_models_table_gains_the_related_column_on_boot() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    let reg = registry()?;
+    let model = house_prices();
+    save_model(&cat, &reg, &model, None).await?;
+
+    // An installation from before related datasets: the column is not there,
+    // and the table has rows.
+    cat.primary()
+        .query(&Statement::raw(
+            r#"ALTER TABLE "_fd_models" DROP COLUMN "related""#,
+            Vec::new(),
+        ))
+        .await?
+        .try_collect()
+        .await?;
+    cat.reload().await?;
+    assert!(cat.require(MODELS_TABLE)?.field("related").is_none());
+    // Read before the boot has caught up: the absent column is "none".
+    assert!(
+        load_model(&cat, model.id)
+            .await?
+            .expect("stored")
+            .related
+            .is_empty()
+    );
+
+    // Boot adds it — nullable, so a table with rows can take it …
+    bootstrap_models(&cat).await?;
+    assert!(cat.require(MODELS_TABLE)?.field("related").is_some());
+    // … and the old row reads back with no related datasets.
+    let loaded = load_model(&cat, model.id).await?.expect("stored");
+    assert!(loaded.related.is_empty());
+    assert_eq!(loaded, model);
     Ok(())
 }

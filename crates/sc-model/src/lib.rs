@@ -22,6 +22,14 @@
 //! feature and two of them hypothesis tests that are there either way (see
 //! [`BUILTINS_COMPILED_OUT`]).
 //!
+//! The Bayesian milestone (the Stan TODO) widens the seam without adding a
+//! second one: a model gains **related datasets** ([`NamedDataset`]) and a
+//! dataset an **order** ([`DatasetOrder`]); a provider may declare what its
+//! program needs ([`Interface`]) and sample a posterior
+//! ([`ModelProvider::fit_posterior`]); and the draws that come back get a table
+//! of their own ([`DrawsReader`]), written in the transaction that marks the
+//! instance fitted.
+//!
 //! ## Layering: why this is at layer 6 and not above the row layer
 //!
 //! Its data comes from `sc-api::rows`, which is layer 8, so the obvious place
@@ -67,13 +75,16 @@
 //!   by name rather than by the OOM killer. See [`DEFAULT_MAX_ROWS`].
 
 mod dataset;
+mod draws;
 mod encode;
 mod fit;
 mod frame;
 mod instance;
 mod instance_store;
+mod interface;
 mod metrics;
 mod model;
+mod posterior;
 mod predict;
 mod provider;
 mod providers;
@@ -84,25 +95,32 @@ mod store;
 mod validate;
 
 pub use dataset::{
-    Dataset, DatasetColumn, DatasetColumnShape, DatasetShape, translate_filter, validate_dataset,
+    Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape, translate_filter,
+    validate_dataset,
 };
+pub use draws::{DRAWS_TABLE, DrawsQuery, DrawsReader, bootstrap_model_draws};
 pub use encode::{
     ColumnEncoding, Encoded, Encoding, Matrix, TargetEncoding, apply_encoding,
     apply_encoding_dropping, fit_encoding,
 };
 pub use fit::{
-    ATTR_OUTCOME, ATTR_ROWS, ATTR_SEARCH, Fit, GridPoint, MAX_GRID_POINTS, RowCounts, fit_model,
-    grid, run_fit,
+    ATTR_CANCEL_REQUESTED, ATTR_OUTCOME, ATTR_PROGRESS, ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Fit,
+    GridPoint, MAX_GRID_POINTS, RowCounts, fit_model, fit_model_with, grid, run_fit, run_fit_with,
 };
 pub use frame::{Column, ColumnType, Frame, canonical_key};
 pub use instance::{ATTR_ERROR, FitStatus, InstanceId, ModelInstance, RESTARTED};
 pub use instance_store::{
     INSTANCES_TABLE, active_model_instance, bootstrap_model_instances, delete_model_instance,
-    delete_model_instances, fitted, list_model_instances, load_model_instance,
-    reap_fitting_instances, require_model_instance, save_model_instance,
+    fitted, list_model_instances, load_model_instance, reap_fitting_instances,
+    require_model_instance, save_fitted_instance, save_model_instance,
 };
-pub use metrics::{ClassMetrics, Metrics, SplitMetrics};
-pub use model::{Model, ModelId};
+pub use interface::{Declaration, Element, Interface, SizeExpr, SizeOp, SizeTree};
+pub use metrics::{ClassMetrics, Metrics, PosteriorMetrics, SplitMetrics};
+pub use model::{MAIN_DATASET, Model, ModelId, NamedDataset};
+pub use posterior::{
+    ChainPhase, ChainProgress, DrawSeries, FitContext, FitProgress, FitStage, NoProgress,
+    PosteriorInput, PosteriorResult, Progress,
+};
 pub use predict::{
     Predictions, Subject, name_classes, predict_rows, predict_subject, prediction_values,
 };

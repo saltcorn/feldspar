@@ -763,29 +763,29 @@ else.
 
 ## Phase 1 — `sc-model` groundwork: many datasets, an order, a posterior
 
-- [ ] 1.1 `Dataset::order` (`DatasetOrder { expr, descending }`), validated like a column,
+- [x] 1.1 `Dataset::order` (`DatasetOrder { expr, descending }`), validated like a column,
       translated into the `Select`'s `ORDER BY` with the primary key appended; `Read` and
       `CatalogDatasetSource` carry it (§7). Unit test: the rendered SQL; a DB test: a frame
       comes back in the declared order with ties broken by key.
-- [ ] 1.2 `NamedDataset` and `Model::related`, the nullable `_fd_models.related` column, the
+- [x] 1.2 `NamedDataset` and `Model::related`, the nullable `_fd_models.related` column, the
       strict row mapping, `validate_model` validating each related dataset against its own
       table, names unique and not `main` (§7). Test: an existing `_fd_models` without the
       column gains it on bootstrap and its rows read back with no related datasets.
-- [ ] 1.3 `OutcomeSpec::Posterior` and `Outcome::Posterior { prediction: Option<String> }`
+- [x] 1.3 `OutcomeSpec::Posterior` and `Outcome::Posterior { prediction: Option<String> }`
       (`predicts()` only with a prediction; `prediction_type()` Float); `Metrics::Posterior`
       as a type with no computation yet; the grid refused for a posterior as for a test.
-- [ ] 1.4 The seam: `Interface`/`Declaration`/`SizeExpr` (§5); `ModelProvider::interface(cfg)`
+- [x] 1.4 The seam: `Interface`/`Declaration`/`SizeExpr` (§5); `ModelProvider::interface(cfg)`
       (async, default `None`), `fit_posterior(input, cfg, ctx)` (default: refused), `discard(state)`
       (default: nothing); `FitContext { progress: &dyn FitProgress, cancelled() }`;
       `ModelProviderKind::binds_data`. `run_fit` branches on `Posterior`: materialise main and
       related (each under the row cap), bind (Phase 3), call the provider, summarise (Phase 5).
       Tested with a stub posterior provider returning canned draws.
-- [ ] 1.5 `_fd_model_draws` (§14): bootstrapped beside `_fd_model_instances`; the rows written
+- [x] 1.5 `_fd_model_draws` (§14): bootstrapped beside `_fd_model_instances`; the rows written
       in batches inside the transaction that saves a fitted instance, and deleted in the one
       that deletes it; `DrawsReader` answering one variable, some elements, some chains, with or
       without warmup. DB tests on Postgres and SQLite: the round trip, the atomicity (a failed
       write leaves the instance `fitting`, not `fitted` with half its draws), and the delete.
-- [ ] 1.6 Instance deletion and model deletion call `discard`; `attributes.progress`,
+- [x] 1.6 Instance deletion and model deletion call `discard`; `attributes.progress`,
       `attributes.cancel_requested`, `attributes.warnings` named as constants beside
       `ATTR_OUTCOME`.
 

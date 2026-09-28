@@ -42,9 +42,9 @@ use sc_error::{Error, Result};
 use sc_types::validate_attrs;
 use serde_json::Value as Json;
 
-use crate::dataset::{DatasetShape, validate_dataset};
-use crate::model::Model;
-use crate::provider::ModelProvider;
+use crate::dataset::{DatasetShape, validate_dataset, validate_label};
+use crate::model::{MAIN_DATASET, Model};
+use crate::provider::{ModelProvider, OutcomeSpec};
 use crate::registry::ModelRegistry;
 use crate::store::{MODELS_TABLE, list_models};
 
@@ -83,6 +83,8 @@ pub async fn validate_model(
         .primary_key(&schema)
         .map_err(|e| problem(e.to_string()))?;
 
+    validate_related(model, &schema).map_err(|e| problem(e.to_string()))?;
+
     let provider = registry
         .require(model.provider.trim())
         .map_err(|e| problem(e.to_string()))?;
@@ -98,6 +100,13 @@ pub async fn validate_model(
 
     validate_hyperparameters(provider.as_ref(), model).map_err(|e| problem(e.to_string()))?;
 
+    // A posterior is sampled, not searched: there is no validation split to
+    // score a grid point on and no primary metric to rank one by. Known from the
+    // declaration alone, so it is refused here rather than inside the job.
+    if matches!(provider.outcome_spec(), OutcomeSpec::Posterior { .. }) && model.searches() {
+        return Err(problem(NO_POSTERIOR_SEARCH.to_owned()));
+    }
+
     if let Some(shape) = shape {
         // What the fit will produce — computed rather than assumed, because a
         // configuration that names no label, or one that is not a column of this
@@ -112,6 +121,58 @@ pub async fn validate_model(
     }
 
     Ok(())
+}
+
+/// Why a posterior refuses a hyperparameter list — here, and again in the fit.
+pub(crate) const NO_POSTERIOR_SEARCH: &str = "a posterior is sampled, not searched: there is no held-out score to rank grid points by, \
+     so give each hyperparameter one value (the sampler's settings are the provider's \
+     configuration)";
+
+/// Each related dataset validates as the main one does, against its own table,
+/// under a name bindings can use (Stan TODO §7).
+///
+/// The primary key is required of each, as it is of the main one, for the
+/// reason a posterior needs related datasets at all: a related dataset is a
+/// **dimension**, its positions are recorded as keys, and a write-back matches
+/// by them. Rows that cannot be told apart cannot be written back to.
+fn validate_related(model: &Model, schema: &sc_expr::SchemaShape) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for related in &model.related {
+        let name = related.name.trim();
+        if !is_identifier(name) {
+            return Err(Error::invalid(format!(
+                "related dataset `{name}`: a name must be an identifier — letters, digits and \
+                 `_`, not starting with a digit — because bindings address it by name"
+            )));
+        }
+        if name == MAIN_DATASET {
+            return Err(Error::invalid(format!(
+                "a related dataset cannot be called `{MAIN_DATASET}`: that is what bindings call \
+                 the model's own dataset"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(Error::invalid(format!(
+                "two related datasets are called `{name}`"
+            )));
+        }
+        let at = |e: Error| Error::invalid(format!("related dataset `{name}`: {e}"));
+        validate_dataset(&related.dataset, schema).map_err(at)?;
+        related.dataset.primary_key(schema).map_err(at)?;
+        if let Some(label) = &related.label {
+            validate_label(&related.dataset, label, schema).map_err(at)?;
+        }
+    }
+    Ok(())
+}
+
+/// `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Every hyperparameter names one the provider declares, and every value is of

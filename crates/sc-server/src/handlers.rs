@@ -3295,16 +3295,19 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
 
     reg.register("deleteModel", {
         let catalog = catalog.clone();
+        let apps = apps.clone();
         move |ctx| {
             let catalog = catalog.clone();
+            let apps = apps.clone();
             async move {
+                let models = models_of(&apps)?;
                 let id = sc_model::ModelId(parse_uuid(ctx.path_param("id")?, "model")?);
                 // `delete_model` takes its instances with it, which is the
                 // difference from an agent's runs: an instance is not a record
                 // of what happened, it is a fit *of this model*, and its
                 // coefficients mean nothing without the dataset they were fitted
                 // over.
-                if !sc_model::delete_model(&catalog, id).await? {
+                if !sc_model::delete_model(&catalog, &models.registry(), id).await? {
                     return Err(Error::not_found(format!("no model with id {id}")));
                 }
                 Ok(HandlerResponse::ok(json!({ "deleted": true })))
@@ -3370,11 +3373,14 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
 
     reg.register("deleteModelInstance", {
         let catalog = catalog.clone();
+        let apps = apps.clone();
         move |ctx| {
             let catalog = catalog.clone();
+            let apps = apps.clone();
             async move {
+                let models = models_of(&apps)?;
                 let id = sc_model::InstanceId(parse_uuid(ctx.path_param("id")?, "model instance")?);
-                if !sc_model::delete_model_instance(&catalog, id).await? {
+                if !sc_model::delete_model_instance(&catalog, &models.registry(), id).await? {
                     return Err(Error::not_found(format!("no model instance with id {id}")));
                 }
                 Ok(HandlerResponse::ok(json!({ "deleted": true })))
@@ -8918,6 +8924,8 @@ async fn model_json(
         "table_name": model.table(),
         "dataset": serde_json::to_value(&model.dataset)
             .map_err(|e| Error::msg(format!("dataset: {e}")))?,
+        "related": serde_json::to_value(&model.related)
+            .map_err(|e| Error::msg(format!("related datasets: {e}")))?,
         "configuration": Json::Object(model.configuration.clone()),
         "hyperparameters": Json::Object(model.hyperparameters.clone()),
         "split": serde_json::to_value(model.split)
@@ -8956,6 +8964,11 @@ fn model_from_body(body: &Map<String, Json>) -> Result<sc_model::Model> {
     model.configuration = optional_attrs(body, "configuration")?;
     model.hyperparameters = optional_attrs(body, "hyperparameters")?;
     model.attributes = optional_attrs(body, "attributes")?;
+    if let Some(related) = body.get("related").filter(|v| !v.is_null()) {
+        model.related = serde_json::from_value(related.clone()).map_err(|e| {
+            Error::invalid(format!("`related` is not a list of named datasets: {e}"))
+        })?;
+    }
     if let Some(split) = body.get("split").filter(|v| !v.is_null()) {
         model.split = serde_json::from_value(split.clone())
             .map_err(|e| Error::invalid(format!("`split` is not a split: {e}")))?;
