@@ -1,33 +1,49 @@
-# Saltcorn v2 — Static directories: served, picked, and listed
+# Saltcorn v2 — Bayesian models with Stan
 
-Ordered, checkable task list for the twenty-ninth milestone after the MVP. Earlier lists are
+Ordered, checkable task list for the thirtieth milestone after the MVP. Earlier lists are
 archived in [docs/TODO-mvp.md](./docs/TODO-mvp.md) (the MVP) and
-`docs/TODO-post-mvp-1.md` … [docs/TODO-post-mvp-28.md](./docs/TODO-post-mvp-28.md) (most
-recently: internationalisation, and streams as an entity). Scope and rationale are in
-[docs/GOALS.md](./docs/GOALS.md), whose sentence on applications is quoted in §1.
+`docs/TODO-post-mvp-1.md` … [docs/TODO-post-mvp-29.md](./docs/TODO-post-mvp-29.md) (most
+recently: static directories, and the interjected agent work — web access, screenshots, calling
+the app's API). The predictive-models milestone this one builds on is
+[docs/TODO-post-mvp-22.md](./docs/TODO-post-mvp-22.md), whose design is now
+[docs/TECHNICAL_DESIGN.md](./docs/TECHNICAL_DESIGN.md) §14.2. Scope and rationale are in
+[docs/GOALS.md](./docs/GOALS.md) ("Model providers", "Predictive models"), quoted in §1.
 
-An application has images. A logo, a hero, a folder of screenshots for the docs page — bytes
-that are not rows, that nobody uploads through a form, and that the person building the
-application wants to point at from a page. GOALS gave them a home in the first milestone: an
-application is "configured with … any number of subdirectories that are served statically", and
-`Application::static_dirs` has been a stored, editable, validated-on-delete field ever since
-(TODO-mvp §161–162).
+The models so far answer questions about **one table, one row at a time**: a regression over
+`houses`, a k-means over `customers`. The frame is one rectangle and every provider gets it.
+Bayesian modelling does not look like that, and the reason it does not is the reason anybody
+reaches for it: the data is **structured**. Homes sit in counties and counties have a uranium
+reading; pupils sit in classes, classes in schools; a sensor has a reading every hour except
+when it didn't; a region's disease rate is like its neighbours'. A relational database already
+holds exactly this structure — as foreign keys, as timestamps, as junction tables — and a Stan
+program wants it as flat arrays of 1-based integers and a handful of sizes. The distance between
+those two representations is where every Stan user loses an afternoon, and it is the thing this
+milestone is for.
 
-**Nothing serves them.** `router.rs` matches a request against the app's API providers and then
-falls through to `app.framework.handle`; `app.static_dirs` is read by `applications_using_file_store`,
-by the admin API's JSON, and by nothing else. An admin can fill the form in, save it, and get a
-404. So the field is a promise the server does not keep, and the agent that writes the
-application's pages has no URL it could truthfully put in an `<img src>`.
+So the centre of this milestone is not "run CmdStan" (that is a subprocess) — it is **binding**:
+tying each variable in a Stan program's `data` block to a table, a column, a foreign key or a
+time axis, checked against the program's declared types and sizes before anything is compiled;
+and then turning the posterior draws that come back into something **labelled by the database
+again** — `alpha[Aitkin County]`, not `alpha.1` — that can be read chain by chain, summarised,
+and written back into the rows it is about.
 
-This milestone keeps the promise and then tells the coding agent about it, because the two are
-one job: a URL the agent can be told about is a URL something has to serve.
-
-**Milestone definition of done:** an admin adds a static directory to an application — mount
-`/img`, store picked from a **drop-down** of the stores the application declares, path `media` —
-and `https://<app>/img/hero.png` serves `media/hero.png` out of that store with the right
-content type and an ETag. The application's coding agent, asked to put the hero image on the
-landing page, calls `list_assets_*`, is told `/img/hero.png`, and writes it into the JSX
-without being told the URL by a human. The same scenario passes in `cargo test`.
+**Milestone definition of done:** an admin has `counties` (`name`, `log_uranium`) and `homes`
+(`county` → `counties`, `floor`, `log_radon`) — Gelman & Hill's radon data, synthetic here with
+known parameters, 85 counties of which some have one home and one has none. They write
+`radon.stan`, a varying-intercept model with a county-level predictor, into a file store from
+the IDE. On the Models tab they create **Radon**, pick the **Stan** provider, point it at the
+program, take `homes` as the dataset and add `counties` as a related dataset. **Bind
+automatically** fills in `N`, `J`, `county` and `y`; they bind `x` to `floor` and `u` to
+`counties.log_uranium` by hand. **Preview data** says `N = 919`, `J = 85`. They press Fit, watch
+four chains compile, warm up and sample, and the instance comes back with every R̂ ≤ 1.01, no
+divergences, and a posterior summary in which `alpha` is **one row per county, labelled with the
+county's name** — including the county with no homes, whose interval is visibly wider. The
+`alpha` screen shows its per-chain trace and a forest plot of the 85 counties. `getModelDraws`
+returns `alpha`'s 4 × 1 000 draws keyed by county id. **Write back** puts `alpha`'s posterior
+mean and standard deviation into `counties.alpha_mean` and `counties.alpha_sd`. The model keeps its
+raw run in a file store, so **Download run** gives a zip that `cmdstanpy.from_csv` reads. The same scenario passes in `cargo test` against a
+real CmdStan (`#[ignore]`d without one), and every part of it that does not need CmdStan passes
+without.
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
@@ -37,451 +53,956 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ### 1. What GOALS says
 
-> The application also is configured with the subdomain on which it is served, any number of
-> APIs that are created under an application, and any number of subdirectories that are served
-> statically.
+> … and bayesian inference (e.g. using https://mc-stan.org/ - model configuration is the model
+> code in a stan file where the data section needs to be linked to the dataset).
 
-Three things are configured there and two of them work. This is the third.
+> Running a model creates a model instance. This has parameters that can be inspected, which
+> may be the main point of the fit. Or it can be applied to a new row in a table.
 
-### 2. Where a static directory sits in the request path
+Three commitments, in order of importance for this milestone:
 
-An application request resolves in three steps, and the new one is the middle:
+1. **The configuration is a Stan file.** Not a form that generates Stan. The admin writes (or
+   the coding agent writes, or they paste from the Stan User's Guide) a real program, and it
+   lives where every other file this system edits lives — in a file store (§6).
+2. **The data section is linked to the dataset.** The core of the milestone (§§8–12).
+3. **The parameters are the main point.** For a Bayesian model they are *draws*: every chain,
+   every iteration, every element of every parameter (§§14–16). Applying the model to a new
+   row is real (§19) but explicitly secondary: an admin who needs it and whose program is not
+   shaped for it can take the draws into code (§17) and do it there.
 
-1. **An API provider**, by longest matching mount (`router.rs`, unchanged).
-2. **A static directory**, by longest matching mount — new.
-3. **The framework**, which serves the built bundle and whose SPA fallback claims `/*`.
+### 2. Why this does not fit the existing provider seam, and what changes
 
-The order is forced. The framework must be last because its fallback answers every path, so a
-static directory behind it would never be reached. APIs must be first because an API is the
-thing an application cannot work without, and an admin who mounts a directory over one should
-find out at *save* time rather than by watching their data layer stop answering — which is
-§5's refusal.
+`ModelProvider` (design §14.2) was designed around one rectangle: `fit(frame, config, hyper)`.
+A Stan model breaks that in five places, and each break is a decision below rather than a
+special case:
 
-### 3. What is served, and to whom
+| the existing seam assumes | a Stan model has | so |
+|---|---|---|
+| one dataset | several tables: observations, groups, edges, a time axis | a model gains **related datasets** (§7) |
+| a row-major world with no order | time series need order; levels need a stable numbering | a dataset gains an **order** (§7) |
+| the host encodes the frame (one-hot, standardise) | the *program* says what it wants, variable by variable | the host **binds** instead of encoding (§§8–12) |
+| parameters are a few `ParameterBlock`s | draws: chains × iterations × thousands of elements | draws get **their own table**, one row per element per chain, summarised by the host (§§14–16) |
+| a fit takes seconds, cannot be cancelled | a compile takes a minute, sampling can take an hour, and it is a subprocess | progress, cancel, a timeout, a process budget (§13) |
 
-The remainder of the path after the mount is resolved under `StaticDir::path` inside
-`StaticDir::store`, and then read through the **same `sc_files::check_access`** every other
-reader in this system goes through, as the request's user role. That is the one decision worth
-stating out loud: a static directory is a **mount, not a grant**. It says where in the URL
-space a store's subdirectory appears; it does not say that everything under it is public. A
-file whose store or path is closed to a guest is not served to a guest, and the refusal is the
-404 an unknown path gets — a 403 would confirm the file exists to somebody not allowed to know.
+What does **not** change: a model is still a `_fd_models` row edited on the Models tab; a fit is
+still a job whose row is the registry (design §14.2, "Fitting is a job"); an instance is still what you
+inspect and what you apply; **metrics are still the host's** — for a posterior they are the
+convergence diagnostics, computed by the host from the draws, so a second Bayesian provider
+(PyMC in a module, one day) would be scored by the same code.
 
-A path that escapes the directory (`..`) is the same 404, resolved rather than string-matched,
-so there is no place to be clever about encodings.
+### 3. Nouns
 
-The content type is `sc_app::asset_content_type`, already the code framework's answer for the
-same question, so a `.png` in a bundle and a `.png` in a static directory are served identically.
-The ETag is over the bytes, and a matching `If-None-Match` is a 304: these are images, they are
-requested on every page load, and they do not change.
+The five of design §14.2 stand. Six are added, and like those five they are fixed here because
+every one of them is overloaded somewhere else.
 
-**Previews come free.** A preview is a `MountedApp` over the same `Application` record
-(`apps.rs`), so `view_app` sees the images without anything further.
+| noun | what it is | where it lives |
+|---|---|---|
+| **program** | a Stan file in a file store (plus the files it `#include`s) | the model's configuration names it; the instance snapshots it |
+| **interface** | what the program declares: its `data` variables and the shapes of its parameters and generated quantities | parsed from the program on demand; a fit records the one it ran with |
+| **related dataset** | a named `Dataset` over another table, beside the model's main one | `_fd_models.related` |
+| **dimension** | an ordered set of labelled positions `1..n`: the rows of a dataset, the distinct values of a column, the steps of a time grid | derived at bind time; its **coordinates** are stored on the instance |
+| **binding** | the rule that computes one `data` variable from the datasets and dimensions | the model's configuration |
+| **draws** | the sampler's output, per variable, per chain, per iteration | `_fd_model_draws`; the raw CmdStan run optionally also in a file store |
 
-**No CSP change.** A static directory is on the application's own origin, which
-`default-src 'self'` already allows. That is itself a reason to prefer this over an admin
-hand-writing an `img-src` for some other host.
+### 4. Where the code goes
 
-### 4. The URL, and why the agent is told a relative one
+- **`sc-model` (layer 6)** gets everything that is not Stan-specific: related datasets and
+  ordering, the `Posterior` outcome, the provider seam extensions, **the binder** (§§8–12), the
+  `_fd_model_draws` table and its reader (§14), and the posterior summary and diagnostics (§15). All of it is
+  pure Rust over frames and is unit-testable with no toolchain. Putting the binder here rather
+  than in the Stan crate is the "metrics are the host's" argument again: a Bayesian provider
+  in another language would declare an interface and receive bound data, and must not have to
+  reimplement "a foreign key becomes a 1-based index".
+- **`sc-stan` (new, layer 6, beside `sc-model` and depending on it)**: the Stan-specific half —
+  the declaration parser (§5), CmdStan discovery (§20), the compile cache and the runner (§13),
+  the CmdStan CSV reader (§14), and `StanProvider` implementing `ModelProvider`. It depends on
+  `sc-files` for the program and the optional raw-run directory.
+- **`sc-server`** registers `StanProvider` in `ModelServices` beside the built-ins, owns the
+  process budget and the cancel path, and wires the new endpoints.
+- **`sc-core-actions`** gets `write_posterior` (§16).
 
-The public URL is `//<subdomain>.<host><mount>/<path within the directory>`. The agent is told
-the **app-root-relative** part — `/img/hero.png` — for two reasons. It is what belongs in the
-JSX: an absolute URL baked into a component follows the application from `localhost:3000` to
-the production domain as a broken link. And it is the answer `preview_pane_url` already gives
-to the same question, where the host is a `{host}` placeholder resolved in the browser
-(`builder_agent.rs`), so the tree has one story about this rather than two.
+**Why Rust driving CmdStan and not a Python module over `cmdstanpy`:** the binder has to be in
+the host anyway, because it reads *several* datasets through the `DatasetSource` seam and a
+module cannot; CmdStan's interface is a command line, a JSON file and CSV files, which Rust
+handles without an interpreter; a subprocess can be **killed**, which is what makes cancel and
+a timeout possible (a Python call cannot be interrupted, design §15.2); and it keeps Stan
+available on a build without Python. There is **no Cargo feature**: the provider has no
+link-time dependency, so it is always compiled and its availability is a runtime fact
+("CmdStan was not found — …", §20), shown on the provider picker rather than hidden.
 
-### 5. The store is a pick-list, not a text field
+### 5. The program's interface: parsed by us, checked by `stanc`
 
-Today `Static directories` is three text inputs — mount, store, path — and `store` is a store's
-name typed from memory (`ApplicationForm.tsx`, `RepeatableRows`). This is wrong three times
-over, and only the first is cosmetic:
+The binder needs, for every `data` variable, its **element type** (int or real), its
+**container** and its **size expressions** — `array[N] int<lower=1, upper=J> county` is an
+int array of one dimension whose size is `N` and whose values should lie in `1..J`. For
+labelling (§15) it needs the same for every variable in `parameters`, `transformed parameters`
+and `generated quantities`: `vector[J] alpha` tells us `alpha`'s one axis has size `J`, and
+if `J` is bound to the size of the `counties` dimension, `alpha[j]` is about county `j`.
 
-- **The set is short, known, and already loaded.** `ApplicationForm` calls `listFileStores()`
-  on mount and renders the result as a multi-select for the application's store subset, twenty
-  lines above. Asking the admin to type one of those names into a box underneath is asking a
-  question whose answer is on the screen.
-- **A typo is silent, and stays silent.** Nothing validates the name on save — not
-  `save_application`, not the admin API. A misspelled store is stored, and the first sign of it
-  is a 404 from §2, or (before this milestone) nothing at all, because nothing served the
-  directory either.
-- **It quietly widens what the application reaches.** `StaticDir::store` is documented as
-  "which should be one the app declares access to" and nothing enforces the *should*. Meanwhile
-  `applications_using_file_store` counts a static directory as a reference that blocks deleting
-  a store — so a typed name can pin a store an application was never granted, and an
-  application's declared subset stops being the whole truth about which stores it touches.
+`stanc --info` gives names, base types and the *number* of dimensions — not the size
+expressions, which are the part we need. So `sc-stan` has **its own declaration parser**, and
+it is deliberately narrow:
 
-So: the drop-down offers **the application's own declared file stores**, live from the form's
-state rather than from the server's full list, and `save_application` refuses a static directory
-whose store is outside the subset, naming both. The subset is right above it on the same screen,
-so the fix for an empty drop-down is visible without scrolling, and the empty state says so.
+- comments (`//`, `/* */`), string literals, and `#include "file.stan"` resolved **inside the
+  same store**, relative to the including file (`..` out of the store, or an absolute path, is
+  refused by name);
+- the block structure by brace matching: `functions`, `data`, `transformed data`,
+  `parameters`, `transformed parameters`, `model`, `generated quantities`;
+- **top-level declarations** in `data`, `parameters`, `transformed parameters` and
+  `generated quantities` — recognised by a leading type keyword; statements are skipped;
+- the modern type grammar only (Stan ≥ 2.33 removed the old array syntax): `int`, `real`,
+  `complex`, `vector`, `row_vector`, `matrix`, the constrained forms (`simplex`, `unit_vector`,
+  `sum_to_zero_vector`, `ordered`, `positive_ordered`, `cov_matrix`, `corr_matrix`,
+  `cholesky_factor_cov`, `cholesky_factor_corr`), `array[...]`, and `<lower=, upper=, offset=,
+  multiplier=>` kept as text;
+- size expressions kept as text **and** as a tiny integer expression tree (identifiers,
+  literals, `+`, `-`, `*`, `%/%`, `%`, parentheses); anything else (a function call) is kept as text and is
+  simply not evaluable — the check that needed it is skipped and Stan performs it at runtime.
 
-A stored value the list no longer offers is still shown and still selected — the pattern the
-framework picker on this same form already uses for a framework this server does not register —
-because a form must never silently discard what it was given to edit.
+What comes out is `sc_model::Interface { data, parameters, transformed, generated }`, each a
+list of `Declaration { name, element: Int|Real|Complex, dims: Vec<SizeExpr>, stan_type: String,
+bounds: Option<(String, String)> }`, where `dims` is the full shape outer-to-inner
+(`array[N] vector[K]` and `matrix[N, K]` are both `[N, K]`, which is also how CmdStan's JSON
+nests them). A `tuple` or a `complex` in the `data` block is refused by name ("bind a tuple's
+parts as separate variables"); in the output blocks it is allowed and simply left unlabelled.
 
-This is TODO-post-mvp-1 §1.6's argument arriving in the one place it had not: a file-store
-reference should *be* a pick-list, because being one is what carries the meaning "this is a
-store" to everything downstream.
+**`stanc` is the authority on whether the program is valid.** When CmdStan is available,
+saving a model and the "Check program" button run `stanc` (no C++ compile — about a second)
+and show its diagnostics verbatim with the path mapped back to the store path; `stanc --info`
+is compared against our parse and a disagreement is a bug report in the sentence, not a
+silent preference. When CmdStan is not available the model still saves on our parse alone,
+with a notice that the program has not been checked.
 
-### 6. `list_assets`: what the agent gets
+### 6. The program lives in a file store; the instance snapshots it
 
-One read-only tool on the `coding` trait, offered when the trait's `application` setting names
-an application — which an application's builder agent always sets (`builder_agent.rs`). It is
-not behind `may_edit`: it reads names and sizes, nothing else. Named per scope like every other
-tool the trait contributes (`list_assets_web_todo`), so an agent with two scopes has two and
-neither collides.
+The configuration names `program_store` (a file-store pick-list, the `files` trait's
+server-query) and `program` (a path in it). That is the only place the program lives, so it is
+edited in the IDE, versioned by a git store, and written by the coding agent with the tools it
+already has. There is no inline-code alternative: two places a program can live is two places
+to look.
+
+A fit **snapshots** the program and every included file into the instance's `state` (they are
+kilobytes; also into the raw-run directory when there is one, §14) and records their SHA-256.
+Editing the file afterwards changes the model, never an existing instance, and the instance
+screen can say "the program has changed since this fit".
+
+### 7. Related datasets, and order
+
+`Model` gains `related: Vec<NamedDataset>` (`NamedDataset { name, dataset: Dataset, label:
+Option<String> }`), stored as a new **nullable** JSON column `_fd_models.related` — nullable, so
+`bootstrap_table` adds it to an existing installation and `TABLES_RENAME.sql` needs nothing (a
+test pins that an existing `_fd_models` gains the column on boot). The main dataset is
+addressed as **`main`** in bindings; related names are identifiers, unique, and not `main`.
+`validate_model` validates each exactly as it validates the main one, against its own table.
+
+`Dataset` gains `order: Vec<DatasetOrder { expr, descending }>` — formulas, like everything
+else in a dataset — which the `DatasetSource` puts in the `ORDER BY`, **always followed by the
+primary key** so the order is total. Other providers ignore it (their split is a hash, design
+§14.2) and it costs them nothing.
+
+Order matters for a posterior for a reason beyond time series: MCMC with the same seed over the
+same data in a **different row order** gives different draws. A total, deterministic order is
+what makes "same data, same seed, same draws" true, and that is what makes a run reproducible
+from its snapshot.
+
+`label` is a formula whose value names a row on the screen (`name` for `counties`); it
+defaults to the primary key.
+
+### 8. Dimensions: where a 1-based index comes from
+
+Every Stan index is a position in `1..n`. A database has keys. A **dimension** is the mapping
+between the two, and it is the most important object in this milestone because every label,
+every write-back and every hierarchical model runs through it.
+
+| kind | positions are | coordinates recorded | typical use |
+|---|---|---|---|
+| **rows** of a dataset | the dataset's rows in its order | each row's key and label | groups with their own table: counties, schools, sensors, regions |
+| **values** of a column | the distinct non-null values, sorted | the values | groups that are only a column: `region = 'north'` |
+| **time grid** over a date column | the steps from start to end at a fixed step, plus a horizon | each step's start instant | regular time series, forecasting |
+
+Every dataset **is** a rows dimension with the dataset's name — `main`, `counties` — so the
+common case needs no configuration. The others are declared in `dimensions` in the
+configuration.
+
+Decisions worth stating:
+
+- **A group's positions come from the group's table, not from the observations.** A county
+  with no homes is a row of `counties`, so it gets a position and a parameter, and the
+  hierarchical model gives it a prediction from the county-level predictor alone. That is the
+  point of partial pooling, and a numbering built from "the distinct county ids in `homes`"
+  would silently drop exactly the counties it is most informative about. (A **values**
+  dimension cannot do this — it only knows the values present — and the docs say so.)
+- **Positions are the instance's private business; everything that leaves the host speaks
+  keys.** A county inserted between two fits may shift every position after it. Each instance
+  stores its own coordinates, and the draws API, the summary, the write-back and the code API
+  all answer by key and label. Nothing outside an instance ever sees `alpha.37`.
+- **Sort orders are defined, not inherited**: values sort numerically for numbers, by
+  Unicode code point for text (not by locale — the order must not change with the server's
+  environment), `false < true`.
+- **A time grid** has a `step` — `N minutes|hours|days|weeks|months|quarters|years` — a start
+  (the first value floored to the step, or given), an end (the last value, or given) and a
+  `horizon` of extra steps after the end. It exposes **two** dimensions: `day` (all steps,
+  horizon included) and `day.future` (the horizon alone), so a forecast declared
+  `vector[H] y_future` is labelled with the future dates. A timestamp maps to the step it falls
+  in, in UTC; months and years step by the calendar, not by a fixed number of seconds.
+
+### 9. Bindings: one data variable, one rule
+
+The configuration's `bindings` maps each `data` variable to exactly one binding. One variable,
+one binding, no binding that produces three variables — so the form is a table with one row
+per declared variable, and every variable's provenance is one line.
+
+**The core kinds** (Phase 3):
+
+| kind | parameters | produces | binds to, e.g. |
+|---|---|---|---|
+| `value` | a JSON literal | the literal | `real prior_scale;`, `vector[3] w;` |
+| `count` | a dataset | its row count | `int N;` |
+| `size` | a dimension | its number of positions | `int J;` |
+| `column` | a dataset, a column, and for a date `time: { unit, origin }` | one value per row | `vector[N] y;` `array[N] int k;` `array[N] real t;` |
+| `columns` | a dataset, a list of columns | one row per dataset row, one column per listed column | `matrix[N, K] X;` `array[N] vector[2] xy;` |
+| `design` | a dataset, a list of columns, `standardise` | a model matrix: categoricals one-hot (reference-coded), numbers as-is or standardised | `matrix[N, K] X;` |
+| `width` | a `design`-bound variable | its number of columns | `int K;` |
+| `index` | a dataset, a column, a dimension, and optionally `match` (which column of the target dataset the values are compared with — the primary key by default) | the 1-based position of each row's value in the dimension | `array[N] int<lower=1, upper=J> county;` |
+| `present` / `absent` | a dataset, a column | the 1-based row positions where it is / is not null | `array[N_obs] int ii_obs;` |
+| `count_present` / `count_absent` | a dataset, a column | how many | `int N_obs;` |
+| `present_values` | a dataset, a column | the non-null values | `vector[N_obs] y_obs;` |
+| `segment_start` / `segment_size` | a dataset, an `index`-bound variable | for each position of the dimension, where its rows start in the dataset and how many | `array[J] int start;` |
+
+**The structured kinds** (Phase 6, for time series and space — §12): `series`, `series_present`, `cells`,
+`cells_present`, `edge_count`, `edge_from`, `edge_to`, `adjacency`, `components`,
+`component`, `icar_scale`, `points`, `distances`.
+
+Everything uses **`sc-expr` formulas as columns**, because a dataset's columns already are
+formulas: `countyⱵlog_uranium` on `main` is a join path; `homesↃcounty.length` on `counties`
+is an aggregation. The binder never learns a second way to reach across a key.
+
+`design` reuses `sc_model::encode` (design §14.2, "The encoding belongs to the instance") and
+records the encoding, so the model matrix's columns have names — which become the labels of
+whatever parameter the program sizes by `K`: `beta[floor=first]`, not `beta[2]`.
+
+A `segment_*` binding requires its dataset to be sorted by the index; the binder **sorts** the
+dataset's frame by that position (stable, so the declared order breaks ties) before anything
+else of that dataset is bound, and every binding of that dataset sees the same order.
+
+### 10. What the binder checks, and when
+
+**At save** (no data read — structure only), each with a sentence naming the variable:
+
+- every `data` variable has a binding, and every binding names a declared variable (a typo
+  lists the declared ones);
+- the binding kind can produce the declaration's element type and rank: an `index` into an
+  `int` array of rank 1, a `columns` into rank 2, a `count` into an int scalar;
+- the datasets, columns and dimensions it names exist; a `width` names a `design`; a
+  `segment_*` names an `index`.
+
+**At preview and at fit** (data read):
+
+- **Sizes.** Every size expression that evaluates is compared with the bound value's actual
+  shape — "`y` is declared `vector[N]` with `N` = 919 (the row count of `main`), but its
+  binding `counties.log_uranium` has 85 values". This is the single most useful check in the
+  milestone: it is the error CmdStan would give as "mismatch in dimension declared and found in
+  context; processing stage=data initialization", after a minute of compiling.
+- **Types.** A float column into an `int` variable is refused (write `round(x)` in the
+  dataset); a boolean becomes `0`/`1`; a date must say its `time` unit and origin; text
+  reaches Stan only through an `index` or a `design`.
+- **Declared bounds that evaluate.** `int<lower=1, upper=J>` checked against the values, so a
+  zero-based mistake is caught here rather than as a Stan exception.
+- **Nulls.** A `column`, `columns`, `design` or `index` over a column holding nulls follows the
+  dataset's **`nulls`** policy — `refuse` (the default; names the column, the count, and the
+  first row's key) or `drop` (the row leaves the dataset before anything of it is counted,
+  indexed or bound, and the count is recorded). `present`/`absent`/`present_values` and the
+  structured kinds handle nulls themselves and never trigger the policy.
+- **Unknown keys.** An `index` value that is not a position of its dimension — a home whose
+  county was filtered out of `counties` — follows the dataset's **`unknown`** policy, `refuse`
+  or `drop`, with the same reporting.
+- **Resolution order.** Datasets are resolved in dependency order — a dataset indexed *into* is
+  resolved (and its drops applied) before the datasets that index it — so a county dropped for
+  a null is an unknown key to `homes`, and the report says both. A cycle is refused by name.
+- **Size.** The total number of values in the bound data is capped (`--stan-max-data-values`,
+  default 20 million), refused by name before anything is written; `distances` is counted as
+  the n² it is.
+
+What comes out is `BoundData { json, coordinates, report }`: the CmdStan data file as a
+`serde_json::Value` (ints as ints, reals as reals with `"NaN"`/`"Inf"` strings where the value
+is non-finite, matrices as nested row-major arrays — CmdStan's JSON convention), the
+coordinates of every dimension, and the report (sizes, drops, and per-variable one-line
+summaries for the preview).
+
+### 11. Representing hierarchical data, and binding it
+
+A hierarchical model's data is groups within groups. How that sits in the database decides the
+binding, and the binder has a recipe for each shape rather than one that fits none of them
+well.
+
+| in the database | example | binding recipe |
+|---|---|---|
+| **observations with a key to a group table** | `homes.county → counties` | dataset `counties`; `J = size(counties)`; `county = index(main.county → counties)`; group-level predictors are `column`s of `counties` |
+| **nested levels, each a table** | `pupils.class → classes.school → schools` | `class = index(main.class → classes)`, `school_of_class = index(classes.school → schools)` — each level indexes the one above, as the Stan User's Guide writes it; or `index(main.classⱵschool → schools)` when the program wants the school of each pupil directly |
+| **groups that are only a column** | `homes.region` is `'north'`… | a **values** dimension over `main.region`; `index(main.region → region)`. No row, no unobserved group — said on the form |
+| **crossed factors** | `responses(person → people, item → items, correct)` (IRT) | two `index` bindings into two rows dimensions |
+| **multiple membership** | `pupil_schools(pupil, school, weight)` | a related dataset over the junction table; `index` into `pupils` and into `schools`, the weights as a `column` |
+| **group sizes the program slices by** | Stan's "ragged array" idiom | `segment_start` / `segment_size` over the `index` variable; the dataset is sorted for it |
+| **a group-level summary of the observations** | how many homes a county has | a formula on the level dataset — `homesↃcounty.length` on `counties` — because the dataset language already aggregates, so the binder does not |
+| **groups with no table and no FK — a code** | `homes.fips` matched to `counties.fips` | `index(main.fips → counties, match: fips)` |
+
+The worked example, which is the definition of done:
+
+```stan
+data {
+  int<lower=1> N;                              // count(main)
+  int<lower=1> J;                              // size(counties)
+  array[N] int<lower=1, upper=J> county;       // index(main.county → counties)
+  vector[N] x;                                 // column(main.floor)
+  vector[J] u;                                 // column(counties.log_uranium)
+  vector[N] y;                                 // column(main.log_radon)
+}
+parameters {
+  real gamma0;
+  real gamma1;
+  real beta;
+  real<lower=0> sigma_a;
+  real<lower=0> sigma_y;
+  vector[J] alpha_raw;
+}
+transformed parameters {
+  vector[J] alpha = gamma0 + gamma1 * u + sigma_a * alpha_raw;   // labelled by county
+}
+model {
+  alpha_raw ~ std_normal();
+  gamma0 ~ normal(0, 5);
+  gamma1 ~ normal(0, 5);
+  beta ~ normal(0, 5);
+  sigma_a ~ normal(0, 2);
+  sigma_y ~ normal(0, 2);
+  y ~ normal(alpha[county] + beta * x, sigma_y);
+}
+generated quantities {
+  vector[N] log_lik;                                               // labelled by home
+  for (n in 1:N) log_lik[n] = normal_lpdf(y[n] | alpha[county[n]] + beta * x[n], sigma_y);
+}
+```
+
+"Bind automatically" (§18) gets `N`, `J`, `county` and `y` right on its own from the names, the
+foreign key and the size expressions; `x` and `u` are the admin's, because nothing in the
+names says so.
+
+### 12. Representing time series and space, and binding them
+
+**Time series.**
+
+| in the database | binding recipe |
+|---|---|
+| **one row per period, no gaps** (`daily_sales(day, amount)`) | order `main` by `day`; `T = count(main)`, `y = column(main.amount)`. The binder does not *assume* regularity: a `series` binding over a time grid checks it |
+| **one row per period, with gaps** | a time grid `day` over `main.day`; `T = size(day)`; either `N_obs = count(main)`, `t_obs = index(main.day → day)`, `y_obs = column(main.amount)` (the Stan missing-data idiom), or `y = series(main.amount over day, fill 0)` with the mask `seen = series_present(main.amount over day)` |
+| **events, not periods** (`visits(at)`, one row per visit) | `y = series(count over day)` — the `series` binding **aggregates** rows that fall in one step: `count`, `sum`, `mean`, `min`, `max`, `first`, `last`, or `refuse` (the default when a value column is given) |
+| **irregular times** (`readings(at, value)` for a GP or a continuous-time model) | `t = column(main.at, time: { unit: hours, origin: min })` into `array[N] real t` |
+| **many series** (`readings(sensor → sensors, at, value)`) | long form: `index` into `sensors`, `index` into the grid, `column` for the value — best when series are ragged. Or wide: `Y = cells(value, rows: sensor → sensors, cols: at → hour, fill 0)` into `matrix[S, T] Y`, with `cells_present` into `array[S, T] int seen` |
+| **covariates per period in another table** (`holidays(day)`, `weather(day, temp)`) | a related dataset aligned to the **same grid**: `index(weather.day → day)`, or `series(weather.temp over day)`. The join is on the time bucket, not on a key — the one join the formula language cannot express, which is why the grid does it |
+| **a forecast horizon** | the grid's `horizon: 30`; `T = size(day)`, `H = size(day.future)`. The program writes `vector[H] y_future` in `generated quantities`, and it comes back labelled with the thirty future dates, ready to write into a `forecasts` table (§16) |
+
+Lags, differences, seasonality and autoregression are the **program's** business — they are
+arithmetic on an ordered vector, which Stan is good at and the dataset language is not.
+
+**Areal (lattice) space.** Regions are rows of a `regions` table. Adjacency is best stored as
+what it is, a **junction table** over `regions` with two keys (`region_adjacency(a, b)`), with
+either one row per unordered pair or both directions. The edge bindings, all over one dataset
+of that table and the `regions` dimension:
+
+- `edge_count`, `edge_from`, `edge_to` — the `N_edges`, `node1`, `node2` of the ICAR
+  formulation (Morris et al., 2019). `symmetric: dedupe` (the default) keeps each unordered
+  pair once with `node1 < node2`; a self-loop is refused; an edge to a region not in the
+  dimension follows the `unknown` policy.
+- `adjacency` — the dense `matrix[R, R]` 0/1 for a CAR written with a matrix.
+- `components` and `component` — the number of connected components and each region's, for a
+  program that constrains per component; a region with no neighbour is its own component, and
+  the preview warns about it by name because a plain ICAR over a disconnected graph is
+  improper.
+- `icar_scale` — BYM2's **scaling factor**: the geometric mean of the marginal variances of
+  the ICAR precision's generalised inverse (`Q = D − W`, per connected component; a singleton
+  component contributes 1), computed with `nalgebra`'s symmetric eigendecomposition (already in
+  the tree). This is the number every BYM2 user otherwise computes in R with INLA, and it is
+  capped (`R ≤ 5 000`) because the decomposition is cubic.
+
+Deriving adjacency from **geometry** (`ST_Touches`) needs a geometry type this system does not
+have; until it does, the junction table is filled by whatever made it (an import, a custom
+query on a PostGIS database). Named under *Carried past*.
+
+**Point-referenced space.** Sites are rows with `lat`/`lon` (or projected `x`/`y`) columns.
+`points` gives `array[N] vector[2]` or `matrix[N, 2]`, optionally **projected** to kilometres
+(equirectangular about the centroid — adequate at city-to-country scale, and said so);
+`distances` gives the `matrix[N, N]` great-circle distances in km, capped (`N ≤ 3 000`) and
+counted as n² against the data cap.
+
+**Space and time.** The composition of the two — nothing new: `index(main.region → regions)`,
+`index(main.week → week)`, the edge bindings over `regions`, and a `column` of counts; or
+`cells` for a `matrix[R, T]`. The tutorial's third model (a BYM2 spatial term plus a random-walk
+weekly term over Poisson case counts with a population offset) is exactly this.
+
+### 13. Compiling and running
+
+**Compile cache.** A compiled model is keyed by the SHA-256 of the program and its includes,
+the CmdStan version and the fixed compile options, and lives in `--stan-cache-dir` (default:
+the platform data directory, beside the modules root). A cache hit costs nothing; a miss runs
+`make` in the CmdStan directory on a copy of the program (the includes laid out beside it,
+`--include-paths` pointing only there), **one compile at a time per node** — a Stan compile is
+a C++ compile, 1–2 GB of memory and a minute of CPU, and two at once is how a small server runs
+out of memory. Never `--allow-undefined`, never admin-supplied
+`CXXFLAGS`, so a program cannot inject C++. A "Compile" button warms the cache without fitting.
+
+**One process per chain.** `<exe> sample num_warmup=… num_samples=… thin=… adapt delta=…
+algorithm=hmc engine=nuts max_depth=… id=<chain> random seed=<seed> init=<init>
+data file=data.json output file=chain-<c>.csv sig_figs=<n> refresh=<r>` — one process per chain
+rather than CmdStan's `num_chains`, because per-chain progress and per-chain failure are both
+simpler to read from separate processes, and it needs no `STAN_THREADS` build. The chains of a
+fit run in parallel up to `parallel_chains`, and every chain of every fit on the node draws from
+one **process budget** (`--stan-max-processes`, default half the available CPUs, minimum 1); a
+fit waiting for the budget says `queued`.
+
+`sig_figs` defaults to 9, not CmdStan's 6: six significant figures is a visible error in a
+posterior standard deviation computed from them.
+
+**Methods.** `sample` (NUTS) is the milestone. `optimize` (the posterior mode, one "draw") and
+`pathfinder` (approximate draws) share every line of the runner and the reader and are two
+small tasks in Phase 4; ADVI is not offered (it is deprecated in spirit, and Pathfinder is its
+replacement).
+
+**Sampler settings** are the provider's configuration, not hyperparameters — there is no grid
+search over a posterior, and a model with a hyperparameter list and the Stan provider is
+refused, as a hypothesis test is: `method`, `chains` (4), `parallel_chains`, `iter_warmup`
+(1 000), `iter_sampling` (1 000), `thin` (1), `adapt_delta` (0.8), `max_treedepth` (10),
+`seed` (empty = a fresh seed per fit, **recorded** on the instance), `init` (2, meaning
+uniform(−2, 2) on the unconstrained scale), `save_warmup` (off), `max_runtime_minutes` (60).
+
+**The job.** The existing fit job (design §14.2, "Fitting is a job"), with three additions the
+subprocess makes possible:
+
+- **Progress.** The runner parses CmdStan's `Iteration: 400 / 2000 [ 20%] (Warmup)` lines and
+  reports `stage` (`queued`, `compiling`, `sampling`, `summarising`) and per-chain
+  `{iteration, total, phase}` through a `FitProgress` sink; the host writes them to the
+  instance's `attributes.progress` at most once a second. The screen already polls.
+- **Cancel.** `cancelModelFit` sets `attributes.cancel_requested` on the row. The job reads it
+  back at each progress write and kills the chain processes (their process group). A cancel
+  works from any node, because **the row is still the registry** — there is no in-memory map
+  another node would not have. A fit whose provider cannot be cancelled (every existing one) is
+  refused by name.
+- **Timeout.** `max_runtime_minutes` kills the processes and fails the instance, saying how
+  long it ran.
+
+Children are spawned with `kill_on_drop` and, on Linux, `PR_SET_PDEATHSIG`, so a server that
+dies takes its chains with it; boot's reap (design §14.2) is unchanged, and additionally clears
+stale scratch directories. The child environment is scrubbed to `PATH`, `HOME`, `TMPDIR` and
+CmdStan's own variables.
+
+**Failures are sentences.** A `stanc` error is quoted with the store path; a data error that
+the binder somehow missed is quoted with CmdStan's variable name; "Rejecting initial value"
+after the last retry says so and suggests `init: 0` or tighter priors; any other non-zero exit
+carries the last 40 lines of that chain's output.
+
+### 14. Draws: where they are kept, and in what shape
+
+A fit of the radon model produces 4 × 1 000 draws of ~1 100 elements (91 parameters, the 85
+`alpha`s, the 919 `log_lik`s): 4.4 million numbers. That is too many for the instance's JSON
+columns, but it is **not** too many for a table of their own, and the database is where they
+belong: it is the one place every node of an installation already shares, it is written in the
+same transaction that marks the instance `fitted` (so a fitted instance always has all of its
+draws and a failed one has none — no half-published directory to reap), it is deleted with the
+instance, and it is in every backup without a second mechanism.
+
+**`_fd_model_draws`**: `id` (uuid pk), `instance` (uuid), `variable` (text — `alpha`),
+`element` (JSON — the 1-based index array, `[]` for a scalar, `[2, 1]` for `Sigma[2, 1]`),
+`chain` (int), `warmup` (bool), `draws` (JSON — the numbers, one per iteration in order). One
+row per **element per chain**, indexed on `(instance, variable)`.
+
+That granularity is the question this milestone was asked. "The chains for this parameter" is
+one indexed read; one element's chain is one value that `serde_json` parses straight into a
+`Vec<f64>`; and the row count is elements × chains — 4 400 for radon, 200 000 for a program
+that saves a 50 000-element `y_rep`, which is what `exclude_variables` is for. The obvious
+alternatives both lose: a row per *draw* is 4.4 million rows for one fit, and a row per
+*variable* makes `y_rep` one 60 MB value that must be read whole to plot one element.
+
+JSON and not `bytea` for the reason design §14.2 gives for `state`: a system table with a binary
+column would be the only one, and the numbers would be unreadable to every tool that is not
+ours. The cost is text: with CmdStan's `sig_figs` at 9 (§13) the shortest representation of a
+draw is at most about a dozen characters, so radon is **about 50 MB per fit** in `jsonb`, and
+that is the number the size bound is written in. Before sampling, the expected stored size is
+computed from the interface and the bound sizes; a run over `--stan-max-draws-bytes` (default
+1 GB) is refused by name, suggesting `thin`, fewer iterations, `exclude_variables`, or
+**`keep_draws: false`**, which keeps the summary and the diagnostics (§15) and discards the draws
+once they are computed. The rows are written in batched multi-row `INSERT`s inside the
+transaction that saves the instance.
+
+Element indices come from **CmdStan's column names** (`Sigma.2.1`), never from column position
+— CmdStan writes matrices column-major, and a reader that assumed otherwise would transpose
+every covariance matrix without a word. `lp__` and the sampler columns (`accept_stat__`,
+`stepsize__`, `treedepth__`, `n_leapfrog__`, `divergent__`, `energy__`) are stored as variables
+like any other, so the diagnostics of §15 can be recomputed from the table alone. Warmup draws
+are stored only when `save_warmup` is on, as rows with `warmup = true`.
+
+**The raw run, optionally, in a file store.** When the configuration names a `runs_store` (a
+file store) and `runs_dir` (default `stan-runs`), a fit also publishes CmdStan's own output to
+`<runs_dir>/<model name>/<instance id>/`:
 
 ```
-list_assets_<scope>(pattern?: string, dir?: string)
-→ {"assets": [
-     {"url": "/img/hero.png", "path": "media/hero.png", "store": "Assets",
-      "content_type": "image/png", "size": 184320, "modified": "…"}
-   ], "truncated": false}
+program/…            the program and its includes, as fitted (§6)
+data.json            the bound data, exactly as CmdStan read it (§10)
+coordinates.json     every dimension's keys and labels (§8)
+config.json          the method, every sampler argument, the seed, the CmdStan version
+chain-1.csv.gz …     CmdStan's own output, gzipped
+chain-1.log …        each chain's stdout/stderr
 ```
 
-Newest first, capped with the same hint `find_files` gives, the same excluded directories, the
-same §9 access rule as the caller. It walks the **application's** static directories, not the
-coding scope: the code is in one store and the images are in another, which is exactly why
-`find_files` cannot answer this. And `find_files` could not answer it anyway — a path is not a
-URL, and a model handed a path will invent the URL, which is the bug.
+This is the interoperable artifact and not a second copy for its own sake. It is what
+`downloadModelRun` zips for `cmdstanpy.from_csv`; it is what standalone generated quantities
+(§19) needs, because CmdStan reads fitted parameters only from its own CSV format and the data
+only from a file; and it is the exact reproduction of the run. CmdStan writes to a local scratch
+directory while it runs (it needs a real path), and the directory is published to the store in
+one pass after the draws are loaded. In a git-backed store a `.gitignore` of `*` is written into
+`runs_dir` on first use, so megabytes of CSV never become a commit. Without a `runs_store` the
+scratch directory is simply deleted: the draws, the summary and the program snapshot are all in
+the database, the download is a zip of per-chain draws CSVs built from the table, and the model
+form says that prediction (§19) needs a runs store.
 
-Plus one line per static directory in the session header, beside `AGENTS.md` and the repo map
-(`coding/header.rs`): `/img → store "Assets" (media), 24 files`. A model that does not know the
-tool exists will not call it, and finding out costs a turn and the admin's money.
+The instance's `state` stays small: the program snapshot and its hashes, the seed, the CmdStan
+version, the interface, the coordinates, the compiled-model cache key, and the run directory's
+location when there is one. Deleting an instance deletes its draws rows in the same transaction,
+and its run directory through a new `ModelProvider::discard(state)` hook (default: nothing),
+which the host calls on instance and model deletion.
 
-**Reading only.** Uploading an image through the agent is a grant an admin gives deliberately,
-and this milestone does not invent it.
+### 15. What the host computes from the draws
+
+**Labels.** For each output variable, each axis whose declared size expression is a bare
+identifier bound by `size(d)` or `count(d)` (or `width(X)`) gets dimension `d`'s labels (or
+the design's column names). Anything else stays numeric. The configuration's `labels` map can
+override per variable (`"y_future": ["day.future"]`), validated against the actual lengths.
+
+**The summary**, per element: mean, sd, MCSE of the mean, the 5 %, 50 % and 95 % quantiles,
+rank-normalised split-R̂, bulk-ESS and tail-ESS (Vehtari, Gelman, Simpson, Carpenter & Bürkner,
+2021 — the definitions `posterior` and ArviZ use, so our numbers agree with theirs). The
+autocovariances go through a small in-crate radix-2 FFT rather than a new dependency; the normal
+quantile function comes from `statrs`, already in the tree. Stored as one
+`ParameterBlock::Table` per variable, with the label columns first, for every variable in
+`parameters` and `transformed parameters` and for `generated quantities` variables of up to
+`--stan-summary-max-elements` elements (default 1 000); larger ones are summarised on demand
+(§16).
+
+**Metrics are the host's**, as ever: a new `Metrics::Posterior` holding the sampler
+diagnostics — divergent transitions (count and per chain), iterations that hit
+`max_treedepth`, E-BFMI per chain, the worst R̂ and the smallest bulk and tail ESS across all
+parameters, and the wall time per chain. **Warnings** are derived from them with the published
+thresholds (R̂ > 1.01, ESS below 100 per chain, any divergence, E-BFMI below 0.3, any
+tree-depth saturation) and stored on the instance as sentences — "12 divergent transitions
+after warmup: the posterior has regions the sampler cannot explore; raise `adapt_delta` or
+reparameterise" — because an admin who is not a statistician needs the diagnostic *and* what to
+do about it. A fit with warnings is still `fitted`: a posterior is not wrong because it is
+hard, and the warning is the honest output.
+
+**`optimize`** has one draw: the summary is the point estimates alone and the metrics are the
+optimiser's log density and iterations. **`pathfinder`** draws are summarised without R̂ (one
+approximation, not chains), and the screen says why the column is empty.
+
+### 16. Reading the posterior, and writing it back
+
+The API (admin, like every model endpoint):
+
+- `getModelDraws(instance, variable, elements?, chains?, warmup?, thin?)` — columnar:
+  `{ variable, dims, labels: [[…]], keys: [[…]], chains: [ { chain, draws: [[…per element…]] } ] }`.
+  `elements` selects by **key or label** (`{ "counties": ["27001"] }`) as well as by position.
+  `thin` and a cap on the returned numbers (`--stan-max-draws-response`, default 2 million)
+  keep a careless request from being a 400 MB response, refused by name with the arithmetic.
+- `getPosteriorSummary(instance, variable, elements?)` — the §15 summary for any variable,
+  including the ones too large to store.
+- `downloadModelRun(instance)` — the raw run directory as a zip when there is one (§14),
+  otherwise per-chain draws CSVs built from `_fd_model_draws` with `coordinates.json`. This is
+  the escape hatch that makes "the admin can do the rest in
+  code" true of *any* code: `cmdstanpy.from_csv`, ArviZ, R's `posterior`.
+
+**Write-back** — `writePosterior` in the API and **`write_posterior`** as an action (so a
+trigger or a workflow can refit and write back nightly, together with the `fit_model` action
+of Phase 7):
+
+- **update mode**: a variable whose axis is labelled by a **rows** dimension writes, per
+  element, the chosen statistics (`mean`, `sd`, `q5`, `q50`, `q95`, `rhat`, …) into chosen
+  fields of *that dimension's table*, matched by key. `alpha → counties.alpha_mean,
+  counties.alpha_sd`.
+- **insert mode**: one new row per element into any table — the element's coordinates into
+  chosen fields (a key, a date, a label), the statistics into others, and optionally the
+  instance id. A forecast into `forecasts(day, mean, lower, upper, instance)`.
+- A two-axis variable (`matrix[R, T]`) writes one row per cell in insert mode; update mode
+  needs a one-axis variable and says so.
+
+Writes go **through the row layer** (validated, ownership-checked, and firing the table's own
+triggers), as `update_rows` and `insert_row` do, and the target fields must be `Float` (or
+`Int` for a count statistic) — checked on the action's form, like `predict_row`'s target.
+
+### 17. The draws in code
+
+"Making predictions about new cases is secondary and it is fine if the user does some of the
+work in code" — so code must be able to reach the draws. JavaScript and Python code bodies gain
+a `models` global beside `db`:
+
+```js
+const alpha = await models.draws("Radon", "alpha");          // the active instance's draws
+// { dims: [85], labels: [["Aitkin", …]], keys: [[27001, …]], chains: [{ chain: 1, draws: [[…]] }, …] }
+const s = await models.summary("Radon", "alpha", { keys: [27001] });
+const inst = await models.instance("Radon");                  // id, status, warnings, metrics
+```
+
+The first argument is a model name (meaning its active instance) or an instance id, exactly as
+`predict_row`'s. It is `code_api_js.md`'s page and the Python equivalent that document it,
+because a method not on that page does not exist (that page's own rule). Posterior predictive
+computations for new rows — "draw `alpha[county] + beta * x` for this home" — are then ten
+lines of code over `models.draws`, which is the workaround §19 makes unnecessary for programs
+written for it.
+
+### 18. The admin UI
+
+The Models tab gains no second screen for Stan; the existing model form and instance screen
+grow the parts a posterior needs, and **none of them names Stan**. A provider declares the
+capability (`ModelProviderKind::binds_data`), and the form renders the binding editor for any
+provider that declares it — the rule `FileStoreForm` follows for git.
+
+- **The model form**, for a binding provider: the program picker (store + path, "Open in IDE",
+  "Check program" with `stanc`'s diagnostics); the main dataset builder as today, plus
+  **related datasets** (add, name, build, order, label) reusing the same builder; the
+  **dimensions** editor (values and time-grid kinds; rows dimensions are implicit and listed);
+  the **binding table** — one row per declared `data` variable showing its Stan type, a kind
+  picker filtered to the kinds that can produce that type, and that kind's fields; **Bind
+  automatically** (`suggestBindings`: a column named like the variable, a size from the
+  expressions of the variables it sizes, an `index` from a foreign key into a related
+  dataset's table, `width` beside `design`) which fills only empty rows; **Preview data**
+  (`previewModelData`) with each variable's resolved shape, first values and errors inline on
+  its row; the sampler settings; and the runs store. The split and the hyperparameter grid are
+  hidden for a posterior outcome.
+- **The instance screen**, for a posterior: while fitting, the stage and a progress bar per
+  chain, with Cancel; after, the warnings in plain language at the top, the metrics, and one
+  section per variable — the summary table with its labels, and for a chosen element its
+  **trace plot per chain** and a **histogram**; for a one-axis labelled variable a **forest
+  plot** (interval per element, sortable by label or by mean) — the plot a hierarchical model
+  is read by. Download run, Write back (a dialog over `writePosterior`), and "the program has
+  changed since this fit" when it has.
+- Plots follow the existing admin UI's charting and the `dataviz` guidance (chains are a
+  categorical series of four; one palette; readable in both themes). Every new string goes
+  through the `admin` i18n domain.
+
+### 19. Prediction for new rows (secondary)
+
+A Stan program can predict new cases **if it is written to**: extra `data` variables for the
+new rows, and a `generated quantities` variable computing the prediction. CmdStan's
+**standalone generated quantities** (`method=generate_quantities fitted_params=chain-1.csv`)
+then runs *only* that block, for new data, over the existing draws, without refitting. That is
+what makes `predict_row` possible for a posterior:
+
+- bindings may name a pseudo-dataset **`new`** — "the rows being predicted", read through the
+  main dataset's formulas and *unfiltered* (design §14.2's `predict_subject` rule). At fit time
+  `new` has no rows (Stan accepts `array[0]`);
+- `prediction` in the configuration names the generated-quantities variable whose one axis is
+  `count(new)` (`vector[N_new] y_new`);
+- it needs the model's **runs store** (§14), because CmdStan takes the fitted draws only as its
+  own CSVs and the data only as a file; a model without one is refused `prediction` on save;
+- at predict time the host takes the stored `data.json`, re-binds only the `new` variables
+  against the caller's rows **using the instance's stored coordinates** (a county not in them
+  is refused by name, as an unknown category is), and runs standalone GQ with the compiled
+  model (recompiled from the snapshot if the cache was cleared);
+- the answer is a new `Prediction::Distribution { mean, sd, q5, q95 }`, whose value in a row is
+  the mean, and whose `Outcome` resolves to `Posterior { prediction: Some(var) }`, which
+  `predicts()`.
+
+It is a subprocess per call — a second or two — so `predict_row` on a busy trigger is the wrong
+tool, and the docs say so; `predictRows` over a filter is one call for all of them. A program
+not written this way has `prediction` unset, `predicts()` false, and is inspected, not applied,
+exactly like a hypothesis test.
+
+### 20. Operations
+
+- **CmdStan** is found at `--cmdstan <dir>`, else `$CMDSTAN`, else the newest
+  `~/.cmdstan/cmdstan-*` (cmdstanpy's convention, so an existing install is picked up). Version
+  ≥ 2.33 is required (the array syntax the parser speaks, and Pathfinder); older is refused by
+  name. `feldspar cmdstan status` prints what was found, its version, and whether `make` and a
+  C++ compiler are on the path. `feldspar cmdstan install [--version V] [--dir D] [--jobs J]`
+  downloads the release tarball from GitHub and builds it — a download and a build the admin
+  runs on purpose from a shell, never something the server does on its own; `--jobs` defaults
+  to 1 for the memory reason in §13. It is the **first** thing built (Phase 0), so that the
+  machine this milestone is developed on has a CmdStan before any test needs one.
+- New server flags, machine properties like `--model-max-rows` and for the same reason:
+  `--cmdstan`, `--stan-cache-dir`, `--stan-max-processes`, `--stan-max-data-values`,
+  `--stan-max-draws-bytes`, `--stan-max-draws-response`, `--stan-summary-max-elements`.
+- **Security.** The program is admin-authored and compiles to native code, so writing to the
+  program's store is a way to change what a fit computes — the same trust as writing a code
+  body. The program cannot reach C++ (§13), includes cannot leave the store, and the process
+  inherits no secrets. Fits remain admin-only.
+- **Backups** include models, instances and their draws (all rows), which is right — an
+  instance without its draws is half an instance — and is where the size of `_fd_model_draws`
+  shows up; `keep_draws: false` and deleting old instances are the answers. Raw run directories
+  are in a file store, and a file store's backup is the store's. An instance whose run
+  directory is gone is listed with that sentence; its draws and summary still read.
 
 ---
 
-# The work
+## Phase 0 — CmdStan on the development machine, first
 
-## Phase 1 — Serving a static directory
+The integration tests of Phases 4, 9 and 11 need a real CmdStan, and building one takes a while,
+so the installer is the first thing written and this machine gets a CmdStan before anything
+else.
 
-- [x] 1.1 `sc-server/src/router.rs`: after the API-provider match and before
-      `app.framework.handle`, resolve the request against `app.static_dirs` by longest matching
-      mount (§2). The remainder under `StaticDir::path` in `StaticDir::store`, read through
-      `sc_files::check_access` as the request's user role; a closed file and an escaping path
-      are both the 404 an unknown path gets (§3). Factor the match itself into `sc-app`
-      (`Application::static_dir_for(path)`) so it is testable without a server and so the
-      longest-mount rule has one implementation, as `provider_for` does.
-- [x] 1.2 The response: `sc_app::asset_content_type`, an ETag over the bytes, `304` on a
-      matching `If-None-Match`, and the app's CSP applied by `with_csp` like every other app
-      response.
-- [x] 1.3 `sc-server/tests/`: a static directory serves a file with the right content type; a
-      second request with the ETag is a 304; `..` does not escape; a file closed to a guest is
-      404 for a guest and served to an admin; an API mounted under the same prefix still wins;
-      the framework's SPA fallback still answers a path no static directory claims.
+- [ ] 0.1 `crates/sc-stan`, layer 6 beside `sc-model`, in the workspace and the design's crate
+      table with the layering comment (§4) — only its `cmdstan` module for now.
+- [ ] 0.2 CmdStan discovery (§20): `--cmdstan`, `$CMDSTAN`, the newest `~/.cmdstan/cmdstan-*`;
+      the version read and ≥ 2.33 enforced; `make` and a C++ compiler looked for. Tests
+      against a fake CmdStan directory — found, too old, absent, no compiler.
+- [ ] 0.3 `feldspar cmdstan status` and `feldspar cmdstan install [--version V] [--dir D]
+      [--jobs J]` (§20): the release tarball from GitHub, unpacked into `~/.cmdstan` by
+      default, `make build -jJ` with `J` = 1 by default, progress printed, a half-finished
+      install removed on failure. Unit tests for the URL, the target directory and the
+      version parsing; the download itself is exercised by 0.4.
+- [ ] 0.4 Run it here: install the latest CmdStan into `~/.cmdstan` with `--jobs 1` (this
+      machine's `systemd-oomd` kills heavy parallel builds), confirm `feldspar cmdstan status`
+      finds it and compiles and samples the `bernoulli` example that ships with CmdStan, and
+      record in the project memory how the ignored tests find it (`CMDSTAN`, or the default
+      directory).
 
-## Phase 2 — The store is a pick-list
+## Phase 1 — `sc-model` groundwork: many datasets, an order, a posterior
 
-- [x] 2.1 `sc-app/src/store.rs`: `save_application` refuses a static directory whose store is
-      not in `Application::file_stores`, naming the store and the application, beside
-      `validate_api_mounts`. Refuse a mount colliding with an API mount there too (§2), for the
-      reason the API-at-`/` check is already made on save.
-- [x] 2.2 `ApplicationForm.tsx`: `RepeatableRows` grows a column kind — a `select` beside its
-      text inputs — and `Static directories`' `store` column becomes one, its options the
-      form's live `fileStores` state, a stored-but-unoffered value kept and selected, and an
-      empty state that says to add a file store above (§5).
-- [x] 2.3 Tests: a `sc-app` test for each refusal in 2.1; a vitest that the drop-down offers
-      the declared subset, that changing the subset changes the options, and that a stored value
-      outside it survives a render and a save untouched.
+- [ ] 1.1 `Dataset::order` (`DatasetOrder { expr, descending }`), validated like a column,
+      translated into the `Select`'s `ORDER BY` with the primary key appended; `Read` and
+      `CatalogDatasetSource` carry it (§7). Unit test: the rendered SQL; a DB test: a frame
+      comes back in the declared order with ties broken by key.
+- [ ] 1.2 `NamedDataset` and `Model::related`, the nullable `_fd_models.related` column, the
+      strict row mapping, `validate_model` validating each related dataset against its own
+      table, names unique and not `main` (§7). Test: an existing `_fd_models` without the
+      column gains it on bootstrap and its rows read back with no related datasets.
+- [ ] 1.3 `OutcomeSpec::Posterior` and `Outcome::Posterior { prediction: Option<String> }`
+      (`predicts()` only with a prediction; `prediction_type()` Float); `Metrics::Posterior`
+      as a type with no computation yet; the grid refused for a posterior as for a test.
+- [ ] 1.4 The seam: `Interface`/`Declaration`/`SizeExpr` (§5); `ModelProvider::interface(cfg)`
+      (async, default `None`), `fit_posterior(input, cfg, ctx)` (default: refused), `discard(state)`
+      (default: nothing); `FitContext { progress: &dyn FitProgress, cancelled() }`;
+      `ModelProviderKind::binds_data`. `run_fit` branches on `Posterior`: materialise main and
+      related (each under the row cap), bind (Phase 3), call the provider, summarise (Phase 5).
+      Tested with a stub posterior provider returning canned draws.
+- [ ] 1.5 `_fd_model_draws` (§14): bootstrapped beside `_fd_model_instances`; the rows written
+      in batches inside the transaction that saves a fitted instance, and deleted in the one
+      that deletes it; `DrawsReader` answering one variable, some elements, some chains, with or
+      without warmup. DB tests on Postgres and SQLite: the round trip, the atomicity (a failed
+      write leaves the instance `fitting`, not `fitted` with half its draws), and the delete.
+- [ ] 1.6 Instance deletion and model deletion call `discard`; `attributes.progress`,
+      `attributes.cancel_requested`, `attributes.warnings` named as constants beside
+      `ATTR_OUTCOME`.
 
-## Phase 3 — `list_assets` and the session header
+## Phase 2 — The program: the parser and `stanc`
 
-- [x] 3.1 `sc-core-traits/src/coding/assets.rs`: the tool spec and call of §6, offered when
-      `CFG_APPLICATION` is set and absent when it is not. The URL is built by the same `sc-app`
-      helper Phase 1 serves through, so the tool cannot describe a URL the router does not
-      answer.
-- [x] 3.2 `coding/header.rs`: one line per static directory in the session header (§6), left
-      out silently when the application has none or cannot be read — nothing in the header
-      fails a run.
-- [x] 3.3 Tests: `list_assets_*` over a fixture application returns the URL Phase 1 actually
-      serves (same fixture, so the two cannot drift); the glob and the cap behave as
-      `find_files`' do; a file the caller may not read is not listed; with no `application`
-      setting the tool is not in the spec list; the header names the mounts.
+- [ ] 2.1 The lexer and block splitter: comments, strings, braces, the seven block names;
+      `#include` resolved through the store relative to the including file, cycles and
+      escapes refused (§5).
+- [ ] 2.2 The declaration parser: every type of §5, constraints kept as text, the full shape
+      outer-to-inner, `SizeExpr` with its evaluator; tuples and complex in `data` refused.
+- [ ] 2.3 Unit tests over real programs: the radon model, eight schools, an AR(1), the ICAR/BYM2
+      program of Morris et al., one with `#include`, and one of every constrained type — each
+      asserting the `Interface` it should produce; and each refusal with its sentence.
+- [ ] 2.4 `stanc` against the discovered CmdStan (Phase 0): its diagnostics mapped back to store
+      paths, and `--info` compared against our parse. Tests with a fake `stanc` script, and
+      one against the real CmdStan (`#[ignore]`d without one).
+- [ ] 2.5 `StanProvider`: `kind()` (the configuration fields of §§6, 13, 14 — program store and
+      path, datasets are the model's, `dimensions`, `bindings`, `labels`, sampler settings,
+      `runs_store`, `runs_dir`, `exclude_variables`, `keep_draws`), `interface()`, `validate()` running the
+      save-time checks of §10; registered in `ModelServices`; listed with "CmdStan was not
+      found" when it was not.
 
-      **Deviation:** the stable-prefix budget (8.3) went from 1 500 estimated tokens to 1 600.
-      R§4's 1 500 was already spent to the last token — `act` measured 1 496 — and a tenth tool
-      costs about a hundred whatever it says, so the choice was this or taking a description off
-      one of the other nine. `list_assets` is the smallest spec in the set at 279 characters.
-      `docs/TECHNICAL_DESIGN.md`'s sentence on the budget says so, and it is still a test.
+## Phase 3 — Binding: the data block tied to the tables
 
-## Phase 4 — The documentation and the walk-through
+- [ ] 3.1 `sc_model::bind`: dimensions — rows (implicit per dataset, key and label), values
+      (sorted as §8 says), time grid with its calendar steps, start/end/horizon and the
+      `.future` slice (§8) — and `Coordinates`, serialisable for the instance.
+- [ ] 3.2 The core binding kinds of §9, each producing a typed value with a shape; `value`,
+      `count`, `size`, `column` (with `time` for dates), `columns`, `design` (via
+      `sc_model::encode`, encoding recorded, column names kept), `width`, `index` (with
+      `match`), `present`, `absent`, `count_present`, `count_absent`, `present_values`,
+      `segment_start`, `segment_size` (with the stable sort).
+- [ ] 3.3 The save-time checks and the data-time checks of §10: sizes against evaluated
+      expressions, element types, evaluable bounds, the `nulls` and `unknown` policies,
+      resolution order and cycles, the data-values cap — every failure a sentence naming the
+      variable, its declaration and its binding.
+- [ ] 3.4 `BoundData`: the CmdStan JSON (ints, reals, `"NaN"`/`"Inf"`, row-major nesting,
+      empty arrays), the coordinates and the report.
+- [ ] 3.5 Unit tests, one per row of §11's table, over hand-built frames: two-level radon with
+      an empty county, three-level nesting both ways, a values dimension, crossed IRT indices,
+      a weighted junction, segments; plus every refusal: a size mismatch, a zero-based index
+      caught by `lower=1`, a null under `refuse` and the same row dropped under `drop`, an
+      orphan key, a dependency cycle, the cap.
 
-- [x] 4.1 `docs/TECHNICAL_DESIGN.md` §13.2: the request path of §2, the mount-not-a-grant rule
-      of §3, and the store-subset rule of §5.
-- [x] 4.2 `docs/tutorial-code-framework.md`: a short section — put an image in a store, mount
-      it, use it from a page — and the note that a new file is live without a rebuild, because
-      the server serves it rather than the bundler.
-- [x] 4.3 Walk the definition of done by hand against a running server, and record what it
-      showed. The agent half needs an API key and spends money; if that is not available, it is
-      carried, and the `cargo test` half still stands.
-- [x] 4.4 `CHANGELOG`.
+## Phase 4 — Compiling and running
 
-### What running it by hand found
+- [ ] 4.1 The compile cache (§13): the key, the cache layout, `make` with the includes laid out
+      and nothing admin-supplied on the command line, one compile at a time per node, `stanc`
+      errors mapped back to store paths.
+- [ ] 4.2 The runner: one process per chain with the arguments of §13, `sig_figs` 9, the
+      process budget and `queued`, the scrubbed environment, `kill_on_drop` and
+      `PR_SET_PDEATHSIG`, progress parsed and sent to `FitProgress`.
+- [ ] 4.3 In `sc-server`: the budget, progress written to the instance at most once a second,
+      `cancel_requested` read back and honoured, `max_runtime_minutes`, and boot's scratch
+      cleanup.
+- [ ] 4.4 Failure sentences (§13): compile error, data error, initialisation failure, any other
+      exit with the chain's last 40 lines.
+- [ ] 4.5 The raw run (§14): scratch while running; published to `runs_store` after the draws
+      are loaded when there is one, deleted when there is not; `.gitignore` in a git store;
+      `discard` deleting it.
+- [ ] 4.6 `optimize` and `pathfinder` through the same runner.
+- [ ] 4.7 Tests against a **fake model executable** (a script that reads its arguments and
+      writes a canned CmdStan CSV with progress lines): the arguments it is given, progress
+      reaching the instance, two fits sharing a budget of one, cancel killing a sleeping chain,
+      the timeout, a non-zero exit's sentence, and the raw run directory's contents.
 
-Walked on 2026-09-22 against a debug `feldspar serve --base-domain localhost --bind
-127.0.0.1:3032 --sqlite … --file-store apps=…`, driving the admin API with `curl` as the first
-admin user: an application `todo` on the `code` framework, one file store, a static directory
-`/img → apps (store/media)`, and a `hero.png` on disk. Everything §3 promises happened —
-`http://todo.localhost:3032/img/hero.png` served the exact bytes as `image/png` with
-`etag: "bae263a2d70f2c71"`, the same request carrying that ETag was a `304`, `/img/../…` and
-`/img/%2e%2e/…` were both `404`, a second file dropped into the store served **with no rebuild
-and no restart**, a folder given `min_role: 1` through `setFileMeta` was `404` to a guest and
-`200` to the signed-in admin, and both save refusals fired with the sentences §5 asks for (an
-undeclared store, and a mount under an API's). On a second application with an API at `/api` and
-a directory at `/`, `GET /api/whoami` was the **API's** `401` rather than the directory's 404,
-and `GET /hero.png` was the image: the §2 order holds in the running server. Three things it
-found:
+## Phase 5 — Draws, summary and diagnostics
 
-1. **A static directory added by an *edit* did not serve until a build or a `SIGHUP`, and that
-   is fixed.** `updateApplication` re-mounted only a *constructed* framework (Saltcorn UI);
-   a built one — every `code` and `react` application — kept the `Application` record its mount
-   was made with, and the router resolves static directories off that record. So the admin
-   filled the form in, saved it, and the new mount's path was answered by the framework's **SPA
-   fallback**: `200` with `index.html`, which is worse than the 404 this milestone set out to
-   remove, because it looks like it worked. The mechanism to fix it already existed for the
-   locale set — `AppMounts::refresh_mount`, which rebuilds the record and the providers and
-   **keeps the bundle** — so the update handler now calls it (`refresh_mounted_app`) for every
-   framework rather than re-mounting only the constructed ones. The same edit-and-it-is-live
-   rule now covers the app's CSP, which was stale in exactly the same way and by the same
-   sentence of §13.2. Asserted in `admin_applications_api.rs`, against the bytes rather than the
-   status, because the bug's signature is a 200. Re-walked against the rebuilt server: removing
-   the directory hands its path back to the SPA fallback, adding it serves the file on the very
-   next request, and an edited CSP is on the next response — no build, no signal, no restart.
-2. **The agent half is carried: this machine has no API key.** `POST /api/applications` said so
-   itself — `no LLM provider is connected, so the `build-todo` agent that builds this
-   application was not created`. What the agent would be told is pinned by
-   `app_static_dirs.rs`'s `list_assets_returns_the_urls_the_router_serves`, which fetches every
-   URL the tool hands the model through the real router; what is unwalked is a model reading the
-   session header and writing the `<img>` itself.
-3. **`feldspar serve --sqlite` still announces the config file's Postgres environment.** The
-   line `database configured from the `production` environment of …/feldspar.toml` is printed
-   before `--sqlite` overrides it; the server does use the SQLite file (its `_fd_*` tables were
-   created there and the production database was untouched). Cosmetic, out of this milestone,
-   and noted because the first reading of that line is alarming.
+- [ ] 5.1 The CmdStan CSV reader: comment lines (adaptation, timing), the header, element
+      indices from the **names** (a column-major matrix read back correctly), sampler columns,
+      warmup rows when saved.
+- [ ] 5.2 Loading the draws (§14): the CSVs read chain by chain into `_fd_model_draws` rows
+      (Phase 1.5), `exclude_variables`, `keep_draws: false`, and the size estimate with its
+      `--stan-max-draws-bytes` refusal before sampling.
+- [ ] 5.3 The summary (§15): mean, sd, MCSE, quantiles, rank-normalised split-R̂, bulk- and
+      tail-ESS, with the FFT in-crate. Tested against reference numbers from `posterior`
+      (R) or ArviZ, pasted as constants with the command that made them in a comment — on a
+      well-mixed normal, on an AR(1) chain with high autocorrelation, and on four chains
+      where one is stuck (R̂ must be large).
+- [ ] 5.4 `Metrics::Posterior` and the warnings with their sentences (§15); the `optimize` and
+      `pathfinder` variants.
+- [ ] 5.5 Labels (§15): axes matched to dimensions through the size expressions, the `labels`
+      override checked against lengths, and the per-variable `ParameterBlock::Table`s with
+      the label columns first.
 
-## Interjected — web access for agents (the `http` trait)
+## Phase 6 — Time series and space
 
-Asked for directly, outside this milestone: can a coding agent read a library's documentation?
-It could not — no trait reached the web, and the only route was `shell_*` with `shell_network`
-on, i.e. `curl` returning raw HTML into the context. Design and the survey of how other agents
-bound a page's size are in `docs/TECHNICAL_DESIGN.md` §11.3, "The web".
+- [ ] 6.1 `series` and `series_present`: one value per step of a grid (or position of any
+      dimension), `fill`, and the aggregations `count sum mean min max first last` or `refuse`.
+- [ ] 6.2 `cells` and `cells_present`: the two-axis version into `matrix[R, C]` /
+      `array[R, C] int`.
+- [ ] 6.3 The edge bindings: `edge_count`, `edge_from`, `edge_to` (with `symmetric: dedupe`),
+      `adjacency`, `components`, `component`; self-loops refused, isolated regions warned.
+- [ ] 6.4 `icar_scale` with `nalgebra` per connected component, singleton components as 1,
+      the `R ≤ 5 000` cap; tested against the scaling factors published for a small graph
+      (and a 4 × 4 lattice computed independently, pasted as a constant).
+- [ ] 6.5 `points` (with the optional projection) and `distances` (great-circle km), with
+      their caps.
+- [ ] 6.6 Unit tests, one per row of §12's tables: gaps on a daily grid both ways, events
+      counted into days, a monthly grid across a year boundary, a horizon labelled with future
+      dates, a weather table aligned to the grid, a panel long and wide, and a
+      region/week spatiotemporal binding.
 
-- [x] W.1 `sc-core-traits/src/http/guard.rs`: the host policy — public addresses only unless
-      opened, an optional allow-list with subdomains, checked on every redirect hop; a resolver
-      that filters what the client connects to.
-- [x] W.2 `http/client.rs`: redirects by hand, headers dropped on a host change, a whole-request
-      deadline, a 5 MB read cap that is reported rather than silent.
-- [x] W.3 `http/document.rs`: HTML to the Markdown of its main content (`htmd`), links absolute,
-      permalinks and `data:` images removed; JSON pretty-printed; binary described.
-- [x] W.4 `http/page.rs` and `http/cache.rs`: the window, the outline, `find`, and the per-run
-      cache that makes paging free.
-- [x] W.5 `http.rs`: the trait — `fetch_<name>`, its form, `elide`, `run_ended`; registered with
-      the built-ins.
-- [x] W.6 Tests: unit tests per module; `tests/http_fetch.rs` against a local server (paging,
-      cache hits counted on the wire, redirects, 404, `POST`, headers, a whole agent run);
-      `docs_agents.rs` pins the tutorial's names. Design §11.3, tutorial Step 10, `CHANGELOG`.
+## Phase 7 — The API, the actions and the code API
 
-- [x] W.7 Every framework's builder agent (`sc_app::framework_builder_agent`) carries `http`:
-      `fetch_web`, read-only, public hosts, no allow-list (design §11.3, "The web"). The eval
-      harness now applies a task's `checks`/`workflow` to `coding` alone, since `http` and
-      `preview_pane` refuse settings they do not declare.
-- [ ] W.8 Agent trait configuration is not redacted when an agent is read back (streams do this
-      with `redact_attrs`/`merge_secrets`). `http`'s `headers` is declared `secret()` so it will
-      be covered when agents adopt it; until then an admin reading the agent sees the key.
-      (The builder's own `http` carries no headers, so it has no key to show.)
+- [ ] 7.1 `listModelProviders` carries `binds_data` and CmdStan's availability;
+      `getProgramInterface(store, path)` (the parse and `stanc`'s diagnostics);
+      `previewModelData(model)`; `suggestBindings(model)` (§18); `compileModel(model)`.
+- [ ] 7.2 `cancelModelFit(instance)` (§13), refused for a provider that cannot cancel.
+- [ ] 7.3 `getModelDraws`, `getPosteriorSummary` and `downloadModelRun` (§16) with the response
+      cap and selection by key or label.
+- [ ] 7.4 `writePosterior` and the `write_posterior` action (§16): update and insert modes,
+      through the row layer, target types checked on the form.
+- [ ] 7.5 The **`fit_model` action** (carried from TODO-post-mvp-22): start a fit of a named
+      model from a trigger or a workflow, optionally activating the result when it has no
+      warnings — what makes "refit and write back every night" two steps.
+- [ ] 7.6 `models.draws`, `models.summary`, `models.instance` in JavaScript and Python code
+      bodies (§17), documented in `code_api_js.md` and its Python counterpart.
+- [ ] 7.7 API tests over a stub posterior provider (no CmdStan): the lifecycle, preview with an
+      inline error, suggest, cancel, draws by key with thinning and the cap, a summary on
+      demand, write-back in both modes firing the target table's trigger, the zip's contents,
+      `fit_model` from a trigger, and the code API from both languages.
 
-## Interjected — skip unchanged application builds at boot
+## Phase 8 — The admin UI
 
-Asked for directly: every boot re-ran every application's bundler, which is most of the start-up
-time. The boot path now keys each build on git's tree hash of the working directory (staged,
-unstaged and untracked-but-not-ignored changes all included), and reuses the previous output
-when nothing changed.
+- [ ] 8.1 The model form for a `binds_data` provider (§18): program picker with Check and
+      Open in IDE, related datasets, dimensions, the binding table with kinds filtered by
+      declared type, Bind automatically, Preview data with per-row errors, sampler settings,
+      runs store; split and grid hidden for a posterior.
+- [ ] 8.2 The instance screen for a posterior: stage and per-chain progress with Cancel;
+      warnings, metrics, per-variable summary tables with labels; trace per chain,
+      histogram, and the forest plot; Download run; Write back; "the program has changed".
+- [ ] 8.3 `models.ts` helpers and their tests: which binding kinds fit a declaration, the
+      binding editor's parse and print, the warning ordering, the forest plot's sort, and
+      the element selection by key/label; strings in the `admin` i18n domain.
 
-- [x] B.1 `sc-app/src/build_cache.rs`: the key — the source subtree's tree hash written from a
-      throwaway index, the build spec, the Feldspar version and the generated files' bytes;
-      the stamp kept in the repository's git dir. `build_application_if_changed` uses it;
-      `mount_all` calls it, while the Build button, the tools and a restore still always build.
+## Phase 9 — Prediction for new rows (secondary)
 
-## Interjected — build no applications at boot
+- [ ] 9.1 The `new` pseudo-dataset and `prediction` in the configuration; at fit time `new` is
+      empty; `Outcome::Posterior { prediction }` resolved from it (§19).
+- [ ] 9.2 Standalone generated quantities: `data.json` re-bound for `new` only with the stored
+      coordinates, the compiled model from the cache or recompiled from the snapshot, the CSVs
+      fetched from the store to scratch; `Prediction::Distribution` from the GQ draws.
+- [ ] 9.3 `predict_row` and `predictRows` accepting a posterior instance; an unknown county
+      refused by name. Tests with the fake executable; one ignored test with real CmdStan.
 
-Asked for directly: building every application at startup was still slowing boot down. Boot now
-mounts each application from what its last build left on disk, as a `SIGHUP` reload does.
+## Phase 10 — Operations
 
-- [x] B.2 `mount_all` builds nothing: it and `reload_all` share `apps::mount_from_disk`. An
-      application that has never been built is logged and skipped. The Build button, the tools
-      and a restore still always build.
+- [ ] 10.1 The server flags of §20 in `ServerConfig`, the CLI and the config file, with their
+      defaults and their tests.
+- [ ] 10.2 `docs/OPERATIONS.md`: installing CmdStan (and its disk and memory), the flags, the
+      compile cache, the size of `_fd_model_draws` and `keep_draws`, the raw run directories
+      and their backup, the security paragraph of §20.
 
-## Interjected — a "None" framework
+## Phase 11 — Real CmdStan, documentation and the definition of done
 
-Asked for directly: picking a framework when creating an application should offer "None" — an
-application of APIs, static directories and streams with no build step — and it should still
-get a coding agent, to write static assets such as HTML and CSS.
+- [ ] 11.1 `crates/sc-server/tests/stan_models.rs`, `#[ignore]`d unless `CMDSTAN` is set: the
+      radon definition of done end to end on synthetic data with known parameters (the
+      recovered `gamma0`, `gamma1`, `beta` inside their 90 % intervals, the empty county's
+      interval wider than the median county's, labels by name, draws by key, write-back);
+      an AR(1) with gaps and a 14-day forecast labelled with dates; a BYM2 over a small
+      lattice with a weekly random walk. Fixed seeds, small iteration counts.
+- [ ] 11.2 `docs/TECHNICAL_DESIGN.md`: §14.2 gains "Bayesian models" (the nouns, the binder,
+      dimensions and coordinates, `_fd_model_draws` and the optional raw run, the host's summary), the crate table and
+      layer diagram gain `sc-stan`.
+- [ ] 11.3 `docs/tutorial-stan.md`: radon (the definition of done), a daily time series with a
+      forecast written into a `forecasts` table, and the spatiotemporal BYM2 — each with its
+      tables, its program, its bindings and what to read on the instance screen. A section
+      "Doing prediction in code" over `models.draws`.
+- [ ] 11.4 README §3, `CHANGELOG`.
+- [ ] 11.5 The definition of done by hand on a real server with a real CmdStan, and what it
+      found written down here.
 
-- [x] N.1 `sc-app/src/none.rs`: `none` as a compiled-in `FrameworkFactory` (settings `store` and
-      `source`; `serves_ui` false; strict CSP; a framework that 404s everything). Listed after
-      the installed factories.
-- [x] N.2 Its builder agent (`builder_agent_in`): `coding` over the store and directory, naming
-      the application, no checks, and a prompt listing the static directories, APIs and
-      streams. `coding`'s `application` setting now accepts an application with nothing to
-      build: `check` passes the "build", and the preview is mounted through the factory.
-- [x] N.3 A static directory serves `index.html` for a directory request. The admin API's
-      `source` and the sidebar's "Edit code" cover a `none` application's directory.
-
-## Interjected — invitations, forgotten passwords, and `users` behind an app's API
-
-Asked for directly: a therapist, signed in to a therapists' app, creates an account for a
-patient; the patient is emailed a link that opens the *patients'* app, chooses a password there
-and is signed in. Also asked for: "forgot password" in general, and closing what exposing the
-`users` table to an app opened (the hash was readable, and `role` writable upwards).
-
-- [x] P.1 `sc-auth/src/password_tokens.rs`: `_fd_password_tokens` (SHA-256 of a 256-bit token,
-      purpose, expiry — 7 days for an invitation, 1 hour for a reset), `invite_user` (an account
-      with **no password**, only to a role less powerful than the inviter's; resent to a pending
-      account, `AlreadyActive` for one in use), and `redeem_password_token` (single use by
-      `DELETE … RETURNING`; ends the user's other tokens and sessions).
-- [x] P.2 `sc-api/src/rest/password.rs`: `POST {mount}/invite` (settings `allow_invite` and
-      `invite_min_role`; role, target app, subject, body/html and from-address in the call),
-      and on every app `POST {mount}/forgot-password` (always `{ok: true}`, one link a minute,
-      sent off the request) and `POST {mount}/set-password` (signs in). Links are
-      `{origin}/set-password#token=…`, the origin coming from the router's `AppDirectory`, so
-      only a served application can be linked to.
-- [x] P.3 `sc-api/src/user_rows.rs`: through any app API the users table never reads, filters,
-      orders, embeds or types `password_hash`, and never writes it; below admin, a written role
-      must be less powerful than the caller's (own row: may keep it), and updates/deletes reach
-      only the caller's own row and less powerful accounts'. A signed-in caller refused by
-      `Error::auth` gets `403` from the REST provider.
-- [x] P.4 The React scaffold: `src/SetPassword.tsx` on a public `/set-password` route,
-      "Forgot your password?" in `src/Login.tsx`, `setPassword`/`forgotPassword` in
-      `src/auth.tsx`; the runtime README and the builder agents' prompts describe all three.
-- [x] P.5 Tests: `sc-auth/tests/db_password_tokens.rs`, `sc-server/tests/app_invite.rs` (the
-      therapist → patient flow end to end, the role rules, forgot-password, the `users`
-      table), unit tests in `password_tokens.rs`, `user_rows.rs`, `rest/password.rs`.
-
-## Interjected — custom queries in JavaScript and Python
-
-Asked for directly: an application's "Custom SQL queries" become "Custom queries", each written
-in SQL, JavaScript or — where this server runs Python — Python, chosen by a drop-down per query.
-A JavaScript or Python body reads the request as `body` and `query`.
-
-- [x] Q.1 `sc-api/src/rest/custom.rs`: `CustomQuery::language` (`sql` by default); a code query's
-      source is not read as SQL, is not described, and projects an opaque-JSON response. The
-      REST provider runs it through the dispatcher's `run_js_code` / `run_python_code`
-      (`TriggerDispatcher::run_code`), with `body`, `query` and `user` in scope.
-- [x] Q.2 The application form: "Custom queries", a language drop-down per query (Python only
-      when the server can run it), a code editor for a JavaScript or Python body.
-- [x] Q.3 Tests, design §13.4, `CHANGELOG`.
-
-## Interjected — agents look at screenshots and image files
-
-Asked for directly: a coding agent on a visual model should be able to take a screenshot and see
-it, and to look at an image file in the code store or in a store the application serves
-statically. `view_app` already had `screenshot` for a `vision` model, but only after a green
-`check` in the same run and only in `act`, so a builder, which starts in `plan`, could not see
-the page it was asked about. No tool showed a model an image file.
-
-- [x] I.1 `view_app` with no preview in the run mounts one from the **live build**
-      (`sc_app::app_output_dir`, through `AppPreviewer::mount_preview`) and says so in the result;
-      a later green `check` re-mounts it with the run's own build. Offered in `plan` with the
-      looking actions only (`goto`, `wait_for`, `snapshot`, `screenshot`); the plan prompt says to
-      look before planning a visible change.
-- [x] I.2 `coding/view_image.rs`: `view_image_<slug>`, for a model with `vision`, in every mode.
-      `path` in the scope, or `url` in one of the application's static directories, resolved and
-      access-checked as the router does. PNG/JPEG/GIF/WebP; anything over 1 568 px or 1.5 MB is
-      scaled and re-encoded (`image` crate, already in the tree). `read_file` on an image names it.
-- [x] I.3 Tests: `coding_images.rs` (both names, 404-shaped refusals, a closed store, vision
-      gating, `plan`'s look-only `view_app`), unit tests in `view_image.rs`, `view_app.rs`'s
-      live-build run against Chromium, the IDE relay's label. Stable-prefix budget 2 000 → 2 100
-      (measured `act` 2 072, `plan` 2 032). Design §11.3, the agents tutorial, `CHANGELOG`.
-
-## Interjected — agents call the application's API
-
-Asked for directly: a coding agent should be able to send a request to the application's API and
-see the response, and to choose which user it is sent as, or send it unauthenticated. Until now
-the only way an agent saw an endpoint's answer was through a page in `view_app`, and only as the
-person chatting.
-
-- [x] C.1 `sc_agent::AppRequester` (`AppHttpRequest`/`AppHttpResponse`), a third capability in
-      `ViewServices` beside the previewer and the browser, on `TraitContext::requests` with
-      `require_requests`, and `Runner::with_requests`.
-- [x] C.2 `sc_server::AppRequests`, installed by `serve` (`install_app_requests`): the request
-      is dispatched in process through the router to the application's live mount, with a CSRF
-      token and, for a user, a session made for the one request and deleted after it. 1 MB
-      body cap, 30 s timeout.
-- [x] C.3 `coding/call_api.rs`: `call_api_<slug>`, offered in every mode wherever the
-      `application` setting names one — no grant. `user` absent → the caller (or `view_app_user`),
-      `"public"` → no session, an email → that user, another user's for an admin's run only.
-      `GET`/`HEAD` only outside `act` (`plan`, `explore`). Result: status line, the headers that say something, the
-      body pretty-printed and capped; `set-cookie` values hidden; elides to its status line.
-- [x] C.5 No `may_call_api` checkbox: an agent saved without it was never offered the tool and
-      reported that nothing could make a live HTTP request. Offered like `list_assets` instead,
-      and in `explore` too, where a planner's questions go. Test: offered in every mode with no
-      grant, not without an application, `GET` from `explore` and a `DELETE` refused there.
-- [x] C.6 Fuller tool descriptions, and a stable-prefix budget of 4 000 (was 2 200). Every
-      `coding` tool says what it returns, when to use it and the rule that trips a model up;
-      every parameter says what it is for; `list_assets` says it lists every served file, not
-      only images. The workflow names `call_api` in `plan`, `act` and `explore` wherever there is
-      an application (test: `every_mode_says_to_ask_the_api_where_there_is_an_application`).
-      Measured `act` 3 130, `plan` 3 038.
-- [x] C.4 Tests: unit tests in `call_api.rs`; `sc-server/tests/call_api.rs` through the real
-      router (as the caller, as `public`, as another user by an admin, refused to a member, a
-      `POST` in `act` and refused in `plan`, no one to send as, an unmounted subdomain, no
-      session left behind); the IDE relay's label. Stable-prefix budget 2 100 → 2 200
-      (measured `act` 2 190, `plan` 2 138). Design §11.3, the agents tutorial, `CHANGELOG`.
+---
 
 ## Explicitly OUT of scope for this milestone
 
-- **Uploading or writing assets from the agent.** §6. Reading is what the use case needs, and a
-  write grant is a decision an admin makes on purpose.
-- **Image transformation** — the `?w=1` resizing `/files/serve/` understands. A static directory
-  serves the bytes that are there.
-- **A directory listing.** A mount serves files, not an index; an index is a page, and a page is
-  something the application's own code writes.
-- **Unifying `/files/serve/` and static directories.** Saltcorn UI's route is a framework's own,
-  with a store named in the path and that framework's access rules; folding the two together is
-  a route change for every existing Saltcorn UI application and buys nothing this milestone
-  needs.
-- **Making a framework's `store` setting a pick-list** (TODO-post-mvp-1 §1.6's other half). The
-  same argument applies and the fix is elsewhere: a framework declares its settings as data, so
-  it needs a way to say "this one is a file store", which is a change to the settings vocabulary
-  rather than to a form.
-
-## Interjected — a VS Code-style source-control panel for git file stores
-
-Asked for directly: the git operations on a file store's edit screen were a column of generic
-forms (a paths textarea, a commit-message box, a branch box). They should look and behave like
-VS Code's Source Control view.
-
-- [x] G.1 `discard` operation (`GitRepo::discard`, `OP_DISCARD`): unstaged edits revert to the
-      index, untracked files are deleted, staged work is untouched. Paths are required, each
-      must be a listed unstaged change, and they are passed with `--literal-pathspecs`.
-- [x] G.2 The status payload carries `upstream` (for Publish branch) and `can_clone` (no clone,
-      and the directory is missing or empty).
-- [x] G.3 `ui/admin/src/screens/SourceControl.tsx` + `sourceControl.ts`: Clone only when
-      `can_clone`; a growing commit message box with Commit beside it, turning into Push
-      (Pull when behind, Publish branch without an upstream); Merge / Staged / Changes groups
-      with M/A/D/U letters and hover stage/unstage/discard, group-header stage/unstage/discard
-      all; a branch dropdown with "Create new branch…". Chosen by the status payload's shape,
-      not the backend name, so `FileStoreForm` still never names git.
+- **A form that writes Stan.** GOALS says the configuration *is* a Stan file. A `brms`-style
+  formula front end (`y ~ x + (1 | county)`) generating a program is a good idea and a
+  different milestone; this one makes the program's data binding good enough that writing the
+  program is the only hard part left.
+- **PyMC, NumPyro, JAGS, or a Bayesian provider in a module.** The seam is built for them —
+  `interface`, bound data, draws the host summarises — but crossing the module boundary with
+  it (a module declaring an interface, returning draws) is its own piece of work.
+- **LOO, WAIC and model comparison.** `log_lik` in the radon example is there so the draws are
+  ready for it; PSIS-LOO needs a generalised Pareto fit and a comparison screen. Carried past.
+- **Prior and posterior predictive check plots.** The draws of `y_rep` are available; a plot
+  that overlays them on `y` is a screen, not a mechanism.
+- **Simulation-based calibration, ADVI, and `laplace`.** Pathfinder replaces ADVI; the rest are
+  a statistician's tools, not an admin's.
+- **Within-chain parallelism** (`reduce_sum`, `STAN_THREADS`, MPI, OpenCL). A program that
+  uses `reduce_sum` still compiles and runs, on one thread per chain.
+- **Geometry and adjacency from shapes.** §12.
+- **Time zones on a time grid.** UTC, said so; a `tz` setting on the grid is small and nobody
+  has asked yet.
+- **Durable fits.** A fit still does not survive a restart (design §14.2) — the chains die
+  with the server, by construction.
 
 ## Carried past this milestone
 
-- From TODO-post-mvp-28: the rest of 3.6 — `de`, `es`, `zh-Hans` and `ar` for all three domains,
-  and `fr` for `admin` (833 messages) and `builder` (339). One `feldspar i18n translate
-  --domain D --locale L` per file, against a configured provider. **3.6 itself has the recipe**:
-  the provider row the key goes in, the loop over the fifteen files, and what to do with what
-  the validator refuses.
-- From TODO-post-mvp-28: the non-JSX half of 3.4's sweep (see its deviations) — the `setError`
-  fallback sentences, and `deleteConfirmation`/`libraryDeleteConfirmation`, which are pure
-  functions in `.ts` modules whose unit tests assert the English they build.
-- From TODO-post-mvp-27: the live-broker half of the streams definition of done (10.3). It needs
-  a real MQTT broker, which this machine has not got; `docs/tutorial-streams.md` is the script.
+- **LOO/WAIC and an instance comparison view** — PSIS-LOO over `log_lik` in `sc-model`, and the
+  side-by-side screen TODO-post-mvp-22 already wanted.
+- **A formula front end generating Stan** (brms-style), which would make the binding
+  automatic because the program would be ours.
+- **Bayesian providers from modules**: `@sc.model_provider(binds_data=True)` receiving bound
+  data and returning draws.
+- **Geometry types and adjacency from `ST_Touches`.**
+- From TODO-post-mvp-29: W.8 — an agent's trait configuration is not redacted when the agent is
+  read back (streams do this with `redact_attrs`/`merge_secrets`); `http`'s `headers` is
+  declared `secret()` and will be covered when agents adopt it. And the agent half of that
+  milestone's definition of done, which needs an API key.
+- From TODO-post-mvp-28: the rest of 3.6 — `de`, `es`, `zh-Hans` and `ar` for all three
+  domains, and `fr` for `admin` and `builder` — and the non-JSX half of 3.4's sweep. The
+  recipes are in [docs/TODO-post-mvp-28.md](./docs/TODO-post-mvp-28.md).
+- From TODO-post-mvp-27: the live-broker half of the streams definition of done (10.3).
 - From TODO-post-mvp-26: running the agent eval against a real provider (11.4) and walking the
-  agent milestone's definition of done by hand (12.3). Both need an API key and spend money;
-  `docs/AGENT_EVAL.md` has the command and the heading the numbers go under.
+  agent milestone's definition of done by hand (12.3).
 - From TODO-post-mvp-25: page groups, HTML-file pages, copilot layout generation, uploading from
   the builder, v1's help topics, formula-editor completions, replacing CKEditor 4, a menu editor,
   cloning pages and views, sharing library items, collaborative editing, and the builder in a
@@ -489,3 +1010,5 @@ VS Code's Source Control view.
 - From TODO-post-mvp-24: `room`/`workflow-room` and realtime, tags, file upload from an Edit
   view, themes as plugins, a v1 `db` module for plugins, and externalising inline handlers to
   drop `'unsafe-inline'` from Saltcorn UI's CSP.
+- From TODO-post-mvp-22: statsmodels as a second bundled module, k-fold cross-validation,
+  application-facing prediction, a fit as a durable workflow run, predicted-value caching.
