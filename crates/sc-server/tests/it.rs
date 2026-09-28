@@ -95,6 +95,8 @@ mod metadata_tables_api;
 mod model_admin_api;
 #[path = "model_dataset.rs"]
 mod model_dataset;
+#[path = "model_fit_job.rs"]
+mod model_fit_job;
 #[path = "modules_api.rs"]
 mod modules_api;
 #[path = "other_events.rs"]

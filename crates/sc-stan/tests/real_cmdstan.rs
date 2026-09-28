@@ -177,3 +177,205 @@ async fn stanc_agrees_with_our_reading_of_every_test_program() {
     assert!(!err.contains(&work.display().to_string()), "{err}");
     std::fs::remove_dir_all(&work).unwrap();
 }
+
+/// A program fitted **through the provider** against the real CmdStan (TODO
+/// Phase 4): compiled into the cache (with an `#include`, so the include path
+/// reaches `stanc` through `make`), run one process per chain with our
+/// command line, the draws read back by column name, and the raw run
+/// published. Then `optimize` and `pathfinder` over the same executable,
+/// which proves their command lines too — and a compile error in `stanc`'s
+/// words.
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn a_program_is_compiled_sampled_and_published_through_the_provider() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use sc_files::{FileStore, LocalFileStore};
+    use sc_model::{FitContext, FitStage, InstanceId, ModelProvider, PosteriorInput, Progress};
+    use sc_stan::compile::CompileCache;
+    use sc_stan::run::ProcessBudget;
+    use sc_stan::{StanProvider, config_keys};
+    use serde_json::json;
+
+    struct Stages(std::sync::Mutex<Vec<FitStage>>);
+    impl sc_model::FitProgress for Stages {
+        fn report(&self, p: &Progress) {
+            let mut stages = self.0.lock().unwrap();
+            if stages.last() != Some(&p.stage) {
+                stages.push(p.stage);
+            }
+        }
+    }
+
+    let cmdstan = cmdstan();
+    let work = scratch("provider");
+    let programs = work.join("programs");
+    std::fs::create_dir_all(programs.join("lib")).unwrap();
+    std::fs::write(
+        programs.join("bernoulli.stan"),
+        "data {\n#include lib/data.stan\n}\nparameters { real<lower=0, upper=1> theta; }\n\
+         model { theta ~ beta(1, 1); y ~ bernoulli(theta); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        programs.join("lib/data.stan"),
+        "int<lower=0> N;\narray[N] int<lower=0, upper=1> y;\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(work.join("runs")).unwrap();
+    let stores: Vec<Arc<dyn FileStore>> = vec![
+        Arc::new(LocalFileStore::new("programs", &programs).unwrap()),
+        Arc::new(LocalFileStore::new("runs", work.join("runs")).unwrap()),
+    ];
+    let lookup = move |name: &str| -> sc_error::Result<Arc<dyn FileStore>> {
+        stores
+            .iter()
+            .find(|s| s.name() == name)
+            .cloned()
+            .ok_or_else(|| sc_error::Error::not_found(name.to_owned()))
+    };
+    let provider = StanProvider::new(Arc::new(lookup), Ok(cmdstan))
+        .with_scratch(work.join("scratch"))
+        .with_cache(CompileCache::new(work.join("cache"), "make"))
+        .with_budget(ProcessBudget::new(2));
+    let input = |instance| PosteriorInput {
+        model: "Bernoulli".into(),
+        instance: Some(instance),
+        datasets: vec![],
+        interface: None,
+        data: json!({ "N": 10, "y": [0, 1, 0, 0, 0, 0, 0, 0, 0, 1] }),
+        coordinates: Default::default(),
+    };
+    let config = |extra: serde_json::Value| -> sc_types::Attrs {
+        let mut c = json!({
+            config_keys::PROGRAM_STORE: "programs",
+            config_keys::PROGRAM: "bernoulli.stan",
+            config_keys::CHAINS: 4,
+            config_keys::ITER_WARMUP: 500,
+            config_keys::ITER_SAMPLING: 1000,
+            config_keys::SEED: 4711,
+            config_keys::RUNS_STORE: "runs",
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            c[k] = v.clone();
+        }
+        serde_json::from_value(c).unwrap()
+    };
+    let cancel = AtomicBool::new(false);
+
+    let stages = Stages(Default::default());
+    let instance = InstanceId::new();
+    let fitted = provider
+        .fit_posterior(
+            &input(instance),
+            &config(json!({})),
+            &FitContext::new(&stages, &cancel),
+        )
+        .await
+        .unwrap();
+    // Two of the four chains wait for the budget of two, but the fit is
+    // sampling, not queued, once its first chain runs.
+    assert_eq!(
+        *stages.0.lock().unwrap(),
+        [
+            FitStage::Compiling,
+            FitStage::Sampling,
+            FitStage::Summarising
+        ]
+    );
+    let theta: Vec<f64> = fitted
+        .draws
+        .iter()
+        .filter(|s| s.variable == "theta")
+        .flat_map(|s| s.draws.iter().copied())
+        .collect();
+    assert_eq!(theta.len(), 4000);
+    let mean = theta.iter().sum::<f64>() / theta.len() as f64;
+    // Beta(3, 9): mean 0.25.
+    assert!(
+        (mean - 0.25).abs() < 0.02,
+        "posterior mean of theta was {mean}"
+    );
+    // The sampler's columns are variables like any other.
+    for sampler in ["lp__", "divergent__", "treedepth__", "energy__"] {
+        assert_eq!(
+            fitted
+                .draws
+                .iter()
+                .filter(|s| s.variable == sampler)
+                .count(),
+            4,
+            "{sampler}"
+        );
+    }
+    let run = work
+        .join("runs/stan-runs/Bernoulli")
+        .join(instance.to_string());
+    for file in [
+        "chain-4.csv.gz",
+        "chain-1.log",
+        "data.json",
+        "program/lib/data.stan",
+    ] {
+        assert!(run.join(file).is_file(), "{file} was not published");
+    }
+
+    // The same executable, two other methods.
+    let optimum = provider
+        .fit_posterior(
+            &input(InstanceId::new()),
+            &config(json!({ "method": "optimize" })),
+            &FitContext::new(&Stages(Default::default()), &cancel),
+        )
+        .await
+        .unwrap();
+    let mode = optimum
+        .draws
+        .iter()
+        .find(|s| s.variable == "theta")
+        .unwrap();
+    // Beta(3, 9)'s mode is 0.2.
+    assert!((mode.draws[0] - 0.2).abs() < 1e-3, "mode {:?}", mode.draws);
+    let approx = provider
+        .fit_posterior(
+            &input(InstanceId::new()),
+            &config(json!({ "method": "pathfinder" })),
+            &FitContext::new(&Stages(Default::default()), &cancel),
+        )
+        .await
+        .unwrap();
+    assert!(
+        approx
+            .draws
+            .iter()
+            .any(|s| s.variable == "theta" && s.draws.len() == 1000)
+    );
+    assert_eq!(
+        std::fs::read_dir(work.join("cache")).unwrap().count(),
+        1,
+        "the program was compiled more than once"
+    );
+
+    // A program stanc refuses, through make, in stanc's words.
+    std::fs::write(
+        programs.join("broken.stan"),
+        "parameters { real theta; }\nmodel { thetaa ~ normal(0, 1); }\n",
+    )
+    .unwrap();
+    let err = provider
+        .fit_posterior(
+            &input(InstanceId::new()),
+            &config(json!({ "program": "broken.stan" })),
+            &FitContext::new(&Stages(Default::default()), &cancel),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("stanc refused the program `broken.stan`"),
+        "{err}"
+    );
+    assert!(err.contains("'broken.stan', line 2"), "{err}");
+    std::fs::remove_dir_all(&work).unwrap();
+}

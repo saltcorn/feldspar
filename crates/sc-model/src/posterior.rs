@@ -26,12 +26,19 @@ use serde_json::Value as Json;
 
 use crate::bind::Coordinates;
 use crate::frame::Frame;
+use crate::instance::InstanceId;
 use crate::interface::Interface;
 use crate::provider::ParameterBlock;
 
 /// What a posterior fit is handed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PosteriorInput {
+    /// The model's name — what a provider files a raw run under
+    /// (`<runs_dir>/<model>/<instance>/`, Stan TODO §14).
+    pub model: String,
+    /// The instance this fit will become, when the fit is a job with a row;
+    /// `None` for a fit run outside one (a test, a preview).
+    pub instance: Option<InstanceId>,
     /// Every dataset, materialised: the model's own first, as
     /// [`MAIN_DATASET`](crate::MAIN_DATASET), then each related one under its
     /// name, in the model's order.
@@ -221,6 +228,7 @@ pub struct FitContext<'a> {
     /// Where progress goes.
     pub progress: &'a dyn FitProgress,
     cancel: Option<&'a AtomicBool>,
+    instance: Option<InstanceId>,
 }
 
 impl<'a> FitContext<'a> {
@@ -229,7 +237,19 @@ impl<'a> FitContext<'a> {
         FitContext {
             progress,
             cancel: Some(cancel),
+            instance: None,
         }
+    }
+
+    /// The same context, for the fit that becomes `instance`.
+    pub fn with_instance(mut self, instance: InstanceId) -> FitContext<'a> {
+        self.instance = Some(instance);
+        self
+    }
+
+    /// The instance this fit becomes, when it is a job with a row.
+    pub fn instance(&self) -> Option<InstanceId> {
+        self.instance
     }
 
     /// A context nobody watches and nobody can cancel — what a fit that is not
@@ -238,6 +258,7 @@ impl<'a> FitContext<'a> {
         FitContext {
             progress: &NoProgress,
             cancel: None,
+            instance: None,
         }
     }
 

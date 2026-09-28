@@ -18,11 +18,13 @@ use sc_db_postgres::PgDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
 use sc_model::{
-    DRAWS_TABLE, Dataset, DatasetSource, DrawSeries, DrawsQuery, DrawsReader, FitContext,
-    FitResult, FitStatus, Frame, Model, ModelInstance, ModelProvider, ModelRegistry, OutcomeSpec,
-    PosteriorInput, PosteriorResult, Prediction, Read, bootstrap_model_draws,
-    bootstrap_model_instances, bootstrap_models, delete_model, delete_model_instance, fit_model,
-    fitted, require_model_instance, save_fitted_instance, save_model, save_model_instance,
+    ATTR_CANCEL_REQUESTED, ATTR_PROGRESS, ChainPhase, ChainProgress, DRAWS_TABLE, Dataset,
+    DatasetSource, DrawSeries, DrawsQuery, DrawsReader, FitContext, FitResult, FitStage, FitStatus,
+    Frame, Model, ModelInstance, ModelProvider, ModelRegistry, OutcomeSpec, PosteriorInput,
+    PosteriorResult, Prediction, Progress, ProgressWrite, Read, bootstrap_model_draws,
+    bootstrap_model_instances, bootstrap_models, cancel_requested, delete_model,
+    delete_model_instance, fit_model, fitted, record_fit_progress, request_fit_cancel,
+    require_model_instance, save_fitted_instance, save_model, save_model_instance,
 };
 use sc_test_harness::TestDb;
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
@@ -436,4 +438,81 @@ async fn a_posterior_model_with_a_grid_is_refused_on_save() -> Result<()> {
     assert!(err.to_string().contains("sampled, not searched"), "{err}");
     assert!(cat.get(DRAWS_TABLE)?.is_some());
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Progress and cancel go through the row (Stan TODO 4.3).
+
+fn sampling(iteration: u64) -> Progress {
+    Progress {
+        stage: FitStage::Sampling,
+        chains: vec![ChainProgress {
+            chain: 1,
+            iteration,
+            total: 2000,
+            phase: ChainPhase::Warmup,
+        }],
+    }
+}
+
+async fn progress_and_cancel_go_through_the_row(cat: &Catalog) -> Result<()> {
+    let model = radon();
+    let running = ModelInstance::starting(model.id);
+    save_model_instance(cat, &running).await?;
+
+    // Progress is written, and only read when there is none to write.
+    assert_eq!(
+        record_fit_progress(cat, running.id, Some(&sampling(400))).await?,
+        ProgressWrite::Running
+    );
+    assert_eq!(
+        record_fit_progress(cat, running.id, None).await?,
+        ProgressWrite::Running
+    );
+    let row = require_model_instance(cat, running.id).await?;
+    assert_eq!(
+        row.attributes[ATTR_PROGRESS],
+        serde_json::to_value(sampling(400)).unwrap()
+    );
+    assert_eq!(row.status, FitStatus::Fitting);
+
+    // A cancel is set on the row and read back by the next write, which
+    // then leaves the row alone.
+    assert!(request_fit_cancel(cat, running.id).await?);
+    let row = require_model_instance(cat, running.id).await?;
+    assert!(cancel_requested(&row));
+    assert_eq!(row.attributes[ATTR_CANCEL_REQUESTED], true);
+    assert_eq!(
+        record_fit_progress(cat, running.id, Some(&sampling(800))).await?,
+        ProgressWrite::CancelRequested
+    );
+    let row = require_model_instance(cat, running.id).await?;
+    assert_eq!(
+        row.attributes[ATTR_PROGRESS],
+        serde_json::to_value(sampling(400)).unwrap()
+    );
+    assert!(cancel_requested(&row));
+
+    // A finished fit is neither written to nor cancelled.
+    save_model_instance(cat, &running.clone().failed("the fit was cancelled")).await?;
+    assert_eq!(
+        record_fit_progress(cat, running.id, Some(&sampling(900))).await?,
+        ProgressWrite::Finished
+    );
+    assert!(!request_fit_cancel(cat, running.id).await?);
+    let row = require_model_instance(cat, running.id).await?;
+    assert_eq!(row.status, FitStatus::Failed);
+    assert!(!row.attributes.contains_key(ATTR_PROGRESS));
+    Ok(())
+}
+
+#[tokio::test]
+async fn progress_and_cancel_go_through_the_row_on_postgres() -> Result<()> {
+    let db = TestDb::new().await?;
+    progress_and_cancel_go_through_the_row(&postgres(&db).await?).await
+}
+
+#[tokio::test]
+async fn progress_and_cancel_go_through_the_row_on_sqlite() -> Result<()> {
+    progress_and_cancel_go_through_the_row(&sqlite().await?).await
 }

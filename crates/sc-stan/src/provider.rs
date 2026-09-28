@@ -23,18 +23,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use sc_error::{Error, Result};
+use sc_error::{Context, Error, Result};
 use sc_files::FileStore;
 use sc_model::{
-    BINDINGS_KEY, DIMENSIONS_KEY, DatasetShape, FitContext, FitResult, Frame, Interface,
+    BINDINGS_KEY, DIMENSIONS_KEY, DatasetShape, FitContext, FitResult, FitStage, Frame, Interface,
     LABELS_KEY, ModelProvider, OutcomeSpec, POLICIES_KEY, PosteriorInput, PosteriorResult,
-    Prediction,
+    Prediction, Progress,
 };
 use sc_types::{Attrs, BasicType, FormField};
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 
-use crate::cmdstan::CmdStan;
+use crate::cmdstan::{CmdStan, Locations, Toolchain};
+use crate::compile::CompileCache;
+use crate::output::read_draws_file;
+use crate::process::Watch;
 use crate::program::Program;
+use crate::run::{DATA_FILE, Method, ProcessBudget, Run, RunSettings, run_chains};
+use crate::run_dir::{DEFAULT_RUNS_DIR, RunDir, RunLocation, publish};
 use crate::stanc::{ProgramCheck, check_program};
 
 /// The name the provider is registered and stored under.
@@ -108,8 +113,13 @@ pub struct StanProvider {
     stores: Arc<dyn StoreLookup>,
     /// The CmdStan found at startup, or the sentence saying why none was.
     cmdstan: std::result::Result<CmdStan, String>,
-    /// Where `stanc` lays programs out.
+    /// Where `stanc` lays programs out and fits keep their run directories
+    /// while they run.
     scratch: PathBuf,
+    /// Where compiled programs are kept.
+    cache: CompileCache,
+    /// The node's chain processes, shared by every fit.
+    budget: ProcessBudget,
     description: String,
 }
 
@@ -124,19 +134,47 @@ impl StanProvider {
         if let Err(why) = &cmdstan {
             description.push_str(&format!(" — CmdStan was not found: {why}"));
         }
+        let make = Toolchain::find(&Locations::from_env(None))
+            .make
+            .unwrap_or_else(|| PathBuf::from("make"));
         StanProvider {
             stores,
             cmdstan,
             scratch: std::env::temp_dir(),
+            cache: CompileCache::new(std::env::temp_dir().join("feldspar-stan-cache"), make),
+            budget: ProcessBudget::for_this_machine(),
             description,
         }
     }
 
-    /// The same provider laying programs out under `dir` rather than the
-    /// system temporary directory.
+    /// The same provider laying programs out, and running fits, under `dir`
+    /// rather than the system temporary directory.
     pub fn with_scratch(mut self, dir: impl Into<PathBuf>) -> StanProvider {
         self.scratch = dir.into();
         self
+    }
+
+    /// The same provider keeping compiled programs in `cache`.
+    pub fn with_cache(mut self, cache: CompileCache) -> StanProvider {
+        self.cache = cache;
+        self
+    }
+
+    /// The same provider running its chains within `budget` — the node's,
+    /// which the server owns.
+    pub fn with_budget(mut self, budget: ProcessBudget) -> StanProvider {
+        self.budget = budget;
+        self
+    }
+
+    /// Where fits keep their run directories while they run.
+    pub fn scratch(&self) -> &std::path::Path {
+        &self.scratch
+    }
+
+    /// The compile cache.
+    pub fn compile_cache(&self) -> &CompileCache {
+        &self.cache
     }
 
     /// The CmdStan this provider compiles with, when one was found.
@@ -385,19 +423,152 @@ impl ModelProvider for StanProvider {
         Ok(Some(program.interface()?))
     }
 
+    /// Compile (or find in the cache), run one process per chain, read the
+    /// draws back, and publish the raw run when the model keeps one (§§13–14).
     async fn fit_posterior(
         &self,
-        _input: &PosteriorInput,
-        _config: &Attrs,
-        _ctx: &FitContext<'_>,
+        input: &PosteriorInput,
+        config: &Attrs,
+        ctx: &FitContext<'_>,
     ) -> Result<PosteriorResult> {
-        match &self.cmdstan {
-            Err(why) => Err(Error::config(format!(
-                "this Stan model cannot be fitted because CmdStan was not found: {why}"
-            ))),
-            Ok(_) => Err(Error::invalid(
-                "sampling a Stan program with CmdStan is not implemented in this build yet",
-            )),
+        let cmdstan = match &self.cmdstan {
+            Ok(cmdstan) => cmdstan,
+            Err(why) => {
+                return Err(Error::config(format!(
+                    "this Stan model cannot be fitted because CmdStan was not found: {why}"
+                )));
+            }
+        };
+        let settings = RunSettings::from_config(config, fresh_seed)?;
+        let cancelled = || ctx.cancelled();
+        let watch = Watch::new(settings.max_runtime(), &cancelled);
+        let program = self.program(config).await?;
+        let run_id = input
+            .instance
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), |id| id.to_string());
+
+        // The run directory, as it will be published (§14).
+        let dir = RunDir::create(&self.scratch, &run_id)?;
+        program.layout(&dir.path().join("program"))?;
+        dir.write(DATA_FILE, &to_json(&input.data)?)?;
+        dir.write("coordinates.json", &to_json(&input.coordinates)?)?;
+        dir.write(
+            "config.json",
+            &to_json(&json!({
+                "program": program.main_path(),
+                "method": settings.method,
+                "settings": settings,
+                "arguments": settings.arguments(1),
+                "cmdstan": cmdstan.version.to_string(),
+            }))?,
+        )?;
+
+        let compiled = self
+            .cache
+            .compile(cmdstan, &program, &watch, &|| {
+                ctx.report(&Progress::stage(FitStage::Compiling));
+            })
+            .await?;
+        let report = |progress: &Progress| ctx.report(progress);
+        let chains = run_chains(
+            &Run {
+                exe: &compiled.exe,
+                src: &compiled.src,
+                program: program.main_path(),
+                dir: dir.path(),
+                settings: &settings,
+            },
+            &self.budget,
+            &watch,
+            &report,
+        )
+        .await?;
+
+        ctx.report(&Progress::stage(FitStage::Summarising));
+        let warmup_rows = match settings.method {
+            Method::Sample if settings.save_warmup => {
+                usize::try_from(settings.iter_warmup.div_ceil(settings.thin)).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        let mut draws = Vec::new();
+        for chain in &chains {
+            draws.extend(read_draws_file(&chain.csv, chain.chain, warmup_rows)?);
         }
+
+        let run = match text(config, RUNS_STORE) {
+            None => None,
+            Some(store_name) => {
+                let store = self.stores.store(store_name)?;
+                let runs_dir = text(config, RUNS_DIR).unwrap_or(DEFAULT_RUNS_DIR);
+                let path = publish(dir.path(), store.as_ref(), runs_dir, &input.model, &run_id)
+                    .await
+                    .with_context(|| {
+                        format!("publishing the raw run to the file store `{store_name}`")
+                    })?;
+                Some(RunLocation {
+                    store: store_name.to_owned(),
+                    path,
+                })
+            }
+        };
+
+        // Small, by design (§14): the program snapshot and its hashes, the
+        // seed, the toolchain, the interface, the cache key and the run's
+        // location. The draws are rows of their own.
+        let state = json!({
+            "program": {
+                "store": program.store,
+                "main": program.main_path(),
+                "files": program.files.iter().map(|f| json!({
+                    "path": f.path, "text": f.text, "sha256": f.sha256,
+                })).collect::<Vec<_>>(),
+            },
+            "hashes": program.hashes(),
+            "seed": settings.seed,
+            "method": settings.method,
+            "settings": settings,
+            "cmdstan": cmdstan.version.to_string(),
+            "compiled": compiled.key,
+            "interface": input.interface,
+            "chains": chains.iter().map(|c| json!({
+                "chain": c.chain,
+                "wall_seconds": c.wall.as_secs_f64(),
+            })).collect::<Vec<_>>(),
+            "run": run,
+        });
+        Ok(PosteriorResult {
+            state,
+            draws,
+            parameters: Vec::new(),
+        })
     }
+
+    /// Delete the published raw run, when the fit kept one (§14).
+    async fn discard(&self, state: &Json) -> Result<()> {
+        let Some(run) = state.get("run").filter(|r| !r.is_null()) else {
+            return Ok(());
+        };
+        let run: RunLocation = serde_json::from_value(run.clone())
+            .map_err(|e| Error::msg(format!("the instance's run location is unreadable: {e}")))?;
+        let store = self.stores.store(&run.store)?;
+        store.delete(&run.path).await.with_context(|| {
+            format!(
+                "deleting the raw run {} from the file store `{}`",
+                run.path, run.store
+            )
+        })?;
+        Ok(())
+    }
+}
+
+/// A seed for a fit that configures none — recorded on the instance, so the
+/// fit can be repeated.
+fn fresh_seed() -> u32 {
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn to_json(value: &impl serde::Serialize) -> Result<Vec<u8>> {
+    serde_json::to_vec(value).map_err(|e| Error::msg(format!("writing JSON: {e}")))
 }

@@ -22,13 +22,27 @@
 //! - [`stanc`] (Phase 2): the Stan compiler as the authority on whether a
 //!   program is valid, its diagnostics mapped back to store paths, and its
 //!   `--info` compared with our parse.
-//! - [`StanProvider`] (Phase 2): the `ModelProvider`, registered by the server
-//!   beside the built-ins. It declares its configuration and answers the
-//!   program's interface; it samples nothing yet (Phase 4).
+//! - [`StanProvider`] (Phases 2 and 4): the `ModelProvider`, registered by the
+//!   server beside the built-ins. It declares its configuration, answers the
+//!   program's interface, and fits: compile, run, read the draws, publish the
+//!   raw run.
+//! - [`compile`] (Phase 4): the compile cache — one compile at a time per
+//!   node, keyed by what the program is.
+//! - [`run`] (Phase 4): one process per chain within the node's process
+//!   budget, progress read from CmdStan's output, failures as sentences.
+//! - [`run_dir`] (Phase 4): the raw run, in scratch while it runs and
+//!   published to a file store when the model keeps one.
+//! - [`output`]: CmdStan's CSV read into draws, elements by column name.
 
 pub mod cmdstan;
+pub mod compile;
+pub mod output;
+mod process;
 pub mod program;
 mod provider;
+pub mod run;
+pub mod run_dir;
 pub mod stanc;
 
+pub use process::{Stopped, Watch};
 pub use provider::{STAN_PROVIDER, StanProvider, StoreLookup, config_keys};

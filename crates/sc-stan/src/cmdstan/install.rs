@@ -23,10 +23,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sc_error::{Context, Error, Result};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 
 use super::discover::{CmdStan, Source};
 use super::version::{MIN_VERSION, Version};
+use crate::process::{KillGroupOnDrop, TAIL_LINES, forward_lines};
 
 /// GitHub's description of CmdStan's latest release; its `tag_name` is the
 /// version.
@@ -35,9 +36,6 @@ pub const LATEST_RELEASE_API: &str =
 
 /// Release assets live under `<this>/v<version>/`.
 const DOWNLOAD_BASE: &str = "https://github.com/stan-dev/cmdstan/releases/download";
-
-/// How many lines of `make`'s output a failure quotes.
-const TAIL_LINES: usize = 40;
 
 /// The tarball for `version` on a machine of this `os` and `arch` (Rust's
 /// `std::env::consts` names).
@@ -367,20 +365,6 @@ async fn build(dir: &Path, jobs: u32, on: &mut (dyn FnMut(InstallEvent<'_>) + Se
     )))
 }
 
-fn forward_lines(
-    stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
-) {
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stream).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-}
-
 /// Removes its paths when dropped; clear the list to keep them.
 struct RemoveOnDrop(Vec<PathBuf>);
 
@@ -399,24 +383,6 @@ impl Drop for RemoveOnDrop {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(200));
-            }
-        }
-    }
-}
-
-/// Kills the process group led by the given process when dropped. After the
-/// group has exited normally the signal finds nothing, which is harmless.
-struct KillGroupOnDrop(Option<u32>);
-
-impl Drop for KillGroupOnDrop {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0.and_then(|pid| libc::pid_t::try_from(pid).ok()) {
-            // SAFETY: `killpg` takes plain integers and has no memory effects;
-            // `pid` leads the group because `make` was spawned with
-            // `process_group(0)`.
-            unsafe {
-                libc::killpg(pid, libc::SIGKILL);
             }
         }
     }

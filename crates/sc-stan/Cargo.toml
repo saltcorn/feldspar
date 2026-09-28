@@ -29,7 +29,7 @@ serde.workspace = true
 sha2.workspace = true
 # `make build` is a subprocess awaited without blocking a runtime thread, and
 # the download is written to disk as it arrives.
-tokio = { workspace = true, features = ["fs", "process", "time"] }
+tokio = { workspace = true, features = ["fs", "process", "time", "sync", "macros", "io-util"] }
 # The release tarball and the "latest release" lookup, over the workspace's one
 # rustls reqwest.
 reqwest.workspace = true
@@ -38,10 +38,18 @@ serde_json.workspace = true
 # is a tree of compilers, and killing `make` alone leaves them writing into the
 # directory being removed.
 libc.workspace = true
+# The chains of a fit are futures run together, and the first failure drops
+# (and so kills) the rest.
+futures.workspace = true
+# A raw run is published to a file store as bytes, its CSVs gzipped.
+bytes.workspace = true
+flate2.workspace = true
+# A fit with no instance to name its run after gets a fresh id, and a fit with
+# no seed configured gets a fresh one.
+uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["fs", "rt-multi-thread", "macros"] }
-bytes.workspace = true
 
 [lints]
 workspace = true

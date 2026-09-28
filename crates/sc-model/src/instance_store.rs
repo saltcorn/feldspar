@@ -21,8 +21,8 @@ use sc_catalog::{Catalog, DataField, Table};
 use sc_db::{Row, Transaction};
 use sc_error::{Error, Result};
 use sc_query::{
-    Assignment, BinOp, Delete, Expr, Insert, OrderBy, Projection, Select, Source, Statement,
-    Update, Value,
+    Assignment, BinOp, Delete, Expr, Insert, JsonStep, OrderBy, Projection, Select, Source,
+    Statement, UnOp, Update, Value,
 };
 use sc_types::{BasicType, TypeRef};
 use serde_json::Value as Json;
@@ -400,6 +400,119 @@ pub(crate) async fn discard_with(
             sc_error::format_chain(&e)
         ))),
     }
+}
+
+/// What [`record_fit_progress`] found on the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressWrite {
+    /// The fit is still running and nobody has asked it to stop; the
+    /// progress, if there was any, is on the row.
+    Running,
+    /// Somebody asked the fit to stop: the job should cancel it. The progress
+    /// was not written.
+    CancelRequested,
+    /// The row is no longer `fitting` (or no longer there): nothing to report
+    /// to.
+    Finished,
+}
+
+/// Write a running fit's [`Progress`](crate::Progress) to its row's
+/// [`ATTR_PROGRESS`](crate::ATTR_PROGRESS), and read back whether it has been
+/// asked to stop (Stan TODO §13) — the one round trip the job makes each
+/// second. With no progress (nothing has changed since the last write) it only
+/// reads.
+///
+/// The attributes are a JSON object and the query language cannot merge one,
+/// so this reads the row and writes the merged object back. The write is
+/// guarded — `WHERE status = 'fitting' AND attributes -> 'cancel_requested'
+/// IS NULL` — so it can neither undo a cancel that landed between the read and
+/// the write (the next call sees it) nor touch a row the fit has already
+/// finished.
+pub async fn record_fit_progress(
+    catalog: &Catalog,
+    id: InstanceId,
+    progress: Option<&crate::Progress>,
+) -> Result<ProgressWrite> {
+    let Some(mut instance) = load_model_instance(catalog, id).await? else {
+        return Ok(ProgressWrite::Finished);
+    };
+    if instance.status != FitStatus::Fitting {
+        return Ok(ProgressWrite::Finished);
+    }
+    if cancel_requested(&instance) {
+        return Ok(ProgressWrite::CancelRequested);
+    }
+    let Some(progress) = progress else {
+        return Ok(ProgressWrite::Running);
+    };
+    instance.attributes.insert(
+        crate::ATTR_PROGRESS.to_owned(),
+        serde_json::to_value(progress).map_err(|e| Error::msg(format!("progress: {e}")))?,
+    );
+    let update = Update::new(
+        INSTANCES_TABLE,
+        vec![Assignment::new(
+            COL_ATTRIBUTES,
+            Expr::lit(Value::Json(Json::Object(instance.attributes))),
+        )],
+    )
+    .filter(
+        Expr::col(COL_ID)
+            .eq(Expr::lit(id.0))
+            .and(Expr::col(COL_STATUS).eq(Expr::lit(FitStatus::Fitting.as_str())))
+            .and(Expr::unary(
+                UnOp::IsNull,
+                Expr::Json {
+                    target: Box::new(Expr::col(COL_ATTRIBUTES)),
+                    path: vec![JsonStep::Field(crate::ATTR_CANCEL_REQUESTED.to_owned())],
+                },
+            )),
+    );
+    let mut tx = catalog.primary().begin().await?;
+    let written = run(tx.as_mut(), Statement::from(update)).await.map(drop);
+    finish(tx, written).await?;
+    Ok(ProgressWrite::Running)
+}
+
+/// Whether the instance's row says somebody asked its fit to stop: the
+/// attribute is there, whatever its value — exactly what the guard on
+/// [`record_fit_progress`]'s write tests, so the two cannot disagree.
+pub fn cancel_requested(instance: &ModelInstance) -> bool {
+    instance
+        .attributes
+        .contains_key(crate::ATTR_CANCEL_REQUESTED)
+}
+
+/// Ask the running fit of instance `id` to stop, by setting
+/// [`ATTR_CANCEL_REQUESTED`](crate::ATTR_CANCEL_REQUESTED) on its row (Stan
+/// TODO §13). The row is the registry, so this works from any node: the job
+/// reads it back with its next progress write and kills what it started.
+///
+/// Answers whether there was a running fit to ask. An instance that has
+/// already finished is left alone.
+pub async fn request_fit_cancel(catalog: &Catalog, id: InstanceId) -> Result<bool> {
+    let instance = require_model_instance(catalog, id).await?;
+    if instance.status != FitStatus::Fitting {
+        return Ok(false);
+    }
+    let mut attributes = instance.attributes;
+    attributes.insert(crate::ATTR_CANCEL_REQUESTED.to_owned(), Json::Bool(true));
+    let update = Update::new(
+        INSTANCES_TABLE,
+        vec![Assignment::new(
+            COL_ATTRIBUTES,
+            Expr::lit(Value::Json(Json::Object(attributes))),
+        )],
+    )
+    .filter(
+        Expr::col(COL_ID)
+            .eq(Expr::lit(id.0))
+            .and(Expr::col(COL_STATUS).eq(Expr::lit(FitStatus::Fitting.as_str()))),
+    );
+    let mut tx = catalog.primary().begin().await?;
+    let written = run(tx.as_mut(), Statement::from(update)).await.map(drop);
+    finish(tx, written).await?;
+    Ok(true)
 }
 
 /// Fail every instance still saying `fitting`, and answer how many there were

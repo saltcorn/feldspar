@@ -30,21 +30,27 @@
 //! leaving an admin looking at a fit in progress that is not.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, RwLock};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use sc_api::rows::{RowQuery, count_rows_where, list_row_values};
 use sc_catalog::Catalog;
 use sc_error::{Context, Error, Result};
 use sc_model::{
-    Column, Dataset, DatasetSource, Frame, InstanceId, Model, ModelInstance, ModelProvider,
-    ModelRegistry, Read, SPLIT_KEY, bootstrap_model_draws, bootstrap_model_instances,
-    bootstrap_models, builtin_registry, canonical_key, fit_model, reap_fitting_instances,
+    Column, Dataset, DatasetSource, FitContext, FitProgress, Frame, InstanceId, Model,
+    ModelInstance, ModelProvider, ModelRegistry, Progress, ProgressWrite, Read, SPLIT_KEY,
+    bootstrap_model_draws, bootstrap_model_instances, bootstrap_models, builtin_registry,
+    canonical_key, fit_model_with, reap_fitting_instances, record_fit_progress,
     save_model_instance,
 };
 use sc_query::{Expr, Projection, Value};
 use sc_stan::StanProvider;
-use sc_stan::cmdstan::{Locations, discover};
+use sc_stan::cmdstan::{Locations, Toolchain, discover};
+use sc_stan::compile::CompileCache;
+use sc_stan::run::ProcessBudget;
 
 /// The [`DatasetSource`] a running server has: the catalog, read through
 /// `sc_api::rows`.
@@ -227,7 +233,17 @@ impl ModelServices {
     /// The services over `catalog`, with the built-in providers and the catalog
     /// as the dataset source.
     pub fn new(catalog: &Arc<Catalog>, max_rows: u64) -> Result<ModelServices> {
-        let stan = Arc::new(stan_provider(catalog));
+        ModelServices::with_stan(catalog, max_rows, stan_provider(catalog))
+    }
+
+    /// The services with `stan` as the Stan provider — a server's is
+    /// [`new`](ModelServices::new)'s; a test's has a CmdStan of its own.
+    pub fn with_stan(
+        catalog: &Arc<Catalog>,
+        max_rows: u64,
+        stan: StanProvider,
+    ) -> Result<ModelServices> {
+        let stan = Arc::new(stan);
         Ok(ModelServices {
             catalog: Arc::clone(catalog),
             registry: Arc::new(RwLock::new(Arc::new(
@@ -291,7 +307,7 @@ impl ModelServices {
     /// work carries on invisibly. The screen polls the row.
     ///
     /// The spawned task's only failure mode worth handling is "the failure could
-    /// not be recorded", which [`fit_model`] reports as `Err`; a fit that simply
+    /// not be recorded", which [`fit_model_with`] reports as `Err`; a fit that simply
     /// did not work is `Ok` carrying a failed instance. So the task logs the
     /// former and nothing else: there is nobody left to return it to.
     pub async fn start_fit(&self, model: &Model, instance: ModelInstance) -> Result<ModelInstance> {
@@ -305,7 +321,19 @@ impl ModelServices {
         let model = model.clone();
         let cap = self.max_rows;
         tokio::spawn(async move {
-            if let Err(e) = fit_model(&catalog, &registry, source.as_ref(), &model, id, cap).await {
+            let progress = JobProgress::default();
+            let cancel = AtomicBool::new(false);
+            let ctx = FitContext::new(&progress, &cancel);
+            let fit = fit_model_with(&catalog, &registry, source.as_ref(), &model, id, cap, &ctx);
+            // The fit and its row's upkeep, side by side on one task: the
+            // upkeep never finishes, so this is over when the fit is.
+            let finished = tokio::select! {
+                finished = fit => finished,
+                () = keep_row(&catalog, id, &progress, &cancel, PROGRESS_INTERVAL) => {
+                    unreachable!("the upkeep of a fit's row never finishes")
+                }
+            };
+            if let Err(e) = finished {
                 eprintln!(
                     "feldspar: the fit of model `{}` could not be recorded: {}",
                     model.name,
@@ -314,6 +342,70 @@ impl ModelServices {
             }
         });
         Ok(instance)
+    }
+}
+
+/// How often a running fit's progress reaches its row, and the row's cancel
+/// is read back (Stan TODO §13): at most once a second.
+pub const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// A running fit's latest progress, held until the next write to its row. A
+/// provider may report as often as it likes; the row hears of it at most once
+/// per [`PROGRESS_INTERVAL`].
+#[derive(Default)]
+pub struct JobProgress(Mutex<Option<Progress>>);
+
+impl JobProgress {
+    /// The progress reported since the last call, if any.
+    fn take(&self) -> Option<Progress> {
+        match self.0.lock() {
+            Ok(mut latest) => latest.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        }
+    }
+}
+
+impl FitProgress for JobProgress {
+    fn report(&self, progress: &Progress) {
+        match self.0.lock() {
+            Ok(mut latest) => *latest = Some(progress.clone()),
+            Err(poisoned) => *poisoned.into_inner() = Some(progress.clone()),
+        }
+    }
+}
+
+/// The upkeep of a running fit's row, every `interval` until it is dropped:
+/// write the latest progress, and read back `cancel_requested` — setting
+/// `cancel`, which the provider polls, when somebody has asked. Reading it
+/// from the row rather than from memory is what makes a cancel work from any
+/// node (Stan TODO §13).
+///
+/// A write that fails is reported and retried next time: a fit is not failed
+/// because its progress bar could not be updated.
+pub async fn keep_row(
+    catalog: &Catalog,
+    id: InstanceId,
+    progress: &JobProgress,
+    cancel: &AtomicBool,
+    interval: Duration,
+) {
+    let mut unwritten: Option<Progress> = None;
+    loop {
+        tokio::time::sleep(interval).await;
+        if let Some(latest) = progress.take() {
+            unwritten = Some(latest);
+        }
+        match record_fit_progress(catalog, id, unwritten.as_ref()).await {
+            Ok(ProgressWrite::Running) => unwritten = None,
+            Ok(ProgressWrite::CancelRequested) => cancel.store(true, Ordering::SeqCst),
+            // The fit is finishing: the final save has been made or is about
+            // to be, and it is the one that counts.
+            Ok(ProgressWrite::Finished) => {}
+            Err(e) => eprintln!(
+                "feldspar: the progress of model fit {id} could not be recorded: {}",
+                sc_error::format_chain(&e)
+            ),
+        }
     }
 }
 
@@ -330,10 +422,30 @@ fn base_registry(stan: &Arc<StanProvider>) -> Result<ModelRegistry> {
 /// §4, §20).
 fn stan_provider(catalog: &Arc<Catalog>) -> StanProvider {
     let stores = Arc::clone(catalog);
+    let locations = Locations::from_env(None);
+    let make = Toolchain::find(&locations)
+        .make
+        .unwrap_or_else(|| PathBuf::from("make"));
     StanProvider::new(
         Arc::new(move |name: &str| stores.require_file_store(name)),
-        discover(&Locations::from_env(None)),
+        discover(&locations),
     )
+    .with_scratch(std::env::temp_dir().join("feldspar-stan"))
+    .with_cache(CompileCache::new(stan_cache_dir(), make))
+    .with_budget(ProcessBudget::for_this_machine())
+}
+
+/// Where compiled Stan programs are kept: beside the modules root, in the
+/// platform's data directory (Stan TODO §13) — a compile is a minute, and a
+/// temporary directory cleared at reboot would pay it again. The system
+/// temporary directory when there is no data directory.
+fn stan_cache_dir() -> PathBuf {
+    match sc_module::default_modules_root() {
+        Ok(modules) => modules
+            .parent()
+            .map_or_else(|| modules.join("stan-cache"), |app| app.join("stan-cache")),
+        Err(_) => std::env::temp_dir().join("feldspar-stan-cache"),
+    }
 }
 
 /// Ensure the three model tables exist, **reap every fit that was running when
@@ -368,7 +480,16 @@ pub async fn install_models(catalog: &Arc<Catalog>, max_rows: u64) -> Result<Mod
              have been marked failed"
         );
     }
-    ModelServices::new(catalog, max_rows)
+    let services = ModelServices::new(catalog, max_rows)?;
+    // The run directories of those fits, and any compile they were in the
+    // middle of, on this node (Stan TODO §13).
+    let stan = services.stan();
+    let removed =
+        sc_stan::run_dir::clean_stale_scratch(stan.scratch()) + stan.compile_cache().clean_stale();
+    if removed > 0 {
+        eprintln!("feldspar: removed {removed} stale Stan run or compile directories");
+    }
+    Ok(services)
 }
 
 #[cfg(test)]

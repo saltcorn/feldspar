@@ -8862,6 +8862,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "flate2",
+ "futures",
  "libc",
  "reqwest",
  "sc-catalog",
@@ -8873,6 +8875,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

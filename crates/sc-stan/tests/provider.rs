@@ -236,6 +236,8 @@ async fn without_cmdstan_a_program_is_checked_on_our_parse_with_a_notice() {
     let err = provider
         .fit_posterior(
             &PosteriorInput {
+                model: "radon".into(),
+                instance: None,
                 datasets: vec![],
                 interface: None,
                 data: json!({}),

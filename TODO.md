@@ -833,31 +833,33 @@ else.
 
 ## Phase 4 — Compiling and running
 
-- [ ] 4.1 The compile cache (§13): the key, the cache layout, `make` with the includes laid out
+- [x] 4.1 The compile cache (§13): the key, the cache layout, `make` with the includes laid out
       and nothing admin-supplied on the command line, one compile at a time per node, `stanc`
       errors mapped back to store paths.
-- [ ] 4.2 The runner: one process per chain with the arguments of §13, `sig_figs` 9, the
+- [x] 4.2 The runner: one process per chain with the arguments of §13, `sig_figs` 9, the
       process budget and `queued`, the scrubbed environment, `kill_on_drop` and
       `PR_SET_PDEATHSIG`, progress parsed and sent to `FitProgress`.
-- [ ] 4.3 In `sc-server`: the budget, progress written to the instance at most once a second,
+- [x] 4.3 In `sc-server`: the budget, progress written to the instance at most once a second,
       `cancel_requested` read back and honoured, `max_runtime_minutes`, and boot's scratch
       cleanup.
-- [ ] 4.4 Failure sentences (§13): compile error, data error, initialisation failure, any other
+- [x] 4.4 Failure sentences (§13): compile error, data error, initialisation failure, any other
       exit with the chain's last 40 lines.
-- [ ] 4.5 The raw run (§14): scratch while running; published to `runs_store` after the draws
+- [x] 4.5 The raw run (§14): scratch while running; published to `runs_store` after the draws
       are loaded when there is one, deleted when there is not; `.gitignore` in a git store;
       `discard` deleting it.
-- [ ] 4.6 `optimize` and `pathfinder` through the same runner.
-- [ ] 4.7 Tests against a **fake model executable** (a script that reads its arguments and
+- [x] 4.6 `optimize` and `pathfinder` through the same runner.
+- [x] 4.7 Tests against a **fake model executable** (a script that reads its arguments and
       writes a canned CmdStan CSV with progress lines): the arguments it is given, progress
       reaching the instance, two fits sharing a budget of one, cancel killing a sleeping chain,
       the timeout, a non-zero exit's sentence, and the raw run directory's contents.
 
 ## Phase 5 — Draws, summary and diagnostics
 
-- [ ] 5.1 The CmdStan CSV reader: comment lines (adaptation, timing), the header, element
+- [~] 5.1 The CmdStan CSV reader: comment lines (adaptation, timing), the header, element
       indices from the **names** (a column-major matrix read back correctly), sampler columns,
-      warmup rows when saved.
+      warmup rows when saved. *(Phase 4 needed the draws, so `sc_stan::output` already reads
+      the header, the names, the sampler columns and the warmup rows; the adaptation and
+      timing comments remain.)*
 - [ ] 5.2 Loading the draws (§14): the CSVs read chain by chain into `_fd_model_draws` rows
       (Phase 1.5), `exclude_variables`, `keep_draws: false`, and the size estimate with its
       `--stan-max-draws-bytes` refusal before sampling.

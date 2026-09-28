@@ -357,6 +357,10 @@ csv = "1"
 zip = { version = "8", default-features = false, features = [
     "deflate-flate2-zlib-rs",
 ] }
+# A Stan fit's raw run is published with its chains' CSVs gzipped (Stan TODO
+# §14): `chain-1.csv.gz` is what `cmdstanpy.from_csv` and every other Stan tool
+# read. Already in the tree through `zip`, on the same pure-Rust zlib backend.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 # --- HTTP server framework ---------------------------------------------------
 #

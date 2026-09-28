@@ -9,5 +9,7 @@ mod programs;
 mod provider;
 #[path = "real_cmdstan.rs"]
 mod real_cmdstan;
+#[path = "runner.rs"]
+mod runner;
 #[path = "stanc.rs"]
 mod stanc;

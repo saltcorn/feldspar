@@ -262,14 +262,22 @@ pub async fn fit_model_with(
     let failed_to_record = |row: ModelInstance, e: &Error| {
         row.failed(format!("the fit finished but could not be recorded: {e}"))
     };
-    let finished = match run_fit_with(registry, source, model, cap, ctx).await {
+    let ctx = ctx.with_instance(instance);
+    let finished = match run_fit_with(registry, source, model, cap, &ctx).await {
         Ok(fit) => match fit.apply(row.clone()) {
             // The draws and the row in one transaction: a fitted instance has
             // all of its draws, and a write that failed half way has none of
             // them and is recorded as the failure it is.
             Ok(finished) => match save_fitted_instance(catalog, &finished, &fit.draws).await {
                 Ok(()) => return Ok(finished),
-                Err(e) => failed_to_record(row, &e),
+                Err(e) => {
+                    // What the fit kept outside the database (a published raw
+                    // run) belongs to an instance that will never be fitted.
+                    if let Some(provider) = registry.get(model.provider.trim()) {
+                        let _ = provider.discard(&fit.state).await;
+                    }
+                    failed_to_record(row, &e)
+                }
             },
             // The fit itself worked and only writing it down did not — which is
             // still a failed instance, and the sentence should say which half
@@ -494,6 +502,8 @@ async fn fit_posterior(
     };
     let dropped = bound.as_ref().map_or(0, |b| b.report.dropped(MAIN_DATASET));
     let input = PosteriorInput {
+        model: model.name.clone(),
+        instance: ctx.instance(),
         datasets,
         interface,
         data: bound
@@ -1275,6 +1285,8 @@ mod tests {
         let fits = Arc::new(AtomicUsize::new(0));
         let mean = Mean { fits };
         let input = PosteriorInput {
+            model: "m".into(),
+            instance: None,
             datasets: Vec::new(),
             interface: None,
             data: Json::Null,

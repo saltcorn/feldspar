@@ -2,6 +2,110 @@
 
 Changes in reverse chronological order.
 
+## Compiling and running: a Stan model is fitted with CmdStan
+
+This is Phase 4 of the Stan milestone (TODO "Bayesian models with Stan"). A Stan model's fit
+now compiles its program, runs one CmdStan process per chain, reads the draws back and keeps
+them. Its progress reaches the instance, it can be cancelled from the row, and it stops at
+its `max_runtime_minutes`. When the model names a `runs_store`, CmdStan's own output is
+published there. The summary, the diagnostics and `exclude_variables`/`keep_draws` are
+Phase 5; until then an instance has its draws and no summary.
+
+- **The compile cache** (`sc_stan::compile`, 4.1).
+  - The key is the SHA-256 of the program's files (path and hash), the CmdStan version and
+    the fixed compile options. An edited include is a new key; so is a CmdStan upgrade.
+  - An entry is `<key>/model`, `<key>/src/…`, `manifest.json` and `compile.log`. A compile
+    is built in `<key>.building-<pid>-<n>` and renamed into place when it has finished.
+  - The cache is `<data dir>/feldspar/stan-cache` on a server, beside the modules root.
+  - A process-wide lock allows one compile at a time per node. A second fit of the same
+    program waits, then finds it cached.
+  - `make` is run in the CmdStan directory with only `STANCFLAGS=--include-paths=<src>` and
+    the target. There is no `--allow-undefined` and no `CXXFLAGS`.
+  - A `stanc` error comes back in `stanc`'s words with store paths ("stanc refused the program
+    `radon.stan`: Semantic error in 'radon.stan', line 3…"). Any other failure quotes the end
+    of `make`'s output.
+- **The runner** (`sc_stan::run`, 4.2, 4.4, 4.6).
+  - It runs one process per chain with cmdstanpy's argument order and `sig_figs=9`. `refresh`
+    is set so a progress line comes about every 2 %.
+  - `RunSettings` is the configuration with its defaults filled in. It is recorded in the
+    instance's state and in `config.json`. A model with no `seed` gets a fresh one per fit,
+    and it is recorded.
+  - Chains run up to `parallel_chains` at a time. Every chain on the node also needs a permit
+    from one `ProcessBudget` (half the CPUs, at least one). A fit none of whose chains has
+    started is reported as `queued`.
+  - `Iteration: 400 / 2000 [ 20%] (Warmup)` lines become per-chain `ChainProgress`.
+  - Every child (`make` included) has a scrubbed environment: `PATH`, `HOME`, `TMPDIR`,
+    `CMDSTAN`, `CXX` and `STAN_*`. Each runs in its own process group, which is killed on
+    drop, on cancel and on timeout. On Linux each also gets `PR_SET_PDEATHSIG`.
+  - When one chain fails, the others are dropped, and so killed.
+  - **Failure sentences.** A data error names CmdStan's variable ("CmdStan refused the data
+    for `y` — which the binder should have caught…"). An initialisation failure says every
+    initial value was rejected, quotes the last reason, and suggests `init: 0` or tighter
+    priors. Any other exit carries the chain's last 40 lines. Cancelled and timed-out fits
+    say how long they ran.
+  - `optimize` and `pathfinder` run as one process each through the same runner. Pathfinder
+    gets `num_paths` = chains and `num_draws` = `num_psis_draws` = `iter_sampling`.
+- **Draws** (`sc_stan::output`, part of 5.1). The CSV is read with element indices taken from
+  the column **names**, so `Sigma.2.1` is `Sigma[2,1]`. The sampler columns are variables like
+  any other. With `save_warmup`, the first ⌈warmup/thin⌉ rows are stored as warmup series.
+  `nan`/`inf` are kept.
+- **The raw run** (`sc_stan::run_dir`, 4.5).
+  - A fit writes into `<scratch>/stan-run-<pid>-<instance>/`: `program/…`, `data.json`,
+    `coordinates.json`, `config.json`, `chain-N.csv` and `chain-N.log`.
+  - With a `runs_store`, the directory is published to `<runs_dir>/<model>/<instance>/` (the
+    default `runs_dir` is `stan-runs`), with the CSVs gzipped. In a git store a `.gitignore`
+    of `*` is written into `runs_dir` first.
+  - The scratch directory is removed in every case.
+  - `StanProvider::discard` deletes the published run. If saving a fitted instance fails,
+    the host now calls `discard` on its state, so the run does not outlive the instance.
+- **The provider's state** is kept small: the program snapshot (every file's text and hash),
+  the seed, the method and settings, the CmdStan version, the compile key, the interface,
+  per-chain wall time, and the run's location.
+- **The job** (`sc-server`, 4.3).
+  - `start_fit` runs the fit beside `keep_row`. Once a second, `keep_row` writes the latest
+    progress to `attributes.progress` and reads `cancel_requested` back. When it is set, it
+    raises the flag the provider polls.
+  - The providers get the context's instance id, so `PosteriorInput` now carries `model` and
+    `instance`.
+  - `max_runtime_minutes` is enforced by the runner, which owns the processes.
+  - At boot, `install_models` also removes scratch run directories and half-built compiles
+    left by server processes that are no longer running.
+  - `ModelServices::with_stan` takes a Stan provider of the caller's (tests).
+- **In `sc-model`**:
+  - `record_fit_progress(catalog, id, Option<&Progress>)` answers `Running`, `CancelRequested`
+    or `Finished`. Its write is guarded by `status = 'fitting' AND attributes ->
+    'cancel_requested' IS NULL`, so it can neither undo a cancel that landed between its read
+    and its write, nor touch a finished row.
+  - `request_fit_cancel(catalog, id)` sets the attribute on a running instance.
+    `cancel_requested(&instance)` reads it. They are the halves `cancelModelFit` (Phase 7)
+    will call.
+- **Dependencies.** `flate2` is added to the workspace. It was already in the tree through
+  `zip`, on the same pure-Rust zlib backend. `sc-stan` gains `bytes`, `futures`, `flate2` and
+  `uuid`, all already in the workspace. `install.rs` now shares the process helpers
+  (`KillGroupOnDrop`, `forward_lines`, `TAIL_LINES`).
+- **Tests.**
+  - `sc-stan/tests/runner.rs` uses a fake `make` and a fake model executable (a shell script
+    that reads CmdStan's arguments, prints its progress lines and writes a canned CSV). It
+    covers:
+    - the compile and the cache hit, and a recompile after an edit;
+    - the exact command line and the scrubbed environment;
+    - the draws, progress stages and chain progress;
+    - warmup draws;
+    - two fits sharing a budget of one (no overlap, one `queued`, one compile);
+    - cancel killing a sleeping chain's process;
+    - the timeout;
+    - the fail/init/data sentences, and a `stanc` error with its store path and nothing left in
+      the cache;
+    - the published run's files, gzip, `.gitignore` and discard;
+    - `optimize` and `pathfinder`.
+  - `real_cmdstan.rs` gains an ignored end-to-end fit through the provider against the real
+    CmdStan 2.40. It compiles with an `#include`, samples 4 chains (θ's posterior mean ≈
+    0.25), and publishes the run. `optimize` finds the mode (0.2) and `pathfinder` runs, all
+    from one compile, and a `stanc` error comes back in its words. It passes on this machine.
+  - `sc-model`: progress and cancel through the row, on Postgres and SQLite.
+  - `sc-server`: a running fit's progress reaches its row, and a cancel set on the row fails
+    it within seconds; a late progress write does not touch the finished row.
+
 ## Binding: a Stan program's `data` block tied to the tables
 
 This is Phase 3 of the Stan milestone (TODO "Bayesian models with Stan"). The host can now turn
