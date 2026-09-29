@@ -67,8 +67,8 @@ Three commitments, in order of importance for this milestone:
 2. **The data section is linked to the dataset.** The core of the milestone (§§8–12).
 3. **The parameters are the main point.** For a Bayesian model they are *draws*: every chain,
    every iteration, every element of every parameter (§§14–16). Applying the model to a new
-   row is real (§19) but explicitly secondary: an admin who needs it and whose program is not
-   shaped for it can take the draws into code (§17) and do it there.
+   row is real (§19) but explicitly secondary — and **carried past this milestone**: an admin
+   who needs it takes the draws into code (§17) and does it there.
 
 ### 2. Why this does not fit the existing provider seam, and what changes
 
@@ -561,8 +561,8 @@ directory while it runs (it needs a real path), and the directory is published t
 one pass after the draws are loaded. In a git-backed store a `.gitignore` of `*` is written into
 `runs_dir` on first use, so megabytes of CSV never become a commit. Without a `runs_store` the
 scratch directory is simply deleted: the draws, the summary and the program snapshot are all in
-the database, the download is a zip of per-chain draws CSVs built from the table, and the model
-form says that prediction (§19) needs a runs store.
+the database, and the download is a zip of per-chain draws CSVs built from the table. (Standalone
+generated quantities, §19, would need a runs store; it is carried past this milestone.)
 
 The instance's `state` stays small: the program snapshot and its hashes, the seed, the CmdStan
 version, the interface, the coordinates, the compiled-model cache key, and the run directory's
@@ -688,6 +688,15 @@ provider that declares it — the rule `FileStoreForm` follows for git.
 
 ### 19. Prediction for new rows (secondary)
 
+> **Carried past this milestone** (Phase 9 was skipped). What stands in the meantime: every
+> Stan model's outcome is `Posterior { prediction: None }`, so `predicts()` is false;
+> `predict_row` over one is refused when the trigger is saved (and `predictRows` when called)
+> with a sentence that calls it a posterior and points at `models.draws`; the runs store is
+> kept for **Download run**. Nothing in Phases 10 and 11 depends on it: a forecast is a time
+> grid's horizon and a generated quantity of the fit itself (§12), written back with
+> `writePosterior` (§16), not a prediction for new rows. The design below is kept for when it
+> is picked up.
+
 A Stan program can predict new cases **if it is written to**: extra `data` variables for the
 new rows, and a `generated quantities` variable computing the prediction. CmdStan's
 **standalone generated quantities** (`method=generate_quantities fitted_params=chain-1.csv`)
@@ -742,7 +751,7 @@ exactly like a hypothesis test.
 
 ## Phase 0 — CmdStan on the development machine, first
 
-The integration tests of Phases 4, 9 and 11 need a real CmdStan, and building one takes a while,
+The integration tests of Phases 4 and 11 (and 9, now carried past) need a real CmdStan, and building one takes a while,
 so the installer is the first thing written and this machine gets a CmdStan before anything
 else.
 
@@ -974,23 +983,26 @@ else.
       *(`posterior.test.ts`. `feldspar i18n lint` is clean; `i18n check` still fails on three
       pre-existing non-literal `t()` calls in `SourceControl.tsx`.)*
 
-## Phase 9 — Prediction for new rows (secondary)
+## Phase 9 — Prediction for new rows (secondary): skipped
 
-- [ ] 9.1 The `new` pseudo-dataset and `prediction` in the configuration; at fit time `new` is
-      empty; `Outcome::Posterior { prediction }` resolved from it (§19).
-- [ ] 9.2 Standalone generated quantities: `data.json` re-bound for `new` only with the stored
-      coordinates, the compiled model from the cache or recompiled from the snapshot, the CSVs
-      fetched from the store to scratch; `Prediction::Distribution` from the GQ draws.
-- [ ] 9.3 `predict_row` and `predictRows` accepting a posterior instance; an unknown county
-      refused by name. Tests with the fake executable; one ignored test with real CmdStan.
+Carried past this milestone — see the last section, and the note at the head of §19.
 
 ## Phase 10 — Operations
 
-- [ ] 10.1 The server flags of §20 in `ServerConfig`, the CLI and the config file, with their
-      defaults and their tests.
-- [ ] 10.2 `docs/OPERATIONS.md`: installing CmdStan (and its disk and memory), the flags, the
+- [x] 10.1 The server flags of §20 in `ServerConfig`, the CLI and the config file, with their
+      defaults and their tests. *(`ServerConfig::stan`, an `sc_server::StanSettings`, reaches
+      the provider and the services through `install_models_with`; the preview and every fit
+      now use the configured `PosteriorLimits` rather than the constants. The file's keys are
+      `cmdstan` and `stan_*`, turned into the flags they mirror before the command line's so
+      a flag wins and a `0` is refused in one place. `serve` says at startup which CmdStan it
+      found, the budget and the cache. Tests: `config.rs`, `sc-config-file`, `run.rs`, and
+      `posterior_api.rs`'s `the_stan_flags_reach_the_provider_the_preview_and_the_fit`.)*
+- [x] 10.2 `docs/OPERATIONS.md`: installing CmdStan (and its disk and memory), the flags, the
       compile cache, the size of `_fd_model_draws` and `keep_draws`, the raw run directories
-      and their backup, the security paragraph of §20.
+      and their backup, the security paragraph of §20. *(§9 there, seven subsections; the
+      config-file key table, the environment variables and the common failures gained the
+      Stan rows. Under the systemd unit CmdStan is installed as the service account, because
+      `~` is `/var/lib/feldspar` and `ProtectHome` hides yours. README's flag table too.)*
 
 ## Phase 11 — Real CmdStan, documentation and the definition of done
 
@@ -1006,7 +1018,8 @@ else.
 - [ ] 11.3 `docs/tutorial-stan.md`: radon (the definition of done), a daily time series with a
       forecast written into a `forecasts` table, and the spatiotemporal BYM2 — each with its
       tables, its program, its bindings and what to read on the instance screen. A section
-      "Doing prediction in code" over `models.draws`.
+      "Doing prediction in code" over `models.draws` — the only route while §19 is carried
+      past, so it says `predict_row` refuses a posterior.
 - [ ] 11.4 README §3, `CHANGELOG`.
 - [ ] 11.5 The definition of done by hand on a real server with a real CmdStan, and what it
       found written down here.
@@ -1038,6 +1051,17 @@ else.
 
 ## Carried past this milestone
 
+- **Prediction for new rows from a posterior** — this milestone's Phase 9, skipped (design
+  in §19): the `new` pseudo-dataset and `prediction` in the configuration, empty at fit time,
+  resolving `Outcome::Posterior { prediction }`; standalone generated quantities re-binding
+  `new` only against the instance's stored coordinates, with the compiled model from the
+  cache or recompiled from the snapshot and the CSVs fetched from the runs store;
+  `Prediction::Distribution { mean, sd, q5, q95 }`; `predict_row` and `predictRows`
+  accepting a posterior instance, an unknown county refused by name. Picking it up means
+  undoing two things this milestone did in its absence: `OutcomeSpec::Posterior
+  { prediction: None }` declares no prediction types (so `predict_row` over a Stan model is
+  refused on save), and `sc_model::no_per_row_prediction` sends a posterior to
+  `models.draws`.
 - **LOO/WAIC and an instance comparison view** — PSIS-LOO over `log_lik` in `sc-model`, and the
   side-by-side screen TODO-post-mvp-22 already wanted.
 - **A formula front end generating Stan** (brms-style), which would make the binding

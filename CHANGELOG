@@ -2,6 +2,77 @@
 
 Changes in reverse chronological order.
 
+## Stan operations; prediction from a posterior carried past
+
+Phase 10 of the Stan milestone (TODO "Bayesian models with Stan", §20), and Phase 9 skipped.
+
+- **Phase 9 is carried past the milestone.** Prediction for new rows from a posterior
+  (standalone generated quantities, TODO §19) moves to "Carried past this milestone", and
+  §19 says what stands meanwhile. Nothing in Phases 10 and 11 needed it: a forecast is a time
+  grid's horizon computed in the fit and written back with `writePosterior`. Two places
+  assumed it would come, and now say what is true instead:
+  - `predict_row` over a Stan model was accepted on save (a posterior declared `Float` as a
+    possible prediction), then refused at every fire as *"a hypothesis test"*. A posterior
+    that names no prediction now declares no prediction types, so the trigger is refused
+    when it is saved.
+  - That refusal, the fire-time one and `predictRows`' now call it a posterior and point at
+    `models.draws` (`sc_model::no_per_row_prediction`). Hypothesis tests keep their wording.
+  - The TODO's other references (§1, §14, Phase 0, 11.3) are updated.
+- **The Stan server flags** (10.1): `--cmdstan`, `--stan-cache-dir`, `--stan-max-processes`,
+  `--stan-max-data-values`, `--stan-max-draws-bytes`, `--stan-max-draws-response` and
+  `--stan-summary-max-elements`.
+  - They are `ServerConfig::stan`, an `sc_server::StanSettings`. `serve` hands them to the new
+    `install_models_with`; `install_models(catalog, max_rows)` keeps the defaults for the tests.
+  - `--cmdstan` goes into discovery ahead of `$CMDSTAN`. A named directory that is wrong makes
+    the provider unavailable, naming it, rather than falling back to `~/.cmdstan`.
+  - The cache directory and process budget are the provider's. `ProcessBudget::processes()` and
+    `StanProvider::budget()` are new.
+  - The three fit ceilings were constants until now. They are carried as `PosteriorLimits`
+    into every fit's `FitContext` (`ModelServices::with_posterior_limits`) and into
+    `previewModelData`. The draws-response cap is set once at boot.
+  - The four ceilings and the process count refuse `0`. `--stan-summary-max-elements 0` is
+    allowed and means "summarise every generated quantity on demand".
+  - `serve` logs which CmdStan it will use and where it came from, the chain budget and the
+    cache directory, or why Stan is unavailable.
+- **The configuration file** gains `cmdstan` and the six `stan_*` keys.
+  `Environment::stan_flags()` turns them into the flags they mirror, placed ahead of the
+  command line's, so a flag wins and a bad value in the file gets the same sentence as the
+  same value typed. `serve`'s usage lists the flags.
+- **`docs/OPERATIONS.md` §9, "Bayesian models with Stan"** (10.2). It covers:
+  - installing CmdStan: what it needs, 1.2 GB built, 1–2 GB per build job, and where the
+    server looks. Under the systemd unit, install *as the service account*: `~` there is
+    `/var/lib/feldspar`, the only writable path, and `ProtectHome` hides your own;
+  - the process budget, cancel and restarts;
+  - the compile cache: its key, one compile at a time, and that it is never pruned;
+  - the four ceilings and the summary threshold, as a table;
+  - the size of `_fd_model_draws` (about 12 bytes per number, and how to keep it down),
+    and the scratch directory;
+  - the raw run directories and backups;
+  - the security paragraph of §20, including the scrubbed child environment.
+
+  The file's key table, the environment variables (`CMDSTAN`, `CXX`, `STAN_*`) and the
+  common failures gain Stan rows. §8.3 no longer says fits have no cancel. README's
+  server-options table lists the flags, and its CmdStan paragraph points to §9.
+- **Tests**:
+  - `parses_the_stan_flags` (defaults, every flag, zero and junk refused);
+  - `an_environment_may_carry_the_stan_settings`;
+  - `a_budget_is_the_processes_it_was_given_and_never_none`;
+  - `a_posterior_is_refused_as_a_posterior_and_pointed_at_its_draws`;
+  - the posterior cases in `predict_row`'s outcome-spec test;
+  - `posterior_api.rs`'s `the_stan_flags_reach_the_provider_the_preview_and_the_fit`, over
+    the stub sampler. It checks the budget, the cache directory, the response cap and a
+    missing `--cmdstan` said by name. A tiny `--stan-max-data-values` fails the preview and
+    the fit naming the flag. A tiny `--stan-max-draws-bytes` finishes the fit with the draws
+    dropped and the warning.
+- **Checked here**:
+  - `sc-config-file`, `sc-stan`, `sc-model`, `sc-core-actions`, `sc-server`'s config unit
+    tests and its `model`/`posterior` integration tests, and `sc-cli`'s tests pass. The one
+    exception is the pre-existing i18n failure on `SourceControl.tsx`'s three non-literal
+    `t()` calls.
+  - Clippy is clean on the touched crates.
+  - A real `feldspar serve` on a SQLite file printed the new CmdStan line with
+    `--stan-max-processes 3`, and `--stan-max-processes 0` was refused before boot.
+
 ## The posterior's admin UI
 
 This is Phase 8 of the Stan milestone (TODO "Bayesian models with Stan", §18). The Models tab

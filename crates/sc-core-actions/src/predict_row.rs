@@ -156,11 +156,13 @@ impl Action for PredictRow {
         // whether a fit produces a number, a class, a cluster, a vector or
         // nothing at all, and only `Supervised` leaves two possibilities open.
         let provider = self.providers.require(model.provider.trim())?;
-        let possible = provider.outcome_spec().possible_prediction_types();
+        let spec = provider.outcome_spec();
+        let possible = spec.possible_prediction_types();
         if possible.is_empty() {
+            let posterior = matches!(spec, sc_model::OutcomeSpec::Posterior { .. });
             return Err(Error::invalid(format!(
-                "model `{name}` is a hypothesis test: its parameters are the answer, and there \
-                 is no per-row prediction to write"
+                "model `{name}` is {}",
+                sc_model::no_per_row_prediction(posterior)
             )));
         }
         if let Target::Field(field) = &target {
@@ -397,10 +399,10 @@ fn check_target_type(table: &Table, field: &str, possible: &[BasicType]) -> Resu
 /// made where the outcome is known rather than guessed.
 fn check_outcome_type(table: &Table, field: &str, outcome: &Outcome) -> Result<()> {
     let produced = outcome.prediction_type().ok_or_else(|| {
-        Error::invalid(
-            "this fit is a hypothesis test: its parameters are the answer, and there is no \
-             per-row prediction to write",
-        )
+        Error::invalid(format!(
+            "this fit is {}",
+            sc_model::no_per_row_prediction(outcome.is_posterior())
+        ))
     })?;
     let Some(target) = field_type(table, field) else {
         return Ok(());
@@ -496,6 +498,20 @@ mod tests {
         // A hypothesis test produces nothing per row, so no target is right —
         // which the action reports in those words rather than as a type clash.
         assert!(OutcomeSpec::Test.possible_prediction_types().is_empty());
+        // Nor does a posterior that names no prediction — every Stan model,
+        // while prediction from a posterior is carried past (Stan TODO §19).
+        assert!(
+            OutcomeSpec::Posterior { prediction: None }
+                .possible_prediction_types()
+                .is_empty()
+        );
+        assert_eq!(
+            OutcomeSpec::Posterior {
+                prediction: Some("y_new".to_owned())
+            }
+            .possible_prediction_types(),
+            vec![BasicType::Float]
+        );
     }
 
     #[test]

@@ -175,6 +175,15 @@ pub struct ServerConfig {
     /// memory, and a node with more of it should be able to say so without every
     /// other node against the same database hearing it.
     pub model_max_rows: u64,
+    /// Where this node's CmdStan is, where compiled programs are kept, how many
+    /// chain processes may run at once, and the ceilings on a posterior fit's
+    /// data, draws and responses — `--cmdstan` and the `--stan-*` flags (TODO
+    /// "Bayesian models with Stan" §20).
+    ///
+    /// Flags rather than stored settings, for `--model-max-rows`' reason: a
+    /// CmdStan is a directory on *this* machine, a chain is one of its cores,
+    /// and a gigabyte of draws is its memory.
+    pub stan: crate::models::StanSettings,
     /// How the stream supervisor behaves: the per-stream broadcast buffer, the
     /// element-rate cap, the replay ring and the reconnection backoff (TODO
     /// "Streams" §7).
@@ -241,6 +250,7 @@ impl Default for ServerConfig {
             python_max_stuck: sc_python::DEFAULT_MAX_STUCK,
             python_env: sc_python::PythonEnv::default(),
             model_max_rows: sc_model::DEFAULT_MAX_ROWS,
+            stan: crate::models::StanSettings::default(),
             streams: sc_stream::StreamConfig::default(),
             tls: TlsSettings::Off,
             browser: None,
@@ -260,6 +270,9 @@ impl ServerConfig {
     /// `--modules-dir <path>`, `--python <auto|off>`,
     /// `--python-max-inflight <n>`, `--python-max-stuck <n>`,
     /// `--python-dir <path>`, `--python-bin <path>`, `--model-max-rows <n>`,
+    /// `--cmdstan <dir>`, `--stan-cache-dir <dir>`, `--stan-max-processes <n>`,
+    /// `--stan-max-data-values <n>`, `--stan-max-draws-bytes <n>`,
+    /// `--stan-max-draws-response <n>`, `--stan-summary-max-elements <n>`,
     /// `--browser <path>`, `--no-browser-sandbox`, `--browser-contexts <n>` and
     /// `--preview-idle-minutes <n>`. Unknown flags are an
     /// [`Error::Config`], so a typo fails loudly rather than being ignored.
@@ -354,6 +367,49 @@ impl ServerConfig {
                         }
                     };
                 }
+                "--cmdstan" => {
+                    cfg.stan.cmdstan = Some(PathBuf::from(next_value(&mut it, "--cmdstan")?));
+                }
+                "--stan-cache-dir" => {
+                    cfg.stan.cache_dir =
+                        Some(PathBuf::from(next_value(&mut it, "--stan-cache-dir")?));
+                }
+                "--stan-max-processes" => {
+                    cfg.stan.max_processes = Some(positive(
+                        &next_value(&mut it, "--stan-max-processes")?,
+                        "--stan-max-processes",
+                    )?);
+                }
+                // The four ceilings are refused at zero for `--model-max-rows`'
+                // reason: a bound of nothing makes every fit (or every read)
+                // fail, which reads as a broken server rather than as a bound.
+                "--stan-max-data-values" => {
+                    cfg.stan.limits.max_data_values = positive_u64(
+                        &next_value(&mut it, "--stan-max-data-values")?,
+                        "--stan-max-data-values",
+                    )?;
+                }
+                "--stan-max-draws-bytes" => {
+                    cfg.stan.limits.max_draws_bytes = positive_u64(
+                        &next_value(&mut it, "--stan-max-draws-bytes")?,
+                        "--stan-max-draws-bytes",
+                    )?;
+                }
+                "--stan-max-draws-response" => {
+                    cfg.stan.max_draws_response = positive_u64(
+                        &next_value(&mut it, "--stan-max-draws-response")?,
+                        "--stan-max-draws-response",
+                    )?;
+                }
+                "--stan-summary-max-elements" => {
+                    // Zero is allowed: it means "summarise every generated
+                    // quantity on demand", which is a coherent choice for a
+                    // node that fits programs with large `y_rep`s.
+                    let raw = next_value(&mut it, "--stan-summary-max-elements")?;
+                    cfg.stan.limits.summary_max_elements = raw.parse().map_err(|e| {
+                        Error::config(format!("invalid --stan-summary-max-elements `{raw}`: {e}"))
+                    })?;
+                }
                 "--stream-buffer" => {
                     cfg.streams.channel_capacity =
                         positive(&next_value(&mut it, "--stream-buffer")?, "--stream-buffer")?;
@@ -396,6 +452,16 @@ impl ServerConfig {
             }
         }
         Ok(cfg)
+    }
+}
+
+/// [`positive`], for a ceiling counted in values or bytes rather than in
+/// workers — which can exceed a 32-bit `usize`.
+fn positive_u64(raw: &str, flag: &str) -> Result<u64> {
+    match raw.parse::<u64>() {
+        Ok(n) if n > 0 => Ok(n),
+        Ok(_) => Err(Error::config(format!("{flag} must be at least 1"))),
+        Err(e) => Err(Error::config(format!("invalid {flag} `{raw}`: {e}"))),
     }
 }
 
@@ -604,6 +670,73 @@ mod tests {
         assert_eq!(cfg.preview_idle.as_secs(), 300);
         assert!(ServerConfig::from_args(["--browser-contexts", "0"]).is_err());
         assert!(ServerConfig::from_args(["--preview-idle-minutes", "soon"]).is_err());
+    }
+
+    /// The Stan flags of TODO §20: unset, each is the engine's own default and
+    /// the budget is the machine's; set, each lands where the models services
+    /// read it.
+    #[test]
+    fn parses_the_stan_flags() {
+        let cfg = ServerConfig::default();
+        assert!(cfg.stan.cmdstan.is_none());
+        assert!(cfg.stan.cache_dir.is_none());
+        assert!(
+            cfg.stan.max_processes.is_none(),
+            "half the CPUs, decided at boot"
+        );
+        assert_eq!(cfg.stan.limits, sc_model::PosteriorLimits::default());
+        assert_eq!(
+            cfg.stan.max_draws_response,
+            sc_model::DEFAULT_MAX_DRAWS_RESPONSE
+        );
+
+        let cfg = ServerConfig::from_args([
+            "--cmdstan",
+            "/opt/cmdstan-2.40.0",
+            "--stan-cache-dir",
+            "/var/cache/feldspar-stan",
+            "--stan-max-processes",
+            "6",
+            "--stan-max-data-values",
+            "1000",
+            "--stan-max-draws-bytes",
+            "5000000000",
+            "--stan-max-draws-response",
+            "250000",
+            "--stan-summary-max-elements",
+            "0",
+        ])
+        .expect("parse");
+        assert_eq!(
+            cfg.stan.cmdstan.as_deref(),
+            Some(std::path::Path::new("/opt/cmdstan-2.40.0"))
+        );
+        assert_eq!(
+            cfg.stan.cache_dir.as_deref(),
+            Some(std::path::Path::new("/var/cache/feldspar-stan"))
+        );
+        assert_eq!(cfg.stan.max_processes, Some(6));
+        assert_eq!(cfg.stan.limits.max_data_values, 1000);
+        // Past 4 GB: a byte ceiling is a u64 on every platform.
+        assert_eq!(cfg.stan.limits.max_draws_bytes, 5_000_000_000);
+        assert_eq!(cfg.stan.max_draws_response, 250_000);
+        assert_eq!(cfg.stan.limits.summary_max_elements, 0);
+
+        for flag in [
+            "--stan-max-processes",
+            "--stan-max-data-values",
+            "--stan-max-draws-bytes",
+            "--stan-max-draws-response",
+        ] {
+            let said = ServerConfig::from_args([flag, "0"])
+                .expect_err("a ceiling of nothing is refused")
+                .to_string();
+            assert!(said.contains(flag), "{said}");
+            assert!(ServerConfig::from_args([flag, "lots"]).is_err());
+            assert!(ServerConfig::from_args([flag]).is_err());
+        }
+        assert!(ServerConfig::from_args(["--stan-summary-max-elements", "-1"]).is_err());
+        assert!(ServerConfig::from_args(["--cmdstan"]).is_err());
     }
 
     #[test]

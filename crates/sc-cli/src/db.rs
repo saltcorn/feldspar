@@ -90,6 +90,14 @@ impl Serving<'_> {
         self.section.and_then(|s| s.browser_sandbox)
     }
 
+    /// The file's CmdStan and Stan ceilings, as the `serve` flags they mirror
+    /// (Stan TODO §20).
+    pub fn stan_flags(&self) -> Vec<(&'static str, String)> {
+        self.section
+            .map(Environment::stan_flags)
+            .unwrap_or_default()
+    }
+
     /// The port applications are reached on: the bind address's, if one was
     /// configured and parses as a socket address.
     ///

@@ -136,7 +136,9 @@ pub use i18n::{LANG_COOKIE, LANG_QUERY};
 pub use logging::log_requests;
 pub use lsp::{LSP_ROUTE, MAX_LANGUAGE_SERVERS};
 pub use mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME};
-pub use models::{CatalogDatasetSource, ModelServices, install_models};
+pub use models::{
+    CatalogDatasetSource, ModelServices, StanSettings, install_models, install_models_with,
+};
 pub use modules::ModuleServices;
 pub use observe::STREAM_OBSERVE_ROUTE;
 pub use reload::{ReloadReport, reload_all, spawn_sighup_reload};

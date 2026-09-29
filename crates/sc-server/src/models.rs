@@ -41,10 +41,10 @@ use sc_catalog::Catalog;
 use sc_error::{Context, Error, Result};
 use sc_model::{
     Column, Dataset, DatasetSource, FitContext, FitProgress, Frame, InstanceId, Model,
-    ModelInstance, ModelProvider, ModelRegistry, Progress, ProgressWrite, Read, SPLIT_KEY,
-    bootstrap_model_draws, bootstrap_model_instances, bootstrap_models, builtin_registry,
-    canonical_key, fit_model_with, fitted_cleanly, reap_fitting_instances, record_fit_progress,
-    save_model_instance,
+    ModelInstance, ModelProvider, ModelRegistry, PosteriorLimits, Progress, ProgressWrite, Read,
+    SPLIT_KEY, bootstrap_model_draws, bootstrap_model_instances, bootstrap_models,
+    builtin_registry, canonical_key, fit_model_with, fitted_cleanly, reap_fitting_instances,
+    record_fit_progress, save_model_instance,
 };
 use sc_query::{Expr, Projection, Value};
 use sc_stan::StanProvider;
@@ -231,13 +231,64 @@ pub struct ModelServices {
     /// (`--stan-max-draws-response`, Stan TODO §16). Shared by every clone,
     /// so it is set once for the process.
     max_draws_response: Arc<AtomicU64>,
+    /// The ceilings on a posterior fit (`--stan-max-data-values`,
+    /// `--stan-max-draws-bytes`, `--stan-summary-max-elements`), handed to
+    /// every fit this node runs.
+    limits: PosteriorLimits,
+}
+
+/// This node's Stan settings: the `--cmdstan` and `--stan-*` flags (Stan TODO
+/// §20), each `None` or the engine's own default when not given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StanSettings {
+    /// `--cmdstan`: the CmdStan to use, before `$CMDSTAN` and `~/.cmdstan`.
+    pub cmdstan: Option<PathBuf>,
+    /// `--stan-cache-dir`: where compiled programs are kept. `None` is beside
+    /// the modules root in the platform's data directory.
+    pub cache_dir: Option<PathBuf>,
+    /// `--stan-max-processes`: the chain processes this node runs at once,
+    /// across every fit. `None` is half the available CPUs, at least one.
+    pub max_processes: Option<usize>,
+    /// `--stan-max-draws-response`: the most numbers one draws response may
+    /// carry.
+    pub max_draws_response: u64,
+    /// `--stan-max-data-values`, `--stan-max-draws-bytes` and
+    /// `--stan-summary-max-elements`.
+    pub limits: PosteriorLimits,
+}
+
+impl Default for StanSettings {
+    fn default() -> StanSettings {
+        StanSettings {
+            cmdstan: None,
+            cache_dir: None,
+            max_processes: None,
+            max_draws_response: sc_model::DEFAULT_MAX_DRAWS_RESPONSE,
+            limits: PosteriorLimits::default(),
+        }
+    }
 }
 
 impl ModelServices {
     /// The services over `catalog`, with the built-in providers and the catalog
     /// as the dataset source.
     pub fn new(catalog: &Arc<Catalog>, max_rows: u64) -> Result<ModelServices> {
-        ModelServices::with_stan(catalog, max_rows, stan_provider(catalog))
+        ModelServices::with_settings(catalog, max_rows, &StanSettings::default())
+    }
+
+    /// [`new`](ModelServices::new), with this node's Stan flags: the CmdStan
+    /// discovered from `--cmdstan`, the cache, the process budget and the
+    /// ceilings.
+    pub fn with_settings(
+        catalog: &Arc<Catalog>,
+        max_rows: u64,
+        settings: &StanSettings,
+    ) -> Result<ModelServices> {
+        let services =
+            ModelServices::with_stan(catalog, max_rows, stan_provider(catalog, settings))?
+                .with_posterior_limits(settings.limits);
+        services.set_max_draws_response(settings.max_draws_response);
+        Ok(services)
     }
 
     /// The services with `stan` as the Stan provider — a server's is
@@ -257,7 +308,20 @@ impl ModelServices {
             max_rows,
             stan,
             max_draws_response: Arc::new(AtomicU64::new(sc_model::DEFAULT_MAX_DRAWS_RESPONSE)),
+            limits: PosteriorLimits::default(),
         })
+    }
+
+    /// The same services giving every posterior fit `limits`.
+    pub fn with_posterior_limits(mut self, limits: PosteriorLimits) -> ModelServices {
+        self.limits = limits;
+        self
+    }
+
+    /// The ceilings a posterior fit and a data preview on this node work
+    /// within.
+    pub fn posterior_limits(&self) -> PosteriorLimits {
+        self.limits
     }
 
     /// The providers this server has before any module adds its own: the
@@ -347,10 +411,11 @@ impl ModelServices {
         let source = Arc::clone(&self.source);
         let model = model.clone();
         let cap = self.max_rows;
+        let limits = self.limits;
         tokio::spawn(async move {
             let progress = JobProgress::default();
             let cancel = AtomicBool::new(false);
-            let ctx = FitContext::new(&progress, &cancel);
+            let ctx = FitContext::new(&progress, &cancel).with_limits(limits);
             let fit = fit_model_with(&catalog, &registry, source.as_ref(), &model, id, cap, &ctx);
             // The fit and its row's upkeep, side by side on one task: the
             // upkeep never finishes, so this is over when the fit is.
@@ -472,12 +537,12 @@ fn base_registry(stan: &Arc<StanProvider>) -> Result<ModelRegistry> {
 }
 
 /// The Stan provider over `catalog`'s file stores, with the CmdStan this
-/// process finds (`$CMDSTAN`, else the newest `~/.cmdstan/cmdstan-*`). Not
-/// finding one is not an error: the provider is listed saying so (Stan TODO
-/// §4, §20).
-fn stan_provider(catalog: &Arc<Catalog>) -> StanProvider {
+/// process finds (`--cmdstan`, else `$CMDSTAN`, else the newest
+/// `~/.cmdstan/cmdstan-*`). Not finding one is not an error: the provider is
+/// listed saying so (Stan TODO §4, §20).
+fn stan_provider(catalog: &Arc<Catalog>, settings: &StanSettings) -> StanProvider {
     let stores = Arc::clone(catalog);
-    let locations = Locations::from_env(None);
+    let locations = Locations::from_env(settings.cmdstan.clone());
     let make = Toolchain::find(&locations)
         .make
         .unwrap_or_else(|| PathBuf::from("make"));
@@ -486,8 +551,15 @@ fn stan_provider(catalog: &Arc<Catalog>) -> StanProvider {
         discover(&locations),
     )
     .with_scratch(std::env::temp_dir().join("feldspar-stan"))
-    .with_cache(CompileCache::new(stan_cache_dir(), make))
-    .with_budget(ProcessBudget::for_this_machine())
+    .with_cache(CompileCache::new(
+        settings.cache_dir.clone().unwrap_or_else(stan_cache_dir),
+        make,
+    ))
+    .with_budget(
+        settings
+            .max_processes
+            .map_or_else(ProcessBudget::for_this_machine, ProcessBudget::new),
+    )
 }
 
 /// Where compiled Stan programs are kept: beside the modules root, in the
@@ -517,6 +589,15 @@ fn stan_cache_dir() -> PathBuf {
 ///
 /// Runs before anything can read an instance, for that reason.
 pub async fn install_models(catalog: &Arc<Catalog>, max_rows: u64) -> Result<ModelServices> {
+    install_models_with(catalog, max_rows, &StanSettings::default()).await
+}
+
+/// [`install_models`] with this node's Stan flags — what `serve` calls.
+pub async fn install_models_with(
+    catalog: &Arc<Catalog>,
+    max_rows: u64,
+    stan: &StanSettings,
+) -> Result<ModelServices> {
     bootstrap_models(catalog)
         .await
         .context("ensuring the models table exists")?;
@@ -535,7 +616,7 @@ pub async fn install_models(catalog: &Arc<Catalog>, max_rows: u64) -> Result<Mod
              have been marked failed"
         );
     }
-    let services = ModelServices::new(catalog, max_rows)?;
+    let services = ModelServices::with_settings(catalog, max_rows, stan)?;
     // The run directories of those fits, and any compile they were in the
     // middle of, on this node (Stan TODO §13).
     let stan = services.stan();

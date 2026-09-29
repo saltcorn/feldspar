@@ -27,7 +27,7 @@ use sc_model::{
     SizeExpr,
 };
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModelServices, ServerConfig, admin_handlers,
+    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModelServices, ServerConfig, StanSettings, admin_handlers,
     build_router_with_apps, default_js_evaluator, install_triggers,
 };
 use sc_test_harness::TestDb;
@@ -316,6 +316,11 @@ struct Server {
 }
 
 async fn setup() -> Result<Server> {
+    setup_with(&StanSettings::default()).await
+}
+
+/// [`setup`], with the Stan flags `stan` (TODO §20).
+async fn setup_with(stan: &StanSettings) -> Result<Server> {
     let db = TestDb::new().await?;
     db.client()
         .await?
@@ -332,7 +337,7 @@ async fn setup() -> Result<Server> {
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
-    let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
+    let models = sc_server::install_models_with(&catalog, sc_model::DEFAULT_MAX_ROWS, stan).await?;
     // The sampler joins the registry before the actions are built over it, as
     // a module's provider does on a reload.
     let mut registry = models.base_registry()?;
@@ -741,6 +746,74 @@ async fn a_posterior_is_bound_fitted_read_by_key_and_written_back() -> Result<()
     assert!(
         refused.to_string().contains("no program to compile"),
         "{refused}"
+    );
+    Ok(())
+}
+
+/// TODO §20: the `--cmdstan`/`--stan-*` flags, as `serve` hands them over,
+/// are what the services build the provider with and what every preview and
+/// fit on the node works within.
+#[tokio::test]
+async fn the_stan_flags_reach_the_provider_the_preview_and_the_fit() -> Result<()> {
+    let cache = std::env::temp_dir().join(format!("sc-stan-flags-{}", std::process::id()));
+    let mut stan = StanSettings {
+        cmdstan: Some("/nonexistent/cmdstan-2.40.0".into()),
+        cache_dir: Some(cache.clone()),
+        max_processes: Some(3),
+        max_draws_response: 1_000,
+        ..StanSettings::default()
+    };
+    // Five homes after the drop: N, J and three columns of five is 17 values.
+    stan.limits.max_data_values = 10;
+    let mut server = setup_with(&stan).await?;
+
+    let provider = server.models.stan();
+    assert_eq!(provider.budget().processes(), 3);
+    assert_eq!(provider.compile_cache().dir(), cache.as_path());
+    assert_eq!(server.models.max_draws_response(), 1_000);
+    assert_eq!(server.models.posterior_limits().max_data_values, 10);
+    // A named CmdStan that is not there is said, not stepped over for
+    // `~/.cmdstan`'s.
+    let why = provider
+        .unavailable()
+        .expect("the named CmdStan is missing");
+    assert!(why.contains("/nonexistent/cmdstan-2.40.0"), "{why}");
+    assert!(provider.cmdstan().is_none());
+
+    let client = &mut server.client;
+    let preview = client
+        .ok(
+            "POST",
+            "/api/model-data/preview",
+            Some(radon("Radon", bound(), nulls_dropped())),
+        )
+        .await;
+    let errors = preview["errors"].to_string();
+    assert!(
+        errors.contains("the bound data has 17 values, more than the 10 allowed")
+            && errors.contains("`--stan-max-data-values`"),
+        "{preview}"
+    );
+    let (_, instance) = fitted(client, radon("Radon", bound(), nulls_dropped())).await;
+    assert_eq!(instance["status"], json!("failed"), "{instance}");
+    assert!(
+        instance["error"]
+            .as_str()
+            .unwrap()
+            .contains("`--stan-max-data-values`"),
+        "{instance}"
+    );
+
+    // The draws ceiling: the fit finishes, and says its draws were not kept.
+    let mut stan = StanSettings::default();
+    stan.limits.max_draws_bytes = 1_000;
+    let mut server = setup_with(&stan).await?;
+    let (_, instance) = fitted(&mut server.client, radon("Radon", bound(), nulls_dropped())).await;
+    assert_eq!(instance["status"], json!("fitted"), "{instance}");
+    let warnings = instance["warnings"].to_string();
+    assert!(
+        warnings.contains("over the limit of") && warnings.contains("`--stan-max-draws-bytes`"),
+        "{instance}"
     );
     Ok(())
 }

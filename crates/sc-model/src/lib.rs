@@ -149,7 +149,8 @@ pub use posterior::{
     PosteriorMethod, PosteriorResult, PosteriorRun, Progress,
 };
 pub use predict::{
-    Predictions, Subject, name_classes, predict_rows, predict_subject, prediction_values,
+    Predictions, Subject, name_classes, no_per_row_prediction, predict_rows, predict_subject,
+    prediction_values,
 };
 pub use provider::{
     CATEGORICAL_COLUMNS_QUERY, COLUMNS_QUERY, FitResult, HostProvider, ModelProvider,

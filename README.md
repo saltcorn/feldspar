@@ -568,10 +568,15 @@ feldspar cmdstan install --version 2.40.0 --dir /opt/cmdstan --jobs 4
 CmdStan is looked for at `--cmdstan DIR`, else `$CMDSTAN`, else the newest
 `~/.cmdstan/cmdstan-*` — cmdstanpy's convention, so one it installed is picked up — and
 anything older than 2.33 is refused by name. An install outside `~/.cmdstan` (`--dir`) is
-not searched, so point `$CMDSTAN` or `--cmdstan` at its `cmdstan-<version>` directory. `install` is a download from GitHub and a
+not searched, so point `$CMDSTAN` or `feldspar serve --cmdstan` (or `cmdstan` in
+`feldspar.toml`) at its `cmdstan-<version>` directory; the server says at startup which one
+it found, or why there is none. `install` is a download from GitHub and a
 C++ build of several minutes that an operator runs on purpose; the server never does
 either on its own. `--jobs` defaults to 1 because each job of that build takes 1–2 GB of
 memory. An install that fails or is interrupted removes what it had unpacked.
+The server's Stan flags — where compiled programs go, how many chains run at once, and the
+ceilings on a fit's data and draws — are in the table under "Server options" below, and
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) §9 is how to size them.
 
 ### Python, which is a build and not a flag
 
@@ -1039,6 +1044,13 @@ can read it — including a group that is not its own.
 | `--python-dir <dir>` | the virtual environment Python modules install into | the platform's data directory |
 | `--python-bin <path>` | the interpreter `pip` runs under | `python3` |
 | `--model-max-rows <n>` | ceiling on the rows one model dataset may select | `200000` |
+| `--cmdstan <dir>` | the CmdStan Stan models compile and run with | `$CMDSTAN`, else the newest `~/.cmdstan/cmdstan-*` |
+| `--stan-cache-dir <dir>` | where compiled Stan programs are kept | `stan-cache` in the platform's data directory |
+| `--stan-max-processes <n>` | Stan chain processes this node runs at once, across every fit | half the CPUs, at least `1` |
+| `--stan-max-data-values <n>` | numbers one fit's bound data may hold | `20000000` |
+| `--stan-max-draws-bytes <n>` | bytes of draws one fit may store; over it, the summary is kept and the draws are not | `1000000000` |
+| `--stan-max-draws-response <n>` | numbers one `getModelDraws` answer may carry | `2000000` |
+| `--stan-summary-max-elements <n>` | a generated quantity with more elements is summarised on demand, not at fit time | `1000` |
 | `--browser <path>` | the headless Chromium the coding agent's `view_app` drives | `chromium`, `chromium-browser` or `google-chrome` on `PATH`, not a snap |
 | `--no-browser-sandbox` | start that browser with `--no-sandbox` (a kernel that refuses its sandbox) | sandboxed |
 | `--browser-contexts <n>` | runs that may hold a browser context at once; a call beyond it waits | `4` |

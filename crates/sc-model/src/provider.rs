@@ -336,7 +336,8 @@ impl OutcomeSpec {
     /// instance actually recorded.
     ///
     /// Empty for [`Test`](OutcomeSpec::Test), which produces nothing per row —
-    /// so a target of any type is wrong, and the caller says so in those words.
+    /// so a target of any type is wrong, and the caller says so in those words
+    /// — and for a posterior that names no prediction.
     pub fn possible_prediction_types(&self) -> Vec<BasicType> {
         match self {
             OutcomeSpec::Supervised { .. } => vec![BasicType::Float, BasicType::Text],
@@ -345,10 +346,14 @@ impl OutcomeSpec {
             OutcomeSpec::Cluster => vec![BasicType::Int],
             OutcomeSpec::Embedding { .. } => vec![BasicType::Json],
             OutcomeSpec::Test => Vec::new(),
-            // Only when the configuration names a prediction — which a
-            // declaration cannot see, so the fire-time check against the
-            // recorded outcome is the one that refuses a program that does not.
-            OutcomeSpec::Posterior { .. } => vec![BasicType::Float],
+            // Only a posterior whose declaration names a prediction. None
+            // does while prediction from a posterior is carried past the Stan
+            // milestone (Stan TODO §19), so a `predict_row` over one is
+            // refused when it is saved, not at every fire.
+            OutcomeSpec::Posterior { prediction: None } => Vec::new(),
+            OutcomeSpec::Posterior {
+                prediction: Some(_),
+            } => vec![BasicType::Float],
         }
     }
 }

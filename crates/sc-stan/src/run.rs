@@ -272,12 +272,18 @@ pub fn parse_iteration(line: &str) -> Option<(u64, u64, ChainPhase)> {
 /// The node's process budget (§13): every chain of every fit holds one permit
 /// while it runs. Owned by the server; cheap to clone.
 #[derive(Debug, Clone)]
-pub struct ProcessBudget(Arc<Semaphore>);
+pub struct ProcessBudget(Arc<Semaphore>, usize);
 
 impl ProcessBudget {
     /// A budget of `processes` (at least one).
     pub fn new(processes: usize) -> ProcessBudget {
-        ProcessBudget(Arc::new(Semaphore::new(processes.max(1))))
+        let processes = processes.max(1);
+        ProcessBudget(Arc::new(Semaphore::new(processes)), processes)
+    }
+
+    /// How many chain processes the budget allows at once, in all.
+    pub fn processes(&self) -> usize {
+        self.1
     }
 
     /// The default: half the available CPUs, at least one.
@@ -562,6 +568,16 @@ mod tests {
         assert_eq!((s.seed, s.init, s.save_warmup), (1234, 2.0, false));
         assert_eq!((s.max_runtime_minutes, s.sig_figs), (60, 9));
         assert_eq!(settings(json!({ "seed": 7 })).seed, 7);
+    }
+
+    /// `--stan-max-processes` (§20) is a budget's size, and a size of nothing
+    /// would queue every fit for ever — so it is one at least.
+    #[test]
+    fn a_budget_is_the_processes_it_was_given_and_never_none() {
+        let budget = ProcessBudget::new(6);
+        assert_eq!((budget.processes(), budget.available()), (6, 6));
+        assert_eq!(ProcessBudget::new(0).processes(), 1);
+        assert!(ProcessBudget::for_this_machine().processes() >= 1);
     }
 
     #[test]

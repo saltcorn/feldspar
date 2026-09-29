@@ -179,6 +179,11 @@ impl StanProvider {
         &self.cache
     }
 
+    /// The node's chain-process budget.
+    pub fn budget(&self) -> &ProcessBudget {
+        &self.budget
+    }
+
     /// The CmdStan this provider compiles with, when one was found.
     pub fn cmdstan(&self) -> Option<&CmdStan> {
         self.cmdstan.as_ref().ok()
@@ -377,7 +382,8 @@ impl ModelProvider for StanProvider {
     }
 
     fn outcome_spec(&self) -> OutcomeSpec {
-        // Prediction for new rows is §19, a later phase.
+        // Prediction for new rows (§19) is carried past this milestone, so a
+        // posterior names none and `predict_row` over one is refused on save.
         OutcomeSpec::Posterior { prediction: None }
     }
 

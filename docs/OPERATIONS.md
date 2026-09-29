@@ -22,6 +22,7 @@ Contents:
 6. [Reloading without a restart](#6-reloading-without-a-restart)
 7. [Claude Code over the MCP server](#7-claude-code-over-the-mcp-server)
 8. [Day-to-day operations](#8-day-to-day-operations)
+9. [Bayesian models with Stan](#9-bayesian-models-with-stan)
 
 ---
 
@@ -520,6 +521,10 @@ bind           = "0.0.0.0:443"
 secure_cookies = true
 browser        = "/usr/bin/chromium"  # view_app's browser; unset searches PATH
 
+# This host's CmdStan and the Stan ceilings (§9) — each mirrors a `serve` flag.
+cmdstan            = "/var/lib/feldspar/.cmdstan/cmdstan-2.40.0"
+stan_max_processes = 4
+
 [environments.staging]
 url = "postgres://feldspar:secret@staging.internal:5432/feldspar"
 base_domain = "staging.example.com"
@@ -549,6 +554,13 @@ Every key an environment may hold:
 | `secure_cookies` | boolean | set `Secure` on session and CSRF cookies |
 | `browser` | string | the headless Chromium the coding agent's `view_app` drives. Unset: `chromium`, `chromium-browser` or `google-chrome` on `PATH`, skipping a snap (§2.5) |
 | `browser_sandbox` | boolean | `false` starts that browser with `--no-sandbox`, for a kernel that refuses its sandbox. Default `true` |
+| `cmdstan` | string | the CmdStan Stan models use — `--cmdstan` (§9.1) |
+| `stan_cache_dir` | string | where compiled Stan programs are kept — `--stan-cache-dir` (§9.3) |
+| `stan_max_processes` | integer | chain processes at once, across every fit — `--stan-max-processes` (§9.2) |
+| `stan_max_data_values` | integer | `--stan-max-data-values` (§9.4) |
+| `stan_max_draws_bytes` | integer | `--stan-max-draws-bytes` (§9.4) |
+| `stan_max_draws_response` | integer | `--stan-max-draws-response` (§9.4) |
+| `stan_summary_max_elements` | integer | `--stan-summary-max-elements` (§9.4) |
 | `test_template` | string | the template per-test databases are cloned from. Read by the integration-test harness, **not** by the server |
 
 `environments` is an ordinary TOML table: define as many as you have databases,
@@ -569,6 +581,10 @@ Three rules that are easy to get wrong:
   placeholder. An environment with connection parameters and no `base_domain`
   stops `feldspar auth token` with `no base domain`.
 - **Unknown keys are errors** (`deny_unknown_fields`), at both levels.
+- **A flag beats the file.** The serving and Stan keys are read as if they had been
+  typed before the command line's own flags, so `--stan-max-processes 8` on one run
+  overrides `stan_max_processes = 4`, and a `0` in the file is refused with the same
+  sentence as a `0` on the command line.
 
 ### 4.3 Precedence
 
@@ -613,7 +629,10 @@ will not boot in a half-working state.
 | `XDG_CONFIG_HOME` | every command | where the user configuration directory is, for the `feldspar.toml` search |
 | `XDG_DATA_HOME` | the server | where the user data directory is, when `SC_DATA_DIR` is unset |
 | `APPDATA` `PROGRAMDATA` `LOCALAPPDATA` | every command | the Windows equivalents of the two above |
-| `PATH` | the server | where `npm`, `python3` and `typescript-language-server` are found |
+| `PATH` | the server | where `npm`, `python3` and `typescript-language-server` are found — and `make` and the C++ compiler a Stan compile runs (§9.1) |
+| `CMDSTAN` | the server, `feldspar cmdstan status` | the CmdStan directory, when `--cmdstan` (or `cmdstan` in the file) is not given (§9.1) |
+| `CXX` | the server | the C++ compiler CmdStan's makefiles use. Passed through to the compile |
+| `STAN_*` | the server | CmdStan's own variables, passed through to its processes. Nothing else of the server's environment is (§9.6) |
 
 A daemon started with a **scrubbed environment** — no `SC_DATA_DIR`, no `HOME`,
 no `XDG_DATA_HOME` — is an error rather than a fallback to the current directory,
@@ -1104,11 +1123,13 @@ the cost of one `COUNT(*)` — *"the dataset selects more than 200 000 rows; add
 or raise `--model-max-rows`"* — rather than by the OOM killer after a partial read. The
 message goes onto the failed instance, where the admin will look for it.
 
-It is the only bound a fit has. **There is no cancel**: stopping a fit means stopping a
-smartcore call or a CPython call mid-flight, and neither can be interrupted safely
-(the technical design's §15.2 says why for Python). Size the flag for the memory the
-process has, and remember that each column is materialised as a boxed vector before the
-numeric matrix is built.
+It is the only bound a smartcore or Python fit has. **Those fits have no cancel**:
+stopping one means stopping a smartcore call or a CPython call mid-flight, and neither
+can be interrupted safely (the technical design's §15.2 says why for Python). Size the
+flag for the memory the process has, and remember that each column is materialised as a
+boxed vector before the numeric matrix is built. A Stan fit reads its datasets under the
+same bound and has more of its own, and it **can** be cancelled, because it is a set of
+processes (§9).
 
 ### 8.4 Stopping
 
@@ -1137,3 +1158,203 @@ looking hung. Ctrl-C does the same interactively.
 | a model fit says "the server restarted while this fit was running" | it did. A fit is a spawned job whose only record is its instance row, so boot marks a `fitting` row failed rather than leaving it running for ever (§3.5). Press **Fit** again |
 | a fit fails with "the dataset selects more than … rows" | the dataset is over `--model-max-rows` (§8.3). Add a filter to the dataset, or raise the flag |
 | the Models tab lists only `t_test` and `anova` | the binary was built `--no-default-features`, so the smartcore providers were compiled out (§1). It is a build, not a setting |
+| the `stan` provider says "CmdStan was not found" | the server looked where §9.1 says and found none, or found one it refused (too old, not built, a named directory that is not there). The startup log has the same sentence. Under systemd, `~` is `/var/lib/feldspar`, not your home |
+| a Stan fit says `queued` for a long time | every chain process the node allows is taken by other fits (§9.2). It starts when one finishes; raise `--stan-max-processes` if the machine has the cores |
+| a Stan fit fails with "more than the … allowed (`--stan-max-data-values`)" | the bound data is too large for the ceiling (§9.4). Filter the datasets or raise the flag |
+| a Stan fit finishes with "the draws … were not kept" | they were over `--stan-max-draws-bytes` (§9.4). The summary and diagnostics are there; to keep the draws, `thin`, `exclude_variables`, or raise the flag |
+| `getModelDraws` refuses with "… numbers" and suggests `thin` | the answer would be over `--stan-max-draws-response` (§9.4). Ask for fewer elements, chains or draws |
+
+---
+
+## 9. Bayesian models with Stan
+
+A model whose provider is **Stan** is a Stan program the administrator wrote, compiled and
+sampled by [CmdStan](https://mc-stan.org/docs/cmdstan-guide/) on the server. Nothing of
+CmdStan is linked into `feldspar`: it is a directory, a `make` and a C++ compiler, found at
+run time, so both artifacts of §1 can fit Stan models and whether *this host* can is decided
+by what is installed on it. A host with no CmdStan runs everything else; the `stan` provider
+is listed saying why it is unavailable.
+
+### 9.1 Installing CmdStan
+
+What the host needs, beside the server:
+
+| | Needed for | Size |
+|---|---|---|
+| CmdStan **2.33 or newer** | every Stan model | about **1.2 GB** built (2.40.0) |
+| `make` and `g++` (or `clang++`) | compiling each program | Debian's `build-essential` |
+| memory | the build, and each compile | **1–2 GB per job** |
+
+`feldspar cmdstan` does the install, from a shell, on purpose — the server never downloads
+or builds anything on its own:
+
+```bash
+sudo apt install build-essential                 # make and g++
+feldspar cmdstan install                         # the latest release, into ~/.cmdstan, make -j1
+feldspar cmdstan install --version 2.40.0 --dir /srv/cmdstan --jobs 2
+feldspar cmdstan status                          # what the server will find, and whether it can compile
+```
+
+`install` downloads the release tarball from GitHub, unpacks it into `<dir>/cmdstan-<version>`
+and runs `make build`. That takes several minutes, and **`--jobs` defaults to 1** because
+each job takes 1–2 GB: on a host with `systemd-oomd`, a parallel build can have the whole
+session killed rather than fail. An install that fails or is interrupted removes what it had
+unpacked. `status` exits non-zero when Stan cannot be used, so a provisioning script can test
+for it.
+
+**Where the server looks**, first match wins:
+
+1. `--cmdstan DIR` (or `cmdstan = "DIR"` in the environment, §4.2);
+2. `$CMDSTAN`;
+3. the newest `~/.cmdstan/cmdstan-*` — where `feldspar cmdstan install` and cmdstanpy's
+   `install_cmdstan` both put one, so an existing install is picked up.
+
+A directory named by 1 or 2 that is missing, not a CmdStan, not built or older than 2.33 is
+**refused by name**, not stepped over for the one in `~/.cmdstan`: a fit on a version nobody
+chose is worse than a provider that says what is wrong. The server says at startup what it
+found:
+
+```
+feldspar: Stan models will use CmdStan 2.40.0 at /var/lib/feldspar/.cmdstan/cmdstan-2.40.0 (the newest under ~/.cmdstan), up to 4 chain process(es) at once, compiling into /var/lib/feldspar/stan-cache
+feldspar: Stan models are unavailable: CmdStan was not found — …
+```
+
+**Under the systemd unit of §2.4**, `~` is the service account's home, `/var/lib/feldspar`,
+and that is the only directory the server may write. So install CmdStan *as* the service
+account, where the server looks by default and where it can write:
+
+```bash
+sudo -u feldspar -H feldspar cmdstan install
+sudo -u feldspar -H feldspar cmdstan status
+```
+
+A CmdStan installed under your own home is invisible to the unit (`ProtectHome=true`). One
+installed elsewhere as root (`--dir /opt/cmdstan`) works if it is complete — it is only read
+at run time — but must be named with `cmdstan` in the file, and upgrading it is then yours to
+do. Upgrading CmdStan is an install of the new version beside the old one; the server takes
+the newest at its next start, and every program is recompiled on its next fit, because the
+CmdStan version is part of the compile cache's key.
+
+### 9.2 The process budget
+
+Every chain of every fit is **one CmdStan process**, and every chain process on the node
+draws from one budget: `--stan-max-processes` (default: half the available CPUs, at least
+one). A fit's own `parallel_chains` setting caps it further. A chain waiting for the budget
+leaves its fit saying `queued` on the instance screen; nothing is refused.
+
+A chain is single-threaded (the server compiles without `STAN_THREADS`), so the budget is
+roughly the cores Stan may keep busy. The default leaves half of them for the server, the
+database and whatever else is on the host; a host that does little but fit models can raise
+it.
+
+Fits are jobs, as every model fit is (§8.3): a fit survives the browser, not a restart. The
+chains are killed with the server (they are its children, in their own process group, with a
+parent-death signal on Linux), the instance is marked failed at the next boot, and the next
+boot removes their scratch directories. A running Stan fit **can** be cancelled from its
+instance screen, from any node, and `max_runtime_minutes` in its configuration stops one that
+runs too long.
+
+### 9.3 The compile cache
+
+A Stan program is compiled to a native executable — a C++ compile, **about a minute and
+1–2 GB of memory** — once per node, and kept in `--stan-cache-dir` (default
+`stan-cache` in the platform's data directory, `/var/lib/feldspar/stan-cache` under the unit).
+An entry is keyed by the SHA-256 of the program and every file it includes, the CmdStan
+version and the compile options, so editing any of them, or upgrading CmdStan, is a new entry,
+and two models running the same program share one. An entry is a few megabytes (2.5 MB for the
+radon model).
+
+**One compile at a time per node**: a second fit of the same program waits for the first
+compile and then finds it cached; a fit of another program waits its turn. The **Compile**
+button on the model form warms the cache without fitting.
+
+Nothing prunes the cache — old entries are only disk. Deleting the directory, or any entry in
+it, is always safe while no compile is running: the next fit recompiles. A compile interrupted
+by a restart leaves a `*.building-*` directory that the next boot removes.
+
+### 9.4 How big a fit can get
+
+Four ceilings, each a server flag because each is about this host's memory, and each refused
+**by name** — the message names the flag:
+
+| Flag | Default | What it bounds | Over it |
+|---|---|---|---|
+| `--model-max-rows` | 200 000 | rows one dataset (the main one, or a related one) may select | the fit fails before anything is read (§8.3) |
+| `--stan-max-data-values` | 20 000 000 | numbers in the bound data file, all variables together | the fit fails before compiling, naming the largest variables; **Preview data** says so too |
+| `--stan-max-draws-bytes` | 1 GB | draws a fit may store in `_fd_model_draws` | refused before sampling when the size can be computed from the program; otherwise the fit finishes, **keeps its summary and diagnostics**, and discards the draws with a warning |
+| `--stan-max-draws-response` | 2 000 000 | numbers in one `getModelDraws` answer | the request is refused with the arithmetic, suggesting `thin` or fewer elements |
+
+And one that is a trade rather than a ceiling: **`--stan-summary-max-elements`** (default
+1 000). A generated quantity with more elements than this — a `y_rep` over every row — is not
+summarised when the fit finishes; the instance screen summarises it on demand from the stored
+draws. `0` summarises every generated quantity on demand. On demand needs the draws: a
+generated quantity over the ceiling whose draws are not kept (§9.5) is not read back from
+CmdStan at all.
+
+### 9.5 Where the draws live, and what they cost
+
+A posterior is its draws, and they are rows: **`_fd_model_draws`**, one row per element per
+chain, the iterations as a JSON array, in the primary database. They are written in the same
+transaction that marks the instance fitted and deleted with it, so every node reads them, and
+a fitted instance always has all of them.
+
+That makes them the largest thing a Stan user adds to the database. **About 12 bytes per
+number** is the rule of thumb: the radon model (4 chains × 1 000 draws × ~1 100 elements) is
+about 50 MB per fit, and a program that saves a 50 000-element `y_rep` is 100 times that.
+Three ways to keep it down, all in the model's configuration:
+
+- `thin`, or fewer `iter_sampling`;
+- `exclude_variables`: variables whose draws are not kept (their summary is);
+- `keep_draws: false`: keep the summary and the diagnostics, computed from every draw, and
+  discard the draws. The traces and histograms are then unavailable, and write-back works
+  from the summary.
+
+And one habit: **delete old instances.** Every fit is an instance, and an instance keeps its
+draws until it is deleted. `SELECT pg_size_pretty(pg_total_relation_size('_fd_model_draws'))`
+is the number to watch.
+
+While a fit runs, CmdStan writes its CSVs to a **scratch directory** under the system
+temporary directory (`feldspar-stan/`; the unit's private `/tmp`). It is about the size of
+the draws as text, is removed when the fit ends, and a boot removes any a crash left behind.
+
+### 9.6 The raw run, and backups
+
+A model may also name a **runs store** — a file store — in its configuration. Then each fit
+publishes CmdStan's own output there, under `<runs_dir>/<model>/<instance id>/`: the program
+as fitted, `data.json`, the coordinates, the sampler's configuration, and each chain's CSV,
+gzipped, with its log. That is what **Download run** zips for `cmdstanpy.from_csv` and the
+exact reproduction of the run. It is optional, and without it Download run builds per-chain
+CSVs from `_fd_model_draws` instead.
+
+In a git-backed store, a `.gitignore` of `*` is written into `runs_dir` on first use, so
+megabytes of CSV never become a commit. Deleting an instance deletes its run directory.
+
+**Backups** include models, instances and **all** of their draws, which is right — an
+instance without its draws is half an instance — and is where the size of `_fd_model_draws`
+shows up (§9.5). Raw run directories are in a file store, and a file store's backup is the
+store's own: a local directory's is your filesystem backup, a git store's is its remote. An
+instance whose run directory has gone (a store restored without it, a directory deleted by
+hand) still reads its draws and summary; its Download run falls back to the table, with a
+`README.txt` saying why.
+
+### 9.7 Security
+
+A Stan program is admin-authored and **compiles to native code that the server runs**. So
+writing to the file store a model's program lives in is a way to change what a fit computes —
+the same trust as editing a code trigger's body, and the same people should have it. What the
+program cannot do is reach past Stan:
+
+- it cannot bring C++ of its own: programs are compiled without `--allow-undefined`, with no
+  administrator-supplied `CXXFLAGS`, and `make` is given only the server's own target and
+  include path;
+- its `#include`s resolve only inside its own file store, laid out in the compile's own
+  directory;
+- every CmdStan process runs with a **scrubbed environment** — `PATH`, `HOME`, `TMPDIR`,
+  `CMDSTAN`, `CXX` and CmdStan's `STAN_*` variables, nothing else — so it inherits no database
+  URL, no password and no API key from the server;
+- it reads its data from a file the server wrote and writes CSVs the server reads; it has no
+  database connection.
+
+Fits, compiles, draws, write-back and **Download run** are admin-only, as every model
+endpoint is.
+

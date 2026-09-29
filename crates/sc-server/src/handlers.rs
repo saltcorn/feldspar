@@ -3600,7 +3600,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                     &interface,
                     &model.configuration,
                     &datasets,
-                    sc_model::DEFAULT_MAX_DATA_VALUES,
+                    models.posterior_limits().max_data_values,
                 );
                 Ok(HandlerResponse::ok(
                     serde_json::to_value(&preview)

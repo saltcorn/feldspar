@@ -96,9 +96,9 @@ pub async fn predict_rows(
     let outcome = instance.outcome()?;
     if !outcome.predicts() {
         return Err(Error::invalid(format!(
-            "instance {} is a hypothesis test: its parameters are the answer, and there is no \
-             per-row prediction to make",
-            instance.id
+            "instance {} is {}",
+            instance.id,
+            no_per_row_prediction(outcome.is_posterior())
         )));
     }
     let encoding = instance.encoding()?;
@@ -227,6 +227,23 @@ pub fn name_classes(predictions: Vec<Prediction>, encoding: &Encoding) -> Result
 /// the row layer.
 pub fn prediction_values(predictions: &[Prediction]) -> Result<Vec<Json>> {
     predictions.iter().map(Prediction::to_json).collect()
+}
+
+/// What a fit that answers nothing per row is, and what to do instead: the
+/// end of every refusal to predict with one, after "… is".
+///
+/// A posterior is refused in its own words rather than a hypothesis test's:
+/// prediction for new rows from a posterior (standalone generated quantities,
+/// Stan TODO §19) is carried past the Stan milestone, and the draws in a code
+/// body are the way to it meanwhile.
+pub fn no_per_row_prediction(posterior: bool) -> &'static str {
+    if posterior {
+        "a posterior: its draws are the answer, and a posterior does not predict rows here — \
+         read its draws in a code body (`models.draws`) and compute the prediction there"
+    } else {
+        "a hypothesis test: its parameters are the answer, and there is no per-row prediction \
+         to make"
+    }
 }
 
 #[cfg(test)]
@@ -530,6 +547,25 @@ mod tests {
             .await
             .expect_err("a test");
         assert!(err.to_string().contains("hypothesis test"), "{err}");
+    }
+
+    /// Prediction from a posterior is carried past the Stan milestone, so a
+    /// posterior is refused — as a posterior, pointing at the draws, not as a
+    /// hypothesis test.
+    #[tokio::test]
+    async fn a_posterior_is_refused_as_a_posterior_and_pointed_at_its_draws() {
+        let mut instance = instance();
+        instance.attributes.insert(
+            ATTR_OUTCOME.to_owned(),
+            serde_json::to_value(Outcome::Posterior { prediction: None }).expect("outcome"),
+        );
+        let err = predict_rows(&registry(), "fixed_class", &instance, &training())
+            .await
+            .expect_err("a posterior")
+            .to_string();
+        assert!(err.contains("is a posterior"), "{err}");
+        assert!(err.contains("`models.draws`"), "{err}");
+        assert!(!err.contains("hypothesis test"), "{err}");
     }
 
     #[test]

@@ -134,9 +134,12 @@ pub struct ConfigFile {
 /// line writes the *same* application URL into the generated documentation that
 /// a build run by the server would. Without them, `feldspar build-app` would
 /// quietly rewrite `AGENTS.md` with the URL taken out, which is worse than
-/// never having written it. They mirror three `serve` flags exactly; the rest of
-/// `serve`'s flags are not here because none of them decides where an
-/// application is reachable.
+/// never having written it. They mirror three `serve` flags exactly.
+///
+/// After them come the properties of **this host** that an operator would
+/// otherwise repeat on every `serve` line: its browser, and its CmdStan with
+/// the Stan ceilings. Each mirrors a `serve` flag too, and a flag given on
+/// the command line wins.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Environment {
@@ -183,6 +186,28 @@ pub struct Environment {
     /// the unprivileged user namespaces the sandbox needs, which
     /// `scripts/setup-host.sh` detects and names.
     pub browser_sandbox: Option<bool>,
+    /// The CmdStan Stan models use — `--cmdstan` (Stan TODO §20). Unset, the
+    /// server takes `$CMDSTAN`, else the newest `~/.cmdstan/cmdstan-*`.
+    ///
+    /// This and the six `stan_*` keys below are properties of this host, like
+    /// `browser`: where its CmdStan is, which disk has room for compiled
+    /// programs, how many cores a chain may take and how much memory draws
+    /// may. Each mirrors the `serve` flag of the same name
+    /// ([`Environment::stan_flags`]), and a flag on the command line wins.
+    pub cmdstan: Option<String>,
+    /// `--stan-cache-dir`: where compiled Stan programs are kept.
+    pub stan_cache_dir: Option<String>,
+    /// `--stan-max-processes`: chain processes at once, across every fit.
+    pub stan_max_processes: Option<u64>,
+    /// `--stan-max-data-values`: numbers one fit's bound data may hold.
+    pub stan_max_data_values: Option<u64>,
+    /// `--stan-max-draws-bytes`: bytes of draws one fit may store.
+    pub stan_max_draws_bytes: Option<u64>,
+    /// `--stan-max-draws-response`: numbers one draws response may carry.
+    pub stan_max_draws_response: Option<u64>,
+    /// `--stan-summary-max-elements`: the largest generated quantity
+    /// summarised when a fit finishes.
+    pub stan_summary_max_elements: Option<u64>,
     /// The database the integration-test harness clones each of its per-test
     /// databases from. Only the test environment has any use for it.
     ///
@@ -227,6 +252,32 @@ impl Environment {
             path.display(),
             postgres.join(", ")
         )))
+    }
+
+    /// The Stan keys this section sets, spelled as the `serve` flags they
+    /// mirror, in a fixed order.
+    ///
+    /// Flags rather than values so that `serve` checks a file's `0` with the
+    /// same parser, and the same sentence, as a `0` typed on the command line.
+    pub fn stan_flags(&self) -> Vec<(&'static str, String)> {
+        let counts = [
+            ("--stan-max-processes", self.stan_max_processes),
+            ("--stan-max-data-values", self.stan_max_data_values),
+            ("--stan-max-draws-bytes", self.stan_max_draws_bytes),
+            ("--stan-max-draws-response", self.stan_max_draws_response),
+            (
+                "--stan-summary-max-elements",
+                self.stan_summary_max_elements,
+            ),
+        ];
+        [
+            ("--cmdstan", self.cmdstan.clone()),
+            ("--stan-cache-dir", self.stan_cache_dir.clone()),
+        ]
+        .into_iter()
+        .chain(counts.map(|(flag, n)| (flag, n.map(|n| n.to_string()))))
+        .filter_map(|(flag, value)| value.map(|v| (flag, v)))
+        .collect()
     }
 
     /// Whether this section says nothing at all. An empty section is treated as
@@ -607,6 +658,42 @@ test_template = "saltcorn_template"
         assert_eq!(prod.browser.as_deref(), Some("/usr/bin/chromium"));
         assert_eq!(prod.browser_sandbox, Some(false));
         assert!(file.environments["production"].url.is_none());
+    }
+
+    /// A host's CmdStan and its Stan ceilings may live in the file (Stan TODO
+    /// §20), and come back as the `serve` flags they mirror.
+    #[test]
+    fn an_environment_may_carry_the_stan_settings() {
+        let file = parse(
+            r#"
+[environments.production]
+database = "a"
+cmdstan = "/opt/cmdstan-2.40.0"
+stan_cache_dir = "/var/cache/feldspar/stan"
+stan_max_processes = 6
+stan_max_draws_bytes = 5000000000
+stan_summary_max_elements = 0
+"#,
+        )
+        .expect("parse");
+        let prod = &file.environments["production"];
+        let flags = prod.stan_flags();
+        let flags: Vec<(&str, &str)> = flags.iter().map(|(f, v)| (*f, v.as_str())).collect();
+        assert_eq!(
+            flags,
+            [
+                ("--cmdstan", "/opt/cmdstan-2.40.0"),
+                ("--stan-cache-dir", "/var/cache/feldspar/stan"),
+                ("--stan-max-processes", "6"),
+                ("--stan-max-draws-bytes", "5000000000"),
+                ("--stan-summary-max-elements", "0"),
+            ]
+        );
+        assert!(Environment::default().stan_flags().is_empty());
+        // A misspelling is refused like any other key.
+        assert!(parse("[environments.production]\nstan_max_proceses = 2\n").is_err());
+        // A count is a number, not a string.
+        assert!(parse("[environments.production]\nstan_max_processes = \"2\"\n").is_err());
     }
 
     #[test]
