@@ -39,7 +39,7 @@ use crate::output::{optimizer_iterations, read_output_file};
 use crate::process::Watch;
 use crate::program::Program;
 use crate::run::{DATA_FILE, Method, ProcessBudget, Run, RunSettings, run_chains};
-use crate::run_dir::{DEFAULT_RUNS_DIR, RunDir, RunLocation, publish};
+use crate::run_dir::{DEFAULT_RUNS_DIR, RunDir, RunLocation, publish, read_published};
 use crate::stanc::{ProgramCheck, check_program};
 
 /// The name the provider is registered and stored under.
@@ -224,6 +224,50 @@ impl StanProvider {
     }
 }
 
+/// What `compileModel` answers: the compiled program's cache key, and whether
+/// it was already there.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CompileAnswer {
+    /// The key it is cached under.
+    pub key: String,
+    /// Whether it was compiled before this request.
+    pub cached: bool,
+    /// The CmdStan it was compiled with.
+    pub cmdstan: String,
+}
+
+impl StanProvider {
+    /// The "Compile" button (§13): the program `config` names, compiled into
+    /// the cache without fitting — at once when it is there already, else one
+    /// compile at a time on this node, within `limit`.
+    pub async fn compile(
+        &self,
+        config: &Attrs,
+        limit: std::time::Duration,
+    ) -> Result<CompileAnswer> {
+        let cmdstan = match &self.cmdstan {
+            Ok(cmdstan) => cmdstan,
+            Err(why) => {
+                return Err(Error::config(format!(
+                    "this Stan program cannot be compiled because CmdStan was not found: {why}"
+                )));
+            }
+        };
+        let program = self.program(config).await?;
+        let never = || false;
+        let watch = Watch::new(limit, &never);
+        let compiled = self
+            .cache
+            .compile(cmdstan, &program, &watch, &|| {})
+            .await?;
+        Ok(CompileAnswer {
+            key: compiled.key,
+            cached: compiled.cached,
+            cmdstan: cmdstan.version.to_string(),
+        })
+    }
+}
+
 /// An error's message without its kind's prefix ("not found: …"): discovery's
 /// sentences are written to be read on their own, after "CmdStan was not
 /// found:".
@@ -338,6 +382,12 @@ impl ModelProvider for StanProvider {
     }
 
     fn binds_data(&self) -> bool {
+        true
+    }
+
+    /// A fit is compiles and chain processes, which are killed when the
+    /// instance's row asks (§13).
+    fn cancellable(&self) -> bool {
         true
     }
 
@@ -602,6 +652,31 @@ impl ModelProvider for StanProvider {
                 sampler_variables: 3,
             },
         }))
+    }
+
+    /// The published raw run, read back for `downloadModelRun` (§16).
+    async fn run_files(&self, state: &Json) -> Result<Option<Vec<(String, Vec<u8>)>>> {
+        let Some(run) = state.get("run").filter(|r| !r.is_null()) else {
+            return Ok(None);
+        };
+        let run: RunLocation = serde_json::from_value(run.clone())
+            .map_err(|e| Error::msg(format!("the instance's run location is unreadable: {e}")))?;
+        let store = self.stores.store(&run.store)?;
+        let files = read_published(store.as_ref(), &run.path)
+            .await
+            .with_context(|| {
+                format!(
+                    "the raw run {} in the file store `{}` could not be read",
+                    run.path, run.store
+                )
+            })?;
+        if files.is_empty() {
+            return Err(Error::not_found(format!(
+                "the raw run {} is gone from the file store `{}`",
+                run.path, run.store
+            )));
+        }
+        Ok(Some(files))
     }
 
     /// Delete the published raw run, when the fit kept one (§14).

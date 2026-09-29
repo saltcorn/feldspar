@@ -31,7 +31,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -43,7 +43,7 @@ use sc_model::{
     Column, Dataset, DatasetSource, FitContext, FitProgress, Frame, InstanceId, Model,
     ModelInstance, ModelProvider, ModelRegistry, Progress, ProgressWrite, Read, SPLIT_KEY,
     bootstrap_model_draws, bootstrap_model_instances, bootstrap_models, builtin_registry,
-    canonical_key, fit_model_with, reap_fitting_instances, record_fit_progress,
+    canonical_key, fit_model_with, fitted_cleanly, reap_fitting_instances, record_fit_progress,
     save_model_instance,
 };
 use sc_query::{Expr, Projection, Value};
@@ -227,6 +227,10 @@ pub struct ModelServices {
     /// The Stan provider, built once: CmdStan is discovered when the server
     /// starts, not on every module change that rebuilds the registry.
     stan: Arc<StanProvider>,
+    /// The most numbers one draws response may carry
+    /// (`--stan-max-draws-response`, Stan TODO §16). Shared by every clone,
+    /// so it is set once for the process.
+    max_draws_response: Arc<AtomicU64>,
 }
 
 impl ModelServices {
@@ -252,6 +256,7 @@ impl ModelServices {
             source: Arc::new(CatalogDatasetSource::new(Arc::clone(catalog))),
             max_rows,
             stan,
+            max_draws_response: Arc::new(AtomicU64::new(sc_model::DEFAULT_MAX_DRAWS_RESPONSE)),
         })
     }
 
@@ -297,6 +302,16 @@ impl ModelServices {
         self.max_rows
     }
 
+    /// The most numbers one draws response may carry.
+    pub fn max_draws_response(&self) -> u64 {
+        self.max_draws_response.load(Ordering::Relaxed)
+    }
+
+    /// Set [`max_draws_response`](Self::max_draws_response) for every clone.
+    pub fn set_max_draws_response(&self, max: u64) {
+        self.max_draws_response.store(max, Ordering::Relaxed);
+    }
+
     /// **Start a fit** (§8): write the instance row saying `fitting`, and spawn
     /// the work.
     ///
@@ -311,6 +326,18 @@ impl ModelServices {
     /// did not work is `Ok` carrying a failed instance. So the task logs the
     /// former and nothing else: there is nobody left to return it to.
     pub async fn start_fit(&self, model: &Model, instance: ModelInstance) -> Result<ModelInstance> {
+        self.start_fit_activating(model, instance, false).await
+    }
+
+    /// [`start_fit`](Self::start_fit), making the instance the model's active
+    /// one when it finishes fitted with no warnings and `activate_if_clean`
+    /// asks — what `fit_model` does when it does not wait.
+    pub async fn start_fit_activating(
+        &self,
+        model: &Model,
+        instance: ModelInstance,
+        activate_if_clean: bool,
+    ) -> Result<ModelInstance> {
         save_model_instance(&self.catalog, &instance)
             .await
             .context("recording the start of the fit")?;
@@ -333,15 +360,43 @@ impl ModelServices {
                     unreachable!("the upkeep of a fit's row never finishes")
                 }
             };
-            if let Err(e) = finished {
-                eprintln!(
-                    "feldspar: the fit of model `{}` could not be recorded: {}",
-                    model.name,
-                    sc_error::format_chain(&e)
-                );
+            let finished = match finished {
+                Ok(finished) => finished,
+                Err(e) => {
+                    eprintln!(
+                        "feldspar: the fit of model `{}` could not be recorded: {}",
+                        model.name,
+                        sc_error::format_chain(&e)
+                    );
+                    return;
+                }
+            };
+            if activate_if_clean && fitted_cleanly(&finished) {
+                let mut active = finished;
+                active.active = true;
+                if let Err(e) = save_model_instance(&catalog, &active).await {
+                    eprintln!(
+                        "feldspar: the new fit of model `{}` could not be made active: {}",
+                        model.name,
+                        sc_error::format_chain(&e)
+                    );
+                }
             }
         });
         Ok(instance)
+    }
+}
+
+#[async_trait]
+impl sc_model::FitStarter for ModelServices {
+    async fn start_fit(
+        &self,
+        model: &Model,
+        instance: ModelInstance,
+        activate_if_clean: bool,
+    ) -> Result<ModelInstance> {
+        self.start_fit_activating(model, instance, activate_if_clean)
+            .await
     }
 }
 

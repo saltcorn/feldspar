@@ -46,6 +46,9 @@ sc-files.workspace = true
 # `mcp` produces the one and the transport renames it — rather than defining a
 # third shape here for the two callers to convert between.
 sc-llm.workspace = true
+# A code body's `models` (Stan TODO §17): a fitted posterior's draws and
+# summary, read through the `db` host. `sc-model` is layer 6, below this crate.
+sc-model.workspace = true
 bytes.workspace = true
 # A table's rows in and out as CSV (`csv` module): the one bulk shape an admin
 # already has a tool for. See the workspace pin for why the format is not

@@ -249,7 +249,7 @@ creates the parent directories on the way. `create()` refuses to replace; `write
 
 ---
 
-## Step 5 — `trigger` and `modfn`: the rest of the server
+## Step 5 — `trigger`, `modfn` and `models`: the rest of the server
 
 ```python
 archived = trigger("archive_done").run(before=payload["today"])
@@ -271,6 +271,21 @@ lat = modfn("@saltcorn/nominatim-geocode").geocode_lat({"city": row["city"]})
 
 A name only one module supplies may be reached the short way; the qualified form always works.
 They are synchronous here even where v1 made them `async`, because everything in this surface is.
+
+`models` is a fitted Bayesian model's posterior — the Python spelling of JavaScript's
+`models`, over the same `db` requests:
+
+```python
+alpha = models.draws("Radon", "alpha", keys=[27001], chains=[1], thin=10)
+alpha["names"]                      # ["alpha[Aitkin]"]
+alpha["chains"][0]["draws"][0]      # that county's draws in chain 1, every 10th
+s = models.summary("Radon", "alpha", elements={"counties": ["Aitkin", "Anoka"]})
+fit = models.instance("Radon")      # id, status, active, warnings, metrics, variables
+```
+
+The first argument is a model's name (its active fit) or a fit's id; elements are chosen by the
+database's keys or labels. Each call is one `db` call of the run, and a refusal — a variable the
+fit did not draw — is a `DbError`.
 
 **Naming a surface this server does not have is a `NameError`.** `fs` on a server with no file
 stores, `modfn` with no modules loaded — the mistake is reported where you made it, rather than as

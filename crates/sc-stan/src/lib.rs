@@ -45,4 +45,5 @@ pub mod run_dir;
 pub mod stanc;
 
 pub use process::{Stopped, Watch};
-pub use provider::{STAN_PROVIDER, StanProvider, StoreLookup, config_keys};
+pub use provider::{CompileAnswer, STAN_PROVIDER, StanProvider, StoreLookup, config_keys};
+pub use stanc::ProgramCheck;

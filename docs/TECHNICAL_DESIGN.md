@@ -253,7 +253,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-query` `sc-types` |
+| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-model` `sc-query` `sc-types` |
 | `sc-app` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
 | `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
 | `sc-viewpattern` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
@@ -1482,6 +1482,15 @@ erDiagram
     json hyperparameters "the point this fit used -- never a list"
     json attributes "the failure sentence, the outcome, the row counts, the search"
   }
+  DRAWS["_fd_model_draws"] {
+    uuid id PK
+    uuid instance FK "-> _fd_model_instances.id, deleted with it"
+    text variable "alpha, lp__"
+    json element "the 1-based index array, [] for a scalar"
+    int chain
+    bool warmup
+    json draws "one value per iteration, in order"
+  }
   LLM["_fd_llm_providers"] {
     uuid id PK
     text name UK
@@ -1679,6 +1688,7 @@ erDiagram
   VIEWS }o--o| TABLES : "table_name -- by name"
   MODULES |o--o{ TRIGGERS : "action -- by name, an action the module supplies"
   STREAMS |o--o{ TRIGGERS : "channel -- by name, stream events"
+  INSTANCES ||--o{ DRAWS : "instance -- by value, one row per element per chain"
   APPS }o--o{ STREAMS : "streams[] -- by name"
   MODULES |o--o{ STREAMS : "provider -- by name, a stream provider the module supplies"
 ```

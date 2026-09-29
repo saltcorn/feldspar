@@ -37,6 +37,7 @@ mod mcp;
 mod models;
 mod modules;
 mod observe;
+mod posterior;
 mod reload;
 mod requests;
 mod router;

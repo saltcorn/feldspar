@@ -47,6 +47,10 @@ mod python_files;
 mod python_modfn;
 
 #[cfg(feature = "python-host")]
+#[path = "python_models.rs"]
+mod python_models;
+
+#[cfg(feature = "python-host")]
 #[path = "python_modules.rs"]
 mod python_modules;
 

@@ -970,7 +970,7 @@ impl Spec {
 }
 
 /// One binding, parsed.
-fn parse_binding(name: &str, json: &Json) -> Result<Binding> {
+pub(crate) fn parse_binding(name: &str, json: &Json) -> Result<Binding> {
     serde_json::from_value(json.clone())
         .map_err(|e| Error::invalid(format!("the binding of `{name}`: {}", serde_sentence(&e))))
 }

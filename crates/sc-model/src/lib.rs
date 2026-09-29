@@ -90,6 +90,7 @@ mod posterior;
 mod predict;
 mod provider;
 mod providers;
+mod reading;
 mod registry;
 mod source;
 mod split;
@@ -99,12 +100,13 @@ mod validate;
 
 pub use bind::{
     Aggregate, Along, Axis, BINDINGS_KEY, BindReport, Binding, BoundData, Coordinates,
-    DEFAULT_MAX_DATA_VALUES, DIMENSIONS_KEY, DatasetReport, DesignCoordinates,
+    DEFAULT_MAX_DATA_VALUES, DIMENSIONS_KEY, DataPreview, DatasetReport, DesignCoordinates,
     DimensionCoordinates, DimensionKind, DimensionSpec, DropReport, EXCLUDE_VARIABLES_KEY, Edges,
     KEEP_DRAWS_KEY, LABEL_COLUMN, LABELS_KEY, Labeller, MAX_DISTANCE_SITES, MAX_GRID_STEPS,
-    MAX_ICAR_NODES, POLICIES_KEY, Points, Policies, Policy, Symmetric, TimeScale, VariableReport,
-    bind_data, binding_dataset, check_bindings, check_bindings_declared, element_label,
-    excluded_variables, keeps_draws,
+    MAX_ICAR_NODES, POLICIES_KEY, Points, Policies, Policy, RecordedAxes, Suggestions, Symmetric,
+    TimeScale, VariablePreview, VariableReport, bind_data, binding_dataset, check_bindings,
+    check_bindings_declared, element_label, excluded_variables, keeps_draws, named_axes,
+    preview_data, recorded_axes, suggest_bindings,
 };
 pub use dataset::{
     Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape, translate_filter,
@@ -124,9 +126,9 @@ pub use encode::{
     apply_encoding_dropping, fit_encoding,
 };
 pub use fit::{
-    ATTR_BINDING, ATTR_CANCEL_REQUESTED, ATTR_COORDINATES, ATTR_OUTCOME, ATTR_PROGRESS, ATTR_ROWS,
-    ATTR_SEARCH, ATTR_WARNINGS, Fit, GridPoint, MAX_GRID_POINTS, RowCounts, fit_model,
-    fit_model_with, grid, run_fit, run_fit_with,
+    ATTR_AXES, ATTR_BINDING, ATTR_CANCEL_REQUESTED, ATTR_COORDINATES, ATTR_OUTCOME, ATTR_PROGRESS,
+    ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Fit, FitStarter, GridPoint, MAX_GRID_POINTS, RowCounts,
+    fit_model, fit_model_with, fitted_cleanly, grid, run_fit, run_fit_with,
 };
 pub use frame::{Column, ColumnType, Frame, canonical_key};
 pub use instance::{ATTR_ERROR, FitStatus, InstanceId, ModelInstance, RESTARTED};
@@ -156,6 +158,12 @@ pub use provider::{
     is_column_query, numeric_column_field, resolve_column_options,
 };
 pub use providers::{BUILTINS_COMPILED_OUT, SMARTCORE, builtin_providers, builtin_registry};
+pub use reading::{
+    ChainDraws, CoordinatePart, CoordinateWrite, DEFAULT_MAX_DRAWS_RESPONSE, DrawsRequest,
+    PlannedRow, PosteriorView, PosteriorWrite, Selection, VariableDraws, VariableSummary,
+    WriteMode, WritePlan, draws_csv, instance_coordinates, plan_write, posterior_method,
+    posterior_variables, read_draws, statistic_names, summarise_variable,
+};
 pub use registry::ModelRegistry;
 pub use source::{DEFAULT_MAX_ROWS, DatasetSource, Read, SPLIT_KEY};
 pub use split::{Part, Split, SplitCounts, Splits};

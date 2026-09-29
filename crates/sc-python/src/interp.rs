@@ -83,12 +83,16 @@ const PLUGIN_MODULE: &str = "__sc_plugin";
 /// behind it, so `db` on a body with no database is a `NameError` naming it
 /// rather than a handle that fails on use.
 ///
-/// The five are objects the package holds, not per-run factories: the run's
+/// `models` rides on the `db` surface (Stan TODO §17): it reads a fitted
+/// model's draws as `db` requests, so it is bound exactly where `db` is.
+///
+/// They are objects the package holds, not per-run factories: the run's
 /// authority, its budgets and the names it may reach all live on the **thread**
 /// (see [`crate::bridge`]), so one shared handle is this language's version of
 /// the closure a JavaScript run is handed.
-const SURFACES: [(&str, Surface); 5] = [
+const SURFACES: [(&str, Surface); 6] = [
     ("db", Surface::Db),
+    ("models", Surface::Db),
     ("fetch", Surface::Fetch),
     ("fs", Surface::Files),
     ("trigger", Surface::Triggers),
@@ -524,6 +528,11 @@ pub(crate) fn run_body(
         // function under each is what the plan crosses on.
         let package = package(py).map_err(|e| py_error(py, &e))?;
         for (name, surface) in SURFACES {
+            // `models` is sugar, not a capability: a caller that bound the
+            // name keeps it, as a JavaScript body's does.
+            if name == "models" && bindings.contains_key(name) {
+                continue;
+            }
             if surfaces.holds(surface) {
                 let handle = package.getattr(name).map_err(|e| py_error(py, &e))?;
                 bind(name, handle)?;

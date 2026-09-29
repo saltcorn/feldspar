@@ -108,6 +108,7 @@ __all__ = [
     "Fs",
     "Headers",
     "ModFns",
+    "Models",
     "ModuleError",
     "ModuleFunctions",
     "Outcome",
@@ -129,6 +130,7 @@ __all__ = [
     "function",
     "modfn",
     "model_provider",
+    "models",
     "not_",
     "on_load",
     "or_",
@@ -1589,6 +1591,95 @@ class ModFns:
 
 
 # ---------------------------------------------------------------------------
+# `models` — a fitted model's posterior
+# ---------------------------------------------------------------------------
+#
+# A fitted posterior's draws, its summary, and the fit itself (Stan TODO §17),
+# read through the ``db`` host: every call is one database call of this run,
+# on its budget, and a body with no ``db`` has no ``models``. The first argument
+# is a model's name (its active fit) or a fit's id, as ``predict_row`` takes
+# it; elements are chosen by key or label, never by a position only one fit
+# knows.
+
+
+class Models:
+    """A fitted model's posterior, by the database's keys and labels::
+
+        alpha = models.draws("Radon", "alpha")
+        # {"dims": [85], "labels": [["Aitkin", …]], "keys": [["27001", …]],
+        #  "chains": [{"chain": 1, "draws": [[…], …]}, …], …}
+        s = models.summary("Radon", "alpha", keys=[27001])
+        fit = models.instance("Radon")   # id, status, warnings, metrics
+    """
+
+    __slots__ = ()
+
+    @staticmethod
+    def _send(what, model, **extra):
+        if not isinstance(model, str) or not model:
+            raise TypeError(
+                f"models.{what}() takes a model's name (its active fit) or a fit's id first"
+            )
+        plan = {"op": "models", "what": what, "model": model}
+        plan.update({k: v for k, v in extra.items() if v is not None})
+        return _call_db(plan)
+
+    @staticmethod
+    def _variable(what, variable):
+        if not isinstance(variable, str) or not variable:
+            raise TypeError(
+                f'models.{what}() takes the variable second, as in models.{what}("Radon", "alpha")'
+            )
+        return variable
+
+    @staticmethod
+    def _elements(what, elements, keys):
+        if keys is not None and elements is not None:
+            raise TypeError(f"give models.{what}() either keys= or elements=, not both")
+        if keys is not None:
+            # The first axis by key or label — a one-axis variable's usual case.
+            return {"1": list(keys) if isinstance(keys, (list, tuple)) else [keys]}
+        return elements
+
+    @staticmethod
+    def _thin(thin):
+        if isinstance(thin, bool) or not isinstance(thin, int) or thin < 1:
+            raise ValueError("thin= keeps every n-th draw, and takes a whole number from 1")
+        return thin
+
+    def draws(self, model, variable, *, elements=None, keys=None, chains=None,
+              warmup=False, thin=1):
+        """One variable's draws: per chain, one list per selected element, with
+        the axes' labels and keys beside them."""
+        return self._send(
+            "draws",
+            model,
+            variable=self._variable("draws", variable),
+            elements=self._elements("draws", elements, keys),
+            chains=list(chains) if chains is not None else None,
+            warmup=bool(warmup),
+            thin=Models._thin(thin),
+        )
+
+    def summary(self, model, variable, *, elements=None, keys=None):
+        """The posterior summary of a variable — mean, sd, MCSE, quantiles,
+        R-hat and effective sample sizes — per selected element."""
+        return self._send(
+            "summary",
+            model,
+            variable=self._variable("summary", variable),
+            elements=self._elements("summary", elements, keys),
+        )
+
+    def instance(self, model):
+        """The fit: its id, status, warnings, metrics and variables."""
+        return self._send("instance", model)
+
+    def __repr__(self):
+        return "<saltcorn models>"
+
+
+# ---------------------------------------------------------------------------
 # The handles a code body is given
 # ---------------------------------------------------------------------------
 #
@@ -1611,3 +1702,5 @@ fs = Fs()
 trigger = Triggers()
 #: The functions this server's modules supply.
 modfn = ModFns()
+#: A fitted model's posterior, over `db`.
+models = Models()

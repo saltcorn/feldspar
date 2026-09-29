@@ -34,11 +34,11 @@ pub const ESS_PER_CHAIN_THRESHOLD: f64 = 100.0;
 pub const EBFMI_THRESHOLD: f64 = 0.3;
 
 /// The summary columns of a table, after the label columns.
-const MCMC_COLUMNS: [&str; 9] = [
+pub(crate) const MCMC_COLUMNS: [&str; 9] = [
     "mean", "sd", "mcse", "q5", "q50", "q95", "rhat", "ess_bulk", "ess_tail",
 ];
 /// A mode has one number per element.
-const MODE_COLUMNS: [&str; 1] = ["estimate"];
+pub(crate) const MODE_COLUMNS: [&str; 1] = ["estimate"];
 
 /// What the host computed from a posterior's draws.
 #[derive(Debug, Clone, PartialEq)]

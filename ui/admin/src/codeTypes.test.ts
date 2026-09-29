@@ -494,6 +494,21 @@ describe("the types the code editor loads", () => {
     );
   });
 
+  it("type a fitted model's draws and summary through `models`", () => {
+    expect(
+      check(
+        `const d = await models.draws("Radon", "alpha", { keys: [27001], thin: 10 });\n` +
+          `const first = d.chains[0].draws[0][0];\n` +
+          `const s = await models.summary("Radon", "alpha", { elements: { counties: ["Aitkin"] } });\n` +
+          `const fit = await models.instance("Radon");\n` +
+          `return { first, label: s.rows[0][0], warned: fit.warnings.length, dims: d.dims };`,
+      ),
+    ).toEqual([]);
+    expect(check(`return await models.draws("Radon");`).join(" ")).toMatch(
+      /Expected 2-3 arguments/,
+    );
+  });
+
   it("declare no modfn on a server whose modules supply no functions", () => {
     const library = codeLibrary(TABLES, { event: "login" });
     expect(library).not.toContain("declare const modfn");

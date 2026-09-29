@@ -58,7 +58,7 @@
 //! host's, computed from the draws before `exclude_variables` and `keep_draws`
 //! decide which of them are kept (Stan TODO §15).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::Catalog;
 use sc_error::{Context, Error, Result};
@@ -66,7 +66,8 @@ use sc_types::Attrs;
 use serde_json::Value as Json;
 
 use crate::bind::{
-    BindReport, Coordinates, Labeller, bind_data, binding_dataset, excluded_variables, keeps_draws,
+    BindReport, Coordinates, Labeller, RecordedAxes, bind_data, binding_dataset,
+    excluded_variables, keeps_draws, recorded_axes,
 };
 use crate::dataset::DatasetShape;
 use crate::diagnose;
@@ -122,6 +123,14 @@ pub const ATTR_BINDING: &str = "binding";
 /// The attribute holding a posterior's diagnostic warnings, as sentences that
 /// say what to do (Stan TODO §15). A fit with warnings is still `fitted`.
 pub const ATTR_WARNINGS: &str = "warnings";
+
+/// The attribute holding, for each output variable a posterior drew, its
+/// shape and the dimension each axis is labelled by ([`RecordedAxes`]) —
+/// decided once, at fit time, by the configuration the fit ran with. The draws
+/// API, the summary on demand and the write-back label by these and this
+/// instance's own coordinates, so editing the model's labels afterwards changes
+/// the model and never an existing instance (Stan TODO §§8, 16).
+pub const ATTR_AXES: &str = "axes";
 
 /// One point of the hyperparameter grid and what it scored on the validation
 /// rows (§11).
@@ -185,6 +194,9 @@ pub struct Fit {
     /// A posterior's warnings, as sentences. Written to [`ATTR_WARNINGS`]
     /// when there are any.
     pub warnings: Vec<String>,
+    /// A posterior's output variables: their shapes and what labels each
+    /// axis. Written to [`ATTR_AXES`].
+    pub axes: BTreeMap<String, RecordedAxes>,
 }
 
 impl Fit {
@@ -217,6 +229,12 @@ impl Fit {
                 ATTR_BINDING.to_owned(),
                 serde_json::to_value(report)
                     .map_err(|e| Error::msg(format!("binding report: {e}")))?,
+            );
+        }
+        if !self.axes.is_empty() {
+            instance.attributes.insert(
+                ATTR_AXES.to_owned(),
+                serde_json::to_value(&self.axes).map_err(|e| Error::msg(format!("axes: {e}")))?,
             );
         }
         if !self.warnings.is_empty() {
@@ -424,6 +442,7 @@ pub async fn run_fit_with(
         draws: Vec::new(),
         binding: None,
         warnings: Vec::new(),
+        axes: BTreeMap::new(),
     })
 }
 
@@ -469,6 +488,7 @@ async fn fit_test(
         draws: Vec::new(),
         binding: None,
         warnings: Vec::new(),
+        axes: BTreeMap::new(),
     })
 }
 
@@ -581,6 +601,7 @@ async fn fit_posterior(
         limits.summary_max_elements,
     )?;
     let mut warnings = report.warnings;
+    let axes = recorded_axes(&result.draws, input.interface.as_ref(), &labeller);
     let mut draws = result.draws;
     if keep {
         draws.retain(|s| !excluded.contains(&s.variable));
@@ -627,7 +648,35 @@ async fn fit_posterior(
         draws,
         binding: bound.map(|b| (b.coordinates, b.report)),
         warnings,
+        axes,
     })
+}
+
+/// Starting a fit as a job, from below the layer that owns the jobs — the seam
+/// the `fit_model` action reaches the server's fits through (Stan TODO 7.5),
+/// as `DatasetSource` is the one a dataset is read through.
+#[async_trait::async_trait]
+pub trait FitStarter: Send + Sync {
+    /// Write `instance` (saying `fitting`) and start fitting `model` into it,
+    /// answering as soon as the row exists. With `activate_if_clean`, the job
+    /// makes the instance active when it finishes fitted with no warnings.
+    async fn start_fit(
+        &self,
+        model: &Model,
+        instance: ModelInstance,
+        activate_if_clean: bool,
+    ) -> Result<ModelInstance>;
+}
+
+/// Whether a finished instance may be made active by a fit that asked for it
+/// only when clean: fitted, and without warnings.
+pub fn fitted_cleanly(instance: &ModelInstance) -> bool {
+    instance.status == crate::instance::FitStatus::Fitted
+        && instance
+            .attributes
+            .get(ATTR_WARNINGS)
+            .and_then(Json::as_array)
+            .is_none_or(Vec::is_empty)
 }
 
 /// Pick the grid point that scores best on the validation rows (§11).

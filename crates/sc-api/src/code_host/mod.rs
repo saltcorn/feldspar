@@ -115,6 +115,7 @@
 //! is refused naming `.rows()`, which can decide row by row.
 
 mod files;
+mod models;
 mod plan;
 pub mod schema;
 mod triggers;
@@ -134,6 +135,7 @@ use crate::ownership;
 use crate::rows;
 
 pub use files::{FileStoreHost, MAX_COPY_BYTES, MAX_FILE_BYTES};
+pub use models::CODE_MAX_DRAWS;
 pub use plan::{AggSpec, Authority, Dir, Op, OrderKey, Plan, Selection, SqlOp, SqlPlan};
 pub use schema::snapshot as schema_snapshot;
 pub use triggers::TriggerRunHost;
@@ -987,6 +989,11 @@ impl CodeHost for TableHost<'_> {
         if request.get("op").and_then(Json::as_str) == Some("sql") {
             let plan: SqlPlan = serde_json::from_value(request).map_err(refuse)?;
             return self.sql(&plan).await;
+        }
+        // A fitted model's draws, summary or fit (Stan TODO §17): two system
+        // tables read on the same budget, rather than a surface of their own.
+        if request.get("op").and_then(Json::as_str) == Some("models") {
+            return models::answer(self.catalog, request).await;
         }
         let plan: Plan = serde_json::from_value(request).map_err(refuse)?;
         self.run(&plan).await

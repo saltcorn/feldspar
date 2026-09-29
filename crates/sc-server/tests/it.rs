@@ -105,6 +105,8 @@ mod other_events;
 mod ownership_enforcement;
 #[path = "ownership_settings_api.rs"]
 mod ownership_settings_api;
+#[path = "posterior_api.rs"]
+mod posterior_api;
 #[path = "primary_key_api.rs"]
 mod primary_key_api;
 #[path = "provided_tables_api.rs"]

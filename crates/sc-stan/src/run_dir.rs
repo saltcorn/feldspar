@@ -182,6 +182,52 @@ fn gzip(bytes: &[u8]) -> Result<Vec<u8>> {
     encoder.finish().context("compressing a chain's CSV")
 }
 
+/// Every file of the published run at `path` in `store`, recursively, with its
+/// path relative to the run — the CSVs **gunzipped** back to `chain-1.csv`, so
+/// the files are what CmdStan wrote and `cmdstanpy.from_csv` reads (§16).
+pub async fn read_published(store: &dyn FileStore, path: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    let root = path.trim_end_matches('/');
+    let mut out = Vec::new();
+    let mut dirs = vec![root.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        let entries = store
+            .list(&dir)
+            .await
+            .with_context(|| format!("listing {dir} in the file store `{}`", store.name()))?;
+        for entry in entries {
+            if entry.is_dir {
+                dirs.push(entry.path);
+                continue;
+            }
+            let bytes = store
+                .read(&entry.path)
+                .await
+                .with_context(|| format!("reading {} from `{}`", entry.path, store.name()))?;
+            let relative = entry
+                .path
+                .strip_prefix(root)
+                .unwrap_or(&entry.path)
+                .trim_start_matches('/')
+                .to_owned();
+            out.push(match relative.strip_suffix(".gz") {
+                Some(plain) => (plain.to_owned(), gunzip(&bytes)?),
+                None => (relative, bytes.to_vec()),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+fn gunzip(bytes: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_end(&mut out)
+        .context("decompressing a chain's CSV")?;
+    Ok(out)
+}
+
 /// Remove the scratch run directories under `root` left by a server process
 /// that is no longer running — boot's cleanup (§13). A directory of a process
 /// that is alive (another server on this machine, mid-fit) is left alone.
@@ -230,6 +276,12 @@ pub(crate) fn alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gzipped_csv_reads_back_as_written() {
+        let csv = b"lp__,alpha.1\n-1.5,0.25\n";
+        assert_eq!(gunzip(&gzip(csv).unwrap()).unwrap(), csv);
+    }
 
     #[test]
     fn a_model_name_becomes_one_safe_segment() {

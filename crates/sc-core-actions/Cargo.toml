@@ -45,6 +45,8 @@ sc-email.workspace = true
 sc-model.workspace = true
 # `predict_row` pins a trigger to one fit by its id.
 uuid.workspace = true
+# `fit_model` waits for the fit it started by reading its row back on a timer.
+tokio = { workspace = true, features = ["time"] }
 # `send_email`'s attachments: the store the row's file path points into is read
 # through `FileStore`, and `mime_for_path` types the part from the file's own
 # extension — the same inference the File field's `mime_allow` check uses, so a

@@ -1,8 +1,9 @@
 //! The core built-in actions (layer 9; technical design §10.1, TODO Phase 3).
 //!
 //! Every action Saltcorn ships with, in one crate: [`InsertRow`], [`UpdateRows`],
-//! [`DeleteRows`], [`Fetch`], [`RunJsCode`], [`RunPythonCode`], [`SendEmail`]
-//! and [`PredictRow`]. The set
+//! [`DeleteRows`], [`Fetch`], [`RunJsCode`], [`RunPythonCode`], [`SendEmail`],
+//! and the three a model needs: [`PredictRow`], [`WritePosterior`] and
+//! [`FitModel`]. The set
 //! is **deliberately small** — GOALS asks for a minimal one, because control flow
 //! belongs to the workflow engine (§10.3) rather than to a proliferation of
 //! actions — and [`builtin_actions`] is the single constructor that assembles it.
@@ -44,6 +45,7 @@ mod code_fetch;
 mod delete_rows;
 mod fetch;
 mod insert_row;
+mod posterior;
 mod predict_row;
 mod rows_scope;
 mod run_js_code;
@@ -60,6 +62,7 @@ pub use code_body::{CodeSurfaces, Hosts as CodeBodyHosts};
 pub use delete_rows::DeleteRows;
 pub use fetch::Fetch;
 pub use insert_row::InsertRow;
+pub use posterior::{FitModel, WritePosterior, write_posterior};
 pub use predict_row::PredictRow;
 pub use run_js_code::RunJsCode;
 pub use run_python_code::RunPythonCode;
@@ -95,23 +98,31 @@ pub fn register_builtin_actions(registry: &mut ActionRegistry) -> Result<()> {
     Ok(())
 }
 
-/// Add `predict_row` to a registry: the one built-in action that needs services
-/// assembled first, exactly as `run_agent` does.
+/// Add the model actions to a registry — `predict_row`, `write_posterior` and
+/// `fit_model`: the built-in actions that need services assembled first,
+/// exactly as `run_agent` does.
 ///
 /// Separate from [`register_builtin_actions`] for the same reason
 /// `sc_core_traits::register_agent_actions` is separate: it holds the model
-/// provider registry a fit ran with and the seam a dataset is read through
-/// (§4), and neither exists until a server has assembled them. A process with no
-/// model support registers the other seven and this one is simply absent — which
-/// is what makes a trigger naming it report "unknown action" rather than fail
-/// silently.
+/// provider registry a fit ran with, the seam a dataset is read through (§4)
+/// and the one a fit is started through, and none of them exists until a
+/// server has assembled them. A process with no model support registers the
+/// other seven and these are simply absent — which is what makes a trigger
+/// naming one report "unknown action" rather than fail silently.
 pub fn register_model_actions(
     registry: &mut ActionRegistry,
     providers: Arc<sc_model::ModelRegistry>,
     source: Arc<dyn sc_model::DatasetSource>,
     max_rows: u64,
+    fits: Arc<dyn sc_model::FitStarter>,
 ) -> Result<()> {
-    registry.register(Arc::new(PredictRow::new(providers, source, max_rows)))
+    registry.register(Arc::new(PredictRow::new(
+        Arc::clone(&providers),
+        source,
+        max_rows,
+    )))?;
+    registry.register(Arc::new(WritePosterior))?;
+    registry.register(Arc::new(FitModel::new(providers, fits)))
 }
 
 #[cfg(test)]

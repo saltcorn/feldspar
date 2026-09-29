@@ -233,23 +233,38 @@ export type CancelRunRequest = { reason?: string | null };
 export type CancelRunResponse = { id: string; kind: string; subject: string; description: string; state: string; error?: string | null; user?: string | null; created_at: string; updated_at: string; subject_version?: number | null; current_step?: string | null; wake_at?: string | null; conclusion?: unknown | null; parent_run?: string | null; context: unknown; attributes: unknown; trace: Array<{ id: string; seq: number; step: string; started_at: string; finished_at: string; attempt: number; outcome: string; error?: string | null; context: unknown }>; pending_form?: { fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null }>; assign_to: string; min_role?: number | null } | null; plan?: { features: Array<{ id: string; title: string; description: string; kind: string; acceptance: Array<string>; files: Array<string>; pages: Array<string>; status: string; attempts: number; runs: Array<string> }>; progress: Array<{ feature: string; run: string; status: string; summary: string; check: string; diffstat: string }> } | null };
 export type RetryRunResponse = { id: string; kind: string; subject: string; description: string; state: string; error?: string | null; user?: string | null; created_at: string; updated_at: string; subject_version?: number | null; current_step?: string | null; wake_at?: string | null; conclusion?: unknown | null; parent_run?: string | null; context: unknown; attributes: unknown; trace: Array<{ id: string; seq: number; step: string; started_at: string; finished_at: string; attempt: number; outcome: string; error?: string | null; context: unknown }>; pending_form?: { fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null }>; assign_to: string; min_role?: number | null } | null; plan?: { features: Array<{ id: string; title: string; description: string; kind: string; acceptance: Array<string>; files: Array<string>; pages: Array<string>; status: string; attempts: number; runs: Array<string> }>; progress: Array<{ feature: string; run: string; status: string; summary: string; check: string; diffstat: string }> } | null };
 export type ListModelProvidersQuery = { dataset?: string; configuration?: string };
-export type ListModelProvidersResponse = { providers: Array<{ name: string; description: string; module?: string | null; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null }>; hyperparameters: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null }>; outcome_spec: unknown; outcome?: unknown | null; outcome_error?: string | null; standardise: boolean }>; builtins_compiled_out: boolean; notice?: string | null };
+export type ListModelProvidersResponse = { providers: Array<{ name: string; description: string; module?: string | null; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null }>; hyperparameters: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null }>; outcome_spec: unknown; outcome?: unknown | null; outcome_error?: string | null; standardise: boolean; binds_data: boolean; cancellable: boolean; unavailable?: string | null }>; builtins_compiled_out: boolean; notice?: string | null };
 export type PreviewDatasetRequest = { dataset: unknown; limit?: number | null };
 export type PreviewDatasetResponse = { columns: Array<{ name: string; type: string }>; rows: Array<unknown>; primary_key?: string | null; split_error?: string | null };
 export type ListModelsQuery = { table?: string };
-export type ListModelsResponse = Array<{ id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null } | null }>;
-export type GetModelResponse = { id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null } | null };
+export type ListModelsResponse = Array<{ id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> } | null; program_check?: unknown | null }>;
+export type GetModelResponse = { id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> } | null; program_check?: unknown | null };
 export type SaveModelRequest = { id?: string | null; name: string; description?: string | null; provider: string; dataset: unknown; related?: unknown | null; configuration?: unknown | null; hyperparameters?: unknown | null; split?: unknown | null; attributes?: unknown | null };
-export type SaveModelResponse = { id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null } | null };
+export type SaveModelResponse = { id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> } | null; program_check?: unknown | null };
 export type DeleteModelResponse = { deleted: boolean };
 export type FitModelRequest = { name?: string | null; description?: string | null };
-export type FitModelResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null };
-export type ListModelInstancesResponse = Array<{ id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null }>;
-export type GetModelInstanceResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; parameters: Array<unknown>; encoding: unknown; search: Array<unknown> };
+export type FitModelResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> };
+export type ListModelInstancesResponse = Array<{ id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> }>;
+export type GetModelInstanceResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; parameters: Array<unknown>; encoding: unknown; search: Array<unknown>; variables: unknown; binding?: unknown | null };
 export type DeleteModelInstanceResponse = { deleted: boolean };
-export type ActivateModelInstanceResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null };
+export type ActivateModelInstanceResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> };
 export type PredictRowsRequest = { model?: string | null; instance?: string | null; rows?: Array<unknown> | null; filter?: string | null };
 export type PredictRowsResponse = { instance: string; outcome: unknown; predictions: Array<{ prediction: unknown; value: unknown; key?: string | null }> };
+export type GetProgramInterfaceQuery = { store?: string; path?: string };
+export type GetProgramInterfaceResponse = { interface?: unknown | null; warnings?: string | null; notice?: string | null; error?: string | null };
+export type PreviewModelDataRequest = { id?: string | null; name: string; description?: string | null; provider: string; dataset: unknown; related?: unknown | null; configuration?: unknown | null; hyperparameters?: unknown | null; split?: unknown | null; attributes?: unknown | null };
+export type PreviewModelDataResponse = { variables: Array<unknown>; report?: unknown | null; errors: Array<string> };
+export type SuggestBindingsRequest = { id?: string | null; name: string; description?: string | null; provider: string; dataset: unknown; related?: unknown | null; configuration?: unknown | null; hyperparameters?: unknown | null; split?: unknown | null; attributes?: unknown | null };
+export type SuggestBindingsResponse = { bindings: unknown; reasons: unknown };
+export type CompileModelResponse = { key: string; cached: boolean; cmdstan: string };
+export type CancelModelFitResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> };
+export type GetModelDrawsQuery = { variable?: string; elements?: string; chains?: string; warmup?: boolean; thin?: number };
+export type GetModelDrawsResponse = { variable: string; dims: Array<number>; axes: Array<string>; labels: Array<unknown>; keys: Array<unknown>; elements: Array<unknown>; names: Array<string>; thin: number; chains: Array<unknown> };
+export type GetPosteriorSummaryQuery = { variable?: string; elements?: string };
+export type GetPosteriorSummaryResponse = { variable: string; source: string; columns: Array<string>; elements: Array<unknown>; names: Array<string>; keys: Array<unknown>; rows: Array<unknown> };
+export type DownloadModelRunResponse = unknown;
+export type WritePosteriorRequest = { variable: string; mode: string; statistics: unknown; table?: string | null; coordinates?: unknown | null; instance_field?: string | null; elements?: unknown | null };
+export type WritePosteriorResponse = { variable: string; mode: string; table: string; instance: string; written: number };
 export type ListStreamProvidersQuery = { provider?: string; configuration?: string };
 export type ListStreamProvidersResponse = { providers: Array<{ name: string; label: string; description: string; module?: string | null; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null }>; element_type?: unknown | null; element_type_error?: string | null }>; builtins_compiled_out: boolean; notice?: string | null };
 export type ListStreamsResponse = Array<{ id: string; name: string; description: string; provider: string; configuration: unknown; min_role?: number | null; attributes: unknown; enabled: boolean; element_type?: unknown | null; error?: string | null; status?: unknown | null; counters?: unknown | null }>;
@@ -432,6 +447,15 @@ export interface ApiClient {
   deleteModelInstance(id: string): Promise<DeleteModelInstanceResponse>;
   activateModelInstance(id: string): Promise<ActivateModelInstanceResponse>;
   predictRows(body: PredictRowsRequest): Promise<PredictRowsResponse>;
+  getProgramInterface(query?: GetProgramInterfaceQuery): Promise<GetProgramInterfaceResponse>;
+  previewModelData(body: PreviewModelDataRequest): Promise<PreviewModelDataResponse>;
+  suggestBindings(body: SuggestBindingsRequest): Promise<SuggestBindingsResponse>;
+  compileModel(id: string): Promise<CompileModelResponse>;
+  cancelModelFit(id: string): Promise<CancelModelFitResponse>;
+  getModelDraws(id: string, query?: GetModelDrawsQuery): Promise<GetModelDrawsResponse>;
+  getPosteriorSummary(id: string, query?: GetPosteriorSummaryQuery): Promise<GetPosteriorSummaryResponse>;
+  downloadModelRun(id: string): Promise<DownloadModelRunResponse>;
+  writePosterior(id: string, body: WritePosteriorRequest): Promise<WritePosteriorResponse>;
   listStreamProviders(query?: ListStreamProvidersQuery): Promise<ListStreamProvidersResponse>;
   listStreams(): Promise<ListStreamsResponse>;
   getStream(id: string): Promise<GetStreamResponse>;
@@ -1859,6 +1883,96 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("predictRows", res);
       return (await res.json()) as PredictRowsResponse;
+    },
+    async getProgramInterface(query) {
+      const search = new URLSearchParams();
+      if (query?.store !== undefined && query?.store !== null) search.append("store", String(query?.store));
+      if (query?.path !== undefined && query?.path !== null) search.append("path", String(query?.path));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/model-programs${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getProgramInterface", res);
+      return (await res.json()) as GetProgramInterfaceResponse;
+    },
+    async previewModelData(body) {
+      const res = await doFetch(`${baseUrl}/api/model-data/preview`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("previewModelData", res);
+      return (await res.json()) as PreviewModelDataResponse;
+    },
+    async suggestBindings(body) {
+      const res = await doFetch(`${baseUrl}/api/model-bindings/suggest`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("suggestBindings", res);
+      return (await res.json()) as SuggestBindingsResponse;
+    },
+    async compileModel(id) {
+      const res = await doFetch(`${baseUrl}/api/models/${id}/compile`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("compileModel", res);
+      return (await res.json()) as CompileModelResponse;
+    },
+    async cancelModelFit(id) {
+      const res = await doFetch(`${baseUrl}/api/model-instances/${id}/cancel`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("cancelModelFit", res);
+      return (await res.json()) as CancelModelFitResponse;
+    },
+    async getModelDraws(id, query) {
+      const search = new URLSearchParams();
+      if (query?.variable !== undefined && query?.variable !== null) search.append("variable", String(query?.variable));
+      if (query?.elements !== undefined && query?.elements !== null) search.append("elements", String(query?.elements));
+      if (query?.chains !== undefined && query?.chains !== null) search.append("chains", String(query?.chains));
+      if (query?.warmup !== undefined && query?.warmup !== null) search.append("warmup", String(query?.warmup));
+      if (query?.thin !== undefined && query?.thin !== null) search.append("thin", String(query?.thin));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/model-instances/${id}/draws${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getModelDraws", res);
+      return (await res.json()) as GetModelDrawsResponse;
+    },
+    async getPosteriorSummary(id, query) {
+      const search = new URLSearchParams();
+      if (query?.variable !== undefined && query?.variable !== null) search.append("variable", String(query?.variable));
+      if (query?.elements !== undefined && query?.elements !== null) search.append("elements", String(query?.elements));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/model-instances/${id}/summary${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getPosteriorSummary", res);
+      return (await res.json()) as GetPosteriorSummaryResponse;
+    },
+    async downloadModelRun(id) {
+      const res = await doFetch(`${baseUrl}/api/model-instances/${id}/run`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("downloadModelRun", res);
+      return (await res.json()) as DownloadModelRunResponse;
+    },
+    async writePosterior(id, body) {
+      const res = await doFetch(`${baseUrl}/api/model-instances/${id}/posterior-writes`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("writePosterior", res);
+      return (await res.json()) as WritePosteriorResponse;
     },
     async listStreamProviders(query) {
       const search = new URLSearchParams();

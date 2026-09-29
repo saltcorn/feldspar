@@ -225,6 +225,95 @@ impl<'a> Labeller<'a> {
     }
 }
 
+/// One output variable of a fitted posterior: its shape, and what labels each
+/// axis — recorded at fit time ([`ATTR_AXES`](crate::ATTR_AXES)), so the
+/// instance is read back by the configuration it was fitted with.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecordedAxes {
+    /// Positions per axis, outer to inner: `[85]` for `alpha`, `[]` for a
+    /// scalar.
+    pub dims: Vec<usize>,
+    /// Per axis, the dimension (or `design`-bound variable) whose labels it
+    /// takes, or `None` for a numbered axis.
+    pub dimensions: Vec<Option<String>>,
+}
+
+/// Every variable of `draws`, with its shape as the draws have it and its axes
+/// as `labeller` labels them — what a fitted instance records.
+pub fn recorded_axes(
+    draws: &[crate::posterior::DrawSeries],
+    interface: Option<&Interface>,
+    labeller: &Labeller<'_>,
+) -> BTreeMap<String, RecordedAxes> {
+    let mut lengths: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for series in draws {
+        let dims = lengths.entry(series.variable.as_str()).or_default();
+        if dims.len() < series.element.len() {
+            dims.resize(series.element.len(), 0);
+        }
+        for (k, i) in series.element.iter().enumerate() {
+            dims[k] = dims[k].max(*i);
+        }
+    }
+    lengths
+        .into_iter()
+        .map(|(name, dims)| {
+            let decl = interface.and_then(|i| i.output(name));
+            let (axes, _) = labeller.axes(name, decl, &dims);
+            (
+                name.to_owned(),
+                RecordedAxes {
+                    dims,
+                    dimensions: axes.into_iter().map(|a| a.dimension).collect(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The axes of a variable recorded as `recorded`, labelled from
+/// `coordinates` — the reading half of [`recorded_axes`]. An axis whose
+/// dimension this instance has no coordinates of, or whose length no longer
+/// matches them, is numbered.
+pub fn named_axes(coordinates: &Coordinates, recorded: &RecordedAxes) -> Vec<Axis> {
+    let mut axes: Vec<Axis> = recorded
+        .dims
+        .iter()
+        .enumerate()
+        .map(|(k, &length)| {
+            let numbered = Axis {
+                name: String::new(),
+                dimension: None,
+                labels: Vec::new(),
+                keys: Vec::new(),
+            };
+            let Some(name) = recorded.dimensions.get(k).cloned().flatten() else {
+                return numbered;
+            };
+            let found = coordinates
+                .dimension(&name)
+                .map(|d| (d.labels.clone(), d.keys.clone()))
+                .or_else(|| {
+                    coordinates
+                        .designs
+                        .get(&name)
+                        .map(|d| (d.columns.clone(), Vec::new()))
+                });
+            match found {
+                Some((labels, keys)) if labels.len() == length => Axis {
+                    name: name.clone(),
+                    dimension: Some(name),
+                    labels,
+                    keys,
+                },
+                _ => numbered,
+            }
+        })
+        .collect();
+    name_columns(&mut axes);
+    axes
+}
+
 /// Headings: the dimension's name, or `index` (`index 1`, `index 2` for a
 /// variable with several numbered axes); a second axis over the same
 /// dimension gets ` (2)`.

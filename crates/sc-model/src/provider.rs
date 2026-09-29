@@ -669,6 +669,11 @@ pub struct ModelProviderKind {
     /// binding editor for any provider that declares it and none of the admin
     /// UI names Stan.
     pub binds_data: bool,
+    /// Whether a running fit of it can be **cancelled** (Stan TODO §13) — a
+    /// provider whose fit is a subprocess it can kill. `cancelModelFit` is
+    /// refused by name for every other, since stopping a `smartcore` or a
+    /// Python call mid-flight is not something the host can do.
+    pub cancellable: bool,
 }
 
 impl ModelProviderKind {
@@ -687,6 +692,7 @@ impl ModelProviderKind {
             outcome,
             standardise: false,
             binds_data: false,
+            cancellable: false,
         }
     }
 
@@ -787,6 +793,12 @@ pub trait ModelProvider: Send + Sync {
         false
     }
 
+    /// Whether a running fit honours [`FitContext::cancelled`] — see
+    /// [`ModelProviderKind::cancellable`].
+    fn cancellable(&self) -> bool {
+        false
+    }
+
     /// What a fit of *this configuration* over *this dataset* will produce.
     ///
     /// Not a constant: a random forest is a regressor or a classifier depending
@@ -821,6 +833,7 @@ pub trait ModelProvider: Send + Sync {
             outcome: self.outcome_spec(),
             standardise: self.standardise(),
             binds_data: self.binds_data(),
+            cancellable: self.cancellable(),
         }
     }
 
@@ -873,6 +886,15 @@ pub trait ModelProvider: Send + Sync {
     /// and then only the draws that come back are measured.
     fn draw_plan(&self, config: &Attrs) -> Result<Option<DrawPlan>> {
         let _ = config;
+        Ok(None)
+    }
+
+    /// The files of a fit's raw run, when `state` says it kept one outside the
+    /// database — what `downloadModelRun` zips (Stan TODO §16), as `(path in
+    /// the run, bytes)`. `None` (the default) when there is none, and the host
+    /// builds the download from the stored draws instead.
+    async fn run_files(&self, state: &Json) -> Result<Option<Vec<(String, Vec<u8>)>>> {
+        let _ = state;
         Ok(None)
     }
 

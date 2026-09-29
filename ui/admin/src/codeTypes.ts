@@ -546,6 +546,84 @@ interface ScTriggers {
 `;
 }
 
+/** The declarations for `models`: a fitted model's posterior, read over the
+ * run's own `db` (Stan TODO §17).
+ *
+ * A transcription of `sc-expr`'s `__scMakeModels`, on the same terms as
+ * {@link triggerDeclarations}. The answers are the admin API's
+ * `getModelDraws` and `getPosteriorSummary`, typed as far as their shape is
+ * fixed; the labels and keys are whatever the database's are. */
+export function modelDeclarations(): string {
+  return `
+/** Which elements: \`keys\` picks positions of the first axis by key or
+ * label; \`elements\` is the general form — index arrays, or per axis
+ * (by its name) the keys or labels wanted. */
+interface ScModelSelection {
+  keys?: unknown[];
+  elements?: number[][] | Record<string, unknown[]>;
+}
+
+interface ScDrawsOptions extends ScModelSelection {
+  /** Only these chains, from 1. */
+  chains?: number[];
+  /** The warmup draws too, as chains of their own (when the fit kept them). */
+  warmup?: boolean;
+  /** Keep every n-th draw. */
+  thin?: number;
+}
+
+/** One variable's draws, labelled by the database. */
+interface ScDraws {
+  variable: string;
+  /** Positions per axis. */
+  dims: number[];
+  /** Each axis's name: its dimension's, or \`index\`. */
+  axes: string[];
+  /** Per axis, every position's label. */
+  labels: unknown[][];
+  /** Per axis, every position's key. */
+  keys: unknown[][];
+  /** The selected elements as 1-based index arrays, and by name. */
+  elements: number[][];
+  names: string[];
+  thin: number;
+  /** Per chain, one array of draws per selected element. */
+  chains: { chain: number; warmup: boolean; draws: (number | null)[][] }[];
+}
+
+/** A variable's posterior summary, one row per selected element: its labels,
+ * then mean, sd, mcse, q5, q50, q95, rhat, ess_bulk, ess_tail. */
+interface ScSummary {
+  variable: string;
+  source: "draws" | "stored";
+  columns: string[];
+  elements: number[][];
+  names: string[];
+  keys: unknown[][];
+  rows: unknown[][];
+}
+
+/** A fitted model's posterior. The first argument is a model's name (its
+ * active fit) or a fit's id. */
+interface ScModels {
+  draws(model: string, variable: string, options?: ScDrawsOptions): Promise<ScDraws>;
+  summary(model: string, variable: string, options?: ScModelSelection): Promise<ScSummary>;
+  instance(model: string): Promise<{
+    id: string;
+    model: string | null;
+    name: string;
+    status: "fitting" | "fitted" | "failed";
+    active: boolean;
+    created: string;
+    error: string | null;
+    warnings: string[];
+    metrics: any;
+    variables: string[];
+  }>;
+}
+`;
+}
+
 /** The TypeScript type one of v1's declared argument types arrives as.
  *
  * v1's own type names, which is the vocabulary `sc_module::spec` already
@@ -768,6 +846,20 @@ export function scopeDeclarations(
       ` * ownership rule) evaluates without it. */\ndeclare const db: ScDb;`,
   );
   parts.push(
+    `/** A fitted model's posterior — its draws, its summary, and the fit —\n` +
+      ` * by the database's keys and labels:\n` +
+      ` *\n` +
+      ` * \`\`\`js\n` +
+      ` * const alpha = await models.draws("Radon", "alpha");\n` +
+      ` * const s = await models.summary("Radon", "alpha", { keys: [27001] });\n` +
+      ` * const fit = await models.instance("Radon");\n` +
+      ` * \`\`\`\n` +
+      ` *\n` +
+      ` * Each call is a database call of this run, on its budget; a draws answer\n` +
+      ` * is at most 500 000 numbers — \`thin\` and \`chains\` keep it under. */\n` +
+      `declare const models: ScModels;`,
+  );
+  parts.push(
     `/** Call an HTTP endpoint. The web's \`fetch\`, with the web's rules: a\n` +
       ` * non-2xx status is an answer rather than a throw, and only a transport\n` +
       ` * failure rejects (with a \`TypeError\`).\n` +
@@ -861,6 +953,7 @@ export function codeLibrary(
     chainDeclarations(),
     fileDeclarations(),
     triggerDeclarations(),
+    modelDeclarations(),
     moduleFunctionDeclarations(functions),
     tableDeclarations(tables),
     scopeDeclarations(scope, tables, functions),

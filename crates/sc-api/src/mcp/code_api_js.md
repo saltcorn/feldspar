@@ -16,7 +16,7 @@ statements, `await` every database/network/file call, and `return` the result.
 - `context` — in a **workflow step** only: the run's context so far.
 - `body`, `query`, `user` — in a **custom API query** only: the request's JSON body, its
   query string, and the caller. There is no `row` or `payload` there.
-- `db`, `fetch`, `fs`, `trigger`, `modfn`, `console` — below.
+- `db`, `models`, `fetch`, `fs`, `trigger`, `modfn`, `console` — below.
 
 ## `db`: reading and writing tables
 
@@ -67,6 +67,30 @@ const top = await db.sql("select owner, count(*) as n from books where pages > $
 
 `db.sql` does not go through the row layer: no ownership formula, and **a write in it fires no
 trigger**. Prefer the chain for writes.
+
+## `models`: a fitted model's posterior
+
+A fitted Bayesian model's draws, their summary, and the fit itself. The first argument is a
+model's **name** (meaning its active fit) or a fit's id; elements are chosen by the database's
+**keys or labels**, never by a position.
+
+```js
+const alpha = await models.draws("Radon", "alpha");                // every county, every chain
+// { dims: [85], axes: ["counties"], labels: [["Aitkin", …]], keys: [[27001, …]],
+//   elements: [[1], …], names: ["alpha[Aitkin]", …],
+//   chains: [{ chain: 1, warmup: false, draws: [[…one array per element…]] }, …] }
+const one = await models.draws("Radon", "alpha", { keys: [27001], chains: [1], thin: 10 });
+const s = await models.summary("Radon", "alpha", { keys: ["Aitkin"] });
+// { columns: ["counties", "mean", "sd", "mcse", "q5", "q50", "q95", "rhat", "ess_bulk",
+//   "ess_tail"], rows: [["Aitkin", 1.02, …]], … }
+const fit = await models.instance("Radon");                      // id, status, active, warnings,
+                                                                 // metrics, variables
+```
+
+`keys` picks positions of the first axis by key or label; `elements` is the general form —
+`{ counties: ["Aitkin"], week: [...] }` per axis, or index arrays `[[1, 2]]`. Each call is one
+database call; one `draws` answer is at most 500 000 numbers, so thin or select for more.
+A variable the fit did not draw, or whose draws it did not keep, throws naming why.
 
 ## The other handles
 

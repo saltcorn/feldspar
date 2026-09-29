@@ -912,27 +912,46 @@ else.
 
 ## Phase 7 — The API, the actions and the code API
 
-- [ ] 7.1 `listModelProviders` carries `binds_data` and CmdStan's availability;
+- [x] 7.1 `listModelProviders` carries `binds_data` and CmdStan's availability;
       `getProgramInterface(store, path)` (the parse and `stanc`'s diagnostics);
       `previewModelData(model)`; `suggestBindings(model)` (§18); `compileModel(model)`.
       `saveModel` of a Stan model runs `StanProvider::check_program` (§5: `stanc` when
       CmdStan is available, and its warnings or the "not checked" notice in the answer) —
       the check exists since 2.4/2.5 but nothing on the save path calls it yet, because
       `validate_model` also runs at load and must not start a subprocess per model.
-- [ ] 7.2 `cancelModelFit(instance)` (§13), refused for a provider that cannot cancel.
-- [ ] 7.3 `getModelDraws`, `getPosteriorSummary` and `downloadModelRun` (§16) with the response
-      cap and selection by key or label.
-- [ ] 7.4 `writePosterior` and the `write_posterior` action (§16): update and insert modes,
-      through the row layer, target types checked on the form.
-- [ ] 7.5 The **`fit_model` action** (carried from TODO-post-mvp-22): start a fit of a named
+      *(Providers also carry `cancellable` and `unavailable`. A program `stanc` refuses is
+      `getProgramInterface`'s `error` field, not a failed request, and refuses the save.
+      The preview binds what binds and puts each variable's error on its row
+      (`sc_model::preview_data`); `compileModel` waits for the compile.)*
+- [x] 7.2 `cancelModelFit(instance)` (§13), refused for a provider that cannot cancel.
+      *(`ModelProvider::cancellable`, true for Stan; a finished fit is refused too.)*
+- [x] 7.3 `getModelDraws`, `getPosteriorSummary` and `downloadModelRun` (§16) with the response
+      cap and selection by key or label. *(A fit now records each output variable's shape
+      and axis dimensions in `attributes.axes`, so an instance is read by the labels it was
+      fitted with. The cap's flag is Phase 10; `ModelServices::set_max_draws_response` holds
+      it. The download gunzips a raw run's CSVs; without one, or when it can no longer be
+      read, it is per-chain CSVs from the table with `coordinates.json`, `variables.json`
+      and a `README.txt` saying why.)*
+- [x] 7.4 `writePosterior` and the `write_posterior` action (§16): update and insert modes,
+      through the row layer, target types checked on the form. *(An effective sample size
+      may go into an integer field, rounded down; every other statistic needs a float.)*
+- [x] 7.5 The **`fit_model` action** (carried from TODO-post-mvp-22): start a fit of a named
       model from a trigger or a workflow, optionally activating the result when it has no
-      warnings — what makes "refit and write back every night" two steps.
-- [ ] 7.6 `models.draws`, `models.summary`, `models.instance` in JavaScript and Python code
-      bodies (§17), documented in `code_api_js.md` and its Python counterpart.
-- [ ] 7.7 API tests over a stub posterior provider (no CmdStan): the lifecycle, preview with an
+      warnings — what makes "refit and write back every night" two steps. *(It waits for the
+      fit by default, so the next step sees it; `wait: false` starts it and the job activates
+      it. The seam is `sc_model::FitStarter`.)*
+- [x] 7.6 `models.draws`, `models.summary`, `models.instance` in JavaScript and Python code
+      bodies (§17), documented in `code_api_js.md` and its Python counterpart. *(Not a sixth
+      host surface: an `op: "models"` request on the `db` host, with a few lines of prelude in
+      each language. There is no Python counterpart page; `tutorial-python.md` step 5 documents
+      it, and the editor's `codeTypes.ts` declares it.)*
+- [x] 7.7 API tests over a stub posterior provider (no CmdStan): the lifecycle, preview with an
       inline error, suggest, cancel, draws by key with thinning and the cap, a summary on
       demand, write-back in both modes firing the target table's trigger, the zip's contents,
-      `fit_model` from a trigger, and the code API from both languages.
+      `fit_model` from a trigger, and the code API from both languages. *(`sc-server`'s
+      `posterior_api.rs`; Python's is `sc-python`'s `python_models.rs`, which needs
+      `--features python-host` and so `python3-dev` — not installed on this machine, so it
+      has not been run here; the lowering was checked against the package directly.)*
 
 ## Phase 8 — The admin UI
 

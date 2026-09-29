@@ -954,6 +954,11 @@ impl std::fmt::Debug for CodeCall<'_> {
 #[cfg(feature = "eval")]
 pub(crate) const DB: &str = "db";
 
+/// The name a fitted model's draws are reached by in a code body — a `const`
+/// over the run's `db` handle, bound wherever `db` is (Stan TODO §17).
+#[cfg(feature = "eval")]
+pub(crate) const MODELS: &str = "models";
+
 /// The name the HTTP surface binds under, reserved when a fetch host is present
 /// for the reason [`DB`] is. It is `fetch` because that is what the web calls
 /// it, and a body's author knows the name before they read anything of ours.
@@ -1397,6 +1402,69 @@ Object.defineProperty(globalThis, "__scMakeDb", {
     });
   };
   return handle("admin");
+  },
+});
+// `models` (Stan TODO §17): a fitted posterior's draws, its summary and the fit
+// itself, over a run's own `db` handle — so every call is a plan this run
+// sends, on this run's call budget, and a body with no `db` has no `models`.
+// The first argument is a model's name (its active fit) or a fit's id, as
+// `predict_row` takes it; elements are chosen by key or label, never by a
+// position only this fit knows.
+Object.defineProperty(globalThis, "__scMakeModels", {
+  writable: false, configurable: false, enumerable: false,
+  value: (db) => {
+    const named = (what, model) => {
+      if (typeof model !== "string" || model === "") {
+        throw new Error(
+          "models." + what + "() takes a model's name (its active fit) or a fit's id first"
+        );
+      }
+      return model;
+    };
+    const variable = (what, v) => {
+      if (typeof v !== "string" || v === "") {
+        throw new Error(
+          "models." + what + "() takes the variable second, as in models." + what +
+          '("Radon", "alpha")'
+        );
+      }
+      return v;
+    };
+    // `{ keys: [...] }` is the first axis by key or label, the common case of
+    // a one-axis variable; `{ elements: ... }` is the general form.
+    const elements = (what, options) => {
+      if (options === undefined || options === null) return undefined;
+      if (typeof options !== "object") {
+        throw new Error("models." + what + "()'s third argument is an options object");
+      }
+      if (options.keys !== undefined && options.elements !== undefined) {
+        throw new Error("give models." + what + "() either `keys` or `elements`, not both");
+      }
+      if (options.keys !== undefined) {
+        return { "1": Array.isArray(options.keys) ? options.keys : [options.keys] };
+      }
+      return options.elements;
+    };
+    const send = (what, model, extra) =>
+      db.__scSend(Object.assign({ op: "models", what: what, model: named(what, model) }, extra));
+    return Object.freeze({
+      draws: (model, v, options) => {
+        const o = options || {};
+        return send("draws", model, {
+          variable: variable("draws", v),
+          elements: elements("draws", options),
+          chains: o.chains,
+          warmup: o.warmup,
+          thin: o.thin,
+        });
+      },
+      summary: (model, v, options) =>
+        send("summary", model, {
+          variable: variable("summary", v),
+          elements: elements("summary", options),
+        }),
+      instance: (model) => send("instance", model, {}),
+    });
   },
 });
 "#;
@@ -5246,6 +5314,12 @@ fn build_run_scripts(call: &CodeRun) -> Result<RunScripts> {
     // generated code, which is the message 6.2 exists to prevent.
     if !call.bindings.contains_key(REQUIRE) {
         consts.push_str(&format!("const {REQUIRE} = __scRequire({wants_v1});\n"));
+    }
+    // `models` rides on `db` (Stan TODO §17) — a `const` built over this run's
+    // own handle, on `require`'s terms: no parameter, and a caller that binds
+    // the name itself keeps it.
+    if wants_db && !call.bindings.contains_key(MODELS) {
+        consts.push_str(&format!("const {MODELS} = __scMakeModels({DB});\n"));
     }
     let args = serde_json::to_string(&Json::Object(bindings))
         .map_err(|e| Error::msg(format!("encode bindings: {e}")))?;

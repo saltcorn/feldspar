@@ -25,6 +25,7 @@
 //! binding, because the admin reading it is looking at a table with one row
 //! per variable.
 
+mod assist;
 mod dimension;
 mod labels;
 mod resolve;
@@ -46,12 +47,13 @@ use crate::dataset::Dataset;
 use crate::interface::Interface;
 use crate::model::{MAIN_DATASET, Model, NamedDataset};
 
+pub use assist::{DataPreview, Suggestions, VariablePreview, preview_data, suggest_bindings};
 pub use dimension::{
     Coordinates, DesignCoordinates, DimensionCoordinates, DimensionKind, MAX_GRID_STEPS,
 };
 pub use labels::{
-    Axis, EXCLUDE_VARIABLES_KEY, KEEP_DRAWS_KEY, Labeller, element_label, excluded_variables,
-    keeps_draws,
+    Axis, EXCLUDE_VARIABLES_KEY, KEEP_DRAWS_KEY, Labeller, RecordedAxes, element_label,
+    excluded_variables, keeps_draws, named_axes, recorded_axes,
 };
 pub use resolve::{
     BindReport, BoundData, DEFAULT_MAX_DATA_VALUES, DatasetReport, DropReport, VariableReport,

@@ -2,6 +2,102 @@
 
 Changes in reverse chronological order.
 
+## The posterior's API, its actions and the code API
+
+This is Phase 7 of the Stan milestone (TODO "Bayesian models with Stan", §§5, 13, 16–18). A
+fitted posterior can now be bound, previewed, compiled, cancelled, read, summarised, downloaded
+and written back over the admin API, refitted and written back from a trigger, and read from a
+code body. Nothing here names Stan except the two endpoints about a program. Everything is tested
+over a stub sampler, so no CmdStan is needed.
+
+- **The model form's endpoints** (7.1).
+  - `listModelProviders` now says, per provider, `binds_data`, `cancellable`, and
+    `unavailable` ("CmdStan was not found: …").
+  - `getProgramInterface(store, path)` answers the parsed interface, `stanc`'s warnings, or the
+    notice that the program was not checked. A program `stanc` refuses comes back in `error`,
+    because showing the diagnostics is what the Check button is for.
+  - `saveModel` of a Stan model runs `check_program` first. A refused program refuses the save;
+    otherwise the answer carries `program_check` (warnings, or the notice).
+  - `previewModelData(model)` (`sc_model::preview_data`) binds what binds. Each data variable
+    gets a row with its shape and first values, or its own error: a binding that does not
+    parse, a size that does not match, or a null under `refuse`. A `width` or `segment_*` of a
+    variable that failed says so. Only sentences about no one variable stop it (`errors`).
+  - `suggestBindings(model)` (`sc_model::suggest_bindings`) proposes a binding for each unbound
+    variable:
+    - a column named like the variable (an `index` when it is an int array and the column is a
+      foreign key into another dataset's table);
+    - `size(d)` for an `upper=` of an index into `d`;
+    - `count(ds)` for the first size of a per-row binding;
+    - `width(X)` beside a design.
+
+    It never replaces a binding. On radon it proposes `N`, `J`, `county` and `y`, each with a
+    reason, and leaves `x` and `u`.
+  - `compileModel(model)` compiles into the cache without fitting, waits for it, and answers the
+    key (`StanProvider::compile`).
+- **Cancel** (7.2). `cancelModelFit(instance)` sets `cancel_requested` on the row. It is refused
+  for a provider whose fit cannot be stopped (the new `ModelProvider::cancellable`, true for
+  Stan) and for a fit that has finished.
+- **Reading a posterior** (7.3, `sc_model::reading`).
+  - A fit now records, per output variable, its shape and the dimension each axis is labelled by
+    (`attributes.axes`). An instance is then read by the labels it was fitted with, whatever the
+    model's configuration says now.
+  - `getModelDraws(instance, variable, elements?, chains?, warmup?, thin?)` answers `dims`,
+    `axes`, per-axis `labels` and `keys`, the selected `elements` and their `names`
+    (`alpha[Anoka]`), and per chain one array per element.
+  - `elements` selects by key or label per axis (`{"counties": ["27001", "Becker"]}`), by an
+    axis's ordinal (`{"1": […]}`), or by index arrays.
+  - More than `max_draws_response` numbers (2 million; the flag is Phase 10) is refused before
+    anything is read, with the arithmetic and `thin`.
+  - `getPosteriorSummary` summarises any variable now, from its draws. When the draws were not
+    kept, the fit's stored table answers (`source: "stored"`).
+  - `downloadModelRun` is a zip. With a runs store it holds the raw CmdStan run, its CSVs
+    gunzipped back for `cmdstanpy.from_csv` (the new `ModelProvider::run_files`). Otherwise it
+    holds one CSV per chain in CmdStan's column layout (column-major within a variable), plus
+    `coordinates.json` and `variables.json`. A raw run that can no longer be read falls back to
+    the draws, with a `README.txt` saying why.
+  - The instance JSON carries `progress`, `cancel_requested` and `warnings`, and the detail
+    carries `variables` and `binding`.
+- **Write-back** (7.4). `writePosterior` and the new `write_posterior` action share one writer
+  (`sc_core_actions::write_posterior`) through the row layer, so the target table's triggers
+  fire.
+  - `update` writes a one-axis variable's statistics into the rows of the table its rows
+    dimension is over, by key.
+  - `insert` makes a row per element in any table, with chosen coordinates (key, label or
+    position) and the fit's id.
+  - Statistics go into float fields. An effective sample size may also go into an integer
+    field, rounded down.
+- **`fit_model`** (7.5). A new action that refits a named model. It waits for the fit by
+  default, and with `activate` makes it active when it finished with no warnings. A fit with a
+  warning is kept inactive. `sc_model::FitStarter` is the seam, implemented by `ModelServices`.
+- **`models` in code bodies** (7.6). `models.draws`, `models.summary` and `models.instance`, in
+  JavaScript and in Python.
+  - The first argument is a model's name (its active fit) or a fit's id. `keys: […]` picks the
+    first axis by key or label.
+  - It is not a sixth host surface: it is an `op: "models"` request on the `db` host, on the
+    run's call budget, with a prelude object in each language. The JS one is a `const` over the
+    run's own `db`; Python's is `saltcorn.models`.
+  - A draws answer from code is capped at 500 000 numbers.
+  - Documented in `code_api_js.md` and `tutorial-python.md`, and declared for the editor in
+    `codeTypes.ts`.
+- **Tests** (7.7).
+  - `sc-server`'s `posterior_api.rs`, over a stub sampler with a program of its own:
+    - the provider list, suggestions and a preview with the null on `x`'s row;
+    - draws by key and by label, one chain, thinned, and the cap's refusal;
+    - a summary by label;
+    - both write-back modes, with the audit trigger on `counties` firing three times;
+    - a text target refused;
+    - the zip's files and CSV header;
+    - cancel, and its two refusals;
+    - `fit_model` activating a clean fit and not a divergent one;
+    - `write_posterior` from a trigger;
+    - `models` from a JavaScript body.
+  - `sc-python`'s `python_models.rs` pins the requests the Python `models` sends. It needs
+    `--features python-host` (`python3-dev`) and was not run on the development machine.
+  - `sc-model` unit tests cover selection, the write plan, the preview and the suggestions.
+- `sc-api` now depends on `sc-model` (the design's crate table says so). The ER diagram gains
+  `_fd_model_draws`, which Phase 1.5 added without it. `trigger_admin_api`'s action list gains
+  the two new actions. The admin client is regenerated in all three copies.
+
 ## Time series and space: the structured binding kinds
 
 This is Phase 6 of the Stan milestone (TODO "Bayesian models with Stan", §12). The binder now
