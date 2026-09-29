@@ -110,6 +110,15 @@ pub struct Catalog {
     /// crates, none of which can name `sc-module` — and `run_js_code`, in a
     /// fourth. The catalog is what all four already hold.
     module_functions: RwLock<Option<Arc<dyn sc_expr::ModuleFnHost>>>,
+    /// The **models** a formula's `predict("…")` and a code body's model handle
+    /// reach (milestone 31 §4) — `None` in a process with no model support.
+    ///
+    /// Held here for [`module_functions`](Catalog::set_module_functions)'
+    /// reason: what implements it is `sc-server`'s `ModelServices`, over
+    /// `sc-model`, which sits above this crate; what needs it is
+    /// [`prefetch_bindings`](crate::prefetch_bindings), the read path and the
+    /// code host, which all hold a `Catalog`.
+    model_host: RwLock<Option<Arc<dyn crate::model_host::ModelHost>>>,
     /// What supplies **table providers** (§8.3) — `None` in a process with no
     /// modules, which is what a `sc-catalog` test and a server with nothing
     /// installed both are.
@@ -234,6 +243,7 @@ impl Catalog {
             field_overlay_issues: RwLock::new(Vec::new()),
             schema_observer: RwLock::new(None),
             module_functions: RwLock::new(None),
+            model_host: RwLock::new(None),
             table_providers: RwLock::new(None),
             provided_table_issues: RwLock::new(Vec::new()),
             public_origin: RwLock::new(None),
@@ -1465,6 +1475,30 @@ impl Catalog {
     /// is a formula that fails naming its call rather than every query failing.
     pub fn module_functions(&self) -> Option<Arc<dyn sc_expr::ModuleFnHost>> {
         self.module_functions.read().ok()?.clone()
+    }
+
+    /// Install the models — `sc-server`'s `ModelServices`, at startup and
+    /// again whenever the module set (and so the provider registry) is rebuilt.
+    ///
+    /// Replaces any previous one, for
+    /// [`set_module_functions`](Catalog::set_module_functions)' reason.
+    pub fn set_model_host(&self, host: Arc<dyn crate::model_host::ModelHost>) -> Result<()> {
+        let mut guard = self
+            .model_host
+            .write()
+            .map_err(|_| Error::msg("catalog model-host lock poisoned"))?;
+        *guard = Some(host);
+        Ok(())
+    }
+
+    /// The installed models, cloned out of the lock — `None` where nobody
+    /// installed any, which makes a `predict("…")` fail naming its call and a
+    /// code body's `models.get` fail saying there are no models here.
+    ///
+    /// A poisoned lock reads as "there are none", for
+    /// [`module_functions`](Catalog::module_functions)' reason.
+    pub fn model_host(&self) -> Option<Arc<dyn crate::model_host::ModelHost>> {
+        self.model_host.read().ok()?.clone()
     }
 
     /// Whether anything listens for `op` on `table` — the question the row layer

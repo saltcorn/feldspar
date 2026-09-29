@@ -1,19 +1,227 @@
-//! A posterior written back into rows (Stan TODO §16; milestone 31 §1).
+//! Models, from the row layer's side (milestone 31 §§1, 3, 4).
 //!
 //! [`write_posterior`] is the one path from a posterior's summary to rows,
 //! shared by the admin API's `writePosterior` and a code body's
 //! `m.writePosterior(…)`. It writes through the row layer, so a write-back is
 //! validated, ownership-checked under the authority it is given, and fires the
 //! target table's own triggers whichever way it was asked for.
+//!
+//! [`predict_for`] and [`describe_model`] are the two halves of
+//! [`ModelHost`](sc_catalog::ModelHost), which `sc-server`'s `ModelServices`
+//! implements by calling them with its registry and dataset source: a formula's
+//! `predict("…")`, the read path's calculated fields and a code body's
+//! `m.predict(…)` all end here.
 
-use sc_catalog::{CallerContext, Catalog, Table};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use sc_auth::User;
+use sc_catalog::{CallerContext, Catalog, ModelSummary, PredictRows, Table};
 use sc_error::{Error, Result};
+use sc_expr::JsEvaluator;
 use sc_model::{
-    Model, ModelInstance, PosteriorView, PosteriorWrite, WriteMode, instance_coordinates,
-    plan_write, summarise_variable,
+    DatasetSource, Model, ModelInstance, ModelRegistry, PosteriorView, PosteriorWrite, Prediction,
+    Subject, WriteMode, canonical_key, instance_coordinates, plan_write, summarise_variable,
 };
+use sc_query::{Expr, InSet};
 use sc_types::{Attrs, BasicType};
 use serde_json::{Value as Json, json};
+
+/// The model called `name` and the fit that answers for it: the one `fit`
+/// names (which must be one of the model's), or else its **active** fit.
+///
+/// Naming the model and not the fit is the point of `active`: the admin
+/// refits, activates, and every formula and code body that named the model
+/// follows without being edited.
+pub async fn resolve_fit(
+    catalog: &Catalog,
+    name: &str,
+    fit: Option<&str>,
+) -> Result<(Model, ModelInstance)> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::invalid("name the model to use"));
+    }
+    let model = sc_model::require_model(catalog, name).await?;
+    let instance = match fit.map(str::trim).filter(|f| !f.is_empty()) {
+        Some(raw) => {
+            let id = uuid::Uuid::parse_str(raw).map_err(|_| {
+                Error::invalid(format!(
+                    "`{raw}` is not a fit's id (fits are named by uuid)"
+                ))
+            })?;
+            let instance =
+                sc_model::require_model_instance(catalog, sc_model::InstanceId(id)).await?;
+            if instance.model != model.id {
+                return Err(Error::invalid(format!(
+                    "fit {raw} is not a fit of model `{}`",
+                    model.name
+                )));
+            }
+            instance
+        }
+        None => sc_model::active_model_instance(catalog, model.id)
+            .await?
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "model `{}` has no active fit: fit it and make a fit active",
+                    model.name
+                ))
+            })?,
+    };
+    Ok((model, instance))
+}
+
+/// Predict `rows` of `table` with `model`'s active fit (or `fit`), in the
+/// order asked — [`ModelHost::predict`](sc_catalog::ModelHost::predict).
+///
+/// Keys are read **through the model's dataset**, by key and unfiltered, in
+/// one read restricted to them (`pk IN (…)`), and the answers are put back in
+/// the order the keys were asked in: the dataset has an order of its own, and
+/// a caller lines the answers up against its rows. Literal values are one
+/// frame, typed as the fit's features were.
+// Nine, because a prediction needs the model machinery (three), the bound,
+// and the four things the caller asked; grouping them would invent a struct
+// with one user.
+#[allow(clippy::too_many_arguments)]
+pub async fn predict_for(
+    catalog: &Catalog,
+    registry: &ModelRegistry,
+    source: &dyn DatasetSource,
+    cap: u64,
+    model: &str,
+    fit: Option<&str>,
+    table: &str,
+    rows: PredictRows<'_>,
+    detail: bool,
+) -> Result<Vec<Json>> {
+    let (model, instance) = resolve_fit(catalog, model, fit).await?;
+    if model.table() != table {
+        return Err(Error::invalid(format!(
+            "`{}` is a model of `{}`, and these rows are of `{table}`",
+            model.name,
+            model.table()
+        )));
+    }
+    let predictions = match rows {
+        PredictRows::Values(values) => {
+            if values.is_empty() {
+                return Ok(Vec::new());
+            }
+            sc_model::predict_subject(
+                registry,
+                source,
+                &model,
+                &instance,
+                Subject::Rows(values),
+                cap,
+            )
+            .await?
+            .predictions
+        }
+        PredictRows::Keys(keys) => {
+            if keys.is_empty() {
+                return Ok(Vec::new());
+            }
+            let target = catalog.require(table)?;
+            let pk = crate::rows::single_pk(&target)?;
+            let mut asked = Vec::with_capacity(keys.len());
+            for key in keys {
+                asked.push(crate::rows::column_value(&target, &pk, key)?);
+            }
+            let restrict = Expr::In {
+                e: Box::new(Expr::col(pk.clone())),
+                set: InSet::List(asked.iter().cloned().map(Expr::lit).collect()),
+            };
+            let answer = sc_model::predict_subject(
+                registry,
+                source,
+                &model,
+                &instance,
+                Subject::Dataset(Some(&restrict)),
+                cap,
+            )
+            .await?;
+            let by_key: HashMap<&str, &Prediction> = answer
+                .keys
+                .iter()
+                .map(String::as_str)
+                .zip(answer.predictions.iter())
+                .collect();
+            let mut ordered = Vec::with_capacity(asked.len());
+            for (value, key) in asked.iter().zip(keys) {
+                let prediction = by_key.get(canonical_key(value).as_str()).ok_or_else(|| {
+                    Error::invalid(format!(
+                        "no row of `{table}` has the {pk} {}, so `{}` has nothing to predict                          for it",
+                        match key {
+                            Json::String(s) => s.clone(),
+                            other => other.to_string(),
+                        },
+                        model.name
+                    ))
+                })?;
+                ordered.push((*prediction).clone());
+            }
+            ordered
+        }
+    };
+    predictions
+        .iter()
+        .map(|prediction| {
+            let value = prediction.to_json()?;
+            if !detail {
+                return Ok(value);
+            }
+            let mut out = serde_json::Map::new();
+            out.insert("value".to_owned(), value);
+            if let Prediction::Class {
+                probability: Some(p),
+                ..
+            } = prediction
+            {
+                out.insert("probability".to_owned(), json!(p));
+            }
+            Ok(Json::Object(out))
+        })
+        .collect()
+}
+
+/// What a formula's save check needs to know about the model called `name` —
+/// [`ModelHost::describe`](sc_catalog::ModelHost::describe).
+///
+/// The prediction types are the provider's **declaration**, not the active
+/// fit's outcome: a field is typed before any fit exists, and a refit must not
+/// be able to change what the field can hold.
+pub async fn describe_model(
+    catalog: &Catalog,
+    registry: &ModelRegistry,
+    name: &str,
+) -> Result<ModelSummary> {
+    let model = sc_model::require_model(catalog, name.trim()).await?;
+    let provider = registry.require(model.provider.trim()).map_err(|e| {
+        Error::invalid(format!(
+            "model `{}` is fitted by `{}`, which this server does not have: {e}",
+            model.name, model.provider
+        ))
+    })?;
+    let spec = provider.outcome_spec();
+    let prediction_types = spec.possible_prediction_types();
+    let no_prediction = prediction_types.is_empty().then(|| {
+        let posterior = matches!(spec, sc_model::OutcomeSpec::Posterior { .. });
+        sc_model::no_per_row_prediction(posterior).to_owned()
+    });
+    let active_fit = sc_model::active_model_instance(catalog, model.id)
+        .await?
+        .map(|i| i.id.to_string());
+    Ok(ModelSummary {
+        name: model.name.clone(),
+        table: model.table().to_owned(),
+        provider: model.provider.clone(),
+        prediction_types,
+        no_prediction,
+        active_fit,
+    })
+}
 
 use crate::rows;
 
@@ -21,7 +229,84 @@ use crate::rows;
 /// sizes, which are counts of draws.
 const COUNT_STATISTICS: [&str; 2] = ["ess_bulk", "ess_tail"];
 
-/// Write `write` of `instance` (a fit of `model`) into rows, as `authority`,
+/// Whose authority a write-back writes under.
+///
+/// The same two shapes a code body's `db` handle has: a context the row layer
+/// writes under as it is (the admin API's, and an undelegated body's — admin,
+/// in the event's user's name, with its trigger chain), and a **delegated**
+/// caller, whose every write goes through [`crate::ownership`]'s `*_as`
+/// functions so §7.3's rule decides it exactly as it decides
+/// `db.counties.asUser().update(…)`.
+pub enum Writer<'a> {
+    /// Written under this context, through the row layer.
+    Context(&'a CallerContext),
+    /// Written as this caller, through the ownership rule.
+    As {
+        /// The role every floor is checked against.
+        role: u8,
+        /// The user an ownership formula and an RLS policy read.
+        user: Option<&'a User>,
+        /// For an ownership formula only the evaluator can decide.
+        evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+        /// The triggers that led here, which each write's event carries.
+        chain: &'a [String],
+    },
+}
+
+impl Writer<'_> {
+    async fn insert(
+        &self,
+        catalog: &Catalog,
+        table: &Table,
+        body: &Json,
+        executor: &rows::Executor,
+    ) -> Result<Json> {
+        match self {
+            Writer::Context(context) => {
+                rows::create_row_in(catalog, table, body, Some(context), executor).await
+            }
+            Writer::As {
+                role,
+                user,
+                evaluator,
+                chain,
+            } => {
+                crate::ownership::insert_row_as(
+                    catalog, table, body, *role, *user, *evaluator, chain, executor,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn update(
+        &self,
+        catalog: &Catalog,
+        table: &Table,
+        key: &str,
+        body: &Json,
+        executor: &rows::Executor,
+    ) -> Result<Json> {
+        match self {
+            Writer::Context(context) => {
+                rows::update_row_in(catalog, table, key, body, Some(context), executor).await
+            }
+            Writer::As {
+                role,
+                user,
+                evaluator,
+                chain,
+            } => {
+                crate::ownership::update_row_as(
+                    catalog, table, key, body, *role, *user, *evaluator, chain, executor,
+                )
+                .await
+            }
+        }
+    }
+}
+
+/// Write `write` of `instance` (a fit of `model`) into rows, as `writer`,
 /// through `executor` — **the** write-back, for the admin API and a code
 /// body's handle alike.
 ///
@@ -35,7 +320,7 @@ pub async fn write_posterior(
     model: &Model,
     instance: &ModelInstance,
     write: &PosteriorWrite,
-    authority: &CallerContext,
+    writer: &Writer<'_>,
     executor: &rows::Executor,
 ) -> Result<Json> {
     if instance.model != model.id {
@@ -68,7 +353,8 @@ pub async fn write_posterior(
         let body = Json::Object(round_counts(&table, write, values));
         match (&plan.mode, &row.key) {
             (WriteMode::Update, Some(key)) => {
-                rows::update_row_in(catalog, &table, key, &body, Some(authority), executor)
+                writer
+                    .update(catalog, &table, key, &body, executor)
                     .await
                     .map_err(|e| {
                         Error::invalid(format!(
@@ -78,7 +364,8 @@ pub async fn write_posterior(
                     })?;
             }
             _ => {
-                rows::create_row_in(catalog, &table, &body, Some(authority), executor)
+                writer
+                    .insert(catalog, &table, &body, executor)
                     .await
                     .map_err(|e| {
                         Error::invalid(format!(

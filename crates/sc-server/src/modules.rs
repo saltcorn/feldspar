@@ -325,6 +325,12 @@ impl ModuleServices {
                 sc_error::format_chain(&e)
             ),
         }
+        // And the models on the catalog, for `predict("…")` and a code body's
+        // `models.get` (milestone 31 §4). The services read the registry
+        // swapped in above at every call, so this is the same host again —
+        // installed here too so a catalog whose models were installed from
+        // somewhere else ends a module change pointing at this server's.
+        crate::models::install_model_host(&self.catalog, &self.models)?;
         // And the **stream providers** (TODO "Streams" §12), which is the same
         // two-source composition one entity along: the built-ins (MQTT, unless
         // it was compiled out) plus whatever the JavaScript modules supply as a

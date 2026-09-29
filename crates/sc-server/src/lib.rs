@@ -137,7 +137,8 @@ pub use logging::log_requests;
 pub use lsp::{LSP_ROUTE, MAX_LANGUAGE_SERVERS};
 pub use mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME};
 pub use models::{
-    CatalogDatasetSource, ModelServices, StanSettings, install_models, install_models_with,
+    CatalogDatasetSource, ModelServices, StanSettings, install_model_host, install_models,
+    install_models_with,
 };
 pub use modules::ModuleServices;
 pub use observe::STREAM_OBSERVE_ROUTE;

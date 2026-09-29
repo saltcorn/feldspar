@@ -239,7 +239,8 @@ pub fn prediction_values(predictions: &[Prediction]) -> Result<Vec<Json>> {
 pub fn no_per_row_prediction(posterior: bool) -> &'static str {
     if posterior {
         "a posterior: its draws are the answer, and a posterior does not predict rows here — \
-         read its draws in a code body (`models.draws`) and compute the prediction there"
+         read its draws in a code body (`m.draws(…)`, on `models.get(…)`) and compute the \
+         prediction there"
     } else {
         "a hypothesis test: its parameters are the answer, and there is no per-row prediction \
          to make"
@@ -564,7 +565,7 @@ mod tests {
             .expect_err("a posterior")
             .to_string();
         assert!(err.contains("is a posterior"), "{err}");
-        assert!(err.contains("`models.draws`"), "{err}");
+        assert!(err.contains("`m.draws(…)`, on `models.get(…)`"), "{err}");
         assert!(!err.contains("hypothesis test"), "{err}");
     }
 

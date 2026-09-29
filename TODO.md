@@ -285,26 +285,26 @@ deny, and a rule that waits on a provider makes every read wait on it.
 
 ## Phase 2 — The model handle in code
 
-- [ ] 2.1 The `ModelHost` trait in `sc-catalog` (§4), with `Catalog::set_model_host` and
+- [x] 2.1 The `ModelHost` trait in `sc-catalog` (§4), with `Catalog::set_model_host` and
       `model_host()`; `ModelServices` implements it over `predict_subject` (keys become a
       `Subject::Dataset` restricted to those keys; values become `Subject::Rows`) and is
       installed at startup and on every module rebuild. Tests: keyed rows come back in the
       order asked, including a row the dataset filter excludes; a literal row missing a
       feature is refused by name; `detail` carries a class's probability.
-- [ ] 2.2 The code host's `op: "models"` (§3): `get` (resolving a name to its active fit, or
+- [x] 2.2 The code host's `op: "models"` (§3): `get` (resolving a name to its active fit, or
       `fit` to that fit, answering fit, outcome, table and variables), `predict`, `draws`,
       `summary` and `write_posterior` by fit id; `write_posterior` through the handle's
       authority, chain and executor. Tests in `code_host/tests.rs`.
-- [ ] 2.3 The JavaScript prelude's `models.get` and the handle: the posterior-only methods as
+- [x] 2.3 The JavaScript prelude's `models.get` and the handle: the posterior-only methods as
       throwing getters on any other outcome; `predict` accepting a row or an array. Tests in
       `sc-expr`'s code tests over a fake host.
-- [ ] 2.4 Python's `Models.get` and the handle class, with `__getattr__` for the absent
+- [x] 2.4 Python's `Models.get` and the handle class, with `__getattr__` for the absent
       methods. Tests in `python_models.rs` (needs `--features python-host`; say so in the
       CHANGELOG if it cannot be run here).
-- [ ] 2.5 `codeTypes.ts` declares `models.get` and the handle (the posterior methods as
+- [x] 2.5 `codeTypes.ts` declares `models.get` and the handle (the posterior methods as
       optional members); `codeTypes.test.ts`. The MCP page `code_api_js.md` documents the
       handle.
-- [ ] 2.6 Integration tests in `sc-server`: a `run_js_code` trigger that predicts the event's
+- [x] 2.6 Integration tests in `sc-server`: a `run_js_code` trigger that predicts the event's
       row and writes it with `db`; a workflow `fit_model` → `run_js_code` `writePosterior`
       over the stub posterior provider, firing the target table's trigger; a non-admin
       body's `writePosterior` into a table it may not update is refused.

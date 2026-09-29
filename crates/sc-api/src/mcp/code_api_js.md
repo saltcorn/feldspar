@@ -68,29 +68,58 @@ const top = await db.sql("select owner, count(*) as n from books where pages > $
 `db.sql` does not go through the row layer: no ownership formula, and **a write in it fires no
 trigger**. Prefer the chain for writes.
 
-## `models`: a fitted model's posterior
+## `models`: a fitted model
 
-A fitted Bayesian model's draws, their summary, and the fit itself. The first argument is a
-model's **name** (meaning its active fit) or a fit's id; elements are chosen by the database's
-**keys or labels**, never by a position.
+`models.get(name)` answers a **handle** on the model's active fit (or `{ fit: id }`'s). Every
+call on the handle uses that fit, even if another is activated meanwhile.
 
 ```js
-const alpha = await models.draws("Radon", "alpha");                // every county, every chain
+const m = await models.get("House prices");
+m.name; m.provider; m.table; m.outcome;     // outcome: { outcome: "regression", label: "price" }
+m.fit;                                      // { id, name, status, active, created, error,
+                                            //   warnings, metrics, parameters }
+const price = await m.predict(row);         // → 312000 | "spam" | 3 | [0.1, …]
+const prices = await m.predict([r1, r2]);   // one request, answers in row order
+const p = await m.predict(row, { detail: true });   // { value, probability } (for a class)
+```
+
+A row carrying the table's primary key is read **through the model's dataset** by that key,
+so its join paths and aggregations are computed as they were when the model was fitted. This
+works even for a row the dataset's filter excludes. A row without a key must supply every
+feature column, or it is refused naming the missing one.
+
+A **posterior** (a Bayesian model) also has its draws, their summary and a write-back.
+Elements are chosen by the database's **keys or labels**, never by a position:
+
+```js
+const r = await models.get("Radon");
+r.variables;                                            // what the fit drew
+const alpha = await r.draws("alpha");                   // every county, every chain
 // { dims: [85], axes: ["counties"], labels: [["Aitkin", …]], keys: [[27001, …]],
 //   elements: [[1], …], names: ["alpha[Aitkin]", …],
 //   chains: [{ chain: 1, warmup: false, draws: [[…one array per element…]] }, …] }
-const one = await models.draws("Radon", "alpha", { keys: [27001], chains: [1], thin: 10 });
-const s = await models.summary("Radon", "alpha", { keys: ["Aitkin"] });
+const one = await r.draws("alpha", { keys: [27001], chains: [1], thin: 10 });
+const s = await r.summary("alpha", { keys: ["Aitkin"] });
 // { columns: ["counties", "mean", "sd", "mcse", "q5", "q50", "q95", "rhat", "ess_bulk",
 //   "ess_tail"], rows: [["Aitkin", 1.02, …]], … }
-const fit = await models.instance("Radon");                      // id, status, active, warnings,
-                                                                 // metrics, variables
+await r.writePosterior({ variable: "alpha", statistics: { mean: "alpha_mean", sd: "alpha_sd" } });
+await r.writePosterior({ variable: "y_future", mode: "insert", table: "forecasts",
+                         statistics: { mean: "mean", q5: "lower", q95: "upper" },
+                         coordinates: [{ axis: "day.future", field: "day" }] });
 ```
 
-`keys` picks positions of the first axis by key or label; `elements` is the general form —
+On any other model, `draws`, `summary`, `variables` and `writePosterior` are absent, and
+reaching one throws a sentence saying what the model is. A posterior does not `predict` rows:
+read its draws and compute the prediction.
+
+`writePosterior` writes the way `db` does: as the trigger by default, or as the event's user
+with `r.asUser().writePosterior(…)`. Either way, ownership is checked and the target table's
+triggers fire.
+
+`keys` picks positions of the first axis by key or label. `elements` is the general form:
 `{ counties: ["Aitkin"], week: [...] }` per axis, or index arrays `[[1, 2]]`. Each call is one
-database call; one `draws` answer is at most 500 000 numbers, so thin or select for more.
-A variable the fit did not draw, or whose draws it did not keep, throws naming why.
+database call. One `draws` answer is at most 500 000 numbers, so thin or select for more. A
+variable the fit did not draw, or whose draws it did not keep, throws naming why.
 
 ## The other handles
 

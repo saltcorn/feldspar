@@ -3833,7 +3833,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                     &model,
                     &instance,
                     &write,
-                    &authority,
+                    &sc_api::models::Writer::Context(&authority),
                     &rows::Executor::Pooled,
                 )
                 .await?;

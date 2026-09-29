@@ -69,10 +69,10 @@ mod field_api;
 mod file_manager;
 #[path = "file_operations_api.rs"]
 mod file_operations_api;
-#[path = "fit_model_action.rs"]
-mod fit_model_action;
 #[path = "file_store_admin_api.rs"]
 mod file_store_admin_api;
+#[path = "fit_model_action.rs"]
+mod fit_model_action;
 #[path = "generated_client_refresh.rs"]
 mod generated_client_refresh;
 #[path = "graphql_serving.rs"]
@@ -99,6 +99,8 @@ mod model_admin_api;
 mod model_dataset;
 #[path = "model_fit_job.rs"]
 mod model_fit_job;
+#[path = "model_handle.rs"]
+mod model_handle;
 #[path = "modules_api.rs"]
 mod modules_api;
 #[path = "other_events.rs"]

@@ -86,4 +86,20 @@ mod tests {
             assert!(JS_CODE_API.contains(guess), "missing `{guess}`");
         }
     }
+
+    #[test]
+    fn the_reference_teaches_the_model_handle_and_not_the_flat_functions() {
+        for taught in [
+            "const m = await models.get(\"House prices\");",
+            "await m.predict(row)",
+            "await r.draws(\"alpha\"",
+            "await r.writePosterior({",
+            "r.asUser().writePosterior(",
+        ] {
+            assert!(JS_CODE_API.contains(taught), "missing `{taught}`");
+        }
+        for gone in ["models.draws(", "models.summary(", "models.instance("] {
+            assert!(!JS_CODE_API.contains(gone), "still teaches `{gone}`");
+        }
+    }
 }

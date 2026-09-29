@@ -465,6 +465,47 @@ impl sc_model::FitStarter for ModelServices {
     }
 }
 
+/// The models a formula's `predict("…")` and a code body's model handle reach
+/// (milestone 31 §4), installed on the catalog by [`install_models`] and again
+/// on every module rebuild.
+///
+/// Both halves are `sc_api::models`' — this supplies the registry as it stands
+/// at the call (so a module's provider is used from the moment it is loaded),
+/// the dataset source and the row cap.
+#[async_trait]
+impl sc_catalog::ModelHost for ModelServices {
+    async fn predict(
+        &self,
+        model: &str,
+        fit: Option<&str>,
+        table: &str,
+        rows: sc_catalog::PredictRows<'_>,
+        detail: bool,
+    ) -> Result<Vec<serde_json::Value>> {
+        sc_api::models::predict_for(
+            &self.catalog,
+            &self.registry(),
+            self.source.as_ref(),
+            self.max_rows,
+            model,
+            fit,
+            table,
+            rows,
+            detail,
+        )
+        .await
+    }
+
+    async fn describe(&self, model: &str) -> Result<sc_catalog::ModelSummary> {
+        sc_api::models::describe_model(&self.catalog, &self.registry(), model).await
+    }
+}
+
+/// Install `services` as the catalog's [`ModelHost`](sc_catalog::ModelHost).
+pub fn install_model_host(catalog: &Catalog, services: &ModelServices) -> Result<()> {
+    catalog.set_model_host(Arc::new(services.clone()))
+}
+
 /// How often a running fit's progress reaches its row, and the row's cancel
 /// is read back (Stan TODO §13): at most once a second.
 pub const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -617,6 +658,7 @@ pub async fn install_models_with(
         );
     }
     let services = ModelServices::with_settings(catalog, max_rows, stan)?;
+    install_model_host(catalog, &services).context("installing the model host")?;
     // The run directories of those fits, and any compile they were in the
     // middle of, on this node (Stan TODO §13).
     let stan = services.stan();

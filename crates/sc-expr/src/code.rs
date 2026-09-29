@@ -954,8 +954,8 @@ impl std::fmt::Debug for CodeCall<'_> {
 #[cfg(feature = "eval")]
 pub(crate) const DB: &str = "db";
 
-/// The name a fitted model's draws are reached by in a code body — a `const`
-/// over the run's `db` handle, bound wherever `db` is (Stan TODO §17).
+/// The name a code body reaches models by — `models.get(name)` — a `const`
+/// over the run's `db` handle, bound wherever `db` is (milestone 31 §3).
 #[cfg(feature = "eval")]
 pub(crate) const MODELS: &str = "models";
 
@@ -1404,65 +1404,153 @@ Object.defineProperty(globalThis, "__scMakeDb", {
   return handle("admin");
   },
 });
-// `models` (Stan TODO §17): a fitted posterior's draws, its summary and the fit
-// itself, over a run's own `db` handle — so every call is a plan this run
-// sends, on this run's call budget, and a body with no `db` has no `models`.
-// The first argument is a model's name (its active fit) or a fit's id; elements are chosen by key or label, never by a
-// position only this fit knows.
+// `models` (milestone 31 §3): `models.get(name)` answers a **handle** on a
+// model's active fit (or `{ fit: id }`'s), over a run's own `db` handle — so
+// every call is a request this run sends, on this run's call budget, and a
+// body with no `db` has no `models`. The handle is built from one `get`, and
+// every later call names the fit that `get` resolved, so a handle does not
+// change fit halfway through a body when somebody activates another.
+//
+// The fit's recorded outcome decides which methods exist: `draws`, `summary`,
+// `variables` and `writePosterior` are a posterior's. On any other handle they
+// are non-enumerable getters that throw a sentence saying what the model is,
+// so `m.draws(…)` fails naming the mistake rather than as "not a function".
 Object.defineProperty(globalThis, "__scMakeModels", {
   writable: false, configurable: false, enumerable: false,
   value: (db) => {
-    const named = (what, model) => {
-      if (typeof model !== "string" || model === "") {
-        throw new Error(
-          "models." + what + "() takes a model's name (its active fit) or a fit's id first"
-        );
-      }
-      return model;
-    };
     const variable = (what, v) => {
       if (typeof v !== "string" || v === "") {
         throw new Error(
-          "models." + what + "() takes the variable second, as in models." + what +
-          '("Radon", "alpha")'
+          "m." + what + "() takes the variable first, as in m." + what + '("alpha")'
         );
       }
       return v;
     };
+    const options = (what, o, allowed) => {
+      if (o === undefined || o === null) return {};
+      if (typeof o !== "object" || Array.isArray(o)) {
+        throw new Error("m." + what + "()'s last argument is an options object");
+      }
+      for (const key of Object.keys(o)) {
+        if (!allowed.includes(key)) {
+          throw new Error(
+            "`" + key + "` is not an option of m." + what + "(); the options are: " +
+            allowed.join(", ")
+          );
+        }
+      }
+      return o;
+    };
     // `{ keys: [...] }` is the first axis by key or label, the common case of
     // a one-axis variable; `{ elements: ... }` is the general form.
-    const elements = (what, options) => {
-      if (options === undefined || options === null) return undefined;
-      if (typeof options !== "object") {
-        throw new Error("models." + what + "()'s third argument is an options object");
+    const elements = (what, o) => {
+      if (o.keys !== undefined && o.elements !== undefined) {
+        throw new Error("give m." + what + "() either `keys` or `elements`, not both");
       }
-      if (options.keys !== undefined && options.elements !== undefined) {
-        throw new Error("give models." + what + "() either `keys` or `elements`, not both");
+      if (o.keys !== undefined) {
+        return { "1": Array.isArray(o.keys) ? o.keys : [o.keys] };
       }
-      if (options.keys !== undefined) {
-        return { "1": Array.isArray(options.keys) ? options.keys : [options.keys] };
-      }
-      return options.elements;
+      return o.elements;
     };
-    const send = (what, model, extra) =>
-      db.__scSend(Object.assign({ op: "models", what: what, model: named(what, model) }, extra));
+    const makeHandle = (got, authority) => {
+      const outcome = got.outcome || null;
+      const kind = outcome && typeof outcome.outcome === "string" ? outcome.outcome : "model";
+      const send = (what, extra) =>
+        db.__scSend(Object.assign(
+          { op: "models", what: what, model: got.name, fit: got.fit.id },
+          extra
+        ));
+      const handle = {
+        name: got.name,
+        provider: got.provider,
+        table: got.table,
+        outcome: outcome,
+        fit: Object.freeze(got.fit),
+        // One row answers one value; an array answers one per row, in order,
+        // from one request.
+        predict: async (rows, opts) => {
+          if (got.no_prediction) throw new Error(got.no_prediction);
+          const many = Array.isArray(rows);
+          if (!many && (rows === null || typeof rows !== "object")) {
+            throw new Error("m.predict() takes a row object or an array of them");
+          }
+          const o = options("predict", opts, ["detail"]);
+          const answer = await send("predict", {
+            rows: many ? rows : [rows],
+            detail: !!o.detail,
+          });
+          return many ? answer : answer[0];
+        },
+        // Whose authority a write-back writes under, as on `db`.
+        asUser: () => makeHandle(got, "user"),
+        asAdmin: () => makeHandle(got, "admin"),
+      };
+      const posteriorOnly = {
+        draws: (v, opts) => {
+          const o = options("draws", opts, ["keys", "elements", "chains", "warmup", "thin"]);
+          return send("draws", {
+            variable: variable("draws", v),
+            elements: elements("draws", o),
+            chains: o.chains,
+            warmup: o.warmup,
+            thin: o.thin,
+          });
+        },
+        summary: (v, opts) => {
+          const o = options("summary", opts, ["keys", "elements"]);
+          return send("summary", {
+            variable: variable("summary", v),
+            elements: elements("summary", o),
+          });
+        },
+        variables: Object.freeze((got.variables || []).slice()),
+        writePosterior: (spec) => {
+          if (spec === null || typeof spec !== "object" || Array.isArray(spec)) {
+            throw new Error(
+              'm.writePosterior() takes what to write, as in m.writePosterior({ variable: ' +
+              '"alpha", statistics: { mean: "alpha_mean" } })'
+            );
+          }
+          return send("write_posterior", { write: spec, authority: authority });
+        },
+      };
+      for (const [prop, value] of Object.entries(posteriorOnly)) {
+        if (kind === "posterior") {
+          Object.defineProperty(handle, prop, { value: value, enumerable: true });
+        } else {
+          Object.defineProperty(handle, prop, {
+            enumerable: false,
+            get: () => {
+              throw new Error(
+                "`" + got.name + "` is a " + got.provider + " " + kind + "; `" + prop +
+                "` is for posterior models"
+              );
+            },
+          });
+        }
+      }
+      return Object.freeze(handle);
+    };
     return Object.freeze({
-      draws: (model, v, options) => {
-        const o = options || {};
-        return send("draws", model, {
-          variable: variable("draws", v),
-          elements: elements("draws", options),
-          chains: o.chains,
-          warmup: o.warmup,
-          thin: o.thin,
-        });
+      get: async (model, opts) => {
+        if (typeof model !== "string" || model === "") {
+          throw new Error('models.get() takes a model\'s name, as in models.get("House prices")');
+        }
+        let fit;
+        if (opts !== undefined && opts !== null) {
+          if (typeof opts !== "object" || Array.isArray(opts)) {
+            throw new Error("models.get()'s second argument is an options object, e.g. { fit: id }");
+          }
+          for (const key of Object.keys(opts)) {
+            if (key !== "fit") {
+              throw new Error("`" + key + "` is not an option of models.get(); the options are: fit");
+            }
+          }
+          fit = opts.fit;
+        }
+        const got = await db.__scSend({ op: "models", what: "get", model: model, fit: fit });
+        return makeHandle(got, "admin");
       },
-      summary: (model, v, options) =>
-        send("summary", model, {
-          variable: variable("summary", v),
-          elements: elements("summary", options),
-        }),
-      instance: (model) => send("instance", model, {}),
     });
   },
 });
@@ -5314,7 +5402,7 @@ fn build_run_scripts(call: &CodeRun) -> Result<RunScripts> {
     if !call.bindings.contains_key(REQUIRE) {
         consts.push_str(&format!("const {REQUIRE} = __scRequire({wants_v1});\n"));
     }
-    // `models` rides on `db` (Stan TODO §17) — a `const` built over this run's
+    // `models` rides on `db` (milestone 31 §3) — a `const` built over this run's
     // own handle, on `require`'s terms: no parameter, and a caller that binds
     // the name itself keeps it.
     if wants_db && !call.bindings.contains_key(MODELS) {
@@ -5798,6 +5886,249 @@ mod tests {
             err.contains("JavaScript code failed") && err.contains("db"),
             "{err}"
         );
+    }
+
+    /// A host that answers a model handle's requests the way `sc-api`'s does:
+    /// `get` with the model `model_of` describes, `predict` with each row's
+    /// `id` (or `"new"`) times ten, and anything else with the request itself.
+    fn model_host(model_of: fn(&str) -> Json) -> Arc<FakeHost> {
+        FakeHost::new(move |plan| {
+            assert_eq!(plan["op"], json!("models"), "{plan}");
+            let what = plan["what"].as_str().unwrap_or_default();
+            Ok(match what {
+                "get" => model_of(plan["model"].as_str().unwrap_or_default()),
+                "predict" => Json::Array(
+                    plan["rows"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|row| match row["id"].as_i64() {
+                            Some(id) => json!(id * 10),
+                            None => json!("new"),
+                        })
+                        .collect(),
+                ),
+                _ => plan.clone(),
+            })
+        })
+    }
+
+    /// `House prices`, a regression, and `Radon`, a posterior.
+    fn two_models(name: &str) -> Json {
+        let fit = |id: &str| {
+            json!({ "id": id, "name": "fit", "status": "fitted", "active": true,
+                    "warnings": [], "metrics": {}, "parameters": [] })
+        };
+        match name {
+            "Radon" => json!({
+                "name": "Radon", "provider": "stan", "table": "homes",
+                "outcome": { "outcome": "posterior" },
+                "fit": fit("f-radon"),
+                "variables": ["alpha", "beta"],
+                "no_prediction": "`Radon` is a posterior: read its draws in a code body \
+                                  (`m.draws(…)`, on `models.get(…)`)",
+            }),
+            _ => json!({
+                "name": name, "provider": "linear_regression", "table": "houses",
+                "outcome": { "outcome": "regression", "label": "price" },
+                "fit": fit("f-houses"),
+                "variables": null,
+                "no_prediction": null,
+            }),
+        }
+    }
+
+    /// Milestone 31 §3: `models.get` builds a handle from one request, and
+    /// every later call names the fit it resolved.
+    #[tokio::test]
+    async fn a_model_handle_predicts_a_row_or_an_array_naming_the_fit_it_was_built_on() {
+        let rt = CodeRuntime::new();
+        let host = model_host(two_models);
+        let out = rt
+            .run(with_host(
+                r#"const m = await models.get("House prices");
+                   return {
+                     name: m.name, provider: m.provider, table: m.table,
+                     outcome: m.outcome, fit: m.fit.id,
+                     one: await m.predict({ id: 3 }),
+                     many: await m.predict([{ id: 1 }, { area: 90 }, { id: 2 }]),
+                     detail: await m.predict({ id: 4 }, { detail: true }),
+                     keys: Object.keys(m).sort(),
+                   };"#,
+                &*host,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out["name"], json!("House prices"));
+        assert_eq!(out["provider"], json!("linear_regression"));
+        assert_eq!(out["table"], json!("houses"));
+        assert_eq!(out["outcome"]["label"], json!("price"));
+        assert_eq!(out["fit"], json!("f-houses"));
+        assert_eq!(out["one"], json!(30));
+        assert_eq!(out["many"], json!([10, "new", 20]));
+        // The posterior methods are not among a regression's own keys.
+        assert_eq!(
+            out["keys"],
+            json!([
+                "asAdmin", "asUser", "fit", "name", "outcome", "predict", "provider", "table"
+            ])
+        );
+        let plans = host.plans();
+        assert_eq!(plans.len(), 4, "{plans:?}");
+        assert_eq!(plans[0]["what"], json!("get"));
+        assert_eq!(plans[0]["model"], json!("House prices"));
+        assert!(plans[0].get("fit").is_none(), "{}", plans[0]);
+        for plan in &plans[1..] {
+            assert_eq!(plan["what"], json!("predict"));
+            assert_eq!(plan["fit"], json!("f-houses"));
+        }
+        // One row is sent as a batch of one; an array as one request.
+        assert_eq!(plans[1]["rows"], json!([{ "id": 3 }]));
+        assert_eq!(plans[2]["rows"].as_array().unwrap().len(), 3);
+        assert_eq!(plans[1]["detail"], json!(false));
+        assert_eq!(plans[3]["detail"], json!(true));
+
+        // A specific fit is asked for by id.
+        let host = model_host(two_models);
+        rt.run(with_host(
+            r#"await models.get("House prices", { fit: "f-old" });"#,
+            &*host,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(host.plans()[0]["fit"], json!("f-old"));
+    }
+
+    #[tokio::test]
+    async fn a_posterior_only_method_on_another_model_throws_a_sentence_saying_what_it_is() {
+        let rt = CodeRuntime::new();
+        let host = model_host(two_models);
+        let out = rt
+            .run(with_host(
+                r#"const m = await models.get("House prices");
+                   const said = {};
+                   for (const call of [
+                     () => m.draws("alpha"),
+                     () => m.summary("alpha"),
+                     () => m.variables,
+                     () => m.writePosterior({ variable: "alpha", statistics: {} }),
+                   ]) {
+                     try { call(); said.none = "no error"; }
+                     catch (e) { said[Object.keys(said).length] = e.message; }
+                   }
+                   said.stringified = JSON.stringify(m).length > 0;
+                   return said;"#,
+                &*host,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            out["0"],
+            json!(
+                "`House prices` is a linear_regression regression; `draws` is for posterior models"
+            )
+        );
+        assert_eq!(
+            out["2"],
+            json!(
+                "`House prices` is a linear_regression regression; `variables` is for \
+                 posterior models"
+            )
+        );
+        assert_eq!(
+            out["3"],
+            json!(
+                "`House prices` is a linear_regression regression; `writePosterior` is for \
+                 posterior models"
+            )
+        );
+        assert!(out.get("none").is_none(), "{out}");
+        // The throwing getters are not enumerable, so the handle serialises.
+        assert_eq!(out["stringified"], json!(true));
+        // And none of it reached the host.
+        assert_eq!(host.plans().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_posterior_handle_reads_draws_and_writes_back_under_the_handles_authority() {
+        let rt = CodeRuntime::new();
+        let host = model_host(two_models);
+        let out = rt
+            .run(with_host(
+                r#"const m = await models.get("Radon");
+                   const d = await m.draws("alpha", { keys: [27001], chains: [1, 2], thin: 10 });
+                   const s = await m.summary("alpha", { elements: { "1": ["Aitkin"] } });
+                   const w = await m.writePosterior({
+                     variable: "alpha", statistics: { mean: "alpha_mean", sd: "alpha_sd" } });
+                   const u = await m.asUser().writePosterior({
+                     variable: "alpha", statistics: { mean: "alpha_mean" } });
+                   let predicted;
+                   try { await m.predict({ id: 1 }); } catch (e) { predicted = e.message; }
+                   let both;
+                   try { await m.draws("alpha", { keys: [1], elements: {} }); }
+                   catch (e) { both = e.message; }
+                   return { variables: m.variables, d, s, w, u, predicted, both };"#,
+                &*host,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out["variables"], json!(["alpha", "beta"]));
+        assert_eq!(out["d"]["what"], json!("draws"));
+        assert_eq!(out["d"]["fit"], json!("f-radon"));
+        assert_eq!(out["d"]["variable"], json!("alpha"));
+        assert_eq!(out["d"]["elements"], json!({ "1": [27001] }));
+        assert_eq!(out["d"]["chains"], json!([1, 2]));
+        assert_eq!(out["d"]["thin"], json!(10));
+        assert_eq!(out["s"]["what"], json!("summary"));
+        assert_eq!(out["s"]["elements"], json!({ "1": ["Aitkin"] }));
+        assert_eq!(out["w"]["what"], json!("write_posterior"));
+        assert_eq!(out["w"]["authority"], json!("admin"));
+        assert_eq!(out["w"]["write"]["statistics"]["sd"], json!("alpha_sd"));
+        assert_eq!(out["u"]["authority"], json!("user"));
+        // A posterior does not predict rows, and says where to go instead,
+        // without asking the host.
+        assert!(
+            out["predicted"].as_str().unwrap().contains("`m.draws(…)`"),
+            "{out}"
+        );
+        assert_eq!(
+            out["both"],
+            json!("give m.draws() either `keys` or `elements`, not both")
+        );
+        assert!(host.plans().iter().all(|p| p["what"] != json!("predict")));
+    }
+
+    #[tokio::test]
+    async fn models_get_refuses_what_is_not_a_name_and_an_option_it_does_not_have() {
+        let rt = CodeRuntime::new();
+        let host = model_host(two_models);
+        let out = rt
+            .run(with_host(
+                r#"const said = [];
+                   for (const call of [
+                     () => models.get(),
+                     () => models.get("House prices", { instance: "x" }),
+                     () => models.draws,
+                   ]) {
+                     try { const r = await call(); said.push(r === undefined ? "undefined" : "ok"); }
+                     catch (e) { said.push(e.message); }
+                   }
+                   return said;"#,
+                &*host,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            out[0],
+            json!(r#"models.get() takes a model's name, as in models.get("House prices")"#)
+        );
+        assert_eq!(
+            out[1],
+            json!("`instance` is not an option of models.get(); the options are: fit")
+        );
+        // The flat functions of the Stan milestone are gone.
+        assert_eq!(out[2], json!("undefined"));
+        assert!(host.plans().is_empty());
     }
 
     /// §1a: the node globals are shadowed as parameters of the wrapper, so a

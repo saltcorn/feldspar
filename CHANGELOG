@@ -2,6 +2,104 @@
 
 Changes in reverse chronological order.
 
+## Models without actions of their own: the model handle in code
+
+Phase 2 of milestone 31. A code body now reaches a model through a **handle**:
+`const m = await models.get("House prices")`, then `m.predict(row)`. A posterior's handle also
+has `m.draws`, `m.summary`, `m.variables` and `m.writePosterior`. This replaces the Stan
+milestone's flat `models.draws(name, …)`, `models.summary` and `models.instance`, which are
+removed. Prediction in formulas (`predict("…")`) is Phase 3.
+
+- **`ModelHost` on the catalog** (2.1).
+  - `sc-catalog` declares the trait (`predict` and `describe`, speaking JSON), with
+    `PredictRows::Keys`/`Values` and `ModelSummary`. It is installed with
+    `Catalog::set_model_host`, the way module functions are, because `sc-catalog` sits below
+    `sc-model`.
+  - The logic is `sc_api::models::predict_for` and `describe_model`. `sc-server`'s
+    `ModelServices` implements the trait by calling them with its registry, dataset source and
+    row cap. `install_models` installs it, and every module rebuild installs it again.
+  - Keys are read through the model's dataset in **one** read restricted to them
+    (`pk IN (…)`), unfiltered, and the answers come back in the order the keys were asked in.
+    A key no row has is refused naming it. Literal rows are one frame, and a missing feature
+    is refused naming it.
+  - `detail` answers `{ value, probability }`, with the probability only for a class.
+  - `describe` reports the prediction types from the provider's **declaration**, not the
+    active fit, because a field is typed before any fit exists.
+  - Test: `the_model_host_answers_keys_in_the_order_asked_and_literal_rows_by_their_features`
+    (`sc-server`, new `model_handle.rs`).
+- **The code host's `op: "models"`** (2.2), in `sc-api/src/code_host/models.rs`.
+  - `get` resolves a name to its active fit, or to `fit`. It answers everything a handle is
+    built from in one call: fit, outcome, table, variables, and, when the fit does not
+    predict, the sentence saying why.
+  - `predict`, `draws`, `summary` and `write_posterior` must name the fit `get` resolved, so a
+    handle does not change fit halfway through a body.
+  - `predict` sends keyed rows (those carrying the table's primary key) in one `ModelHost`
+    call and literal rows in another, then merges the answers back into row order.
+  - `write_posterior` writes under the handle's authority, this run's trigger chain and its
+    executor, the same as a `db` write. `sc_api::models::write_posterior` now takes a
+    `Writer`: either the row layer under a context (the admin API, and an undelegated body),
+    or a delegated caller through `ownership::*_as`.
+  - `draws`, `summary` and `write_posterior` on a fit that is not a posterior are refused by
+    the host too, in the handle's own words.
+  - Tests in `code_host/tests.rs`, over a recording fake `ModelHost`:
+    - one call for keyed rows and one for literal rows, answered in order;
+    - a non-object row is refused;
+    - a malformed request is refused before any model is read.
+- **The JavaScript handle** (2.3), `__scMakeModels` in `sc-expr`.
+  - On a handle whose outcome is not a posterior, `draws`, `summary`, `variables` and
+    `writePosterior` are **non-enumerable getters that throw**: "`House prices` is a
+    linear_regression regression; `draws` is for posterior models". Because they are
+    non-enumerable, the handle still serialises.
+  - `m.predict` takes a row or an array, sends one request either way, and takes
+    `{ detail: true }`. On a fit that does not predict, it throws the host's sentence
+    without making a call.
+  - `m.asUser()` / `m.asAdmin()` choose the write-back's authority, as on `db`.
+  - Four tests in `sc-expr`'s code tests, over a fake host.
+- **The Python handle** (2.4), in `saltcorn.py`.
+  - `models.get(name, fit=None)` answers a `Model`, or a `Posterior` (its subclass).
+  - `Model.__getattr__` raises an `AttributeError` carrying the same sentence for the
+    posterior-only four, so `hasattr(m, "draws")` is `False`.
+  - `write_posterior(**write)` and `as_user()` are on the `Posterior`. `m.predict` on a fit
+    that does not predict raises `DbError`.
+  - `python_models.rs` is rewritten for the handle.
+  - **Not run here:** it needs `--features python-host`, and this machine has no
+    `libpython3.13` to link against. It type-checks with the feature on
+    (`cargo check -p sc-python --tests --features python-host`). The Python was also exercised
+    directly with `python3` against a stub `__sc` module.
+- **Editor types and the agent's reference** (2.5).
+  - `codeTypes.ts` declares `models.get` and `ScModel`, with the posterior's four as optional
+    members.
+  - `codeTypes.test.ts` checks:
+    - that the handle type-checks;
+    - that an unguarded `r.draws(…)` is "possibly undefined";
+    - that the removed `models.draws` and a misspelt method are errors.
+  - The MCP page `code_api_js.md` documents the handle. A new `code_api.rs` test checks that
+    it teaches the handle and not the removed functions.
+- **Integration tests** (2.6).
+  - `model_handle.rs`, `a_code_trigger_predicts_the_events_row_and_writes_it_with_db`: an
+    insert trigger predicts the new, unsold house and writes the estimate with `db`. It also
+    checks a mixed batch, and that the posterior-only members are absent and throw.
+  - `posterior_api.rs`, `a_workflow_refits_and_a_code_step_writes_the_posterior_back`: a
+    workflow runs `fit_model`, then a `run_js_code` step calls `m.writePosterior`. This fills
+    `counties`, fires its update trigger once per county, stays on the fit the previous step
+    activated, and a `m.predict` on the posterior points at `m.draws`.
+  - `posterior_api.rs`, `a_callers_write_back_is_held_to_the_callers_own_rights`: run for a
+    role-40 caller, `m.asUser().writePosterior` into the admin-only `counties` is refused and
+    writes nothing. The same body under the trigger's own authority writes all three rows.
+  - `posterior_api.rs`'s existing code-body test and `stan_models.rs`'s `#[ignore]`d
+    prediction-in-code body now use the handle.
+- **Smaller changes.**
+  - A write-back's `mode` now defaults to `update`, so
+    `m.writePosterior({ variable, statistics })` works as the milestone writes it.
+  - `no_per_row_prediction`'s posterior sentence now points at `m.draws(…)` on
+    `models.get(…)`.
+- **Not changed yet:** the tutorials still show the removed flat functions:
+  - `tutorial-stan.md`'s "Doing prediction in code";
+  - `tutorial-python.md` step 5;
+  - `TECHNICAL_DESIGN.md` §14.2.
+
+  They are Phase 4.
+
 ## Models without actions of their own: one model action
 
 Phase 1 of milestone 31 (TODO "Models without actions of their own"). `fit_model` is now the

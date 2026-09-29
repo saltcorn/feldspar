@@ -449,7 +449,7 @@ pub struct ChainDraws {
     pub draws: Vec<Vec<f64>>,
 }
 
-/// A variable's draws, labelled — what `getModelDraws` and `models.draws`
+/// A variable's draws, labelled — what `getModelDraws` and a handle's `m.draws`
 /// answer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct VariableDraws {
@@ -600,7 +600,7 @@ fn not_kept(variable: &str) -> Error {
 }
 
 /// A variable's summary, per selected element — what `getPosteriorSummary`
-/// and `models.summary` answer, and what the write-back writes.
+/// and a handle's `m.summary` answer, and what the write-back writes.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct VariableSummary {
     /// The variable.
@@ -767,11 +767,13 @@ fn stored_summary(
 }
 
 /// How a write-back writes (§16).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteMode {
     /// Into the rows of the table a one-axis variable's rows dimension is
-    /// over, matched by key.
+    /// over, matched by key. The default, because it is the write-back a
+    /// hierarchical model's per-group parameter is for.
+    #[default]
     Update,
     /// One new row per element into any table.
     Insert,
@@ -809,7 +811,8 @@ pub struct CoordinateWrite {
 pub struct PosteriorWrite {
     /// The variable.
     pub variable: String,
-    /// Update or insert.
+    /// Update (the default) or insert.
+    #[serde(default)]
     pub mode: WriteMode,
     /// Statistic → the field it is written into: `{ "mean": "alpha_mean" }`.
     pub statistics: BTreeMap<String, String>,

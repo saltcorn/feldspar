@@ -207,9 +207,10 @@ model {
 /// variable comes from the same iteration, which is what makes combining them
 /// draw by draw right.
 const PREDICT_JS: &str = r#"
-const alpha = await models.draws("Radon", "alpha", { keys: [row.county] });
-const beta = await models.draws("Radon", "beta");
-const sigma = await models.draws("Radon", "sigma_y");
+const m = await models.get("Radon");
+const alpha = await m.draws("alpha", { keys: [row.county] });
+const beta = await m.draws("beta");
+const sigma = await m.draws("sigma_y");
 const ys = [];
 for (let c = 0; c < alpha.chains.length; c++) {
   const a = alpha.chains[c].draws[0], b = beta.chains[c].draws[0], s = sigma.chains[c].draws[0];

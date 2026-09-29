@@ -1591,88 +1591,238 @@ class ModFns:
 
 
 # ---------------------------------------------------------------------------
-# `models` — a fitted model's posterior
+# `models` — a handle on a fitted model
 # ---------------------------------------------------------------------------
 #
-# A fitted posterior's draws, its summary, and the fit itself (Stan TODO §17),
-# read through the ``db`` host: every call is one database call of this run,
-# on its budget, and a body with no ``db`` has no ``models``. The first argument
-# is a model's name (its active fit) or a fit's id; elements are chosen by key
-# or label, never by a position only one fit knows.
+# ``models.get(name)`` answers a handle on a model's active fit (or on
+# ``fit=id``'s), read through the ``db`` host (milestone 31 §3): every call is
+# one database call of this run, on its budget, and a body with no ``db`` has no
+# ``models``. The handle is built from one ``get``, and every later call names
+# the fit that ``get`` resolved, so it does not change fit halfway through a body
+# when somebody activates another. It is the JavaScript handle, synchronously
+# and in snake case.
 
 
-class Models:
-    """A fitted model's posterior, by the database's keys and labels::
+def _check_variable(what, variable):
+    if not isinstance(variable, str) or not variable:
+        raise TypeError(
+            f'm.{what}() takes the variable first, as in m.{what}("alpha")'
+        )
+    return variable
 
-        alpha = models.draws("Radon", "alpha")
-        # {"dims": [85], "labels": [["Aitkin", …]], "keys": [["27001", …]],
-        #  "chains": [{"chain": 1, "draws": [[…], …]}, …], …}
-        s = models.summary("Radon", "alpha", keys=[27001])
-        fit = models.instance("Radon")   # id, status, warnings, metrics
+
+def _check_elements(what, elements, keys):
+    if keys is not None and elements is not None:
+        raise TypeError(f"give m.{what}() either keys= or elements=, not both")
+    if keys is not None:
+        # The first axis by key or label — a one-axis variable's usual case.
+        return {"1": list(keys) if isinstance(keys, (list, tuple)) else [keys]}
+    return elements
+
+
+def _check_thin(thin):
+    if isinstance(thin, bool) or not isinstance(thin, int) or thin < 1:
+        raise ValueError("thin= keeps every n-th draw, and takes a whole number from 1")
+    return thin
+
+
+#: The methods only a posterior's handle has.
+_POSTERIOR_ONLY = ("draws", "summary", "variables", "write_posterior")
+
+
+class Model:
+    """A fitted model, as ``models.get(…)`` answers it::
+
+        m = models.get("House prices")
+        m.name, m.provider, m.table, m.outcome
+        m.fit                      # id, name, status, active, warnings, metrics, …
+        m.predict({"id": 3})       # one value
+        m.predict([r1, r2], detail=True)   # [{"value": …, "probability": …}, …]
+
+        r = models.get("Radon")    # a posterior also has
+        r.draws("alpha", keys=[27001], chains=[1, 2], thin=10)
+        r.summary("alpha")
+        r.variables
+        r.write_posterior(variable="alpha", statistics={"mean": "alpha_mean"})
+
+    ``draws``, ``summary``, ``variables`` and ``write_posterior`` exist on a
+    handle whose fit is a posterior; on any other they are absent, and reaching
+    one raises an ``AttributeError`` saying what the model is.
     """
 
-    __slots__ = ()
+    __slots__ = ("_got", "_authority")
 
-    @staticmethod
-    def _send(what, model, **extra):
-        if not isinstance(model, str) or not model:
-            raise TypeError(
-                f"models.{what}() takes a model's name (its active fit) or a fit's id first"
-            )
-        plan = {"op": "models", "what": what, "model": model}
+    def __init__(self, got, authority="admin"):
+        object.__setattr__(self, "_got", got)
+        object.__setattr__(self, "_authority", authority)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("a model handle cannot be changed")
+
+    def _send(self, what, **extra):
+        plan = {
+            "op": "models",
+            "what": what,
+            "model": self._got["name"],
+            "fit": self._got["fit"]["id"],
+        }
         plan.update({k: v for k, v in extra.items() if v is not None})
         return _call_db(plan)
 
-    @staticmethod
-    def _variable(what, variable):
-        if not isinstance(variable, str) or not variable:
-            raise TypeError(
-                f'models.{what}() takes the variable second, as in models.{what}("Radon", "alpha")'
+    @property
+    def name(self):
+        return self._got["name"]
+
+    @property
+    def provider(self):
+        return self._got["provider"]
+
+    @property
+    def table(self):
+        return self._got["table"]
+
+    @property
+    def outcome(self):
+        """The outcome as recorded on the fit: ``{"outcome": "regression",
+        "label": "price"}`` and the like."""
+        return self._got.get("outcome")
+
+    @property
+    def fit(self):
+        """The fit: its id, name, status, whether it is active, when it was
+        made, its error, warnings, metrics and parameters."""
+        return self._got["fit"]
+
+    def _kind(self):
+        outcome = self._got.get("outcome") or {}
+        return outcome.get("outcome") or "model"
+
+    def predict(self, rows, *, detail=False):
+        """One value for one row (a dict), or one per row, in order, for a list
+        of them — one request either way. A row carrying the table's primary
+        key is read through the model's dataset; any other must supply every
+        feature. ``detail=True`` answers ``{"value": …, "probability": …}``."""
+        refusal = self._got.get("no_prediction")
+        if refusal:
+            # What the host would refuse the request with, without sending it.
+            raise DbError(refusal)
+        many = isinstance(rows, (list, tuple))
+        if not many and not isinstance(rows, dict):
+            raise TypeError("m.predict() takes a row dict or a list of them")
+        answer = self._send(
+            "predict", rows=list(rows) if many else [rows], detail=bool(detail)
+        )
+        return answer if many else answer[0]
+
+    def as_user(self):
+        """The same handle, writing back under the event's caller's authority."""
+        return Model(self._got, "user")
+
+    def as_admin(self):
+        """The same handle, writing back under the trigger's own authority —
+        the default."""
+        return Model(self._got, "admin")
+
+    def __getattr__(self, name):
+        # Reached only for what the class does not have: the posterior-only
+        # four, on a handle whose fit is not a posterior. An `AttributeError`,
+        # so `hasattr(m, "draws")` is the honest False — carrying the sentence.
+        if name in _POSTERIOR_ONLY:
+            raise AttributeError(
+                f"`{self._got['name']}` is a {self._got['provider']} {self._kind()}; "
+                f"`{name}` is for posterior models"
             )
-        return variable
+        raise AttributeError(
+            f"a model handle has no `{name}`; it has predict, fit, name, provider, "
+            "table and outcome, and a posterior's also has draws, summary, variables "
+            "and write_posterior"
+        )
 
-    @staticmethod
-    def _elements(what, elements, keys):
-        if keys is not None and elements is not None:
-            raise TypeError(f"give models.{what}() either keys= or elements=, not both")
-        if keys is not None:
-            # The first axis by key or label — a one-axis variable's usual case.
-            return {"1": list(keys) if isinstance(keys, (list, tuple)) else [keys]}
-        return elements
+    def __dir__(self):
+        names = [n for n in object.__dir__(self) if not n.startswith("_")]
+        if self._kind() == "posterior":
+            names += list(_POSTERIOR_ONLY)
+        return sorted(set(names))
 
-    @staticmethod
-    def _thin(thin):
-        if isinstance(thin, bool) or not isinstance(thin, int) or thin < 1:
-            raise ValueError("thin= keeps every n-th draw, and takes a whole number from 1")
-        return thin
+    def __repr__(self):
+        return f"<saltcorn model `{self._got['name']}` ({self._kind()}), fit {self._got['fit']['id']}>"
 
-    def draws(self, model, variable, *, elements=None, keys=None, chains=None,
+
+class Posterior(Model):
+    """A handle whose fit is a posterior: :class:`Model`, plus its draws."""
+
+    __slots__ = ()
+
+    def draws(self, variable, *, elements=None, keys=None, chains=None,
               warmup=False, thin=1):
         """One variable's draws: per chain, one list per selected element, with
         the axes' labels and keys beside them."""
         return self._send(
             "draws",
-            model,
-            variable=self._variable("draws", variable),
-            elements=self._elements("draws", elements, keys),
+            variable=_check_variable("draws", variable),
+            elements=_check_elements("draws", elements, keys),
             chains=list(chains) if chains is not None else None,
             warmup=bool(warmup),
-            thin=Models._thin(thin),
+            thin=_check_thin(thin),
         )
 
-    def summary(self, model, variable, *, elements=None, keys=None):
+    def summary(self, variable, *, elements=None, keys=None):
         """The posterior summary of a variable — mean, sd, MCSE, quantiles,
         R-hat and effective sample sizes — per selected element."""
         return self._send(
             "summary",
-            model,
-            variable=self._variable("summary", variable),
-            elements=self._elements("summary", elements, keys),
+            variable=_check_variable("summary", variable),
+            elements=_check_elements("summary", elements, keys),
         )
 
-    def instance(self, model):
-        """The fit: its id, status, warnings, metrics and variables."""
-        return self._send("instance", model)
+    @property
+    def variables(self):
+        """What the fit drew, its ``__`` internals left out."""
+        return tuple(self._got.get("variables") or ())
+
+    def write_posterior(self, **write):
+        """Write a variable's summary into rows, as the admin's Write back
+        does, under this handle's authority — so ownership is checked and the
+        target table's triggers fire::
+
+            m.write_posterior(variable="alpha",
+                              statistics={"mean": "alpha_mean", "sd": "alpha_sd"})
+        """
+        if not write:
+            raise TypeError(
+                'm.write_posterior() takes what to write, as in m.write_posterior('
+                'variable="alpha", statistics={"mean": "alpha_mean"})'
+            )
+        return self._send("write_posterior", write=write, authority=self._authority)
+
+    def as_user(self):
+        return Posterior(self._got, "user")
+
+    def as_admin(self):
+        return Posterior(self._got, "admin")
+
+
+class Models:
+    """The models, by name::
+
+        m = models.get("House prices")               # its active fit
+        m = models.get("House prices", fit=fit_id)   # a specific fit
+    """
+
+    __slots__ = ()
+
+    def get(self, model, *, fit=None):
+        """A handle on ``model``'s active fit, or on the fit ``fit`` names."""
+        if not isinstance(model, str) or not model:
+            raise TypeError('models.get() takes a model\'s name, as in models.get("House prices")')
+        plan = {"op": "models", "what": "get", "model": model}
+        if fit is not None:
+            plan["fit"] = fit
+        got = _call_db(plan)
+        outcome = got.get("outcome") or {}
+        if outcome.get("outcome") == "posterior":
+            return Posterior(got)
+        return Model(got)
 
     def __repr__(self):
         return "<saltcorn models>"
@@ -1701,5 +1851,5 @@ fs = Fs()
 trigger = Triggers()
 #: The functions this server's modules supply.
 modfn = ModFns()
-#: A fitted model's posterior, over `db`.
+#: The models, over `db`: ``models.get(name)``.
 models = Models()

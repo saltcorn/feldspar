@@ -494,19 +494,48 @@ describe("the types the code editor loads", () => {
     );
   });
 
-  it("type a fitted model's draws and summary through `models`", () => {
+  it("type a model handle from `models.get`, its posterior methods as optional members", () => {
     expect(
       check(
-        `const d = await models.draws("Radon", "alpha", { keys: [27001], thin: 10 });\n` +
-          `const first = d.chains[0].draws[0][0];\n` +
-          `const s = await models.summary("Radon", "alpha", { elements: { counties: ["Aitkin"] } });\n` +
-          `const fit = await models.instance("Radon");\n` +
-          `return { first, label: s.rows[0][0], warned: fit.warnings.length, dims: d.dims };`,
+        `const m = await models.get("House prices");\n` +
+          `const one = await m.predict(row);\n` +
+          `const many = await m.predict([row, { area: 90, bedrooms: 2 }]);\n` +
+          `const detailed = await m.predict(row, { detail: true });\n` +
+          `const old = await models.get("House prices", { fit: m.fit.id });\n` +
+          `return { one, n: many.length, p: detailed.probability, table: m.table,\n` +
+          `         warned: m.fit.warnings.length, r2: m.fit.metrics, same: old.name === m.name,\n` +
+          `         kind: m.outcome && m.outcome.outcome };`,
       ),
     ).toEqual([]);
-    expect(check(`return await models.draws("Radon");`).join(" ")).toMatch(
-      /Expected 2-3 arguments/,
+    // A posterior's four are there to complete, and optional, because which
+    // handle a name answers is the fit's to decide at run time.
+    expect(
+      check(
+        `const r = await models.get("Radon");\n` +
+          `if (!r.draws || !r.summary || !r.writePosterior || !r.variables) throw new Error("not a posterior");\n` +
+          `const d = await r.draws("alpha", { keys: [27001], thin: 10 });\n` +
+          `const first = d.chains[0].draws[0][0];\n` +
+          `const s = await r.summary("alpha", { elements: { counties: ["Aitkin"] } });\n` +
+          `const w = await r.asUser().writePosterior?.({ variable: "alpha", statistics: { mean: "alpha_mean" } });\n` +
+          `await r.writePosterior({ variable: "y_future", mode: "insert", table: "forecasts",\n` +
+          `  statistics: { mean: "mean" }, coordinates: [{ axis: "day.future", field: "day" }] });\n` +
+          `return { first, label: s.rows[0][0], n: r.variables.length, dims: d.dims, w };`,
+      ),
+    ).toEqual([]);
+    expect(
+      check(`const r = await models.get("Radon");\nreturn await r.draws("alpha");`).join(" "),
+    ).toMatch(/possibly 'undefined'/);
+    // The flat functions of the Stan milestone are gone, and a misspelling is
+    // an error rather than a completion.
+    expect(check(`return await models.draws("Radon", "alpha");`).join(" ")).toMatch(
+      /Property 'draws' does not exist/,
     );
+    expect(
+      check(`const m = await models.get("House prices");\nreturn await m.predicts(row);`).join(
+        " ",
+      ),
+    ).toMatch(/Property 'predicts' does not exist/);
+    expect(check(`return await models.get();`).join(" ")).toMatch(/Expected 1-2 arguments/);
   });
 
   it("declare no modfn on a server whose modules supply no functions", () => {

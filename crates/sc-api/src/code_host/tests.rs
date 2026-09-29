@@ -1293,3 +1293,173 @@ async fn the_batch_size_is_clamped_where_a_rows_bound_is_refused() {
     .expect("resolves");
     assert_eq!(read.query.limit, Some(1000));
 }
+
+// ---------------------------------------------------------------------------
+// A model handle's requests (milestone 31 §3)
+// ---------------------------------------------------------------------------
+
+/// A model host that records what it was asked and answers each row by what
+/// identifies it: a key as `key:<k>`, a literal row as `title:<title>`.
+#[derive(Default)]
+struct RecordingModels {
+    calls: std::sync::Mutex<Vec<ModelCall>>,
+}
+
+/// One call a [`RecordingModels`] was asked: model, fit, table, `keys` or
+/// `values`, and the rows.
+type ModelCall = (String, Option<String>, String, &'static str, Vec<Json>);
+
+#[async_trait::async_trait]
+impl sc_catalog::ModelHost for RecordingModels {
+    async fn predict(
+        &self,
+        model: &str,
+        fit: Option<&str>,
+        table: &str,
+        rows: sc_catalog::PredictRows<'_>,
+        detail: bool,
+    ) -> Result<Vec<Json>> {
+        let (kind, rows) = match rows {
+            sc_catalog::PredictRows::Keys(keys) => ("keys", keys.to_vec()),
+            sc_catalog::PredictRows::Values(values) => ("values", values.to_vec()),
+        };
+        self.calls.lock().unwrap().push((
+            model.to_owned(),
+            fit.map(str::to_owned),
+            table.to_owned(),
+            kind,
+            rows.clone(),
+        ));
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let value = match kind {
+                    "keys" => json!(format!("key:{row}")),
+                    _ => json!(format!("title:{}", row["title"].as_str().unwrap_or("?"))),
+                };
+                if detail {
+                    json!({ "value": value })
+                } else {
+                    value
+                }
+            })
+            .collect())
+    }
+
+    async fn describe(&self, _model: &str) -> Result<sc_catalog::ModelSummary> {
+        Err(sc_error::Error::invalid("not described here"))
+    }
+}
+
+#[tokio::test]
+async fn a_batch_of_rows_is_one_call_for_the_keyed_and_one_for_the_literal_in_row_order() {
+    let cat = library().await;
+    let books = cat.require("books").unwrap();
+    let models = RecordingModels::default();
+    let rows = vec![
+        json!({ "id": 3, "title": "Emma" }),
+        json!({ "title": "Unwritten", "pages": 10 }),
+        json!({ "id": 1 }),
+        // A null key is no key: the row is taken as it is.
+        json!({ "id": null, "title": "Draft" }),
+    ];
+    let answer = super::models::predict_through(&models, "Pages", "fit-1", &books, &rows, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        answer,
+        json!(["key:3", "title:Unwritten", "key:1", "title:Draft"])
+    );
+    let calls = models.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    // Both calls name the fit the handle resolved, not the model's active fit.
+    assert_eq!(calls[0].0, "Pages");
+    assert_eq!(calls[0].1.as_deref(), Some("fit-1"));
+    assert_eq!(calls[0].2, "books");
+    assert_eq!(calls[0].3, "keys");
+    assert_eq!(calls[0].4, vec![json!(3), json!(1)]);
+    assert_eq!(calls[1].3, "values");
+    assert_eq!(calls[1].4.len(), 2);
+
+    // Only keyed rows: no literal call at all. `detail` reaches the host.
+    let models = RecordingModels::default();
+    let answer = super::models::predict_through(
+        &models,
+        "Pages",
+        "fit-1",
+        &books,
+        &[json!({ "id": 2 })],
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer, json!([{ "value": "key:2" }]));
+    assert_eq!(models.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_row_that_is_not_an_object_is_refused_naming_it() {
+    let cat = library().await;
+    let books = cat.require("books").unwrap();
+    let models = RecordingModels::default();
+    let err = super::models::predict_through(
+        &models,
+        "Pages",
+        "fit-1",
+        &books,
+        &[json!({ "id": 1 }), json!(7)],
+        false,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("predict() takes a row object or an array of them, and row 2 is 7"),
+        "{err}"
+    );
+    assert!(models.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_models_request_is_refused_before_any_model_is_read_when_it_is_malformed() {
+    let cat = library().await;
+    let host = super::TableHost::new(&cat);
+    let refused = |request: Json| {
+        let host = &host;
+        async move {
+            sc_expr::CodeHost::call(host, request)
+                .await
+                .unwrap_err()
+                .to_string()
+        }
+    };
+    // The flat functions of the Stan milestone are gone.
+    let err = refused(json!({ "op": "models", "what": "instance", "model": "Radon" })).await;
+    assert!(
+        err.contains(
+            "a model handle has no `instance`; it has predict, draws, summary and \
+             writePosterior"
+        ),
+        "{err}"
+    );
+    // Every request after `get` names the fit `get` resolved.
+    let err = refused(json!({ "op": "models", "what": "draws", "model": "Radon",
+                              "variable": "alpha" }))
+    .await;
+    assert!(
+        err.contains("a models `draws` request names the fit `models.get` resolved"),
+        "{err}"
+    );
+    // A field the seam does not describe, by serde, naming it.
+    let err = refused(json!({ "op": "models", "what": "get", "model": "Radon",
+                              "instance": "x" }))
+    .await;
+    assert!(err.contains("unknown field `instance`"), "{err}");
+    // An authority that is none of the four spellings.
+    let err = refused(
+        json!({ "op": "models", "what": "write_posterior", "model": "Radon",
+                              "fit": "f", "authority": "root" }),
+    )
+    .await;
+    assert!(err.contains("not one the server understands"), "{err}");
+}

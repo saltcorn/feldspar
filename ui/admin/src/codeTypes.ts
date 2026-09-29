@@ -546,13 +546,15 @@ interface ScTriggers {
 `;
 }
 
-/** The declarations for `models`: a fitted model's posterior, read over the
- * run's own `db` (Stan TODO §17).
+/** The declarations for `models`: `models.get(name)` and the handle it
+ * answers, over the run's own `db` (milestone 31 §3).
  *
  * A transcription of `sc-expr`'s `__scMakeModels`, on the same terms as
- * {@link triggerDeclarations}. The answers are the admin API's
- * `getModelDraws` and `getPosteriorSummary`, typed as far as their shape is
- * fixed; the labels and keys are whatever the database's are. */
+ * {@link triggerDeclarations}. The posterior's four are optional members,
+ * because which handle a name answers is decided by the fit, at run time. The
+ * draws and summary answers are the admin API's `getModelDraws` and
+ * `getPosteriorSummary`, typed as far as their shape is fixed; the labels and
+ * keys are whatever the database's are. */
 export function modelDeclarations(): string {
   return `
 /** Which elements: \`keys\` picks positions of the first axis by key or
@@ -603,23 +605,95 @@ interface ScSummary {
   rows: unknown[][];
 }
 
-/** A fitted model's posterior. The first argument is a model's name (its
- * active fit) or a fit's id. */
-interface ScModels {
-  draws(model: string, variable: string, options?: ScDrawsOptions): Promise<ScDraws>;
-  summary(model: string, variable: string, options?: ScModelSelection): Promise<ScSummary>;
-  instance(model: string): Promise<{
-    id: string;
-    model: string | null;
-    name: string;
-    status: "fitting" | "fitted" | "failed";
-    active: boolean;
-    created: string;
-    error: string | null;
-    warnings: string[];
-    metrics: any;
-    variables: string[];
+/** A fit, as \`m.fit\` holds it. */
+interface ScModelFit {
+  id: string;
+  name: string;
+  status: "fitting" | "fitted" | "failed";
+  active: boolean;
+  created: string;
+  error: string | null;
+  warnings: string[];
+  metrics: any;
+  parameters: any[];
+}
+
+/** What a fit's outcome is, as it was recorded when it was fitted. */
+type ScModelOutcome =
+  | { outcome: "regression"; label: string }
+  | { outcome: "classification"; label: string; classes?: string[] }
+  | { outcome: "cluster" }
+  | { outcome: "embedding"; dimensions: number }
+  | { outcome: "test" }
+  | { outcome: "posterior"; prediction?: string };
+
+/** One prediction with \`{ detail: true }\`: the value, and the class's
+ * probability where there is one. */
+interface ScPrediction {
+  value: any;
+  probability?: number;
+}
+
+/** What \`m.writePosterior\` writes: statistics of a variable into fields —
+ * into the rows the variable is about (\`update\`, the default), or as new rows
+ * of \`table\` (\`insert\`), with each element's coordinates written too. */
+interface ScPosteriorWrite {
+  variable: string;
+  mode?: "update" | "insert";
+  /** Statistic → field: \`{ mean: "alpha_mean", sd: "alpha_sd" }\`. */
+  statistics: Record<string, string>;
+  table?: string;
+  coordinates?: { axis: string; field: string; value?: "key" | "label" | "position" }[];
+  instance_field?: string;
+  elements?: ScModelSelection["elements"];
+}
+
+/** A model, and the fit \`models.get\` resolved — which every call on the
+ * handle keeps using, even if another fit is activated meanwhile.
+ *
+ * \`draws\`, \`summary\`, \`variables\` and \`writePosterior\` exist on a
+ * posterior's handle only; on any other, reaching one throws a sentence
+ * saying what the model is. */
+interface ScModel {
+  readonly name: string;
+  readonly provider: string;
+  /** The table whose rows it predicts. */
+  readonly table: string;
+  readonly outcome: ScModelOutcome | null;
+  readonly fit: ScModelFit;
+  /** One value for a row; one per row, in order, for an array — one request
+   * either way. A row with the table's primary key is read through the
+   * model's dataset; any other must supply every feature. */
+  predict(row: ScRow): Promise<any>;
+  predict(rows: ScRow[]): Promise<any[]>;
+  predict(row: ScRow, options: { detail: true }): Promise<ScPrediction>;
+  predict(rows: ScRow[], options: { detail: true }): Promise<ScPrediction[]>;
+  predict(row: ScRow | ScRow[], options?: { detail?: boolean }): Promise<any>;
+  /** A posterior's draws of one variable, labelled by the database. */
+  draws?(variable: string, options?: ScDrawsOptions): Promise<ScDraws>;
+  /** A posterior's summary of one variable. */
+  summary?(variable: string, options?: ScModelSelection): Promise<ScSummary>;
+  /** What a posterior's fit drew, its \`__\` internals left out. */
+  readonly variables?: readonly string[];
+  /** Write a posterior's summary into rows, under this handle's authority:
+   * ownership is checked and the target table's triggers fire. */
+  writePosterior?(write: ScPosteriorWrite): Promise<{
+    variable: string;
+    mode: "update" | "insert";
+    table: string;
+    instance: string;
+    written: number;
   }>;
+  /** The same handle, writing back as the event's caller. */
+  asUser(): ScModel;
+  /** The same handle, writing back as the trigger — the default. */
+  asAdmin(): ScModel;
+}
+
+/** The models, by name. */
+interface ScModels {
+  /** A handle on the model's active fit, or on the fit \`fit\` names. */
+  get(model: string, options?: { fit?: string }): Promise<ScModel>;
 }
 `;
 }
@@ -846,13 +920,15 @@ export function scopeDeclarations(
       ` * ownership rule) evaluates without it. */\ndeclare const db: ScDb;`,
   );
   parts.push(
-    `/** A fitted model's posterior — its draws, its summary, and the fit —\n` +
-      ` * by the database's keys and labels:\n` +
+    `/** The models, by name. \`models.get\` answers a handle on a model's\n` +
+      ` * active fit (or \`{ fit: id }\`'s):\n` +
       ` *\n` +
       ` * \`\`\`js\n` +
-      ` * const alpha = await models.draws("Radon", "alpha");\n` +
-      ` * const s = await models.summary("Radon", "alpha", { keys: [27001] });\n` +
-      ` * const fit = await models.instance("Radon");\n` +
+      ` * const m = await models.get("House prices");\n` +
+      ` * const price = await m.predict(row);\n` +
+      ` * const r = await models.get("Radon");\n` +
+      ` * const alpha = await r.draws("alpha", { keys: [27001] });\n` +
+      ` * await r.writePosterior({ variable: "alpha", statistics: { mean: "alpha_mean" } });\n` +
       ` * \`\`\`\n` +
       ` *\n` +
       ` * Each call is a database call of this run, on its budget; a draws answer\n` +

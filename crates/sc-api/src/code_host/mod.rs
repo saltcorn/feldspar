@@ -990,10 +990,11 @@ impl CodeHost for TableHost<'_> {
             let plan: SqlPlan = serde_json::from_value(request).map_err(refuse)?;
             return self.sql(&plan).await;
         }
-        // A fitted model's draws, summary or fit (Stan TODO §17): two system
-        // tables read on the same budget, rather than a surface of their own.
+        // A model handle's requests (milestone 31 §3): a fit resolved, a
+        // prediction, a posterior's draws or its write-back — on the same
+        // budget, and a write-back under this run's authority and chain.
         if request.get("op").and_then(Json::as_str) == Some("models") {
-            return models::answer(self.catalog, request).await;
+            return models::answer(self, request).await;
         }
         let plan: Plan = serde_json::from_value(request).map_err(refuse)?;
         self.run(&plan).await

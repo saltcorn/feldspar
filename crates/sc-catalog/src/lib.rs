@@ -33,6 +33,7 @@ mod field;
 mod field_meta;
 mod file_stores;
 pub mod inmem;
+mod model_host;
 mod observer;
 mod origin;
 mod prefetch;
@@ -73,6 +74,7 @@ pub use file_stores::{
     file_store_field_references, file_store_settings, list_file_stores, load_file_store,
     load_file_store_by_name, resolve_options, save_file_store, unique_file_store_name,
 };
+pub use model_host::{ModelHost, ModelSummary, PredictRows};
 pub use observer::{ReprojectedApp, SchemaChanged, SchemaObserver};
 pub use origin::PublicOrigin;
 pub use prefetch::prefetch_bindings;
