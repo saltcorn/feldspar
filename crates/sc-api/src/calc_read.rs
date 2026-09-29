@@ -258,11 +258,13 @@ impl CalcPlan {
             return Ok(());
         }
         let Some(host) = catalog.model_host() else {
-            let (call, (_, field)) = calls.first_key_value().expect("not empty");
+            // `calls` is not empty (checked above), so this names one.
+            let named = calls
+                .first_key_value()
+                .map(|(call, (_, field))| format!("`{field}` of `{}` calls `{call}`", table.name))
+                .unwrap_or_else(|| format!("a field of `{}` calls `predict`", table.name));
             return Err(Error::invalid(format!(
-                "`{field}` of `{}` calls `{call}`, and this server has no model support to \
-                 answer it",
-                table.name
+                "{named}, and this server has no model support to answer it"
             )));
         };
         let keys: Vec<Json> = keyed.iter().map(|(_, k)| k.clone()).collect();

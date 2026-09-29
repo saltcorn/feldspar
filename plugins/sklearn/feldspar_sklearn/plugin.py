@@ -2,7 +2,7 @@
 
 The third bundled module (`plugins/README.md`), and the one that makes "a model
 provider is an extension point" a claim with something behind it: nothing on the
-model form, the instance screen or the `predict_row` action knows that these
+model form, the instance screen or `predict()` in a formula knows that these
 five are Python. They are declared with `@sc.model_provider`, they answer `fit`
 and `predict` over a **columnar frame**, and the host does everything else.
 

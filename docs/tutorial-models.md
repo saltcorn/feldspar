@@ -9,8 +9,8 @@ A **model** is that. It is a saved question about a table — which rows and whi
 make up the data, which provider answers it, and with what settings — and **fitting** one leaves
 a **fit** (a *model instance*) behind: the coefficients, the metrics, and enough state to apply
 it to a row nobody has seen yet. Both halves are first class. You will read a coefficient table
-in this tutorial, and you will also have a trigger writing a predicted price onto every house
-that gets inserted.
+in this tutorial, and you will also have a column that predicts the price of every house, sold
+or not, each time the table is read.
 
 By the end you will have:
 
@@ -18,7 +18,8 @@ By the end you will have:
 - a **House prices** model whose dataset mixes a field, an arithmetic expression, a join path and
   an aggregation, filtered to the sold ones;
 - a linear-regression fit whose coefficient table has standard errors, *t* and *p*;
-- a trigger that writes `estimated_price` on every insert;
+- an `estimated_price` calculated field whose formula is `predict("House prices")`, and a
+  nightly trigger that refits the model;
 - and a **second** fit of the *same dataset* from a scikit-learn gradient-boosting model supplied
   by a bundled Python module — with its RMSE next to the regression's, and nothing on the screen
   caring that one of the two answers came from Python.
@@ -51,7 +52,6 @@ Now `houses`:
 | `neighbourhood` | Key to `neighbourhoods` | |
 | `sold` | Bool | |
 | `price` | Float | what it sold for; empty until it does |
-| `estimated_price` | Float | the model will write this |
 
 And a third, `viewings`, so the dataset has something to aggregate:
 
@@ -247,44 +247,102 @@ next step name the *model* rather than pinning a particular fit.
 
 ---
 
-## Step 6 — A trigger that writes the prediction
+## Step 6 — A calculated field that predicts
 
-Predictions are applied by an **action**, `predict_row`, like any other write.
+A prediction is a value computed from a row, so it is written where every other computed value
+is: in a **formula**. The formula language has one function for it, `predict`, and there is no
+separate "prediction" action.
 
-Go to **Triggers → New trigger**:
+Under **Data → Tables → houses**, press **Add field**:
 
 | Field | Value |
 |---|---|
-| Name | `estimate_price` |
+| Name | `estimated_price` |
+| Calculated (computed on read, no stored column) | ticked |
+| Value type | Float |
+| Formula | `predict("House prices")` |
+
+Save, and open the table's rows. Every house has an `estimated_price`, including the unsold ones
+with no `price`. Insert a new house (address, area, bedrooms, neighbourhood, `sold` unticked) and
+it has one too. Nothing wrote it: the field is computed each time the table is read, through the
+model's **active** fit. That includes every API that lists `houses`
+(`GET /api/tables/houses/rows`, a REST provider, GraphQL).
+
+What to know about it:
+
+- **The argument is the model's name, as a quoted string.** It names the model and never a
+  particular fit. Refit, press **Activate** on the new fit, and the next read follows it with
+  nothing edited. A computed name, a second argument, or a `predict` inside an `=>` is refused
+  when you save, naming the call.
+- **It is checked when you save the field.** The model must exist and must be a model of
+  *this* table ("`House prices` is a model of `houses`, and this formula is on `orders`"). It
+  must answer something per row, so `predict("Price test")` over a t-test is refused. And the
+  field's type must be able to hold the answer: a text field is refused with "the field is text
+  and `House prices` predicts float". A model with no active fit is accepted, but the save
+  tells you that every read of `houses` fails until a fit is active.
+- **A page is one prediction.** A listing of fifty houses asks the provider once, with all fifty
+  rows, not fifty times. For a Python provider that is the difference between usable and not.
+- **The dataset's filter does not apply here.** An unsold house is not one of the rows the model
+  was fitted from, and it is exactly the row you want an answer about. A prediction reads each
+  house *through* the dataset, so `neighbourhood_income` and `viewings_count` are computed the
+  way they were at fit time, but it reads past the `sold === true` filter.
+- **You cannot filter or sort on it.** The database never sees the value, because it is
+  computed after the rows are read. `?estimated_price=gt.300000` is refused with "cannot filter
+  on `estimated_price`: `estimated_price` is computed after the rows are read, because it calls
+  `predict`, so the database never sees it". The same applies to `order=`, and to GraphQL's
+  `where` and `order_by`.
+- **An error fails the read.** If the model cannot answer for a row, for example a neighbourhood
+  the fit never saw, the listing fails. The error names the field, the model and the row ("the
+  row whose id is 31"). A null in its place would be a wrong answer that looked like a missing
+  one. It follows that a model with no active fit makes every read of `houses` fail. Keep a fit
+  active once a field depends on it.
+- **An ownership rule may not call `predict`.** A rule that waited on a model would make every
+  read wait on it, and an error in a rule means "deny".
+
+### The stored variant
+
+A calculated field is always the current fit's answer. Sometimes you want the estimate a house
+had **when it was listed**, kept even after the model changes. That is a stored value, and a
+trigger stores it. Add a plain Float field `listing_estimate` to `houses`, then **Triggers → New
+trigger**:
+
+| Field | Value |
+|---|---|
+| Name | `estimate_on_insert` |
 | Event | `A row is inserted` |
 | Table | `houses` |
-| Action | `predict_row` |
+| Action | `update_rows` |
+| Table (action setting) | `houses` |
+| Where | `id === row.id` |
+| Assignments | `{ "listing_estimate": "predict(\"House prices\")" }` |
+
+The same `predict` works in any formula that is evaluated against a row. That includes an
+`update_rows` assignment, an `only if`, and a `{{ predict("House prices") }}` in a `send_email`
+subject. An `insert_row` value is not evaluated against a row, so it is refused there, and the
+refusal says where it does work.
+
+### Refit every night
+
+Houses keep selling, so the model should keep learning. **Triggers → New trigger**:
+
+| Field | Value |
+|---|---|
+| Name | `refit_house_prices` |
+| Event | `daily`, at 03:30 |
+| Action | `fit_model` |
 | Model (action setting) | `House prices` |
-| Fit (action setting) | leave empty — the active one |
-| Write to field | `estimated_price` |
+| Make the new fit active | `if_clean` |
+| Wait for the fit to finish | ticked |
 
-Save. Now insert a house under **Data → Tables → houses** — address, area, bedrooms,
-neighbourhood, `sold` unticked — and look at the row: `estimated_price` is filled in.
+Each night fits the model again over whatever is `sold` by then. With **`if_clean`**, the new fit
+becomes the active one only if it fitted with **no warnings**, and the next read of
+`estimated_price` follows it. A fit with a warning is kept for you to read on the Fits list but
+left inactive, so yesterday's fit goes on answering. (`never` only fits. `always` activates any
+fit that did not fail.) What counts as a warning is the provider's to say. A scikit-learn
+estimator that did not converge is one, and so is a Stan fit with divergences.
 
-Three things about that:
-
-- **The target type is checked when you save the trigger,** not when it fires. A regression
-  produces a number, so a text field is refused on the form. (It is checked again at fire time
-  against the outcome the fit actually recorded, because a model can be edited after a trigger
-  names it.)
-- **Leaving the fit empty is the useful setting.** The trigger names the model; refitting it and
-  pressing **Activate** on the new fit changes what the trigger writes, with no trigger edit.
-- **You can write to the workflow context instead of a field** — `Write to context key` — which
-  is how a prediction becomes a step of a workflow rather than a column of a table.
-- **The dataset's filter does not apply here.** The house you just inserted is not `sold`, so it
-  is not one of the rows the model was fitted from — and it is exactly the row you want an
-  answer about. A prediction reads the dataset's columns for the rows the *caller* named.
-
-**There is deliberately no calculated field that predicts.** A calculated field is a formula with
-two evaluators that must agree, and a prediction translates to neither SQL nor the JavaScript
-one; a *stored* one would have to be recomputed on every write to every row the model reads,
-which for this dataset — with an aggregation over `viewings` in it — is every row of two tables.
-A trigger you wrote puts that recomputation where you chose it.
+The action answers `{ instance, status, active, error, warnings, metrics }`. In a workflow, a
+later step can branch on `metrics.test.r2` if you would rather decide by the numbers yourself.
 
 ---
 
@@ -354,8 +412,11 @@ Nothing on either screen knows that one of the two answers came from Python.
   RMSE comparable with a smartcore one on the same screen.
 - **Fitting is a job.** The instance row is the job record, the screen polls, and a restart marks
   a running fit failed rather than leaving it running for ever.
-- **Prediction is an action.** `predict_row` names a model (or a specific fit), and where the
-  answer goes.
+- **Prediction is a formula.** `predict("House prices")` in a calculated field is a live
+  column, computed a page at a time through the active fit. The same call in an `update_rows`
+  trigger stores it. `fit_model` with `activate: if_clean` keeps the active fit current without
+  anybody editing a formula. In code, `models.get("House prices")` answers a handle whose
+  `predict` takes a row or an array of them ([tutorial-triggers.md](tutorial-triggers.md)).
 
 A dataset is bounded: `--model-max-rows` (default 200 000) is the ceiling, the count is asked for
 before the rows, and a dataset over it is refused in a sentence telling you to add a filter or

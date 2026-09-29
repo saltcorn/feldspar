@@ -48,10 +48,10 @@ const SCHEMA: &str = "
 ";
 
 /// What the stub says about every fit it makes.
-const WARNING: &str = "the solver stopped before it converged: raise `max_iter`";
+pub(crate) const WARNING: &str = "the solver stopped before it converged: raise `max_iter`";
 
 /// A regression that always predicts 1 and always warns.
-struct Warns;
+pub(crate) struct Warns;
 
 #[async_trait::async_trait]
 impl ModelProvider for Warns {

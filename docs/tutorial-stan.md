@@ -468,23 +468,42 @@ arrive in `forecasts`.
 
 ### Every night
 
-Two actions make this a job. **`fit_model`** fits a named model and, with **activate**, makes
-the new fit the active one when it has no warnings. **`write_posterior`** is Write back as an
-action, over the model's active fit. A `daily` trigger whose action is a workflow of those two
-steps refits and rewrites the forecast every night:
+A nightly refit is a `daily` trigger whose action is a workflow of two steps. The first is
+**`fit_model`**, the one model action, which fits a named model. With `activate: if_clean` it
+makes the new fit the active one only if it has **no warnings**. The second is a
+**`run_js_code`** step that does what the **Write back** button does, from code:
 
 ```json
-{ "action": "fit_model", "configuration": { "model": "Sales", "activate": true } }
-{ "action": "write_posterior",
-  "configuration": { "model": "Sales", "variable": "y_future", "mode": "insert",
-                     "table": "forecasts",
-                     "statistics": { "mean": "mean", "q5": "lower", "q95": "upper" },
-                     "coordinates": [{ "axis": "day.future", "field": "day" }],
-                     "instance_field": "fit" } }
+{ "name": "refit", "kind": { "type": "action", "action": "fit_model",
+    "configuration": { "model": "Sales", "activate": "if_clean" } },
+  "next": { "type": "step", "step": "forecast" } }
+{ "name": "forecast", "kind": { "type": "action", "action": "run_js_code",
+    "configuration": { "code": "…the body below…" } },
+  "next": { "type": "end" } }
 ```
 
-`fit_model` waits for the fit by default, so the next step sees it. A fit with warnings is kept
-but left inactive, so last night's forecast stays the one `write_posterior` reads.
+```js
+const m = await models.get("Sales");            // the active fit
+return await m.writePosterior({
+  variable: "y_future", mode: "insert", table: "forecasts",
+  statistics: { mean: "mean", q5: "lower", q95: "upper" },
+  coordinates: [{ axis: "day.future", field: "day" }],
+  instance_field: "fit",
+});
+```
+
+`fit_model` waits for the fit by default, so the next step sees it. Its answer (`{ instance,
+status, active, error, warnings, metrics }`) is in the workflow's context as `context.refit`, so
+a step can branch on it. A fit with warnings is kept but left inactive, so the code step writes
+last night's forecast again from the fit that is still active. Use `models.get("Sales", { fit:
+context.refit.instance })` if you would rather write the new fit's forecast whatever it says.
+
+The write goes through the row layer **as the trigger**, the way a `db` write in the same body
+does, and the `forecasts` table's triggers fire. `m.asUser().writePosterior(…)` writes as
+whoever caused the event instead, and is refused if they may not write `forecasts`. The same
+body can write `alpha` back for Radon after a refit, with
+`m.writePosterior({ variable: "alpha", statistics: { mean: "alpha_mean", sd: "alpha_sd" } })`.
+`update` is the default mode.
 
 ---
 
@@ -642,24 +661,25 @@ too: `index(main.region → regions)`, `index(main.week → week)`, and `column(
 
 ## Doing prediction in code
 
-A predictive model from [tutorial-models.md](tutorial-models.md) has `predict_row`: a trigger
-that writes a prediction into each new row. **A posterior doesn't do that here.** Saving
-`predict_row` over the Radon model is refused, because the model is
+A predictive model from [tutorial-models.md](tutorial-models.md) predicts in a formula: a
+calculated field whose formula is `predict("House prices")` fills itself in. **A posterior
+doesn't do that here.** Saving `predict("Radon")` in a formula is refused, because the model is
 
 > a posterior: its draws are the answer, and a posterior does not predict rows here — read its
-> draws in a code body (`models.draws`) and compute the prediction there
+> draws in a code body (`m.draws(…)`, on `models.get(…)`) and compute the prediction there
 
-(Stan can do it itself, with CmdStan's standalone generated quantities over new data. That is
-designed and not yet built.) Meanwhile it's about fifteen lines, because code bodies have
-**`models`** beside `db`.
+and `m.predict(row)` on its handle throws the same sentence. (Stan can do it itself, with
+CmdStan's standalone generated quantities over new data. That is designed and not yet built.)
+Meanwhile it's about fifteen lines, because code bodies have **`models`** beside `db`.
 
 Add `predicted_mean`, `predicted_q5` and `predicted_q95` (Float) to `homes`, mark the Radon fit
 **active**, and give `homes` a trigger on **insert** with a `run_js_code` body:
 
 ```js
-const alpha = await models.draws("Radon", "alpha", { keys: [row.county] });
-const beta = await models.draws("Radon", "beta");
-const sigma = await models.draws("Radon", "sigma_y");
+const m = await models.get("Radon");
+const alpha = await m.draws("alpha", { keys: [row.county] });
+const beta = await m.draws("beta");
+const sigma = await m.draws("sigma_y");
 const ys = [];
 for (let c = 0; c < alpha.chains.length; c++) {
   const a = alpha.chains[c].draws[0], b = beta.chains[c].draws[0], s = sigma.chains[c].draws[0];
@@ -688,13 +708,18 @@ Three things make this correct rather than approximately right:
 - **Draw `i` of every variable comes from the same iteration of the same chain.** Combining them
   draw by draw keeps the correlation between `alpha` and `beta`. Averaging each first and then
   combining would not.
-- `models.draws("Radon", …)` means the model's **active** fit, so refitting and activating
-  changes every later prediction with no edit to the trigger. Pass a fit's id to pin one.
+- `models.get("Radon")` means the model's **active** fit, so refitting and activating changes
+  every later prediction with no edit to the trigger. `models.get("Radon", { fit: id })` pins
+  one. Either way, the handle stays on the fit it got for the rest of the body, so the three
+  `draws` calls cannot straddle two fits.
 
-In Python the same calls are `models.draws("Radon", "alpha", keys=[row["county"]])` and so on
-([tutorial-python.md](tutorial-python.md) step 5). The whole API is `models.draws`,
-`models.summary` and `models.instance`, documented with `db` in the code-body reference. One
-`draws` answer is capped at 500 000 numbers, so use `thin` or `chains` to take less.
+The handle also has `m.summary("alpha", { keys: [27001] })`, `m.variables` (what the fit drew),
+`m.fit` (its id, status, warnings and metrics) and `m.writePosterior(…)` (above). These four are
+there because the fit's outcome is a posterior. A handle on a regression doesn't have them, and
+touching one throws a sentence saying so. In Python the handle is the same in snake case:
+`m = models.get("Radon")`, then `m.draws("alpha", keys=[row["county"]])` and so on
+([tutorial-python.md](tutorial-python.md) step 5). One `draws` answer is capped at 500 000
+numbers, so use `thin` or `chains` to take less.
 
 ---
 

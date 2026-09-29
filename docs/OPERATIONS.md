@@ -461,8 +461,8 @@ row saying `fitting` for ever. Boot therefore **reaps** them: every instance sti
 `fitting` at startup is marked `failed` with *"the server restarted while this fit was
 running"*. Nothing is lost but the compute — the model is untouched, and pressing
 **Fit** again starts a new instance. An instance that was already `fitted` is
-unaffected, including the **active** one a `predict_row` trigger reads, so predictions
-resume with the restart.
+unaffected, including the **active** one that `predict("…")` in a formula reads, so
+predictions resume with the restart.
 
 ---
 
@@ -1156,6 +1156,7 @@ looking hung. Ctrl-C does the same interactively.
 | `POST /mcp` answers 404 with a valid token | `mcp_enabled` is off, and off means absent (§7.1) |
 | MCP calls refused from another machine | `mcp_loopback_only` is on, which is its default |
 | a model fit says "the server restarted while this fit was running" | it did. A fit is a spawned job whose only record is its instance row, so boot marks a `fitting` row failed rather than leaving it running for ever (§3.5). Press **Fit** again |
+| every read of a table fails with "`estimated_price` of `houses` could not be computed … has no active fit" | a calculated field calls `predict("…")` and its model has no active fit, perhaps because the active one was deleted. Activate a fit on the model's Fits list. A read fails rather than answering null, so a model a field depends on must always have an active fit. A nightly `fit_model` with `activate: if_clean` never deactivates one |
 | a fit fails with "the dataset selects more than … rows" | the dataset is over `--model-max-rows` (§8.3). Add a filter to the dataset, or raise the flag |
 | the Models tab lists only `t_test` and `anova` | the binary was built `--no-default-features`, so the smartcore providers were compiled out (§1). It is a build, not a setting |
 | the `stan` provider says "CmdStan was not found" | the server looked where §9.1 says and found none, or found one it refused (too old, not built, a named directory that is not there). The startup log has the same sentence. Under systemd, `~` is `/var/lib/feldspar`, not your home |

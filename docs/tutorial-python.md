@@ -272,20 +272,31 @@ lat = modfn("@saltcorn/nominatim-geocode").geocode_lat({"city": row["city"]})
 A name only one module supplies may be reached the short way; the qualified form always works.
 They are synchronous here even where v1 made them `async`, because everything in this surface is.
 
-`models` is a fitted Bayesian model's posterior — the Python spelling of JavaScript's
-`models`, over the same `db` requests:
+`models` is this server's predictive models, the Python spelling of JavaScript's `models`,
+over the same `db` requests. `models.get` answers a **handle** on a model's active fit, or on
+the fit `fit=` names:
 
 ```python
-alpha = models.draws("Radon", "alpha", keys=[27001], chains=[1], thin=10)
-alpha["names"]                      # ["alpha[Aitkin]"]
+m = models.get("House prices")
+m.fit["id"], m.fit["metrics"]       # which fit answered, and how well it scored
+m.predict(row)                      # 312000.0; a row with an id is read through the dataset
+m.predict([r1, r2], detail=True)    # one call: [{"value": …, "probability": …}, …]
+
+r = models.get("Radon")             # a posterior
+alpha = r.draws("alpha", keys=[27001], chains=[1], thin=10)
 alpha["chains"][0]["draws"][0]      # that county's draws in chain 1, every 10th
-s = models.summary("Radon", "alpha", elements={"counties": ["Aitkin", "Anoka"]})
-fit = models.instance("Radon")      # id, status, active, warnings, metrics, variables
+s = r.summary("alpha", elements={"counties": ["Aitkin", "Anoka"]})
+r.variables                         # what the fit drew
+r.write_posterior(variable="alpha", statistics={"mean": "alpha_mean", "sd": "alpha_sd"})
 ```
 
-The first argument is a model's name (its active fit) or a fit's id; elements are chosen by the
-database's keys or labels. Each call is one `db` call of the run, and a refusal — a variable the
-fit did not draw — is a `DbError`.
+The handle stays on the fit it got, for the rest of the body. `draws`, `summary`, `variables`
+and `write_posterior` exist only on a posterior's handle. On any other handle,
+`hasattr(m, "draws")` is `False`, and `m.draws` raises an `AttributeError` saying "`House prices`
+is a linear_regression regression; `draws` is for posterior models". `write_posterior` writes as
+the trigger, the way `db` does, so the target table's triggers fire; `m.as_user()` writes as the
+event's caller instead. Each call is one `db` call of the run. A refusal (a variable the fit did
+not draw, a row missing a feature) is a `DbError`.
 
 **Naming a surface this server does not have is a `NameError`.** `fs` on a server with no file
 stores, `modfn` with no modules loaded — the mistake is reported where you made it, rather than as
@@ -358,8 +369,8 @@ body.
 
 A code body is one trigger's worth of Python. A **plugin** is a package: importable, installable,
 versioned, and able to supply things a body cannot — an **action** that appears in the trigger
-form with its own settings, a **function** callable from a formula, and a **table provider** that
-backs a whole table.
+form with its own settings, a **function** callable from a formula, a **table provider** that
+backs a whole table, and a **model provider** that the Models screen can fit.
 
 Make a directory on the **server's** disk. Three files:
 
@@ -525,6 +536,51 @@ returned — listable, filterable, and usable in views like any other table; see
 [tutorial-table-providers.md](tutorial-table-providers.md) for what that costs and what it can do.
 Add `insert_row`, `update_row` and `delete_rows` to the class and the same table becomes
 writable.
+
+### A model provider, and the warnings it gives
+
+A plugin can also supply a **model provider**: something the Models screen can fit
+([tutorial-models.md](tutorial-models.md)). It is a class with `fit` and `predict` over a
+columnar frame. This one predicts the label's mean, which is useless as a model and short enough
+to read:
+
+```python
+import statistics
+
+
+@sc.model_provider(
+    "sweeper_mean",
+    description="Predicts the mean of the label",
+    config=[sc.Field.string("label", label="Label", required=True)],
+    outcome=sc.Outcome.regression("label"),
+)
+class SweeperMean:
+    def fit(self, frame, configuration, hyperparameters):
+        values = frame[configuration["label"]]
+        warnings = []
+        if len(values) < 20:
+            warnings.append(f"only {len(values)} rows were fitted: add rows before trusting this")
+        return {
+            "state": {"mean": statistics.fmean(values)},
+            "parameters": [sc.Parameter.scalar("Mean", statistics.fmean(values))],
+            "warnings": warnings,
+        }
+
+    def predict(self, state, frame):
+        return [state["mean"]] * len(frame)
+```
+
+**`warnings` are sentences for the admin to read before trusting the fit**, each saying what to
+do. You don't have to collect them all yourself. A `warnings.warn` raised while `fit` runs is
+caught and added too, as `"ConvergenceWarning: …"`. That is how scikit-learn's own complaints
+reach the screen. The fit is still `fitted`, and its warnings are listed on it, but it is not
+**clean**. A nightly `fit_model` trigger with `activate: if_clean` leaves such a fit inactive, so
+the fit that was answering goes on answering. The same rule holds for every provider, built-in,
+JavaScript or Python.
+
+There are no metrics in the answer, on purpose. The server computes R², RMSE and the rest itself,
+over the same split with the same code for every provider, so this provider's numbers can be
+compared with the built-in regression's.
 
 ---
 

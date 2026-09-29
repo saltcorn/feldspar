@@ -566,9 +566,9 @@ async fn an_insert_trigger_writes_the_prediction_and_a_template_renders_it() -> 
 // --- 3.5 and 3.6: a calculated field that predicts, on the read path ---------
 
 /// The installed model host, with a count of the calls made through it.
-struct Counting {
+pub(crate) struct Counting {
     inner: Arc<dyn ModelHost>,
-    calls: AtomicUsize,
+    pub(crate) calls: AtomicUsize,
 }
 
 #[async_trait]
@@ -591,7 +591,7 @@ impl ModelHost for Counting {
 }
 
 /// Count the model calls from here on.
-fn count_calls(catalog: &Catalog) -> Result<Arc<Counting>> {
+pub(crate) fn count_calls(catalog: &Catalog) -> Result<Arc<Counting>> {
     let counting = Arc::new(Counting {
         inner: catalog.model_host().expect("the model host is installed"),
         calls: AtomicUsize::new(0),

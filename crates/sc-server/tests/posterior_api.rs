@@ -73,7 +73,7 @@ const DRAWS: usize = 250;
 /// its draws are independent normals about `j` — so they mix, and a fit of
 /// them has no warnings unless `diverge` puts one there. With `sleep` it
 /// samples until it is cancelled.
-struct Sampler;
+pub(crate) struct Sampler;
 
 /// A standard normal, from a small deterministic generator: the draws are the
 /// same every run, so what the diagnostics say about them is too.
@@ -387,7 +387,7 @@ async fn setup_with(stan: &StanSettings) -> Result<Server> {
 }
 
 /// The radon model over the sampler, with `bindings` and `extra` settings.
-fn radon(name: &str, bindings: Value, extra: Value) -> Value {
+pub(crate) fn radon(name: &str, bindings: Value, extra: Value) -> Value {
     let mut configuration = json!({ "bindings": bindings });
     if let (Value::Object(config), Value::Object(extra)) = (&mut configuration, extra) {
         config.extend(extra);
@@ -420,7 +420,7 @@ fn radon(name: &str, bindings: Value, extra: Value) -> Value {
 
 /// The bindings Bind automatically proposes, plus `x`, which the names do
 /// not say.
-fn bound() -> Value {
+pub(crate) fn bound() -> Value {
     json!({
         "N": { "kind": "count", "dataset": "main" },
         "J": { "kind": "size", "dimension": "counties" },
@@ -431,7 +431,7 @@ fn bound() -> Value {
     })
 }
 
-fn nulls_dropped() -> Value {
+pub(crate) fn nulls_dropped() -> Value {
     json!({ "policies": { "main": { "nulls": "drop" } } })
 }
 

@@ -336,20 +336,20 @@ deny, and a rule that waits on a provider makes every read wait on it.
 
 ## Phase 4 — Documentation and the definition of done
 
-- [ ] 4.1 `docs/TECHNICAL_DESIGN.md`: §10's built-in action list; §14.2's table row "prediction |
+- [x] 4.1 `docs/TECHNICAL_DESIGN.md`: §10's built-in action list; §14.2's table row "prediction |
       … | the `predict_row` action", "Prediction: the action, and the calculated field there is
       not" rewritten as "Prediction: a formula and a method", "Reading and writing back"
       (`write_posterior` action and `models.draws` replaced by the handle); §4b gains model
       calls beside module calls; §6.2's calculated fields gain the read-path fallback and its
       filter/sort rule; `ModelHost` in the seams table.
-- [ ] 4.2 Tutorials: `tutorial-models.md` (the trigger that applies the model becomes the
+- [x] 4.2 Tutorials: `tutorial-models.md` (the trigger that applies the model becomes the
       `estimated_price` calculated field, and an `update_rows` for the stored variant),
       `tutorial-stan.md` (write back from a code step after `fit_model`),
       `tutorial-triggers.md`, `tutorial-python.md` (the handle, and `warnings` in a provider);
       `README.md`, `OPERATIONS.md` where they name the removed actions.
       `crates/sc-cli/tests/repo_hygiene.rs`'s fragments (`predict_row`, "There is no
       calculated field that predicts") follow the documents.
-- [ ] 4.3 The definition of done as one `sc-server` test (`models_without_actions.rs`), over
+- [x] 4.3 The definition of done as one `sc-server` test (`models_without_actions.rs`), over
       `linear_regression` and the stub posterior provider (no CmdStan), with the Radon half
       also in `stan_models.rs` behind its `#[ignore]`.
 

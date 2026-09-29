@@ -524,6 +524,23 @@ cannot loop for ever: a trigger that runs a trigger that runs a trigger is a *ch
 deep it is refused with the whole chain in the message — including the case where a body runs
 the trigger it is itself the code of.
 
+**Asking a model.** If you have fitted a predictive model ([tutorial-models.md](tutorial-models.md)),
+`models.get` gets you a handle on it. It predicts a row, or an array of rows in one call:
+
+```js
+const m = await models.get("House prices");      // the model's active fit
+const estimate = await m.predict(row);            // a row with an id is read through the model's dataset
+await db.houses.where({ id: row.id }).update({ estimate });
+const many = await m.predict(await db.houses.where({ sold: false }).rows());
+```
+
+`m.fit` says which fit answered (its id, warnings and metrics). The handle stays on that fit for
+the rest of the body even if someone activates another meanwhile. A posterior model (a Stan fit,
+[tutorial-stan.md](tutorial-stan.md)) also has `m.draws`, `m.summary` and `m.writePosterior`.
+On any other model those three are not there, and touching one throws a sentence saying so.
+`models` is not a sixth way out: its requests go through `db`, and count against the same
+budget.
+
 ## Step 6 — Code you are bringing from Saltcorn 1
 
 If this application is being moved from Saltcorn 1, the bodies you are pasting in do not say
@@ -722,6 +739,7 @@ action added by a plugin gets a working form with no change to the admin UI.
 | `fetch` | Send an HTTP request built from the event; the parsed response is the result |
 | `run_js_code` | Run a JavaScript body against the event and return what it returns |
 | `send_email` | Send an email whose recipients, subject and body are `{{ }}` templates, optionally attaching a File field of the row |
+| `fit_model` | Fit a model again, and optionally make the new fit active ([tutorial-models.md](tutorial-models.md)) |
 
 `fetch` is the webhook: point it at a URL, give it a JSON body of formulas, and its response
 comes back as the trigger's result — so a `none` trigger exposed on your app can be a typed
@@ -803,8 +821,10 @@ And [tutorial-agents.md](tutorial-agents.md), which adds one more action to the 
 agent is a configured LLM loop that can read your tables, run the triggers you built here, and
 edit your app's source — and hanging one off a trigger is how it runs when nobody is watching.
 
-And [tutorial-models.md](tutorial-models.md), which adds a different kind of action:
-`predict_row`, whose configuration is a **model** and where the answer goes. A model is a saved
-question about a table — a dataset built out of this same formula language, fitted by a
-regression, a random forest or a scikit-learn estimator from a module — and a trigger like the
-ones above is what turns a fitted model into a column that fills itself in.
+And [tutorial-models.md](tutorial-models.md), which adds one function to the formula language
+you have been writing: `predict("House prices")`. A model is a saved question about a table — a
+dataset built out of this same formula language, fitted by a regression, a random forest or a
+scikit-learn estimator from a module. `predict` in a calculated field turns a fitted model into
+a column that fills itself in, and in an `update_rows` assignment it stores the answer. The one
+model action is `fit_model`, which a `daily` trigger like Step 4's uses to refit the model
+every night.

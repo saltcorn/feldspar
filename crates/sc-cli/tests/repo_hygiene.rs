@@ -422,8 +422,8 @@ fn tutorials_are_cross_linked() {
     );
     assert!(
         triggers.contains("tutorial-models.md"),
-        "the triggers tutorial should point at the models tutorial, whose `predict_row` is \
-         one more action a trigger fires"
+        "the triggers tutorial should point at the models tutorial, whose `predict(\"…\")` \
+         is one more function of the formula language a trigger's formulas use"
     );
     let models = read(&root, "docs/tutorial-models.md");
     assert!(
@@ -1442,9 +1442,13 @@ fn the_design_records_what_the_models_milestone_actually_built() {
         "validation",
         "`smartcore` feature",
         "feldspar-sklearn",
-        // Prediction, and the calculated field there is not.
-        "predict_row",
-        "There is no calculated field that predicts",
+        // Prediction: a formula and a method (milestone 31), hoisted like a
+        // module call and reached through the `ModelHost` seam.
+        "Prediction: a formula and a method",
+        "hoisted, exactly as a module call is",
+        "`ModelHost`",
+        "A stored calculated field will not predict",
+        "An action is in the set only if it is generic",
         // The storage judgements §9 asks for.
         "the failure **sentence** is in `attributes`",
         "`bytea` column would be the only one",
@@ -1458,6 +1462,37 @@ fn the_design_records_what_the_models_milestone_actually_built() {
         !design.contains("Crates planned in the tree above but **not yet created**: `sc-bus`,\n`sc-fieldview`, `sc-viewpattern`, `sc-model`"),
         "sc-model exists and must not be listed as not yet created"
     );
+}
+
+/// Milestone 31 removed `predict_row` and `write_posterior` and the flat
+/// `models.draws(name, …)` family. A document that still taught one would send
+/// an admin to an "unknown action" — so the documents an admin reads may name
+/// the removed actions only to say they are gone.
+#[test]
+fn no_document_teaches_the_removed_model_actions() {
+    let root = workspace_root();
+    for doc in [
+        "README.md",
+        "docs/OPERATIONS.md",
+        "docs/TECHNICAL_DESIGN.md",
+        "docs/tutorial-models.md",
+        "docs/tutorial-stan.md",
+        "docs/tutorial-triggers.md",
+        "docs/tutorial-python.md",
+    ] {
+        let text = read(&root, doc);
+        for gone in [
+            "`predict_row` action",
+            "\"action\": \"predict_row\"",
+            "\"action\": \"write_posterior\"",
+            "models.draws(",
+            "models.summary(",
+            "models.instance(",
+            "\"activate\": true",
+        ] {
+            assert!(!text.contains(gone), "{doc} still teaches `{gone}`");
+        }
+    }
 }
 
 /// The models tutorial has to reach every screen the milestone's definition of
@@ -1481,9 +1516,13 @@ fn the_models_tutorial_walks_the_definition_of_done() {
         "std. error",
         "Dropped",
         "Activate",
-        // The trigger that applies it.
-        "predict_row",
+        // The calculated field that applies it, the stored variant, and the
+        // nightly refit that keeps it current.
+        "predict(\"House prices\")",
         "estimated_price",
+        "update_rows",
+        "fit_model",
+        "if_clean",
         // The second provider, from a bundled module, and the grid.
         "sklearn_gradient_boosting",
         "Hyperparameter search",

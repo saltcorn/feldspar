@@ -760,7 +760,14 @@ fn walk_model_calls(
                 ),
             ));
         };
-        let key = hoisted_call_key(ast).expect("a call with a literal argument hoists");
+        // A call with one literal argument always has a key; the `else` is
+        // unreachable, but an error rather than a panic if that ever changes.
+        let Some(key) = hoisted_call_key(ast) else {
+            return Err(invalid(
+                table,
+                format_args!("`predict(\"{model}\")` could not be read as a hoisted call"),
+            ));
+        };
         analysis.model_calls.insert(ModelCall {
             key,
             model: model.clone(),

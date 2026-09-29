@@ -123,9 +123,9 @@ feldspar/
 │  │                              #    (REST/GraphQL/gRPC/tRPC/MCP) + TypeScript consumer gen
 │  ├─ sc-app/                     # 8. Application, Framework provider trait, routing/subdomains
 │  ├─ sc-core-actions/            # 8. the built-in action set (insert_row, update_rows,
-│  │                              #    delete_rows, fetch, run_js_code, send_email) — above the
-│  │                              #    row layer, because a trigger's write goes *through* it
-│  │                              #    (§10.1)
+│  │                              #    delete_rows, fetch, run_js_code, run_python_code,
+│  │                              #    send_email, and fit_model) — above the row layer,
+│  │                              #    because a trigger's write goes *through* it (§10.1)
 │  ├─ sc-viewpattern/             # 9. Saltcorn UI (§13.3): `_fd_views`/`_fd_pages`, the pattern
 │  │                              #    registry, the view snapshot, the `ViewRuntime` seam and
 │  │                              #    the `saltcorn-ui` framework. Above sc-app, because it
@@ -827,6 +827,42 @@ pub struct Calc { pub stored: bool, pub source: CalcSource }
 pub enum CalcSource { Expr(Formula), Code { adapter: AdapterId, body: String } }
 ```
 
+**A non-stored field is projected in SQL where it translates, and computed after the read
+where it does not.** Most expressions translate: `pages * 2`, a Ⱶ-join and an Ↄ-aggregation
+are each one more projection of the `SELECT`. A field that calls `predict("…")` (§14.2) or a
+module function (§15.1) cannot, because its value comes from outside the database. Such a
+field is not skipped. `sc-api`'s `CalcPlan` (`calc_read.rs`) splits a table's calculated fields
+into the ones SQL projects and the ones computed **after** the rows are fetched. The second
+kind are evaluated by the reified evaluator over the page, in dependency order, so a field that
+reads a predicting field sees its value. Every read path that projects calculated fields goes
+through the one plan: a list, a read by key, `select_values_in`, and the `RETURNING` of an
+insert and an update. GraphQL, the code host and the CSV export read through those, so there is
+one implementation and nothing to drift.
+
+- **Hoisted values are resolved first.** Predictions are **batched per page**: one
+  `ModelHost::predict` per model, with every row's key, so a 50-row page is one dataset read
+  and one provider call rather than fifty. Join paths, relations and module calls are resolved
+  per row by `prefetch_bindings`, as on the write path.
+- **An error fails the read**, naming the field, the model and the row ("`estimated_price` of
+  `houses` could not be computed for the row whose id is 500: …"). A failed batch is asked again
+  row by row to find which row it was. A null would be a silent failure, and a model with no
+  active fit therefore makes its table's reads fail until one is activated. The save check
+  warns about that when the field is added.
+- **It cannot be filtered or sorted on**, because the database never sees it. Every place that
+  lowers a filter or an ordering (REST's query string, GraphQL's `where` and `order_by`, counts,
+  the code host's query plans) refuses with one sentence: "cannot filter on `estimated_price`:
+  `estimated_price` is computed after the rows are read, because it calls `predict`, so the
+  database never sees it".
+- **A write computes it after the commit.** If that fails, the error says the row was saved.
+  Inside a caller's transaction the after-read fields are left out, because a prediction reads
+  the row through the dataset on another connection, where it is not committed yet.
+- **A model's dataset read is SQL-only** (`RowQuery::sql_only`). Otherwise a field that predicts
+  with a model of its own table would recurse: computing the field reads the dataset, and
+  reading the dataset computes the field.
+
+*Stored* calculated fields do not exist yet. When they do, `predict` in one is refused, for the
+reason §14.2 gives.
+
 ### 6.3 Fieldviews
 
 A fieldview displays and optionally edits a value of one or more types. With the admin UI and
@@ -1031,7 +1067,8 @@ SQL NULL, granting nothing — optional-chaining semantics for free.
 
 **Non-stored calculated fields** (§6.2) reuse this whole machinery over the same scope
 **minus `user` and the operation flags**: an expression computed on read, dependency-ordered
-so one calc field may read another. A calc-field reference inside an ownership formula is
+so one calc field may read another, projected in SQL where it translates and computed after the
+`SELECT` where it does not (§6.2). A calc-field reference inside an ownership formula is
 **inlined** as its defining expression, transitively, before translation — so a calc field is
 usable in ownership formulae and in RLS policies alike (an untranslatable inlined definition
 refuses RLS, naming the construct). Because a calc field can hold no `user`/flags, inlining can
@@ -1780,11 +1817,22 @@ ambient, and `row`/`old` are *out of scope* on an event that has no row (so nami
 run's `context` — §10.3) so an `only_if` and an action's settings cannot disagree about what is
 in scope.
 
-The six built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_js_code` and
-`send_email`, and they live in **`sc-core-actions`, above the row layer**. That placement is
-the design's one real constraint on where an action may live: a trigger's write goes through
-`sc-api`'s `rows` module, so it is coerced, validated, `File`-field-checked and *observed*
-exactly like an API caller's write. A second write path would quietly skip all of it.
+The seven built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_js_code`,
+`run_python_code` (§15.2) and `send_email`, and they live in **`sc-core-actions`, above the row
+layer**. That placement is the design's one real constraint on where an action may live: a
+trigger's write goes through `sc-api`'s `rows` module, so it is coerced, validated,
+`File`-field-checked and *observed* exactly like an API caller's write. A second write path would
+quietly skip all of it. Two more are registered apart from the set, because each holds a seam a
+server assembles: `run_agent` (§11.5) and **`fit_model`** (§14.2), the one model action.
+
+**An action is in the set only if it is generic**: it means something for every table, every
+provider and every application. A capability that exists for one kind of thing is a *method* of
+that thing, reached from a code body; a computed value is a *formula*, which already has a place
+in every action that writes rows. That rule is why there is no `predict_row` and no
+`write_posterior`. A prediction is `predict("House prices")` in any formula, and writing a
+posterior back is `m.writePosterior(…)` on a model handle in code (§14.2). Every trigger form
+lists every action, including for an admin who will never build a model, so an action that
+means something for one provider is a cost paid by everybody.
 
 - `insert_row` / `update_rows` / `delete_rows` take a target table and formulas. The `where`
   of the latter two **selects** rows: translated into SQL when it translates, and falling back
@@ -1815,7 +1863,9 @@ exactly like an API caller's write. A second write path would quietly skip all o
   schema changes, no path to a file that is not a store an admin connected, and no way to fire
   an event except by being one more caller of the dispatcher every event already goes through.
   Beside them a body is handed Saltcorn 1's `Table` and `Field` (below), which are not a sixth
-  surface but v1's vocabulary over the first and the fourth. It runs on its
+  surface but v1's vocabulary over the first and the fourth, and `models`, whose
+  `models.get("…")` answers a model handle (§14.2) and which is also not a surface: its
+  requests are `op: "models"` on the `db` host, on the run's call budget. It runs on its
   **own pool of isolates**, not the single pure isolate every ownership formula shares, which
   is what lets it suspend on a host call and carry a configurable `timeout_ms` (default 5s,
   max 60s) without either becoming a property of every authorization decision in the process.
@@ -6729,11 +6779,11 @@ Five nouns, fixed here because the words are overloaded everywhere else in the i
 | **dataset** | which table, which derived columns, which rows | a JSON column *on the model* |
 | **model** | a dataset + a provider + its configuration + its hyperparameter space | `_fd_models` |
 | **model instance** | one fit: parameters, metrics, encoding, serialised state | `_fd_model_instances` |
-| **prediction** | applying an instance to rows | the `predict_row` action, and `predictRows` |
+| **prediction** | applying an instance to rows | `predict("…")` in a formula, `m.predict(…)` on a model handle in code, and `predictRows` |
 
 A model is edited and refitted; each fit leaves an instance behind, so the instances of a model
 are its history and are **comparable** — same dataset, same split, different settings. At most
-one instance per model is **active**, which is what lets a trigger name a model rather than a fit.
+one instance per model is **active**, which is what lets a formula name a model rather than a fit.
 
 #### A dataset is a list of formulas, and that is the whole of it
 
@@ -6804,6 +6854,20 @@ table (§8.3) at all. `ModelServices` in `sc-server/src/models.rs` assembles the
 the fit job runner. `ModelProviderHost` routes by the `(module, provider)` pair rather than by
 the provider name alone, because one host serves every module of its language and two of them may
 well supply a `random_forest`.
+
+Two more seams face the other way: they let what sits *below* `sc-model` start a fit and ask for
+a prediction.
+
+| Seam | Declared in | Implemented in | Installed by | What reaches it |
+|---|---|---|---|---|
+| `DatasetSource` | `sc-model` | `sc-server` (`CatalogDatasetSource`, over `sc_api::rows`) | `ModelServices` | every fit and prediction |
+| `ModelProviderHost` | `sc-model` | `sc-module`, `sc-python` | the module rebuild | the registry, for a module's provider |
+| `FitStarter` | `sc-model` | `sc-server` (`ModelServices`) | `register_model_actions` | the `fit_model` action |
+| `ModelHost` | `sc-catalog` | `sc-server` (`ModelServices`, over `sc_api::models`) | `Catalog::set_model_host`, at startup and on every module rebuild | `predict("…")` in a formula, and the code host's model handle |
+
+`ModelHost` is declared in `sc-catalog` because that is where `prefetch_bindings` is, and
+`sc-catalog` is below `sc-model`. It speaks JSON and is installed the way the module functions
+are (§15.1). It is described with prediction, below.
 
 #### The frame is columnar, and it is bounded
 
@@ -6927,7 +6991,8 @@ pub enum Outcome {
 
 A random forest is a regressor or a classifier according to the type of the column its
 configuration names as the label. `Outcome` is what the UI renders against, what the metric set
-is chosen by, and what `predict_row` checks before it writes a number into a text column;
+is chosen by, and what a calculated field calling `predict` is checked against before it may
+hold a number as text. It also decides which methods a model handle in code has (below).
 `Test` has no per-row output at all, so nothing asks a t-test to predict. Because the seam
 carries data and not closures, a provider *declares* an `OutcomeSpec` (`Supervised { label }`,
 `Regression { … }`, `Cluster`, `Embedding { components }`, `Test`) naming which configuration key
@@ -6941,8 +7006,9 @@ the metric pass score 50 000 rows in one call rather than in 50 000.
 
 #### Metrics are the host's; parameters are the provider's
 
-A provider returns `FitResult { state, parameters }` and **no metrics**. `sc-model` computes
-those itself, by running the fitted state back over each split and scoring the predictions:
+A provider returns `FitResult { state, parameters, warnings }` and **no metrics**. `sc-model`
+computes those itself, by running the fitted state back over each split and scoring the
+predictions:
 
 | outcome | metrics |
 |---|---|
@@ -6973,6 +7039,14 @@ column of feature importances; a row that is not as wide as the headings is refu
 block is built rather than rendered against the wrong column. `Text` is for a provider whose own
 output is a summary nobody should reformat — statsmodels' `summary()` is the case — and it means
 a fourth kind of parameter can arrive without a schema change.
+
+**Warnings are the provider's too**, as sentences that say what to do ("the optimiser stopped
+after 100 iterations without converging: raise `max_iter`"). A Python provider's `fit` may
+return `"warnings": […]`, and a `warnings.warn` raised during `fit` (scikit-learn's
+`ConvergenceWarning`) is caught and added. The fit job writes them to the instance's
+`ATTR_WARNINGS`, beside a posterior's diagnostics. So "fitted cleanly" means "fitted, and nothing
+warned" for every provider. That is what `fit_model`'s `activate: if_clean` tests, and it is why
+the action is generic rather than a posterior's.
 
 A `Prediction` is `Number`, `Class`, `Cluster`, `Vector` — or `ClassIndex`, which is the same
 answer earlier in its journey. A provider works in class *indices*, because that is what the
@@ -7054,31 +7128,135 @@ module wrapping five scikit-learn estimators — ridge, gradient boosting, an SV
 — installed in one click from the Modules tab and appearing on the model form beside the
 built-ins, with nothing above the seam knowing which language answered.
 
-#### Prediction: the action, and the calculated field there is not
+#### Prediction: a formula and a method
 
 **A prediction reads past the dataset's filter, and that is deliberate.** The filter says which
 rows the model was *fitted from*; the rows it may be asked about are the caller's, and they are
 usually the ones the filter excludes — a model of what houses sell for is fitted on the `sold`
-ones and asked about the unsold one a trigger just inserted. So `Read::unfiltered` is what
+ones and asked about the unsold one just inserted. So `Read::unfiltered` is what
 `predict_subject` asks for, while the columns still come *through* the dataset and the row layer,
 so a join path and an aggregation are computed exactly as they were at fit time. Reusing the
 sample restriction as an access rule would make every model of this shape unable to answer the
 only question anybody asks it.
 
-`predict_row` is an ordinary action (`sc-core-actions`, layer 9 with the others that write rows):
-configure a model — or a named instance — and where the answer goes, either a field on the row or
-a key in the workflow context. Its `config_spec_for` offers the models on *this* table when the
-trigger has one, and it checks at save time that the target field's type can hold what the model's
-outcome produces, using `possible_prediction_types` (two wide for a `Supervised` declaration,
-empty for a `Test`, which is a target that is wrong whatever its type). The definitive check is
-made again at fire time, against the outcome the instance actually recorded.
+**What a row is.** A row that carries the model table's primary key is read **through the
+dataset**, by key and unfiltered. A row without one (a proposed row not inserted yet, or one a
+body made up) is taken as the dataset's columns as given (`Subject::Rows`) and must supply
+every feature; a missing one is refused by name. In a batch, keyed rows are one read
+restricted to their keys and literal rows are one frame, and the answers come back in the order
+asked.
 
-**There is no calculated field that predicts**, and the reason is not effort. A calculated field
-is an `sc-expr` formula with two evaluators that must agree (§7.3), and a prediction is
-translatable to neither SQL nor the reified evaluator; a *stored* one would have to be recomputed
-on every write to every row the model reads, which for a model with an aggregation in its dataset
-is every row of two tables. An action, fired by a trigger the admin wrote, puts the recomputation
-where somebody chose it.
+There is **no prediction action**. A prediction is a computed value, so it lives where values
+are already computed (§10.1's rule). There are two places.
+
+**In a formula: `predict("House prices")`.** It predicts the row the formula ranges over with the
+model's active fit, and returns the plain value: a number, a class name, a cluster index or a
+vector. It takes one argument, a string literal naming the model. Pinning a fit is what `active`
+is for, and a formula that named a fit id would break the day that fit was deleted. `predict` is
+a global of the formula language. A column called `predict` shadows it, and it wins over a
+module function called `predict`. It works in:
+
+- a non-stored calculated field (§6.2). `estimated_price = predict("House prices")` is a number
+  in every row a listing returns, including an unsold house, for one provider call per page;
+- an `update_rows` assignment. An insert trigger that sets `estimate = predict("House prices")`
+  is the stored variant, recomputed when the admin's trigger says so;
+- an `only_if`, and a `{{ }}` template in `send_email`, `fetch` and the rest.
+
+A formula in the event scope (an `insert_row` value, a `run_agent` prompt) ranges over no row,
+so `predict` there is refused on save, saying where it does work.
+
+It is **hoisted, exactly as a module call is** (§15.1). `sc-expr`'s `analyze` collects each call
+into `Analysis::model_calls`, a `ModelCall { key, model }` keyed by the call's text.
+`translate` answers `Untranslatable`, so no SQL path tries to compute one.
+`sc_catalog::prefetch_bindings` resolves the call through the catalog's `ModelHost` before the
+formula runs, and binds the value under the key. It asks by the row's key when it has one, and
+otherwise by its values. The formula isolate stays op-less and does no I/O. A computed argument,
+a second argument and a call inside `=>` are refused on save naming the call. A server with no
+model host fails the formula naming the call, never with a null.
+
+The save checks are `sc_catalog::check_model_calls`. They are async, because models are rows,
+and run in `schema_edit` for a calculated field and on trigger save for an action's formulas
+and `only_if`. They check that:
+
+- the model exists;
+- it is a model of the formula's table ("`House prices` is a model of `houses`, and this formula
+  is on `orders`");
+- its outcome predicts. A t-test, or a posterior with no prediction quantity, gets
+  `no_per_row_prediction`'s sentence;
+- for a calculated field that *is* the call, its declared type is among the provider's
+  `possible_prediction_types`. That is two types for a `Supervised` declaration, taken from the
+  **declaration** rather than the active fit, because a field is typed before any fit exists.
+
+A model with no active fit is accepted, with a note that every read of the table fails until one
+is active. An **ownership formula refuses `predict`** outright, for the module functions'
+reason: `Err` is deny, and a rule that waits on a provider makes every read wait on it.
+
+**In code: a model handle.** `models.get` answers a handle over the model's active fit, or over
+a named one:
+
+```js
+const m = await models.get("House prices");              // the active fit
+const m = await models.get("House prices", { fit: id }); // a specific fit
+m.name; m.provider; m.table; m.outcome; m.fit;           // fit: status, warnings, metrics, …
+await m.predict(row);                                     // → 312000 | "spam" | 3 | [0.1, …]
+await m.predict([r1, r2, r3]);                            // one provider call, in row order
+await m.predict(row, { detail: true });                   // → { value, probability }
+
+// a Posterior outcome only
+await m.draws("alpha", { keys: [27001], chains: [1, 2], thin: 10 });
+await m.summary("alpha", { keys: [27001] });
+m.variables;
+await m.writePosterior({ variable: "alpha", statistics: { mean: "alpha_mean", sd: "alpha_sd" } });
+```
+
+Python has the same handle, synchronous and in snake case (`m.write_posterior(…)`).
+
+- **The fit's recorded outcome decides which methods exist, not the provider's name.** `draws`,
+  `summary`, `variables` and `writePosterior` exist on a handle whose outcome is `Posterior`, so
+  a Bayesian provider from a module would get them unchanged. On any other handle they are
+  **absent**, and touching one throws a sentence ("`House prices` is a linear_regression
+  regression; `draws` is for posterior models"). JavaScript uses a non-enumerable getter that
+  throws, so the handle still serialises. Python uses `__getattr__`, so `hasattr(m, "draws")` is
+  false. `predict` exists on every handle. On an outcome that does not predict it throws
+  `no_per_row_prediction`'s sentence without making a call. There is no per-provider method
+  registry. One can be added when a provider needs a method nobody else has.
+- **The wire** is `op: "models"` on the `db` host (so it is on the run's call budget, and a body
+  with no `db` has no `models`), with `what`: `get`, `predict`, `draws`, `summary`,
+  `write_posterior`. `get` answers everything the handle is built from in one call: the fit, the
+  outcome, the table, the variables, and why it does not predict when it does not. The later
+  calls name the **fit id** `get` resolved, so a handle does not change fit halfway through a
+  body when someone activates another.
+- **Authority.** A prediction and a draws read read the admin's own fit. A `writePosterior`
+  writes under the handle's authority and the run's trigger chain, the same as
+  `db.counties.update(…)`: ownership is checked, the target's triggers fire, and the chain
+  bounds recursion. `m.asUser()` and `m.asAdmin()` choose, as on `db`.
+
+**The seam: `ModelHost` on the `Catalog`.**
+
+```rust
+#[async_trait]
+pub trait ModelHost: Send + Sync {                        // sc-catalog
+    /// Predict `rows` of `table` with `model`'s active fit (or `fit`), in row order.
+    async fn predict(&self, model: &str, fit: Option<&str>, table: &str,
+                     rows: PredictRows<'_>, detail: bool) -> Result<Vec<Json>>;
+    /// What a formula's save check needs: the model's table, and whether its outcome
+    /// predicts, and into which basic types.
+    async fn describe(&self, model: &str) -> Result<ModelSummary>;
+}
+pub enum PredictRows<'a> { Keys(&'a [Json]), Values(&'a [Json]) }
+```
+
+The logic is `sc_api::models::predict_for` and `describe_model`. `sc-server`'s `ModelServices`
+implements the trait by calling them with its registry, dataset source and row cap, and installs
+it on the catalog at startup and again whenever the module set is rebuilt. That is the same act
+that swaps the action registry. The formula path and the code host reach models through it
+alone, so the code host adds nothing of its own.
+
+**A stored calculated field will not predict.** A stored value would have to be recomputed on
+every write to every row the model reads, which for a model with an aggregation in its dataset
+is every row of two tables. A non-stored field is computed when it is read, batched per page
+(§6.2). An `update_rows` trigger that stores the value puts the recomputation where somebody
+chose it.
 
 #### Storage
 
@@ -7114,7 +7292,11 @@ milestone already established for a record whose world changed underneath it.
 the answer of before you fit it), `listModels` / `getModel` / `saveModel` / `deleteModel`,
 `fitModel` / `listModelInstances` / `getModelInstance` / `activateModelInstance` /
 `deleteModelInstance`, and `predictRows` — an instance, or a model meaning its active instance,
-plus either literal rows or a filter over the model's table.
+plus either literal rows or a filter over the model's table. These are the admin's own tools, not
+the action namespace, which is why they outlived the `predict_row` and `write_posterior`
+actions. `predictRows` and a formula's `predict` both end in `sc_model::predict_subject`, and
+`writePosterior` and a handle's `writePosterior` call the same
+`sc_api::models::write_posterior`.
 
 The admin UI is a **Models** tab (§12): the model form with the dataset builder beside its live
 preview, the provider's own form rendered from `config_spec`, the hyperparameter grid and the
@@ -7122,7 +7304,9 @@ split; then the instance list, which polls while anything says `fitting`; then t
 screen, which renders the three parameter variants, the metrics per split, the search results,
 the row counts and what was dropped, and a "try a row" box over `predictRows`. An
 application-facing prediction endpoint is deliberately not here: which application, which
-permission and what shape are application-API questions, and this API is the admin's.
+permission and what shape are application-API questions, and this API is the admin's. An
+application that wants predictions reads a calculated field that calls `predict`, which its
+APIs already serve under its own permissions.
 
 #### Bayesian models
 
@@ -7301,19 +7485,22 @@ get `Metrics::PosteriorMode` and `Metrics::PosteriorApproximation`.
 
 **Reading and writing back.** `getModelDraws` answers one variable, selected by key or label,
 chain, warmup and `thin`, under `--stan-max-draws-response`. `getPosteriorSummary` covers any
-variable, stored or not, and `downloadModelRun` is described above. `writePosterior` and the
-`write_posterior` action write statistics through the row layer, so the target table's triggers
-fire. In **update** mode that is into the table of the rows dimension a one-axis variable is
-labelled by, matched by key (`alpha` into `counties.alpha_mean`). In **insert** mode it is one
-new row per element into any table, with its coordinates (a key, a label, a grid step's date).
-`fit_model` makes "refit and write back nightly" two trigger steps. Code reaches the draws as
-`models.draws`, `models.summary` and `models.instance` in JavaScript and Python bodies, an
-`op: "models"` request on the `db` host.
+variable, stored or not, and `downloadModelRun` is described above. The admin's
+`writePosterior` and a code body's `m.writePosterior(…)` are one function,
+`sc_api::models::write_posterior`, and write statistics through the row layer, so the target
+table's triggers fire. In **update** mode (the default) that is into the table of the rows
+dimension a one-axis variable is labelled by, matched by key (`alpha` into
+`counties.alpha_mean`). In **insert** mode it is one new row per element into any table, with its
+coordinates (a key, a label, a grid step's date). A midnight instant goes into a `date` field as
+its day. "Refit and write back nightly" is a workflow: `fit_model` with `activate: if_clean`,
+then a `run_js_code` step that calls `models.get("Radon")` and `m.writePosterior(…)`. Code reads
+the draws as `m.draws`, `m.summary` and `m.variables` on the same handle (above).
 
 **What was left out, and why.** Prediction for new rows from a posterior (CmdStan's standalone
 generated quantities over a `new` pseudo-dataset) is **carried past** this design. A posterior
-declares no prediction, so `predict_row` over one is refused when it is saved and points at
-`models.draws`. A forecast needs none of it: a time grid's horizon is a generated quantity of
+declares no prediction, so `predict("Radon")` in a formula is refused when it is saved, and
+`m.predict` on its handle throws a sentence pointing at `m.draws`. When it is picked up, it
+arrives as those two accepting a posterior, not as an action. A forecast needs none of it: a time grid's horizon is a generated quantity of
 the fit itself. LOO/WAIC, a formula front end generating Stan, Bayesian providers from modules,
 and adjacency from geometry are later work. A fit still doesn't survive a restart; the chains
 die with the server. The admin-facing walk-through is `docs/tutorial-stan.md`; operating it
@@ -7814,6 +8001,14 @@ stays op-less and does no I/O. A call that cannot be hoisted (inside a lambda, o
 formula's own computation) is refused on save naming the call, and an **ownership** formula
 refuses module functions outright: `Err` is deny, so a rule calling a geocoder would turn a
 third party's outage into "nobody may read anything".
+
+**`predict("…")` is hoisted beside them** (§14.2). It is a built-in rather than a module's
+function, and it is collected into `Analysis::model_calls` rather than `module_calls`, but it
+follows every rule above. It is keyed by the same `hoisted_call_key` text, resolved by the same
+`prefetch_bindings` through the catalog's `ModelHost` rather than its module functions, and
+refused in the same places for the same reasons. A module function called `predict` is still
+reachable from code as `modfn("…").predict`. In a non-stored calculated field either kind of
+call makes the field one computed after the read (§6.2).
 
 **Installing changes a running server.** The registry the dispatcher runs from is rebuilt from
 the built-ins plus every loaded module and swapped in whole

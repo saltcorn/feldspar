@@ -103,6 +103,8 @@ mod model_fit_job;
 mod model_formulas;
 #[path = "model_handle.rs"]
 mod model_handle;
+#[path = "models_without_actions.rs"]
+mod models_without_actions;
 #[path = "modules_api.rs"]
 mod modules_api;
 #[path = "other_events.rs"]

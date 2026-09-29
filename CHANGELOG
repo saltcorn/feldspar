@@ -2,6 +2,94 @@
 
 Changes in reverse chronological order.
 
+## Models without actions of their own: documentation and the definition of done
+
+Phase 4, the last of milestone 31. The documents now teach `predict("…")` in formulas, the model
+handle in code and the one generic `fit_model`, and no longer teach `predict_row`,
+`write_posterior` or the flat `models.draws(name, …)` family. The milestone's definition of
+done is one test.
+
+- **`docs/TECHNICAL_DESIGN.md`** (4.1).
+  - §10.1: there are seven built-ins, plus `run_agent` and `fit_model`, which are registered
+    apart. The section now states the rule "an action is in the set only if it is generic", and
+    says why that removed the two actions. `models` in a code body is described as requests on
+    `db`, not a sixth surface.
+  - §6.2: a non-stored calculated field is projected in SQL where it translates, and computed
+    after the read (`CalcPlan`) where it does not. The section covers per-page batching, a read
+    that fails naming the field, model and row, the filter/sort refusal, writes, and
+    `RowQuery::sql_only`. §7.3 points at it.
+  - §14.2: the nouns table's "prediction" row. A new seams table lists `DatasetSource`,
+    `ModelProviderHost`, `FitStarter` and `ModelHost`, with where each is declared, implemented
+    and installed. `FitResult` gains `warnings` and what "clean" means. "Prediction: the action,
+    and the calculated field there is not" is rewritten as **"Prediction: a formula and a
+    method"**: the row rule, `predict()` and its hoist, the save checks, the handle and its
+    wire, and why a stored field will not predict. "Reading and writing back" and "What was
+    left out" now use the handle. The API section says why `predictRows` and `writePosterior`
+    outlived the actions.
+  - §15.1: `predict("…")` is hoisted beside module calls.
+- **Tutorials** (4.2).
+  - `tutorial-models.md` step 6 is now **"A calculated field that predicts"**:
+    `estimated_price = predict("House prices")`, what is checked on save, one call per page,
+    reading past the filter, no filtering or sorting, and errors that fail the read. It also
+    covers the stored variant (an `update_rows` trigger) and a nightly `fit_model` with
+    `if_clean`. `estimated_price` is no longer a plain column in step 1.
+  - `tutorial-stan.md`: "Every night" is a `fit_model` step and then a `run_js_code` step
+    calling `m.writePosterior(…)`. "Doing prediction in code" uses `models.get("Radon")` and
+    `m.draws`.
+  - `tutorial-triggers.md`: step 5 gains "Asking a model", and the action table gains
+    `fit_model`. "What next" introduces `predict()`.
+  - `tutorial-python.md`: step 5's `models` is the handle. Step 7 gains "A model provider, and
+    the warnings it gives".
+  - `README.md` and `OPERATIONS.md` (the restart note, and a troubleshooting row for a table
+    whose reads fail because a field's model has no active fit).
+  - `feldspar_sklearn/plugin.py`'s docstring.
+- **`repo_hygiene.rs`** follows the documents. The design's fragments are now "Prediction: a
+  formula and a method", the hoist, `ModelHost` and the generic-action rule. The models
+  tutorial's are `predict("House prices")`, `update_rows`, `fit_model` and `if_clean`. A new
+  test, `no_document_teaches_the_removed_model_actions`, checks that the seven documents an
+  admin reads contain none of the following:
+  - `` `predict_row` action ``;
+  - a `"action": "predict_row"` or `"action": "write_posterior"` step;
+  - `models.draws(`, `models.summary(` or `models.instance(`;
+  - `"activate": true`.
+- **The definition of done** (4.3), `crates/sc-server/tests/models_without_actions.rs`. It
+  runs over `linear_regression`, the warning stub from `fit_model_action.rs` and the stub
+  sampler from `posterior_api.rs` (both now `pub(crate)`, as is `model_formulas.rs`'s call
+  counter). It checks:
+  - `listActions` has `fit_model` and neither removed action;
+  - `House prices` uses `neighbourhoodⱵaverage_income` and `viewingsↃhouse.length`;
+  - listing `houses` answers `estimated_price` for all 61 rows, including the unsold house, in
+    **one** provider call;
+  - `?estimated_price=gt.…` is refused naming the field;
+  - a `daily` `fit_model` with `if_clean`, run after prices double, activates the new fit, and
+    the next read of house 500 doubles with nothing edited;
+  - the warning stub's nightly fit is kept, inactive, carrying its warning;
+  - a workflow runs `fit_model` then `run_js_code`: `models.get("Radon").writePosterior(…)`
+    fills `counties.alpha_mean`, the `counties` update trigger fires three times,
+    `m.predict` points at `m.draws(…)`, and `models.get("House prices")` has no enumerable
+    `draws`, and calling it throws "`draws` is for posterior models";
+  - a `run_python_code` body does the same through `m.write_posterior`. **Not run here:**
+    that half is `#[cfg(feature = "python")]`, and this machine has no `libpython3.13`. The
+    default build asserts the "`--features python`" sentence and that nothing was written.
+- **`stan_models.rs`** gains `radon_is_refitted_by_a_workflow_and_written_back_from_code`
+  (`#[ignore]`d, real CmdStan). It is the same workflow over the real Radon model: a clean
+  refit becomes active, 85 counties are written back and audited, and a prediction points at
+  `m.draws`. `setup` now starts the workflow engine.
+- **Two clippy fixes** in Phase 3's code, which failed `clippy --tests -D warnings`
+  (`expect_used`). They were `sc-expr`'s `walk_model_calls` and `calc_read.rs`'s "no model
+  support" error. Both now return an error instead of panicking on a branch that cannot be
+  reached. The messages are unchanged.
+- **Tests run here:**
+  - `sc-cli`'s `repo_hygiene`: 41 passed.
+  - `cargo test -p sc-expr -p sc-api -p sc-server`: all passed, including
+    `models_without_actions`; `sc-server`'s `it` ran 427 passed and 6 ignored.
+  - `radon_is_refitted_by_a_workflow_and_written_back_from_code` with `--ignored`, against
+    CmdStan 2.40: passed in 100 s.
+  - `clippy -p sc-server -p sc-cli --tests -D warnings`: clean.
+- **Formatting:** `cargo fmt --check` still reports four files that this phase did not touch
+  (`sc-api/src/lib.rs`, `sc-api/src/rest/custom.rs`, `sc-llm/src/lib.rs`,
+  `sc-model/src/lib.rs`). They are left as they were.
+
 ## Models without actions of their own: `predict()` in formulas and calculated fields
 
 Phase 3 of milestone 31. A formula can now call `predict("House prices")`: in a non-stored

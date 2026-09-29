@@ -34,8 +34,9 @@ own, for every other kind of box. (Design and planning docs live under
 - **Predictive models** over your own tables: a dataset built out of the same formula
   language as calculated fields, fitted by a built-in provider (regression, classification,
   clustering, dimensionality reduction, hypothesis tests) or by one a module supplies, with
-  the coefficients and metrics on a screen and a `predict_row` action to apply a fit to a
-  row. The built-in providers are a **default-on cargo feature** (§3). See
+  the coefficients and metrics on a screen. A fit is applied by `predict("House prices")` in
+  any formula, including a calculated field that predicts every row it lists, and by a model
+  handle in code (`models.get(…)`). `fit_model` refits on a schedule. The built-in providers are a **default-on cargo feature** (§3). See
   [`docs/tutorial-models.md`](docs/tutorial-models.md).
 - **Bayesian models with Stan.** The model is a Stan program in a file store. Its `data` block
   is bound to your tables: a foreign key becomes a 1-based index, a date column a time grid
