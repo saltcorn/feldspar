@@ -293,9 +293,3 @@ There is no coding agent for this application type at this point. 
 7. Simulation workspace, and the Model predictions operation.
 8. Spatial analysis: generated grids, the Neighbourhood column operation, adjacency from geometry, fit outputs as datasets, spatial model providers (density, interpolation, hot spots, clustering) and their toolbox tools, and the map time slider.
 9. Application framework for restricted analytics UIs. Everything before this milestone is the unrestricted analytics UI accessed by the admin through the site bar link.
-
-Open questions:
-
-- is this the right set of workspace types
-- in the data explorer can we bring in ideas from the grammar of graphics in an interactive interface? Proposed answer: yes, as the internal representation of every plot, with drop zones and a gallery of presets as the interface (see [Plots and the grammar of graphics](#plots-and-the-grammar-of-graphics)). Plots are rendered with ECharts and maps with MapLibre GL (see Rendering in the same section).
-- gis maps: having maps with special data that can be overlaid in layers seems straightforward. What is less obvious to me is how that interacts with models and how model outputs for spatial temporal models can also be overlaid on maps. We need a better handle on the types of transformations of spatial data. Proposed answer: maps only display datasets. Spatial transformations are geometry formula functions and dataset operations, and computational spatial analyses are models whose results come back as fit outputs and scored datasets. Geometry reaches results by key, through foreign keys to tables with geometry (see [Map workspace](#map-workspace)). Still open: which spatial model providers to ship first.
