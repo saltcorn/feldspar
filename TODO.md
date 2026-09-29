@@ -1,406 +1,766 @@
-# Saltcorn v2 — Models without actions of their own (milestone 31)
+# Saltcorn v2 — The Analytics UI (milestones A1–A9)
 
-Ordered, checkable task list for the thirty-first milestone after the MVP. Earlier lists are
-archived in [docs/TODO-mvp.md](./docs/TODO-mvp.md) (the MVP) and
-`docs/TODO-post-mvp-1.md` … [docs/TODO-post-mvp-30.md](./docs/TODO-post-mvp-30.md) (most
-recently: Bayesian models with Stan). The predictive-models milestone is
-[docs/TODO-post-mvp-22.md](./docs/TODO-post-mvp-22.md); both are now
+Ordered, checkable task list for implementing [docs/analytics-ui-goals.md](./docs/analytics-ui-goals.md)
+(**the goals document** below). Earlier lists are archived in [docs/TODO-mvp.md](./docs/TODO-mvp.md)
+and `docs/TODO-post-mvp-1.md` … [docs/TODO-post-mvp-31.md](./docs/TODO-post-mvp-31.md) (most
+recently: models without actions of their own). The models this builds on are
 [docs/TECHNICAL_DESIGN.md](./docs/TECHNICAL_DESIGN.md) §14.2.
 
-The last two milestones gave models three actions: `predict_row`, `write_posterior` and
-`fit_model`. Two of them are too specific. Every trigger form lists them, including for an admin
-who will never build a model, and GOALS asks for a **minimal** action set, because control flow
-belongs to workflows rather than to more and more actions. `write_posterior` only means something
-for one kind of provider. `predict_row` is what `update_rows` does, plus one value it cannot
-compute. This milestone keeps the one action that is generic, removes the other two, and moves
-their capabilities to where values are already computed: **methods on a model object in code
-bodies**, and a **`predict()` function in formulas**, including non-stored calculated fields.
-
-**Milestone definition of done:** the models tutorial's `houses` table has the `House prices`
-linear regression (with `neighbourhoodⱵaverage_income` and `viewingsↃhouse.length` in its
-dataset). The admin adds a non-stored calculated field `estimated_price` whose expression is
-`predict("House prices")`. Listing `houses` over the REST API returns a number in
-`estimated_price` for every row, with **one** provider call for the page, including for an
-unsold house that the dataset's filter excludes. Filtering on `estimated_price` is refused with a
-sentence naming the field. A nightly trigger runs `fit_model` on `House prices` with
-`activate: if_clean`. The new fit becomes active, and the next read of `estimated_price` follows
-it without anything being edited. A stub provider that reports a warning leaves its new fit
-inactive. For **Radon**, a workflow runs `fit_model`, then a `run_js_code` step that does
-`const m = await models.get("Radon"); await m.writePosterior({ variable: "alpha", statistics:
-{ mean: "alpha_mean", sd: "alpha_sd" } })`. That fills `counties.alpha_mean` and fires the
-`counties` update trigger. The same body calls `m.predict(...)` on a posterior and gets a
-sentence pointing at `m.draws`; `models.get("House prices").draws` is absent, and calling it
-gets a sentence too. The Python body does the same through `m.write_posterior(...)`.
-`listActions` has `fit_model` and has neither `predict_row` nor `write_posterior`.
+The nine milestones are the goals document's milestones 1–9, prefixed **A** so they are not
+confused with the post-MVP milestone numbers. Tasks are numbered within their milestone (A1.1,
+A1.2, …) and grouped in phases. Work through them in order: a milestone assumes every earlier
+one is done.
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ---
 
-# The specification
+# Ground rules for every milestone
 
-### 1. The rule this milestone applies
+- **Runnable after every milestone.** When a milestone's last task is ticked, `feldspar serve`
+  starts, the admin UI and the Analytics UI build and load, and every feature the milestone
+  added can be tried by hand in the browser. The milestone's **Try it** section is that walk
+  through, written as steps a person follows. Its final task turns the walkthrough into a
+  tutorial section and a definition-of-done test. A milestone that leaves anything half-wired
+  (a menu entry that errors, a button that does nothing) is not done. A workspace type or
+  gallery item that a later milestone implements is shown disabled, labelled with what it is
+  waiting for.
+- **Demo data.** `feldspar demo analytics` (A1.18) creates a small, deterministic set of demo
+  tables for trying the features. Later milestones extend it (paired measurements and a large
+  table in A2, districts and incidents with geometry in A5, incidents over time in A8). Its
+  data is synthetic, including the district polygons, so there is no licensing question.
+- **Nothing breaks on the way.** The admin's *Predictive models* screens keep working until A3
+  replaces them. Existing models keep fitting and predicting across A1's change to the dataset
+  model.
+- **Both databases.** Dataset operations work on Postgres and SQLite. Spatial features need
+  Postgres with PostGIS; on SQLite, and on Postgres without PostGIS, they are refused with a
+  sentence saying why. Tests that need PostGIS skip themselves with a message when it is
+  absent, and `OPERATIONS.md` says how to install it.
+- **Clients and strings.** An `sc-api` schema change regenerates `client.ts` in every UI that
+  has a copy (`ui/admin`, `ui/ide`, `ui/builder` and, from A1, `ui/analytics`). User-facing
+  strings of the Analytics UI go in a new `analytics` i18n domain.
+- **Migrations.** No code for backwards compatibility. Where stored data must change shape,
+  idempotent SQL goes in `TABLES_RENAME.sql`, for Postgres and SQLite.
+- **Documentation follows the code.** Each milestone updates `docs/TECHNICAL_DESIGN.md` for
+  what it built, and grows `docs/tutorial-analytics.md` by one part.
 
-An action belongs in the action set only if it is **generic**: it makes sense for every table,
-every provider, every application. A capability that exists for one kind of model is a
-**method** of that model, reached from code. A computed value belongs in a **formula**, which
-already has a place to live in every action that writes rows (`insert_row` values, `update_rows`
-assignments, `only_if`, `{{ }}` templates) and in calculated fields.
+## Implementation decisions this plan makes
 
-| Capability | Before | After |
-|---|---|---|
-| Refit a model | `fit_model` | `fit_model`, generic across providers (§2) |
-| Predict a row | `predict_row` action | `predict("Model")` in any formula (§4); `m.predict(row)` in code (§3) |
-| Write a posterior back | `write_posterior` action | `m.writePosterior({...})` in code (§3), only on a posterior |
-| Read draws / summary / fit | `models.draws(name, var)` etc. | `m.draws(var)`, `m.summary(var)`, `m.fit` (§3) |
+The goals document says *what*; these are the *where* and *how* this plan assumes. Deviate
+where the code shows a better way, and record the deviation in the CHANGELOG.
 
-**The admin API does not change.** `predictRows`, `writePosterior` and the posterior screen's
-**Write back** button stay, because they are the admin's own tools and not the action namespace.
-The one `write_posterior()` function they share moves from `sc-core-actions` into `sc-api`
-(`sc_api::models`), which already owns the row layer and depends on `sc-model`, so the admin
-handler and the code host (§3) call the same function.
-
-**No migration.** A stored trigger that names `predict_row` or `write_posterior` loads as a
-broken trigger ("unknown action"), listed with its reason and editable, which is how any trigger
-whose action went away already behaves. Nothing goes in `TABLES_RENAME.sql`: no table or column
-changes.
-
-### 2. `fit_model`, for every provider
-
-The action's steps are already provider-neutral: `validate_model`, then
-`FitStarter::start_fit`, then optionally wait. What is not neutral is **"activate when clean"**.
-"Clean" means "fitted with no warnings", and today only a posterior produces warnings. For a
-random forest the option really means "if it didn't fail". So the fix is in the provider
-interface, not the action:
-
-- **`FitResult` gets `warnings: Vec<String>`** (`FitResult::warning("…")`), as sentences that
-  say what to do, like a posterior's. A Python provider's `fit` may return
-  `{"state": …, "parameters": […], "warnings": ["…"]}`. `@sc.model_provider`'s docstring and
-  `tutorial-python.md` say so, and a `warnings.warn` from inside `fit` (sklearn's
-  `ConvergenceWarning`) is caught and added. The fit job merges them with the posterior
-  diagnostics into `ATTR_WARNINGS`, so `fitted_cleanly` means the same thing for every provider.
-- **Configuration:** `model` (the picker), `activate`: `never` | `if_clean` | `always`
-  (default `never`), `wait` (default true) and `name`.
-- **The answer:** `{ instance, status, active, error, warnings, metrics }`. With `metrics`, a
-  later workflow step can branch on `metrics.test.r2` without a new activation rule.
-- The description loses its posterior wording: "Fit a model again, and optionally make the new
-  fit active".
-
-### 3. The model handle in code bodies
-
-`models` stays a `const` built over the run's `db` handle (so it is on the run's call budget,
-and a body with no `db` has no `models`). Its one function returns a **handle**:
-
-```js
-const m = await models.get("House prices");              // the model's active fit
-const m = await models.get("House prices", { fit: id }); // a specific fit
-m.name; m.provider; m.table; m.outcome;                   // outcome as recorded on the fit
-m.fit;   // { id, name, status, active, created, error, warnings, metrics, parameters }
-
-// every fit whose outcome predicts (regression, classification, clustering, embedding)
-await m.predict(row);                    // → 312000 | "spam" | 3 | [0.1, …]
-await m.predict([r1, r2, r3]);           // one provider call, answers in row order
-await m.predict(row, { detail: true });  // → { value, probability } (probability for a class)
-
-// a Posterior outcome only
-await m.draws("alpha", { keys: [27001], chains: [1, 2], thin: 10 });
-await m.summary("alpha", { keys: [27001] });
-m.variables;                             // what the fit drew, `__` internals left out
-await m.writePosterior({ variable: "alpha", statistics: { mean: "alpha_mean", sd: "alpha_sd" } });
-await m.writePosterior({ variable: "y_future", mode: "insert", table: "forecasts",
-                         statistics: { mean: "mean", q5: "lower", q95: "upper" },
-                         coordinates: [{ axis: "day.future", field: "day" }] });
-```
-
-Python has the same handle, synchronously and in snake case: `m = models.get("Radon")`,
-`m.predict(row)`, `m.predict(rows, detail=True)`, `m.draws("alpha", keys=[27001])`,
-`m.summary("alpha")`, `m.write_posterior(variable="alpha", statistics={...})`.
-
-The rules:
-
-- **What a row is.** A row that carries the model table's primary key is read **through the
-  model's dataset**, by key and unfiltered (design §14.2's `predict_subject` rule), so a join
-  path and an aggregation are computed as they were at fit time. A row without one (not inserted
-  yet, or made up) is taken as the dataset's columns as given
-  (`Subject::Rows`) and must supply every feature. A missing one is refused by name. In a batch,
-  keyed rows are read in one query and literal rows go in one frame.
-- **The fit's recorded outcome decides which methods exist, not the provider's name.**
-  `draws`, `summary`, `variables` and `writePosterior` exist on a handle whose outcome is
-  `Posterior`. Today only Stan produces one, and a Bayesian provider from a module would get them
-  unchanged. On any other handle they are **absent**, and calling one throws a sentence ("`House
-  prices` is a linear_regression regression; draws are for posterior models"). JavaScript uses a
-  getter that throws; Python uses `__getattr__`. `predict` exists on every handle; on an outcome
-  that does not predict it throws `no_per_row_prediction`'s sentence. There is no per-provider
-  method registry. One can be added when a provider needs a method nobody else has.
-- **Authority.** A prediction and a draws read read the admin's own fit, as today. **A
-  `writePosterior` writes under the handle's authority and the run's trigger chain.** That is
-  the `db` handle's, the same as `db.counties.update(…)`: ownership is checked, the target's
-  triggers fire, and the chain bounds recursion. The removed action wrote as admin. A trigger
-  body that needs admin writes gets them the way any code body does.
-- **The wire.** `op: "models"` requests on the `db` host, with `what`: `get`, `predict`,
-  `draws`, `summary`, `write_posterior`. `get` answers everything the handle needs to be built
-  without another call (the fit, the outcome, the variables). The later calls name the **fit
-  id** the `get` resolved, so a handle does not change fit halfway through a body when someone
-  activates another. The flat `models.draws(name, var)`, `models.summary` and `models.instance`
-  are removed (prototype: no compatibility layer).
-- **The seam.** The code host has a `Catalog`, and a prediction needs the provider registry and
-  the `DatasetSource`. Both are reached through the `ModelHost` seam of §4, which is installed
-  on the `Catalog`. The code host adds nothing of its own.
-
-### 4. `predict()` in formulas
-
-```js
-predict("House prices")      // this row, through the model's active fit
-```
-
-**One argument, a string literal: the model's name.** Pinning a fit is what `active` is for,
-and a formula that named a fit id would break the day that fit was deleted. It returns the
-plain value, the one `predict_row` wrote: a number, a class name, a cluster index or a vector.
-`predict` is a global of the formula language. A **column** called `predict` shadows it, which
-is the scope rule's one rule. The built-in wins over a module function called `predict`, which
-code bodies can still reach as `modfn("…").predict`.
-
-**It is hoisted, exactly as a module function call is** (design §4b):
-
-- `sc-expr`'s `analyze` recognises `predict(<string literal>)` and collects it into a new
-  `Analysis::model_calls: BTreeSet<ModelCall { key, model }>`, keyed by `hoisted_call_key`'s text
-  (`predict("House prices")`). A non-literal argument, a second argument, and a call inside `=>`
-  are refused on save, with sentences in the module-call style.
-- `translate` answers `Untranslatable` for it, so no SQL path ever tries to compute one.
-- `sc_catalog::prefetch_bindings` resolves each model call before the formula runs, after the
-  join paths, and binds the value under the key. The formula isolate stays op-less and does no
-  I/O. The **row** is the row being evaluated: by its key when it has one, otherwise its values
-  as literal dataset columns (a proposed row on the write path), under §3's rule.
-
-**The seam: `ModelHost` on the `Catalog`.** `sc-catalog` sits below `sc-model`, so it cannot
-call `predict_subject`. It declares a trait that speaks JSON and installs it the way
-`module_functions()` is installed:
-
-```rust
-#[async_trait]
-pub trait ModelHost: Send + Sync {                        // sc-catalog
-    /// Predict `rows` of `table` with `model`'s active fit (or `fit`), in row order.
-    async fn predict(&self, model: &str, fit: Option<&str>, table: &str,
-                     rows: PredictRows<'_>, detail: bool) -> Result<Vec<Json>>;
-    /// What a formula's save check needs: the model's table and whether its outcome
-    /// predicts, and into which basic types.
-    async fn describe(&self, model: &str) -> Result<ModelSummary>;
-}
-pub enum PredictRows<'a> { Keys(&'a [Json]), Values(&'a [Json]) }
-```
-
-`sc-server`'s `ModelServices` implements it over the provider registry and the `DatasetSource`,
-and sets it on the `Catalog` at startup and again whenever the module set is rebuilt (the same
-act that swaps the action registry today). A server with no model support has none, and a
-formula that calls `predict` fails **naming the call**, never with a null, which is the module
-functions' rule.
-
-**Save-time checks** (async, because models are rows). They run in `schema_edit` for a
-calculated field and on trigger save for an action's formulas and `only_if`:
-
-- the model exists;
-- its table is the formula's table ("`House prices` is a model of `houses`, and this formula is
-  on `orders`");
-- its outcome predicts (a t-test, or a posterior with no prediction quantity, is refused with
-  `no_per_row_prediction`'s sentence);
-- for a calculated field, the field's declared type is among the outcome's
-  `possible_prediction_types`. This is the check `predict_row` made against its target field.
-
-An **ownership formula refuses `predict`** outright, for the module-function reason: `Err` is
-deny, and a rule that waits on a provider makes every read wait on it.
-
-**Where it works:**
-
-- **Action formulas**: `insert_row` values, `update_rows` assignments, `only_if`, `{{ }}`
-  templates in `send_email`, `fetch` and the rest. These already go through
-  `prefetch_bindings`, so they need nothing beyond the hoist. This is the direct replacement for
-  `predict_row`: an insert trigger on `houses` whose `update_rows` sets
-  `estimate = predict("House prices")`. A workflow that wanted the prediction in its context
-  uses a formula step.
-- **Non-stored calculated fields.** These need the read path to change. Today `rows.rs`'s
-  `calc_projections` computes calculated fields only in SQL and **silently skips** one that does
-  not translate (`crates/sc-api/src/rows.rs:1014`). This milestone adds the missing fallback:
-  - After the `SELECT`, every calculated field that did not translate is evaluated by the
-    reified evaluator over the fetched page, in the calculated fields' dependency order (a field
-    that reads a predicting field sees its value).
-  - **Predictions are batched per page**: for each model named on the page, one
-    `ModelHost::predict` with `PredictRows::Keys` of every row's key, so a 50-row page is one
-    dataset read and one provider call, not fifty. The other hoisted values (join paths, module
-    calls) are resolved by `prefetch_bindings` per row, as they are on the write path.
-  - The fallback is **general**. Any untranslatable calculated field is computed rather than
-    skipped, which also covers a module function call in a calculated field.
-  - Such a field **cannot be filtered or sorted on**. A `where` or `orderBy` that names it is
-    refused with a sentence naming the field and saying why ("`estimated_price` is computed after
-    the rows are read, because it calls `predict`"). Everywhere a query lowers a filter
-    (`filter.rs`, GraphQL, the CSV export) refuses the same way.
-  - **Errors fail the read, naming the field, the model and the row** (an unseen category, a
-    model with no active fit). This is the system's position on silent failure and the rule the
-    module functions already follow. A model with no active fit makes its table's reads fail
-    until one is activated, and the save-time check warns about that when the field is added.
-  - Every read path that projects calculated fields goes through the one fallback: the four
-    `calc_projections` call sites in `rows.rs`, plus GraphQL and CSV if they project calculated
-    fields separately. There must be one implementation, because two would drift.
-- **Stored calculated fields** do not exist yet. When they do, `predict` in one is refused. A
-  prediction depends on rows the model reads through its dataset, and recomputing it on every
-  write to every one of them is the objection design §14.2 already records.
-
-### 5. Where the code goes
-
-| Crate | What changes |
-|---|---|
-| `sc-model` | `FitResult::warnings`; the fit job merges them into `ATTR_WARNINGS` |
-| `sc-python` | the fit payload's `warnings`, `warnings.warn` caught in `fit`; the `Models` handle class in `saltcorn.py` |
-| `sc-expr` | `ModelCall`, `Analysis::model_calls`, the hoist in `analyze`, `Untranslatable` in `translate`; the JavaScript `models` prelude becomes the handle |
-| `sc-catalog` | the `ModelHost` trait, `Catalog::set_model_host`/`model_host`, model calls in `prefetch_bindings` |
-| `sc-api` | `models::write_posterior` (moved); the code host's `get`/`predict`/`write_posterior`; the calculated-field fallback and batching in `rows.rs`; the save checks in `schema_edit.rs`; filter/sort refusals |
-| `sc-core-actions` | `predict_row.rs` deleted; `posterior.rs` keeps only `FitModel` (renamed `fit_model.rs`); `register_model_actions` takes the registry and the `FitStarter` only |
-| `sc-server` | `ModelServices` implements `ModelHost` and installs it; handlers call `sc_api::models::write_posterior`; the trigger save path runs the formula checks |
-| `ui/admin` | `ModelForm.tsx` and `PosteriorInstance.tsx` wording; `codeTypes.ts` declares the handle |
+- **`sc-dataset`**, a new crate (layer 5, above `sc-catalog`, `sc-expr` and `sc-query`) holds
+  dataset definitions, their operations, the stage shapes, the compiler to `sc-query` and the
+  `_fd_datasets` table. `sc-model`'s `dataset.rs` moves there; `sc-model` depends on it.
+- **`sc-analytics`**, a new crate (layer 6, beside `sc-model`) holds workspaces
+  (`_fd_workspaces`), panels, the plot spec and its stat compiler, the hypothesis tests, map
+  layers and the analytics framework factory (A9).
+- **`ui/analytics`**, a new single-page app (Vite, React, TypeScript, react-bootstrap, the same
+  stack as `ui/admin`) served under `/analytics/` in the way the IDE is served under `/ide/`,
+  and built into the binary in the way the admin SPA is. A separate bundle, rather than more
+  admin screens, so that A9 can mount it as an application framework without the admin shell.
+- **Renderers:** Apache ECharts for plots; MapLibre GL JS, with deck.gl for large layers, for
+  maps (the goals document's "Rendering").
+- **Statistics** (hypothesis tests, kernel density, spatial statistics) are implemented in
+  Rust over `statrs`, which is already a dependency, and tested against reference values
+  from R or PySAL recorded as fixtures.
+- **PDF reports** in A4 use a print stylesheet and the browser's print-to-PDF. Server-side PDF
+  generation (for scheduled or emailed reports) is out of scope for now.
 
 ---
 
-## Phase 1 — One model action
+# A1 — Workspaces and the dataset editor
 
-- [x] 1.1 `FitResult::warnings` and `FitResult::warning(…)`; the fit job writes provider
-      warnings into `ATTR_WARNINGS` beside the posterior diagnostics; the Python
-      `@sc.model_provider` payload's `warnings` and `warnings.warn` captured during `fit`.
-      Tests: a stub provider with a warning gives an instance with that sentence; a clean one
-      gives none.
-- [x] 1.2 `fit_model` generic (§2): `activate: never | if_clean | always`, `metrics` in the
-      answer, the neutral description. Tests: fired from a trigger over a
-      `linear_regression` model; `if_clean` with the warning stub stays inactive; `always`
-      activates it anyway; `wait: false` with `if_clean` is activated by the job.
-- [x] 1.3 Remove `predict_row` and `write_posterior`: delete `predict_row.rs`, move
-      `write_posterior()` and its helpers (target checks, count rounding, dates as days) to
-      `sc_api::models`, point `handlers.rs`'s `writePosterior` at it, and shrink
-      `register_model_actions` and its callers (`sc-cli/src/main.rs`, `sc-server`'s
-      `triggers.rs`, `modules.rs`, `apps.rs`). Rewrite the tests that used them
-      (`posterior_api.rs`, `trigger_admin_api.rs`, `model_admin_api.rs`, `stan_models.rs`) to
-      keep what they covered through the admin API, until Phases 2 and 3 give them their new
-      home. The `sc-core-actions` test asserts the model action set is exactly `fit_model`.
-- [x] 1.4 The admin UI's wording: `ModelForm.tsx`'s "what a `predict_row` action names this
-      model by" and `PosteriorInstance.tsx`'s "the `write_posterior` action does the same"
-      now point at `predict()` and at `m.writePosterior`. The strings go in the `admin` i18n
-      domain.
+The new dataset model (a base and an ordered list of operations, goals document "Dataset
+operations"), workspace persistence, the Analytics UI shell, and the Dataset editor workspace.
 
-## Phase 2 — The model handle in code
+**Try it.** Run `feldspar demo analytics`, then `feldspar serve`, and log in as the admin.
+1. The admin sidebar has an **Analytics** link (beside *Predictive models*, which stays until
+   A3). It opens the Analytics UI with an empty list of workspaces.
+2. Create a workspace "Houses data" of type *Dataset editor*. The other types are listed but
+   disabled, each labelled with the milestone that brings it.
+3. Create a dataset "House prices by area" on the base table `houses`. The spreadsheet shows
+   the rows of `houses`.
+4. Click the **+** in the last column header and add `price_per_m2 = price / area`. Add
+   `neighbourhoodⱵname` the same way.
+5. From the `price` column header's menu, add a Filter `price > 100000`. Then add an Aggregate
+   by `neighbourhood` with the mean of `price_per_m2` and a count.
+6. Click each operation in the side panel: the spreadsheet shows the data after that
+   operation. Disable the Filter and watch the counts change. Rename the column the Aggregate
+   uses in the Calculated column: the Aggregate is marked with an error naming the missing
+   column.
+7. Close the browser tab and reopen the workspace: it opens on the same dataset and operation.
+8. In the admin's *Predictive models*, create a linear regression. Its dataset is picked from
+   the named datasets, with a link to edit it in the Analytics UI. Fit it, and check that the
+   `estimated_price` calculated field from the models tutorial still returns numbers.
 
-- [x] 2.1 The `ModelHost` trait in `sc-catalog` (§4), with `Catalog::set_model_host` and
-      `model_host()`; `ModelServices` implements it over `predict_subject` (keys become a
-      `Subject::Dataset` restricted to those keys; values become `Subject::Rows`) and is
-      installed at startup and on every module rebuild. Tests: keyed rows come back in the
-      order asked, including a row the dataset filter excludes; a literal row missing a
-      feature is refused by name; `detail` carries a class's probability.
-- [x] 2.2 The code host's `op: "models"` (§3): `get` (resolving a name to its active fit, or
-      `fit` to that fit, answering fit, outcome, table and variables), `predict`, `draws`,
-      `summary` and `write_posterior` by fit id; `write_posterior` through the handle's
-      authority, chain and executor. Tests in `code_host/tests.rs`.
-- [x] 2.3 The JavaScript prelude's `models.get` and the handle: the posterior-only methods as
-      throwing getters on any other outcome; `predict` accepting a row or an array. Tests in
-      `sc-expr`'s code tests over a fake host.
-- [x] 2.4 Python's `Models.get` and the handle class, with `__getattr__` for the absent
-      methods. Tests in `python_models.rs` (needs `--features python-host`; say so in the
-      CHANGELOG if it cannot be run here).
-- [x] 2.5 `codeTypes.ts` declares `models.get` and the handle (the posterior methods as
-      optional members); `codeTypes.test.ts`. The MCP page `code_api_js.md` documents the
-      handle.
-- [x] 2.6 Integration tests in `sc-server`: a `run_js_code` trigger that predicts the event's
-      row and writes it with `db`; a workflow `fit_model` → `run_js_code` `writePosterior`
-      over the stub posterior provider, firing the target table's trigger; a non-admin
-      body's `writePosterior` into a table it may not update is refused.
+## Phase 1 — The dataset model (`sc-dataset`)
 
-## Phase 3 — `predict()` in formulas and calculated fields
+- [ ] A1.1 The `sc-dataset` crate: `DatasetDef { id, name, description, base, operations }`,
+      `Base::Table(name) | Base::Dataset(id)`, `Operation { id, kind, enabled, params }`. The
+      `_fd_datasets` table with bootstrap and a store (create, read, update, delete, clone,
+      list; names unique). Move `sc-model`'s `Dataset` code here. Tests: the store round-trips
+      every operation kind; a duplicate name is refused with a sentence.
+- [ ] A1.2 Stage shapes and grain: for each position in the list, the columns and their types
+      after that operation, and the grain (`Table { table, key }`, `Group { keys }` or
+      `Derived`). A foreign key column stays a foreign key through every operation. Formulas in
+      an operation are validated against a `SchemaShape` built from the stage before it:
+      `Ⱶ` from any foreign key column; `Ↄ` when the grain is a table, or a group on a single
+      foreign key column (goals document, "How this fits Feldspar's relational model").
+      Tests: `customerⱵregion` after an Aggregate grouped by `customer`; `ordersↃcustomer`
+      refused after an Aggregate by month, with a sentence naming the grain.
+- [ ] A1.3 The operations that keep the grain: Calculated column, Filter, Select columns, Sort,
+      Window column (lag, lead, difference, cumulative sum and mean, rank, row number, group
+      summary, last non-missing value). Compiled to `sc-query` as nested subqueries, one per
+      operation, collapsed where an operation can be merged into the one before. Tests on both
+      drivers, comparing with rows computed by hand.
+- [ ] A1.4 The operations that change the grain: Aggregate (the summaries of the goals
+      document except geometry union, which is A5; with no summaries it is `distinct`), Limit
+      (first N, random sample with a seed, top N per group), Stack, Split (its new columns fixed
+      when the operation is defined, pre-filled from the data), Complete (values from the data,
+      from a date or number range, or from all rows of the table a foreign key refers to).
+      Tests on both drivers.
+- [ ] A1.5 The operations that combine: Join (inner, left, full; equality keys; "nearest
+      earlier" on a date column) and Union (columns matched by name, an optional source
+      column). Add `UNION ALL` to `sc-query` and both dialects. Tests on both drivers,
+      including an as-of join.
+- [ ] A1.6 Datasets over datasets, and invalid operations: a base that is another dataset
+      contributes its operations first; a cycle is refused. Disabled operations are skipped.
+      Evaluation stops at the first invalid enabled operation and reports it by id with its
+      sentence, and the stages before it still read. Tests.
+- [ ] A1.7 Reading a stage: `read_stage(def, upto, page)` returns a page of rows, the column
+      types and the total row count, reading as the caller (for now, only the admin reads).
+      Tests: paging is stable under the dataset's order; the count matches.
 
-- [x] 3.1 `sc-expr`: `ModelCall`, `Analysis::model_calls`, the hoist in `analyze` (literal
-      string only, one argument, not inside `=>`, shadowed by a column), `Untranslatable` in
-      `translate`. Unit tests beside the module-call ones.
-- [x] 3.2 `prefetch_bindings` resolves model calls through `model_host()`: by key when the row
-      has one, otherwise from its values; no host is an error naming the call. Tests in
-      `sc-catalog` over a fake `ModelHost`.
-- [x] 3.3 Save-time checks (§4): in `schema_edit` for a calculated field (existence, table,
-      outcome predicts, declared type among `possible_prediction_types`, a notice when the
-      model has no active fit) and on trigger save for action formulas and `only_if`;
-      ownership formulas refuse `predict`. Tests for each refusal's sentence.
-- [x] 3.4 Action formulas: an insert trigger on `houses` with `update_rows` setting
-      `estimate = predict("House prices")` writes the number; a `{{ predict(…) }}` in a
-      template renders it. (Nothing to build beyond 3.1–3.3; this task is the test.)
-- [x] 3.5 The read-path fallback in `rows.rs` (§4): untranslatable calculated fields evaluated
-      after the `SELECT` in dependency order, predictions batched per page and per model, the
-      silent skip removed; every read path that projects calculated fields shares it. Tests:
-      a page of 50 houses is one `ModelHost::predict` (count the calls on a fake); a field
-      that reads the predicting field sees its value; a module-function calculated field that
-      was skipped before is now computed; an unseen category fails the read naming the field,
-      the model and the row.
-- [x] 3.6 Filtering and sorting on a fallback-computed field are refused with §4's sentence in
-      REST, GraphQL and the code host's query plans. Tests.
+## Phase 2 — Models use named datasets
 
-## Phase 4 — Documentation and the definition of done
+- [ ] A1.8 `Model.dataset` and each related dataset become references to named datasets
+      (`dataset_id`, and `{ name, dataset_id, label }` for related ones). A fit snapshots the
+      resolved definition and its hash into the instance, and the instance reports "the
+      dataset has changed since this fit" when the hash differs. `DatasetSource` reads through
+      `sc-dataset`. Tests: the existing `sc-model` and `sc-stan` tests pass with their
+      datasets stored as named datasets; editing a dataset flags its existing fits.
+- [ ] A1.9 Row keys: a dataset that keeps its base table's grain has the table's primary key as
+      its row key, so `predict("…")` in a calculated field works as before. Saving a
+      `predict("…")` over a model whose dataset changes the grain is refused with a sentence.
+      The Stan binder accepts a dataset that keeps the grain as before, and refuses one that
+      does not with a sentence (A8 lifts this where it can). Tests.
+- [ ] A1.10 `TABLES_RENAME.sql`: an idempotent section, for Postgres and SQLite, creating a
+      named dataset from each `_fd_models.dataset` and `related` entry and setting the model's
+      references. Test: running it twice over a database with old-style models gives the
+      same result as running it once, and those models then fit.
+- [ ] A1.11 The admin's model form: `DatasetBuilder.tsx` gives way to a picker of named
+      datasets with "New dataset" and "Edit in Analytics" links. Tests (vitest).
 
-- [x] 4.1 `docs/TECHNICAL_DESIGN.md`: §10's built-in action list; §14.2's table row "prediction |
-      … | the `predict_row` action", "Prediction: the action, and the calculated field there is
-      not" rewritten as "Prediction: a formula and a method", "Reading and writing back"
-      (`write_posterior` action and `models.draws` replaced by the handle); §4b gains model
-      calls beside module calls; §6.2's calculated fields gain the read-path fallback and its
-      filter/sort rule; `ModelHost` in the seams table.
-- [x] 4.2 Tutorials: `tutorial-models.md` (the trigger that applies the model becomes the
-      `estimated_price` calculated field, and an `update_rows` for the stored variant),
-      `tutorial-stan.md` (write back from a code step after `fit_model`),
-      `tutorial-triggers.md`, `tutorial-python.md` (the handle, and `warnings` in a provider);
-      `README.md`, `OPERATIONS.md` where they name the removed actions.
-      `crates/sc-cli/tests/repo_hygiene.rs`'s fragments (`predict_row`, "There is no
-      calculated field that predicts") follow the documents.
-- [x] 4.3 The definition of done as one `sc-server` test (`models_without_actions.rs`), over
-      `linear_regression` and the stub posterior provider (no CmdStan), with the Radon half
-      also in `stan_models.rs` behind its `#[ignore]`.
+## Phase 3 — Workspaces (`sc-analytics`)
+
+- [ ] A1.12 The `sc-analytics` crate and `_fd_workspaces { id, name, kind, state, created_by,
+      updated_at }`. `kind` lists all eight workspace types of the goals document; creating
+      one that is not implemented yet is refused with a sentence naming the milestone that
+      brings it. `state` is JSON owned by the workspace type. Tests.
+- [ ] A1.13 `sc-api` endpoints: datasets (create, read, update, delete, clone, list),
+      validating one operation, reading a stage, stage shapes; workspaces (create, read,
+      update, delete, list, save state). Admin only in this milestone (A9 opens them up).
+      Regenerate the clients. Tests in `sc-server`.
+
+## Phase 4 — The Analytics UI
+
+- [ ] A1.14 `ui/analytics`: the bundle, served under `/analytics/` with its CSP, built into
+      the binary, sharing the admin's session. A hash router, the `analytics` i18n domain, a
+      light and dark theme following the admin's. The admin sidebar gains **Analytics**. Tests:
+      an `analytics_spa_typecheck` test in `sc-server` like `admin_spa_typecheck`; a
+      non-admin is refused.
+- [ ] A1.15 The workspace list: create by name and type (types not yet implemented shown
+      disabled with their milestone), rename, delete with confirmation, open. The workspace
+      frame saves state as it changes (debounced) and restores it on open. Tests (vitest).
+- [ ] A1.16 The Dataset editor workspace, list mode: the global list of datasets with edit,
+      clone and delete (delete warns and lists the models that use the dataset), and new with
+      a base picker (a table, or another dataset). Tests.
+- [ ] A1.17 The Dataset editor workspace, edit mode: the operations side panel (add from a
+      menu, edit in a form for each kind, reorder by dragging, disable, delete, errors shown on
+      the operation); the read-only spreadsheet of the selected stage, virtualised, reusing
+      the admin's grid code where it fits; **+** in the last column header adds a Calculated
+      column; each column header's menu offers Filter, Sort, Group by (Aggregate) and Stack
+      with the other selected columns. The formula input offers columns and join paths as
+      completions. Tests.
+
+## Phase 5 — Demo data, documentation, definition of done
+
+- [ ] A1.18 `feldspar demo analytics [--replace]`: creates `neighbourhoods`, `houses` and
+      `viewings` (compatible with the models tutorial) with deterministic synthetic rows, and
+      refuses to touch existing tables without `--replace`. Tests.
+- [ ] A1.19 Documentation: `TECHNICAL_DESIGN.md` (§14.2's dataset rewritten for named
+      datasets and operations; new sections for `sc-dataset`, `sc-analytics` and the
+      Analytics UI bundle); `docs/tutorial-analytics.md` part 1 (the Try it above);
+      `tutorial-models.md` updated for named datasets; `OPERATIONS.md` for the demo command.
+- [ ] A1.20 Definition of done: an `sc-server` test that creates the Try it's dataset through
+      the API, reads every stage and checks the rows, breaks and repairs the Aggregate, and
+      fits and predicts with a model over a named dataset. Walk the Try it by hand.
 
 ---
 
-## Explicitly OUT of scope for this milestone
+# A2 — The data explorer
 
-- **An `if_better` activation rule** (comparing a new fit's test metric with the active fit's).
-  Decided against; `fit_model`'s answer carries `metrics`, so a workflow can make that
-  decision itself.
-- **Stored calculated fields**, and so `predict` in one (§4).
-- **Prediction for new rows from a posterior**: still carried (below). When it is picked up it
-  arrives as `m.predict` and `predict()` over a posterior, not as an action.
-- **Caching predicted values** between reads (carried from TODO-post-mvp-22).
-- **A per-provider method registry** on the handle (§3).
+The plot spec, stats on the server, ECharts rendering, the drop-zone interface and hypothesis
+tests (goals document "Plots and the grammar of graphics" and "Hypothesis tests in the data
+explorer"). No drag and drop yet.
 
-## Carried past this milestone
+**Try it.** After `feldspar demo analytics --replace`:
+1. Create a *Data explorer* workspace. Pick the dataset "House prices by area" from A1, or
+   create one on `houses`.
+2. From the gallery, pick *Scatter plot*. Drag `area` to X, `price` to Y, `neighbourhood` to
+   Color. Change the mark to *line* and back from the mark palette.
+3. Drag `year_built` (binned) to Wrap: one small plot per bin.
+4. Open the layers panel: add a linear smoother layer, set Y to a log scale, add a reference
+   line.
+5. Start again with `price` on Y and `neighbourhood` on X: a box plot appears with a one-way
+   ANOVA, a Kruskal-Wallis test and pairwise comparisons, and a sentence saying what they mean.
+   Drop two neighbourhoods from the dataset with a Filter: the explorer switches to a Welch
+   t-test and Mann-Whitney.
+6. Pick the demo `measurements` dataset, choose *paired* mode with `before` and `after` on Y:
+   a paired t-test and a Wilcoxon signed-rank test.
+7. Switch the same assignment to a *summary table*: rows by neighbourhood, cells with the mean
+   price.
+8. Pick the large demo table `events` (a million rows) and make a histogram: it draws in about
+   a second. A scatter plot of it says it is showing a sample.
+9. Reopen the workspace: everything is as it was left.
 
-- **Prediction for new rows from a posterior**: TODO-post-mvp-30's Phase 9, skipped (design
-  in its §19). The `new` pseudo-dataset and `prediction` in the configuration, empty at fit
-  time, resolving `Outcome::Posterior { prediction }`; standalone generated quantities
-  re-binding `new` only against the instance's stored coordinates, with the compiled model
-  from the cache or recompiled from the snapshot and the CSVs fetched from the runs store;
-  `Prediction::Distribution { mean, sd, q5, q95 }`; `predict()`, `m.predict` and
-  `predictRows` accepting a posterior fit, with an unknown county refused by name. Picking it
-  up means undoing two things done in its absence: `OutcomeSpec::Posterior
-  { prediction: None }` declares no prediction types (so `predict()` over a Stan model is
-  refused on save), and `sc_model::no_per_row_prediction` sends a posterior to `m.draws`.
-- **LOO/WAIC and an instance comparison view**: PSIS-LOO over `log_lik` in `sc-model`, and the
-  side-by-side screen TODO-post-mvp-22 already wanted.
-- **A formula front end generating Stan** (brms-style), which would make the binding
-  automatic because the program would be ours.
-- **Bayesian providers from modules**: `@sc.model_provider(binds_data=True)` receiving bound
-  data and returning draws.
-- **Geometry types and adjacency from `ST_Touches`.**
-- From TODO-post-mvp-29: W.8. An agent's trait configuration is not redacted when the agent is
-  read back (streams do this with `redact_attrs`/`merge_secrets`); `http`'s `headers` is
-  declared `secret()` and will be covered when agents adopt it. Also the agent half of that
-  milestone's definition of done, which needs an API key.
-- From TODO-post-mvp-28: the rest of 3.6 (`de`, `es`, `zh-Hans` and `ar` for all three
-  domains, and `fr` for `admin` and `builder`) and the non-JSX half of 3.4's sweep. The
-  recipes are in [docs/TODO-post-mvp-28.md](./docs/TODO-post-mvp-28.md).
-- From TODO-post-mvp-27: the live-broker half of the streams definition of done (10.3).
-- From TODO-post-mvp-26: running the agent eval against a real provider (11.4) and walking the
-  agent milestone's definition of done by hand (12.3).
-- From TODO-post-mvp-25: page groups, HTML-file pages, copilot layout generation, uploading from
-  the builder, v1's help topics, formula-editor completions, replacing CKEditor 4, a menu editor,
-  cloning pages and views, sharing library items, collaborative editing, and the builder in a
-  plugin pattern's mode.
-- From TODO-post-mvp-24: `room`/`workflow-room` and realtime, tags, file upload from an Edit
-  view, themes as plugins, a v1 `db` module for plugins, and externalising inline handlers to
-  drop `'unsafe-inline'` from Saltcorn UI's CSP.
-- From TODO-post-mvp-22: statsmodels as a second bundled module, k-fold cross-validation,
-  application-facing prediction, a fit as a durable workflow run, predicted-value caching.
+## Phase 1 — The plot spec
+
+- [ ] A2.1 The spec types in `sc-analytics`: data (a dataset reference), layers (mark,
+      encodings, stat), scales, coordinates, facets and selections (declared now, used in
+      A6), serialised as JSON. Validation against the dataset's shape: the columns exist and
+      their types suit the encodings, with sentences for each refusal. Tests.
+- [ ] A2.2 Mark choice from column types (the "show me" rules) and the gallery presets as
+      functions from a dataset shape to a spec: histogram, bar, line, scatter, box, heatmap,
+      area, and the map item shown disabled until A5. Tests.
+
+## Phase 2 — Stats on the server
+
+- [ ] A2.3 The stat compiler: a spec's stats become SQL over the dataset's compiled query, with
+      facets and colour groups as extra `GROUP BY` keys. Bin (Freedman-Diaconis by default),
+      count, aggregate, quantiles and the box plot's five-number summary (percentiles in SQL
+      on Postgres; computed in memory on SQLite), summary with a confidence interval. Tests on
+      both drivers.
+- [ ] A2.4 Density (kernel density estimate) and smoothers (linear from SQL regression
+      aggregates; loess in memory on a sample) computed on the server and returned as shapes.
+      Tests against R reference values.
+- [ ] A2.5 Layers that draw rows take a random sample above a limit (10,000 by default) and
+      return `sampled: true` with the total. Tests.
+- [ ] A2.6 The `render_plot(spec)` endpoint: each layer's data and the resolved scale domains,
+      or the sentence saying why the spec cannot be drawn. Tests in `sc-server`, including a
+      histogram of a million rows that returns only the bins.
+
+## Phase 3 — Rendering
+
+- [ ] A2.7 ECharts in `ui/analytics` (imported per chart type, so unused parts are left out of
+      the bundle) and the compiler from spec plus layer data to an ECharts option: layers to
+      series, facets to grids, colour to series or a `visualMap`, log scales, flipped
+      coordinates, themes. Tests (vitest): spec in, option out.
+- [ ] A2.8 The summary table renderer from the same drop zones: row and column dimensions,
+      aggregate cells, totals. Tests.
+
+## Phase 4 — The explorer
+
+- [ ] A2.9 The Data explorer workspace: dataset drop-down, gallery, the column list and the
+      drop zones (X, Y, Color, Size, Shape, Label, Facet rows, Facet columns, Wrap), the mark
+      palette, several columns on Y compared as one variable. State saved in the workspace.
+      Tests.
+- [ ] A2.10 The layers panel: add and remove layers, change a layer's stat, scales, reference
+      lines, coordinates. Tests.
+- [ ] A2.11 The presets that do their own reshaping: scatterplot matrix, parallel coordinates,
+      correlation heatmap, mosaic plot. Tests.
+
+## Phase 5 — Hypothesis tests
+
+- [ ] A2.12 The tests of the goals document's table, in `sc-analytics::stats`: one-sample t,
+      normality (Shapiro-Wilk), chi-square goodness of fit, binomial, Welch t, Mann-Whitney,
+      one-way ANOVA, Kruskal-Wallis, pairwise comparisons (Tukey HSD), chi-square test of
+      independence, Fisher's exact, Pearson and Spearman correlation, simple linear and
+      logistic regression, paired t and Wilcoxon signed-rank. Sufficient statistics are
+      computed in SQL where the test allows it; rank tests read the column (sampling above a
+      limit, and saying so). Each returns the statistic, degrees of freedom, p-value, effect
+      size and confidence interval. Tests against R reference values.
+- [ ] A2.13 Choosing the tests from the Y, X and Wrap roles and the column types; assumption
+      checks (group sizes, normality, equal variances) with the non-parametric alternative
+      shown alongside; the plain-language sentence in the `analytics` domain. Tests.
+- [ ] A2.14 The results beside the plot as one panel; paired mode; Wrap repeating the analysis
+      per group. Tests.
+
+## Phase 6 — Demo data, documentation, definition of done
+
+- [ ] A2.15 Demo data: `patients` and `measurements` (before and after), and `events` with a
+      million rows (generated in SQL so it is quick). Documentation: `TECHNICAL_DESIGN.md`
+      (the plot spec, the stat compiler, the tests); `tutorial-analytics.md` part 2.
+- [ ] A2.16 Definition of done: an `sc-server` test that renders the Try it's specs and checks
+      the returned bins, box statistics and test results. Walk the Try it by hand.
+
+---
+
+# A3 — The model fit workspace
+
+Models are created, fitted and inspected in the Analytics UI, with their outputs as panels,
+and the admin's *Predictive models* screens are retired. No drag and drop yet.
+
+**Try it.**
+1. The admin sidebar's *Predictive models* is gone; **Analytics** is the way in. An old
+   bookmark to a model opens it in the Model fit workspace.
+2. Create a *Model fit* workspace. Its list shows the same global models the admin saw. Create
+   a linear regression on "House prices by area" (or a dataset on `houses`), predicting
+   `price` from `area` and `neighbourhood`.
+3. Fit it. Progress shows while it runs; the outputs appear below: a coefficient table, a
+   plot of residuals against fitted values, and actual against predicted. A normal Q-Q plot
+   of the residuals is in the "More plots" drop-down.
+4. Clone the model, add `year_built`, fit it, and compare the two coefficient tables.
+5. Edit the model's dataset in a Dataset editor workspace, then return: the fit says the
+   dataset has changed since it was fitted.
+6. With CmdStan installed, open the Radon model from the Stan tutorial: edit the program,
+   check the bindings, fit, and see the posterior summary with trace and rank plots.
+7. In the Data explorer, from a box plot with an ANOVA, press **Open as model**: a linear
+   regression opens with the same dataset, response and factor.
+
+## Phase 1 — Outputs as panels
+
+- [ ] A3.1 Model providers declare their outputs: tables, and plots as plot specs over **fit
+      output data** (a new kind of data reference, `FitOutput { instance, name }`, read from
+      the instance rather than through SQL, so stats on it are computed in memory). Plots
+      can be marked optional. Tests.
+- [ ] A3.2 Outputs of the built-in providers: linear and logistic regression (coefficients,
+      residuals against fitted values, actual against predicted, Q-Q), k-means (cluster
+      sizes, centroids, a scatter plot coloured by cluster), Stan (the posterior summary, and
+      trace, rank and density plots per parameter over the draws). Python module providers
+      can declare outputs the same way. Tests.
+
+## Phase 2 — The API
+
+- [ ] A3.3 Endpoints for the workspace: a model's outputs with each plot rendered by
+      `render_plot`, fit progress (the existing `Progress`, pushed to the browser), cancelling
+      a fit, and the list of a model's fits with the "dataset changed" flag. Tests in
+      `sc-server`.
+
+## Phase 3 — The workspace
+
+- [ ] A3.4 The Model fit workspace: the global model list (edit, clone, delete, new); the
+      editor (dataset picker, provider picker, the provider's configuration form from its
+      `config_spec`, hyperparameters, split); fit with progress; the outputs below, with the
+      optional plots in a drop-down; earlier fits. Tied to one model in its state. Tests.
+- [ ] A3.5 Stan models in the workspace: the program in an embedded editor (opening the IDE
+      for the file store as now), the bindings, the posterior plots. Move `ModelForm.tsx`,
+      `ModelBindings.tsx`, `ModelInstance.tsx`, `PosteriorInstance.tsx` and
+      `PosteriorPlots.tsx` from `ui/admin` into `ui/analytics`, replacing their plots with
+      plot specs. Tests moved with them.
+- [ ] A3.6 **Open as model** in the Data explorer: a linear or logistic regression, by the
+      response's type, with the explorer's dataset, Y and X, opened in a Model fit workspace.
+      Tests.
+
+## Phase 4 — Retiring *Predictive models*
+
+- [ ] A3.7 The admin sidebar entry and its routes go; `#/models/…` and `#/model-instances/…`
+      redirect to the Analytics UI. `repo_hygiene.rs` fragments and the admin's `models.ts`
+      follow. Tests.
+
+## Phase 5 — Documentation, definition of done
+
+- [ ] A3.8 `tutorial-models.md` and `tutorial-stan.md` rewritten around the Model fit
+      workspace; `TECHNICAL_DESIGN.md` §14.2 (outputs, fit output data); `tutorial-analytics.md`
+      part 3.
+- [ ] A3.9 Definition of done: an `sc-server` test that fits a linear regression and the stub
+      posterior provider through the API and renders every declared output; the Radon half
+      behind `#[ignore]` in `stan_models.rs`. Walk the Try it by hand.
+
+---
+
+# A4 — Reports, and drag and drop
+
+Split view, the panel model, drag and drop from the data explorer and model fits, and the
+Report workspace with PDF output.
+
+**Try it.**
+1. Open the Data explorer workspace from A2, then press **Split** and open a new *Report*
+   workspace beside it.
+2. Drag the current plot from the explorer into the report. Change the plot in the explorer:
+   the report's copy does not change.
+3. Add a heading and a text block (Markdown) above the plot, and a page break. Drag a
+   coefficient table and a residual plot from a Model fit workspace into the report.
+   Reorder the blocks.
+4. Add a row to `houses` in the admin, then reopen the report: its plots include the new row
+   (panels are live views of their datasets).
+5. Set the page to A4 landscape and press **Export PDF**: the browser's print dialog shows the
+   report paginated, with sharp vector plots.
+6. Drag a panel from this report into a second report.
+7. Try to delete the dataset the report uses: the warning lists the report.
+
+## Phase 1 — Panels and split view
+
+- [ ] A4.1 Split view: two workspaces side by side with a movable divider, each with its own
+      state; the URL records both. Tests.
+- [ ] A4.2 The panel model in `sc-analytics`: `Panel { id, kind, content }` with kinds plot,
+      summary table, test result, text and custom; panels reference datasets by id and render
+      live. A usage index answers "what uses this dataset" for the delete warning, and a
+      panel whose dataset is gone shows a sentence instead of failing. Tests.
+- [ ] A4.3 Drag and drop: a panel's JSON as the drag payload; sources are the explorer's
+      current output and a model fit's output panels; the report is a sink; always a copy.
+      Tests.
+
+## Phase 2 — The Report workspace
+
+- [ ] A4.4 The Report workspace: a document of blocks (panel, heading, Markdown text, page
+      break), added by dropping or from a menu, reordered by dragging, removed; page size and
+      orientation. Panels render without interaction (no tooltips or brushing). Report blocks
+      are themselves drag sources. Tests.
+- [ ] A4.5 PDF output: a print stylesheet with `@page` sizes and page breaks, ECharts' SVG
+      renderer for printing, **Export PDF** opening the print dialog. Tests of the pagination
+      logic (vitest).
+
+## Phase 3 — Documentation, definition of done
+
+- [ ] A4.6 `TECHNICAL_DESIGN.md` (panels, drag and drop, reports); `tutorial-analytics.md`
+      part 4.
+- [ ] A4.7 Definition of done: an `sc-server` test that builds a report through the API with a
+      copied explorer panel and a model output panel, and checks that the usage index finds
+      it. Walk the Try it by hand, including the PDF.
+
+---
+
+# A5 — Maps
+
+The geometry field type and import, geometry functions and the Spatial join operation, map
+panels in the explorer, and the Map workspace with layers, symbology, the attribute table,
+selection, reference layers and the tools that dataset operations can express (goals document
+"Map workspace"; generated grids, neighbourhoods, spatial models and time are A8).
+
+**Try it.** On Postgres with PostGIS, after `feldspar demo analytics --replace`, which now adds
+`districts` (polygons) and `incidents` (points with a category and a date):
+1. In the admin, import a GeoJSON file as a new table: it has a geometry column and its rows
+   show on a map in the Analytics UI.
+2. In the Data explorer, pick `incidents` and the *Map* gallery item: points over a base map,
+   coloured by category.
+3. Press **Open in map**: a Map workspace opens with the incidents as its first layer.
+4. From the toolbox, *Aggregate → Count per region* with `districts`: a new dataset (a Spatial
+   join and an Aggregate, visible in the Dataset editor) is added as a layer. Style it with
+   graduated colours in five natural-breaks classes.
+5. Open the attribute table of the districts layer, sort by count and select the top three
+   rows: they highlight on the map.
+6. Select the incidents within 1 km of a clicked point, and **Save selection as dataset**.
+7. Add a reference layer from a tile service URL and change the opacity of the layers.
+8. Drag the whole map into the report from A4, and export the PDF.
+
+## Phase 1 — Geometry in core
+
+- [ ] A5.1 A geometry field type in `sc-types` (point, line, polygon and the multi variants, in
+      WGS84), stored as PostGIS `geometry(…, 4326)`. Bootstrap enables the `postgis`
+      extension where the role may; otherwise, and on SQLite, a geometry field is refused
+      with a sentence. REST and GraphQL represent geometry as GeoJSON. Tests.
+- [ ] A5.2 Importing GeoJSON, zipped Shapefiles and GeoPackage files into a new table: the
+      geometry is loaded with its source coordinate system and transformed to WGS84 by
+      PostGIS, so no projection library is needed. The admin's table import offers it.
+      Tests with small fixture files.
+- [ ] A5.3 Geometry formula functions in `sc-expr`, translated to PostGIS: a point from
+      longitude and latitude, buffer, centroid, area, length, distance, intersects, contains,
+      within, and the square and hexagonal cell of a point. Distances and areas are in
+      metres (geography casts). Tests.
+
+## Phase 2 — Spatial operations and delivery
+
+- [ ] A5.4 The Spatial join operation (intersects, contains, within, within a distance,
+      nearest by a lateral join), and geometry union as an Aggregate summary. Tests.
+- [ ] A5.5 Layer data for the browser: GeoJSON for small layers, and Mapbox vector tiles
+      (`ST_AsMVT`) for large ones, with simplification by zoom level. Tests.
+
+## Phase 3 — Map rendering and the map panel
+
+- [ ] A5.6 MapLibre GL JS and deck.gl in `ui/analytics`; the base map style URL as a setting
+      (with a default), and the CSP entries its hosts need. The compiler from a map layer
+      spec to MapLibre layers. Tests.
+- [ ] A5.7 The map panel in the Data explorer: the geometry source chosen automatically
+      (geometry column, latitude and longitude columns, or a foreign key to a table with
+      geometry), encodings colour, size, shape and label. Tests.
+
+## Phase 4 — The Map workspace
+
+- [ ] A5.8 The Map workspace's state and layer list: dataset, geometry source, filter, popup
+      fields, labels, visibility, opacity, order, legend. Tests.
+- [ ] A5.9 Symbology: single symbol, categories, graduated colours (quantile, equal interval,
+      natural breaks computed on the server), proportional symbols, heatmap style. Tests.
+- [ ] A5.10 The attribute table below the map with selection linked both ways; selection by
+      click, lasso, attribute condition and location; **Save selection as dataset**. Tests.
+- [ ] A5.11 Reference layers from tile or map service URLs. Tests.
+- [ ] A5.12 The toolbox, for what dataset operations can do: Proximity (buffer, distance to
+      nearest, within a distance), Overlay (spatial join, intersection), Aggregate (count and
+      sum per region, dissolve). Each creates a global dataset and adds it as a layer, and
+      the dataset opens in the Dataset editor. Plugins can register tools. Tests.
+- [ ] A5.13 **Open in map** from the explorer's map panel; a whole map as a draggable panel,
+      rendered as an image for reports. Tests.
+
+## Phase 5 — Demo data, documentation, definition of done
+
+- [ ] A5.14 Demo data: synthetic `districts` (polygons generated from seeded points) and
+      `incidents`. `OPERATIONS.md`: installing PostGIS. `TECHNICAL_DESIGN.md` (geometry type,
+      spatial functions and operations, layer delivery, the Map workspace);
+      `tutorial-analytics.md` part 5.
+- [ ] A5.15 Definition of done: an `sc-server` test (skipped with a message without PostGIS)
+      that imports a GeoJSON fixture, runs the count-per-region tool through the API and
+      checks the counts, and fetches a vector tile. Walk the Try it by hand.
+
+---
+
+# A6 — Dashboards
+
+A tiled workspace combining panels from any source, with stat cards, cross-filtering and
+drill-down.
+
+**Try it.**
+1. Create a *Dashboard* workspace. Split the view and drag in a bar chart of incidents by
+   category from the explorer, the districts map from A5, and a plot from the report.
+2. Add a stat card: the number of incidents, compared with the previous month, with a
+   sparkline.
+3. Arrange and resize the tiles.
+4. Click a category's bar: the map and the stat card filter to that category. Brush a date
+   range on a line chart: everything filters to it. Clear the filters from the filter bar.
+5. Select a district on the map: panels on other datasets that have a foreign key to
+   `districts` filter too.
+6. Give the bar chart a drill path *district → category*: clicking a district shows its
+   categories, with a breadcrumb back.
+
+## Phase 1 — Layout and cards
+
+- [ ] A6.1 The Dashboard workspace: a grid of tiles, dragged and resized, responsive to width;
+      panels dropped in from any source. Tests.
+- [ ] A6.2 The stat card panel kind: an aggregate of a column, number formatting, a comparison
+      (with the previous period, or unfiltered) and an optional sparkline. Tests.
+
+## Phase 2 — Cross-filtering and drill-down
+
+- [ ] A6.3 Selections: clicks and brushes on ECharts and MapLibre panels become the spec's
+      declared selections, and those become filter conditions on the encoded columns. Tests.
+- [ ] A6.4 Propagation: a condition applies to panels on the same dataset through the column,
+      and to panels on other datasets through a column with a foreign key to the same table
+      (from the stage shapes). On the server, it is an extra Filter at the end of the
+      dataset's operations. Tests: selecting a district filters a panel on a dataset that
+      only has a `district` foreign key.
+- [ ] A6.5 Drill paths on a panel, with a breadcrumb. Tests.
+- [ ] A6.6 The filter bar: the active filters, removing one or all, and dashboard-wide filters
+      on a column; an optional refresh interval. Tests.
+
+## Phase 3 — Documentation, definition of done
+
+- [ ] A6.7 `TECHNICAL_DESIGN.md` (selections and propagation); `tutorial-analytics.md` part 6.
+- [ ] A6.8 Definition of done: an `sc-server` test rendering a dashboard's panels with a
+      selection applied and checking the filtered results across two datasets. Walk the
+      Try it by hand.
+
+---
+
+# A7 — Simulation
+
+Prediction with uncertainty, the Model predictions operation, and the Simulation workspace
+with the profiler, scenarios and scoring (goals document "Simulation workspace").
+
+**Try it.**
+1. Open the linear regression from A3 in a *Simulation* workspace. One input control per
+   predictor, starting at typical values; the predicted price with its prediction interval;
+   a profile curve for each predictor.
+2. Move the `area` slider: the prediction and every curve update at once.
+3. Save the scenario as "baseline", change the neighbourhood, save it as "north side", and
+   compare the two predicted distributions side by side.
+4. **Score** the dataset of unsold houses: a new dataset appears with prediction and interval
+   columns, based on the source dataset. Open it in the Data explorer and plot the
+   predictions.
+5. Drag the profiler into the dashboard from A6: it stays interactive there. Drag it into a
+   report: it shows the saved scenarios.
+6. With CmdStan installed, do the same for the Radon model: predictions for a new home are
+   posterior predictive distributions.
+
+## Phase 1 — Prediction with uncertainty
+
+- [ ] A7.1 Prediction for new rows from a posterior, carried from TODO-post-mvp-30 Phase 9
+      (its §19 design): the `new` pseudo-dataset, standalone generated quantities,
+      `Prediction::Distribution`, and `predict()`, `m.predict` and `predictRows` accepting a
+      posterior, with an unknown group refused by name. Tests with the stub posterior
+      provider; real CmdStan behind `#[ignore]`.
+- [ ] A7.2 Providers declare and return uncertainty: prediction intervals for linear
+      regression, class probabilities for classifiers, distributions for posteriors. Tests.
+- [ ] A7.3 The Model predictions operation: inputs matched to columns by name, prediction and
+      interval columns added. It runs after the SQL, so the operations after it are evaluated
+      in memory over the frame (Calculated column through the reified evaluator, Filter,
+      Select columns, Sort, Aggregate, Limit). Tests.
+
+## Phase 2 — Profiler and scenarios
+
+- [ ] A7.4 The profiler endpoint: typical values from the training data; the prediction and
+      interval for given inputs; each predictor's profile curve over its range with the
+      others fixed, in one batched prediction call. Tests.
+- [ ] A7.5 Scenarios in the workspace's state, and a comparison endpoint returning each
+      scenario's predicted distribution (draws where the model has them). Tests.
+
+## Phase 3 — The workspace
+
+- [ ] A7.6 The Simulation workspace: model picker, input controls by column type, the
+      prediction, the profile curves, saving and comparing scenarios. Tests.
+- [ ] A7.7 Scoring: choose a dataset; a new dataset based on it with a Model predictions
+      operation is created and can be opened in the Dataset editor or the explorer. Tests.
+- [ ] A7.8 The profiler and scenario comparison as panel kinds: interactive in dashboards,
+      static at the saved scenarios in reports. Tests.
+
+## Phase 4 — Documentation, definition of done
+
+- [ ] A7.9 `TECHNICAL_DESIGN.md` §14.2 (uncertainty, the operation, the workspace);
+      `tutorial-analytics.md` part 7; `tutorial-stan.md` (prediction from a posterior).
+- [ ] A7.10 Definition of done: an `sc-server` test that profiles, compares two scenarios and
+      scores a dataset for the linear regression and the stub posterior provider. Walk the
+      Try it by hand.
+
+---
+
+# A8 — Spatial analysis
+
+Generated grids, the Neighbourhood column operation, adjacency from geometry, fit outputs as
+datasets, the spatial model providers and their tools, and time on maps (goals document "Map
+workspace").
+
+**Try it.** After `feldspar demo analytics --replace`, which now spreads the incidents over two
+years:
+1. In a Map workspace with the incidents layer, *Aggregate → Count per hexagon* at 500 m: a
+   generated grid, joined and aggregated, styled by count.
+2. *Neighbourhood → Count within distance* of 250 m: each incident gets the number of other
+   incidents nearby.
+3. *Surfaces → Kernel density*: a smooth density surface over a grid.
+4. *Statistics → Hot spots* on the districts' incident counts: districts classified as hot,
+   cold or not significant, and a Moran's I panel that can be dragged into a report.
+5. *Statistics → Clusters (DBSCAN)*: the incidents coloured by cluster.
+6. The worked example of the goals document: a dataset of burglaries by district and month,
+   a Stan spatiotemporal model with district adjacency (from a bundled template), and its
+   six-month forecast as a layer. The time slider steps through the months and **Play**
+   animates them. A second layer shows the district effects.
+7. Toggle the forecast layer to show the width of its intervals.
+
+## Phase 1 — Dataset additions
+
+- [ ] A8.1 The generated grid base: square or hexagonal cells of a size in metres, covering the
+      extent of a dataset or a region, optionally crossed with a time range and step
+      (PostGIS grid functions in a metric projection, returned in WGS84). Tests.
+- [ ] A8.2 The Neighbourhood column operation: within a distance, the k nearest, or touching
+      polygons, with the Aggregate summaries. Tests.
+- [ ] A8.3 Adjacency from geometry: the pairs of touching polygons of a dataset, and a Stan
+      binding kind for adjacency (the node arrays CAR and BYM2 programs take), lifting A1.9's
+      refusal for datasets whose grain is a table with geometry. Tests.
+
+## Phase 2 — Fit outputs as datasets, and time
+
+- [ ] A8.4 Fit outputs become datasets: per-row outputs keyed by the training dataset's row
+      key, per-group outputs keyed by the grouping columns (a Stan provider maps its array
+      indexes back to keys through the binder's dimensions), forecasts keyed by group and
+      time. A new base kind `FitOutput { model, output, fit }` (`fit` is the active fit or a
+      fixed one), so they can be explored, plotted, mapped and used as the base of other
+      datasets. Tests.
+- [ ] A8.5 Time on maps: a layer's time encoding, the time slider with play filtering every
+      layer with a time encoding, and small multiples by time for reports. Tests.
+
+## Phase 3 — Spatial model providers
+
+- [ ] A8.6 Kernel density: fitted on points (bandwidth by a rule, or set), scored over a grid.
+      Tests against reference values.
+- [ ] A8.7 Interpolation: inverse distance weighting and ordinary kriging with a fitted
+      variogram. Tests against reference values.
+- [ ] A8.8 Spatial statistics: Getis-Ord Gi* hot spots (with false discovery rate
+      correction), global Moran's I as a result panel, local Moran's I per feature. Tests
+      against PySAL reference values.
+- [ ] A8.9 DBSCAN clustering. Tests.
+- [ ] A8.10 A bundled Stan template for a spatiotemporal count model (BYM2 district effects and
+      a time trend) with its bindings, and its forecast as a fit output. Tests with the stub
+      posterior provider; real CmdStan behind `#[ignore]`.
+
+## Phase 4 — Tools, documentation, definition of done
+
+- [ ] A8.11 The toolbox groups Neighbourhood, Surfaces, Statistics and Models, each creating a
+      dataset, or a model and a scored dataset or fit output, and adding it as a layer.
+      Tests.
+- [ ] A8.12 The uncertainty toggle for layers with interval columns. Tests.
+- [ ] A8.13 Demo data over two years; `TECHNICAL_DESIGN.md` (grids, neighbourhoods,
+      adjacency, fit outputs as datasets, the providers); `tutorial-analytics.md` part 8.
+- [ ] A8.14 Definition of done: an `sc-server` test (skipped without PostGIS) running the hex
+      count, a neighbourhood count, hot spots and the worked example with the stub posterior
+      provider, checking each layer's data; the real CmdStan half behind `#[ignore]`. Walk the
+      Try it by hand.
+
+---
+
+# A9 — Applications with a restricted Analytics UI
+
+The Analytics UI as an application framework: an admin publishes a restricted subset of it to
+end users (goals document, the introduction's "application").
+
+**Try it.**
+1. As the admin, create an application with the framework *Analytics*, in *fixed* mode,
+   showing only the dashboard from A6, for the role `staff`.
+2. Log in as a `staff` user at the application's address: the dashboard is there and
+   interactive, and nothing else is: no workspace list, no admin links.
+3. Create a second application in *self-serve* mode with the tables `houses` and
+   `neighbourhoods` allowed and the Data explorer and Dataset editor types enabled.
+4. As a `staff` user there, create a dataset on `houses` and explore it. `incidents` is not
+   offered as a base, and asking the API for it directly is refused.
+5. Give `staff` read access to only some `houses` rows (an ownership formula): the user's
+   plots and tests only include those rows.
+
+## Phase 1 — Authority
+
+- [ ] A9.1 Every analytics endpoint takes the caller's authority. Datasets, stat queries,
+      tests and layer data read as the caller, through table permissions and ownership
+      formulas; the admin keeps full access. Datasets and workspaces gain an owner and
+      sharing with roles. Tests: a user without read access is refused; an ownership formula
+      restricts a histogram's counts.
+
+## Phase 2 — The framework
+
+- [ ] A9.2 The *Analytics* `FrameworkFactory`: its configuration (mode fixed or self-serve,
+      the workspaces shown in fixed mode, the tables and workspace types allowed in
+      self-serve mode, whether users may create workspaces) and validation. Tests.
+- [ ] A9.3 Mounting: the Analytics UI bundle served in an application with the application's
+      CSP and session, in a restricted shell without admin links. Workspaces belong to an
+      application or to the unrestricted UI. Tests.
+- [ ] A9.4 Enforcing the configuration on the server: base pickers, dataset reads and
+      workspace types limited to what the application allows, whatever the client asks.
+      Tests.
+
+## Phase 3 — Documentation, definition of done
+
+- [ ] A9.5 `TECHNICAL_DESIGN.md` (the framework, authority in analytics);
+      `tutorial-analytics.md` part 9.
+- [ ] A9.6 Definition of done: an `sc-server` test with both applications, checking what a
+      `staff` user can see and read in each. Walk the Try it by hand.
+
+---
+
+# Not in a milestone yet
+
+The goals document describes these, but its milestones do not schedule them. They are listed
+here, without checkboxes, so that they are not lost and not picked up by accident. Say where
+they go before starting them.
+
+- **The Notebook workspace** (goals document, "Workspaces"): JavaScript, Python and LLM prompt
+  cells whose functions create panels, fit models and create non-persisted datasets. It could
+  follow A4, since its outputs are panels that need drag and drop.
+- **The Bayesian workflow** (goals document, "Bayesian workflow"): the structured model
+  builder generating Stan; prior-only runs and prior predictive checks; the `y_rep` and
+  `log_lik` conventions; diagnostics with suggested remedies; the staged fit area; fake-data
+  fits (A8.4 already makes fit outputs usable as dataset bases); PSIS-LOO and per-observation
+  Pareto k; power-scaling prior sensitivity; the model comparison view; stacking as a
+  provider; predictions with draws through dataset operations; background fitting from a
+  queue with persisted fits and draws. Prior-only runs and diagnostics could join A3; the
+  rest could be a milestone after A7.
+
+# Explicitly out of scope
+
+- Raster data analysis, network analysis and routing, geocoding, editing geometries on the
+  map, 3D (goals document, "Map workspace").
+- Server-side PDF generation, and scheduled or emailed reports.
+- A coding agent for Analytics applications (goals document, "Additional changes to core").
+- Spatial features on SQLite (SpatiaLite).
+
+# Carried from milestone 31
+
+The items carried past milestone 31 are listed in
+[docs/TODO-post-mvp-31.md](./docs/TODO-post-mvp-31.md). This plan takes up three of them:
+prediction for new rows from a posterior (A7.1), geometry types (A5.1) and adjacency from
+geometry (A8.3). LOO and the comparison view, and the formula front end generating Stan, are
+part of the unscheduled Bayesian workflow above. The rest remain carried.
