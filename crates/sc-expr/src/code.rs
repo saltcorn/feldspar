@@ -1407,8 +1407,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
 // `models` (Stan TODO §17): a fitted posterior's draws, its summary and the fit
 // itself, over a run's own `db` handle — so every call is a plan this run
 // sends, on this run's call budget, and a body with no `db` has no `models`.
-// The first argument is a model's name (its active fit) or a fit's id, as
-// `predict_row` takes it; elements are chosen by key or label, never by a
+// The first argument is a model's name (its active fit) or a fit's id; elements are chosen by key or label, never by a
 // position only this fit knows.
 Object.defineProperty(globalThis, "__scMakeModels", {
   writable: false, configurable: false, enumerable: false,

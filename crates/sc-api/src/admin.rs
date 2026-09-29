@@ -3137,8 +3137,8 @@ pub fn admin_endpoints() -> EndpointSet {
     );
 
     // At most one instance per model is **active**, and that is what lets a
-    // trigger name a model rather than a fit: the admin refits, activates the
-    // new instance, and every `predict_row` action follows without being edited.
+    // formula name a model rather than a fit: the admin refits, activates the
+    // new instance, and every `predict("…")` follows without being edited.
     // Activating one deactivates whichever was.
     set.register(
         Endpoint::new(
@@ -3377,8 +3377,8 @@ pub fn admin_endpoints() -> EndpointSet {
 
     // Write one variable's summary into rows (§16), through the row layer:
     // `update` into the rows of the table its one axis is about, matched by
-    // key; `insert`, one row per element into `table`. The same write-back the
-    // `write_posterior` action makes.
+    // key; `insert`, one row per element into `table`. The same write-back a
+    // code body's model handle makes (`sc_api::models::write_posterior`).
     set.register(
         Endpoint::new(
             "writePosterior",

@@ -99,7 +99,7 @@ impl std::fmt::Display for ModelId {
 pub struct Model {
     /// Stable identity: the UUID of its `_fd_models` row.
     pub id: ModelId,
-    /// The unique, human-facing name — what a `predict_row` action and the admin
+    /// The unique, human-facing name — what a `predict("…")` formula and the admin
     /// screen address it by, so renaming one breaks those references
     /// deliberately rather than silently.
     pub name: String,
@@ -164,7 +164,7 @@ impl Model {
     /// The table this model is over — the dataset's, and **only** the dataset's.
     ///
     /// `_fd_models` carries a `table_name` column so the list can be filtered by
-    /// table without reading every dataset (and so `predict_row`'s
+    /// table without reading every dataset (and so `fit_model`'s
     /// `config_spec_for` can offer "the models on this table"), but it is
     /// derived from here on the way out and checked against here on the way in.
     /// Two places to edit one fact would eventually disagree, and the one that

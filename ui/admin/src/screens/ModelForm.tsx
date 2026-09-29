@@ -412,7 +412,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                 </Form.Label>
                 <Form.Control value={name} required onChange={(e) => setName(e.target.value)} />
                 <Form.Text muted>
-                  <T text="What a" /> <code>predict_row</code> <T text="action names this model by." />
+                  <T text='What predict("…") in a formula and models.get("…") in code name this model by.' />
                 </Form.Text>
               </Form.Group>
             </Col>

@@ -127,7 +127,8 @@ pub use encode::{
 };
 pub use fit::{
     ATTR_AXES, ATTR_BINDING, ATTR_CANCEL_REQUESTED, ATTR_COORDINATES, ATTR_OUTCOME, ATTR_PROGRESS,
-    ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Fit, FitStarter, GridPoint, MAX_GRID_POINTS, RowCounts,
+    ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Activation, Fit, FitStarter, GridPoint, MAX_GRID_POINTS,
+    RowCounts,
     fit_model, fit_model_with, fitted_cleanly, grid, run_fit, run_fit_with,
 };
 pub use frame::{Column, ColumnType, Frame, canonical_key};

@@ -846,7 +846,7 @@ function WriteBack({
         )}
 
         <p className="text-muted small mb-0">
-          <T text="The rows are written through the table's own rules and fire its triggers, as an edit would. The write_posterior action does the same from a trigger, after a fit_model." />
+          <T text="The rows are written through the table's own rules and fire its triggers, as an edit would. A code body does the same with m.writePosterior(…) — in a workflow, a code step after a fit_model." />
         </p>
         {error && <Alert variant="danger" className="mt-3 mb-0">{error}</Alert>}
         {done && <Alert variant="success" className="mt-3 mb-0">{done}</Alert>}

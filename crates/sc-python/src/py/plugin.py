@@ -66,6 +66,7 @@ import os
 import re
 import sys
 import traceback
+import warnings
 
 #: The distribution metadata group a package advertises its plugin under — the
 #: idiomatic way a Python distribution says "this is a plugin of X" (§9).
@@ -726,8 +727,15 @@ def model_provider(
     """Register a **model provider**: code that can fit something (TODO §10, §14).
 
     The class answers ``fit(frame, configuration, hyperparameters)`` — returning
-    ``{"state": ..., "parameters": [...]}``, or just the state — and
-    ``predict(state, frame)``, returning one answer per row::
+    ``{"state": ..., "parameters": [...], "warnings": ["..."]}``, or just the
+    state — and ``predict(state, frame)``, returning one answer per row.
+
+    ``warnings`` are sentences the admin should read before trusting the fit,
+    saying what to do ("the solver did not converge: raise `max_iter`"). A
+    ``warnings.warn`` raised while ``fit`` runs (scikit-learn's
+    ``ConvergenceWarning``) is caught and added to them. The host records them
+    on the fit, and a fit with any is not clean, so ``fit_model`` with
+    ``activate: if_clean`` leaves it inactive::
 
         @sc.model_provider(
             "ridge",
@@ -1176,21 +1184,32 @@ def op_model_fit(payload):
     answered its state: ``state`` is the half without which nothing can predict,
     and ``parameters`` is the half a screen shows.
     """
-    result = _model_call(
-        payload,
-        "fit",
-        {
-            "frame": Frame(payload.get("frame")),
-            "configuration": payload.get("configuration") or {},
-            "hyperparameters": payload.get("hyperparameters") or {},
-        },
-    )
+    with warnings.catch_warnings(record=True) as caught:
+        # "always", or a warning Python has already shown once in this
+        # process would be missing from the second fit that raised it.
+        warnings.simplefilter("always")
+        result = _model_call(
+            payload,
+            "fit",
+            {
+                "frame": Frame(payload.get("frame")),
+                "configuration": payload.get("configuration") or {},
+                "hyperparameters": payload.get("hyperparameters") or {},
+            },
+        )
     if isinstance(result, dict) and "state" in result:
-        return {
+        answer = {
             "state": result.get("state"),
             "parameters": list(result.get("parameters") or ()),
+            "warnings": [str(w) for w in result.get("warnings") or ()],
         }
-    return {"state": result, "parameters": []}
+    else:
+        answer = {"state": result, "parameters": [], "warnings": []}
+    for w in caught:
+        sentence = f"{w.category.__name__}: {w.message}"
+        if sentence not in answer["warnings"]:
+            answer["warnings"].append(sentence)
+    return answer
 
 
 def op_model_predict(payload):

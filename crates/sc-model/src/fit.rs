@@ -39,11 +39,11 @@
 //! [`ATTR_OUTCOME`] (what this fit produces, so a prediction does not have to
 //! re-read the dataset to find out), [`ATTR_ROWS`] (what the split came to and
 //! what the encoding dropped) and [`ATTR_SEARCH`] (every grid point and its
-//! score, so the search is inspectable and not a number that appeared). A
-//! posterior adds three more: [`ATTR_PROGRESS`] while it runs,
-//! [`ATTR_CANCEL_REQUESTED`] when somebody asks it to stop, and
-//! [`ATTR_WARNINGS`] when its diagnostics say it should not be trusted as it
-//! stands.
+//! score, so the search is inspectable and not a number that appeared).
+//! [`ATTR_WARNINGS`] holds what the provider warned about, for any provider,
+//! and a posterior's diagnostics when they say it should not be trusted as it
+//! stands. A posterior adds two more: [`ATTR_PROGRESS`] while it runs, and
+//! [`ATTR_CANCEL_REQUESTED`] when somebody asks it to stop.
 //!
 //! ## A posterior takes another road (Stan TODO §2)
 //!
@@ -120,8 +120,10 @@ pub const ATTR_COORDINATES: &str = "coordinates";
 /// what the policies dropped, and a line per bound variable (Stan TODO §10).
 pub const ATTR_BINDING: &str = "binding";
 
-/// The attribute holding a posterior's diagnostic warnings, as sentences that
-/// say what to do (Stan TODO §15). A fit with warnings is still `fitted`.
+/// The attribute holding a fit's warnings, as sentences that say what to do:
+/// a posterior's diagnostics (Stan TODO §15) and whatever any provider
+/// reported in [`FitResult::warnings`](crate::provider::FitResult). A fit
+/// with warnings is still `fitted`, and is not [`fitted_cleanly`].
 pub const ATTR_WARNINGS: &str = "warnings";
 
 /// The attribute holding, for each output variable a posterior drew, its
@@ -191,8 +193,8 @@ pub struct Fit {
     /// A posterior's binding: every dimension's coordinates and the report.
     /// Written to [`ATTR_COORDINATES`] and [`ATTR_BINDING`].
     pub binding: Option<(Coordinates, BindReport)>,
-    /// A posterior's warnings, as sentences. Written to [`ATTR_WARNINGS`]
-    /// when there are any.
+    /// The fit's warnings, as sentences: a posterior's diagnostics, or what
+    /// the provider reported. Written to [`ATTR_WARNINGS`] when there are any.
     pub warnings: Vec<String>,
     /// A posterior's output variables: their shapes and what labels each
     /// axis. Written to [`ATTR_AXES`].
@@ -441,7 +443,7 @@ pub async fn run_fit_with(
         search,
         draws: Vec::new(),
         binding: None,
-        warnings: Vec::new(),
+        warnings: result.warnings,
         axes: BTreeMap::new(),
     })
 }
@@ -487,7 +489,7 @@ async fn fit_test(
         search: Vec::new(),
         draws: Vec::new(),
         binding: None,
-        warnings: Vec::new(),
+        warnings: result.warnings,
         axes: BTreeMap::new(),
     })
 }
@@ -652,19 +654,74 @@ async fn fit_posterior(
     })
 }
 
+/// When a new fit becomes its model's active one — `fit_model`'s `activate`
+/// (milestone 31 §2).
+///
+/// The same three words for every provider, because "clean" is: a fit is
+/// clean when it is fitted and nothing warned, whether the warning was a
+/// posterior's diagnostic or a provider's own ([`FitResult::warnings`](crate::
+/// provider::FitResult)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Activation {
+    /// Keep the new fit beside the active one, for the admin to activate.
+    #[default]
+    Never,
+    /// Activate it when it is [`fitted_cleanly`].
+    IfClean,
+    /// Activate it whenever it is fitted, warnings or not. A failed fit is
+    /// never activated: it cannot answer a prediction.
+    Always,
+}
+
+impl Activation {
+    /// Every setting, as stored.
+    pub const ALL: [&'static str; 3] = ["never", "if_clean", "always"];
+
+    /// The setting as stored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Activation::Never => "never",
+            Activation::IfClean => "if_clean",
+            Activation::Always => "always",
+        }
+    }
+
+    /// A stored setting, refused by name when it is none of the three.
+    pub fn parse(raw: &str) -> Result<Activation> {
+        match raw.trim() {
+            "never" => Ok(Activation::Never),
+            "if_clean" => Ok(Activation::IfClean),
+            "always" => Ok(Activation::Always),
+            other => Err(Error::invalid(format!(
+                "`activate` must be one of `never`, `if_clean` or `always`, not `{other}`"
+            ))),
+        }
+    }
+
+    /// Whether a finished `instance` becomes active under this setting.
+    pub fn activates(self, instance: &ModelInstance) -> bool {
+        match self {
+            Activation::Never => false,
+            Activation::IfClean => fitted_cleanly(instance),
+            Activation::Always => instance.status == crate::instance::FitStatus::Fitted,
+        }
+    }
+}
+
 /// Starting a fit as a job, from below the layer that owns the jobs — the seam
 /// the `fit_model` action reaches the server's fits through (Stan TODO 7.5),
 /// as `DatasetSource` is the one a dataset is read through.
 #[async_trait::async_trait]
 pub trait FitStarter: Send + Sync {
     /// Write `instance` (saying `fitting`) and start fitting `model` into it,
-    /// answering as soon as the row exists. With `activate_if_clean`, the job
-    /// makes the instance active when it finishes fitted with no warnings.
+    /// answering as soon as the row exists. When it finishes, the job makes
+    /// the instance active if `activation` [`activates`](Activation::activates)
+    /// it.
     async fn start_fit(
         &self,
         model: &Model,
         instance: ModelInstance,
-        activate_if_clean: bool,
+        activation: Activation,
     ) -> Result<ModelInstance>;
 }
 
@@ -886,10 +943,14 @@ mod tests {
             let n = values.len() as f64;
             let mean = values.iter().flatten().sum::<f64>() / n;
             let bias = hyper.get("bias").and_then(Json::as_f64).unwrap_or(0.0);
-            Ok(
-                FitResult::new(serde_json::json!({ "prediction": mean + bias }))
-                    .parameter(ParameterBlock::scalar("mean", mean)),
-            )
+            let mut result = FitResult::new(serde_json::json!({ "prediction": mean + bias }))
+                .parameter(ParameterBlock::scalar("mean", mean));
+            // A configured `warn` is reported, the way sklearn's
+            // `ConvergenceWarning` is by a Python provider.
+            if let Some(warning) = config.get("warn").and_then(Json::as_str) {
+                result = result.warning(warning);
+            }
+            Ok(result)
         }
 
         async fn predict(&self, state: &Json, frame: &Frame) -> Result<Vec<Prediction>> {
@@ -984,6 +1045,39 @@ mod tests {
         let encoding = fit.encoding.expect("encoding");
         assert_eq!(encoding.feature_names(), vec!["x"]);
         assert_eq!(encoding.target.expect("target").column, "y".to_owned());
+    }
+
+    #[tokio::test]
+    async fn a_providers_warnings_are_the_instances_and_a_clean_fit_has_none() {
+        let fits = Arc::new(AtomicUsize::new(0));
+        let sentence = "the optimiser stopped without converging: raise `max_iter`";
+        let warned = run_fit(
+            &registry(&fits),
+            &Fixed(rows(100)),
+            &model().config("warn", sentence),
+            1000,
+        )
+        .await
+        .expect("fit");
+        assert_eq!(warned.warnings, vec![sentence.to_owned()]);
+        let instance = warned
+            .apply(ModelInstance::starting(crate::model::ModelId::new()))
+            .expect("apply");
+        assert_eq!(
+            instance.attributes.get(ATTR_WARNINGS),
+            Some(&serde_json::json!([sentence]))
+        );
+        assert!(!fitted_cleanly(&instance));
+
+        let clean = run_fit(&registry(&fits), &Fixed(rows(100)), &model(), 1000)
+            .await
+            .expect("fit");
+        assert!(clean.warnings.is_empty());
+        let instance = clean
+            .apply(ModelInstance::starting(crate::model::ModelId::new()))
+            .expect("apply");
+        assert!(!instance.attributes.contains_key(ATTR_WARNINGS));
+        assert!(fitted_cleanly(&instance));
     }
 
     #[tokio::test]

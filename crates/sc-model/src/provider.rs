@@ -28,7 +28,7 @@
 //! the type of the column its configuration names as the label. So
 //! [`ModelProvider::outcome`] takes the dataset's shape and the configuration
 //! and answers an [`Outcome`], which is what the UI renders against, what the
-//! metric set is chosen by, and what `predict_row` checks before it writes a
+//! metric set is chosen by, and what `predict()` checks before it writes a
 //! number into a text column. The alternative is four providers where there is
 //! one algorithm.
 //!
@@ -101,7 +101,7 @@ pub fn resolve_column_options(spec: Vec<FormField>, shape: &DatasetShape) -> Vec
 /// The five are not a taxonomy of algorithms — they are a taxonomy of *answers*,
 /// which is what everything downstream needs: [`Test`](Outcome::Test) has no
 /// per-row output at all, so nothing asks a t-test to predict, and
-/// [`Cluster`](Outcome::Cluster) answers an integer, so `predict_row` refuses to
+/// [`Cluster`](Outcome::Cluster) answers an integer, so `predict()` refuses to
 /// write it into a text field.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
@@ -184,7 +184,7 @@ impl Outcome {
     }
 
     /// The type of field a prediction of this outcome can be written into —
-    /// what `predict_row` checks its target against (§12), and `None` for an
+    /// what `predict()` checks its target against (§12), and `None` for an
     /// outcome that produces nothing per row.
     ///
     /// An embedding is [`Json`](BasicType::Json) because a vector is not a
@@ -329,7 +329,7 @@ impl OutcomeSpec {
     /// configuration names, and no amount of reading the configuration decides
     /// which without the data.
     ///
-    /// It exists for `predict_row`'s save-time check (§12): the target field has
+    /// It exists for `predict()`'s save-time check (§12): the target field has
     /// to be able to hold what the model will produce, and refusing that on the
     /// form is worth an answer that is sometimes two possibilities wide. The
     /// definitive check is still made at fire time, against the outcome the
@@ -348,7 +348,7 @@ impl OutcomeSpec {
             OutcomeSpec::Test => Vec::new(),
             // Only a posterior whose declaration names a prediction. None
             // does while prediction from a posterior is carried past the Stan
-            // milestone (Stan TODO §19), so a `predict_row` over one is
+            // milestone (Stan TODO §19), so a `predict()` over one is
             // refused when it is saved, not at every fire.
             OutcomeSpec::Posterior { prediction: None } => Vec::new(),
             OutcomeSpec::Posterior {
@@ -513,6 +513,13 @@ pub struct FitResult {
     /// The parameters, in the order they should be shown.
     #[serde(default)]
     pub parameters: Vec<ParameterBlock>,
+    /// What the provider thinks the admin should know before trusting this
+    /// fit ("the optimiser stopped after 100 iterations without converging:
+    /// raise `max_iter`"), as sentences that say what to do. The fit job
+    /// writes them to `ATTR_WARNINGS`, beside a posterior's diagnostics, so
+    /// "fitted cleanly" means the same thing for every provider.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl FitResult {
@@ -521,12 +528,19 @@ impl FitResult {
         FitResult {
             state,
             parameters: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
     /// Append a parameter block, returning `self` for chaining.
     pub fn parameter(mut self, block: ParameterBlock) -> FitResult {
         self.parameters.push(block);
+        self
+    }
+
+    /// Append a warning, returning `self` for chaining.
+    pub fn warning(mut self, sentence: impl Into<String>) -> FitResult {
+        self.warnings.push(sentence.into());
         self
     }
 }
@@ -1240,7 +1254,7 @@ mod tests {
         );
         assert_eq!(Outcome::Cluster.prediction_type(), Some(BasicType::Int));
         // A hypothesis test answers nothing per row, so there is nothing for
-        // `predict_row` to write and the action refuses it.
+        // `predict()` to answer and it is refused.
         assert_eq!(Outcome::Test.prediction_type(), None);
         assert!(!Outcome::Test.predicts());
         assert_eq!(Outcome::Cluster.name(), "cluster");

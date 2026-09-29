@@ -261,16 +261,16 @@ deny, and a rule that waits on a provider makes every read wait on it.
 
 ## Phase 1 — One model action
 
-- [ ] 1.1 `FitResult::warnings` and `FitResult::warning(…)`; the fit job writes provider
+- [x] 1.1 `FitResult::warnings` and `FitResult::warning(…)`; the fit job writes provider
       warnings into `ATTR_WARNINGS` beside the posterior diagnostics; the Python
       `@sc.model_provider` payload's `warnings` and `warnings.warn` captured during `fit`.
       Tests: a stub provider with a warning gives an instance with that sentence; a clean one
       gives none.
-- [ ] 1.2 `fit_model` generic (§2): `activate: never | if_clean | always`, `metrics` in the
+- [x] 1.2 `fit_model` generic (§2): `activate: never | if_clean | always`, `metrics` in the
       answer, the neutral description. Tests: fired from a trigger over a
       `linear_regression` model; `if_clean` with the warning stub stays inactive; `always`
       activates it anyway; `wait: false` with `if_clean` is activated by the job.
-- [ ] 1.3 Remove `predict_row` and `write_posterior`: delete `predict_row.rs`, move
+- [x] 1.3 Remove `predict_row` and `write_posterior`: delete `predict_row.rs`, move
       `write_posterior()` and its helpers (target checks, count rounding, dates as days) to
       `sc_api::models`, point `handlers.rs`'s `writePosterior` at it, and shrink
       `register_model_actions` and its callers (`sc-cli/src/main.rs`, `sc-server`'s
@@ -278,7 +278,7 @@ deny, and a rule that waits on a provider makes every read wait on it.
       (`posterior_api.rs`, `trigger_admin_api.rs`, `model_admin_api.rs`, `stan_models.rs`) to
       keep what they covered through the admin API, until Phases 2 and 3 give them their new
       home. The `sc-core-actions` test asserts the model action set is exactly `fit_model`.
-- [ ] 1.4 The admin UI's wording: `ModelForm.tsx`'s "what a `predict_row` action names this
+- [x] 1.4 The admin UI's wording: `ModelForm.tsx`'s "what a `predict_row` action names this
       model by" and `PosteriorInstance.tsx`'s "the `write_posterior` action does the same"
       now point at `predict()` and at `m.writePosterior`. The strings go in the `admin` i18n
       domain.

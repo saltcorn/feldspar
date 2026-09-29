@@ -383,7 +383,7 @@ impl ModelProvider for StanProvider {
 
     fn outcome_spec(&self) -> OutcomeSpec {
         // Prediction for new rows (§19) is carried past this milestone, so a
-        // posterior names none and `predict_row` over one is refused on save.
+        // posterior names none and `predict()` over one is refused on save.
         OutcomeSpec::Posterior { prediction: None }
     }
 

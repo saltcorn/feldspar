@@ -69,6 +69,8 @@ mod field_api;
 mod file_manager;
 #[path = "file_operations_api.rs"]
 mod file_operations_api;
+#[path = "fit_model_action.rs"]
+mod fit_model_action;
 #[path = "file_store_admin_api.rs"]
 mod file_store_admin_api;
 #[path = "generated_client_refresh.rs"]

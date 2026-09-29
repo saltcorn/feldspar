@@ -10,6 +10,8 @@ handed the plans directly with the same authority and the same budgets a code
 body has.
 """
 
+import warnings
+
 import saltcorn as sc
 
 sc.settings(
@@ -156,8 +158,14 @@ class FixtureMean:
     def fit(self, frame, configuration, hyperparameters):
         values = [float(v) for v in frame[configuration["label"]]]
         mean = sum(values) / (len(values) or 1)
+        shift = float(hyperparameters.get("shift") or 0)
+        # Both ways a provider warns: `warnings.warn`, which the host catches,
+        # and the `warnings` of the answer.
+        if shift < 0:
+            warnings.warn("a negative shift predicts below every mean")
         return {
-            "state": {"mean": mean + float(hyperparameters.get("shift") or 0)},
+            "state": {"mean": mean + shift},
+            "warnings": [configuration["note"]] if configuration.get("note") else [],
             "parameters": [
                 sc.Parameter.scalar("Mean", mean),
                 sc.Parameter.table(

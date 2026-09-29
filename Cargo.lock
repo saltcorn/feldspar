@@ -8483,7 +8483,6 @@ dependencies = [
  "sc-types",
  "serde_json",
  "tokio",
- "uuid",
 ]
 
 [[package]]

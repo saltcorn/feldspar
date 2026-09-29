@@ -38,13 +38,11 @@ serde_json.workspace = true
 # transport itself is handed to the action through `ActionContext`, so this
 # dependency is for the *message*, not for a way to send one.
 sc-email.workspace = true
-# `predict_row` (TODO "Predictive models", §12): the provider registry a fit ran
-# with, the `DatasetSource` seam a dataset is read through, and the vocabulary a
-# prediction is expressed in. This crate is layer 9 and `sc-model` is layer 6, so
-# the dependency runs the way every other one here does.
+# `fit_model` (milestone 31 §2): the provider registry a fit is validated
+# against, the `FitStarter` seam a fit is started through, and the instance it
+# reads back. This crate is layer 9 and `sc-model` is layer 6, so the
+# dependency runs the way every other one here does.
 sc-model.workspace = true
-# `predict_row` pins a trigger to one fit by its id.
-uuid.workspace = true
 # `fit_model` waits for the fit it started by reading its row back on a timer.
 tokio = { workspace = true, features = ["time"] }
 # `send_email`'s attachments: the store the row's file path points into is read

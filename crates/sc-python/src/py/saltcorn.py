@@ -1597,9 +1597,8 @@ class ModFns:
 # A fitted posterior's draws, its summary, and the fit itself (Stan TODO §17),
 # read through the ``db`` host: every call is one database call of this run,
 # on its budget, and a body with no ``db`` has no ``models``. The first argument
-# is a model's name (its active fit) or a fit's id, as ``predict_row`` takes
-# it; elements are chosen by key or label, never by a position only one fit
-# knows.
+# is a model's name (its active fit) or a fit's id; elements are chosen by key
+# or label, never by a position only one fit knows.
 
 
 class Models:

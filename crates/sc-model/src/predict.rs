@@ -137,8 +137,8 @@ pub async fn predict_rows(
 ///   derive them from.
 /// - [`Dataset`](Subject::Dataset) is rows of the model's own table, read
 ///   **through the dataset**, so a join path and an aggregation are computed by
-///   the row layer exactly as they were at fit time. This is what a trigger's
-///   `predict_row` uses, and it is why the restriction goes into the read rather
+///   the row layer exactly as they were at fit time. This is what a formula's
+///   `predict("…")` uses, and it is why the restriction goes into the read rather
 ///   than being applied to what came back.
 #[derive(Debug, Clone, Copy)]
 pub enum Subject<'a> {
@@ -162,7 +162,7 @@ pub struct Predictions {
 /// Apply `instance` to whatever `subject` names, answering in row order.
 ///
 /// The one path both callers of Phase 5 go through — the `predictRows` endpoint
-/// and the `predict_row` action — because "read the rows, encode them the way
+/// and `predict("…")` — because "read the rows, encode them the way
 /// the fit was, ask the provider, name the classes" must not be written twice
 /// and drift.
 pub async fn predict_subject(
@@ -223,7 +223,7 @@ pub fn name_classes(predictions: Vec<Prediction>, encoding: &Encoding) -> Result
         .collect()
 }
 
-/// The value each prediction writes into a row (§12) — what `predict_row` hands
+/// The value each prediction writes into a row (§12) — what `predict()` hands
 /// the row layer.
 pub fn prediction_values(predictions: &[Prediction]) -> Result<Vec<Json>> {
     predictions.iter().map(Prediction::to_json).collect()

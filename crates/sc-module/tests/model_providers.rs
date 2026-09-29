@@ -289,3 +289,21 @@ fn a_provider_that_answers_the_wrong_number_of_predictions_is_named() {
         "{err}"
     );
 }
+
+#[test]
+fn a_fit_answer_carries_its_warnings_and_one_without_any_is_clean() {
+    let warned = model_providers::read_fit(
+        "@saltcorn-test/model",
+        "echo_mean",
+        json!({ "state": 1, "parameters": [], "warnings": ["only five rows: add more"] }),
+    )
+    .expect("readable");
+    assert_eq!(warned.warnings, vec!["only five rows: add more".to_owned()]);
+    let clean = model_providers::read_fit(
+        "@saltcorn-test/model",
+        "echo_mean",
+        json!({ "state": 1, "parameters": [] }),
+    )
+    .expect("readable");
+    assert!(clean.warnings.is_empty());
+}

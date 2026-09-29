@@ -205,9 +205,9 @@ pub struct AppMounts {
     modules: Option<Arc<crate::modules::ModuleServices>>,
     /// The model machinery (TODO "Predictive models"): the provider registry,
     /// the dataset seam and the row cap. Here for the reason the four above are
-    /// — the admin handlers already hold this handle, and the `predict_row`
-    /// action in the trigger registry has to predict with the *same* registry a
-    /// fit was run with. `None` is a process with no models installed, where the
+    /// — the admin handlers already hold this handle, and the `fit_model`
+    /// action in the trigger registry has to fit with the *same* registry the
+    /// admin's Fit button does. `None` is a process with no models installed, where the
     /// Models tab says so rather than pretending.
     models: Option<crate::models::ModelServices>,
     /// The stream machinery (TODO "Streams"): the provider registry and the

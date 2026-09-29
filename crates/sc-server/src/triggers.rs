@@ -126,7 +126,7 @@ pub async fn install_triggers_with_adapters(
 }
 
 /// The action set a server runs with **before its modules**: the built-ins plus
-/// `run_agent` and `predict_row`.
+/// `run_agent` and `fit_model`.
 ///
 /// Its own function because it is assembled twice — once at boot, here, and
 /// again every time a module is installed, configured or removed
@@ -145,21 +145,18 @@ pub fn base_action_registry(
         Arc::clone(agents.providers()),
     )
     .context("registering the agent action")?;
-    // And the model actions, for the same reason and in the same place: they
-    // need the model provider registry a fit ran with, the dataset seam and the
-    // fits themselves, none of which exists until a server has assembled them.
-    // Rebuilding the base set
-    // on a module change is therefore what gives the action the *new* registry —
-    // which is how a model fitted by a module's provider keeps predicting after
-    // that module is reinstalled.
+    // And the model action, for the same reason and in the same place: it
+    // needs the model provider registry a fit is validated against and the fits
+    // themselves, neither of which exists until a server has assembled them.
+    // Rebuilding the base set on a module change is therefore what gives the
+    // action the *new* registry — which is how a model over a module's
+    // provider can still be refitted after that module is reinstalled.
     sc_core_actions::register_model_actions(
         &mut registry,
         models.registry(),
-        models.source(),
-        models.max_rows(),
         Arc::new(models.clone()),
     )
-    .context("registering the model actions")?;
+    .context("registering the model action")?;
     Ok(registry)
 }
 

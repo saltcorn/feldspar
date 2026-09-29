@@ -2,11 +2,10 @@
 //!
 //! Every action Saltcorn ships with, in one crate: [`InsertRow`], [`UpdateRows`],
 //! [`DeleteRows`], [`Fetch`], [`RunJsCode`], [`RunPythonCode`], [`SendEmail`],
-//! and the three a model needs: [`PredictRow`], [`WritePosterior`] and
-//! [`FitModel`]. The set
-//! is **deliberately small** — GOALS asks for a minimal one, because control flow
-//! belongs to the workflow engine (§10.3) rather than to a proliferation of
-//! actions — and [`builtin_actions`] is the single constructor that assembles it.
+//! and [`FitModel`]. The set is **deliberately small** — GOALS asks for a
+//! minimal one, because control flow belongs to the workflow engine (§10.3)
+//! rather than to a proliferation of actions — and [`builtin_actions`] is the
+//! single constructor that assembles it.
 //!
 //! ## Why a crate of its own
 //!
@@ -44,9 +43,8 @@ mod code_body;
 mod code_fetch;
 mod delete_rows;
 mod fetch;
+mod fit_model;
 mod insert_row;
-mod posterior;
-mod predict_row;
 mod rows_scope;
 mod run_js_code;
 mod run_python_code;
@@ -61,9 +59,8 @@ use sc_error::Result;
 pub use code_body::{CodeSurfaces, Hosts as CodeBodyHosts};
 pub use delete_rows::DeleteRows;
 pub use fetch::Fetch;
+pub use fit_model::FitModel;
 pub use insert_row::InsertRow;
-pub use posterior::{FitModel, WritePosterior, write_posterior};
-pub use predict_row::PredictRow;
 pub use run_js_code::RunJsCode;
 pub use run_python_code::RunPythonCode;
 pub use send_email::SendEmail;
@@ -98,30 +95,23 @@ pub fn register_builtin_actions(registry: &mut ActionRegistry) -> Result<()> {
     Ok(())
 }
 
-/// Add the model actions to a registry — `predict_row`, `write_posterior` and
-/// `fit_model`: the built-in actions that need services assembled first,
-/// exactly as `run_agent` does.
+/// Add the model action to a registry — `fit_model`, the one model action,
+/// because it is the one that means the same thing for every provider
+/// (milestone 31 §1). Predicting and writing a posterior back are methods of
+/// a model, reached from code, and `predict("…")` in a formula.
 ///
 /// Separate from [`register_builtin_actions`] for the same reason
 /// `sc_core_traits::register_agent_actions` is separate: it holds the model
-/// provider registry a fit ran with, the seam a dataset is read through (§4)
-/// and the one a fit is started through, and none of them exists until a
-/// server has assembled them. A process with no model support registers the
-/// other seven and these are simply absent — which is what makes a trigger
-/// naming one report "unknown action" rather than fail silently.
+/// provider registry a fit is validated against and the seam a fit is started
+/// through, and neither exists until a server has assembled them. A process
+/// with no model support registers the other seven and this one is simply
+/// absent — which is what makes a trigger naming it report "unknown action"
+/// rather than fail silently.
 pub fn register_model_actions(
     registry: &mut ActionRegistry,
     providers: Arc<sc_model::ModelRegistry>,
-    source: Arc<dyn sc_model::DatasetSource>,
-    max_rows: u64,
     fits: Arc<dyn sc_model::FitStarter>,
 ) -> Result<()> {
-    registry.register(Arc::new(PredictRow::new(
-        Arc::clone(&providers),
-        source,
-        max_rows,
-    )))?;
-    registry.register(Arc::new(WritePosterior))?;
     registry.register(Arc::new(FitModel::new(providers, fits)))
 }
 
@@ -153,6 +143,44 @@ mod tests {
             assert!(!spec.is_empty(), "{}", action.name());
             assert!(spec.iter().any(|f| f.required), "{}", action.name());
         }
+    }
+
+    /// A `FitStarter` that is never called: the registration is under test.
+    struct NoFits;
+
+    #[async_trait::async_trait]
+    impl sc_model::FitStarter for NoFits {
+        async fn start_fit(
+            &self,
+            _model: &sc_model::Model,
+            _instance: sc_model::ModelInstance,
+            _activation: sc_model::Activation,
+        ) -> Result<sc_model::ModelInstance> {
+            unreachable!("nothing is fitted here")
+        }
+    }
+
+    #[test]
+    fn the_model_action_set_is_exactly_fit_model() {
+        // Milestone 31 §1: a model's one action is the generic one. Predicting
+        // is `predict("…")` in a formula and `m.predict` in code; writing a
+        // posterior back is `m.writePosterior`.
+        let mut registry = sc_action::ActionRegistry::new();
+        register_model_actions(
+            &mut registry,
+            Arc::new(sc_model::ModelRegistry::new()),
+            Arc::new(NoFits),
+        )
+        .unwrap();
+        assert_eq!(registry.names(), vec!["fit_model"]);
+        let spec: Vec<String> = registry
+            .require("fit_model")
+            .unwrap()
+            .config_spec()
+            .iter()
+            .map(|f| f.name().to_owned())
+            .collect();
+        assert_eq!(spec, vec!["model", "activate", "wait", "name"]);
     }
 
     #[test]

@@ -40,11 +40,11 @@ use sc_api::rows::{RowQuery, count_rows_where, list_row_values};
 use sc_catalog::Catalog;
 use sc_error::{Context, Error, Result};
 use sc_model::{
-    Column, Dataset, DatasetSource, FitContext, FitProgress, Frame, InstanceId, Model,
+    Activation, Column, Dataset, DatasetSource, FitContext, FitProgress, Frame, InstanceId, Model,
     ModelInstance, ModelProvider, ModelRegistry, PosteriorLimits, Progress, ProgressWrite, Read,
     SPLIT_KEY, bootstrap_model_draws, bootstrap_model_instances, bootstrap_models,
-    builtin_registry, canonical_key, fit_model_with, fitted_cleanly, reap_fitting_instances,
-    record_fit_progress, save_model_instance,
+    builtin_registry, canonical_key, fit_model_with, reap_fitting_instances, record_fit_progress,
+    save_model_instance,
 };
 use sc_query::{Expr, Projection, Value};
 use sc_stan::StanProvider;
@@ -212,7 +212,7 @@ impl DatasetSource for CatalogDatasetSource {
 /// dataset seam, and the bound a read must stay under.
 ///
 /// Cloneable and cheap, like [`AgentServices`](crate::AgentServices), because
-/// four places need the same one: the admin handlers, the `predict_row` action
+/// four places need the same one: the admin handlers, the `fit_model` action
 /// in the trigger registry, the module reload that rebuilds the registry, and
 /// the spawned fit itself.
 #[derive(Clone)]
@@ -390,17 +390,18 @@ impl ModelServices {
     /// did not work is `Ok` carrying a failed instance. So the task logs the
     /// former and nothing else: there is nobody left to return it to.
     pub async fn start_fit(&self, model: &Model, instance: ModelInstance) -> Result<ModelInstance> {
-        self.start_fit_activating(model, instance, false).await
+        self.start_fit_activating(model, instance, Activation::Never)
+            .await
     }
 
     /// [`start_fit`](Self::start_fit), making the instance the model's active
-    /// one when it finishes fitted with no warnings and `activate_if_clean`
-    /// asks — what `fit_model` does when it does not wait.
+    /// one when it finishes and `activation` says it should — what `fit_model`
+    /// does when it does not wait.
     pub async fn start_fit_activating(
         &self,
         model: &Model,
         instance: ModelInstance,
-        activate_if_clean: bool,
+        activation: Activation,
     ) -> Result<ModelInstance> {
         save_model_instance(&self.catalog, &instance)
             .await
@@ -436,7 +437,7 @@ impl ModelServices {
                     return;
                 }
             };
-            if activate_if_clean && fitted_cleanly(&finished) {
+            if activation.activates(&finished) {
                 let mut active = finished;
                 active.active = true;
                 if let Err(e) = save_model_instance(&catalog, &active).await {
@@ -458,10 +459,9 @@ impl sc_model::FitStarter for ModelServices {
         &self,
         model: &Model,
         instance: ModelInstance,
-        activate_if_clean: bool,
+        activation: Activation,
     ) -> Result<ModelInstance> {
-        self.start_fit_activating(model, instance, activate_if_clean)
-            .await
+        self.start_fit_activating(model, instance, activation).await
     }
 }
 

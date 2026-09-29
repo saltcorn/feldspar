@@ -289,7 +289,7 @@ pub async fn list_model_instances(catalog: &Catalog, model: ModelId) -> Result<V
         .collect()
 }
 
-/// The model's active instance, if it has one — what a `predict_row` naming a
+/// The model's active instance, if it has one — what a `predict("…")` naming a
 /// *model* rather than a fit resolves to (§1).
 pub async fn active_model_instance(
     catalog: &Catalog,

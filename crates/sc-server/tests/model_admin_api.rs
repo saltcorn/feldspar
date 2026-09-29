@@ -14,10 +14,11 @@
 //! 3. **A fit that fails leaves the sentence on the instance.** Not an HTTP
 //!    error: the request that started it has long since returned, so the only
 //!    place the reason can be is the row.
-//! 4. **The action writes a prediction onto a row through a trigger.** Which is
-//!    the milestone's definition of done: `predict_row` on an insert trigger,
-//!    the model's *active* instance answering, and the estimate on the row the
-//!    row layer wrote.
+//! 4. **A row the dataset's filter excludes is predicted through the dataset.**
+//!    The model's *active* instance answers about a house inserted after the
+//!    fit, with its join path computed by the row layer. (This was the
+//!    `predict_row` action's test; milestone 31 removed the action, and the
+//!    same prediction is `predict("…")` in a formula from its Phase 3.)
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
@@ -333,7 +334,7 @@ async fn a_model_is_previewed_saved_fitted_and_activated() -> sc_error::Result<(
     assert_eq!(models[0]["provider"], json!("linear_regression"));
     assert_eq!(models[0]["dataset"]["columns"][3]["name"], json!("income"));
 
-    // …and by table, which is what `predict_row`'s picker asks.
+    // …and by table, which is what `fit_model`'s picker asks.
     let (_, by_table) = server
         .client
         .send("GET", "/api/models?table=houses", None)
@@ -523,14 +524,15 @@ async fn a_fit_that_fails_leaves_the_sentence_on_the_instance() -> sc_error::Res
 }
 
 #[tokio::test]
-async fn a_trigger_writes_a_prediction_onto_the_row_it_fired_on() -> sc_error::Result<()> {
+async fn a_row_the_datasets_filter_excludes_is_predicted_through_the_dataset()
+-> sc_error::Result<()> {
     let mut server = setup().await?;
 
     // A fitted, active model over `houses` — **with a filter**, which is the
-    // shape of every real model of this kind and the one the definition of done
-    // names: it is fitted on the houses that have a price, and asked about the
-    // one that does not. A dataset's filter says which rows the fit was computed
-    // from, not which rows may be predicted, so a prediction reads past it.
+    // shape of every real model of this kind: it is fitted on the houses that
+    // have a price, and asked about the one that does not. A dataset's filter
+    // says which rows the fit was computed from, not which rows may be
+    // predicted, so a prediction reads past it.
     let mut body = model_body("house prices");
     body["dataset"]["filter"] = json!("price !== null");
     let (status, saved) = server.client.send("POST", "/api/models", Some(body)).await;
@@ -552,20 +554,27 @@ async fn a_trigger_writes_a_prediction_onto_the_row_it_fired_on() -> sc_error::R
         )
         .await;
 
-    // The action is offered with **this table's** models as its options, which
-    // is what `config_spec_for` plus the query resolution buys.
+    // The one model action is offered with **this table's** models as its
+    // options, which is what `config_spec_for` plus the query resolution buys.
     let (status, actions) = server
         .client
         .send("GET", "/api/actions?table=houses", None)
         .await;
     assert_eq!(status, StatusCode::OK, "{actions}");
-    let predict = actions
+    let names: Vec<&str> = actions
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["name"] == json!("predict_row"))
-        .unwrap_or_else(|| panic!("no predict_row among {actions}"));
-    let model_field = predict["config_spec"]
+        .filter_map(|a| a["name"].as_str())
+        .collect();
+    assert!(!names.contains(&"predict_row"), "{names:?}");
+    let fit = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == json!("fit_model"))
+        .unwrap_or_else(|| panic!("no fit_model among {actions}"));
+    let model_field = fit["config_spec"]
         .as_array()
         .unwrap()
         .iter()
@@ -573,27 +582,7 @@ async fn a_trigger_writes_a_prediction_onto_the_row_it_fired_on() -> sc_error::R
         .unwrap();
     assert_eq!(model_field["options"], json!(["house prices"]));
 
-    // The trigger of the definition of done: an insert on `houses` writes
-    // `estimate`, naming the **model** rather than the fit — so a refit followed
-    // by an activate changes what it predicts with, without editing it.
-    let trigger = json!({
-        "name": "estimate_price",
-        "description": "",
-        "when": "insert",
-        "channel": "houses",
-        "only_if": Value::Null,
-        "action": "predict_row",
-        "configuration": { "model": "house prices", "field": "estimate" },
-        "min_role": Value::Null,
-        "enabled": true,
-    });
-    let (status, created) = server
-        .client
-        .send("POST", "/api/triggers", Some(trigger.clone()))
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-
-    // A new house, and the estimate arrives on it: 1000·area + 20000·bedrooms.
+    // A new house, which the dataset's filter excludes (it has no price).
     let (status, row) = server
         .client
         .send(
@@ -607,29 +596,25 @@ async fn a_trigger_writes_a_prediction_onto_the_row_it_fired_on() -> sc_error::R
         .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
 
-    let (status, rows) = server
+    // Predicted by the model's active fit, through the dataset — so the join
+    // path is the row layer's answer — at 1000·area + 20000·bedrooms.
+    let (status, answer) = server
         .client
-        .send("GET", "/api/tables/houses/rows?id=eq.500", None)
+        .send(
+            "POST",
+            "/api/model-predictions",
+            Some(json!({ "model": id, "filter": "id == 500" })),
+        )
         .await;
-    assert_eq!(status, StatusCode::OK, "{rows}");
-    let estimate = rows[0]["estimate"].as_f64().unwrap_or_else(|| {
-        panic!("the trigger wrote no estimate: {rows}");
-    });
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["instance"], json!(instance), "{answer}");
+    let estimate = answer["predictions"][0]["value"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("no prediction: {answer}"));
     assert!(
         (estimate - 160_000.0).abs() < 1.0,
         "expected ~160000, got {estimate}"
     );
-
-    // A target the model cannot fill is refused **on the form**, not at fire
-    // time: a regression produces a number and `id` is not one it may write.
-    let mut bad = trigger;
-    bad["name"] = json!("wrong_target");
-    bad["configuration"] = json!({ "model": "house prices", "field": "neighbourhood" });
-    let (status, refused) = server.client.send("POST", "/api/triggers", Some(bad)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
-
-    // And nothing here went round the row layer: the write the action made is
-    // an ordinary update, so the row is what the catalog says it is.
     assert!(server.catalog.get("houses")?.is_some());
     Ok(())
 }

@@ -1410,7 +1410,14 @@ async function modelFit({ module: name, provider: providerName, frame, configura
     typeof result === "object" && !Array.isArray(result) && "state" in result
       ? result
       : { state: result };
-  return { state: pair.state === undefined ? null : pair.state, parameters: pair.parameters || [] };
+  // `warnings` are sentences the admin should read before trusting the fit;
+  // the host records them on the instance, and a fit with any is not clean.
+  const warnings = Array.isArray(pair.warnings) ? pair.warnings.map(String) : [];
+  return {
+    state: pair.state === undefined ? null : pair.state,
+    parameters: pair.parameters || [],
+    warnings,
+  };
 }
 
 /** Predict with one, over a frame of any height. Always a list, one per row. */

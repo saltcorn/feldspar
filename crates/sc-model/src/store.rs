@@ -21,7 +21,7 @@
 //!   (§3 for the dataset in particular) and nothing queries into them.
 //! - **`table_name` is a column even though the dataset already carries it**,
 //!   because "the models on this table" is a question two things ask — the model
-//!   list's filter and `predict_row`'s `config_spec_for` — and answering it by
+//!   list's filter and `fit_model`'s `config_spec_for` — and answering it by
 //!   reading every dataset would be a scan. It is *derived* on the way out and
 //!   *checked* on the way in ([`Model::table`]), so the duplication cannot drift.
 //!
@@ -44,7 +44,7 @@ use crate::split::Split;
 pub const MODELS_TABLE: &str = "_fd_models";
 
 /// The [`OptionsSource::ServerQuery`](sc_types::OptionsSource) name meaning "the
-/// models over this table" — what `predict_row`'s model picker declares (§12).
+/// models over this table" — what `fit_model`'s model picker declares.
 ///
 /// A query name rather than a resolved list, because the answer is *rows*: a
 /// `config_spec_for` is synchronous and cannot read them, so the declaration
@@ -54,7 +54,7 @@ pub const MODELS_QUERY: &str = "models_for_table";
 
 /// The UUID primary-key column (§9).
 pub const COL_ID: &str = "id";
-/// The model's unique name — what `predict_row` and the admin screen address.
+/// The model's unique name — what `predict()` and the admin screen address.
 pub const COL_NAME: &str = "name";
 /// The human-readable description column (§9).
 pub const COL_DESCRIPTION: &str = "description";
@@ -89,7 +89,7 @@ fn model_fields() -> Vec<DataField> {
             .required()
             .primary_key(),
         // Unique for the reason a trigger's and an agent's names are: it is the
-        // key a `predict_row` action resolves through, so two models claiming
+        // key a `predict("…")` formula resolves through, so two models claiming
         // one name is not a state the system can serve.
         DataField::plain(COL_NAME, text()).required().unique(),
         DataField::plain(COL_DESCRIPTION, text()),
@@ -173,7 +173,7 @@ pub async fn load_model(catalog: &Catalog, id: ModelId) -> Result<Option<Model>>
     load_one(catalog, Expr::col(COL_ID).eq(Expr::lit(id.0))).await
 }
 
-/// Load the model named `name`, if any — the lookup `predict_row` resolves
+/// Load the model named `name`, if any — the lookup `predict()` resolves
 /// through.
 pub async fn load_model_by_name(catalog: &Catalog, name: &str) -> Result<Option<Model>> {
     load_one(catalog, Expr::col(COL_NAME).eq(Expr::lit(name))).await
@@ -203,8 +203,8 @@ pub async fn list_models(catalog: &Catalog) -> Result<Vec<Model>> {
     Ok(out)
 }
 
-/// The models over `table`, ordered by name — what `predict_row`'s
-/// `config_spec_for` offers when its trigger has a table (§12), and the reason
+/// The models over `table`, ordered by name — what `fit_model`'s
+/// `config_spec_for` offers when its trigger has a table, and the reason
 /// [`COL_TABLE_NAME`] is a column.
 pub async fn models_for_table(catalog: &Catalog, table: &str) -> Result<Vec<Model>> {
     let select = Select::from(Source::table(MODELS_TABLE))

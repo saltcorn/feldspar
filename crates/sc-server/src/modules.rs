@@ -49,7 +49,7 @@ pub struct ModuleServices {
     dispatcher: Arc<TriggerDispatcher>,
     agents: AgentServices,
     /// The model machinery, for the two things a module change does to it: the
-    /// rebuilt action set carries `predict_row` over the *current* provider
+    /// rebuilt action set carries `fit_model` over the *current* provider
     /// registry, and (Phase 7) a module supplying model providers replaces that
     /// registry.
     models: crate::models::ModelServices,

@@ -12,7 +12,7 @@
 //!     hyperparameters: [{ name: "alpha", type: "Float", default: 1 }],
 //!     outcome: { kind: "regression", label: "label" },
 //!     standardise: true,
-//!     fit: async ({ frame, configuration, hyperparameters }) => ({ state, parameters }),
+//!     fit: async ({ frame, configuration, hyperparameters }) => ({ state, parameters, warnings }),
 //!     predict: async ({ state, frame }) => [1.2, 3.4],
 //!   },
 //! }
@@ -36,7 +36,9 @@
 //!
 //! # Metrics are not asked for, and cannot be sent
 //!
-//! A provider answers its state and its parameters. Everything scored — R²,
+//! A provider answers its state, its parameters and, optionally, `warnings`:
+//! sentences the admin should read before trusting the fit, which make it
+//! not "clean" for `fit_model`'s `activate: if_clean`. Everything scored — R²,
 //! RMSE, accuracy, the confusion matrix — is computed by `sc-model` over the
 //! same splits with the same code for every provider, which is what makes a
 //! scikit-learn estimator's number comparable with a smartcore regression's.

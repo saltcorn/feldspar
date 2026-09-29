@@ -13,7 +13,7 @@
 //!
 //! - **Before the fit**, `outcome` reads the *dataset* shape: `price` is a float
 //!   column, so this is a regression. That is what the form renders, what the
-//!   metric set is chosen by, and what `predict_row` checks a target field
+//!   metric set is chosen by, and what `predict()` checks a target field
 //!   against.
 //! - **During the fit**, this provider reads the *frame*'s label column: a class
 //!   index arrives as an integer column and a measurement as a float one (see
@@ -445,7 +445,7 @@ mod tests {
 
     /// The outcome is a function of the *dataset*'s column type, resolved before
     /// any fit — the other half of the same decision, and the one the form and
-    /// `predict_row` read.
+    /// `predict()` read.
     #[test]
     fn the_declared_outcome_follows_the_labels_type() {
         let shape = |ty| DatasetShape {

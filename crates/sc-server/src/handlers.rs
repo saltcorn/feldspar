@@ -2769,7 +2769,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                     .map(str::trim)
                     .filter(|table| !table.is_empty());
                 // The models over this table, for the one declaration that asks
-                // for them: `predict_row`'s picker (§12). Read once rather than
+                // for them: `fit_model`'s picker. Read once rather than
                 // per action, and **only when the request named a table** — with
                 // no channel there is no "this table's models" to answer with,
                 // and answering with an empty list would be claiming there are
@@ -3538,7 +3538,8 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
     // --- posteriors -----------------------------------------------------------
     // Stan TODO §§5, 13, 16, 18. The reading and the write-back are the host's
     // (`sc_model::read_draws`, `summarise_variable`, `plan_write`) and the
-    // write is the one the `write_posterior` action makes; what is here is the
+    // write is `sc_api::models::write_posterior`, which a code body's model
+    // handle makes too; what is here is the
     // reading of the request and the two things only a server can do — read a
     // model's datasets through the row layer, and start or stop a job.
 
@@ -3827,7 +3828,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                 // through the ordinary write path, so the target table's own
                 // triggers fire.
                 let authority = admin_caller(ctx.user.as_ref());
-                let written = sc_core_actions::write_posterior(
+                let written = sc_api::models::write_posterior(
                     &catalog,
                     &model,
                     &instance,

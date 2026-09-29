@@ -2,6 +2,78 @@
 
 Changes in reverse chronological order.
 
+## Models without actions of their own: one model action
+
+Phase 1 of milestone 31 (TODO "Models without actions of their own"). `fit_model` is now the
+only model action, and it means the same thing for every provider. `predict_row` and
+`write_posterior` are gone. Their replacements are Phases 2 and 3 (`models.get(…)` in code and
+`predict("…")` in formulas). Until then, prediction and write-back are the admin API's
+`predictRows` and `writePosterior`, which have not changed.
+
+- **Provider warnings** (1.1). `FitResult` gains `warnings: Vec<String>` and
+  `FitResult::warning("…")`. The fit job writes them to the instance's `ATTR_WARNINGS`, where a
+  posterior's diagnostics already go. So `fitted_cleanly` now means "fitted, and nothing
+  warned" for every provider, not just Stan.
+  - A Python provider's `fit` may return `"warnings": [...]`. A `warnings.warn` raised during
+    `fit` (such as scikit-learn's `ConvergenceWarning`) is caught and added as
+    `"Category: message"`, without duplicates. `@sc.model_provider`'s docstring says so.
+  - A JavaScript module's `fit` may return `warnings` too, since both languages share one wire
+    format.
+  - Tests:
+    - `a_providers_warnings_are_the_instances_and_a_clean_fit_has_none` (`sc-model`)
+    - `a_fit_answer_carries_its_warnings_and_one_without_any_is_clean` (`sc-module`)
+    - the Python fixture's `fixture_mean` now warns both ways, and
+      `a_python_model_provider_declares_itself_and_then_fits_and_predicts` asserts both
+      sentences. **Not run here:** this machine has no `libpython3.13` to link `python-host`
+      against. The Python side was checked by calling `plugin.op_model_fit` directly with
+      `python3`.
+- **`fit_model`, generic** (1.2), in `crates/sc-core-actions/src/fit_model.rs`.
+  - `activate` is now `never` | `if_clean` | `always` (default `never`), replacing a boolean.
+    The rule is `sc_model::Activation`, and the `FitStarter` seam carries it, so
+    `wait: false` activates by the same rule once the job finishes. `always` activates any
+    fitted instance, but never a failed one.
+  - The answer gains `metrics`, so a later workflow step can branch on `metrics.test.r2`.
+    Not waiting answers the same shape, saying `fitting`.
+  - The description is now "Fit a model again, and optionally make the new fit active".
+  - Tests: `crates/sc-server/tests/fit_model_action.rs`, over `linear_regression` and a
+    stub provider that always warns. `if_clean` activates the clean fit and not the warned one,
+    `always` activates the warned one, `never` keeps the new fit beside the active one, and
+    `wait: false` with `if_clean` is activated by the job.
+- **`predict_row` and `write_posterior` removed** (1.3).
+  - `predict_row.rs` and `posterior.rs` are deleted.
+  - `write_posterior()` and its helpers (target checks, count rounding, dates as days) moved to
+    the new `sc_api::models`, and the `writePosterior` handler calls it from there. A code
+    body's handle will call it too (Phase 2).
+  - `register_model_actions` now takes only the provider registry and the `FitStarter`.
+  - Fixed while moving: the "not a midnight" sentence had a run of spaces in it (a missing
+    line continuation).
+  - Test changes:
+    - The `sc-core-actions` test `the_model_action_set_is_exactly_fit_model`.
+    - `trigger_admin_api`'s action list no longer has the two.
+    - `model_admin_api`'s `predict_row` test is now
+      `a_row_the_datasets_filter_excludes_is_predicted_through_the_dataset`, through
+      `predictRows`. It still checks that the model picker offers this table's models, now on
+      `fit_model`.
+    - `posterior_api`'s trigger test writes back through `writePosterior`, and uses
+      `activate: "if_clean"`.
+  - Stale `predict_row` mentions in code comments across `sc-model`, `sc-stan`, `sc-expr`,
+    `sc-server` and `saltcorn.py` now point at `predict()` or `fit_model`.
+  - A stored trigger naming either action now loads as a broken trigger ("unknown action").
+    There is no migration.
+- **Admin UI wording** (1.4).
+  - The model form's name hint now reads "What predict("…") in a formula and models.get("…")
+    in code name this model by."
+  - The posterior write-back note now points at `m.writePosterior(…)` in a code step after a
+    `fit_model`.
+  - Both are whole `<T>` sentences in the `admin` domain, replacing the old fragments. The
+    three stale keys are removed from the five admin locale files. The new sentences are not
+    translated yet; that is a `feldspar i18n translate` run.
+- **Not changed yet:** the documents still describe the removed actions and `activate: true`
+  (`tutorial-stan.md`, `tutorial-models.md`, the design document). They are Phase 4.
+- **Pre-existing and unrelated:** `sc-cli`'s
+  `every_declared_domain_scans_without_an_unreadable_call_site` fails on three `t()` calls in
+  `ui/admin/src/screens/SourceControl.tsx`. It fails the same way with this change stashed.
+
 ## Stan against a real CmdStan, the tutorial, and the definition of done
 
 Phase 11, the last of the Stan milestone (TODO "Bayesian models with Stan"). Every item on its

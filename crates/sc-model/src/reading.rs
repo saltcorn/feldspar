@@ -10,8 +10,8 @@
 //! the model and never how an existing instance reads.
 //!
 //! Everything here is a function of the instance row and `_fd_model_draws`,
-//! so the admin API, the `write_posterior` action and a code body's `models`
-//! global all answer the same question the same way.
+//! so the admin API and a code body's `models` global (its handle's
+//! `m.writePosterior` among them) all answer the same question the same way.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -803,7 +803,7 @@ pub struct CoordinateWrite {
     pub value: CoordinatePart,
 }
 
-/// A write-back, as `writePosterior` and the `write_posterior` action take it.
+/// A write-back, as `writePosterior` and a code body's `m.writePosterior` take it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PosteriorWrite {

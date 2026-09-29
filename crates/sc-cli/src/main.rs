@@ -224,9 +224,9 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // is its row, so nothing survives a restart and an instance still saying
     // `fitting` at boot is one nothing will finish — it is failed by name here,
     // before anything can read it.
-    // It is also what carries the provider registry and the dataset seam into
-    // the action set below: `predict_row` needs both, so the models come up
-    // before the triggers do.
+    // It is also what carries the provider registry and the fits into the
+    // action set below: `fit_model` needs both, so the models come up before
+    // the triggers do.
     let models =
         sc_server::install_models_with(&catalog, config.model_max_rows, &config.stan).await?;
     // Which CmdStan Stan models will use, and how many chains may run at once

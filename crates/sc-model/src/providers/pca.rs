@@ -4,7 +4,7 @@
 //! The other unsupervised built-in, and the one that exercises
 //! [`Outcome::Embedding`](crate::Outcome::Embedding): there is no label, every
 //! column is a feature, and a fitted instance answers each row with its
-//! coordinates in the space the components span. `predict_row` writes that into
+//! coordinates in the space the components span. `predict("…")` answers it for
 //! a JSON field, because a vector is not a scalar and rendering it as text would
 //! make it unreadable by anything that wanted to use it.
 //!

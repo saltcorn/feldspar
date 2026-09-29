@@ -12,8 +12,7 @@
 //!   "elements": { "counties": [27001] }, "chains": [1, 2], "thin": 10 }
 //! ```
 //!
-//! `model` is a model's name (meaning its active fit) or a fit's id, exactly
-//! as `predict_row`'s. The answers are the admin API's — `getModelDraws`,
+//! `model` is a model's name (meaning its active fit) or a fit's id. The answers are the admin API's — `getModelDraws`,
 //! `getPosteriorSummary` — because they are the same functions of the same
 //! rows; `instance` answers the fit itself. Every answer speaks keys and
 //! labels: nothing that leaves the host numbers a county.

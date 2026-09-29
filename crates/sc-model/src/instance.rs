@@ -8,7 +8,7 @@
 //!
 //! **At most one instance per model is `active`**, and that is what lets a
 //! trigger name a *model* rather than a fit: the admin refits, marks the new
-//! instance active, and every `predict_row` action follows without being edited.
+//! instance active, and every `predict("…")` follows without being edited.
 //!
 //! **A fit is a job, not a request** (§8). The row is created with
 //! [`FitStatus::Fitting`] and the id returned immediately; a spawned task writes

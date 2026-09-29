@@ -16,7 +16,7 @@
 //! downstream reads that: the fit takes no split (there is nothing to hold out
 //! from a test statistic), fits no encoding (the configuration names *this*
 //! column as the value and *that* one as the group, and a one-hot would leave
-//! neither addressable), computes no metrics, and `predict_row` will not offer
+//! neither addressable), computes no metrics, and `predict()` will not offer
 //! these providers at all. [`ModelProvider::predict`] here is therefore an
 //! error and not an empty vector: a caller that reached it has a bug, and a
 //! silent empty answer would hide it.

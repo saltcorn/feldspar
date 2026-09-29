@@ -5,8 +5,7 @@
 //! a job with a cancel, the draws read back by key and label with thinning and
 //! the response cap, a summary on demand, the write-back in both modes through
 //! the row layer (so the target table's own trigger fires), the run as a zip,
-//! `fit_model` and `write_posterior` from triggers, and `models` in a
-//! JavaScript body. The Python `models` is `sc-python`'s `python_models.rs`.
+//! `fit_model` from a trigger, and `models` in a JavaScript body. The Python `models` is `sc-python`'s `python_models.rs`.
 
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -903,7 +902,7 @@ async fn triggers_refit_write_back_and_read_the_draws_from_code() -> Result<()> 
         .trigger(json!({
             "name": "refit", "description": "", "when": "none", "channel": null,
             "only_if": null, "action": "fit_model",
-            "configuration": { "model": "Radon", "activate": true },
+            "configuration": { "model": "Radon", "activate": "if_clean" },
             "min_role": null, "enabled": true,
         }))
         .await;
@@ -923,21 +922,20 @@ async fn triggers_refit_write_back_and_read_the_draws_from_code() -> Result<()> 
     assert_eq!(active.len(), 1);
     assert_eq!(active[0]["id"], json!(first));
 
-    // Write the active fit back, from a trigger.
-    let write = client
-        .trigger(json!({
-            "name": "write_alpha", "description": "", "when": "none", "channel": null,
-            "only_if": null, "action": "write_posterior",
-            "configuration": {
-                "model": "Radon", "variable": "alpha", "mode": "update",
+    // The fit the trigger made is the one written back. (Milestone 31: from
+    // the admin API here; a code body's `m.writePosterior` is Phase 2's.)
+    let written = client
+        .ok(
+            "POST",
+            &format!("/api/model-instances/{first}/posterior-writes"),
+            Some(json!({
+                "variable": "alpha", "mode": "update",
                 "statistics": { "q50": "alpha_mean" },
-            },
-            "min_role": null, "enabled": true,
-        }))
+            })),
+        )
         .await;
-    let ran = client.run(&write, json!({})).await;
-    assert_eq!(ran["result"]["written"], json!(3), "{ran}");
-    assert_eq!(ran["result"]["instance"], json!(first));
+    assert_eq!(written["written"], json!(3), "{written}");
+    assert_eq!(written["instance"], json!(first));
     let becker = client
         .rows("counties")
         .await

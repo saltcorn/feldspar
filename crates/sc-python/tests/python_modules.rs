@@ -782,6 +782,25 @@ async fn a_python_model_provider_declares_itself_and_then_fits_and_predicts() ->
         mean.predict(&fitted.state, &frame).await?,
         vec![sc_model::Prediction::number(30.0); 4]
     );
+    // A clean fit reports nothing.
+    assert!(fitted.warnings.is_empty(), "{:?}", fitted.warnings);
+
+    // A provider warns in its answer, and with `warnings.warn`, which the host
+    // catches during `fit`.
+    let warned = mean
+        .fit(
+            &frame,
+            &attrs_of(json!({ "label": "price", "note": "only four rows: add more" })),
+            &attrs_of(json!({ "shift": -1 })),
+        )
+        .await?;
+    assert_eq!(
+        warned.warnings,
+        vec![
+            "only four rows: add more".to_owned(),
+            "UserWarning: a negative shift predicts below every mean".to_owned(),
+        ]
+    );
 
     // And the tagged direction: a cluster number is not a number a regression
     // predicts, so it crosses written out in full.
