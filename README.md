@@ -37,6 +37,13 @@ own, for every other kind of box. (Design and planning docs live under
   the coefficients and metrics on a screen and a `predict_row` action to apply a fit to a
   row. The built-in providers are a **default-on cargo feature** (§3). See
   [`docs/tutorial-models.md`](docs/tutorial-models.md).
+- **Bayesian models with Stan.** The model is a Stan program in a file store. Its `data` block
+  is bound to your tables: a foreign key becomes a 1-based index, a date column a time grid
+  with a forecast horizon, and a junction table an adjacency graph with BYM2's scaling factor.
+  Every binding is checked before anything compiles. The posterior comes back labelled by your
+  keys and names, with R̂, effective sample sizes and plain-language warnings, trace and forest
+  plots, and a write-back into the rows it is about. It needs CmdStan on the machine, found at
+  run time (§3). See [`docs/tutorial-stan.md`](docs/tutorial-stan.md).
 - **Saltcorn 1's views, running.** An application whose framework is **Saltcorn UI** owns
   views (List, Show, Edit, Feed, Filter, ListShowList — and any a v1 plugin such as
   `@saltcorn/kanban` supplies) and pages, rendered on the server by v1's own view code. Restoring
@@ -577,6 +584,16 @@ memory. An install that fails or is interrupted removes what it had unpacked.
 The server's Stan flags — where compiled programs go, how many chains run at once, and the
 ceilings on a fit's data and draws — are in the table under "Server options" below, and
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md) §9 is how to size them.
+[`docs/tutorial-stan.md`](docs/tutorial-stan.md) walks three models end to end (radon by
+county, a daily series with a forecast, and a BYM2 over regions and weeks).
+
+The tests that need a real CmdStan are `#[ignore]`d, and find it the way the server does, so
+on a machine where `feldspar cmdstan install` has run they need nothing set:
+
+```bash
+cargo test -p sc-stan -- --ignored                           # compile, sample, stanc agreement
+cargo test -p sc-server --test it -- --ignored stan_models   # the three tutorial models, end to end
+```
 
 ### Python, which is a build and not a flag
 

@@ -90,7 +90,8 @@ pub async fn write_posterior(
     check_targets(&table, write)?;
     let mut written = 0usize;
     for row in &plan.rows {
-        let body = Json::Object(round_counts(&table, write, row.values.clone()));
+        let values = dates_as_days(&table, write, row.values.clone())?;
+        let body = Json::Object(round_counts(&table, write, values));
         match (&plan.mode, &row.key) {
             (WriteMode::Update, Some(key)) => {
                 rows::update_row_in(catalog, &table, key, &body, Some(authority), executor)
@@ -189,6 +190,36 @@ fn round_counts(table: &Table, write: &PosteriorWrite, mut values: Attrs) -> Att
         }
     }
     values
+}
+
+/// A time grid's coordinate is an instant (`2025-05-01T00:00:00Z`), which a
+/// `date` field refuses. Written into one, it is its day — when it is a
+/// midnight, as every step of a grid of days, weeks, months or years is. An
+/// hour's instant would lose its hour, so that is refused, naming a timestamp
+/// field as the way out.
+fn dates_as_days(table: &Table, write: &PosteriorWrite, mut values: Attrs) -> Result<Attrs> {
+    for coordinate in &write.coordinates {
+        let field = &coordinate.field;
+        let date = table
+            .field(field)
+            .and_then(|f| f.base.type_.as_basic().cloned())
+            == Some(BasicType::Date);
+        let Some(Json::String(instant)) = values.get(field).filter(|_| date) else {
+            continue;
+        };
+        let Some((day, time)) = instant.split_once('T') else {
+            continue;
+        };
+        if !matches!(time, "00:00:00Z" | "00:00:00.000Z" | "00:00:00+00:00") {
+            return Err(Error::invalid(format!(
+                "`{field}` of `{}` is a date, and `{instant}` is not a midnight: write this                  axis into a timestamp field",
+                table.name
+            )));
+        }
+        let day = day.to_owned();
+        values.insert(field.clone(), Json::from(day));
+    }
+    Ok(values)
 }
 
 /// A required, non-empty configuration string.
@@ -555,6 +586,83 @@ mod tests {
 
         let err = configured_write(&config(&[(CFG_VARIABLE, json!("alpha"))])).unwrap_err();
         assert!(err.to_string().contains("writes no statistic"), "{err}");
+    }
+
+    /// `forecasts(day date, at timestamptz)`.
+    fn forecasts() -> Table {
+        use sc_catalog::{AccessRules, DataField, DbId, TableId, TableSource};
+        use sc_types::TypeRef;
+        Table {
+            id: TableId("forecasts".into()),
+            name: "forecasts".into(),
+            database: DbId::primary(),
+            source: TableSource::Database,
+            fields: vec![
+                DataField::plain("day", TypeRef::Basic(BasicType::Date)),
+                DataField::plain("at", TypeRef::Basic(BasicType::Timestamp)),
+            ],
+            primary_key: vec!["id".into()],
+            label: "forecasts".into(),
+            description: String::new(),
+            access: AccessRules::default(),
+            attributes: Attrs::new(),
+            overlay: None,
+            ownership: None,
+            ownership_error: None,
+            rls_enabled: false,
+            constraints: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_grids_instant_goes_into_a_date_field_as_its_day() {
+        let write = |field: &str| {
+            configured_write(&config(&[
+                (CFG_VARIABLE, json!("y_future")),
+                (CFG_MODE, json!("insert")),
+                (CFG_TABLE, json!("forecasts")),
+                (CFG_STATISTICS, json!({ "mean": "mean" })),
+                (
+                    CFG_COORDINATES,
+                    json!([{ "axis": "day.future", "field": field }]),
+                ),
+            ]))
+            .unwrap()
+        };
+        let row =
+            |field: &str, instant: &str| config(&[(field, json!(instant)), ("mean", json!(1.5))]);
+
+        let written = dates_as_days(
+            &forecasts(),
+            &write("day"),
+            row("day", "2025-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(written["day"], json!("2025-05-01"));
+        assert_eq!(written["mean"], json!(1.5));
+        // A timestamp field takes the instant as it is.
+        let written = dates_as_days(
+            &forecasts(),
+            &write("at"),
+            row("at", "2025-05-01T06:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(written["at"], json!("2025-05-01T06:00:00Z"));
+        // An hour is not a day.
+        let err = dates_as_days(
+            &forecasts(),
+            &write("day"),
+            row("day", "2025-05-01T06:00:00Z"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains(
+                "`day` of `forecasts` is a date, and `2025-05-01T06:00:00Z` is not a \
+                          midnight"
+            ),
+            "{err}"
+        );
     }
 
     #[test]

@@ -153,6 +153,8 @@ mod saltcorn_ui_render;
 mod schema_edit_api;
 #[path = "settings_admin_api.rs"]
 mod settings_admin_api;
+#[path = "stan_models.rs"]
+mod stan_models;
 #[path = "stream_triggers.rs"]
 mod stream_triggers;
 #[path = "streams_admin_api.rs"]

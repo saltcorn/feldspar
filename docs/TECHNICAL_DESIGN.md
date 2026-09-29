@@ -103,13 +103,15 @@ feldspar/
 │  │                              #    `_fd_model_instances`. Beside sc-action rather than
 │  │                              #    above the row layer it reads through, because a module
 │  │                              #    supplies model providers (TODO "Predictive models" §4)
-│  ├─ sc-stan/                    # 6. Bayesian models with Stan, beside sc-model: CmdStan
-│  │                              #    discovery (`--cmdstan`, `$CMDSTAN`, `~/.cmdstan`) and
-│  │                              #    `feldspar cmdstan install`; the declaration parser, the
-│  │                              #    compile cache, the runner and StanProvider as they land.
-│  │                              #    What is not Stan-specific (the binder, the draws, the
-│  │                              #    posterior summary) is sc-model's. No Cargo feature:
-│  │                              #    nothing is linked, availability is a runtime fact
+│  ├─ sc-stan/                    # 6. Bayesian models with Stan, beside sc-model (§14.2,
+│  │                              #    "Bayesian models"): CmdStan discovery (`--cmdstan`,
+│  │                              #    `$CMDSTAN`, `~/.cmdstan`) and `feldspar cmdstan install`;
+│  │                              #    the program's declaration parser and `stanc`, the compile
+│  │                              #    cache, the chain runner, the CmdStan CSV reader, the raw
+│  │                              #    run directory, and StanProvider. What is not
+│  │                              #    Stan-specific (the binder, the draws, the posterior
+│  │                              #    summary) is sc-model's. No Cargo feature: nothing is
+│  │                              #    linked, availability is a runtime fact
 │  ├─ sc-stream/                  # 6. Streams: dataflows as an entity (§14.3). The
 │  │                              #    StreamProvider seam and its registry, the element
 │  │                              #    type and the envelope, `_fd_streams`, the supervisor
@@ -363,7 +365,7 @@ through a single Rust shim per adapter.
           ┌──────────────────────▼────────────────────────▼──────────────────────┐
           │                       Core services                                    │
           │  sc-workflow · sc-agent · sc-action · sc-model · sc-viewpattern        │
-          │  sc-stream · sc-fieldview · sc-copilot · sc-files                       │
+          │  sc-stan · sc-stream · sc-fieldview · sc-copilot · sc-files             │
           └──────────────────────┬────────────────────────────────────────────────┘
                                  │
                     ┌────────────▼─────────────┐        ┌──────────────────────┐
@@ -6740,6 +6742,7 @@ pub struct Dataset {
     pub table: String,
     pub columns: Vec<DatasetColumn>,   // { name, expr }
     pub filter: Option<String>,        // one boolean formula, or none
+    pub order: Vec<DatasetOrder>,      // { expr, descending }; the primary key always follows
 }
 ```
 
@@ -6918,6 +6921,7 @@ pub enum Outcome {
     Cluster,                         // a cluster number per row
     Embedding { dimensions: usize }, // a vector per row
     Test,                            // no per-row output; the parameters are the result
+    Posterior { prediction: Option<String> }, // draws; see "Bayesian models" below
 }
 ```
 
@@ -7006,9 +7010,11 @@ Two consequences, stated rather than discovered:
   `failed` with "the server restarted while this fit was running". Making a fit durable is the
   workflow engine's job (§10.3) and would mean expressing a fit as steps, which is a bigger claim
   than this design makes.
-- **There is no cancel.** Stopping a fit means stopping a smartcore call or a Python call
-  mid-flight, and §15.2 has already said what CPython can and cannot be interrupted at. The bound
-  that exists is the row cap, and it is the honest one.
+- **There is no cancel** for these providers. Stopping a fit means stopping a smartcore call or
+  a Python call mid-flight, and §15.2 has already said what CPython can and cannot be
+  interrupted at. The bound that exists is the row cap, and it is the honest one. A posterior
+  is the exception, because its fit is subprocesses, which *can* be killed ("Bayesian models"
+  below); `cancelModelFit` refuses any provider that does not declare `cancellable`.
 
 #### The built-ins, and the `smartcore` feature
 
@@ -7077,8 +7083,9 @@ where somebody chose it.
 #### Storage
 
 `_fd_models`: `id` (uuid pk), `name` (unique), `description`, `table_name`, `provider`, `dataset`
-(JSON), `configuration` (JSON), `hyperparameters` (JSON — values or lists), `split` (JSON —
-fractions and seed), `attributes` (JSON).
+(JSON), `related` (JSON, nullable — a posterior's related datasets), `configuration` (JSON),
+`hyperparameters` (JSON — values or lists), `split` (JSON — fractions and seed), `attributes`
+(JSON).
 
 `_fd_model_instances`: `id` (uuid pk), `model` (uuid), `name`, `description`, `status`
 (`fitting` | `fitted` | `failed`), `created`, `active` (bool), `state` (JSON — the provider's
@@ -7116,6 +7123,201 @@ screen, which renders the three parameter variants, the metrics per split, the s
 the row counts and what was dropped, and a "try a row" box over `predictRows`. An
 application-facing prediction endpoint is deliberately not here: which application, which
 permission and what shape are application-API questions, and this API is the admin's.
+
+#### Bayesian models
+
+GOALS asks for "bayesian inference (e.g. using Stan) — model configuration is the model code in
+a stan file where the data section needs to be linked to the dataset". Every other provider
+answers about one rectangle, one row at a time. A Bayesian model is usually worth writing
+*because* the data is structured: homes in counties, pupils in classes in schools, readings per
+hour with gaps, regions next to regions. The database holds that structure as foreign keys,
+timestamps and junction tables. A Stan program wants it as flat arrays of 1-based integers and
+a handful of sizes. Closing that gap is the design; running CmdStan is a subprocess.
+
+Six more nouns, beside the five above:
+
+| noun | what it is | where it lives |
+|---|---|---|
+| **program** | a Stan file in a file store (§14.1), plus what it `#include`s | the configuration names it (`program_store`, `program`); a fit snapshots it |
+| **interface** | what the program declares: its `data` variables, and the shapes of its parameters and generated quantities | parsed on demand; a fit records it |
+| **related dataset** | a named `Dataset` over another table, beside the main one | `_fd_models.related` |
+| **dimension** | an ordered set of labelled positions `1..n` | derived when data is bound; its **coordinates** are stored on the instance |
+| **binding** | the rule that computes one `data` variable | the configuration's `bindings` |
+| **draws** | every chain × iteration × element of every output variable | `_fd_model_draws`, and optionally the raw run in a file store |
+
+**Where it lives.** `sc-model` holds everything that is not Stan-specific: related datasets and
+order, `Outcome::Posterior`, the seam, **the binder**, `_fd_model_draws` and its reader, and the
+posterior summary and diagnostics. All of it is pure Rust over frames. The binder sits in the
+host for the reason metrics do: a second Bayesian provider (PyMC in a module, one day) should
+declare an interface and receive bound data, not reimplement "a foreign key becomes a 1-based
+index". `sc-stan` (layer 6, beside `sc-model` and above it) holds the Stan half. That is
+discovery, the declaration parser and `stanc`, the compile cache, the runner, the CmdStan CSV
+reader, the raw run directory, and `StanProvider`. Rust drives CmdStan directly rather than
+through a Python module over `cmdstanpy`, for three reasons. The binder must read several
+datasets through `DatasetSource`, which a module cannot. CmdStan's interface is a command line,
+a JSON file and CSV files. And a subprocess can be killed, which is what makes cancel and a
+timeout possible. There is no Cargo feature: nothing is linked, so the provider is always
+registered and says "CmdStan was not found — …" on the picker when it wasn't.
+
+**The seam.** A posterior provider declares `OutcomeSpec::Posterior`, `binds_data` and
+`cancellable`, and implements the posterior half of `ModelProvider`, all with defaults that
+refuse or do nothing:
+
+```rust
+async fn interface(&self, cfg: &Attrs) -> Result<Option<Interface>>;
+async fn fit_posterior(&self, input: &PosteriorInput, cfg: &Attrs, ctx: &FitContext<'_>)
+    -> Result<PosteriorResult>;                        // { state, draws: Vec<DrawSeries>, run, … }
+fn draw_plan(&self, cfg: &Attrs) -> Result<Option<DrawPlan>>;   // sized before sampling
+async fn run_files(&self, state: &Json) -> Result<Option<Vec<(String, Vec<u8>)>>>;
+async fn program_changed(&self, cfg: &Attrs, state: &Json) -> Option<bool>;
+async fn discard(&self, state: &Json) -> Result<()>;  // on instance and model deletion
+```
+
+`run_fit` branches on the outcome. For a posterior it materialises the main dataset and each
+related one, each under `--model-max-rows`. It binds them against the interface, checks the
+planned size of the draws, and calls `fit_posterior` with a `FitContext` carrying a progress
+sink, the cancel flag and the node's `PosteriorLimits`. Then it summarises the draws and saves
+the instance with its draws in one transaction. A posterior has no split and no hyperparameter
+grid: the sampler's settings are configuration, and a model with a hyperparameter list over a
+posterior is refused, as one over a hypothesis test is.
+
+**The interface: parsed by us, checked by `stanc`.** Binding needs each `data` variable's
+element type, container and **size expressions**. For `array[N] int<lower=1, upper=J> county`
+that is int, rank 1, size `N`, values in `1..J`. `stanc --info` gives names and ranks but not
+the expressions, so `sc-stan` has its own narrow parser. It handles comments, strings and
+`#include` (resolved inside the store, relative to the including file; `..` out of the store is
+refused). It splits the seven blocks by brace matching and reads the top-level declarations of
+the modern type grammar. Sizes become a tiny integer expression tree (`+ - * %/% %`, literals,
+identifiers); anything else stays text and simply isn't evaluable. Shapes are outer-to-inner, so
+`array[N] vector[K]` and `matrix[N, K]` are both `[N, K]`, which is also how CmdStan's JSON
+nests them. **`stanc` is the authority**: saving a model and "Check program" run it (about a
+second, no C++), show its diagnostics with paths mapped back to the store, and compare `--info`
+with our parse. Without CmdStan the model saves on our parse, with a notice that it hasn't been
+checked.
+
+**Datasets and order.** `Model::related` is a list of `NamedDataset { name, dataset, label }`.
+The main dataset is `main` in bindings; `label` is a formula naming a row on the screen (the
+primary key by default). `Dataset::order` goes into the `ORDER BY`, **always followed by the
+primary key**. Order matters beyond time series: MCMC with the same seed over the same rows in a
+different order gives different draws, so a total order is what makes a run reproducible from
+its snapshot. Other providers ignore it.
+
+**Dimensions and coordinates.** A Stan index is a position; a database has keys. A dimension
+maps between them, and every label, write-back and hierarchical model goes through it:
+
+- **rows** of a dataset: every dataset is one, under its own name, with each row's key and
+  label. A group's positions come from **its own table**, not from the observations, so a
+  county with no homes still gets a parameter. That is partial pooling's point, and a numbering
+  built from the distinct keys in `homes` would drop exactly the counties it says most about.
+- **values** of a column: the distinct non-null values, sorted by a defined order (numbers
+  numerically, text by code point, `false < true`) that cannot change with the server's locale.
+- **time grid** over a date column: steps of N minutes to years (months and years by the
+  calendar), from a start to an end, plus a `horizon`. It exposes two dimensions, `day` and
+  `day.future`, so a forecast declared `vector[H] y_future` comes back labelled with its dates.
+  UTC.
+
+Positions are the instance's private business. Each instance stores its own `Coordinates`,
+and the draws API, the summary, the write-back and the code API all answer by key and label. A
+county inserted between two fits may renumber every one after it, and nothing outside an
+instance ever sees `alpha.37`.
+
+**The binder.** The configuration's `bindings` gives each `data` variable exactly one binding,
+so the form is one row per declared variable and each variable's provenance is one line. The
+core kinds are `value`, `count`, `size`, `column`, `columns`, `design` (through `encode`, so a
+model matrix's columns have names), `width`, `index` (with `match` for a code rather than a
+key), `present`/`absent` and their counts and values, and `segment_start`/`segment_size`. Time
+and space add `series`, `cells` (and their `_present` masks, with aggregation into a step),
+the edge kinds over a junction table (`edge_count`, `edge_from`, `edge_to`, `adjacency`,
+`components`, `component`), `icar_scale` (BYM2's scaling factor, by `nalgebra`'s symmetric
+eigendecomposition per connected component, capped at 5 000 regions), `points` and
+`distances`. Every column is an `sc-expr` formula, so reaching across a key is the dataset
+language's job and the binder never learns a second way. The one join formulas cannot express,
+on a time bucket, is what a grid does.
+
+The binder checks twice. **At save** it checks structure only: every variable has a binding,
+every binding names a declared variable, the kind can produce that element type and rank, and
+the datasets, columns and dimensions exist. **At preview and fit** it checks the data:
+
+- every size expression that evaluates against the bound value's shape ("`y` is declared
+  `vector[N]` with `N` = 919, but its binding has 85 values"), which is the error CmdStan would
+  otherwise give after a minute of compiling;
+- element types and declared bounds, so a zero-based index fails `lower=1` here;
+- each dataset's `nulls` and `unknown` policies (`refuse`, the default, or `drop`, counted);
+- datasets resolved in dependency order, so a dropped county is an unknown key to `homes`;
+- the total size against `--stan-max-data-values`.
+
+Each failure is a sentence naming the variable, its declaration and its binding. What comes out
+is `BoundData { json, coordinates, report }`: CmdStan's JSON (`"NaN"`/`"Inf"`, row-major
+nesting), the coordinates, and the report the preview shows. `previewModelData` binds what binds
+and puts each variable's error on its row. `suggestBindings` fills empty rows from names,
+foreign keys into a related dataset's table, and the size expressions.
+
+**Compiling and running** (`sc-stan`). A compiled program is cached by the SHA-256 of the
+program and its includes, the CmdStan version and the fixed compile options, under
+`--stan-cache-dir`. A miss runs `make` on a copy with the includes laid out beside it, **one
+compile at a time per node**, because a Stan compile is a C++ compile. There is never an
+admin-supplied `CXXFLAGS` or `--allow-undefined`, so a program cannot reach C++. Each chain is
+its own process (`sample`, or `optimize` or `pathfinder` through the same runner), with
+`sig_figs=9`. Chains draw from one node-wide **process budget** (`--stan-max-processes`); a fit
+waiting for it says `queued`. Progress lines are parsed into stage and per-chain iteration and
+written to the instance at most once a second. That write also reads back `cancel_requested`,
+so a cancel works from any node, because the row is still the registry. `max_runtime_minutes`
+bounds a fit. Children get a scrubbed environment, `kill_on_drop` and `PR_SET_PDEATHSIG`; boot
+clears stale scratch and half-built compiles. Every failure is a sentence: `stanc`'s error with
+its store path, "Rejecting initial value" with what to try, or a chain's last 40 lines.
+
+**Draws.** Radon is 4 chains × 1 000 draws × about 1 100 elements, 4.4 million numbers: too
+many for the instance's JSON, not too many for a table. `_fd_model_draws` is `id`, `instance`,
+`variable`, `element` (the 1-based index array, from CmdStan's **column names**, because CmdStan
+writes matrices column-major), `chain`, `warmup` and `draws` (a JSON array). There is one row
+per element per chain, indexed on `(instance, variable)`. The rows are written in batched
+`INSERT`s inside the transaction that marks the instance `fitted`, so a fitted instance has all
+its draws and a failed one has none, and they are deleted in the one that deletes it. `lp__` and
+the sampler columns are variables like any other, so diagnostics can be recomputed from the
+table. A row per draw would be millions of rows; a row per variable would make a large `y_rep`
+one value read whole to plot one element. JSON rather than `bytea`, for `state`'s reason.
+Before sampling, the expected size is computed from the interface and the bound sizes. A run
+over `--stan-max-draws-bytes` is refused, suggesting `thin`, `exclude_variables` or
+`keep_draws: false`; a size that only sampling reveals drops the draws with a warning instead.
+
+The instance's `state` stays small: the program snapshot and hashes, the seed, the CmdStan
+version, the compile key and the run's location. With a `runs_store`, CmdStan's own output is
+published to `<runs_dir>/<model>/<instance>/` once the draws are loaded: the program, the data,
+the coordinates, the arguments, gzipped chain CSVs and logs. A git store gets a `.gitignore` of
+`*` there. That directory is what **Download run** zips for `cmdstanpy.from_csv`. Without one,
+the download is per-chain CSVs rebuilt from the table.
+
+**What the host computes.** For each element: mean, sd, MCSE, the 5/50/95 % quantiles,
+rank-normalised split-R̂, and bulk- and tail-ESS (Vehtari et al., 2021, with an in-crate FFT).
+They are checked against CmdStan's `stansummary`. The summary is stored as one
+`ParameterBlock::Table` per variable, **label columns first**. An axis is labelled when its size
+expression is a bare identifier bound by `size`, `count` or `width` (or overridden in
+`labels`). Generated quantities larger than `--stan-summary-max-elements` are summarised on
+demand. `Metrics::Posterior` holds the sampler diagnostics: divergences, tree-depth hits,
+E-BFMI per chain, the worst R̂, the smallest ESS, and wall time. Warnings are derived from them
+with the published thresholds and stored as sentences that say what to do. A fit with warnings
+is still `fitted`, because a posterior isn't wrong for being hard. `optimize` and `pathfinder`
+get `Metrics::PosteriorMode` and `Metrics::PosteriorApproximation`.
+
+**Reading and writing back.** `getModelDraws` answers one variable, selected by key or label,
+chain, warmup and `thin`, under `--stan-max-draws-response`. `getPosteriorSummary` covers any
+variable, stored or not, and `downloadModelRun` is described above. `writePosterior` and the
+`write_posterior` action write statistics through the row layer, so the target table's triggers
+fire. In **update** mode that is into the table of the rows dimension a one-axis variable is
+labelled by, matched by key (`alpha` into `counties.alpha_mean`). In **insert** mode it is one
+new row per element into any table, with its coordinates (a key, a label, a grid step's date).
+`fit_model` makes "refit and write back nightly" two trigger steps. Code reaches the draws as
+`models.draws`, `models.summary` and `models.instance` in JavaScript and Python bodies, an
+`op: "models"` request on the `db` host.
+
+**What was left out, and why.** Prediction for new rows from a posterior (CmdStan's standalone
+generated quantities over a `new` pseudo-dataset) is **carried past** this design. A posterior
+declares no prediction, so `predict_row` over one is refused when it is saved and points at
+`models.draws`. A forecast needs none of it: a time grid's horizon is a generated quantity of
+the fit itself. LOO/WAIC, a formula front end generating Stan, Bayesian providers from modules,
+and adjacency from geometry are later work. A fit still doesn't survive a restart; the chains
+die with the server. The admin-facing walk-through is `docs/tutorial-stan.md`; operating it
+(installing CmdStan, the flags, the cache, the size of the draws) is `OPERATIONS.md` §9.
 
 ---
 

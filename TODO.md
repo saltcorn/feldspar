@@ -1006,23 +1006,62 @@ Carried past this milestone — see the last section, and the note at the head o
 
 ## Phase 11 — Real CmdStan, documentation and the definition of done
 
-- [ ] 11.1 `crates/sc-server/tests/stan_models.rs`, `#[ignore]`d unless `CMDSTAN` is set: the
+- [x] 11.1 `crates/sc-server/tests/stan_models.rs`, `#[ignore]`d unless `CMDSTAN` is set: the
       radon definition of done end to end on synthetic data with known parameters (the
       recovered `gamma0`, `gamma1`, `beta` inside their 90 % intervals, the empty county's
       interval wider than the median county's, labels by name, draws by key, write-back);
       an AR(1) with gaps and a 14-day forecast labelled with dates; a BYM2 over a small
       lattice with a weekly random walk. Fixed seeds, small iteration counts.
-- [ ] 11.2 `docs/TECHNICAL_DESIGN.md`: §14.2 gains "Bayesian models" (the nouns, the binder,
+      *(`#[ignore]`d always, like `sc-stan`'s: `--ignored` runs them, and CmdStan is found the
+      way the server finds it, so no variable is needed here. Radon samples 1 000 draws per
+      chain: at 500, a few of the 85 R̂s landed just over 1.01. The BYM2 needs 1 000 + 1 000,
+      because `sigma` and `rho` mix slowly. Radon also runs the tutorial's
+      prediction-in-code trigger. All three in parallel from a cold cache take 90 s here.
+      Found a bug: a time grid's key is an instant, and writing it into a `date` field was
+      refused. Fixed in `sc-core-actions`: a midnight instant goes into a date as its day.)*
+- [x] 11.2 `docs/TECHNICAL_DESIGN.md`: §14.2 gains "Bayesian models" (the nouns, the binder,
       dimensions and coordinates, `_fd_model_draws` and the optional raw run, the host's summary), the crate table and
-      layer diagram gain `sc-stan`.
-- [ ] 11.3 `docs/tutorial-stan.md`: radon (the definition of done), a daily time series with a
+      layer diagram gain `sc-stan`. *(The crate table and the dependency graph had it since
+      0.1; the ASCII layer diagram and the tree's comment now do too. §14.2 also says where
+      a posterior differs from what it said before: `Dataset::order`, `Outcome::Posterior`,
+      cancel, `_fd_models.related`.)*
+- [x] 11.3 `docs/tutorial-stan.md`: radon (the definition of done), a daily time series with a
       forecast written into a `forecasts` table, and the spatiotemporal BYM2 — each with its
       tables, its program, its bindings and what to read on the instance screen. A section
       "Doing prediction in code" over `models.draws` — the only route while §19 is carried
-      past, so it says `predict_row` refuses a posterior.
-- [ ] 11.4 README §3, `CHANGELOG`.
-- [ ] 11.5 The definition of done by hand on a real server with a real CmdStan, and what it
+      past, so it says `predict_row` refuses a posterior. *(Its programs are the test's, and
+      its SQL data scripts were run against Postgres. The JavaScript prediction body is run
+      by the radon test.)*
+- [x] 11.4 README §3, `CHANGELOG`. *(§3 had CmdStan since Phase 0; it gains the tutorial and
+      how to run the ignored tests, and §1 a bullet.)*
+- [x] 11.5 The definition of done by hand on a real server with a real CmdStan, and what it
       found written down here.
+      *(A debug `feldspar serve` on a scratch Postgres database, with CmdStan 2.40 and an
+      empty compile cache. The tutorial's SQL made the tables and data. The walk was driven
+      over HTTP by a script doing what the form does, and the instance screen was read in
+      headless Chromium. The form itself was walked by hand in 8.2.*
+      - *Bind automatically proposed `N`, `J`, `county` and `y`, with its reasons; `x` and
+        `u` were bound by hand. Preview said `main 919`, `counties 85`.*
+      - *The fit showed `compiling` (8 s), four chains `sampling`, then `summarising`. It
+        came back with no warnings: largest R̂ 1.008, no divergences, smallest bulk ESS
+        1 710.*
+      - *All five population parameters were inside their 90 % intervals (`gamma0` 1.515
+        [1.423, 1.605]).*
+      - *`alpha` was 85 rows labelled `County 01`…`County 85`. County 85, with no homes, had
+        a 90 % width of 1.06 against a median of 0.65. The screen showed its forest plot and
+        per-chain traces.*
+      - *`getModelDraws` gave 4 × 1 000 draws keyed 27001…27169, and one county by key.
+        Write back filled 85 rows.*
+      - *Download run was CmdStan's CSVs and logs, `data.json`, `coordinates.json`,
+        `config.json` and the program. `cmdstanpy.from_csv` (1.3.0) read it as 4 × 1 000
+        draws, and its summary agrees with ours (`sigma_a`'s bulk ESS is 1706.98 in both).*
+      - *Found:*
+        - *the date write-back bug of 11.1, fixed;*
+        - *the tutorial said "Models" where the sidebar says "Predictive models", fixed;*
+        - *not fixed, outside this milestone: `serve` logs "database configured from the
+          `production` environment of …/feldspar.toml" when `--database-url` has overridden
+          that environment. It connected to the flag's database, as documented, but the
+          one line meant to say which database it is names another.)*
 
 ---
 

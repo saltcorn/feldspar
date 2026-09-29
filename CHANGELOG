@@ -2,6 +2,79 @@
 
 Changes in reverse chronological order.
 
+## Stan against a real CmdStan, the tutorial, and the definition of done
+
+Phase 11, the last of the Stan milestone (TODO "Bayesian models with Stan"). Every item on its
+list is done. Prediction for new rows from a posterior stays carried past it (Phase 9).
+
+- **`crates/sc-server/tests/stan_models.rs`** (11.1): the milestone's three models end to end
+  through the assembled router against a real CmdStan. Each is `#[ignore]`d, and finds CmdStan
+  the way the server does (`$CMDSTAN`, else `~/.cmdstan`):
+  `cargo test -p sc-server --test it -- --ignored stan_models`. The data is drawn from known
+  parameters with fixed seeds, and the sampler's seed is fixed too. The compile cache is kept
+  in the temporary directory between runs.
+  - **Radon**: 85 counties (five with one home, one with none) and 919 homes. It checks Bind
+    automatically's four bindings and Preview's sizes. The fit must have no warnings, R̂ ≤ 1.01
+    and no divergences. `gamma0`, `gamma1` and `beta` must be inside their 90 % intervals, and
+    `alpha` 85 rows labelled by county name. The empty county's interval must be over 1.5× the
+    median's. The draws come back 4 × 1 000 keyed by FIPS code. Write back fills
+    `counties.alpha_mean`/`alpha_sd`, and Download run holds CmdStan's CSVs. The tutorial's
+    prediction-in-code trigger then fills a new home's predictive mean and interval.
+  - **Daily sales**: an AR(1) with eleven missing days on a daily grid with a 14-day horizon.
+    `mu`, `phi` and `sigma` are recovered, and the eleven missing days are estimated.
+    `y_future` is labelled `2025-05-01`…`2025-05-14` and inserted into `forecasts`.
+  - **Outbreak**: BYM2 over a 5 × 5 lattice with a weekly random walk. It checks the edges (40)
+    and a clean preview. `beta0` is recovered, `convolved_re` is labelled by region, and `rw`
+    by week.
+  - Radon samples 1 000 draws a chain, because at 500 a few of 85 R̂s land just over 1.01. The
+    BYM2 samples 1 000 + 1 000, because `sigma` and `rho` mix slowly.
+- **Fixed: a time grid's coordinate into a `date` field** (found by 11.1). A grid's key is an
+  instant (`2025-05-01T00:00:00Z`), and the row layer refused it for a date field, so a forecast
+  could not be inserted into `forecasts(day date, …)`. `write_posterior` and `writePosterior`
+  now write a midnight instant into a date as its day. Another hour is refused, naming a
+  timestamp field as the way out. Tested by
+  `a_grids_instant_goes_into_a_date_field_as_its_day`.
+- **`docs/TECHNICAL_DESIGN.md`** (11.2): §14.2 gains "Bayesian models". It covers:
+  - the six nouns, and where the code lives;
+  - the seam;
+  - the interface parsed by us and checked by `stanc`;
+  - datasets and order;
+  - dimensions and coordinates;
+  - the binder and its two rounds of checks;
+  - compiling and running;
+  - `_fd_model_draws` and the optional raw run;
+  - the host's summary, metrics and warnings;
+  - reading and writing back;
+  - what was left out.
+
+  The `Dataset` and `Outcome` sketches, the storage paragraph and "there is no cancel" are
+  brought up to date. The ASCII layer diagram and the crate tree's comment gain `sc-stan`.
+- **`docs/tutorial-stan.md`** (11.3): the three models, each with its tables, a SQL script
+  for synthetic data from known parameters, its program, its bindings, and what to read on the
+  instance screen. The nightly `fit_model` + `write_posterior` pair is included. "Doing
+  prediction in code" is a `run_js_code` trigger over `models.draws` computing a new home's
+  posterior predictive, and says why combining draws iteration by iteration is right. A table
+  covers the sentences that come after Preview. The programs are the test's, the SQL was run
+  against Postgres, and the JavaScript is run by the radon test.
+- **README** (11.4): §1 gains Bayesian models; §3 points at the tutorial and says how to run the
+  real-CmdStan tests.
+- **The definition of done by hand** (11.5), on a debug `feldspar serve` over a scratch Postgres
+  database with CmdStan 2.40 and an empty compile cache:
+  - Bind automatically proposed `N`, `J`, `county`, `y`; Preview said 919 and 85.
+  - The fit compiled (8 s), sampled four chains and summarised, with no warnings. The largest
+    R̂ was 1.008, and every population parameter was inside its 90 % interval.
+  - County 85 (no homes) had a 90 % width of 1.06 against a median of 0.65.
+  - The draws came back by FIPS key, and Write back filled 85 rows.
+  - `cmdstanpy.from_csv` read the downloaded run, and its summary agrees with ours.
+  - The instance screen (labels, forest plot, per-chain traces) was checked in headless
+    Chromium.
+  - Also found: the tutorial said "Models" where the sidebar says "Predictive models" (fixed).
+    Not fixed, and recorded in the TODO: `serve`'s "database configured from the `production`
+    environment" line is printed when `--database-url` has overridden that environment.
+- **Checked here**: the three ignored tests, together from a cold cache (90 s).
+  `sc-core-actions`' posterior unit tests, and `sc-server`'s `posterior_api`, `model_*` and
+  `stan_models` (without `--ignored`). Clippy is clean on both crates.
+
 ## Stan operations; prediction from a posterior carried past
 
 Phase 10 of the Stan milestone (TODO "Bayesian models with Stan", §20), and Phase 9 skipped.
