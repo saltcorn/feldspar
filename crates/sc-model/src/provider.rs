@@ -898,6 +898,16 @@ pub trait ModelProvider: Send + Sync {
         Ok(None)
     }
 
+    /// Whether the program `config` names now differs from the one a fitted
+    /// `state` snapshotted — what the instance screen says as "the program has
+    /// changed since this fit" (Stan TODO §§6, 18). `None` (the default) when
+    /// the provider has no program, the state holds no snapshot, or the
+    /// program cannot be read to compare: "cannot tell" is not "unchanged".
+    async fn program_changed(&self, config: &Attrs, state: &Json) -> Option<bool> {
+        let _ = (config, state);
+        None
+    }
+
     /// Release whatever a fitted `state` holds outside the database — a raw run
     /// directory in a file store (Stan TODO §14). Called when the instance is
     /// deleted, after its rows are gone. The default holds nothing.

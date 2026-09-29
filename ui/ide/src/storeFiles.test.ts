@@ -17,6 +17,7 @@ import {
   encodeBase64,
   kindOfStatus,
   parentPath,
+  requestedPath,
   toStorePath,
   toStorePathOrNull,
   toUriPath,
@@ -134,6 +135,17 @@ describe("paths", () => {
     expect(toStorePathOrNull("app", "/other/App.tsx")).toBeNull();
     expect(toStorePathOrNull("app", "/app")).toBeNull();
     expect(toStorePathOrNull("app", "/app/")).toBeNull();
+  });
+
+  it("opens the file a page URL names, and only one inside the store", () => {
+    // "Open in IDE" on a model's program (Stan TODO §18).
+    const at = (query: string) => requestedPath(`https://x.test/ide/?store=models${query}`);
+    expect(at("&path=radon.stan")).toBe("radon.stan");
+    expect(at("&path=%2Fprograms%2Fradon.stan")).toBe("programs/radon.stan");
+    expect(at("")).toBeNull();
+    expect(at("&path=")).toBeNull();
+    expect(at("&path=..%2Fsecrets")).toBeNull();
+    expect(at("&path=a%2F%2Fb")).toBeNull();
   });
 
   it("knows a path's parent", () => {

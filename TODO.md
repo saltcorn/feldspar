@@ -955,16 +955,24 @@ else.
 
 ## Phase 8 — The admin UI
 
-- [ ] 8.1 The model form for a `binds_data` provider (§18): program picker with Check and
+- [x] 8.1 The model form for a `binds_data` provider (§18): program picker with Check and
       Open in IDE, related datasets, dimensions, the binding table with kinds filtered by
       declared type, Bind automatically, Preview data with per-row errors, sampler settings,
-      runs store; split and grid hidden for a posterior.
-- [ ] 8.2 The instance screen for a posterior: stage and per-chain progress with Cancel;
+      runs store; split and grid hidden for a posterior. *(`ModelBindings.tsx`; the dataset
+      builder became `DatasetBuilder.tsx` and edits the order. Compile is on the program card.
+      Open in IDE opens the file: `ideUrl(store, path)` and the IDE's `?path=`.)*
+- [x] 8.2 The instance screen for a posterior: stage and per-chain progress with Cancel;
       warnings, metrics, per-variable summary tables with labels; trace per chain,
       histogram, and the forest plot; Download run; Write back; "the program has changed".
-- [ ] 8.3 `models.ts` helpers and their tests: which binding kinds fit a declaration, the
+      *(`PosteriorInstance.tsx`, `PosteriorPlots.tsx`. "The program has changed" is
+      `getModelInstance`'s new `program_changed`, from `ModelProvider::program_changed`.
+      Walked by hand against real CmdStan; what it found is in the CHANGELOG — two Phase 4
+      gaps around a cancel that lands after sampling are not fixed here.)*
+- [x] 8.3 `models.ts` helpers and their tests: which binding kinds fit a declaration, the
       binding editor's parse and print, the warning ordering, the forest plot's sort, and
       the element selection by key/label; strings in the `admin` i18n domain.
+      *(`posterior.test.ts`. `feldspar i18n lint` is clean; `i18n check` still fails on three
+      pre-existing non-literal `t()` calls in `SourceControl.tsx`.)*
 
 ## Phase 9 — Prediction for new rows (secondary)
 

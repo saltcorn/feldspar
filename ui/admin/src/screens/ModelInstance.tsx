@@ -14,6 +14,10 @@
 // is not a claim about anything until you know whether it was measured on the
 // rows the fit was computed from.
 //
+// A **posterior** (Stan TODO §18) is a different reading of the same row — its
+// parameters are draws, its metrics the sampler's diagnostics — and is rendered
+// by `PosteriorInstance.tsx`, which this screen hands the whole of the body to.
+//
 // And "try a row" is the point of the whole milestone in one box: an instance is
 // something you *read* (the coefficients, the p-values) and something you
 // *apply*, and the second half should not need a trigger to see.
@@ -58,10 +62,12 @@ import {
   type FeatureInput,
   type InstanceDetail,
   type Metrics,
+  type ModelItem,
   type ParameterBlock,
   type SplitMetrics,
 } from "../models";
 import { fitTone } from "./Models";
+import { PosteriorInstance } from "./PosteriorInstance";
 import { T, useT } from "../i18n";
 
 /** How often a fit still running is re-read (§8). */
@@ -75,6 +81,9 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
   const [instance, setInstance] = useState<InstanceDetail | null>(null);
   const [modelName, setModelName] = useState("");
   const [dataset, setDataset] = useState<Dataset | null>(null);
+  const [model, setModel] = useState<ModelItem | null>(null);
+  const [cancellable, setCancellable] = useState(false);
+  const [bindsData, setBindsData] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -87,8 +96,17 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
       // fit.
       const model = await api.getModel(detail.model).catch(() => null);
       if (model) {
+        setModel(model);
         setModelName(model.name);
         setDataset(readDataset(model.dataset, model.table_name));
+        // Whether Cancel is offered is the provider's to say, and so is
+        // whether this is a posterior before the fit has recorded its outcome.
+        if (detail.status === "fitting") {
+          const listed = await api.listModelProviders().catch(() => null);
+          const provider = listed?.providers.find((p) => p.name === model.provider);
+          setCancellable(Boolean(provider?.cancellable));
+          setBindsData(Boolean(provider?.binds_data));
+        }
       }
     } catch (err) {
       setLoadError(errorMessage(err, "Could not load this fit."));
@@ -154,6 +172,11 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
   const parameters = readParameters(instance.parameters);
   const search = readSearch(instance.search);
   const rows = readRowCounts(instance.rows);
+  // A running fit has no outcome yet, so a posterior is also known by its
+  // provider, or by the progress only a posterior reports.
+  const posterior =
+    outcome?.outcome === "posterior" ||
+    (instance.status === "fitting" && (bindsData || instance.progress != null));
 
   return (
     <>
@@ -188,7 +211,7 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
           <span className="text-muted small">{formatTimestamp(instance.created)}</span>
         </div>
 
-        {instance.status === "fitting" && (
+        {instance.status === "fitting" && !posterior && (
           <Alert variant="info">
             <T text="This fit is running on the server. The screen is asking again every second or so — there is nothing to wait on, because the row is the only record of the job." />
           </Alert>
@@ -197,7 +220,16 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
             the fit returned long before it failed. */}
         {instance.error && <Alert variant="danger">{instance.error}</Alert>}
 
-        {rows && (
+        {posterior && (
+          <PosteriorInstance
+            instance={instance}
+            model={model}
+            cancellable={cancellable}
+            onChanged={() => void load()}
+          />
+        )}
+
+        {rows && !posterior && (
           <Card className="mb-3">
             <Card.Header><T text="Rows" /></Card.Header>
             <Card.Body className="d-flex flex-wrap gap-4">
@@ -222,7 +254,7 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
           </Card>
         )}
 
-        {hasMetrics(metrics) && (
+        {hasMetrics(metrics) && !posterior && (
           <Card className="mb-3">
             <Card.Header><T text="Metrics" /></Card.Header>
             <MetricsTable metrics={metrics} />
@@ -244,7 +276,7 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
 
         <ClassificationDetail metrics={metrics} />
 
-        {parameters.length > 0 && (
+        {parameters.length > 0 && !posterior && (
           <Card className="mb-3">
             <Card.Header><T text="Parameters" /></Card.Header>
             <Card.Body>
@@ -301,7 +333,10 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
           </Card>
         )}
 
-        {instance.status === "fitted" && outcome && outcome.outcome !== "test" && (
+        {instance.status === "fitted" &&
+          outcome &&
+          outcome.outcome !== "test" &&
+          !posterior && (
           <TryARow
             instanceId={instanceId}
             features={featureInputs(readEncoding(instance.encoding), dataset)}

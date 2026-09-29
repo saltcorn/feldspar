@@ -17,6 +17,12 @@
 // the types it reports are the *data's*, which is what the provider's form is
 // built from and what no schema carries.
 //
+// For a provider that **binds data** (a posterior — Stan TODO §18) the form
+// grows the parts a program needs, and none of them names the provider: the
+// program's place, related datasets, dimensions and the binding table
+// (`ModelBindings.tsx`). The split and the hyperparameter grid are hidden for
+// it, because a posterior is not divided and not searched.
+//
 // **Fit saves first.** A fit of what is on the screen and a save of what is on
 // the screen are the same intention, and the alternative is a button that
 // silently fits the last saved version of a form the admin has been editing.
@@ -33,40 +39,51 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
-import type { PreviewDatasetResponse } from "../client";
 import { catalog, type TableInfo } from "../codeTypes";
-import { IconArrowLeft, IconPlus, IconTrash } from "../icons";
+import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import {
+  BINDINGS_KEY,
+  BINDING_FORM_KEYS,
+  BINDING_KINDS,
   DEFAULT_SPLIT,
+  DIMENSIONS_KEY,
+  DIMENSION_KINDS,
   MAX_GRID_POINTS,
+  POLICIES_KEY,
   buildHyperparameters,
+  buildPolicies,
   formatTimestamp,
-  formulaChoices,
   gridPoints,
   headlineMetric,
   instanceLabel,
   orderInstances,
   outcomeSummary,
+  parseDraft,
+  parseDrafts,
+  printDrafts,
   printGridValue,
   readDataset,
   readHyperparameters,
   readMetrics,
   readOutcome,
+  readPolicies,
+  readProgress,
+  readRelated,
   readSplit,
-  suggestColumnName,
-  uniqueColumnName,
-  type DatasetColumn,
+  type Dataset,
+  type Interface,
   type InstanceItem,
   type ProviderItem,
 } from "../models";
 import { SettingsFields, buildConfig, readConfig } from "../settings";
+import { DatasetBuilder, datasetBody } from "./DatasetBuilder";
+import { BindingSection, type BindingState } from "./ModelBindings";
 import { fitTone } from "./Models";
 import { T, useT } from "../i18n";
 
-/** How long the form waits after a keystroke before asking the server what the
- * dataset answers. Long enough that typing a formula is not a request per
- * character, short enough that stopping typing shows the rows. */
+/** How long the form waits after a keystroke before asking the server which
+ * providers this dataset resolves. */
 const DEBOUNCE_MS = 600;
 
 /** How often a `fitting` instance is re-read (§8: the row is the registry, so
@@ -87,9 +104,12 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const [id, setId] = useState<string | null>(modelId ?? null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [table, setTable] = useState("");
-  const [columns, setColumns] = useState<DatasetColumn[]>([]);
-  const [filter, setFilter] = useState("");
+  const [mainDataset, setMainDataset] = useState<Dataset>({
+    table: "",
+    columns: [],
+    filter: null,
+    order: [],
+  });
   const [provider, setProvider] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [hyper, setHyper] = useState<Record<string, string>>({});
@@ -104,23 +124,27 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const [schema, setSchema] = useState<TableInfo[]>([]);
   const [providers, setProviders] = useState<ProviderItem[]>([]);
   const [resolved, setResolved] = useState(false);
-  const [preview, setPreview] = useState<PreviewDatasetResponse | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const [instances, setInstances] = useState<InstanceItem[]>([]);
+  // The binding half, for a provider that binds data (Stan TODO §18).
+  const [binding, setBinding] = useState<BindingState>({
+    related: [],
+    dimensions: [],
+    policies: {},
+    bindings: {},
+  });
+  const [iface, setIface] = useState<Interface | null>(null);
+  const [programCheck, setProgramCheck] = useState<string | null>(null);
 
-  // The dataset as the API takes it, and as the two lookups key off. Stringified
-  // because that is what a query parameter carries and what an effect can
-  // compare — a fresh object every render would re-fetch on every keystroke.
-  const dataset = useMemo(
-    () => ({
-      table,
-      columns: columns.filter((c) => c.name.trim() !== "" || c.expr.trim() !== ""),
-      filter: filter.trim() === "" ? null : filter.trim(),
-    }),
-    [table, columns, filter],
-  );
+  // The dataset as the API takes it, and as the provider lookup keys off.
+  // Stringified because that is what a query parameter carries and what an
+  // effect can compare — a fresh object every render would re-fetch on every
+  // keystroke.
+  const dataset = useMemo(() => datasetBody(mainDataset), [mainDataset]);
   const datasetJson = JSON.stringify(dataset);
-  const configJson = JSON.stringify(buildConfig(specOf(providers, provider), config));
+  const bindsData = Boolean(providers.find((p) => p.name === provider)?.binds_data);
+  const configJson = JSON.stringify(
+    configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
+  );
 
   // --- loading ---------------------------------------------------------------
 
@@ -141,11 +165,18 @@ export function ModelForm({ modelId }: { modelId?: string }) {
           const stored = readDataset(existing.dataset, existing.table_name);
           setName(existing.name);
           setDescription(existing.description);
-          setTable(stored.table);
-          setColumns(stored.columns);
-          setFilter(stored.filter ?? "");
+          setMainDataset(stored);
           setProvider(existing.provider);
           setConfig(readConfig(existing.configuration));
+          const configuration = (existing.configuration ?? {}) as Record<string, unknown>;
+          setBinding({
+            related: readRelated(existing.related),
+            dimensions: Object.entries(printDrafts(DIMENSION_KINDS, configuration[DIMENSIONS_KEY])).map(
+              ([dimension, draft]) => ({ name: dimension, draft }),
+            ),
+            policies: readPolicies(configuration[POLICIES_KEY]),
+            bindings: printDrafts(BINDING_KINDS, configuration[BINDINGS_KEY]),
+          });
           setHyper(readHyperparameters(existing.hyperparameters));
           const storedSplit = readSplit(existing.split);
           setSplit({
@@ -156,7 +187,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
           });
           if (existing.error) setError(existing.error);
         } else {
-          setTable(tableList[0]?.name ?? "");
+          setMainDataset({ table: tableList[0]?.name ?? "", columns: [], filter: null, order: [] });
         }
         setReady(true);
       } catch (err) {
@@ -168,38 +199,6 @@ export function ModelForm({ modelId }: { modelId?: string }) {
       cancelled = true;
     };
   }, [modelId]);
-
-  // The preview: what this dataset answers, and the types it answers in. Skipped
-  // while there are no columns, because "it has no columns" is a sentence about
-  // a dataset that has not been built yet rather than one that is wrong.
-  useEffect(() => {
-    if (!ready) return undefined;
-    const parsed = JSON.parse(datasetJson) as typeof dataset;
-    if (parsed.table === "" || parsed.columns.length === 0) {
-      setPreview(null);
-      setPreviewError(null);
-      return undefined;
-    }
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void api
-        .previewDataset({ dataset: parsed, limit: 10 })
-        .then((answer) => {
-          if (cancelled) return;
-          setPreview(answer);
-          setPreviewError(null);
-        })
-        .catch((err: unknown) => {
-          if (cancelled) return;
-          setPreview(null);
-          setPreviewError(errorMessage(err, "This dataset could not be read."));
-        });
-    }, DEBOUNCE_MS);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [datasetJson, ready]);
 
   // The providers, resolved against this dataset and this configuration where
   // they can be: `config_spec` then offers *these* columns and `outcome` says
@@ -268,34 +267,11 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const hyperSpace = buildHyperparameters(chosen?.hyperparameters ?? [], hyper);
   const points = gridPoints(hyperSpace);
   const validationRows = Number(split.validation) > 0;
-  const choices = useMemo(() => formulaChoices(schema, table), [schema, table]);
-  const grouped = useMemo(() => {
-    const groups = new Map<string, { label: string; expr: string; index: number }[]>();
-    choices.forEach((choice, index) => {
-      const list = groups.get(choice.group) ?? [];
-      list.push({ label: choice.label, expr: choice.expr, index });
-      groups.set(choice.group, list);
-    });
-    return [...groups.entries()];
-  }, [choices]);
-
-  const addColumn = (index: number) => {
-    const choice = choices[index];
-    if (!choice) return;
-    setColumns((list) => [
-      ...list,
-      {
-        name: uniqueColumnName(
-          choice.name,
-          list.map((c) => c.name),
-        ),
-        expr: choice.expr,
-      },
-    ]);
-  };
-
-  const editColumn = (index: number, over: Partial<DatasetColumn>) =>
-    setColumns((list) => list.map((c, i) => (i === index ? { ...c, ...over } : c)));
+  // A binding provider's own controls edit these settings; the rest (the
+  // sampler's, the runs store) are rendered as settings like any provider's.
+  const settingsSpec = (chosen?.config_spec ?? []).filter(
+    (field) => !bindsData || !BINDING_FORM_KEYS.includes(field.name),
+  );
 
   // --- saving and fitting ----------------------------------------------------
 
@@ -306,14 +282,25 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     description: description.trim(),
     provider,
     dataset,
-    configuration: buildConfig(specOf(providers, provider), config),
-    hyperparameters: hyperSpace,
-    split: {
-      train: Number(split.train),
-      validation: Number(split.validation),
-      test: Number(split.test),
-      seed: Math.trunc(Number(split.seed)) || 0,
-    },
+    related: bindsData
+      ? binding.related.map((r) => ({
+          name: r.name.trim(),
+          dataset: datasetBody(r.dataset),
+          ...(r.label && r.label.trim() !== "" ? { label: r.label.trim() } : {}),
+        }))
+      : [],
+    configuration: configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
+    // A posterior is not searched and not divided (Stan TODO §13): nothing of
+    // the hidden controls is sent for one.
+    hyperparameters: bindsData ? {} : hyperSpace,
+    split: bindsData
+      ? DEFAULT_SPLIT
+      : {
+          train: Number(split.train),
+          validation: Number(split.validation),
+          test: Number(split.test),
+          seed: Math.trunc(Number(split.seed)) || 0,
+        },
     attributes: {},
   });
 
@@ -323,6 +310,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     const saved = await api.saveModel(body());
     setId(saved.id);
     setError(saved.error ?? null);
+    setProgramCheck(programCheckText(saved.program_check));
     // A new model now has a URL of its own, so a reload comes back to it rather
     // than to an empty form.
     if (!modelId) window.location.hash = `/models/${encodeURIComponent(saved.id)}`;
@@ -443,188 +431,22 @@ export function ModelForm({ modelId }: { modelId?: string }) {
           <Card className="mb-3">
             <Card.Header><T text="Dataset" /></Card.Header>
             <Card.Body>
-              <Row>
-                <Col md={4}>
-                  <Form.Group className="mb-3" controlId="modelTable">
-                    <Form.Label>
-                      <T text="Table" /><span className="text-danger"> *</span>
-                    </Form.Label>
-                    <Form.Select value={table} onChange={(e) => setTable(e.target.value)}>
-                      {tables.every((t) => t !== table) && table !== "" && (
-                        <option value={table}>
-                          {t("{name} (missing)", { name: table })}
-                        </option>
-                      )}
-                      {tables.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
-                      ))}
-                    </Form.Select>
-                    <Form.Text muted>
-                      <T text="The table every formula below is written over. Changing it leaves the columns as they are — they are formulas, and most of them will not resolve over another table." />
-                    </Form.Text>
-                  </Form.Group>
-                </Col>
-                <Col md={8}>
-                  <Form.Group className="mb-3" controlId="modelFilter">
-                    <Form.Label><T text="Filter" /></Form.Label>
-                    <Form.Control
-                      className="font-monospace"
-                      value={filter}
-                      placeholder={t("sold")}
-                      onChange={(e) => setFilter(e.target.value)}
-                    />
-                    <Form.Text muted>
-                      <T text="One boolean formula deciding which rows are in the data, or blank for all of them." /> <code>user</code> <T text="and the operation flags may not be used: a dataset has no caller." />
-                    </Form.Text>
-                  </Form.Group>
-                </Col>
-              </Row>
-
-              <Table size="sm" className="mb-2">
-                <thead>
-                  <tr>
-                    <th style={{ width: "30%" }}><T text="Column" /></th>
-                    <th><T text="Formula" /></th>
-                    <th style={{ width: "1%" }} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {columns.length === 0 && (
-                    <tr>
-                      <td colSpan={3} className="text-muted">
-                        <T text="No columns yet. Pick one below, or add a blank row and write a formula." />
-                      </td>
-                    </tr>
-                  )}
-                  {columns.map((column, index) => (
-                    <tr key={index}>
-                      <td>
-                        <Form.Control
-                          size="sm"
-                          value={column.name}
-                          aria-label={`Column ${index + 1} name`}
-                          onChange={(e) => editColumn(index, { name: e.target.value })}
-                        />
-                      </td>
-                      <td>
-                        <Form.Control
-                          size="sm"
-                          className="font-monospace"
-                          value={column.expr}
-                          aria-label={`Column ${index + 1} formula`}
-                          onChange={(e) => {
-                            const expr = e.target.value;
-                            // A name the picker suggested follows the formula
-                            // while it is still the suggestion; one the admin
-                            // typed is theirs and is left alone.
-                            const suggested = suggestColumnName(column.expr);
-                            editColumn(index, {
-                              expr,
-                              ...(column.name === suggested || column.name === ""
-                                ? { name: suggestColumnName(expr) }
-                                : {}),
-                            });
-                          }}
-                        />
-                      </td>
-                      <td>
-                        <Button
-                          size="sm"
-                          variant="outline-danger"
-                          aria-label={`Remove column ${index + 1}`}
-                          onClick={() => setColumns((list) => list.filter((_, i) => i !== index))}
-                        >
-                          <IconTrash className="icon-2" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
-
-              <div className="d-flex gap-2 align-items-start flex-wrap">
-                {/* The picker writes a formula and nothing else (§2): three
-                    groups, one language, and every choice is editable in the
-                    row it lands in. */}
-                <Form.Select
-                  className="w-auto"
-                  value=""
-                  aria-label={t("Add a column")}
-                  onChange={(e) => addColumn(Number(e.target.value))}
-                >
-                  <option value=""><T text="Add a field, join path or aggregation…" /></option>
-                  {grouped.map(([group, list]) => (
-                    <optgroup key={group} label={group}>
-                      {list.map((choice) => (
-                        <option key={choice.expr} value={String(choice.index)}>
-                          {choice.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </Form.Select>
-                <Button
-                  variant="outline-secondary"
-                  onClick={() => setColumns((list) => [...list, { name: "", expr: "" }])}
-                >
-                  <IconPlus className="icon-2" />
-                  <T text="Blank column" />
-                </Button>
-              </div>
-
-              <hr />
-
-              <h4 className="h5"><T text="Preview" /></h4>
-              {previewError && <Alert variant="warning">{previewError}</Alert>}
-              {!previewError && !preview && (
-                <p className="text-muted mb-0">
-                  <T text="Add a column to see the first rows and the types they came back as." />
-                </p>
-              )}
-              {preview && (
-                <>
-                  {preview.split_error && (
-                    <Alert variant="warning">
-                      {t(
-                        "{problem} — the dataset reads, and a fit cannot divide it.",
-                        { problem: preview.split_error },
-                      )}
-                    </Alert>
-                  )}
-                  <div className="table-responsive">
-                    <Table size="sm" className="table-vcenter">
-                      <thead>
-                        <tr>
-                          {preview.columns.map((column) => (
-                            <th key={column.name}>
-                              {column.name}
-                              <div className="text-muted fw-normal small">{column.type}</div>
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {preview.rows.map((row, index) => (
-                          <tr key={index}>
-                            {preview.columns.map((column) => (
-                              <td key={column.name} className="text-nowrap">
-                                {cellText((row as Record<string, unknown>)[column.name])}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </Table>
-                  </div>
-                  <p className="text-muted small mb-0">
+              <DatasetBuilder
+                dataset={mainDataset}
+                onChange={setMainDataset}
+                tables={tables}
+                schema={schema}
+                idPrefix="model-main"
+                withOrder={bindsData}
+                previewNote={(preview) => (
+                  <>
                     <T text="The first rows, and the type each column’s values came back as — which is what the provider’s form below is built from." />
-                    {preview.primary_key &&
+                    {!bindsData &&
+                      preview.primary_key &&
                       ` ${t("Split by {column}.", { column: preview.primary_key })}`}
-                  </p>
-                </>
-              )}
+                  </>
+                )}
+              />
             </Card.Body>
           </Card>
 
@@ -652,10 +474,19 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                         <option key={p.name} value={p.name}>
                           {p.name}
                           {p.module ? ` (${p.module})` : ""}
+                          {p.unavailable ? ` — ${t("unavailable here")}` : ""}
                         </option>
                       ))}
                     </Form.Select>
                     {chosen && <Form.Text muted>{chosen.description}</Form.Text>}
+                    {/* Listed rather than hidden (Stan TODO §4): the model can
+                        still be written and saved, and the reason is what the
+                        admin needs to fix the server. */}
+                    {chosen?.unavailable && (
+                      <Alert variant="warning" className="mt-2 mb-0 py-2 small">
+                        {chosen.unavailable}
+                      </Alert>
+                    )}
                   </Form.Group>
                 </Col>
                 <Col md={7}>
@@ -680,17 +511,17 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                 </Col>
               </Row>
 
-              {chosen && chosen.config_spec.length > 0 && (
+              {chosen && !bindsData && settingsSpec.length > 0 && (
                 <>
                   <hr />
                   <h4 className="h5"><T text="Settings" /></h4>
-                  {!resolved && (
+                  {!resolved && !bindsData && (
                     <p className="text-muted small">
                       <T text="The dataset could not be read, so a setting that would offer this dataset's columns is a text box here." />
                     </p>
                   )}
                   <SettingsFields
-                    spec={chosen.config_spec}
+                    spec={settingsSpec}
                     values={config}
                     onChange={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
                     idPrefix="model-config"
@@ -698,7 +529,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                 </>
               )}
 
-              {chosen && chosen.hyperparameters.length > 0 && (
+              {chosen && !bindsData && chosen.hyperparameters.length > 0 && (
                 <>
                   <hr />
                   <h4 className="h5"><T text="Hyperparameters" /></h4>
@@ -748,7 +579,41 @@ export function ModelForm({ modelId }: { modelId?: string }) {
             </Card.Body>
           </Card>
 
+          {/* --- the program and its data (a binding provider) --------------- */}
+          {bindsData && chosen && (
+            <BindingSection
+              spec={chosen.config_spec}
+              config={config}
+              setConfig={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
+              state={binding}
+              setState={setBinding}
+              iface={iface}
+              setIface={setIface}
+              main={mainDataset}
+              tables={tables}
+              schema={schema}
+              modelBody={body}
+              modelId={id}
+            />
+          )}
+          {/* The sampler's settings come after the program and its data, which
+              are what the admin is answering first. */}
+          {bindsData && chosen && settingsSpec.length > 0 && (
+            <Card className="mb-3">
+              <Card.Header><T text="Settings" /></Card.Header>
+              <Card.Body>
+                <SettingsFields
+                  spec={settingsSpec}
+                  values={config}
+                  onChange={(key, value) => setConfig((c) => ({ ...c, [key]: value }))}
+                  idPrefix="model-config"
+                />
+              </Card.Body>
+            </Card>
+          )}
+
           {/* --- the split --------------------------------------------------- */}
+          {!bindsData && (
           <Card className="mb-3">
             <Card.Header><T text="Split" /></Card.Header>
             <Card.Body>
@@ -789,6 +654,13 @@ export function ModelForm({ modelId }: { modelId?: string }) {
               </p>
             </Card.Body>
           </Card>
+          )}
+
+          {programCheck && (
+            <Alert variant="secondary">
+              <pre className="text-pre-wrap small mb-0">{programCheck}</pre>
+            </Alert>
+          )}
 
           <div className="btn-list mb-4">
             <Button type="submit" disabled={busy}>
@@ -851,6 +723,16 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                       {instance.error && (
                         <div className="text-danger small">{instance.error}</div>
                       )}
+                      {instance.status === "fitting" && readProgress(instance.progress) && (
+                        <div className="text-muted small">
+                          {stageText(t, readProgress(instance.progress)?.stage)}
+                        </div>
+                      )}
+                      {instance.warnings.length > 0 && (
+                        <div className="text-warning small">
+                          {t("{count} warnings", { count: instance.warnings.length })}
+                        </div>
+                      )}
                     </td>
                     <td>
                       {headlineMetric(readMetrics(instance.metrics)) ??
@@ -891,7 +773,11 @@ export function ModelForm({ modelId }: { modelId?: string }) {
               </tbody>
             </Table>
             <Card.Footer className="text-muted small">
-              <T text="A fit runs on the server and this list polls until it finishes. Nothing survives a restart: an instance still fitting when the server stops is failed at boot, because there is no cancel and no way to pick it back up." />
+              {chosen?.cancellable ? (
+                <T text="A fit runs on the server and this list polls until it finishes; its screen can cancel it. Nothing survives a restart: an instance still fitting when the server stops is failed at boot." />
+              ) : (
+                <T text="A fit runs on the server and this list polls until it finishes. Nothing survives a restart: an instance still fitting when the server stops is failed at boot, because there is no cancel and no way to pick it back up." />
+              )}
             </Card.Footer>
           </Card>
         )}
@@ -913,12 +799,62 @@ function splitSums(split: SplitForm): boolean {
   return Number.isFinite(sum) && Math.abs(sum - 1) < 1e-9;
 }
 
-/** A preview cell: a null is an em dash rather than the word "null", and an
- * object is its JSON, because a dataset column can be one. */
-function cellText(value: unknown): string {
-  if (value === null || value === undefined) return "—";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+/**
+ * The configuration `saveModel` takes: the settings as the spec types them,
+ * and for a provider that binds data, the binding half's own keys built from
+ * their editors rather than from the settings' text — each draft parsed, the
+ * rows with no kind left for the server to name as unbound.
+ */
+function configurationOf(
+  spec: ProviderItem["config_spec"],
+  values: Record<string, string>,
+  binding: BindingState | null,
+): Record<string, unknown> {
+  if (!binding) return buildConfig(spec, values);
+  const owned = [BINDINGS_KEY, DIMENSIONS_KEY, POLICIES_KEY];
+  const config = buildConfig(
+    spec.filter((field) => !owned.includes(field.name)),
+    values,
+  );
+  const dimensions: Record<string, unknown> = {};
+  for (const row of binding.dimensions) {
+    const parsed = parseDraft(DIMENSION_KINDS, row.draft).value;
+    if (row.name.trim() !== "" && parsed) dimensions[row.name.trim()] = parsed;
+  }
+  config[BINDINGS_KEY] = parseDrafts(BINDING_KINDS, binding.bindings);
+  config[DIMENSIONS_KEY] = dimensions;
+  config[POLICIES_KEY] = buildPolicies(binding.policies);
+  return config;
+}
+
+/** What `saveModel` said about the program (Stan TODO §5): `stanc`'s warnings,
+ * or the notice that it was not checked. */
+function programCheckText(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const check = raw as { warnings?: unknown; notice?: unknown };
+  const parts = [check.notice, check.warnings].filter(
+    (p): p is string => typeof p === "string" && p.trim() !== "",
+  );
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+/** A running fit's stage, as a word. */
+export function stageText(
+  t: (text: string) => string,
+  stage: string | undefined,
+): string {
+  switch (stage) {
+    case "queued":
+      return t("queued for a process");
+    case "compiling":
+      return t("compiling");
+    case "sampling":
+      return t("sampling");
+    case "summarising":
+      return t("summarising");
+    default:
+      return "";
+  }
 }
 
 /** The hyperparameter point a fit used, on one line. */

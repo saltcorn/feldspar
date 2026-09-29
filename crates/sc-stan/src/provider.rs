@@ -679,6 +679,23 @@ impl ModelProvider for StanProvider {
         Ok(Some(files))
     }
 
+    /// The program `config` names now against the snapshot in `state` (§6):
+    /// another store, another main file, a file added or dropped from the
+    /// includes, or any file's SHA-256. A program that cannot be read now is
+    /// `None` — a disconnected store says nothing about the file in it.
+    async fn program_changed(&self, config: &Attrs, state: &Json) -> Option<bool> {
+        let snapshot = state.get("program")?;
+        let hashes: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(state.get("hashes")?.clone()).ok()?;
+        let store = snapshot.get("store")?.as_str()?;
+        let main = snapshot.get("main")?.as_str()?;
+        if text(config, PROGRAM_STORE) != Some(store) {
+            return Some(true);
+        }
+        let program = self.program(config).await.ok()?;
+        Some(program.main_path() != main || program.hashes() != hashes)
+    }
+
     /// Delete the published raw run, when the fit kept one (§14).
     async fn discard(&self, state: &Json) -> Result<()> {
         let Some(run) = state.get("run").filter(|r| !r.is_null()) else {

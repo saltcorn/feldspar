@@ -106,8 +106,10 @@ export function navigate(path: string): void {
  * at `/ide/`, because VS Code initializes once per page. So this is an ordinary
  * link that leaves the SPA, and the browser's Back button is what comes back.
  */
-export function ideUrl(store: string): string {
-  return `/ide/?store=${encodeURIComponent(store)}`;
+export function ideUrl(store: string, path?: string): string {
+  const base = `/ide/?store=${encodeURIComponent(store)}`;
+  // A file to open once the workbench is up — a model's program (Stan TODO §18).
+  return path && path.trim() !== "" ? `${base}&path=${encodeURIComponent(path.trim())}` : base;
 }
 
 export function App() {

@@ -529,6 +529,8 @@ async fn a_posterior_is_bound_fitted_read_by_key_and_written_back() -> Result<()
     let (model_id, instance) = fitted(client, radon("Radon", bound(), nulls_dropped())).await;
     assert_eq!(instance["status"], json!("fitted"), "{instance}");
     assert_eq!(instance["warnings"], json!([]), "{instance}");
+    // The sampler keeps no program, so it cannot say whether one has changed.
+    assert_eq!(instance["program_changed"], Value::Null, "{instance}");
     assert_eq!(
         instance["variables"]["alpha"],
         json!({ "dims": [3], "dimensions": ["counties"] }),

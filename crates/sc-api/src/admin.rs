@@ -5749,6 +5749,10 @@ fn model_instance_detail_schema() -> TypeSchema {
                 // A posterior's binding report: rows read and bound, drops, a
                 // line per data variable.
                 StructField::new("binding", TypeSchema::optional(TypeSchema::json())),
+                // Whether the model's program differs now from the one this
+                // fit snapshotted (Stan TODO §§6, 18); null for a provider with
+                // no program, or when it cannot tell.
+                StructField::new("program_changed", TypeSchema::optional(TypeSchema::bool())),
             ])
             .collect(),
     )

@@ -249,8 +249,18 @@ describe("reading the API's JSON blobs", () => {
   it("reads a dataset, and answers an empty one over the table for anything else", () => {
     expect(
       readDataset({ table: "houses", columns: [{ name: "price", expr: "price" }], filter: "sold" }),
-    ).toEqual({ table: "houses", columns: [{ name: "price", expr: "price" }], filter: "sold" });
-    expect(readDataset(null, "houses")).toEqual({ table: "houses", columns: [], filter: null });
+    ).toEqual({
+      table: "houses",
+      columns: [{ name: "price", expr: "price" }],
+      filter: "sold",
+      order: [],
+    });
+    expect(readDataset(null, "houses")).toEqual({
+      table: "houses",
+      columns: [],
+      filter: null,
+      order: [],
+    });
   });
 
   it("reads a split, and falls back to four fifths fitted", () => {

@@ -8,6 +8,7 @@
  */
 import "./style.css";
 import { api, errorStatus } from "./api";
+import { requestedPath } from "./storeFiles";
 import type { FileStoreSummary } from "./git";
 
 const CONTAINER_ID = "workbench";
@@ -101,7 +102,7 @@ if (store == null) {
       });
     } else {
       const { bootWorkbench } = await import("./workbench");
-      await bootWorkbench(found, workbenchContainer());
+      await bootWorkbench(found, workbenchContainer(), requestedPath(window.location.href));
     }
   } catch (err) {
     // A session that expired between the page load and this call: the admin UI

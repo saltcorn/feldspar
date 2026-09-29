@@ -60,6 +60,7 @@ import {
 import { storeGit, type FileStoreSummary } from "./git";
 import { configureWorkers } from "./workers";
 import { registerStoreSearch } from "./searchProvider";
+import { toUriPath } from "./storeFiles";
 import { registerStoreFilesystem, storeFolderUri } from "./workspace";
 
 /**
@@ -260,6 +261,9 @@ function constructionOptions(store: string): IWorkbenchConstructionOptions {
 export async function bootWorkbench(
   summary: FileStoreSummary,
   container: HTMLElement,
+  /** A file to open once the workbench is up — what "Open in IDE" on a model's
+   * program asks for. */
+  open: string | null = null,
 ): Promise<void> {
   const store = summary.name;
   configureWorkers();
@@ -305,6 +309,13 @@ export async function bootWorkbench(
       provider,
       refreshSourceControl: saltcorn.refreshSourceControl,
     });
+  }
+  if (open != null) {
+    // A file that is not there is said by the editor itself; the workbench is
+    // still the store's.
+    await vscode.window
+      .showTextDocument(vscode.Uri.file(toUriPath(store, open)))
+      .then(undefined, (err: unknown) => console.warn(`[saltcorn] could not open ${open}`, err));
   }
 }
 

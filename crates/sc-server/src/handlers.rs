@@ -3389,12 +3389,38 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
 
     reg.register("getModelInstance", {
         let catalog = catalog.clone();
+        let apps = apps.clone();
         move |ctx| {
             let catalog = catalog.clone();
+            let apps = apps.clone();
             async move {
                 let id = sc_model::InstanceId(parse_uuid(ctx.path_param("id")?, "model instance")?);
                 let instance = sc_model::require_model_instance(&catalog, id).await?;
-                Ok(HandlerResponse::ok(model_instance_detail_json(&instance)))
+                let mut out = model_instance_detail_json(&instance);
+                // "The program has changed since this fit" (Stan TODO §18):
+                // the provider compares its snapshot with the model's program
+                // now. Null for a provider with no program, and whenever it
+                // cannot tell — a screen must still open when a store is down.
+                let changed = match (
+                    models_of(&apps),
+                    sc_model::load_model(&catalog, instance.model).await,
+                ) {
+                    (Ok(models), Ok(Some(model))) => {
+                        match models.registry().require(model.provider.trim()) {
+                            Ok(provider) => {
+                                provider
+                                    .program_changed(&model.configuration, &instance.state)
+                                    .await
+                            }
+                            Err(_) => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let Json::Object(map) = &mut out {
+                    map.insert("program_changed".to_owned(), json!(changed));
+                }
+                Ok(HandlerResponse::ok(out))
             }
         }
     });

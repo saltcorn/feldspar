@@ -90,6 +90,18 @@ export function toUriPath(store: string, storePath: string): string {
   return storePath === "" ? `/${store}` : `/${store}/${storePath}`;
 }
 
+/**
+ * The store path a page URL asks to have opened (`/ide/?store=s&path=a/b.stan`),
+ * or `null` when it names none or names one that is not inside a store — an
+ * absolute path or a `..` is dropped here rather than handed to the workbench.
+ */
+export function requestedPath(href: string): string | null {
+  const raw = new URL(href).searchParams.get("path")?.trim().replace(/^\/+/, "");
+  if (raw == null || raw === "") return null;
+  if (raw.split("/").some((part) => part === ".." || part === "")) return null;
+  return raw;
+}
+
 /** Decode base64 the API returned into the bytes it stands for. */
 export function decodeBase64(base64: string): Uint8Array {
   const binary = atob(base64);

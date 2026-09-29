@@ -17,7 +17,7 @@ use serde_json::{Value as Json, json};
 use crate::programs::RADON;
 
 fn store_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("sc-stan-provider-{label}-{}", std::process::id()));
+    let dir = store_dir_path(label);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -112,6 +112,53 @@ fn it_declares_a_posterior_that_binds_data_and_the_whole_form() {
         provider.unavailable(),
         Some("$CMDSTAN is not set and ~/.cmdstan is empty")
     );
+}
+
+/// The instance screen's "the program has changed since this fit" (§§6, 18):
+/// the snapshot a fit keeps in its state against the file in the store now.
+#[tokio::test]
+async fn a_snapshot_is_compared_with_the_program_in_its_store_now() {
+    let provider = StanProvider::new(lookup("changed"), no_cmdstan());
+    let program = provider.program(&radon_config()).await.unwrap();
+    let state = json!({
+        "program": { "store": program.store, "main": program.main_path() },
+        "hashes": program.hashes(),
+    });
+    assert_eq!(
+        provider.program_changed(&radon_config(), &state).await,
+        Some(false)
+    );
+
+    // An edit in the IDE.
+    std::fs::write(
+        store_dir_path("changed").join("radon.stan"),
+        format!("{RADON}\n// edited\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        provider.program_changed(&radon_config(), &state).await,
+        Some(true)
+    );
+
+    // The model pointed at another store is another program; one that cannot
+    // be read says nothing; a state with no snapshot (another method's, or a
+    // failed fit's) says nothing either.
+    let elsewhere = config(json!({"program_store": "other", "program": "radon.stan"}));
+    assert_eq!(
+        provider.program_changed(&elsewhere, &state).await,
+        Some(true)
+    );
+    let gone = config(json!({"program_store": "models", "program": "nope.stan"}));
+    assert_eq!(provider.program_changed(&gone, &state).await, None);
+    assert_eq!(
+        provider.program_changed(&radon_config(), &json!({})).await,
+        None
+    );
+}
+
+/// [`store_dir`]'s path, without clearing it.
+fn store_dir_path(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("sc-stan-provider-{label}-{}", std::process::id()))
 }
 
 #[tokio::test]
