@@ -8,27 +8,121 @@ The scope for the framework is predictive analytics, including:
 * exploratory data analysis
 * dashboards for non-technical users 
 * fitting statistical models
-* hypothesis testing* notebook interfaces
+* hypothesis testing
+* notebook interfaces
 * GIS work: maps with layers, spatiotemporal data analysis
 * reports
+* simulation: using fitted models to predict outcomes and compare what-if scenarios
 
 The goal here is not to be the most powerful data analytics package but to provide the 50% of features that are sufficient for 95% of users, ideally with a plug-in architecture so that entity types can provide expert functionality. Prioritise ease of use over feature completeness.
 
-The unrestricted version of the analytics UI appears as the Analytics link in the admin UI sidebar menu (replacing the "Predictive models" link). This leads to a version of the analytics UI where all tables and workspaces are accessible. The admin can also create an application using the Analytics UI framework, which is a restricted subset of the Analytics UI functionality. It might be only a particular workspace (e.g. dashboard or report), or it might give the end user more power with a self-serve analytics environment but that has access only to a restricted subset of tables.
+The unrestricted version of the analytics UI appears as the Analytics link in the admin UI sidebar menu (replacing the "Predictive models" link). This leads to a version of the analytics UI where all tables and workspaces are accessible. The admin can also create an application using the Analytics UI framework, which is a restricted subset of the Analytics UI functionality. It might be only a particular workspace (e.g. dashboard, report or simulation), or it might give the end user more power with a self-serve analytics environment but that has access only to a restricted subset of tables.
 
 ### Workspaces
 
 The full analytics UI consists of a number of workspaces each of which takes a specific form. When entering the analytics UI, the user see the list of existing workspace and can enter one, or create a new one by name and type.
 Workspace type:
-* Dataset editor - initial screen is a list of datasets, each has a link to edit, clone and delete, or create new. Each dataset is based on a base table which is picked when creating new but cannot be changed. In the individual dataset editor is a spreadsheet like read only view of data. New columns can be added with a plus in the last column header. The persisted list of datasets is global, the dataset editor will open one of them (unless it is in the initial state of looking at the list of global datasets before picking one to edit)
-* Data explorer: interactively creating different visualizations and summary tables without any persistence other than opening up in the same state where it was left off last time. A single screen where the data set is chosen in a drop-down and then the plot / summary table type. Then the parameters and configuration for each plot type is chosen and the plot is shown. The data explorer can also perform simple hypothesis tests, which sit alongside a plot type. Large models like general linear models are done through the model fit interface.
+* Dataset editor - initial screen is a list of datasets, each has a link to edit, clone and delete, or create new. Each dataset is based on a base table which is picked when creating new but cannot be changed. A dataset is defined by its base and an ordered list of operations (see [Dataset operations](#dataset-operations)). The individual dataset editor shows the list of operations beside a spreadsheet like read only view of the data as it is after the selected operation. New columns can be added with a plus in the last column header, which adds a Calculated column operation at the end. The persisted list of datasets is global, the dataset editor will open one of them (unless it is in the initial state of looking at the list of global datasets before picking one to edit)
+* Data explorer: interactively creating different visualizations and summary tables without any persistence other than opening up in the same state where it was left off last time. A single screen where the data set is chosen in a drop-down and then the plot / summary table type. Then the parameters and configuration for each plot type is chosen and the plot is shown. The data explorer can also perform simple hypothesis tests, which sit alongside a plot type. Large models like general linear models are done through the model fit interface. The tests are chosen from the types of the variables, as in JMP's "Fit Y by X" (see [Hypothesis tests in the data explorer](#hypothesis-tests-in-the-data-explorer)).
 * Dashboard: a tiled view including multiple plots and summary table and summary statistics cards, it may be interactive to enable drill down / cross filtering. There is no base data set for a dashboard; it can freely combine plots and summary tables across multiple datasets.
 * Model fit: a workspace for creating and editing model fits to datasets. Starts with a list of existing models each of which can be edited, cloned or deleted or the user can create a new model. Each model has a dataset and the model provider. There is an interface for editing the model parameters, fitting to a model, seeing fit progress, and then the fit output for that model below when done. Like the dataset editor, the list of models is global and the model fit it tied to one of them, unless it is in the initial state of picking a model to edit.
 * Notebook: the notebook is a jupyter- style notebook that contains code blocks, text blocks and output blocks. The code blocks are in a language that is set at creation time; it can be either JavaScript, Python or it can be natural language prompts to an LLM. The functions available allow it to generate panels, fit models or create non-persisted datasets.
 * Report: similar to a dashboard but intended to generate printable PDFs. Not interactive for drill down statistics.
 * Map: a map for GIS work. Has a base map and layers of data that can be added. The data for these layers comes from datasets.
+* Simulation: a workspace for using a fitted model rather than building it: what-if exploration of inputs, named scenarios compared side by side, and scoring a dataset with the model's predictions. Like model fit, it is tied to one model from the global list of models, unless it is in the initial state of picking one (see [Simulation workspace](#simulation-workspace)).
 
 Initially only one workspace is open at a time, however the display can be split side by side to have two open workspaces. 
+
+#### Dataset operations
+
+A dataset is a base followed by an ordered list of operations. The base is a table, or another dataset whose operations then come first. Each operation takes the rows produced by the operation before it and produces new rows, like a pipeline of tidyverse verbs (`table |> filter(…) |> mutate(…) |> summarise(…)`). The operations are modelled on those of dplyr, tidyr and sf, adapted to Feldspar's relational model.
+
+**Grain.** The grain of a dataset is what one of its rows represents: a row of the base table (an order), or something else (a customer-month, a region). Some operations keep the grain, and others change it. This distinction matters for which relations formulas can follow, and for how models fitted on the dataset can be used.
+
+**How this fits Feldspar's relational model.** Much of what needs an explicit join in the tidyverse is a formula in Feldspar, because formulas can follow foreign keys (Ⱶ join fields) and aggregate over child tables (Ↄ aggregations):
+
+* a lookup in a parent table (`left_join` along a foreign key) is a calculated column, e.g. `customerⱵregion`;
+* a per-row summary of a child table is a calculated column, e.g. `ordersↃcustomer.sum(o => o.total)`;
+* `semi_join` and `anti_join` along a foreign key are filters, e.g. `ordersↃcustomer.length > 0`.
+
+The Join operation is therefore only needed for keys that are not foreign keys, and for joining datasets. Relations remain available after grain-changing operations wherever the rows still correspond to database rows:
+
+* Every column keeps its type through the operations, and a column that is a foreign key stays one, so join fields can be followed from it in any later operation.
+* Aggregations over child tables need the row to correspond to a row of a table. That holds for the base table's rows until an operation changes the grain. It also holds after an Aggregate grouped by a single foreign key column, because each group then corresponds to the referenced row. For example, rows of incidents aggregated by district can still aggregate over the district's other child tables.
+* A model whose dataset keeps its base table's grain can, as today, be used in `predict("…")` in a calculated field on that table. A model whose dataset changes the grain cannot, as a row of that table is not an input it understands.
+
+Operations that keep the grain (one output row per input row, except Filter, which removes rows):
+
+| Operation | tidyverse | What it does |
+|---|---|---|
+| Calculated column | `mutate` | Add or replace a column computed by a formula over the current row. The formula can follow foreign keys and aggregate over child tables. |
+| Filter | `filter`, `drop_na`, `semi_join`, `anti_join` | Keep the rows that satisfy a condition. |
+| Select columns | `select`, `rename`, `relocate` | Keep, drop, rename and reorder columns. |
+| Sort | `arrange` | Order the rows. |
+| Window column | `group_by` + `mutate`, `fill` | A column computed over the ordered rows of a group: lag, lead, difference from the previous row, cumulative sum or mean, rank, row number, a group summary (e.g. each row's share of its group's total) or the last non-missing value. |
+| Model predictions | `predict`, `augment` | Add columns with a fitted model's prediction and, where the model provides it, the prediction's uncertainty interval. The model's inputs are matched to columns by name. |
+
+Operations that change the grain:
+
+| Operation | tidyverse | What it does |
+|---|---|---|
+| Aggregate | `group_by` + `summarise`, `count`, `distinct` | One row per combination of the group-by expressions, with summary columns: count, sum, mean, median, min, max, standard deviation, first or last by an order, and geometry union (to dissolve regions). Group-by expressions can bin values, e.g. a date truncated to the month or a point assigned to a grid cell. Without summary columns it is `distinct`. |
+| Limit | `slice_head`, `slice_sample`, `slice_max` | Keep the first N rows, a random sample, or the top N rows of each group by some column. |
+| Stack | `pivot_longer` | Turn a chosen set of columns into rows of name/value pairs, repeating the other columns. |
+| Split | `pivot_wider` | Turn the values of a name column into separate columns, giving one row per combination of the id columns. |
+| Complete | `complete` | Add rows for missing combinations of values (e.g. every region × every month), with a fill value for the other columns. The values come from the data, from a range (e.g. the months between two dates), or, for a foreign key column, from all rows of the referenced table, so that regions with no data still appear. Needed for time series and spatiotemporal models. |
+
+Operations that combine with another table or dataset:
+
+| Operation | tidyverse | What it does |
+|---|---|---|
+| Join | `inner_join`, `left_join`, `full_join`, `join_by(closest())` | Join on key columns: inner, left or full. The key on a date column can also be "nearest earlier" (an as-of join), e.g. the price in force when an order was placed. |
+| Union | `bind_rows` | Append the rows of another table or dataset, matching columns by name, optionally with a column recording which source a row came from. |
+| Spatial join | `st_join` | Join where the geometries intersect, where one contains the other, where they are within a given distance, or to the nearest. |
+
+Geometry is a column type, and most of what sf does is formula functions rather than operations: building a point from coordinates, buffer, centroid, area, length, distance between two geometries, and assigning a point to a square or hexagonal grid cell. Operations are only needed where rows of another dataset are involved. Aggregating points to regions is a Spatial join followed by an Aggregate by region, and dissolving regions is an Aggregate with a geometry union. The dataset editor can offer such combinations as one action (e.g. "count per region") that creates the operations.
+
+Also formula functions rather than operations: splitting and joining text (`separate`, `unite`) and replacing missing values (`replace_na`). Applying the same formula to several columns (`across`) is a convenience in the editor that creates one Calculated column per selected column. List columns (`nest`, `unnest`) are left out.
+
+The columns an operation produces are fixed when it is defined. For Split, the new columns are pre-filled from the values currently in the data, not recomputed when the data changes, so later operations, panels and models do not break when a new value appears. Later operations refer to columns by name.
+
+In the dataset editor, the operations are listed in a side panel. Selecting an operation shows the data as it is after it, so the user can see the effect of each operation in isolation. Operations can be edited, reordered, temporarily disabled and deleted. An operation that becomes invalid (e.g. because an earlier operation removed a column it uses) is marked with an error rather than removed. The plus in the last column header adds a Calculated column at the end, and each column header has a menu with the operations that apply to that column (filter on it, sort by it, group by it, stack it with other selected columns).
+
+The rows of a dataset are not materialised. The operations are compiled into a single SQL query where possible, so that large tables are not loaded into memory. Spatial operations and functions need a spatial database extension (e.g. PostGIS). Model predictions cannot be expressed in SQL, so the operations after one are evaluated in memory on the rows it returns. Plugins can provide additional operations.
+
+#### Hypothesis tests in the data explorer
+
+The data explorer follows the approach of JMP's "Fit Y by X". The user does not pick a test from a menu of named tests. Instead they assign columns to roles: a response Y, optionally a factor X, and optionally a "by" column to repeat the analysis for each group. The explorer then chooses the plot and the applicable tests from the types of Y and X:
+
+| Y | X | Plot | Tests |
+|---|---|---|---|
+| continuous | none | histogram, box plot | one-sample t-test, normality test |
+| categorical | none | bar chart | chi-square goodness of fit, binomial test (two levels) |
+| continuous | categorical, 2 levels | box plot / dot plot by group | t-test (Welch), Mann-Whitney |
+| continuous | categorical, >2 levels | box plot / dot plot by group | one-way ANOVA, Kruskal-Wallis, pairwise comparisons |
+| categorical | categorical | mosaic plot, contingency table | chi-square test of independence, Fisher's exact test |
+| continuous | continuous | scatter plot with fitted line | Pearson and Spearman correlation, simple linear regression |
+| categorical | continuous | logistic curve | simple logistic regression |
+
+Paired data (e.g. before and after measurements on the same subject) is handled by choosing two continuous Y columns in a "paired" mode, giving the paired t-test and Wilcoxon signed-rank test. Data in long form can be brought into the wide form this needs with a Split operation in the dataset.
+
+The plot and the test results form a single panel, so they are dragged together. Results are shown as a short table (the test statistic, degrees of freedom, p-value, effect size and confidence interval) together with a plain-language sentence, for example "The mean of weight differs between groups A and B (p = 0.003)". Where a test's assumptions are doubtful (small groups, clearly non-normal data, unequal variances) the explorer says so and shows the non-parametric alternative alongside.
+
+The boundary with the model fit workspace: the data explorer handles one response and at most one factor, and nothing is persisted beyond the explorer's own state. Anything with several predictors, covariates, interactions or random effects, or that needs to be saved and reused, is a model. An "Open as model" button creates a model in the model fit workspace with the same dataset, response and factor, so that the user can extend a simple analysis without starting over.
+
+#### Simulation workspace
+
+The model fit workspace is where an analyst builds a model. The simulation workspace is where the analyst, or an end user in a restricted application, uses it. It has three parts:
+
+* Profiler: one input control per predictor (slider, drop-down or date picker), starting at typical values (the mean or the most common level). It shows the predicted outcome with its uncertainty interval and, for each predictor, a profile curve showing how the prediction changes as that predictor varies with the others held fixed. Changing an input updates the prediction and all the curves immediately.
+* Scenarios: the current input values can be saved as a named scenario, e.g. "price +10%" or "baseline". Scenarios are compared side by side, showing the distribution of the predicted outcome where the model provides one, and not only point predictions. Scenarios are persisted with the workspace.
+* Scoring: applying the model to a dataset creates a new dataset whose base is the source dataset, followed by a Model predictions operation. The scored dataset therefore follows changes to the source dataset. As with any dataset, the rows are not materialised.
+
+Scoring is how model outputs reach the other workspaces. A scored dataset can be explored, summarised in a dashboard or shown as a map layer. For example, a spatiotemporal model scored over a dataset of regions or grid cells can be shown as a choropleth map of predictions, without the map needing to know anything about models.
+
+The profiler and the scenario comparison are draggable panels. In a dashboard the profiler stays interactive, so a non-technical user can try out inputs. In a report it is rendered statically at the saved scenarios.
+
+Later, the simulation workspace could support decisions: choose the value of a decision variable (e.g. price or stock level) that maximises an expected outcome, taking the model's uncertainty into account.
 
 ### Panels
 
@@ -43,30 +137,34 @@ Sources:
 * The notebook output may be a panel that can be dragged. 
 * Reports or dashboards are also sources
 * Any map as a whole is a single panel that can be dragged.
+* The simulation profiler and scenario comparison are draggable panels.
 
 Sinks:
 * Anything can be dragged into a report or dashboard
 
 ### Additional changes to core
-* Dataset definitions now become persistent, but their rows are not materialised. There is a table to represent dataset definitions.
+* Feldspar's dataset model changes. Today a dataset is a list of formula columns, a filter and an order, stored as JSON on the model that uses it (TECHNICAL_DESIGN.md §14.2). It becomes a persistent, named definition in its own table: a base (a table or another dataset) and an ordered list of operations (see [Dataset operations](#dataset-operations)). Today's model is the special case of a series of Calculated column operations, one Filter and one Sort. The rows are still not materialised.
+* Datasets are shared, so one dataset can be used by several models, panels and other datasets. A model fit records the dataset definition it was fitted with, so that changing a dataset does not silently change the meaning of existing fits, and the model fit workspace shows when the dataset has changed since the fit.
 * The predictive models menu link is replaced by a link to the unrestricted analytics UI
 * Models fits have outputs: tables and plots. Some plots may be optional, i.e. not initially shown but available in a drop-down.
 * the definition of models and models providers is still open and should be tweaked to align with the goals in this specification
+* To support the simulation workspace and the Model predictions operation, a model provider must be able to predict for new rows of inputs and, where possible, give the uncertainty of the prediction (an interval or draws). This includes predicting from a Stan posterior, which is currently not supported.
 
 There is no coding agent for this application type at this point. 
 
 ### Milestones
 
-1. Workspace persistence+UI, Dataset editor workspace
+1. Workspace persistence+UI, the new dataset model, Dataset editor workspace
 2. Add Data explorer workspace which defines the available plot types. No drag and drop
 3. Model fit workspace with output panels. No drag and drop.
 4. Reports and enabling drag and drop of panels from the data explorer.
-5. Maps.
+5. Maps, including geometry functions and the Spatial join operation.
 6. Dashboards
-7. Application framework for restricted analytics UIs. Everything before this milestone is the unrestricted analytics UI accessed by the admin through the site bar link.
+7. Simulation workspace, and the Model predictions operation.
+8. Application framework for restricted analytics UIs. Everything before this milestone is the unrestricted analytics UI accessed by the admin through the site bar link.
 
 Open questions:
 
 - is this the right set of workspace types
 - in the data explorer can we bring in ideas from the grammar of graphics in an interactive interface?
-- gis maps: having maps with special data that can be overlaid in layers seems straightforward. What is less obvious to me is how that interacts with models and how model outputs for spatial temporal models can also be overlaid on maps. We need a better handle on the types of transformations of spatial data
+- gis maps: having maps with special data that can be overlaid in layers seems straightforward. What is less obvious to me is how that interacts with models and how model outputs for spatial temporal models can also be overlaid on maps. We need a better handle on the types of transformations of spatial data. Proposed answer: spatial transformations are geometry formula functions and the Spatial join operation (see [Dataset operations](#dataset-operations)), and model outputs reach maps as scored datasets (see [Simulation workspace](#simulation-workspace)), so maps only ever display datasets. Still open: whether that set of spatial functions and operations is sufficient, and how maps display time (e.g. a time slider across the layers).
