@@ -132,10 +132,14 @@ impl DatasetSource for CatalogDatasetSource {
         // preview and a prediction alike. A posterior needs it (the same seed
         // over the same rows in another order is another set of draws, Stan
         // TODO §7), and a hash-split provider is indifferent to it.
+        // `sql_only`: the dataset's columns are its own projections, and a
+        // calculated field of the table that predicts with this very model
+        // would otherwise read this dataset to compute itself.
         let mut query = RowQuery::new()
             .where_(filter)
             .projecting(projections)
-            .order_by(ds.order_by(&shape)?);
+            .order_by(ds.order_by(&shape)?)
+            .sql_only();
         if how.limit.is_some() {
             // Never above the cap, even when the caller asked for more: the cap
             // is what this process can hold, and a limit is what this caller

@@ -52,6 +52,7 @@ pub mod rows;
 pub mod schema_edit;
 
 mod admin;
+mod calc_read;
 mod endpoint;
 mod graphql;
 mod ownership;

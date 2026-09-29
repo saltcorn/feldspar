@@ -5,7 +5,7 @@ use sc_expr::{Formula, Operation};
 use sc_types::{BasicType, FormField};
 use serde_json::{Map, Value as Json, json};
 
-use sc_action::{Action, ActionContext, ConfigCheck, check_formula, formula_map};
+use sc_action::{Action, ActionContext, ConfigCheck, formula_map};
 
 use crate::rows_scope::{
     CFG_ASSIGNMENTS, CFG_TABLE, CFG_WHERE, Scope, row_id, target_table, where_formula,
@@ -58,15 +58,18 @@ impl Action for UpdateRows {
         // be a target — said here, in front of the admin, rather than at fire
         // time in front of nobody.
         rows::single_pk(&table)?;
-        check_formula(
-            check.shape,
-            &table.name,
-            &where_formula(check.config)?,
-            &format!("`{CFG_WHERE}`"),
-        )?;
+        check
+            .formula(
+                &table.name,
+                &where_formula(check.config)?,
+                &format!("`{CFG_WHERE}`"),
+            )
+            .await?;
         for (field, formula) in formula_map(check.config, CFG_ASSIGNMENTS)? {
             writable_field(&table, &field)?;
-            check_formula(check.shape, &table.name, &formula, &format!("`{field}`"))?;
+            check
+                .formula(&table.name, &formula, &format!("`{field}`"))
+                .await?;
         }
         Ok(())
     }

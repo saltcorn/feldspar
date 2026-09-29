@@ -1,8 +1,8 @@
 //! `send_email` — build a message out of the event and send it (design §18.2).
 
 use sc_action::{
-    Action, ActionContext, ConfigCheck, check_template, config_flag, optional_template,
-    render_event_template, required_template, template_scope,
+    Action, ActionContext, ConfigCheck, config_flag, optional_template, render_event_template,
+    required_template, template_scope,
 };
 use sc_catalog::{Catalog, DataField, DataFieldKind, Table};
 use sc_email::{Attachment, Email, Mailbox, parse_mailbox, parse_recipients, render_mjml};
@@ -148,7 +148,9 @@ impl Action for SendEmail {
         // does not resolve is named here, in front of the admin, together with
         // the token it is in.
         for (what, template) in templates.each() {
-            check_template(check.shape, scope, template, &format!("`{what}`"))?;
+            check
+                .template(scope, template, &format!("`{what}`"))
+                .await?;
         }
 
         // What a message must have, said while it can still be fixed. Both of

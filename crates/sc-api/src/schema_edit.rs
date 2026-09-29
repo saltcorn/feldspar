@@ -511,7 +511,8 @@ pub async fn apply(
     // Deferred to here on purpose: an ownership formula naming a field the batch
     // adds, and a calculated field reading one, must both validate against the
     // schema the batch *ends* with (§7.3, Phase 8).
-    plan.validate_deferred(catalog)?;
+    let model_notes = plan.validate_deferred(catalog).await?;
+    plan.applied.notes.extend(model_notes);
     let steps = plan.steps(catalog)?;
 
     if options.dry_run {
@@ -2064,10 +2065,24 @@ impl Plan {
     /// Everything that can only be checked once every operation has been read:
     /// the calculated-field expressions and the ownership formulas, both against
     /// the schema the batch ends with.
-    fn validate_deferred(&self, catalog: &Catalog) -> Result<()> {
+    ///
+    /// Answers the notices the batch should carry: a calculated field that
+    /// predicts with a model that has no active fit yet is saved, and told
+    /// that its table's reads fail until one is.
+    async fn validate_deferred(&self, catalog: &Catalog) -> Result<Vec<String>> {
         let shape = self.projection.shape();
+        let mut notes = Vec::new();
         for (table, field, expression) in &self.deferred_calc {
-            validate_calc_expression(&shape, table, field, expression)?;
+            let analysis = validate_calc_expression(&shape, table, field, expression)?;
+            let declared = self
+                .projection
+                .get(table)
+                .and_then(|t| t.field(field))
+                .map(|f| f.base.type_.clone());
+            notes.extend(
+                check_calc_predictions(catalog, table, field, expression, &analysis, declared)
+                    .await?,
+            );
         }
         for (table, formula) in &self.deferred_constraints {
             validate_formula(&self.projection, table, formula)?;
@@ -2078,7 +2093,7 @@ impl Plan {
             };
             validate_ownership(catalog, &self.projection, table)?;
         }
-        Ok(())
+        Ok(notes)
     }
 
     /// The whole batch as steps of one transaction: the structured DDL in the
@@ -2210,6 +2225,17 @@ fn validate_ownership(
             table.name, call.function
         )));
     }
+    // And for the same reason no `predict("…")` (milestone 31 §4): a provider
+    // that is slow, or a model with no active fit, would deny every read.
+    if let Some(call) = analysis.first_model_call() {
+        return Err(Error::invalid(format!(
+            "table `{}`: an ownership formula may not call `{}`. A rule that decides who may \
+             read a row must fail closed, so a model that is slow or cannot answer would deny \
+             every read of this table — and every read would wait on it. Use a calculated \
+             field or a trigger instead",
+            table.name, call.key
+        )));
+    }
     if !table.rls_enabled {
         return Ok(());
     }
@@ -2253,7 +2279,7 @@ fn validate_calc_expression(
     table: &str,
     field: &str,
     expression: &str,
-) -> Result<()> {
+) -> Result<sc_expr::Analysis> {
     let formula = sc_expr::Formula::parse(expression)
         .map_err(|e| Error::invalid(format!("calculated field `{table}.{field}`: {e}")))?;
     let analysis = formula
@@ -2265,7 +2291,89 @@ fn validate_calc_expression(
              or the operation flags"
         )));
     }
-    Ok(())
+    Ok(analysis)
+}
+
+/// The save check for a calculated field that calls `predict("…")`
+/// (milestone 31 §4): [`check_model_calls`](sc_catalog::check_model_calls)'s
+/// three (the model exists, is a model of this table, and predicts), and —
+/// when the expression **is** the call, so the field's value is the
+/// prediction — that the field's declared type can hold what the model
+/// produces. That is the check `predict_row` made against its target field.
+///
+/// Answers a notice per model with no active fit: the field is saved, and
+/// every read of its table fails until a fit is activated, which the admin is
+/// told now rather than on the next read.
+async fn check_calc_predictions(
+    catalog: &Catalog,
+    table: &str,
+    field: &str,
+    expression: &str,
+    analysis: &sc_expr::Analysis,
+    declared: Option<TypeRef>,
+) -> Result<Vec<String>> {
+    let named = |e: Error| Error::invalid(format!("calculated field `{table}.{field}`: {e}"));
+    let summaries = sc_catalog::check_model_calls(catalog, table, analysis)
+        .await
+        .map_err(named)?;
+    let whole = sc_expr::Formula::parse(expression)
+        .ok()
+        .and_then(|f| sc_expr::hoisted_call_key(f.ast()));
+    let mut notes = Vec::new();
+    for (call, summary) in analysis.model_calls.iter().zip(&summaries) {
+        if whole.as_deref() == Some(call.key.as_str())
+            && let Some(basic) = declared.as_ref().and_then(TypeRef::as_basic)
+            && !summary
+                .prediction_types
+                .iter()
+                .any(|produced| holds_prediction(basic, produced))
+        {
+            return Err(named(Error::invalid(format!(
+                "the field is {} and `{}` predicts {}; declare the field as {}",
+                basic.name(),
+                summary.name,
+                summary
+                    .prediction_types
+                    .iter()
+                    .map(|p| p.name().to_owned())
+                    .collect::<Vec<_>>()
+                    .join(" or "),
+                summary
+                    .prediction_types
+                    .iter()
+                    .map(|p| p.name().to_owned())
+                    .collect::<Vec<_>>()
+                    .join(" or "),
+            ))));
+        }
+        if summary.active_fit.is_none() {
+            notes.push(format!(
+                "calculated field `{table}.{field}`: `{}` has no active fit yet, so every read \
+                 of `{table}` fails until one is. Fit the model and make a fit active",
+                summary.name
+            ));
+        }
+    }
+    Ok(notes)
+}
+
+/// Whether a field of type `field` can hold a `produced` prediction.
+///
+/// Deliberately narrow, as `predict_row`'s was: a number is numeric, a class
+/// **name** is text, a cluster number is any number, and a vector is JSON and
+/// nothing else, because a vector rendered as text is unreadable by anything
+/// that wanted to use it.
+fn holds_prediction(field: &BasicType, produced: &BasicType) -> bool {
+    match produced {
+        BasicType::Float => matches!(field, BasicType::Float | BasicType::Decimal),
+        BasicType::Int => matches!(
+            field,
+            BasicType::Int | BasicType::Float | BasicType::Decimal
+        ),
+        BasicType::Text => matches!(field, BasicType::Text),
+        BasicType::Json => matches!(field, BasicType::Json),
+        _ => false,
+    }
 }
 
 // --- the type vocabulary ------------------------------------------------------

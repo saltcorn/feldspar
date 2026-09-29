@@ -311,27 +311,27 @@ deny, and a rule that waits on a provider makes every read wait on it.
 
 ## Phase 3 — `predict()` in formulas and calculated fields
 
-- [ ] 3.1 `sc-expr`: `ModelCall`, `Analysis::model_calls`, the hoist in `analyze` (literal
+- [x] 3.1 `sc-expr`: `ModelCall`, `Analysis::model_calls`, the hoist in `analyze` (literal
       string only, one argument, not inside `=>`, shadowed by a column), `Untranslatable` in
       `translate`. Unit tests beside the module-call ones.
-- [ ] 3.2 `prefetch_bindings` resolves model calls through `model_host()`: by key when the row
+- [x] 3.2 `prefetch_bindings` resolves model calls through `model_host()`: by key when the row
       has one, otherwise from its values; no host is an error naming the call. Tests in
       `sc-catalog` over a fake `ModelHost`.
-- [ ] 3.3 Save-time checks (§4): in `schema_edit` for a calculated field (existence, table,
+- [x] 3.3 Save-time checks (§4): in `schema_edit` for a calculated field (existence, table,
       outcome predicts, declared type among `possible_prediction_types`, a notice when the
       model has no active fit) and on trigger save for action formulas and `only_if`;
       ownership formulas refuse `predict`. Tests for each refusal's sentence.
-- [ ] 3.4 Action formulas: an insert trigger on `houses` with `update_rows` setting
+- [x] 3.4 Action formulas: an insert trigger on `houses` with `update_rows` setting
       `estimate = predict("House prices")` writes the number; a `{{ predict(…) }}` in a
       template renders it. (Nothing to build beyond 3.1–3.3; this task is the test.)
-- [ ] 3.5 The read-path fallback in `rows.rs` (§4): untranslatable calculated fields evaluated
+- [x] 3.5 The read-path fallback in `rows.rs` (§4): untranslatable calculated fields evaluated
       after the `SELECT` in dependency order, predictions batched per page and per model, the
       silent skip removed; every read path that projects calculated fields shares it. Tests:
       a page of 50 houses is one `ModelHost::predict` (count the calls on a fake); a field
       that reads the predicting field sees its value; a module-function calculated field that
       was skipped before is now computed; an unseen category fails the read naming the field,
       the model and the row.
-- [ ] 3.6 Filtering and sorting on a fallback-computed field are refused with §4's sentence in
+- [x] 3.6 Filtering and sorting on a fallback-computed field are refused with §4's sentence in
       REST, GraphQL and the code host's query plans. Tests.
 
 ## Phase 4 — Documentation and the definition of done

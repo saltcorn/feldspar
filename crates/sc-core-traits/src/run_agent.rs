@@ -124,7 +124,8 @@ impl Action for RunAgent {
             EVENT_SCOPE,
             &formula,
             &format!("`{CFG_PROMPT}`"),
-        )
+        )?;
+        Ok(())
     }
 
     async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {

@@ -8,9 +8,8 @@ use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
 use sc_action::{
-    Action, ActionContext, ConfigCheck, EVENT_SCOPE, Event, check_formula, check_template,
-    event_formula_value, optional_formula, render_event_template, required_template,
-    template_scope,
+    Action, ActionContext, ConfigCheck, EVENT_SCOPE, Event, check_formula, event_formula_value,
+    optional_formula, render_event_template, required_template, template_scope,
 };
 
 /// The `url` setting — a template, so a request can be addressed to the row it
@@ -119,12 +118,9 @@ impl Action for Fetch {
             // what is checked here is what *can* be: that every identifier in
             // every token resolves in the event's scope. The parse happens at
             // send, with the same "not a valid URL" message.
-            check_template(
-                check.shape,
-                template_scope(check.channel),
-                &url,
-                &format!("`{CFG_URL}`"),
-            )?;
+            check
+                .template(template_scope(check.channel), &url, &format!("`{CFG_URL}`"))
+                .await?;
         }
         headers(check.config)?;
         timeout(check.config)?;

@@ -5,7 +5,7 @@ use sc_expr::Operation;
 use sc_types::{BasicType, FormField};
 use serde_json::{Value as Json, json};
 
-use sc_action::{Action, ActionContext, ConfigCheck, check_formula};
+use sc_action::{Action, ActionContext, ConfigCheck};
 
 use crate::rows_scope::{CFG_TABLE, CFG_WHERE, Scope, row_id, target_table, where_formula};
 use sc_api::rows;
@@ -46,12 +46,13 @@ impl Action for DeleteRows {
     async fn validate_config(&self, check: &ConfigCheck<'_>) -> Result<()> {
         let table = target_table(check.catalog, check.config)?;
         rows::single_pk(&table)?;
-        check_formula(
-            check.shape,
-            &table.name,
-            &where_formula(check.config)?,
-            &format!("`{CFG_WHERE}`"),
-        )
+        check
+            .formula(
+                &table.name,
+                &where_formula(check.config)?,
+                &format!("`{CFG_WHERE}`"),
+            )
+            .await
     }
 
     async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {

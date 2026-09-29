@@ -852,6 +852,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_hoisted_prediction_is_a_value_the_evaluator_reads() {
+        // `predict("…")` goes through the same hoist: bound under its key, and
+        // the call node renders as that binding.
+        let mut c = call("predict(\"House prices\") * 2", Operation::Read);
+        c.row = BTreeMap::from([(
+            "predict(\"House prices\")".to_owned(),
+            Value::Float(150000.0),
+        )]);
+        let out = DenoEvaluator::new().eval_value(c).await.unwrap();
+        assert_eq!(out, serde_json::json!(300000));
+    }
+
+    #[tokio::test]
     async fn a_call_nobody_prefetched_is_still_an_ordinary_call() {
         // The rule on this side is presence in the row and nothing else, so a
         // formula calling something the isolate really has is untouched.

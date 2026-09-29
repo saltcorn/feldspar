@@ -152,7 +152,8 @@ pub async fn predict_for(
             for (value, key) in asked.iter().zip(keys) {
                 let prediction = by_key.get(canonical_key(value).as_str()).ok_or_else(|| {
                     Error::invalid(format!(
-                        "no row of `{table}` has the {pk} {}, so `{}` has nothing to predict                          for it",
+                        "no row of `{table}` has the {pk} {}, so `{}` has nothing to predict \
+                         for it",
                         match key {
                             Json::String(s) => s.clone(),
                             other => other.to_string(),

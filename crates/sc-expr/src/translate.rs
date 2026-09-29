@@ -1773,6 +1773,8 @@ mod tests {
             ("`${title}!` === title", "a template literal"),
             ("owner && true", "a bare value as a condition"),
             ("Math.random() > 0.5", "a function call"),
+            // A prediction is hoisted, never translated (milestone 31 §4).
+            ("predict('House prices') > 1", "a function call"),
             (
                 "publisher.name === 'x'",
                 "property access on something other",

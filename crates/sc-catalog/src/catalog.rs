@@ -119,6 +119,12 @@ pub struct Catalog {
     /// [`prefetch_bindings`](crate::prefetch_bindings), the read path and the
     /// code host, which all hold a `Catalog`.
     model_host: RwLock<Option<Arc<dyn crate::model_host::ModelHost>>>,
+    /// The formula evaluator the **read path** computes a calculated field
+    /// with when it does not translate to SQL (milestone 31 §4) — a
+    /// `predict("…")`, a module function call. Installed by whoever built the
+    /// server's evaluator; `None` in a process that never did, where such a
+    /// field fails its read naming itself.
+    formula_evaluator: RwLock<Option<Arc<dyn sc_expr::JsEvaluator>>>,
     /// What supplies **table providers** (§8.3) — `None` in a process with no
     /// modules, which is what a `sc-catalog` test and a server with nothing
     /// installed both are.
@@ -244,6 +250,7 @@ impl Catalog {
             schema_observer: RwLock::new(None),
             module_functions: RwLock::new(None),
             model_host: RwLock::new(None),
+            formula_evaluator: RwLock::new(None),
             table_providers: RwLock::new(None),
             provided_table_issues: RwLock::new(Vec::new()),
             public_origin: RwLock::new(None),
@@ -464,6 +471,19 @@ impl Catalog {
                                  rule that decides who may read a row must fail closed, so \
                                  a module that is down would deny every read of this table",
                                 call.function
+                            ),
+                        ));
+                    } else if let Some(call) = analysis.first_model_call() {
+                        // The same rule for a prediction (milestone 31 §4): a
+                        // provider that is slow or has no active fit would
+                        // deny every read.
+                        ownership_errors.push((
+                            id.clone(),
+                            format!(
+                                "an ownership formula may not call `{}`: a rule that decides \
+                                 who may read a row must fail closed, so a model that cannot \
+                                 answer would deny every read of this table",
+                                call.key
                             ),
                         ));
                     }
@@ -1499,6 +1519,26 @@ impl Catalog {
     /// [`module_functions`](Catalog::module_functions)' reason.
     pub fn model_host(&self) -> Option<Arc<dyn crate::model_host::ModelHost>> {
         self.model_host.read().ok()?.clone()
+    }
+
+    /// Install the formula evaluator the read path computes an untranslatable
+    /// calculated field with — the server's own, the one its triggers use.
+    ///
+    /// Replaces any previous one, for
+    /// [`set_module_functions`](Catalog::set_module_functions)' reason.
+    pub fn set_formula_evaluator(&self, evaluator: Arc<dyn sc_expr::JsEvaluator>) -> Result<()> {
+        let mut guard = self
+            .formula_evaluator
+            .write()
+            .map_err(|_| Error::msg("catalog formula-evaluator lock poisoned"))?;
+        *guard = Some(evaluator);
+        Ok(())
+    }
+
+    /// The installed formula evaluator, cloned out of the lock — `None` where
+    /// nobody installed one.
+    pub fn formula_evaluator(&self) -> Option<Arc<dyn sc_expr::JsEvaluator>> {
+        self.formula_evaluator.read().ok()?.clone()
     }
 
     /// Whether anything listens for `op` on `table` — the question the row layer

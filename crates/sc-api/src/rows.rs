@@ -15,10 +15,10 @@
 //! endpoint's [`AuthRequirement`](crate::AuthRequirement) first, so every API
 //! surface goes through the same §7 layer.
 
+use crate::calc_read::CalcPlan;
 use sc_catalog::{CallerContext, Catalog, DataFieldKind, SharedTx, Table, TableWrite, WriteOp};
 use sc_db::Row;
 use sc_error::{Error, Repr, Result};
-use sc_expr::{CalcFields, Env, Formula, TranslateError, UserEnv, translate_value};
 use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, OrderBy, Projection, Select, Source, Statement,
     Update, Value,
@@ -201,6 +201,15 @@ pub struct RowQuery {
     ///
     /// It only ever *adds* a transaction; it never removes a table's own.
     pub in_caller_context: bool,
+    /// Leave out the calculated fields computed **after** the read
+    /// (milestone 31 §4): only what the `SELECT` itself computes comes back.
+    ///
+    /// For one caller, a model's dataset read, and for a reason that is not
+    /// an optimisation. A dataset reads its own columns, not the table's
+    /// calculated fields — and a field of that table that calls
+    /// `predict("…")` of a model over it would read that model's dataset to
+    /// compute itself, which would compute the field again, forever.
+    pub sql_only: bool,
 }
 
 /// At most `limit` rows for each distinct value of `by`, after skipping
@@ -294,6 +303,13 @@ impl RowQuery {
         self
     }
 
+    /// Leave out the calculated fields computed after the read — see
+    /// [`sql_only`](Self::sql_only).
+    pub fn sql_only(mut self) -> RowQuery {
+        self.sql_only = true;
+        self
+    }
+
     /// This query with `extra` ANDed into its filter — how an ownership
     /// predicate joins a caller's own one without either being able to drop the
     /// other.
@@ -313,14 +329,19 @@ pub async fn list_rows_query(
     query: &RowQuery,
     context: Option<&CallerContext>,
 ) -> Result<Json> {
+    let plan = CalcPlan::of(catalog, table)?;
     let rows = run_read(
         catalog,
         table,
-        &read_select(catalog, table, query)?,
+        &planned_select(table, &plan, query)?,
         context,
         query.in_caller_context,
     )
     .await?;
+    let rows = match query.sql_only {
+        true => rows,
+        false => plan.complete(catalog, table, rows).await?,
+    };
     Ok(Json::Array(rows.iter().map(row_to_json).collect()))
 }
 
@@ -350,15 +371,20 @@ pub async fn list_row_values_in(
     context: Option<&CallerContext>,
     executor: &Executor,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
+    let plan = CalcPlan::of(catalog, table)?;
     let rows = run_read_in(
         catalog,
         table,
-        &read_select(catalog, table, query)?,
+        &planned_select(table, &plan, query)?,
         context,
         query.in_caller_context,
         executor,
     )
     .await?;
+    let rows = match query.sql_only {
+        true => rows,
+        false => plan.complete(catalog, table, rows).await?,
+    };
     Ok(rows.iter().map(row_values).collect())
 }
 
@@ -410,6 +436,9 @@ pub async fn aggregate_grouped(
     query: &RowQuery,
     context: Option<&CallerContext>,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
+    // A count or a sum over a filter the row read would refuse is refused the
+    // same way, so a grid's count and its rows cannot disagree about why.
+    CalcPlan::of(catalog, table)?.refuse_query(table, query.filter.as_ref(), &query.order)?;
     let mut select = Select::from(Source::table(table.name.clone())).columns(projections);
     select.filter = query.filter.clone();
     select.group = query.group.clone();
@@ -474,10 +503,22 @@ pub async fn count_rows_where(
 }
 
 /// The `SELECT` one [`RowQuery`] renders to: every column plus the calculated
-/// fields and the query's own extra projections, filtered, ordered and bounded.
+/// fields SQL can compute and the query's own extra projections, filtered,
+/// ordered and bounded.
+///
+/// A calculated field computed **after** the read is not in it, and the
+/// caller that runs it completes the rows with [`CalcPlan::complete`]; one
+/// that only renders it (a code body's query plan) gets the statement the
+/// database would run.
 pub(crate) fn read_select(catalog: &Catalog, table: &Table, query: &RowQuery) -> Result<Select> {
+    planned_select(table, &CalcPlan::of(catalog, table)?, query)
+}
+
+/// [`read_select`] with the calculated fields already planned.
+fn planned_select(table: &Table, plan: &CalcPlan, query: &RowQuery) -> Result<Select> {
+    plan.refuse_query(table, query.filter.as_ref(), &query.order)?;
     let mut columns = user_rows::projection(table);
-    columns.extend(calc_projections(catalog, table)?);
+    columns.extend(plan.projections.iter().cloned());
     columns.extend(query.extra.iter().cloned());
     let Some(partition) = &query.partition else {
         let mut select = Select::from(Source::table(table.name.clone())).columns(columns);
@@ -570,13 +611,16 @@ pub async fn select_values_in(
     context: Option<&CallerContext>,
     executor: &Executor,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
+    let plan = CalcPlan::of(catalog, table)?;
+    plan.refuse_query(table, filter.as_ref(), &[])?;
     let mut columns = user_rows::projection(table);
-    columns.extend(calc_projections(catalog, table)?);
+    columns.extend(plan.projections.iter().cloned());
     let mut select = Select::from(Source::table(table.name.clone())).columns(columns);
     if let Some(filter) = filter {
         select = select.filter(filter);
     }
     let fetched = run_read_in(catalog, table, &select, context, false, executor).await?;
+    let fetched = plan.complete(catalog, table, fetched).await?;
     Ok(fetched.iter().map(row_values).collect())
 }
 
@@ -622,10 +666,12 @@ pub async fn create_row_in(
     if columns.is_empty() {
         return Err(Error::invalid("no fields to insert"));
     }
+    let plan = CalcPlan::of(catalog, table)?;
     let mut returning = user_rows::projection(table);
-    returning.extend(calc_projections(catalog, table)?);
+    returning.extend(plan.projections.iter().cloned());
     let insert = Insert::row(table.name.clone(), columns, values).returning(returning);
     let rows = run_write_in(catalog, table, Statement::from(insert), context, executor).await?;
+    let rows = complete_written(catalog, table, &plan, rows, executor).await?;
     let row = rows
         .into_iter()
         .next()
@@ -713,8 +759,9 @@ pub(crate) async fn update_row_guarded_in(
         true => read_row_in(catalog, table, &pk, id, context, executor).await?,
         false => None,
     };
+    let plan = CalcPlan::of(catalog, table)?;
     let mut returning = user_rows::projection(table);
-    returning.extend(calc_projections(catalog, table)?);
+    returning.extend(plan.projections.iter().cloned());
     let update = Update {
         table: table.name.clone(),
         assignments,
@@ -722,6 +769,7 @@ pub(crate) async fn update_row_guarded_in(
         returning,
     };
     let rows = run_write_in(catalog, table, Statement::from(update), context, executor).await?;
+    let rows = complete_written(catalog, table, &plan, rows, executor).await?;
     let row = rows
         .into_iter()
         .next()
@@ -997,51 +1045,32 @@ pub fn row_to_json(row: &Row) -> Json {
     Json::Object(map)
 }
 
-/// The parsed calc-field expressions of `table` (Phase 8), keyed by field name.
-/// Re-parses the stored source, which validated cleanly at merge time.
-fn calc_map(table: &Table) -> CalcFields {
-    table
-        .calc_fields()
-        .filter_map(|f| {
-            let expr = f.calc_expression()?;
-            Formula::parse(expr)
-                .ok()
-                .map(|fm| (f.base.name.clone(), fm))
-        })
-        .collect()
-}
-
-/// Extra `SELECT` projections that compute `table`'s non-stored calculated
-/// fields on read (Phase 8), each aliased to its field name and in dependency
-/// order (a calc field that reads another inlines it, so the SQL is
-/// self-contained). A calc field whose inlined expression does not translate to
-/// SQL is **skipped** — computing it needs the reified evaluator, a read-path
-/// fallback not yet wired here (a genuinely untranslatable calc expression is
-/// the rare case; the built-in field/Ⱶ/Ↄ forms all translate).
-fn calc_projections(catalog: &Catalog, table: &Table) -> Result<Vec<Projection>> {
-    let calc = calc_map(table);
-    if calc.is_empty() {
-        return Ok(Vec::new());
+/// A written row's calculated fields computed after the read
+/// ([`CalcPlan::complete`]), once the write has committed.
+///
+/// Two differences from a read, both because the row has already been
+/// written. A failure says so — "the row was saved, but …" — rather than
+/// reading as a write that did not happen. And inside a caller's
+/// **transaction** the fields are left out: the row is not committed, and a
+/// prediction reads it through the model's dataset on another connection,
+/// where it is not there yet (or is still its old self).
+async fn complete_written(
+    catalog: &Catalog,
+    table: &Table,
+    plan: &CalcPlan,
+    rows: Vec<Row>,
+    executor: &Executor,
+) -> Result<Vec<Row>> {
+    if plan.is_complete() || executor.serving(table).is_some() {
+        return Ok(rows);
     }
-    let shape = catalog.schema_shape()?;
-    let env = UserEnv::Inline(None);
-    let mut out = Vec::new();
-    for field in table.calc_fields() {
-        let Some(formula) = calc.get(&field.base.name) else {
-            continue;
-        };
-        match translate_value(
-            formula,
-            &Env::new(&env).with_calc(&calc),
-            &shape,
-            &table.name,
-        ) {
-            Ok(expr) => out.push(Projection::expr_as(expr, field.base.name.clone())),
-            Err(TranslateError::Untranslatable(_)) => {}
-            Err(TranslateError::Error(e)) => return Err(e),
-        }
-    }
-    Ok(out)
+    plan.complete(catalog, table, rows).await.map_err(|e| {
+        Error::invalid(format!(
+            "the row was saved, but a calculated field of `{}` could not be computed for it: \
+             {e}",
+            table.name
+        ))
+    })
 }
 
 /// Refuse a write that names a non-stored calculated field — it has no column

@@ -211,6 +211,12 @@ pub async fn validate_trigger(
         if let Some(ambient) = analysis.ambient_outside(&Ambient::ALL) {
             return Err(problem(format!("`only if`: `{ambient}` is not available")));
         }
+        // A `predict("…")` predicts the event's row, so its model must be a
+        // model of the event's table (milestone 31 §4). A stream's scope has
+        // no row, and the check says so by naming the pseudo-table.
+        sc_catalog::check_model_calls(catalog, scope, &analysis)
+            .await
+            .map_err(|e| problem(format!("`only if`: {e}")))?;
     }
     Ok(())
 }

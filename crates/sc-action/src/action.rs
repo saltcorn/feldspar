@@ -20,7 +20,9 @@ use std::sync::Arc;
 use sc_catalog::{Catalog, SharedTx};
 use sc_email::Mailer;
 use sc_error::{Error, Result};
-use sc_expr::{Ambient, CodeAdapter, ConsoleSink, JsEvaluator, SchemaShape, value_from_json};
+use sc_expr::{
+    Ambient, CodeAdapter, ConsoleSink, Formula, JsEvaluator, SchemaShape, Template, value_from_json,
+};
 use sc_query::Value;
 use sc_types::{Attrs, FormField};
 use serde_json::Value as Json;
@@ -125,6 +127,36 @@ pub struct ConfigCheck<'a> {
     /// formulas are then *evaluated* in — which is exactly the drift
     /// [`ActionContext::shape`] exists to prevent on the other side.
     pub shape: &'a SchemaShape,
+}
+
+impl ConfigCheck<'_> {
+    /// Check one configured formula in `scope`: [`check_formula`]'s syntax
+    /// and scope rules, then every `predict("…")` it makes against the models
+    /// (milestone 31 §4) — the model exists, is a model of `scope`'s table,
+    /// and answers something per row.
+    ///
+    /// The one call an action's `validate_config` makes per formula, so a
+    /// prediction in an `update_rows` assignment is refused on save with the
+    /// same sentence as one in an `only if`.
+    ///
+    /// [`check_formula`]: crate::check_formula
+    pub async fn formula(&self, scope: &str, formula: &Formula, what: &str) -> Result<()> {
+        let analysis = crate::scope::check_formula(self.shape, scope, formula, what)?;
+        sc_catalog::check_model_calls(self.catalog, scope, &analysis)
+            .await
+            .map_err(|e| Error::invalid(format!("{what}: {e}")))?;
+        Ok(())
+    }
+
+    /// [`formula`](ConfigCheck::formula), for a template: every token.
+    pub async fn template(&self, scope: &str, template: &Template, what: &str) -> Result<()> {
+        for analysis in crate::scope::check_template(self.shape, scope, template, what)? {
+            sc_catalog::check_model_calls(self.catalog, scope, &analysis)
+                .await
+                .map_err(|e| Error::invalid(format!("{what}: {e}")))?;
+        }
+        Ok(())
+    }
 }
 
 /// Everything one action run has access to.

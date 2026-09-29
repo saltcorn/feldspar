@@ -51,8 +51,8 @@ mod translate;
 
 pub use agg::{AggUse, INVERSE};
 pub use analyze::{
-    Ambient, AmbientUse, Analysis, FreeVars, JOIN, JoinPath, ModuleArg, ModuleCall, OpFlag,
-    hoisted_call_key,
+    Ambient, AmbientUse, Analysis, FreeVars, JOIN, JoinPath, ModelCall, ModuleArg, ModuleCall,
+    OpFlag, PREDICT, hoisted_call_key,
 };
 pub use ast::{Ast, BinaryOp, MemberProp, UnaryOp};
 #[cfg(feature = "eval")]

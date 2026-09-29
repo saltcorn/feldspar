@@ -2,6 +2,121 @@
 
 Changes in reverse chronological order.
 
+## Models without actions of their own: `predict()` in formulas and calculated fields
+
+Phase 3 of milestone 31. A formula can now call `predict("House prices")`: in a non-stored
+calculated field, an `update_rows` assignment, an `only if` and a `{{ }}` template. It predicts
+the row the formula ranges over with the model's active fit. This replaces the removed
+`predict_row` action. Calculated fields that do not translate to SQL are now computed on the
+read path instead of being silently left out.
+
+- **The hoist** (3.1), in `sc-expr`'s `analyze`.
+  - `predict(<string literal>)` is collected into `Analysis::model_calls` as a `ModelCall
+    { key, model }`, keyed by `hoisted_call_key`'s text (`predict("House prices")`), the way a
+    module call is. The evaluator binds it through the same hoist, so it needed no change.
+  - Refused on save, by name:
+    - an argument the formula computes;
+    - no argument, or more than one;
+    - a call inside `=>`;
+    - `predict` passed as a value.
+  - A column called `predict` shadows it. The built-in wins over a module function called
+    `predict`.
+  - `translate` already answers `Untranslatable` for any bare call; a test now says so for
+    `predict`.
+  - `Analysis::first_model_call` is for the callers that allow none.
+- **`prefetch_bindings` resolves predictions** (3.2) through `Catalog::model_host()`.
+  - A row with a value in its single-column primary key is asked **by key**, so it is read
+    through the model's dataset.
+  - A row without one (a proposed row) is asked **by its values**. Hoisted keys are left out
+    of those values.
+  - No host is an error naming the call, never a null. So is a failing host.
+  - A value the caller already bound is not asked again, which is how the read path's batch
+    reaches it.
+  - Tests: `sc-catalog`'s new `model_calls.rs`, over a fake `ModelHost`.
+- **Save checks** (3.3). They live in one function, `sc_catalog::check_model_calls`, which
+  checks three things:
+  - the model exists;
+  - it is a model of the formula's table ("`House prices` is a model of `houses`, and this
+    formula is on `orders`");
+  - its outcome predicts (a t-test gets `no_per_row_prediction`'s sentence).
+
+  Where it runs:
+  - **Calculated fields**, in `schema_edit`'s deferred validation, which is now async. When
+    the expression *is* the call, the field's declared type must be able to hold the
+    prediction ("the field is text and `House prices` predicts float"). This is the check
+    `predict_row` made against its target field. A model with no active fit is accepted, and
+    the batch's `notes` say that every read of the table fails until a fit is active.
+  - **Triggers**. `ConfigCheck` gains async `formula` and `template` methods. They run
+    `check_formula`/`check_template`, which now return their analyses, and then the model
+    check. `update_rows`, `delete_rows`, `send_email` and `fetch` call them. So does the
+    `only if` check in `validate_trigger`.
+  - A formula in the event scope (an `insert_row` value, a `fetch` body, a `run_agent`
+    prompt) ranges over no row, so `predict` there is refused synchronously, saying where it
+    does work.
+  - **Ownership formulas** refuse `predict` outright, on save (`validate_ownership`) and on
+    reload (the catalog clears the rule, which fails closed). The reason is the module
+    functions' reason.
+- **Action formulas** (3.4). An insert trigger on `houses` whose `update_rows` sets
+  `estimate = predict("House prices")` writes the number for the unsold house just inserted.
+  A `{{ predict("House prices") }}` in a template renders it. Nothing was built for this
+  beyond 3.1–3.3; the test is `model_formulas.rs`.
+- **The read-path fallback** (3.5), in the new `sc-api/src/calc_read.rs`.
+  - `CalcPlan` splits a table's calculated fields into those SQL projects and those computed
+    after the `SELECT`. It replaces `calc_projections` and its silent skip.
+  - All four call sites in `rows.rs` go through it: `read_select` and the two reads built on
+    it, `select_values_in`, and the `RETURNING` of an insert and an update. GraphQL, the code
+    host and the CSV import read through these, so there is one implementation.
+  - Fields are computed in dependency order. A field that reads a predicting field sees its
+    value.
+  - **Predictions are batched**: one `ModelHost::predict` per model per page, with every
+    row's key. A failed batch is asked again row by row, so the error names the field, the
+    model **and the row** ("`styled` of `houses` could not be computed for the row whose id
+    is 500: …").
+  - Other hoisted values (joins, relations, module calls) are resolved per row by
+    `prefetch_bindings`.
+  - A module-function calculated field, which used to be skipped, is now computed.
+  - The evaluator comes from the catalog: `Catalog::set_formula_evaluator`, installed by
+    `install_triggers` alongside the dispatcher's.
+  - On a write, a failure after the commit says "the row was saved, but …". Inside a
+    caller's transaction the after-read fields are left out, because a prediction reads the
+    row on another connection where it is not committed yet.
+  - `RowQuery::sql_only` leaves the after-read fields out. A model's dataset read
+    (`CatalogDatasetSource`) sets it. Without it, a field that predicts with a model of its
+    own table recursed until the stack overflowed: computing the field read the dataset,
+    and reading the dataset computed the field.
+- **Filtering and sorting refused** (3.6). `CalcPlan::refuse_query` walks a read's lowered
+  filter and ordering. REST's query string, GraphQL's `where`/`order_by` and counts all end
+  there. The code host's plan lowering checks its `where` keys and its formulas against the
+  same plan. The sentence is: "cannot filter on `estimated_price`: `estimated_price` is
+  computed after the rows are read, because it calls `predict`, so the database never sees
+  it".
+- **Fixed**: the "no row has the id …" message from `predict_for` had lost a line
+  continuation and carried a run of spaces.
+- **Known limitation**: a calculated field's *basic* declared type (`float8`) is not kept
+  once the schema reloads. Only a rich type is stored on the overlay, so such a field reads
+  back as text, and in GraphQL it is a `String` input. This predates this milestone. The
+  save-time type check therefore sees the type the admin declared, and a read returns the
+  prediction's own JSON value rather than coercing it.
+- Tests:
+  - `sc-expr`: analyze and translate units, and an eval test of a bound prediction.
+  - `sc-catalog`: `model_calls.rs`.
+  - `sc-api`: `calc_after_read.rs`, over a counting fake host, a fake module and the real
+    evaluator. It checks one call for a 50-row page, dependency order, a module field, the
+    row named in an error, and the REST, count and GraphQL refusals.
+  - `sc-server`: `model_formulas.rs`, over the real `linear_regression`. It checks every
+    refusal's sentence, the insert trigger and the template, a listing of 61 houses in one
+    provider call, the REST and code-body refusals, and an unseen category naming house 500.
+- **The full suite** (`scripts/test.sh --no-fail-fast`): 3,950 passed and 3 failed. None of
+  the three failures touch this change.
+  - `sc-cli`'s `i18n::every_declared_domain_scans_without_an_unreadable_call_site` fails
+    because of three non-literal `t()` calls in `ui/admin/src/screens/SourceControl.tsx`.
+  - `sc-files`' `a_backends_operations_are_declared_like_its_settings` fails because the git
+    backend declares a `discard` operation the test does not list.
+  - `sc-server`'s `saving_the_development_settings_moves_the_logging_switches` flips a
+    process-global switch and passes when run alone.
+
+  The first two are in files this phase did not modify.
+
 ## Models without actions of their own: the model handle in code
 
 Phase 2 of milestone 31. A code body now reaches a model through a **handle**:

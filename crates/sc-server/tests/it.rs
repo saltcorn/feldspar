@@ -99,6 +99,8 @@ mod model_admin_api;
 mod model_dataset;
 #[path = "model_fit_job.rs"]
 mod model_fit_job;
+#[path = "model_formulas.rs"]
+mod model_formulas;
 #[path = "model_handle.rs"]
 mod model_handle;
 #[path = "modules_api.rs"]

@@ -24,13 +24,15 @@ use std::collections::BTreeMap;
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_expr::{
-    AggUse, Analysis, INVERSE, ModuleArg, ModuleCall, SchemaShape, value_from_json, value_to_json,
+    AggUse, Analysis, INVERSE, ModelCall, ModuleArg, ModuleCall, SchemaShape, value_from_json,
+    value_to_json,
 };
 use sc_query::{Expr, Projection, Select, Source, Value};
 use serde_json::{Map, Value as Json};
 
 use crate::catalog::Catalog;
 use crate::field::DataFieldKind;
+use crate::model_host::PredictRows;
 use crate::table::Table;
 
 /// Add one binding per Ⱶ-join path and per Ↄ-relation the `analysis` names to
@@ -61,6 +63,15 @@ pub async fn prefetch_bindings(
     for call in &analysis.module_calls {
         if !values.contains_key(&call.key) {
             let value = resolve_module_call(cat, call, values).await?;
+            values.insert(call.key.clone(), value);
+        }
+    }
+    // Predictions (milestone 31 §4), hoisted like module calls. The read path
+    // batches a page's predictions and binds them before it gets here, so a key
+    // already present is not asked again.
+    for call in &analysis.model_calls {
+        if !values.contains_key(&call.key) {
+            let value = resolve_model_call(cat, table, call, values).await?;
             values.insert(call.key.clone(), value);
         }
     }
@@ -133,6 +144,73 @@ async fn resolve_module_call(
             ))
         })??;
     Ok(value_from_json(&answered))
+}
+
+/// Resolve one `predict("…")` for the row in `values`, through the catalog's
+/// [`ModelHost`](crate::ModelHost).
+///
+/// The row is the one the formula is evaluated over. **By its key** when it
+/// has one — a single-column primary key with a value — so it is read through
+/// the model's dataset, as it was at fit time, and a row the dataset's filter
+/// excludes is still answered. Otherwise (a row not inserted yet, a table with
+/// no single key) **its values** are taken as the dataset's columns, and a
+/// feature it does not supply is refused by name.
+///
+/// No host is an error naming the call, never a null: the module functions'
+/// rule, for the same reason.
+async fn resolve_model_call(
+    cat: &Catalog,
+    table: &Table,
+    call: &ModelCall,
+    values: &BTreeMap<String, Value>,
+) -> Result<Value> {
+    let Some(host) = cat.model_host() else {
+        return Err(Error::invalid(format!(
+            "this formula calls `{}`, and this server has no model support to answer it",
+            call.key
+        )));
+    };
+    let key = match table.primary_key.as_slice() {
+        [pk] => values.get(pk).filter(|v| !v.is_null()).map(value_to_json),
+        _ => None,
+    };
+    let answered = match key {
+        Some(key) => {
+            let keys = [key];
+            host.predict(
+                &call.model,
+                None,
+                &table.name,
+                PredictRows::Keys(&keys),
+                false,
+            )
+            .await
+        }
+        None => {
+            // The row's own columns and the Ⱶ-join values fetched above; not
+            // the hoisted calls' keys, which are no dataset's columns.
+            let row: Map<String, Json> = values
+                .iter()
+                .filter(|(name, _)| !name.contains('('))
+                .map(|(name, value)| (name.clone(), value_to_json(value)))
+                .collect();
+            let rows = [Json::Object(row)];
+            host.predict(
+                &call.model,
+                None,
+                &table.name,
+                PredictRows::Values(&rows),
+                false,
+            )
+            .await
+        }
+    }
+    .map_err(|e| Error::invalid(format!("`{}` failed: {e}", call.key)))?;
+    let value = answered
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::invalid(format!("`{}` answered nothing for this row", call.key)))?;
+    Ok(value_from_json(&value))
 }
 
 /// Fetch the child rows an aggregation ranges over, as a JSON array bound under

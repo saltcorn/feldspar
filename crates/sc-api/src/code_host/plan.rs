@@ -1142,6 +1142,9 @@ struct Lowering<'a> {
     fields: Vec<String>,
     shape: sc_expr::SchemaShape,
     calc: CalcFields,
+    /// Which calculated fields the database never sees (milestone 31 §4), so
+    /// a filter or an ordering naming one is refused saying why.
+    calc_plan: crate::calc_read::CalcPlan,
     user_env: UserEnv,
     role: u8,
     in_caller_context: Cell<bool>,
@@ -1154,6 +1157,7 @@ impl<'a> Lowering<'a> {
             fields: table.fields.iter().map(|f| f.base.name.clone()).collect(),
             shape: catalog.schema_shape()?,
             calc: table.calc_formulas(),
+            calc_plan: crate::calc_read::CalcPlan::of(catalog, table)?,
             table: table.clone(),
             // A formula in a plan reads the row and nothing else — see
             // `guard`, which refuses `user` by name rather than inlining a null.
@@ -1168,6 +1172,12 @@ impl<'a> Lowering<'a> {
     /// two can be **mixed**: repeated `.where()` calls arrive as
     /// `{ and: [ { … }, { formula: "…" } ] }`.
     fn filter(&self, where_: Option<&Json>) -> Result<Option<Expr>> {
+        if let Some(where_) = where_ {
+            let mut keys = Vec::new();
+            object_keys(where_, &mut keys);
+            self.calc_plan
+                .refuse_in_query(keys.iter().map(String::as_str), "filter on")?;
+        }
         filter::where_resolved(&self.table, &self.fields, where_, &|key, condition| {
             self.filter_key(key, condition)
         })
@@ -1350,6 +1360,8 @@ impl<'a> Lowering<'a> {
     /// with this table's row as the bare scope, guarded, and translated.
     fn formula_value(&self, source: &str) -> Result<Expr> {
         let formula = self.parse(source)?;
+        self.calc_plan
+            .refuse_in_query(formula.free_vars().idents.iter().map(String::as_str), "use")?;
         match translate_value(&formula, &self.env(), &self.shape, &self.table.name) {
             Ok(expr) => Ok(expr),
             Err(e) => Err(self.translation_failed(source, e)),
@@ -1359,6 +1371,10 @@ impl<'a> Lowering<'a> {
     /// A formula in predicate position — the string spelling of a `where`.
     fn formula_predicate(&self, source: &str) -> Result<Expr> {
         let formula = self.parse(source)?;
+        self.calc_plan.refuse_in_query(
+            formula.free_vars().idents.iter().map(String::as_str),
+            "filter on",
+        )?;
         match translate(
             &formula,
             Operation::Read,
@@ -1492,4 +1508,22 @@ fn is_plain_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+/// Every object key anywhere in a `where` document — the names it filters on,
+/// under `and`/`or`/`not` as much as at the top.
+fn object_keys(value: &Json, out: &mut Vec<String>) {
+    match value {
+        Json::Object(map) => {
+            for (key, sub) in map {
+                out.push(key.clone());
+                object_keys(sub, out);
+            }
+        }
+        Json::Array(items) => {
+            for item in items {
+                object_keys(item, out);
+            }
+        }
+        _ => {}
+    }
 }

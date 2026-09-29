@@ -25,6 +25,8 @@ mod field_meta_store;
 mod file_store_live;
 #[path = "file_store_store.rs"]
 mod file_store_store;
+#[path = "model_calls.rs"]
+mod model_calls;
 #[path = "module_functions.rs"]
 mod module_functions;
 #[path = "provided_tables.rs"]

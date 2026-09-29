@@ -36,8 +36,8 @@ use std::collections::BTreeMap;
 use sc_catalog::{Catalog, Table, prefetch_bindings};
 use sc_error::{Error, Result};
 use sc_expr::{
-    Ambient, AmbientValues, Formula, FormulaCall, Operation, RenderMode, SchemaShape, TableShape,
-    Template, value_from_json,
+    Ambient, AmbientValues, Analysis, Formula, FormulaCall, Operation, RenderMode, SchemaShape,
+    TableShape, Template, value_from_json,
 };
 use sc_query::Value;
 use sc_types::{Attrs, BasicType, TypeRef, json_to_value};
@@ -198,13 +198,21 @@ pub fn template_scope(channel: Option<&str>) -> &str {
 }
 
 /// Check one configured formula in the scope it will be evaluated in: every
-/// identifier resolves, and none of the operation flags is used.
+/// identifier resolves, and none of the operation flags is used. Answers the
+/// analysis, for [`ConfigCheck::formula`]'s model check.
+///
+/// A `predict("…")` in [`EVENT_SCOPE`] is refused here, because it can never
+/// work there: it predicts the row the formula ranges over, and that scope
+/// ranges over none. Whether a model exists and predicts the scope's table is
+/// [`ConfigCheck::formula`]'s to ask, since models are rows.
+///
+/// [`ConfigCheck::formula`]: crate::ConfigCheck::formula
 pub fn check_formula(
     shape: &SchemaShape,
     scope: &str,
     formula: &Formula,
     what: &str,
-) -> Result<()> {
+) -> Result<Analysis> {
     let analysis = formula
         .validate(shape, scope)
         .map_err(|e| Error::invalid(format!("{what}: {e}")))?;
@@ -214,7 +222,24 @@ pub fn check_formula(
              the trigger's own event is the operation"
         )));
     }
-    Ok(())
+    refuse_rowless_prediction(scope, &analysis, what)?;
+    Ok(analysis)
+}
+
+/// Refuse a `predict("…")` in a scope that ranges over no row.
+fn refuse_rowless_prediction(scope: &str, analysis: &Analysis, what: &str) -> Result<()> {
+    if scope != EVENT_SCOPE {
+        return Ok(());
+    }
+    let Some(call) = analysis.first_model_call() else {
+        return Ok(());
+    };
+    Err(Error::invalid(format!(
+        "{what}: `{}` predicts the row a formula ranges over, and this setting ranges over \
+         none (the event's row is `row`). Predict in an `update_rows` assignment or an \
+         `only if` on the model's table, or in a code body with `models.get(…)`",
+        call.key
+    )))
 }
 
 /// Check one configured **template** in the scope it will be rendered in: every
@@ -231,7 +256,7 @@ pub fn check_template(
     scope: &str,
     template: &Template,
     what: &str,
-) -> Result<()> {
+) -> Result<Vec<Analysis>> {
     let analyses = template
         .validate(shape, scope)
         .map_err(|e| Error::invalid(format!("{what}: {e}")))?;
@@ -241,7 +266,10 @@ pub fn check_template(
              the trigger's own event is the operation"
         )));
     }
-    Ok(())
+    for analysis in &analyses {
+        refuse_rowless_prediction(scope, analysis, what)?;
+    }
+    Ok(analyses)
 }
 
 /// The values an event puts in scope: the ambient `row`/`old` and the caller.

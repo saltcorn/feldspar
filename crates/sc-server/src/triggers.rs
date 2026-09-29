@@ -104,6 +104,12 @@ pub async fn install_triggers_with_adapters(
     // its own name (§15). JavaScript is deliberately not among them: it is the
     // evaluator above, which is also what carries the formula isolate, and a
     // second way in would be two answers to which engine runs a JavaScript body.
+    // The same evaluator computes a calculated field the read path cannot
+    // translate to SQL (a `predict("…")`, a module call): one formula engine
+    // per process, installed where every boot path passes.
+    catalog
+        .set_formula_evaluator(Arc::clone(&evaluator))
+        .context("installing the formula evaluator")?;
     let mut dispatcher = TriggerDispatcher::new(Arc::new(registry))
         .with_evaluator(evaluator)
         .with_mailer(mailer);

@@ -351,6 +351,32 @@ fn number_literal(n: f64) -> String {
     }
 }
 
+/// The formula language's one built-in that reaches a fitted model:
+/// `predict("House prices")` (milestone 31 §4).
+///
+/// A global of the language rather than a module function, so it wins over a
+/// module function of the same name (a body still reaches that one as
+/// `modfn("…").predict`), and a **column** called `predict` shadows it, which
+/// is the scope rule's one rule.
+pub const PREDICT: &str = "predict";
+
+/// One `predict("…")` a formula makes, hoisted out of it exactly as a
+/// [`ModuleCall`] is: collected here at validation, resolved by
+/// `sc_catalog::prefetch_bindings` before the formula runs, and bound into the
+/// evaluator's scope as a plain value.
+///
+/// There is no row argument, and no fit: the row is the one the formula is
+/// evaluated over, and which fit answers is what the model's `active` flag is
+/// for — a formula naming a fit id would break the day the fit was deleted.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModelCall {
+    /// What the value binds under — [`hoisted_call_key`]'s text,
+    /// `predict("House prices")`.
+    pub key: String,
+    /// The model's name, as the formula wrote it.
+    pub model: String,
+}
+
 /// A Ⱶ-join path, resolved link by link through Key fields.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct JoinPath {
@@ -385,6 +411,10 @@ pub struct Analysis {
     /// the shape and hoistable by construction: a call that could not be
     /// hoisted was refused on save rather than recorded here.
     pub module_calls: BTreeSet<ModuleCall>,
+    /// Every `predict("…")` the formula makes (milestone 31 §4), hoisted like
+    /// a module call. What the model is, and whether it predicts this table's
+    /// rows, is the save check's to ask: models are rows, not schema.
+    pub model_calls: BTreeSet<ModelCall>,
 }
 
 /// What a formula reads from one ambient object.
@@ -424,6 +454,16 @@ impl Analysis {
     /// authorization does not.
     pub fn first_module_call(&self) -> Option<&ModuleCall> {
         self.module_calls.first()
+    }
+
+    /// The first `predict("…")` the formula makes, for a caller that allows
+    /// none — an ownership formula, for [`first_module_call`]'s reason: a rule
+    /// that waits on a provider makes every read wait on it, and its `Err` is
+    /// deny.
+    ///
+    /// [`first_module_call`]: Analysis::first_module_call
+    pub fn first_model_call(&self) -> Option<&ModelCall> {
+        self.model_calls.first()
     }
 
     /// The first ambient object used that is **not** in `allowed` — what a caller
@@ -480,6 +520,13 @@ impl Formula {
         // below needs — a module function's own name is a free identifier, and
         // it is a legitimate one exactly where it was called.
         let mut called = BTreeSet::new();
+        let predict_shadowed = table_shape.fields.contains_key(PREDICT);
+        if !predict_shadowed {
+            walk_model_calls(self.ast(), table, &mut Vec::new(), &mut analysis)?;
+            if !analysis.model_calls.is_empty() {
+                called.insert(PREDICT.to_owned());
+            }
+        }
         walk_module_calls(
             self.ast(),
             shape,
@@ -507,6 +554,18 @@ impl Formula {
                     .insert(resolve_join_path(shape, table, ident)?);
             } else if GLOBALS.contains(&ident.as_str()) {
                 // Fine reified, untranslatable symbolically; nothing to record.
+            } else if ident == PREDICT {
+                // Named but not called with a model's name: `xs.map(predict)`.
+                // Every malformed *call* was refused by `walk_model_calls`.
+                if !called.contains(ident) {
+                    return Err(invalid(
+                        table,
+                        format_args!(
+                            "`predict` is called with the model's name, as \
+                             `predict(\"House prices\")`, and cannot be passed as a value"
+                        ),
+                    ));
+                }
             } else if !shape.modules_supplying(ident).is_empty() {
                 // A module function named but not *called* here: passed as a
                 // value (`items.map(md_to_html)`), where the arity is not known
@@ -568,6 +627,9 @@ fn walk_module_calls(
     if let Ast::Call { callee, args, .. } = ast
         && let Ast::Ident(function) = &**callee
         && !locals.iter().any(|l| l == function)
+        // `predict` is the language's own, and wins over a module function of
+        // that name; `walk_model_calls` has it.
+        && function != PREDICT
         // A column of this table wins, exactly as it wins over a global: the
         // scope rule is one rule.
         && !shape
@@ -647,6 +709,73 @@ fn walk_module_calls(
     }
     for child in child_nodes(ast) {
         walk_module_calls(child, shape, table, locals, called, analysis)?;
+    }
+    Ok(())
+}
+
+/// Walk `ast` collecting and validating every `predict("…")` (milestone 31 §4).
+///
+/// Only called when no column of the table is called `predict`, which would
+/// shadow it. The shape is exactly one argument, a string literal; anything
+/// else is refused naming the call, in the module calls' style. Whether the
+/// model exists and predicts this table's rows is not asked here — models are
+/// rows, and this is pure syntax against a shape — but by the save check.
+fn walk_model_calls(
+    ast: &Ast,
+    table: &str,
+    locals: &mut Vec<String>,
+    analysis: &mut Analysis,
+) -> Result<()> {
+    if let Ast::Call { callee, args, .. } = ast
+        && let Ast::Ident(function) = &**callee
+        && function == PREDICT
+        && !locals.iter().any(|l| l == function)
+    {
+        if !locals.is_empty() {
+            return Err(invalid(
+                table,
+                format_args!(
+                    "`predict` is called inside a `=>` function. A prediction in a formula is \
+                     made for the formula's own row before the formula runs, so it cannot \
+                     depend on the function's parameters; use a code body's \
+                     `(await models.get(…)).predict(rows)` instead"
+                ),
+            ));
+        }
+        let [Ast::Str(model)] = args.as_slice() else {
+            let what = if args.len() == 1 {
+                "its argument is computed by the formula"
+            } else if args.is_empty() {
+                "it has no argument"
+            } else {
+                "it has more than one argument"
+            };
+            return Err(invalid(
+                table,
+                format_args!(
+                    "`predict` takes one argument, the model's name as a string literal \
+                     (`predict(\"House prices\")`), and {what}. It predicts the formula's own \
+                     row with the model's active fit; to predict other rows, or with another \
+                     fit, use a code body"
+                ),
+            ));
+        };
+        let key = hoisted_call_key(ast).expect("a call with a literal argument hoists");
+        analysis.model_calls.insert(ModelCall {
+            key,
+            model: model.clone(),
+        });
+        return Ok(());
+    }
+    if let Ast::Arrow { params, body } = ast {
+        let depth = locals.len();
+        locals.extend(params.iter().cloned());
+        walk_model_calls(body, table, locals, analysis)?;
+        locals.truncate(depth);
+        return Ok(());
+    }
+    for child in child_nodes(ast) {
+        walk_model_calls(child, table, locals, analysis)?;
     }
     Ok(())
 }
@@ -1173,6 +1302,96 @@ mod tests {
             validate("owner === user.id")
                 .unwrap()
                 .first_module_call()
+                .is_none()
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // `predict("…")` in a formula (milestone 31 §4)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_predict_call_is_hoisted_under_its_own_key() {
+        let a = validate("predict(\"House prices\") > 100000 && title !== ''").unwrap();
+        let call = a.first_model_call().unwrap();
+        assert_eq!(call.model, "House prices");
+        assert_eq!(call.key, "predict(\"House prices\")");
+        // The renderer computes the same key from the AST alone.
+        let ast = Formula::parse("predict(\"House prices\")").unwrap();
+        assert_eq!(
+            hoisted_call_key(ast.ast()).as_deref(),
+            Some(call.key.as_str())
+        );
+        // `predict` is not a module call and not a field.
+        assert!(a.module_calls.is_empty());
+        assert!(!a.fields.contains("predict"));
+        // The same model twice is one call.
+        let a = validate("predict('M') + predict(\"M\")").unwrap();
+        assert_eq!(a.model_calls.len(), 1);
+        // A conditional one hoists, as a module call does.
+        let a = validate("owner === null ? predict('M') : 0").unwrap();
+        assert_eq!(a.model_calls.len(), 1);
+    }
+
+    #[test]
+    fn a_predict_call_of_the_wrong_shape_is_refused_by_name() {
+        for (src, says) in [
+            ("predict(title)", "its argument is computed by the formula"),
+            (
+                "predict('M' + '1')",
+                "its argument is computed by the formula",
+            ),
+            ("predict()", "it has no argument"),
+            ("predict('M', 'fit-1')", "it has more than one argument"),
+        ] {
+            let err = validate(src).unwrap_err().to_string();
+            assert!(err.contains("`predict` takes one argument"), "{src}: {err}");
+            assert!(err.contains(says), "{src}: {err}");
+        }
+        let s = SchemaShape::new().table("t", TableShape::new().field("xs"));
+        let err = Formula::parse("xs.map(x => predict('M'))")
+            .unwrap()
+            .validate(&s, "t")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`predict` is called inside a `=>` function"),
+            "{err}"
+        );
+        assert!(err.contains("models.get"), "{err}");
+        let err = Formula::parse("xs.map(predict)")
+            .unwrap()
+            .validate(&s, "t")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be passed as a value"), "{err}");
+    }
+
+    #[test]
+    fn a_predict_column_shadows_the_built_in_which_wins_over_a_module_function() {
+        // A column called `predict` is the field, and calling it is not a
+        // prediction.
+        let shaded = SchemaShape::new().table("t", TableShape::new().field("predict"));
+        let a = Formula::parse("predict === 1")
+            .unwrap()
+            .validate(&shaded, "t")
+            .unwrap();
+        assert!(a.fields.contains("predict") && a.model_calls.is_empty());
+        // A module supplying `predict` loses to the built-in.
+        let with_module = shape().module_function("predict", "@saltcorn/ml");
+        let a = validate_with_modules(&with_module, "predict('M') > 0").unwrap();
+        assert_eq!(a.model_calls.len(), 1);
+        assert!(a.module_calls.is_empty());
+    }
+
+    #[test]
+    fn an_ownership_formula_is_told_about_the_prediction_it_may_not_make() {
+        let a = validate("predict('M') > 0 && owner === user.id").unwrap();
+        assert_eq!(a.first_model_call().unwrap().model, "M");
+        assert!(
+            validate("owner === user.id")
+                .unwrap()
+                .first_model_call()
                 .is_none()
         );
     }

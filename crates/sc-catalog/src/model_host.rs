@@ -84,3 +84,56 @@ pub trait ModelHost: Send + Sync {
     /// What a formula's save check needs to know about `model`.
     async fn describe(&self, model: &str) -> Result<ModelSummary>;
 }
+
+/// The save check every formula that calls `predict("…")` goes through
+/// (milestone 31 §4): each model exists, is a model of `table` — the table the
+/// formula ranges over — and answers something per row.
+///
+/// Answers each model's [`ModelSummary`], in the order of the calls, for the
+/// checks only some callers make: a calculated field's declared type against
+/// [`prediction_types`](ModelSummary::prediction_types), and the notice that
+/// a model has no active fit yet.
+///
+/// Async, and against the catalog rather than a shape, because models are
+/// rows: a formula's syntax is checked by `Formula::validate`, and this is the
+/// half that needs the models table.
+pub async fn check_model_calls(
+    catalog: &crate::Catalog,
+    table: &str,
+    analysis: &sc_expr::Analysis,
+) -> Result<Vec<ModelSummary>> {
+    if analysis.model_calls.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(host) = catalog.model_host() else {
+        let call = analysis.model_calls.first().map_or("predict", |c| &c.key);
+        return Err(sc_error::Error::invalid(format!(
+            "this formula calls `{call}`, and this server has no model support to answer it"
+        )));
+    };
+    let mut out = Vec::with_capacity(analysis.model_calls.len());
+    for call in &analysis.model_calls {
+        let summary = host.describe(&call.model).await?;
+        if summary.table != table {
+            return Err(sc_error::Error::invalid(format!(
+                "`{}` is a model of `{}`, and this formula is on `{table}`: `{}` predicts the \
+                 row the formula ranges over, so the two must be the same table",
+                summary.name, summary.table, call.key
+            )));
+        }
+        if let Some(why) = summary.no_prediction.as_deref() {
+            return Err(sc_error::Error::invalid(format!(
+                "`{}` is {why}",
+                summary.name
+            )));
+        }
+        if !summary.predicts() {
+            return Err(sc_error::Error::invalid(format!(
+                "`{}` answers nothing per row, so `{}` has nothing to compute",
+                summary.name, call.key
+            )));
+        }
+        out.push(summary);
+    }
+    Ok(out)
+}
