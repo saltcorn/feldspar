@@ -43,6 +43,9 @@
 //! whose framework is `saltcorn-ui` then fails to mount naming the missing
 //! bundle, rather than failing on every request.
 //!
+//! The Analytics UI (`ui/analytics`, analytics TODO A1.14) is the fifth, on the
+//! same variable and with the IDE's fallback to the checkout (see `main.rs`).
+//!
 //! The builder is the fourth bundle and rides on the same variable, for the same
 //! reason. A `--no-ui` build records no `SC_BUILDER_BUNDLE_DIR`; the builder's
 //! routes then answer a page saying so, and the admin UI keeps showing a layout
@@ -166,7 +169,7 @@ struct Bundle {
     marker: &'static str,
 }
 
-const BUNDLES: [Bundle; 4] = [
+const BUNDLES: [Bundle; 5] = [
     Bundle {
         subdir: "ui/admin",
         env_var: "SC_ADMIN_BUNDLE_DIR",
@@ -203,6 +206,21 @@ const BUNDLES: [Bundle; 4] = [
             "../saltcorn-ui/vendor/common-code",
         ],
         marker: "builder.js",
+    },
+    Bundle {
+        subdir: "ui/analytics",
+        env_var: "SC_ANALYTICS_BUNDLE_DIR",
+        label: "Analytics UI",
+        // Its stylesheet is the admin UI's vendored Tabler, so the two look alike
+        // and follow one theme; a change there rebuilds this bundle too.
+        inputs: &[
+            "src",
+            "vite.config.ts",
+            "index.html",
+            "tsconfig.json",
+            "../admin/src/vendor/tabler",
+        ],
+        marker: "index.html",
     },
 ];
 

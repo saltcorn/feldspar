@@ -123,6 +123,7 @@ impl SqliteDriver {
             // and nothing for an import to wind forward afterwards.
             identity_sequences: false,
             unlogged_tables: false,
+            native_temporal_types: false,
         }
     }
 

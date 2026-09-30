@@ -87,6 +87,10 @@ feldspar/
 │  ├─ sc-config/                  # 5. `_fd_config`: declared settings, validation, ACME cache
 │  ├─ sc-auth/                    # 5. User, Role, authz (ACL/RLS), sessions, OAuth2 provider
 │  ├─ sc-files/                   # 5. FileStore trait, drivers (local, S3, git), xattr metadata
+│  ├─ sc-dataset/                 # 5. Datasets (§14.4): a base and an ordered list of
+│  │                              #    operations, compiled into one sc-query statement; the
+│  │                              #    stage shapes and grain, reading a stage, the snapshot a
+│  │                              #    fit records, and `_fd_datasets`
 │  ├─ sc-action/                  # 6. Action trait + registry, Event/Trigger model, `_fd_triggers`
 │  │                              #    storage & validation, the live set, dispatch, scheduler
 │  ├─ sc-llm/                     # 6. object-safe LlmProvider seam over a provider crate
@@ -97,12 +101,15 @@ feldspar/
 │  │                              #    that advances a run of it (§10.3)
 │  ├─ sc-agent/                   # 7. Agent record + AgentTrait trait + registry + inference
 │  │                              #    loop + `_fd_agents`/`_fd_runs` storage (§11.2)
-│  ├─ sc-model/                   # 6. Predictive models: the dataset (formulas over a table),
-│  │                              #    the columnar Frame, the primary-key-hash split, the
+│  ├─ sc-model/                   # 6. Predictive models: a named dataset (sc-dataset) resolved,
+│  │                              #    the columnar Frame, the row-identity-hash split, the
 │  │                              #    DatasetSource + ModelProvider seams, `_fd_models` /
 │  │                              #    `_fd_model_instances`. Beside sc-action rather than
 │  │                              #    above the row layer it reads through, because a module
 │  │                              #    supplies model providers (TODO "Predictive models" §4)
+│  ├─ sc-analytics/               # 6. The Analytics UI's server half (§14.5): workspaces
+│  │                              #    (`_fd_workspaces`), the demo data, and — as the analytics
+│  │                              #    milestones arrive — panels, plot specs, tests, map layers
 │  ├─ sc-stan/                    # 6. Bayesian models with Stan, beside sc-model (§14.2,
 │  │                              #    "Bayesian models"): CmdStan discovery (`--cmdstan`,
 │  │                              #    `$CMDSTAN`, `~/.cmdstan`) and `feldspar cmdstan install`;
@@ -150,6 +157,9 @@ feldspar/
 │  ├─ builder/                    # Saltcorn 1's Craft.js layout builder, vendored (JSX) and
 │  │                              #    hosted by a TypeScript `src/`: its own admin document
 │  │                              #    under `/builder/` (§13.3, "The builder")
+│  ├─ analytics/                  # the Analytics UI (§14.5): workspaces, the Dataset editor —
+│  │                              #    React + react-bootstrap over the generated client, served
+│  │                              #    admin-only under `/analytics/`
 │  └─ form-runtime/               # React dynamic-form framework (conditional/repeated/dynamic)
 ├─ plugins/                       # the bundled modules (§15.1a): first-party plugins that
 │                                #    ship in the release and install in one click
@@ -180,6 +190,12 @@ graph TD
   server --> module["sc-module"]
   viewpattern["sc-viewpattern"] --> app
   server --> model["sc-model"]
+  server --> analytics["sc-analytics"]
+  cli --> analytics
+  analytics --> catalog
+  model --> dataset["sc-dataset"]
+  api --> dataset
+  dataset --> catalog
   cli --> stan["sc-stan"]
   server --> stan
   stan --> model
@@ -250,20 +266,22 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-llm` | `sc-catalog` `sc-db` `sc-error` `sc-log` `sc-query` `sc-types` |
 | `sc-action` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
-| `sc-model` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
+| `sc-dataset` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
+| `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
+| `sc-analytics` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stream` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-model` `sc-query` `sc-types` |
+| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-model` `sc-query` `sc-types` |
 | `sc-app` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
 | `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
 | `sc-viewpattern` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
 | `sc-module` | `sc-action` `sc-app` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -1498,13 +1516,29 @@ erDiagram
     uuid id PK
     text name UK
     text description
-    text table_name "derived from the dataset, never edited beside it"
+    text table_name "the table the dataset's rows start from, written on save"
     text provider "-> a registered model provider"
-    json dataset "which rows and which derived values (a list of formulas)"
+    json dataset "{ dataset_id } -- a named dataset"
     json configuration
     json hyperparameters "per key a value, or a list to search over"
     json split "train/validation/test fractions + the hash seed"
     json attributes
+  }
+  DATASETS["_fd_datasets"] {
+    uuid id PK
+    text name UK
+    text description
+    json base "a table, or another dataset; never changed"
+    json operations "the ordered list of { id, enabled, kind, params }"
+    json attributes
+  }
+  WORKSPACES["_fd_workspaces"] {
+    uuid id PK
+    text name
+    text kind "one of the eight; only those whose milestone arrived can be made"
+    json state "the kind's own, restored when it is opened"
+    uuid created_by "-> users.id, by value"
+    timestamp updated_at
   }
   INSTANCES["_fd_model_instances"] {
     uuid id PK
@@ -1728,6 +1762,10 @@ erDiagram
   MODULES |o--o{ TRIGGERS : "action -- by name, an action the module supplies"
   STREAMS |o--o{ TRIGGERS : "channel -- by name, stream events"
   INSTANCES ||--o{ DRAWS : "instance -- by value, one row per element per chain"
+  DATASETS ||--o{ MODELS : "dataset.dataset_id and related[].dataset_id -- by value"
+  DATASETS ||--o{ DATASETS : "base, and a Join's or Union's other -- by value"
+  DATASETS }o--o| TABLES : "base.table -- by name"
+  USERS |o--o{ WORKSPACES : "created_by -- by value"
   APPS }o--o{ STREAMS : "streams[] -- by name"
   MODULES |o--o{ STREAMS : "provider -- by name, a stream provider the module supplies"
 ```
@@ -6776,7 +6814,7 @@ Five nouns, fixed here because the words are overloaded everywhere else in the i
 | noun | what it is | where it lives |
 |---|---|---|
 | **model provider** | code that can fit something — `linear_regression`, `kmeans`, a module's `sklearn_ridge` | a registry, like actions |
-| **dataset** | which table, which derived columns, which rows | a JSON column *on the model* |
+| **dataset** | which rows and which columns: a base and an ordered list of operations | a **named dataset** in `_fd_datasets` (§14.4); the model holds its id |
 | **model** | a dataset + a provider + its configuration + its hyperparameter space | `_fd_models` |
 | **model instance** | one fit: parameters, metrics, encoding, serialised state | `_fd_model_instances` |
 | **prediction** | applying an instance to rows | `predict("…")` in a formula, `m.predict(…)` on a model handle in code, and `predictRows` |
@@ -6785,40 +6823,48 @@ A model is edited and refitted; each fit leaves an instance behind, so the insta
 are its history and are **comparable** — same dataset, same split, different settings. At most
 one instance per model is **active**, which is what lets a formula name a model rather than a fit.
 
-#### A dataset is a list of formulas, and that is the whole of it
+#### A dataset is a named dataset
 
-```rust
-pub struct Dataset {
-    pub table: String,
-    pub columns: Vec<DatasetColumn>,   // { name, expr }
-    pub filter: Option<String>,        // one boolean formula, or none
-    pub order: Vec<DatasetOrder>,      // { expr, descending }; the primary key always follows
-}
-```
+A model's data is a **named dataset** (§14.4): a base — a table, or another dataset — and an
+ordered list of operations, stored in `_fd_datasets`, shared by every model, panel and dataset
+that reads it, and compiled into one query. The model holds only its id, as `{ "dataset_id": … }`
+in `_fd_models.dataset`, and each related dataset of a posterior as `{ name, dataset_id, label }`.
 
-`expr` is an `sc-expr` formula — `price`, `price / area`, `neighbourhoodⱵaverage_income`,
-`viewingsↃcount` — validated against the same `SchemaShape` as a calculated field (§7.3), with
-the same errors, and translated by the same `translate_value` into one `Projection::expr_as` per
-column. The filter translates the same way, in boolean position. A column that will not
-translate is **not** an error: it is one the row layer falls back to the reified evaluator for,
-which is the arrangement calculated fields already have.
+`sc_model::Dataset` is that id **resolved**: loading a model compiles its dataset against the
+catalog and records the definitions it reads (a `Snapshot`), the table its rows start from, the
+columns of its last stage and their types, and the **grain** — what a row is. A dataset that no
+longer reads (deleted, or with an operation marked invalid) resolves to one carrying the sentence,
+so the model is listed with its reason and stays editable.
 
-That language is already exactly what GOALS asks a dataset for — "table fields and derived
-fields such as calculations, joinfields and aggregations, and any inclusion/exclusion criteria
-on the rows" — so there is **no second vocabulary** of "field / joinfield / aggregation" with
-three shapes in the JSON and three code paths behind it. The admin UI still offers a picker
-(click a field, a join path, an aggregation); what the picker *writes* is a formula, and an
-admin who wants `log(price)` types it over what the picker wrote.
+Every formula in an operation is the calculated-field language, which is already what GOALS asks
+a dataset for — "table fields and derived fields such as calculations, joinfields and
+aggregations, and any inclusion/exclusion criteria on the rows". So there is
+**no second vocabulary** of "field / joinfield / aggregation": `neighbourhoodⱵaverage_income` in
+a Calculated column is a join path, `viewingsↃhouse.length` an aggregation, and the Dataset editor's completions
+write formulas an admin can type over.
 
-`user` and the operation flags are refused in a dataset formula for the same reason they are
-refused in a calculated field: a dataset has no caller, and a fit that meant something different
-depending on who pressed the button would be indefensible.
+What used to be the whole of a dataset — named formula columns, one filter, an order — is the
+special case of a Calculated column per column, a Filter, a Sort and a Select columns
+(`DatasetDef::from_columns`). `sc_model::Dataset::new("houses").column(…)` still builds one, for
+tests and for code that thinks in columns; `save_model` saves such a dataset as a named one before
+the model that uses it.
 
-**The dataset has no tab, and no store.** It is a JSON column on `_fd_models`. A shared, named
-dataset would need a lifecycle — what happens to the four models fitted against it when somebody
-adds a column, whether an instance fitted against version 1 is still readable, whether deleting
-it is allowed — and that is a versioning problem bought for a saving (retyping a column list)
-that a **Duplicate model** button answers instead.
+**A fit records what it read.** The instance keeps each dataset's snapshot and one hash over them
+(`ATTR_DATASETS`). Its predictions compile the snapshot, not today's definition, so an edited
+dataset never silently changes what an existing fit means; and every fit reports
+**`dataset_changed`** when the model's datasets now hash differently (the hash is of the meaning:
+bases and the enabled operations, not names or descriptions).
+
+**The grain decides where a model applies.** A dataset whose rows are rows of its base table keeps
+that table's primary key as each row's key, so a split hashes it and `predict("…")` in a
+calculated field on the table works as it always did. A dataset that changes the grain — an
+Aggregate, a Stack — is still fitted (a group's keys identify its row for the split), but a row of
+the table is not an input it understands: saving `predict("…")` over it is refused naming what a
+row is (`ModelSummary::not_rows_of_table`). The Stan binder, whose dimensions are tables' rows,
+refuses such a dataset the same way.
+
+`user` and the operation flags are refused in a dataset's formulas for the reason they are refused
+in a calculated field: a dataset has no caller.
 
 #### Layer 6, and the two seams that put it there
 
@@ -6847,9 +6893,11 @@ pub trait ModelProviderHost: Send + Sync {
 }
 ```
 
-Reading *through* `sc-api::rows` rather than around it is what makes a dataset see non-stored
-calculated fields, ownership and row-level security, and what lets it be built over a **provided**
-table (§8.3) at all. `ModelServices` in `sc-server/src/models.rs` assembles the pieces the way
+The source compiles the dataset (§14.4) into one query and runs it on the primary database, as
+the admin: a model is the admin's, and the Analytics UI's A9 is where a restricted reader's
+permissions enter. A table's non-stored calculated fields are columns of a dataset over it where
+they become SQL; a provided table (§8.3) cannot be a dataset's base, because a dataset is one
+query. `ModelServices` in `sc-server/src/models.rs` assembles the pieces the way
 `AgentServices` and the trigger dispatcher already are: the registry, the `DatasetSource`, and
 the fit job runner. `ModelProviderHost` routes by the `(module, provider)` pair rather than by
 the provider name alone, because one host serves every module of its language and two of them may
@@ -6860,7 +6908,7 @@ a prediction.
 
 | Seam | Declared in | Implemented in | Installed by | What reaches it |
 |---|---|---|---|---|
-| `DatasetSource` | `sc-model` | `sc-server` (`CatalogDatasetSource`, over `sc_api::rows`) | `ModelServices` | every fit and prediction |
+| `DatasetSource` | `sc-model` | `sc-model` (`CompiledSource`, over `sc-dataset`; re-exported by `sc-server` as `CatalogDatasetSource`) | `ModelServices` | every fit and prediction |
 | `ModelProviderHost` | `sc-model` | `sc-module`, `sc-python` | the module rebuild | the registry, for a module's provider |
 | `FitStarter` | `sc-model` | `sc-server` (`ModelServices`) | `register_model_actions` | the `fit_model` action |
 | `ModelHost` | `sc-catalog` | `sc-server` (`ModelServices`, over `sc_api::models`) | `Catalog::set_model_host`, at startup and on every module rebuild | `predict("…")` in a formula, and the code host's model handle |
@@ -7260,8 +7308,10 @@ chose it.
 
 #### Storage
 
-`_fd_models`: `id` (uuid pk), `name` (unique), `description`, `table_name`, `provider`, `dataset`
-(JSON), `related` (JSON, nullable — a posterior's related datasets), `configuration` (JSON),
+`_fd_models`: `id` (uuid pk), `name` (unique), `description`, `table_name` (the table the
+dataset's rows start from, written on save), `provider`, `dataset` (JSON, `{ "dataset_id": … }`),
+`related` (JSON, nullable — a posterior's related datasets, `[{ name, dataset_id, label }]`),
+`configuration` (JSON),
 `hyperparameters` (JSON — values or lists), `split` (JSON — fractions and seed), `attributes`
 (JSON).
 
@@ -7288,8 +7338,8 @@ milestone already established for a record whose world changed underneath it.
 
 `sc-api::admin` carries the lot, admin-only like everything else there: `listModelProviders`
 (with the config spec and the outcome resolved against a dataset, when the query names one),
-`previewDataset` (the column types and the first rows — what makes a dataset a thing you can see
-the answer of before you fit it), `listModels` / `getModel` / `saveModel` / `deleteModel`,
+`previewDataset` (a named dataset's column types and first rows — what the model form shows under
+the dataset picked), `listModels` / `getModel` / `saveModel` / `deleteModel`,
 `fitModel` / `listModelInstances` / `getModelInstance` / `activateModelInstance` /
 `deleteModelInstance`, and `predictRows` — an instance, or a model meaning its active instance,
 plus either literal rows or a filter over the model's table. These are the admin's own tools, not
@@ -7298,8 +7348,9 @@ actions. `predictRows` and a formula's `predict` both end in `sc_model::predict_
 `writePosterior` and a handle's `writePosterior` call the same
 `sc_api::models::write_posterior`.
 
-The admin UI is a **Models** tab (§12): the model form with the dataset builder beside its live
-preview, the provider's own form rendered from `config_spec`, the hyperparameter grid and the
+The admin UI is a **Models** tab (§12): the model form with a picker of named datasets — and
+links to edit the one picked, or make a new one, in the Analytics UI (§14.5) — over its preview,
+the provider's own form rendered from `config_spec`, the hyperparameter grid and the
 split; then the instance list, which polls while anything says `fitting`; then the instance
 screen, which renders the three parameter variants, the metrics per split, the search results,
 the row counts and what was dropped, and a "try a row" box over `predictRows`. An
@@ -7379,10 +7430,12 @@ second, no C++), show its diagnostics with paths mapped back to the store, and c
 with our parse. Without CmdStan the model saves on our parse, with a notice that it hasn't been
 checked.
 
-**Datasets and order.** `Model::related` is a list of `NamedDataset { name, dataset, label }`.
-The main dataset is `main` in bindings; `label` is a formula naming a row on the screen (the
-primary key by default). `Dataset::order` goes into the `ORDER BY`, **always followed by the
-primary key**. Order matters beyond time series: MCMC with the same seed over the same rows in a
+**Datasets and order.** `Model::related` is a list of `NamedDataset { name, dataset, label }`,
+each a named dataset (§14.4) that keeps its table's grain. The main dataset is `main` in
+bindings; `label` is a formula naming a row on the screen (the primary key by default), computed
+over the dataset's last stage — or just before a final Select columns, so a label can name a
+column the dataset does not keep. A dataset's Sort decides the order its rows are bound in, and
+the row key always follows it. Order matters beyond time series: MCMC with the same seed over the same rows in a
 different order gives different draws, so a total order is what makes a run reproducible from
 its snapshot. Other providers ignore it.
 
@@ -7797,6 +7850,129 @@ retained messages are the only "before you connected" this delivers, and only be
 sends them.
 
 ---
+
+### 14.4 Datasets (`sc-dataset`)
+
+The goals of the Analytics UI (`docs/analytics-ui-goals.md`, "Dataset operations") make a
+dataset a **persistent, named definition**: a **base** — a table, or another dataset whose
+operations then come first — and an **ordered list of operations**, each taking the rows the
+one before produced, like a pipeline of tidyverse verbs. `sc-dataset` (layer 5, above the
+catalog, the formula language and the query AST) holds the definition, its compiler and its
+store; models (`sc-model`), the Analytics UI's workspaces and, from A2, panels read it.
+
+```rust
+pub struct DatasetDef { id, name, description, base: Base, operations: Vec<Operation> }
+pub enum Base { Table { table }, Dataset { dataset: DatasetId } }
+pub struct Operation { id: String, enabled: bool, #[serde(flatten)] op: Op }  // { id, enabled, kind, params }
+pub enum Op { Calculated, Filter, Select, Sort, Window, Aggregate, Limit, Stack, Split, Complete, Join, Union }
+```
+
+The operations of milestone A1 are the goals document's, less the three that need later
+machinery (Neighbourhood column in A8, Model predictions in A7, Spatial join in A5):
+
+| keep the grain | change the grain | combine |
+|---|---|---|
+| Calculated column, Filter, Select columns, Sort, Window column (lag, lead, difference, running total and mean, rank, row number, group summaries, share, last value that was not missing) | Aggregate (count, distinct count, sum, mean, median, min, max, standard deviation, first, last; `distinct` with no summaries), Limit (first N, seeded sample, top N per group), Stack, Split (columns fixed when defined, pre-filled from the data), Complete (from the data, a number or date range, or every row of a key's table) | Join (inner, left, full; equality keys; "nearest earlier" on a date), Union (by column name, an optional source column) |
+
+**Compiling: stages, merged or nested.** `compile(schema, library, def, options)` turns the
+definition into one `Compilation`: a report for the base and every operation (its status —
+`ok`, `disabled`, `invalid` with the sentence, or `not_reached` — and the **shape** after it),
+and the `Stage` each reaches. A stage is the query so far: a `FROM`, named column expressions
+over it, and a `WHERE`, `GROUP BY` or `LIMIT` when the operations put one there. Every formula
+is translated by `sc-expr` as though it read its row from an alias (`_fd_row`) over a
+table-shaped view of the stage, then either **merged** — each `"_fd_row"."price"` replaced with
+the expression the stage computes `price` by, so a Filter after a Calculated column after the
+base is still `SELECT … FROM houses WHERE …` — or, when merging would change the meaning (a
+condition on a window, anything after a `GROUP BY` or a `LIMIT`), the stage is **sealed** into a
+subquery first. So a dataset is nested subqueries, one per operation that needs one. Median,
+first and last are window functions a level below the aggregate, so one SQL spelling works on
+both backends; SQLite is given `sqrt` and `stddev_samp` by the driver (`sc-db-sqlite`'s
+`functions`), and dates, times and UUIDs, which it stores as text, are cast to text where
+Postgres casts to the type (`DbCapabilities::native_temporal_types`).
+
+**Hidden columns** carry what nobody selects: `_fd_key`, the base table's primary key, while
+rows are rows of it; and one `_fd_o…` per sort key, because a subquery keeps no order — the
+order is the stage's, applied when it is read. A read orders by the sort keys, then the row key,
+the group keys or every column, so paging is stable.
+
+**Grain** (`Table { table, key }`, `Group { keys }`, `Derived`) is what a row is, and it decides
+what formulas may follow. A foreign-key column stays one through every operation, so `Ⱶ` is
+always available from it. `Ↄ` needs rows that are rows of a table: the base table's until an
+operation changes the grain, or — after an Aggregate grouped by one foreign key — the referenced
+table's. `sc-expr`'s `TableShape::rows_of` is how the stage says so: its rows are `table`'s,
+identified by `field`, whose value it holds in `column`, and a child's key then correlates on
+that column.
+
+**Errors are sentences, and they stop.** An enabled operation that does not compile is reported
+by id, the stages before it still read, and the ones after it are not reached. The definition is
+never refused for it — marking it is the editor's job, and the edit that repairs it has to be
+savable. A cycle (a dataset joining a dataset based on it) is such an error; a base that leads
+back is refused on save.
+
+**Reading** (`read_stage`, `read_page`, `read_rows`, `column_values`) runs a stage's query on the
+primary database with a page, a count, and — for a prediction — a restriction to the rows of
+the base table a condition selects (`_fd_key IN (SELECT pk FROM table WHERE …)`). Values come
+back typed by the stage's column types on both backends; a decimal is sent to the browser as a
+number.
+
+**The store** is `_fd_datasets` (`id`, `name` unique, `description`, `base`, `operations`,
+`attributes`), read strictly. What a save refuses: an empty or taken name, a missing base, a base
+that leads back, a changed base ("clone it or create a new one"), and empty or repeated
+operation ids. Deleting a dataset other datasets read is refused, naming them; a model that uses
+it is listed by `datasetUsage` for the warning and afterwards stays listed with its error.
+
+**The snapshot** a fit records (`Snapshot { root, datasets }`) is the dataset and every dataset
+it reaches; its hash (SHA-256 over canonical JSON) covers bases and the kinds and parameters of
+the enabled operations.
+
+**Migrating.** A model stored with its dataset written on it is moved by `TABLES_RENAME.sql`
+sections 7 (Postgres) and 8 (SQLite): one named dataset per old dataset, built as
+`DatasetDef::from_columns` builds it.
+
+### 14.5 The Analytics UI (`sc-analytics`, `ui/analytics`)
+
+The Analytics UI (`docs/analytics-ui-goals.md`) is where datasets are built and, milestone by
+milestone, explored, modelled, mapped and reported. Milestone A1 is its frame and its first
+workspace kind.
+
+**Workspaces** (`sc-analytics`, `_fd_workspaces`: `id`, `name`, `kind`, `state`, `created_by`,
+`updated_at`). `kind` is one of the eight of the goals document; creating one whose milestone
+has not arrived is refused naming it ("arrives with milestone A2"), and `listWorkspaceKinds`
+says which are here so the create dialog lists the rest disabled. `state` is JSON owned by the
+kind — the Dataset editor's is which dataset is open and which operation is selected — saved as
+it changes (`saveWorkspaceState`) and restored when the workspace is opened.
+
+**The API** (`sc-api`'s `analytics.rs`, handled in `sc-server`'s `analytics.rs`; admin-only
+until A9): datasets (`listDatasets`, `getDataset`, `createDataset`, `updateDataset`,
+`deleteDataset`, `cloneDataset`, `datasetUsage`, `listDatasetTables`), and the reads, which take
+a **whole definition** in the body so the editor previews edits before they are saved
+(`datasetShapes` — every stage's shape plus what formulas may name; `validateDatasetOperation` —
+one operation compiled where it would go; `readDatasetStage`; `datasetColumnValues`); and
+workspaces (`listWorkspaceKinds`, `listWorkspaces`, `getWorkspace`, `createWorkspace`,
+`updateWorkspace`, `saveWorkspaceState`, `deleteWorkspace`).
+
+**The bundle** (`ui/analytics`): React, TypeScript and react-bootstrap over the generated client,
+like the admin SPA, but a bundle of its own — so that A9 can mount it in an application without
+the admin shell. It is served under `/analytics/` in the way the IDE is (§12.1): admin-only (a
+visitor is sent to sign in, a non-admin refused), under its own CSP
+(`ANALYTICS_CONTENT_SECURITY_POLICY`, strict for now, widened by later milestones' renderers
+without touching the admin UI's), built into the binary by `sc-cli`'s build script, and sharing
+the admin UI's session cookie. It routes on the hash (`#/`, `#/w/<id>`, `#/datasets/<id>`,
+`#/datasets/new`), uses the admin UI's vendored Tabler stylesheet and its colour-scheme setting,
+and its strings are the `analytics` i18n domain. The admin sidebar's **Analytics** entry leads
+to it; *Predictive models* stays beside it until A3.
+
+**The Dataset editor** lists the datasets (edit, clone, delete with a warning naming the models
+that use one, new on a table or a dataset) and edits one: the operations in a side panel — added
+from a menu or from the spreadsheet's column headers (Filter, Sort, Group by, Stack with the
+selected columns; **+** adds a Calculated column), edited in a form of their kind that the server
+checks as it is typed, dragged to reorder, switched off, deleted, and marked with their error —
+beside a read-only, virtualised spreadsheet of the stage selected, paged with the admin grid's
+own helpers. The formula input offers the stage's columns, one step along each foreign key and,
+while rows are a table's rows, the child tables' counts and totals.
+
+**Demo data** (`sc_analytics::demo`, `feldspar demo analytics [--replace]`): `neighbourhoods`,
+`houses` and `viewings`, deterministic and synthetic, shaped as the models tutorial has them.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

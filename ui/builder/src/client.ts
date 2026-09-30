@@ -245,7 +245,7 @@ export type DeleteModelResponse = { deleted: boolean };
 export type FitModelRequest = { name?: string | null; description?: string | null };
 export type FitModelResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> };
 export type ListModelInstancesResponse = Array<{ id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> }>;
-export type GetModelInstanceResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; parameters: Array<unknown>; encoding: unknown; search: Array<unknown>; variables: unknown; binding?: unknown | null; program_changed?: boolean | null };
+export type GetModelInstanceResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; parameters: Array<unknown>; encoding: unknown; search: Array<unknown>; variables: unknown; binding?: unknown | null; program_changed?: boolean | null; dataset_changed?: boolean | null };
 export type DeleteModelInstanceResponse = { deleted: boolean };
 export type ActivateModelInstanceResponse = { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string> };
 export type PredictRowsRequest = { model?: string | null; instance?: string | null; rows?: Array<unknown> | null; filter?: string | null };
@@ -282,6 +282,33 @@ export type GetPythonStatusResponse = { state: string; version?: string | null; 
 export type GetBackupOptionsResponse = { available: { tables: Array<{ name: string; label: string; count?: number | null }>; applications: Array<{ name: string; label: string; count?: number | null }>; file_stores: Array<{ name: string; label: string; count?: number | null }>; users: number; agents: number; triggers: number; views: number; pages: number; ssl: boolean }; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean } };
 export type RestoreBackupRequest = { id: string; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean } };
 export type RestoreBackupResponse = { restored: Array<string>; warnings: Array<string> };
+export type ListDatasetsResponse = Array<{ id: string; name: string; description: string; base: unknown; table: string; operations: number; columns: Array<unknown>; error?: string | null; grain?: unknown | null }>;
+export type GetDatasetResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
+export type CreateDatasetRequest = { name: string; description?: string | null; base: unknown; operations?: unknown | null };
+export type CreateDatasetResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
+export type UpdateDatasetRequest = { name: string; description?: string | null; base: unknown; operations?: unknown | null };
+export type UpdateDatasetResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
+export type CloneDatasetRequest = { name?: string | null };
+export type CloneDatasetResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
+export type DatasetUsageResponse = { datasets: Array<{ id: string; name: string }>; models: Array<{ id: string; name: string }> };
+export type DatasetShapesRequest = { dataset: unknown };
+export type DatasetShapesResponse = { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown };
+export type ValidateDatasetOperationRequest = { dataset: unknown; position: number; replace?: boolean | null; operation: unknown };
+export type ValidateDatasetOperationResponse = { error?: string | null; shape?: unknown | null };
+export type ReadDatasetStageRequest = { dataset: unknown; upto?: number | null; offset?: number | null; limit?: number | null };
+export type ReadDatasetStageResponse = { columns: Array<unknown>; grain: unknown; rows: Array<unknown>; total: number };
+export type DatasetColumnValuesRequest = { dataset: unknown; upto?: number | null; column: string; limit?: number | null };
+export type DatasetColumnValuesResponse = Array<unknown>;
+export type ListDatasetTablesResponse = Array<{ name: string; columns: Array<unknown>; primary_key?: string | null }>;
+export type ListWorkspaceKindsResponse = Array<{ kind: string; label: string; available: boolean; arrives_in?: string | null }>;
+export type ListWorkspacesResponse = Array<{ id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string }>;
+export type GetWorkspaceResponse = { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string };
+export type CreateWorkspaceRequest = { name: string; kind: string };
+export type CreateWorkspaceResponse = { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string };
+export type UpdateWorkspaceRequest = { name: string };
+export type UpdateWorkspaceResponse = { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string };
+export type SaveWorkspaceStateRequest = { state: unknown };
+export type SaveWorkspaceStateResponse = { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string };
 
 export interface ApiClient {
   authStatus(): Promise<AuthStatusResponse>;
@@ -468,6 +495,25 @@ export interface ApiClient {
   getPythonStatus(): Promise<GetPythonStatusResponse>;
   getBackupOptions(): Promise<GetBackupOptionsResponse>;
   restoreBackup(body: RestoreBackupRequest): Promise<RestoreBackupResponse>;
+  listDatasets(): Promise<ListDatasetsResponse>;
+  getDataset(id: string): Promise<GetDatasetResponse>;
+  createDataset(body: CreateDatasetRequest): Promise<CreateDatasetResponse>;
+  updateDataset(id: string, body: UpdateDatasetRequest): Promise<UpdateDatasetResponse>;
+  deleteDataset(id: string): Promise<void>;
+  cloneDataset(id: string, body: CloneDatasetRequest): Promise<CloneDatasetResponse>;
+  datasetUsage(id: string): Promise<DatasetUsageResponse>;
+  datasetShapes(body: DatasetShapesRequest): Promise<DatasetShapesResponse>;
+  validateDatasetOperation(body: ValidateDatasetOperationRequest): Promise<ValidateDatasetOperationResponse>;
+  readDatasetStage(body: ReadDatasetStageRequest): Promise<ReadDatasetStageResponse>;
+  datasetColumnValues(body: DatasetColumnValuesRequest): Promise<DatasetColumnValuesResponse>;
+  listDatasetTables(): Promise<ListDatasetTablesResponse>;
+  listWorkspaceKinds(): Promise<ListWorkspaceKindsResponse>;
+  listWorkspaces(): Promise<ListWorkspacesResponse>;
+  getWorkspace(id: string): Promise<GetWorkspaceResponse>;
+  createWorkspace(body: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse>;
+  updateWorkspace(id: string, body: UpdateWorkspaceRequest): Promise<UpdateWorkspaceResponse>;
+  saveWorkspaceState(id: string, body: SaveWorkspaceStateRequest): Promise<SaveWorkspaceStateResponse>;
+  deleteWorkspace(id: string): Promise<void>;
 }
 
 export function createClient(options: ClientOptions = {}): ApiClient {
@@ -2077,6 +2123,168 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("restoreBackup", res);
       return (await res.json()) as RestoreBackupResponse;
+    },
+    async listDatasets() {
+      const res = await doFetch(`${baseUrl}/api/datasets`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listDatasets", res);
+      return (await res.json()) as ListDatasetsResponse;
+    },
+    async getDataset(id) {
+      const res = await doFetch(`${baseUrl}/api/datasets/${id}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getDataset", res);
+      return (await res.json()) as GetDatasetResponse;
+    },
+    async createDataset(body) {
+      const res = await doFetch(`${baseUrl}/api/datasets`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createDataset", res);
+      return (await res.json()) as CreateDatasetResponse;
+    },
+    async updateDataset(id, body) {
+      const res = await doFetch(`${baseUrl}/api/datasets/${id}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateDataset", res);
+      return (await res.json()) as UpdateDatasetResponse;
+    },
+    async deleteDataset(id) {
+      const res = await doFetch(`${baseUrl}/api/datasets/${id}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteDataset", res);
+      return;
+    },
+    async cloneDataset(id, body) {
+      const res = await doFetch(`${baseUrl}/api/datasets/${id}/clone`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("cloneDataset", res);
+      return (await res.json()) as CloneDatasetResponse;
+    },
+    async datasetUsage(id) {
+      const res = await doFetch(`${baseUrl}/api/datasets/${id}/usage`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("datasetUsage", res);
+      return (await res.json()) as DatasetUsageResponse;
+    },
+    async datasetShapes(body) {
+      const res = await doFetch(`${baseUrl}/api/datasets/shapes`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("datasetShapes", res);
+      return (await res.json()) as DatasetShapesResponse;
+    },
+    async validateDatasetOperation(body) {
+      const res = await doFetch(`${baseUrl}/api/datasets/validate`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("validateDatasetOperation", res);
+      return (await res.json()) as ValidateDatasetOperationResponse;
+    },
+    async readDatasetStage(body) {
+      const res = await doFetch(`${baseUrl}/api/datasets/stage`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("readDatasetStage", res);
+      return (await res.json()) as ReadDatasetStageResponse;
+    },
+    async datasetColumnValues(body) {
+      const res = await doFetch(`${baseUrl}/api/datasets/values`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("datasetColumnValues", res);
+      return (await res.json()) as DatasetColumnValuesResponse;
+    },
+    async listDatasetTables() {
+      const res = await doFetch(`${baseUrl}/api/datasets/tables`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listDatasetTables", res);
+      return (await res.json()) as ListDatasetTablesResponse;
+    },
+    async listWorkspaceKinds() {
+      const res = await doFetch(`${baseUrl}/api/workspace-kinds`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listWorkspaceKinds", res);
+      return (await res.json()) as ListWorkspaceKindsResponse;
+    },
+    async listWorkspaces() {
+      const res = await doFetch(`${baseUrl}/api/workspaces`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listWorkspaces", res);
+      return (await res.json()) as ListWorkspacesResponse;
+    },
+    async getWorkspace(id) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${id}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getWorkspace", res);
+      return (await res.json()) as GetWorkspaceResponse;
+    },
+    async createWorkspace(body) {
+      const res = await doFetch(`${baseUrl}/api/workspaces`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createWorkspace", res);
+      return (await res.json()) as CreateWorkspaceResponse;
+    },
+    async updateWorkspace(id, body) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${id}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateWorkspace", res);
+      return (await res.json()) as UpdateWorkspaceResponse;
+    },
+    async saveWorkspaceState(id, body) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${id}/state`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("saveWorkspaceState", res);
+      return (await res.json()) as SaveWorkspaceStateResponse;
+    },
+    async deleteWorkspace(id) {
+      const res = await doFetch(`${baseUrl}/api/workspaces/${id}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteWorkspace", res);
+      return;
     },
   };
 }

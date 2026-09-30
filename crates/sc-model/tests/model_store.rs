@@ -119,20 +119,30 @@ async fn a_model_round_trips_through_its_row() -> Result<()> {
     let loaded = load_model(&cat, model.id)
         .await?
         .expect("the row that was just written");
-    assert_eq!(loaded, model);
+    assert_same(&loaded, &model);
 
     // And by name, which is how `predict_row` resolves it.
-    assert_eq!(
-        load_model_by_name(&cat, "house prices").await?.as_ref(),
-        Some(&model)
+    assert_same(
+        &load_model_by_name(&cat, "house prices")
+            .await?
+            .expect("by name"),
+        &model,
     );
-    assert_eq!(require_model(&cat, "house prices").await?, model);
+    assert_same(&require_model(&cat, "house prices").await?, &model);
 
-    // The dataset survives whole — the columns in order, the filter, and the
-    // formula that is not a bare field name.
+    // The dataset is a named one now, stored beside the model and resolved
+    // with it: the columns in order, and the formula that is not a bare field
+    // name.
     assert_eq!(loaded.dataset.columns.len(), 3);
     assert_eq!(loaded.dataset.columns[2].expr, "area / bedrooms");
-    assert_eq!(loaded.dataset.filter.as_deref(), Some("sold === true"));
+    let def = sc_dataset::load_dataset(&cat, model.dataset.id)
+        .await?
+        .expect("the dataset was saved as a named one");
+    assert!(
+        def.operations
+            .iter()
+            .any(|o| o.op == sc_dataset::Op::filter("sold === true"))
+    );
     // As does the split, which is what makes two instances comparable.
     assert_eq!(loaded.split, Split::new(0.6, 0.2, 0.2, 42));
     assert_eq!(loaded.attributes["note"], json!("fitted from the tutorial"));
@@ -627,6 +637,29 @@ async fn a_modules_provider_is_saved_against_like_any_other() -> Result<()> {
     Ok(())
 }
 
+/// Two models store the same thing: every field of the row, the dataset by
+/// its id. (A model built in a test carries its dataset's formulas; one loaded
+/// carries the dataset resolved, so they are not `==`.)
+#[track_caller]
+fn assert_same(a: &Model, b: &Model) {
+    assert_eq!(a.id, b.id);
+    assert_eq!(a.name, b.name);
+    assert_eq!(a.description, b.description);
+    assert_eq!(a.provider, b.provider);
+    assert_eq!(a.dataset.id, b.dataset.id);
+    assert_eq!(a.configuration, b.configuration);
+    assert_eq!(a.hyperparameters, b.hyperparameters);
+    assert_eq!(a.split, b.split);
+    assert_eq!(a.attributes, b.attributes);
+    let related = |m: &Model| -> Vec<(String, sc_dataset::DatasetId, Option<String>)> {
+        m.related
+            .iter()
+            .map(|r| (r.name.clone(), r.dataset.id, r.label.clone()))
+            .collect()
+    };
+    assert_eq!(related(a), related(b));
+}
+
 /// A `counties` table beside `houses`, for related datasets to be over.
 async fn with_counties(cat: &Catalog) -> Result<()> {
     cat.create_table(
@@ -663,8 +696,11 @@ async fn related_datasets_round_trip_and_validate_against_their_own_tables() -> 
     let model = house_prices().related(counties());
     save_model(&cat, &reg, &model, None).await?;
     let loaded = load_model(&cat, model.id).await?.expect("stored");
-    assert_eq!(loaded.related, vec![counties()]);
-    assert_eq!(loaded, model);
+    assert_eq!(loaded.related.len(), 1);
+    assert_eq!(loaded.related[0].name, "counties");
+    assert_eq!(loaded.related[0].label.as_deref(), Some("name"));
+    assert_eq!(loaded.related[0].dataset.columns[0].name, "u");
+    assert_same(&loaded, &model);
 
     // Each way a related dataset can be wrong, refused by name.
     let refused = |model: Model, expected: &'static str| {
@@ -699,7 +735,7 @@ async fn related_datasets_round_trip_and_validate_against_their_own_tables() -> 
     .await;
     refused(
         house_prices().related(counties().labelled("no_such_field")),
-        "dataset label on `counties`",
+        "the label `no_such_field`",
     )
     .await;
     // Validated against its *own* table: `price` is a column of houses, not
@@ -709,7 +745,7 @@ async fn related_datasets_round_trip_and_validate_against_their_own_tables() -> 
             "counties",
             Dataset::new("counties").column("p", "price"),
         )),
-        "dataset column `p` on `counties`",
+        "unknown identifier `price`",
     )
     .await;
     Ok(())
@@ -750,6 +786,6 @@ async fn an_existing_models_table_gains_the_related_column_on_boot() -> Result<(
     // … and the old row reads back with no related datasets.
     let loaded = load_model(&cat, model.id).await?.expect("stored");
     assert!(loaded.related.is_empty());
-    assert_eq!(loaded, model);
+    assert_same(&loaded, &model);
     Ok(())
 }

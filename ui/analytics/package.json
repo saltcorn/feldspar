@@ -1,0 +1,29 @@
+{
+  "name": "@saltcorn/analytics-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Feldspar's Analytics UI — workspaces over datasets, models and panels, served under /analytics/ (analytics TODO A1.14). React + TypeScript + react-bootstrap over the generated typed API client, like the admin SPA.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "gen-client": "cargo run -q -p sc-api --example emit_admin_client -- src/client.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.14.10",
+    "bootstrap": "^5.3.3",
+    "react": "^18.3.1",
+    "react-bootstrap": "^2.10.4",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "vitest": "^4.1.10"
+  }
+}

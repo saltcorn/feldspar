@@ -1164,6 +1164,25 @@ looking hung. Ctrl-C does the same interactively.
 | a Stan fit fails with "more than the … allowed (`--stan-max-data-values`)" | the bound data is too large for the ceiling (§9.4). Filter the datasets or raise the flag |
 | a Stan fit finishes with "the draws … were not kept" | they were over `--stan-max-draws-bytes` (§9.4). The summary and diagnostics are there; to keep the draws, `thin`, `exclude_variables`, or raise the flag |
 | `getModelDraws` refuses with "… numbers" and suggests `thin` | the answer would be over `--stan-max-draws-response` (§9.4). Ask for fewer elements, chains or draws |
+| `/analytics/` says "the Analytics UI bundle is not built" | the binary was built with `SC_BUILD_ADMIN=0` or `--no-ui` (§5.3). Rebuild with the variable unset, or run `npm ci && npm run build` in `ui/analytics` for a source tree |
+| `feldspar demo analytics` says "the database already has `houses` …" | the demo never touches a table that is there. Use `--replace` to drop and remake its three tables, or run it against another database (§8.6) |
+
+### 8.6 Demo data for the Analytics UI
+
+```bash
+feldspar demo analytics [--replace] [database flags]
+```
+
+makes three small tables for trying the Analytics UI (`/analytics/`, linked from the admin
+sidebar): `neighbourhoods` (5 rows), `houses` (200, a key to `neighbourhoods`, some unsold with
+no `price`) and `viewings` (a key to `houses`, with dates). The data is synthetic and generated
+from a fixed seed, so every run on every machine makes the same rows, on Postgres or SQLite.
+It takes the same database flags as `feldspar serve` and writes where the server would read.
+
+It refuses to touch a table that is already there, naming it. `--replace` drops and remakes
+the demo's three tables — and only those, so anything else in the database, including datasets
+and models that read them, is left alone (a dataset over a dropped table reports its error until
+the table is back). Run it on a scratch database, not on one whose `houses` table is yours.
 
 ---
 

@@ -8,11 +8,12 @@
 //! filled in, exactly as `sc-agent` declares `ProviderConnector` and
 //! [`agents`](crate::agents) supplies it.
 //!
-//! Reading **through the row layer** rather than around it is the whole point of
-//! the seam. A dataset that issued its own `SELECT` would see no non-stored
-//! calculated field, would ignore ownership and row-level security, and could
-//! not read a table a module provides at all — three ways for a fit to be
-//! computed over rows that are not the rows the application has.
+//! Since datasets became named definitions of their own (analytics TODO A1),
+//! the seam is filled by `sc_model::CompiledSource`, which reads a dataset
+//! compiled by `sc-dataset` into one query. It reads as the admin — the
+//! models are the admin's — and a table's non-stored calculated fields are
+//! columns where they become SQL. A provided table cannot be a dataset's base:
+//! a dataset is one query.
 //!
 //! [`ModelServices`] is the assembly [`AgentServices`](crate::AgentServices) and
 //! the trigger dispatcher already are: the registry of providers, the source, the
@@ -29,188 +30,28 @@
 //! [`install_models`] reaps every row still `fitting` at boot rather than
 //! leaving an admin looking at a fit in progress that is not.
 
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sc_api::rows::{RowQuery, count_rows_where, list_row_values};
 use sc_catalog::Catalog;
-use sc_error::{Context, Error, Result};
+use sc_error::{Context, Result};
 use sc_model::{
-    Activation, Column, Dataset, DatasetSource, FitContext, FitProgress, Frame, InstanceId, Model,
-    ModelInstance, ModelProvider, ModelRegistry, PosteriorLimits, Progress, ProgressWrite, Read,
-    SPLIT_KEY, bootstrap_model_draws, bootstrap_model_instances, bootstrap_models,
-    builtin_registry, canonical_key, fit_model_with, reap_fitting_instances, record_fit_progress,
-    save_model_instance,
+    Activation, DatasetSource, FitContext, FitProgress, InstanceId, Model, ModelInstance,
+    ModelProvider, ModelRegistry, PosteriorLimits, Progress, ProgressWrite, bootstrap_model_draws,
+    bootstrap_model_instances, bootstrap_models, builtin_registry, fit_model_with,
+    reap_fitting_instances, record_fit_progress, save_model_instance,
 };
-use sc_query::{Expr, Projection, Value};
 use sc_stan::StanProvider;
 use sc_stan::cmdstan::{Locations, Toolchain, discover};
 use sc_stan::compile::CompileCache;
 use sc_stan::run::ProcessBudget;
 
-/// The [`DatasetSource`] a running server has: the catalog, read through
-/// `sc_api::rows`.
-pub struct CatalogDatasetSource {
-    catalog: Arc<Catalog>,
-}
-
-impl CatalogDatasetSource {
-    /// A source over `catalog`.
-    pub fn new(catalog: Arc<Catalog>) -> CatalogDatasetSource {
-        CatalogDatasetSource { catalog }
-    }
-}
-
-#[async_trait]
-impl DatasetSource for CatalogDatasetSource {
-    async fn read(&self, ds: &Dataset, how: &Read<'_>) -> Result<Frame> {
-        let table = self.catalog.require(&ds.table)?;
-        let shape = self.catalog.schema_shape()?;
-        // The dataset's own filter, and the caller's restriction anded onto it:
-        // a prediction about one row is that row's primary key in the `WHERE`,
-        // not a full read filtered afterwards, because "afterwards" would mean
-        // materialising the whole table to answer about one row of it.
-        //
-        // A prediction reads `unfiltered`, and that is deliberate: the dataset's
-        // filter says which rows the model was *fitted from*, not which rows it
-        // may be asked about. A model of what houses sell for is fitted on the
-        // sold ones and asked about the unsold one a trigger just inserted.
-        let own = if how.filtered {
-            ds.filter_expr(&shape)?
-        } else {
-            None
-        };
-        let filter = match (own, how.restrict) {
-            (Some(own), Some(extra)) => Some(own.and(extra.clone())),
-            (Some(own), None) => Some(own),
-            (None, Some(extra)) => Some(extra.clone()),
-            (None, None) => None,
-        };
-
-        // The count first, and on purpose: a dataset is a `SELECT` an admin
-        // wrote and the server has to hold the answer in memory, so the refusal
-        // costs one `COUNT(*)` rather than a partial read that has already
-        // allocated most of what it would have refused.
-        //
-        // A **limited** read skips it, because it is bounded by construction:
-        // the preview screen exists to show an admin the dataset that is too
-        // big to fit, and refusing it for being too big would refuse the one
-        // answer they came for.
-        if how.limit.is_none() {
-            let count = count_rows_where(&self.catalog, &table, filter.clone(), None)
-                .await
-                .with_context(|| format!("counting the rows of dataset table `{}`", ds.table))?;
-            if count > 0 && how.cap < count as u64 {
-                return Err(Error::invalid(format!(
-                    "the dataset selects more than {} rows (it selects {count}); \
-                     add a filter or raise `--model-max-rows`",
-                    how.cap
-                )));
-            }
-        }
-
-        // The split key rides along as a reserved projection rather than as the
-        // primary-key column's own name: a dataset column may legitimately be
-        // *called* `id` while computing something else, and a split that hashed
-        // that would be a split over the wrong thing. A table with a composite
-        // or absent primary key simply has no key column — reads are unaffected,
-        // and only the split refuses (§5).
-        let mut projections = ds.projections(&shape)?;
-        let key_column = ds.primary_key(&shape).ok();
-        if let Some(pk) = &key_column {
-            projections.push(Projection::expr_as(
-                Expr::qcol(ds.table.clone(), pk.clone()),
-                SPLIT_KEY,
-            ));
-        }
-
-        // The dataset's order, then its primary key, on every read — a fit, a
-        // preview and a prediction alike. A posterior needs it (the same seed
-        // over the same rows in another order is another set of draws, Stan
-        // TODO §7), and a hash-split provider is indifferent to it.
-        // `sql_only`: the dataset's columns are its own projections, and a
-        // calculated field of the table that predicts with this very model
-        // would otherwise read this dataset to compute itself.
-        let mut query = RowQuery::new()
-            .where_(filter)
-            .projecting(projections)
-            .order_by(ds.order_by(&shape)?)
-            .sql_only();
-        if how.limit.is_some() {
-            // Never above the cap, even when the caller asked for more: the cap
-            // is what this process can hold, and a limit is what this caller
-            // wants.
-            query = query.limit(how.ceiling());
-        }
-        let rows = list_row_values(&self.catalog, &table, &query, None)
-            .await
-            .with_context(|| format!("reading dataset table `{}`", ds.table))?;
-
-        // A frame of no rows is a real answer — a filter that matched nothing —
-        // and it keeps its columns: a frame with none would fail later as a
-        // shape error rather than here as an empty fit. There is also nothing to
-        // check translation against, since a column is "present" only by having
-        // arrived on some row.
-        if rows.is_empty() {
-            return Frame::new(
-                ds.columns
-                    .iter()
-                    .map(|c| (c.name.clone(), Column::Null(0)))
-                    .collect(),
-                Vec::new(),
-            );
-        }
-
-        let mut columns = Vec::with_capacity(ds.columns.len());
-        let mut arrived: BTreeSet<&str> = BTreeSet::new();
-        for column in &ds.columns {
-            // A column absent from every row is one whose formula did not
-            // translate: `Dataset::projections` leaves those to the reified
-            // evaluator, which the read path does not yet run.
-            if rows.iter().all(|row| !row.contains_key(&column.name)) {
-                continue;
-            }
-            arrived.insert(column.name.as_str());
-            columns.push((
-                column.name.clone(),
-                Column::from_values(
-                    rows.iter()
-                        .map(|row| row.get(&column.name).cloned().unwrap_or(Value::Null))
-                        .collect(),
-                ),
-            ));
-        }
-        // Saying which column and why, rather than handing back a frame that is
-        // quietly missing it — a fit over the columns that happened to arrive
-        // would not be the fit the model asked for.
-        let missing = ds.missing(&arrived);
-        if !missing.is_empty() {
-            return Err(Error::invalid(format!(
-                "dataset on `{}`: the formula for {} does not translate to SQL, and the \
-                 dataset read has no reified fallback",
-                ds.table,
-                missing
-                    .iter()
-                    .map(|n| format!("`{n}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
-        }
-
-        let keys = match &key_column {
-            Some(_) => rows
-                .iter()
-                .map(|row| canonical_key(row.get(SPLIT_KEY).unwrap_or(&Value::Null)))
-                .collect(),
-            None => Vec::new(),
-        };
-        Frame::new(columns, keys)
-    }
-}
+/// The [`DatasetSource`] a running server has: a named dataset compiled by
+/// `sc-dataset` into one query over the catalog (analytics TODO A1.8).
+pub use sc_model::CompiledSource as CatalogDatasetSource;
 
 /// The model machinery a running server holds: the provider registry, the
 /// dataset seam, and the bound a read must stay under.
@@ -652,6 +493,11 @@ pub async fn install_models_with(
     bootstrap_model_draws(catalog)
         .await
         .context("ensuring the model draws table exists")?;
+    // The Analytics UI's workspaces, beside the models the UI is the way into
+    // (analytics TODO A1.12). The datasets table came with the models table.
+    sc_analytics::bootstrap_workspaces(catalog)
+        .await
+        .context("ensuring the workspaces table exists")?;
     let reaped = reap_fitting_instances(catalog)
         .await
         .context("failing the fits that were running at the last shutdown")?;
@@ -672,18 +518,4 @@ pub async fn install_models_with(
         eprintln!("feldspar: removed {removed} stale Stan run or compile directories");
     }
     Ok(services)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_split_key_is_a_reserved_alias_and_not_a_dataset_column_name() {
-        // A dataset column called `id` computes whatever its formula says; the
-        // key is projected separately so the two cannot be confused.
-        assert!(SPLIT_KEY.starts_with("_fd_"));
-        let ds = Dataset::new("houses").column("id", "bedrooms");
-        assert!(ds.columns.iter().all(|c| c.name != SPLIT_KEY));
-    }
 }

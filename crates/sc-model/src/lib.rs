@@ -109,8 +109,8 @@ pub use bind::{
     preview_data, recorded_axes, suggest_bindings,
 };
 pub use dataset::{
-    Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape, translate_filter,
-    validate_dataset,
+    ATTR_DATASETS, Dataset, DatasetColumn, DatasetColumnShape, DatasetOrder, DatasetShape,
+    dataset_changed, datasets_hash, datasets_record, fitted_dataset, translate_filter,
 };
 pub use diagnose::{
     EBFMI_THRESHOLD, ESS_PER_CHAIN_THRESHOLD, PosteriorReport, RHAT_THRESHOLD, ebfmi,
@@ -128,8 +128,7 @@ pub use encode::{
 pub use fit::{
     ATTR_AXES, ATTR_BINDING, ATTR_CANCEL_REQUESTED, ATTR_COORDINATES, ATTR_OUTCOME, ATTR_PROGRESS,
     ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Activation, Fit, FitStarter, GridPoint, MAX_GRID_POINTS,
-    RowCounts,
-    fit_model, fit_model_with, fitted_cleanly, grid, run_fit, run_fit_with,
+    RowCounts, fit_model, fit_model_with, fitted_cleanly, grid, run_fit, run_fit_with,
 };
 pub use frame::{Column, ColumnType, Frame, canonical_key};
 pub use instance::{ATTR_ERROR, FitStatus, InstanceId, ModelInstance, RESTARTED};
@@ -167,11 +166,11 @@ pub use reading::{
     posterior_variables, read_draws, statistic_names, summarise_variable,
 };
 pub use registry::ModelRegistry;
-pub use source::{DEFAULT_MAX_ROWS, DatasetSource, Read, SPLIT_KEY};
+pub use source::{CompiledSource, DEFAULT_MAX_ROWS, DatasetSource, Read, SPLIT_KEY};
 pub use split::{Part, Split, SplitCounts, Splits};
 pub use store::{
-    MODELS_QUERY, MODELS_TABLE, bootstrap_models, delete_model, list_models, load_model,
-    load_model_by_name, models_for_table, require_model, save_model,
+    MODELS_QUERY, MODELS_TABLE, bootstrap_models, dataset_ref, delete_model, list_models,
+    load_model, load_model_by_name, models_for_table, related_json, require_model, save_model,
 };
 pub use summary::{ElementSummary, ess_bulk, ess_mean, ess_tail, quantile, rhat};
 pub use validate::{ModelIssue, Models, validate_model};

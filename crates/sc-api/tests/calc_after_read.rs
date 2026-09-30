@@ -73,6 +73,7 @@ impl ModelHost for FakeModels {
             prediction_types: vec![BasicType::Float],
             no_prediction: None,
             active_fit: Some("fit".to_owned()),
+            not_rows_of_table: None,
         })
     }
 }
@@ -256,7 +257,7 @@ async fn a_field_computed_after_the_read_cannot_be_filtered_or_sorted_on() -> Re
     assert_eq!(top[0]["id"], json!(60));
 
     // GraphQL's `where` and `order_by`.
-    let api = GraphqlProvider::project("/graphql", &[houses.clone()])?;
+    let api = GraphqlProvider::project("/graphql", std::slice::from_ref(&houses))?;
     let user = User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)?;
     for document in [
         "{ houses(where: { estimated_price: { gt: \"100\" } }) { id } }",

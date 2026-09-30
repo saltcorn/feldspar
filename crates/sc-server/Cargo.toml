@@ -75,6 +75,9 @@ sc-workflow.workspace = true
 # dataset's rows is `sc_api::rows`' job, and `sc-model` sits below it so a module
 # can supply a model provider.
 sc-model.workspace = true
+sc-analytics.workspace = true
+# Named datasets and the Analytics UI's dataset endpoints (analytics TODO A1).
+sc-dataset.workspace = true
 # Bayesian models (the Stan TODO): `StanProvider` is registered here beside the
 # built-ins, over the catalog's file stores, with whatever CmdStan discovery
 # found at startup — always compiled, because availability is a runtime fact.

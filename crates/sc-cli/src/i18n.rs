@@ -18,11 +18,11 @@
 //! because that is a message that will never reach a catalogue at all (task
 //! 2.1's rule).
 //!
-//! # The three domains
+//! # The four domains
 //!
 //! [`DOMAINS`] is the whole of the mapping from a name to a source tree and a
 //! catalogue directory. There is no configuration file behind it, on purpose:
-//! these are *our* three domains, they are in this repository, and an
+//! these are *our* four domains, they are in this repository, and an
 //! application's catalogue is not reached from here at all — it lives wherever
 //! that application's definition lives, and the Translations screen is its
 //! surface (task 4.4).
@@ -69,7 +69,7 @@ pub struct Domain {
     pub about: &'static str,
 }
 
-/// The three domains of population **A** — the product's own strings.
+/// The four domains of population **A** — the product's own strings.
 pub const DOMAINS: &[Domain] = &[
     Domain {
         name: "core",
@@ -97,9 +97,17 @@ pub const DOMAINS: &[Domain] = &[
         kind: Kind::Js,
         about: "the drag-and-drop layout builder",
     },
+    Domain {
+        name: "analytics",
+        sources: &["ui/analytics/src"],
+        vendored: &[],
+        locales: "ui/analytics/src/locales",
+        kind: Kind::Js,
+        about: "the Analytics UI",
+    },
 ];
 
-/// The domain called `name`, or an error listing the three.
+/// The domain called `name`, or an error listing them.
 pub fn domain(name: &str) -> Result<&'static Domain> {
     DOMAINS.iter().find(|d| d.name == name).ok_or_else(|| {
         Error::config(format!(

@@ -47,7 +47,7 @@ import {
   outcomeSummary,
   predictionSummary,
   printGridValue,
-  readDataset,
+  readModelDataset,
   readEncoding,
   readMetrics,
   readOutcome,
@@ -58,7 +58,7 @@ import {
   significanceStars,
   typedFeatureValue,
   type ClassMetrics,
-  type Dataset,
+  type ModelDataset,
   type FeatureInput,
   type InstanceDetail,
   type Metrics,
@@ -80,7 +80,7 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
   const { t } = useT();
   const [instance, setInstance] = useState<InstanceDetail | null>(null);
   const [modelName, setModelName] = useState("");
-  const [dataset, setDataset] = useState<Dataset | null>(null);
+  const [dataset, setDataset] = useState<ModelDataset | null>(null);
   const [model, setModel] = useState<ModelItem | null>(null);
   const [cancellable, setCancellable] = useState(false);
   const [bindsData, setBindsData] = useState(false);
@@ -98,7 +98,7 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
       if (model) {
         setModel(model);
         setModelName(model.name);
-        setDataset(readDataset(model.dataset, model.table_name));
+        setDataset(readModelDataset(model.dataset));
         // Whether Cancel is offered is the provider's to say, and so is
         // whether this is a posterior before the fit has recorded its outcome.
         if (detail.status === "fitting") {
@@ -219,6 +219,11 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
         {/* The failure sentence is on the row, because the request that started
             the fit returned long before it failed. */}
         {instance.error && <Alert variant="danger">{instance.error}</Alert>}
+        {instance.dataset_changed && (
+          <Alert variant="info">
+            <T text="The dataset has changed since this fit. This instance keeps the version it read, and its predictions read the rows that way; fit again to use the new one." />
+          </Alert>
+        )}
 
         {posterior && (
           <PosteriorInstance

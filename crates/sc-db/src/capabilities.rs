@@ -46,6 +46,15 @@ pub struct DbCapabilities {
     /// between nodes and not worth a WAL record, and losing them all to an
     /// unclean shutdown costs a re-login.
     pub unlogged_tables: bool,
+    /// Dates, times, timestamps and UUIDs are types of their own, so
+    /// `CAST(x AS date)` makes a date.
+    ///
+    /// Postgres's are. SQLite stores them as text and gives a cast a numeric
+    /// affinity by its type's name, so there `CAST('2024-01-05' AS date)` is
+    /// `2024`. A dataset's compiled query (analytics TODO A1.4) casts the
+    /// literals it generates, and casts those to `text` on a backend without
+    /// them.
+    pub native_temporal_types: bool,
 }
 
 impl DbCapabilities {
@@ -59,6 +68,7 @@ impl DbCapabilities {
             returning: false,
             identity_sequences: false,
             unlogged_tables: false,
+            native_temporal_types: false,
         }
     }
 }

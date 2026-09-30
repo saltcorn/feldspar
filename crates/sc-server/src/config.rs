@@ -49,6 +49,12 @@ pub struct ServerConfig {
     /// the bundle it was built with, or from the checkout it was built in (see
     /// `sc-cli`); a test points it at a directory of its own.
     pub ide_dir: Option<PathBuf>,
+    /// Directory holding the built `ui/analytics` bundle — the Analytics UI,
+    /// served admin-only under `/analytics/` (analytics TODO A1.14).
+    ///
+    /// **Not a command-line setting**, for the reason `ide_dir` is not. `None`
+    /// is a server whose `/analytics/` says the bundle is not built.
+    pub analytics_dir: Option<PathBuf>,
     /// Directory holding the built `ui/saltcorn-ui` bundle — Saltcorn UI's view
     /// runtime (`view-runtime.js`) and the browser assets its pages load (TODO
     /// "Saltcorn UI" §9).
@@ -237,6 +243,7 @@ impl Default for ServerConfig {
             ide_dir: None,
             saltcorn_ui_dir: None,
             builder_dir: None,
+            analytics_dir: None,
             plugins_dir: None,
             session_ttl_hours: sc_auth::DEFAULT_TTL_HOURS,
             secure_cookies: false,

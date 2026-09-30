@@ -1,0 +1,48 @@
+[package]
+name = "sc-dataset"
+description = "Datasets: a base and an ordered list of operations, compiled to one query (layer 5)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary, as elsewhere in the workspace.
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+# The AST every operation compiles to, and the dialects that render it.
+sc-query.workspace = true
+# The formula language an operation's expressions are written in (§7.3): the
+# same `SchemaShape`, validation and translation a calculated field uses. The
+# `eval` feature stays off — a dataset compiles to SQL, it does not run an
+# isolate.
+sc-expr.workspace = true
+# Field types, for the type of each column of each stage.
+sc-types.workspace = true
+# `_fd_datasets` is stored metadata, bootstrapped through the catalog, and the
+# catalog is what a stage's base table and its fields come from.
+sc-catalog.workspace = true
+sc-db.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# A model fit records the hash of the definition it was fitted with (A1.8): a
+# stable hash, for the reason the split's is (`sc-model`'s `split.rs`).
+sha2.workspace = true
+# Complete's date ranges are generated here, as literals.
+chrono.workspace = true
+
+[dev-dependencies]
+sc-db-postgres.workspace = true
+sc-db-sqlite.workspace = true
+sc-test-harness.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

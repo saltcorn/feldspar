@@ -29,6 +29,7 @@ mod ddl;
 mod dialect;
 mod driver;
 mod exec;
+mod functions;
 mod introspect;
 mod pool;
 mod transaction;

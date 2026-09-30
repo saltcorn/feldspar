@@ -190,7 +190,12 @@ pub async fn predict_subject(
             if let Some(expr) = restrict {
                 how = how.restricted_to(expr);
             }
-            source.read(&model.dataset, &how).await?
+            // The dataset **as this fit read it**, so its columns are computed
+            // the way they were at fit time whatever has been edited since; a
+            // fit from before datasets had names reads the model's own.
+            let dataset =
+                crate::dataset::fitted_dataset(instance).unwrap_or_else(|| model.dataset.clone());
+            source.read(&dataset, &how).await?
         }
     };
     let predictions = predict_rows(registry, &model.provider, instance, &frame).await?;

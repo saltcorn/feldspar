@@ -41,6 +41,9 @@ sc-files.workspace = true
 sc-llm.workspace = true
 # `_fd_agents` and `_fd_runs`, bootstrapped beside the other metadata tables.
 sc-agent.workspace = true
+# The Analytics UI's tables and the demo data (analytics TODO A1).
+sc-dataset.workspace = true
+sc-analytics.workspace = true
 # `_fd_config` and the ACME cache, bootstrapped the same way — and read at boot,
 # because how this process serves TLS is a stored setting rather than a flag
 # (§13.5).

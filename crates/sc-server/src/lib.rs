@@ -20,6 +20,7 @@
 //! endpoint set at dispatch time.
 
 mod agents;
+mod analytics;
 mod apps;
 mod backup;
 mod browser;
@@ -145,7 +146,8 @@ pub use observe::STREAM_OBSERVE_ROUTE;
 pub use reload::{ReloadReport, reload_all, spawn_sighup_reload};
 pub use requests::{AppRequests, MAX_RESPONSE_BYTES, install_app_requests};
 pub use router::{
-    BOOTSTRAP_HTML, CSRF_REQUEST_HEADER, IDE_PREFIX, build_router, build_router_with_apps,
+    ANALYTICS_PREFIX, BOOTSTRAP_HTML, CSRF_REQUEST_HEADER, IDE_PREFIX, build_router,
+    build_router_with_apps,
 };
 /// The guest-language adapter trait, re-exported: a caller that hands
 /// [`install_triggers_with_adapters`] a set of adapters needs to name it, and
@@ -154,7 +156,7 @@ pub use sc_expr::CodeAdapter;
 /// Where the bundled modules are in the checkout, re-exported: `sc-cli` needs to
 /// name the fallback and `sc-module` is not otherwise its dependency.
 pub use sc_module::BUNDLED_IN_CHECKOUT;
-pub use security::IDE_CONTENT_SECURITY_POLICY;
+pub use security::{ANALYTICS_CONTENT_SECURITY_POLICY, IDE_CONTENT_SECURITY_POLICY};
 pub use security::{BUILDER_CONTENT_SECURITY_POLICY, builder_content_security_policy};
 pub use security::{CONTENT_SECURITY_POLICY, CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE};
 pub use serve::{serve, serve_browser};

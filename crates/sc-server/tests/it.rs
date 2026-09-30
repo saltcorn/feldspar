@@ -29,6 +29,14 @@ mod admin_workflow_editor;
 mod agent_admin_api;
 #[path = "agent_chat.rs"]
 mod agent_chat;
+#[path = "analytics_api.rs"]
+mod analytics_api;
+#[path = "analytics_done.rs"]
+mod analytics_done;
+#[path = "analytics_route.rs"]
+mod analytics_route;
+#[path = "analytics_spa_typecheck.rs"]
+mod analytics_spa_typecheck;
 #[path = "api_token_admin_api.rs"]
 mod api_token_admin_api;
 #[path = "app_builder_agent.rs"]
@@ -107,6 +115,8 @@ mod model_handle;
 mod models_without_actions;
 #[path = "modules_api.rs"]
 mod modules_api;
+#[path = "named_datasets.rs"]
+mod named_datasets;
 #[path = "other_events.rs"]
 mod other_events;
 #[path = "ownership_enforcement.rs"]

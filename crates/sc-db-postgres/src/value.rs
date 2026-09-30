@@ -49,12 +49,18 @@ impl PgParam<'_> {
                 Type::INT2 => (*v as i16).to_sql_checked(ty, out),
                 Type::INT4 => (*v as i32).to_sql_checked(ty, out),
                 Type::NUMERIC => Decimal::from(*v).to_sql_checked(ty, out),
+                // `price > 100000` on a `double precision` column: Postgres
+                // infers the placeholder from the column, and a whole-number
+                // literal is still a number there.
+                Type::FLOAT8 => (*v as f64).to_sql_checked(ty, out),
+                Type::FLOAT4 => (*v as f32).to_sql_checked(ty, out),
                 _ => v.to_sql_checked(ty, out),
             },
             Value::Float(v) => match *ty {
                 Type::NUMERIC => Decimal::try_from(*v)
                     .map_err(BoxError::from)
                     .and_then(|d| d.to_sql_checked(ty, out)),
+                Type::FLOAT4 => (*v as f32).to_sql_checked(ty, out),
                 _ => v.to_sql_checked(ty, out),
             },
             Value::Text(v) => v.to_sql_checked(ty, out),
@@ -230,6 +236,18 @@ mod tests {
         assert!(
             PgParam(&Value::Int(9))
                 .to_sql_checked(&Type::INT8, &mut out)
+                .is_ok()
+        );
+        // `price > 100000` on a double-precision column: a whole number into
+        // a float placeholder (a dataset's Filter, analytics TODO A1.3).
+        assert!(
+            PgParam(&Value::Int(100_000))
+                .to_sql_checked(&Type::FLOAT8, &mut out)
+                .is_ok()
+        );
+        assert!(
+            PgParam(&Value::Float(1.5))
+                .to_sql_checked(&Type::FLOAT4, &mut out)
                 .is_ok()
         );
     }

@@ -472,19 +472,45 @@ impl<'a> Chain<'a> {
                 &format!("`{key_field}` on `{child_table}` is not a Key field"),
             )
         })?;
-        if key.target_table != parent_table {
-            return Err(err(
-                self.relation,
-                &format!(
-                    "`{key_field}` on `{child_table}` points at `{}`, not `{parent_table}`",
-                    key.target_table
-                ),
-            ));
-        }
+        // A parent whose rows are another table's (a dataset stage, see
+        // `RowsOf`) correlates on the column holding that table's identifying
+        // field, not on the field itself, which it need not have.
+        let parent_field = if key.target_table == parent_table {
+            key.target_field.clone()
+        } else {
+            match shape
+                .tables
+                .get(parent_table)
+                .and_then(|p| p.rows_of.as_ref())
+            {
+                Some(rows) if rows.table == key.target_table && rows.field == key.target_field => {
+                    rows.column.clone()
+                }
+                Some(rows) => {
+                    return Err(err(
+                        self.relation,
+                        &format!(
+                            "`{key_field}` on `{child_table}` points at `{}`, and these rows are \
+                             rows of `{}`",
+                            key.target_table, rows.table
+                        ),
+                    ));
+                }
+                None => {
+                    return Err(err(
+                        self.relation,
+                        &format!(
+                            "`{key_field}` on `{child_table}` points at `{}`, not `{parent_table}`",
+                            key.target_table
+                        ),
+                    ));
+                }
+            }
+        };
         Ok(Relation {
             child_table: child_table.to_string(),
             key_field: key_field.to_string(),
-            parent_field: key.target_field.clone(),
+            parent_field,
             child_pk: child.primary_key.clone(),
         })
     }

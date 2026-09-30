@@ -135,6 +135,31 @@ pub enum Source {
         /// The alias the subquery is exposed under.
         alias: String,
     },
+    /// The rows of several queries one after another, duplicates kept:
+    /// `(SELECT … UNION ALL SELECT …) AS alias` (analytics TODO A1.5).
+    ///
+    /// A **source** rather than a statement, because every caller so far wants
+    /// to go on querying the union — filter it, number it, join it — and a
+    /// derived table is the one position both dialects accept that in. The
+    /// parts are matched by **position**, as SQL matches them: a caller that
+    /// means "by name" lines its projections up itself.
+    ///
+    /// A part with an `ORDER BY`, `LIMIT` or `OFFSET` of its own is rendered
+    /// wrapped in a derived table of its own, because SQLite refuses those
+    /// clauses on any but the last member of a compound select and Postgres
+    /// would apply the last member's to the whole union.
+    UnionAll {
+        /// The queries, in order; at least one.
+        parts: Vec<Select>,
+        /// The alias the union is exposed under.
+        alias: String,
+    },
+    /// **No `FROM` clause at all**: `SELECT 1 AS "x"` is one row computed from
+    /// nothing. Both dialects accept it; it is how a list of literal rows is
+    /// spelled portably (one such `SELECT` per row, in a
+    /// [`UnionAll`](Source::UnionAll)), since SQLite's `VALUES` cannot name its
+    /// columns. Refused in a `JOIN`.
+    Nothing,
 }
 
 impl Source {
@@ -143,6 +168,22 @@ impl Source {
         Source::Table {
             name: name.into(),
             alias: None,
+        }
+    }
+
+    /// `(parts[0] UNION ALL parts[1] …) AS alias`.
+    pub fn union_all(parts: Vec<Select>, alias: impl Into<String>) -> Self {
+        Source::UnionAll {
+            parts,
+            alias: alias.into(),
+        }
+    }
+
+    /// A derived table: `(query) AS alias`.
+    pub fn subquery(query: Select, alias: impl Into<String>) -> Self {
+        Source::Subquery {
+            query: Box::new(query),
+            alias: alias.into(),
         }
     }
 

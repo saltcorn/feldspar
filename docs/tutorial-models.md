@@ -66,35 +66,35 @@ viewings. A model is only as interesting as its rows; if you would rather not ty
 `insert_row` trigger with a `run_js_code` body will fill the table in a loop, and
 [tutorial-triggers.md](tutorial-triggers.md) step 5 shows how.
 
+Or skip the typing altogether: `feldspar demo analytics` makes these three tables with 200
+houses in them, on a fixed seed ([OPERATIONS.md](OPERATIONS.md) §8.6).
+
 ---
 
-## Step 2 — The Models tab, and a dataset that is a list of formulas
+## Step 2 — A named dataset, built in the Analytics UI
 
-**Models** is in the sidebar. It is empty; press **New model** and call it `House prices`.
+A model reads a **dataset**: a named, saved definition of rows — a base table and a list of
+operations applied to it in order. Datasets are built in the **Analytics** UI (the sidebar link
+of that name), in a *Dataset editor* workspace, and every model that wants those rows picks the
+same one. [tutorial-analytics.md](tutorial-analytics.md) part 1 walks through the editor; this
+step builds just what the model needs.
 
-The first card is the **Dataset**, and it is where the interesting decision of this whole feature
-lives. A dataset is a table, a list of named columns, and one optional filter — and every column
-is a **formula in the language you already use for calculated fields and ownership rules**. There
-is no separate "add a field / add a joinfield / add an aggregation" vocabulary: the picker below
-the list writes a formula into the row, and you can type over what it wrote.
+Open **Analytics**, create a workspace of type *Dataset editor*, press **New dataset**, call it
+`Sold houses` and choose the table `houses`. The spreadsheet shows the rows of `houses`. Now add
+these operations, in this order — the **+** in the last column header adds a Calculated column,
+and **Add an operation** adds the rest:
 
-Set **Table** to `houses`, then build these five columns. Use the picker (its three groups are
-the table's own fields, one join path per column of each table a key points at, and one
-aggregation per incoming key) or type them:
-
-| Column | Formula | What it is |
+| Operation | What to type | What it is |
 |---|---|---|
-| `price` | `price` | a field — the label |
-| `area` | `area` | a field |
-| `bedrooms` | `bedrooms` | a field |
-| `neighbourhood_income` | `neighbourhoodⱵaverage_income` | a **join path**: follow the key, take a column |
-| `viewings_count` | `viewingsↃhouse.length` | an **aggregation** over the incoming key |
+| Calculated column | `neighbourhood_income = neighbourhoodⱵaverage_income` | a **join path**: follow the key, take a column |
+| Calculated column | `viewings_count = viewingsↃhouse.length` | an **aggregation** over the incoming key |
+| Filter | `sold === true` | the rows the model is fitted from |
+| Select columns | `price`, `area`, `bedrooms`, `neighbourhood_income`, `viewings_count` | the columns the model sees |
 
-Then put this in **Filter**:
-
-```
-sold === true
-```
+Every formula is **in the language you already use for calculated fields and ownership rules**.
+There is no separate "add a field / add a joinfield / add an aggregation" vocabulary: as you type,
+the formula box offers the columns, one step along each key, and each child table's count and
+totals.
 
 The filter is one boolean formula, and it must be an explicit **comparison** — `sold` on its own
 is refused with a sentence saying so, because a bare value in boolean position has no `WHERE` to
@@ -110,18 +110,31 @@ an answer. That is the point of a model of house prices, and a prediction theref
 the filter — while still reading through the dataset, so the join path and the aggregation are
 computed exactly as they were at fit time.
 
-Because it is the ordinary formula language, `price / area` is a column too if you want one, and
-so is `log(price)`. Two things it may **not** mention are `user` and the operation flags
-(`_insert` and friends) — a dataset has no caller, and a fit that meant something different
-depending on who pressed the button would be indefensible.
+Two things a dataset formula may **not** mention are `user` and the operation flags (`_insert`
+and friends) — a dataset has no caller, and a fit that meant something different depending on who
+pressed the button would be indefensible. And a model that predicts per row needs a dataset whose
+rows are still rows of `houses`: an Aggregate, a Stack or a Join that changes what a row is makes
+a fine dataset to look at, but the model form refuses it with a sentence naming the operation.
 
-### The preview is the point of the card
+Click each operation in the side panel: the spreadsheet shows the rows as they are after it.
+That is how you check a dataset — one step at a time — before any model reads it.
 
-As you type, the **Preview** below the column list fills in: the first rows, and — above them —
-**the type each column actually came back as**. That matters more than it looks. Nothing in your
-schema says what `viewingsↃhouse.length` is; the preview does, and the provider's form further down the
-page is built out of exactly those types. If a formula is wrong you get a sentence here rather
-than a failed fit five minutes later.
+### The picker, and its preview
+
+Back in the admin UI, **Predictive models** is in the sidebar. It is empty; press **New model**
+and call it `House prices`. The first card is the **Dataset**: a dropdown of the named datasets.
+Choose `Sold houses`. **Edit in Analytics** beside it opens the dataset in the editor, and **New
+dataset** starts another.
+
+Below the dropdown, the **Preview** fills in: the first rows, and — above them — **the type each
+column actually came back as**. That matters more than it looks. Nothing in your schema says what
+`viewingsↃhouse.length` is; the preview does, and the provider's form further down the page is
+built out of exactly those types. If a dataset has an error you get its sentence here rather than
+a failed fit five minutes later.
+
+**A dataset is shared, and a fit remembers the one it read.** Edit `Sold houses` after fitting
+and the fit keeps the version it was fitted against — its predictions read the dataset as it was
+— while the model's screen says the dataset has changed since, so you know a refit is due.
 
 ---
 
@@ -355,12 +368,10 @@ Go to **Settings → Modules**. `feldspar-sklearn` is in the bundled catalog —
 release; scikit-learn itself does not, and pip fetches it now. Press **Install**. The card comes
 back saying **5 model providers**.
 
-Now open **Models → New model** and build the *same* five columns and the same `sold` filter
-again, calling it `House prices (boosted)`. Retyping is on purpose: a dataset belongs to its
-model and is not shared, which is why there is no Datasets tab. A shared, named dataset would
-need a lifecycle — what happens to the four models fitted against it when somebody adds a column,
-whether a fit made against version 1 is still readable — and that is a versioning problem bought
-for a saving that copying a column list answers instead.
+Now open **Predictive models → New model**, call it `House prices (boosted)`, and pick the
+*same* dataset, `Sold houses`. Nothing is retyped: both models read one definition, and each fit
+records the version it read, so editing the dataset later cannot quietly change what either fit
+means.
 
 Change the provider to **`sklearn_gradient_boosting`**. The Settings card looks the way the
 regression's did — a **Label** dropdown over your dataset's columns — because a Python provider
@@ -398,11 +409,11 @@ Nothing on either screen knows that one of the two answers came from Python.
 
 ## What to remember
 
-- **A dataset is a list of formulas**, in the language you already know, plus one filter. The
-  picker writes them; you can type over them. The filter chooses the rows the model is fitted
-  **from**, and never the rows it may be asked about.
-- **A dataset belongs to its model.** There is no Datasets tab and no sharing — *Duplicate model*
-  is the answer to wanting the same columns twice.
+- **A dataset is a named list of operations** over a table, and its formulas are in the language
+  you already know. It is built in the Analytics UI and picked by the model. Its filter chooses
+  the rows the model is fitted **from**, and never the rows it may be asked about.
+- **A dataset is shared; a fit is not.** Several models may read one dataset. Each fit records
+  the version it read, and the model's screen says when the dataset has changed since.
 - **The split is a hash of the primary key**, so fits of one model are comparable and new rows do
   not reshuffle the old ones.
 - **The encoding is fitted once, on the training rows, and stored on the fit.** A category at

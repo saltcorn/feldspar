@@ -46,9 +46,9 @@ use crate::lsp::{LSP_ROUTE, ServerSlots, language_server_upgrade, server_slots};
 use crate::mcp::MCP_ROUTE;
 use crate::observe::{STREAM_OBSERVE_ROUTE, stream_observe_by_name, stream_observe_upgrade};
 use crate::security::{
-    AnonymousCaller, CONTENT_SECURITY_POLICY, CSRF_COOKIE, CSRF_HEADER, CsrfPolicy,
-    IDE_CONTENT_SECURITY_POLICY, SESSION_COOKIE, admin_content_security_policy, build_cookie,
-    csrf_middleware,
+    ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CSRF_COOKIE,
+    CSRF_HEADER, CsrfPolicy, IDE_CONTENT_SECURITY_POLICY, SESSION_COOKIE,
+    admin_content_security_policy, build_cookie, csrf_middleware,
 };
 
 /// A WebSocket upgrade, **if this request is one** — the extractor the fallback
@@ -126,6 +126,10 @@ fn is_hashed_asset(path: &str) -> bool {
 /// The path prefix the file-store IDE is served under (design §12.1).
 pub const IDE_PREFIX: &str = "/ide";
 
+/// The route prefix the Analytics UI's bundle is served under (analytics TODO
+/// A1.14): admin-only, under its own CSP, like the IDE.
+pub const ANALYTICS_PREFIX: &str = "/analytics";
+
 /// Shared server state threaded through dispatch.
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -137,6 +141,8 @@ pub(crate) struct AppState {
     sessions: Arc<SessionStore>,
     /// Directory holding the built `ui/ide` bundle, if configured.
     ide_dir: Option<Arc<PathBuf>>,
+    /// Directory holding the built `ui/analytics` bundle, if configured.
+    analytics_dir: Option<Arc<PathBuf>>,
     /// Directory holding the built `ui/admin` bundle, if configured.
     static_dir: Option<Arc<PathBuf>>,
     /// Directory holding the built `ui/builder` bundle, if configured.
@@ -231,6 +237,7 @@ pub fn build_router_with_apps(
         sessions,
         static_dir: config.static_dir.clone().map(Arc::new),
         ide_dir: config.ide_dir.clone().map(Arc::new),
+        analytics_dir: config.analytics_dir.clone().map(Arc::new),
         builder_dir: config.builder_dir.clone().map(Arc::new),
         secure_cookies: config.secure_cookies,
         apps,
@@ -791,6 +798,8 @@ async fn dispatch(
             if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
                 if is_ide_path(uri.path()) {
                     serve_ide(&state, &uri, &headers, &jar).await
+                } else if is_analytics_path(uri.path()) {
+                    serve_analytics(&state, &uri, &headers, &jar).await
                 } else if crate::builder::is_builder_path(uri.path())
                     || crate::builder::is_files_serve_path(uri.path())
                 {
@@ -1917,6 +1926,60 @@ async fn serve_ide(
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(IDE_CONTENT_SECURITY_POLICY),
+    );
+    response
+}
+
+/// Whether a path belongs to the Analytics UI — `/analytics`, `/analytics/`
+/// or anything under it, and not `/analyticsfoo`.
+fn is_analytics_path(path: &str) -> bool {
+    path.strip_prefix(ANALYTICS_PREFIX)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Serve the Analytics UI (analytics TODO A1.14): its bundle, admin-only, under
+/// its own CSP — [`serve_ide`]'s three decisions, for its reasons.
+///
+/// The bundle routes on the URL's hash (`/analytics/#/w/…`), so the document is
+/// only ever `/analytics/`; anything else under the prefix is an asset or a
+/// 404. The session is the admin UI's own cookie, so a signed-in admin is
+/// signed in here; a navigation without a session goes to the admin UI to sign
+/// in, and a signed-in user who is not an admin gets the refusal.
+async fn serve_analytics(
+    state: &AppState,
+    uri: &Uri,
+    headers: &axum::http::HeaderMap,
+    jar: &CookieJar,
+) -> Response {
+    let user = match session_user(state, jar).await {
+        Ok(user) => user,
+        Err(response) => return *response,
+    };
+    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
+        if user.is_none() && accepts_html(headers) {
+            return Redirect::to("/").into_response();
+        }
+        return rejection;
+    }
+    let rest = uri
+        .path()
+        .strip_prefix(ANALYTICS_PREFIX)
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or("/");
+    let mut response = None;
+    if let Some(dir) = &state.analytics_dir {
+        response = serve_file(dir.as_ref().as_path(), rest).await;
+    }
+    let mut response = response.unwrap_or_else(|| {
+        json_error(
+            StatusCode::NOT_FOUND,
+            "the Analytics UI bundle is not built (run `npm ci && npm run build` in ui/analytics)",
+        )
+    });
+    set_cache_control(&mut response, rest);
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(ANALYTICS_CONTENT_SECURITY_POLICY),
     );
     response
 }

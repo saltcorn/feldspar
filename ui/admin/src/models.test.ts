@@ -20,32 +20,31 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { TableInfo } from "./codeTypes";
 import {
+  analyticsDatasetUrl,
   buildHyperparameters,
   featureInputs,
   formatNumber,
   formatParameterCell,
   formatPValue,
-  formulaChoices,
   gridPoints,
   headlineMetric,
   instanceLabel,
   metricRows,
+  newDatasetUrl,
   orderInstances,
   outcomeSummary,
   parseGridValue,
   predictionSummary,
   printGridValue,
-  readDataset,
   readEncoding,
   readHyperparameters,
+  readModelDataset,
   readOutcome,
   readSplit,
+  relatedBody,
   significanceStars,
-  suggestColumnName,
   typedFeatureValue,
-  uniqueColumnName,
   type Metrics,
 } from "./models";
 
@@ -246,21 +245,43 @@ describe("the instance list", () => {
 });
 
 describe("reading the API's JSON blobs", () => {
-  it("reads a dataset, and answers an empty one over the table for anything else", () => {
+  it("reads a model's dataset: a named one, by reference, as the server resolved it", () => {
     expect(
-      readDataset({ table: "houses", columns: [{ name: "price", expr: "price" }], filter: "sold" }),
+      readModelDataset({
+        dataset_id: "d1",
+        name: "House prices",
+        table: "houses",
+        columns: [{ name: "price", type: "float", expr: "price" }, { junk: 1 }],
+        error: null,
+      }),
     ).toEqual({
+      dataset_id: "d1",
+      name: "House prices",
       table: "houses",
-      columns: [{ name: "price", expr: "price" }],
-      filter: "sold",
-      order: [],
+      columns: [{ name: "price", type: "float", expr: "price" }],
+      error: null,
     });
-    expect(readDataset(null, "houses")).toEqual({
-      table: "houses",
-      columns: [],
-      filter: null,
-      order: [],
-    });
+    // The shape it used to have — the formulas written on the model — is not one.
+    expect(readModelDataset({ table: "houses", columns: [] })).toBeNull();
+    expect(readModelDataset(null)).toBeNull();
+  });
+
+  it("links a dataset to the Analytics UI, where datasets are edited", () => {
+    expect(analyticsDatasetUrl("a b")).toBe("/analytics/#/datasets/a%20b");
+    expect(newDatasetUrl()).toBe("/analytics/#/datasets/new");
+    expect(newDatasetUrl("houses")).toBe("/analytics/#/datasets/new?table=houses");
+  });
+
+  it("sends a related dataset as its name, its dataset's id and its label", () => {
+    expect(
+      relatedBody([
+        { name: " counties ", dataset_id: "d2", label: " name ", columns: [] },
+        { name: "edges", dataset_id: "d3", label: "  " },
+      ]),
+    ).toEqual([
+      { name: "counties", dataset_id: "d2", label: "name" },
+      { name: "edges", dataset_id: "d3" },
+    ]);
   });
 
   it("reads a split, and falls back to four fifths fitted", () => {
@@ -294,16 +315,20 @@ describe("asking a fit about a row", () => {
 
   it("asks for the encoding's features — never the label, which is the answer", () => {
     const dataset = {
+      dataset_id: "d1",
+      name: "House prices",
       table: "houses",
+      error: null,
       columns: [
-        { name: "price", expr: "price" },
-        { name: "area", expr: "area" },
-        { name: "region", expr: "neighbourhoodⱵname" },
-        { name: "listed", expr: "listed_at" },
+        { name: "price", type: "float", expr: "price" },
+        { name: "area", type: "float", expr: "area" },
+        { name: "region", type: "text", expr: "neighbourhoodⱵname" },
+        { name: "listed", type: "date", expr: "listed_at" },
       ],
     };
+    // A column that is just itself has no formula worth showing.
     expect(featureInputs(encoding, dataset)).toEqual([
-      { name: "area", kind: "number", categories: undefined, expr: "area" },
+      { name: "area", kind: "number", categories: undefined, expr: undefined },
       {
         name: "region",
         kind: "category",
@@ -341,92 +366,6 @@ describe("asking a fit about a row", () => {
     expect(readEncoding(encoding)?.columns).toHaveLength(3);
     expect(readEncoding({ columns: [{ encoding: "quantum", column: "x" }] })?.columns).toEqual([]);
     expect(readEncoding(null)).toBeNull();
-  });
-});
-
-describe("the dataset builder's picker", () => {
-  const schema: TableInfo[] = [
-    {
-      name: "houses",
-      columns: [
-        { name: "id", type: "int", sqlType: "bigint", required: true },
-        { name: "price", type: "float", sqlType: "double precision", required: false },
-        {
-          name: "neighbourhood",
-          type: "int",
-          sqlType: "bigint",
-          required: false,
-          keyTo: "neighbourhoods",
-        },
-      ],
-    },
-    {
-      name: "neighbourhoods",
-      columns: [
-        { name: "id", type: "int", sqlType: "bigint", required: true },
-        { name: "average_income", type: "float", sqlType: "double precision", required: false },
-      ],
-    },
-    {
-      name: "viewings",
-      columns: [
-        { name: "id", type: "int", sqlType: "bigint", required: true },
-        { name: "house", type: "int", sqlType: "bigint", required: false, keyTo: "houses" },
-        { name: "offer", type: "float", sqlType: "double precision", required: false },
-        { name: "notes", type: "text", sqlType: "text", required: false },
-      ],
-    },
-  ];
-
-  it("offers the table's own fields as themselves", () => {
-    const fields = formulaChoices(schema, "houses").filter((c) => c.group === "Fields");
-    expect(fields.map((c) => c.expr)).toEqual(["id", "price", "neighbourhood"]);
-  });
-
-  it("writes a Ⱶ-join path per column of the table a key points at", () => {
-    const joins = formulaChoices(schema, "houses").filter((c) => c.group === "Join fields");
-    expect(joins).toEqual([
-      {
-        group: "Join fields",
-        label: "neighbourhoodⱵaverage_income  (neighbourhoods.average_income)",
-        expr: "neighbourhoodⱵaverage_income",
-        name: "neighbourhood_average_income",
-      },
-    ]);
-  });
-
-  it("writes a Ↄ-aggregation per incoming key — a count, and the numbers", () => {
-    const aggregations = formulaChoices(schema, "houses").filter(
-      (c) => c.group === "Aggregations",
-    );
-    expect(aggregations.map((c) => c.expr)).toEqual([
-      "viewingsↃhouse.length",
-      'viewingsↃhouse.sum("offer")',
-      'viewingsↃhouse.avg("offer")',
-      'viewingsↃhouse.max("offer")',
-    ]);
-    // A text column has no sum, and the key back to `houses` is not a value.
-    expect(aggregations.some((c) => c.expr.includes("notes"))).toBe(false);
-    expect(aggregations[0].name).toBe("viewings_count");
-  });
-
-  it("answers nothing for a table it has never heard of", () => {
-    expect(formulaChoices(schema, "ships")).toEqual([]);
-  });
-
-  it("suggests a column name a heading can hold", () => {
-    expect(suggestColumnName("price")).toBe("price");
-    expect(suggestColumnName("neighbourhoodⱵaverage_income")).toBe("neighbourhood_average_income");
-    expect(suggestColumnName('viewingsↃhouse.sum("offer")')).toBe("viewings_house_sum_offer");
-    expect(suggestColumnName("viewingsↃhouse.length")).toBe("viewings_house_count");
-    expect(suggestColumnName("price / area")).toBe("price_area");
-    expect(suggestColumnName("   ")).toBe("");
-  });
-
-  it("does not offer a name another column already has", () => {
-    expect(uniqueColumnName("price", [])).toBe("price");
-    expect(uniqueColumnName("price", ["price"])).toBe("price_2");
-    expect(uniqueColumnName("price", ["price", "price_2"])).toBe("price_3");
   });
 });
 

@@ -45,6 +45,12 @@ own, for every other kind of box. (Design and planning docs live under
   keys and names, with R̂, effective sample sizes and plain-language warnings, trace and forest
   plots, and a write-back into the rows it is about. It needs CmdStan on the machine, found at
   run time (§3). See [`docs/tutorial-stan.md`](docs/tutorial-stan.md).
+- **Analytics.** A separate UI under `/analytics/` for looking at data. Its first workspace
+  kind is the **Dataset editor**: a named dataset is a table (or another dataset) and an ordered
+  list of operations — calculated columns, filters, window columns, aggregates, stacks, splits,
+  joins, unions and more — each one a stage you can look at in a spreadsheet, all compiled to one
+  SQL query on Postgres or SQLite. Models read these datasets. `feldspar demo analytics` makes
+  data to try it on. See [`docs/tutorial-analytics.md`](docs/tutorial-analytics.md).
 - **Saltcorn 1's views, running.** An application whose framework is **Saltcorn UI** owns
   views (List, Show, Edit, Feed, Filter, ListShowList — and any a v1 plugin such as
   `@saltcorn/kanban` supplies) and pages, rendered on the server by v1's own view code. Restoring

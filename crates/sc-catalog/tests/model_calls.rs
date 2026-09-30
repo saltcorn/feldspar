@@ -87,6 +87,7 @@ impl ModelHost for FakeModels {
             prediction_types: vec![BasicType::Float],
             no_prediction: None,
             active_fit: Some("fit-1".to_owned()),
+            not_rows_of_table: None,
         })
     }
 }

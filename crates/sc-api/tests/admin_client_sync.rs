@@ -1,5 +1,5 @@
-//! The checked-in admin clients (`ui/admin/src/client.ts`, `ui/builder/src/client.ts` and
-//! `ui/ide/src/client.ts`) are **generated** artifacts and must not drift from the
+//! The checked-in admin clients (`ui/admin/src/client.ts`, `ui/builder/src/client.ts`,
+//! `ui/ide/src/client.ts` and `ui/analytics/src/client.ts`) are **generated** artifacts and must not drift from the
 //! endpoint contract they are generated from.
 //!
 //! Both bundles consume `client.ts` directly, so if someone changes an admin
@@ -28,7 +28,7 @@ fn committed_admin_clients_match_generator() {
         (sc_api::CLIENT_HELPER_FILE, sc_api::client_helper()),
     ];
 
-    for ui in ["ui/admin", "ui/ide", "ui/builder"] {
+    for ui in ["ui/admin", "ui/ide", "ui/builder", "ui/analytics"] {
         for (name, generated) in &files {
             let path = root.join(ui).join("src").join(name);
             let committed = std::fs::read_to_string(&path)

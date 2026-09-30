@@ -8,12 +8,10 @@
 //! from the admin screen, from an API call and (later) from a trigger without
 //! reshaping anything.
 //!
-//! **The dataset is a field on the model, not a record of its own** (§3). A
-//! shared, named dataset would need a lifecycle — what happens to the four
-//! models fitted against it when somebody adds a column, whether an instance
-//! fitted against version 1 is still readable, whether deleting it is allowed —
-//! bought for a saving (retyping a column list) that a *Duplicate model* button
-//! answers instead.
+//! **The dataset is a named one** (analytics TODO A1.8): the model holds a
+//! reference, resolved when it is loaded, and each fit records the definition
+//! it read — so editing the dataset flags the fits rather than silently
+//! changing what they mean.
 //!
 //! **A model is edited and refitted**; each fit leaves a
 //! [`ModelInstance`](crate::ModelInstance) behind, so the instances of one model
@@ -40,16 +38,18 @@ pub const MAIN_DATASET: &str = "main";
 /// own: a county with no homes is a row of `counties`, and a numbering built
 /// from the homes would drop exactly the county partial pooling is most
 /// informative about.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// Stored as `{ name, dataset_id, label }`: the dataset is a named one, like
+/// the main dataset (analytics TODO A1.8).
+#[derive(Debug, Clone, PartialEq)]
 pub struct NamedDataset {
     /// What bindings call it: an identifier, unique among the model's related
     /// datasets, and never [`MAIN_DATASET`].
     pub name: String,
-    /// Which rows and which derived values, exactly as the main dataset says it.
+    /// The named dataset, resolved.
     pub dataset: Dataset,
-    /// A formula over the dataset's table whose value names a row on the screen
-    /// — `name` for `counties`. `None` names a row by its primary key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A formula over the dataset's last stage whose value names a row on the
+    /// screen — `name` for `counties`. `None` names a row by its primary key.
     pub label: Option<String>,
 }
 
@@ -161,14 +161,12 @@ impl Model {
         }
     }
 
-    /// The table this model is over — the dataset's, and **only** the dataset's.
+    /// The table this model is over — the one its dataset's rows start from,
+    /// and **only** that.
     ///
     /// `_fd_models` carries a `table_name` column so the list can be filtered by
-    /// table without reading every dataset (and so `fit_model`'s
-    /// `config_spec_for` can offer "the models on this table"), but it is
-    /// derived from here on the way out and checked against here on the way in.
-    /// Two places to edit one fact would eventually disagree, and the one that
-    /// decides what is read has to win.
+    /// table without reading every dataset, derived from here on every save. A
+    /// dataset's base cannot be changed, so the two cannot drift apart.
     pub fn table(&self) -> &str {
         &self.dataset.table
     }

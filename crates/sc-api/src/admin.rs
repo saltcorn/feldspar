@@ -3672,6 +3672,9 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // The Analytics UI's datasets and workspaces (analytics TODO A1.13).
+    crate::analytics::register(&mut set);
+
     set
 }
 
@@ -5753,6 +5756,9 @@ fn model_instance_detail_schema() -> TypeSchema {
                 // fit snapshotted (Stan TODO §§6, 18); null for a provider with
                 // no program, or when it cannot tell.
                 StructField::new("program_changed", TypeSchema::optional(TypeSchema::bool())),
+                // Whether the model's datasets differ now from the ones this
+                // fit read (analytics TODO A1.10); null when it cannot tell.
+                StructField::new("dataset_changed", TypeSchema::optional(TypeSchema::bool())),
             ])
             .collect(),
     )

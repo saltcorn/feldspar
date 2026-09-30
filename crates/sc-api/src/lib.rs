@@ -52,6 +52,7 @@ pub mod rows;
 pub mod schema_edit;
 
 mod admin;
+mod analytics;
 mod calc_read;
 mod endpoint;
 mod graphql;
@@ -84,8 +85,8 @@ pub use provider::{
 };
 pub use resource::{ResourceField, ResourceFile, ResourceModel, ResourceOps};
 pub use rest::custom::{
-    CFG_QUERIES as REST_CFG_QUERIES, CustomParam, CustomQuery, QueryColumn, QueryLanguage, custom_queries,
-    describe_custom_query, set_custom_queries, validate_custom_queries,
+    CFG_QUERIES as REST_CFG_QUERIES, CustomParam, CustomQuery, QueryColumn, QueryLanguage,
+    custom_queries, describe_custom_query, set_custom_queries, validate_custom_queries,
 };
 pub use rest::password::{
     CFG_ALLOW_INVITE as REST_CFG_ALLOW_INVITE, CFG_INVITE_MIN_ROLE as REST_CFG_INVITE_MIN_ROLE,

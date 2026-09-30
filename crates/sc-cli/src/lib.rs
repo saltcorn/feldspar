@@ -15,6 +15,7 @@ pub mod auth;
 pub mod cmdstan;
 pub mod config;
 pub mod db;
+pub mod demo;
 pub mod eval;
 pub mod i18n;
 
@@ -93,6 +94,15 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_agent::bootstrap_runs(&catalog)
         .await
         .context("ensuring the runs table exists")?;
+    // The Analytics UI's datasets and workspaces (analytics TODO A1). Models
+    // bootstrap the datasets table too, because a model's dataset is a row of
+    // it; this is for a server whose models are never installed.
+    sc_dataset::bootstrap_datasets(&catalog)
+        .await
+        .context("ensuring the datasets table exists")?;
+    sc_analytics::bootstrap_workspaces(&catalog)
+        .await
+        .context("ensuring the workspaces table exists")?;
     sc_config::bootstrap(&catalog)
         .await
         .context("ensuring the configuration tables exist")?;

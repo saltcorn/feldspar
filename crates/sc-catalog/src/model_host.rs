@@ -51,6 +51,11 @@ pub struct ModelSummary {
     /// The id of its active fit, `None` when no fit is active — in which
     /// case every prediction fails until one is.
     pub active_fit: Option<String>,
+    /// Why a row of `table` is not an input the model understands, when its
+    /// dataset changes the grain — "each row is one combination of
+    /// `neighbourhood`" (analytics TODO A1.9). `None` when its rows are rows
+    /// of `table`.
+    pub not_rows_of_table: Option<String>,
 }
 
 impl ModelSummary {
@@ -119,6 +124,13 @@ pub async fn check_model_calls(
                 "`{}` is a model of `{}`, and this formula is on `{table}`: `{}` predicts the \
                  row the formula ranges over, so the two must be the same table",
                 summary.name, summary.table, call.key
+            )));
+        }
+        if let Some(grain) = summary.not_rows_of_table.as_deref() {
+            return Err(sc_error::Error::invalid(format!(
+                "`{}` cannot predict a row of `{table}`: its dataset changes what a row is \
+                 ({grain}), so a row of the table is not an input it understands",
+                summary.name
             )));
         }
         if let Some(why) = summary.no_prediction.as_deref() {

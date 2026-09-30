@@ -201,6 +201,8 @@ fn open(source: &SqliteSource, create: bool) -> Result<Connection> {
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(|e| Error::database(format!("enabling SQLite foreign keys: {e}")))?;
+    crate::functions::register(&connection)
+        .map_err(|e| Error::database(format!("registering SQL functions: {e}")))?;
     if matches!(source, SqliteSource::File(_)) {
         // Write-ahead logging: readers do not block the writer and the writer
         // does not block readers, which is the difference between a server that

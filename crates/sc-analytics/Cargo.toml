@@ -1,0 +1,35 @@
+[package]
+name = "sc-analytics"
+description = "The Analytics UI's server half: workspaces, and later panels, plots, tests and maps (layer 6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+sc-query.workspace = true
+sc-types.workspace = true
+# `_fd_workspaces` is stored metadata, bootstrapped through the catalog.
+sc-catalog.workspace = true
+sc-db.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+sc-db-postgres.workspace = true
+sc-db-sqlite.workspace = true
+sc-test-harness.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

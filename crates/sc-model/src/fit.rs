@@ -300,7 +300,16 @@ pub async fn fit_model_with(
     };
     let ctx = ctx.with_instance(instance);
     let finished = match run_fit_with(registry, source, model, cap, &ctx).await {
-        Ok(fit) => match fit.apply(row.clone()) {
+        Ok(fit) => match fit.apply(row.clone()).map(|mut finished| {
+            // What it read, so it predicts the way it was fitted and can say
+            // when the dataset has changed since (analytics TODO A1.8).
+            if let Some(record) = crate::dataset::datasets_record(&model.dataset, &model.related) {
+                finished
+                    .attributes
+                    .insert(crate::dataset::ATTR_DATASETS.to_owned(), record);
+            }
+            finished
+        }) {
             // The draws and the row in one transaction: a fitted instance has
             // all of its draws, and a write that failed half way has none of
             // them and is recorded as the failure it is.

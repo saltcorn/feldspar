@@ -453,6 +453,21 @@ impl Client {
         path: &str,
         body: Option<Value>,
     ) -> (StatusCode, HashMap<String, String>, Vec<u8>) {
+        let body = match body {
+            Some(mut b) if crate::named_datasets::carries_a_model(method, path) => {
+                let mut ids = Vec::new();
+                for (pointer, create) in crate::named_datasets::inline_datasets(&b) {
+                    let (status, _, made) =
+                        Box::pin(self.raw("POST", "/api/datasets", Some(create))).await;
+                    let made: Value = serde_json::from_slice(&made).unwrap_or(Value::Null);
+                    assert!(status.is_success(), "creating a dataset: {status} {made}");
+                    ids.push((pointer, made["dataset"]["id"].as_str().unwrap().to_owned()));
+                }
+                crate::named_datasets::use_ids(&mut b, ids);
+                Some(b)
+            }
+            other => other,
+        };
         let mut builder = Request::builder().method(method).uri(path);
         if !self.cookies.is_empty() {
             let jar = self

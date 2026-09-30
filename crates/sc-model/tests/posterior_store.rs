@@ -445,6 +445,68 @@ async fn a_posterior_model_with_a_grid_is_refused_on_save() -> Result<()> {
     Ok(())
 }
 
+/// A Stan program's data is bound from rows of tables, so a dataset that
+/// changes the grain is refused on save, naming what a row is (analytics TODO
+/// A1.9).
+#[tokio::test]
+async fn a_posterior_over_a_dataset_that_changes_the_grain_is_refused() -> Result<()> {
+    /// A provider whose program's data is bound, like Stan's, and which never
+    /// gets as far as sampling.
+    struct Binder;
+    #[async_trait::async_trait]
+    impl ModelProvider for Binder {
+        fn name(&self) -> &str {
+            "binder"
+        }
+        fn description(&self) -> &str {
+            "binds data"
+        }
+        fn config_declaration(&self) -> Vec<FormField> {
+            Vec::new()
+        }
+        fn outcome_spec(&self) -> OutcomeSpec {
+            OutcomeSpec::Posterior { prediction: None }
+        }
+        fn binds_data(&self) -> bool {
+            true
+        }
+        async fn fit(&self, _f: &Frame, _c: &Attrs, _h: &Attrs) -> Result<FitResult> {
+            Err(sc_error::Error::msg("never fitted"))
+        }
+        async fn predict(&self, _s: &Json, _f: &Frame) -> Result<Vec<Prediction>> {
+            Err(sc_error::Error::msg("never predicts"))
+        }
+    }
+    let cat = sqlite().await?;
+    let mut reg = ModelRegistry::new();
+    reg.register(Arc::new(Binder))?;
+    let grouped = sc_dataset::DatasetDef::over_table("by y", "homes").then(
+        sc_dataset::Op::Aggregate(sc_dataset::AggregateOp {
+            group_by: vec![sc_dataset::GroupKey::column("y")],
+            summaries: vec![sc_dataset::Summary::count("n")],
+        }),
+    );
+    sc_dataset::save_dataset(&cat, &grouped).await?;
+    let schema = sc_dataset::Schema::of_catalog(&cat)?;
+    let library = sc_dataset::load_library(&cat).await?;
+    let model = Model::new(
+        "grouped",
+        "binder",
+        Dataset::resolve(&schema, &library, grouped.id),
+    );
+    let err = save_model(&cat, &reg, &model, None)
+        .await
+        .expect_err("a grouped dataset under a posterior");
+    assert!(
+        err.to_string().contains("bound from rows of tables")
+            && err
+                .to_string()
+                .contains("each row is one combination of `y`"),
+        "{err}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Progress and cancel go through the row (Stan TODO 4.3).
 

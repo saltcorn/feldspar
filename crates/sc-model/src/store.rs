@@ -33,12 +33,13 @@ use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Update, Value};
 use sc_types::{Attrs, BasicType, TypeRef};
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 
 use crate::dataset::{Dataset, DatasetShape};
 use crate::model::{Model, ModelId, NamedDataset};
 use crate::registry::ModelRegistry;
 use crate::split::Split;
+use sc_dataset::{DatasetId, Library, Schema};
 
 /// Name of the models table in the primary database.
 pub const MODELS_TABLE: &str = "_fd_models";
@@ -62,7 +63,8 @@ pub const COL_DESCRIPTION: &str = "description";
 pub const COL_TABLE_NAME: &str = "table_name";
 /// The registered model-provider name.
 pub const COL_PROVIDER: &str = "provider";
-/// The dataset: table, columns and filter, as JSON (§3).
+/// The dataset, as a reference to a named one: `{ "dataset_id": "…" }`
+/// (analytics TODO A1.8).
 pub const COL_DATASET: &str = "dataset";
 /// The provider's configuration (JSON object).
 pub const COL_CONFIGURATION: &str = "configuration";
@@ -72,8 +74,8 @@ pub const COL_HYPERPARAMETERS: &str = "hyperparameters";
 pub const COL_SPLIT: &str = "split";
 /// The sparse per-model values column (§9) — JSON, always an object.
 pub const COL_ATTRIBUTES: &str = "attributes";
-/// The related datasets, as a JSON array of [`NamedDataset`](crate::NamedDataset)s
-/// (Stan TODO §7).
+/// The related datasets, as a JSON array of `{ name, dataset_id, label }`
+/// (Stan TODO §7; analytics TODO A1.8).
 ///
 /// **Nullable**, and last, so that `bootstrap_table` can add it to an
 /// installation whose `_fd_models` already has rows — a required column could
@@ -110,6 +112,8 @@ fn model_fields() -> Vec<DataField> {
 /// same contract as `bootstrap_triggers` and `bootstrap_agents`. Call once at
 /// startup, after the [`Catalog`] is initialised.
 pub async fn bootstrap_models(catalog: &Catalog) -> Result<Table> {
+    // A model's dataset is a row of `_fd_datasets`, so that table comes first.
+    sc_dataset::bootstrap_datasets(catalog).await?;
     catalog.bootstrap_table(MODELS_TABLE, &model_fields()).await
 }
 
@@ -134,9 +138,17 @@ pub async fn save_model(
     model: &Model,
     shape: Option<&DatasetShape>,
 ) -> Result<()> {
+    let name = model.name.trim();
+    // A dataset built from formulas (`Dataset::new(…).column(…)`) is saved as
+    // a named dataset of its own first; one picked by id is already there.
+    let mut model = model.clone();
+    ensure_saved(catalog, &mut model.dataset, name, None).await?;
+    for related in &mut model.related {
+        ensure_saved(catalog, &mut related.dataset, name, Some(&related.name)).await?;
+    }
+    let model = &model;
     crate::validate_model(catalog, registry, model, shape).await?;
 
-    let name = model.name.trim();
     if let Some(other) = load_model_by_name(catalog, name).await?
         && other.id != model.id
     {
@@ -168,6 +180,54 @@ pub async fn save_model(
     }
 }
 
+/// Save a dataset a model was built with, when it is not stored yet, under
+/// its own name or — when that is taken — one saying which model it is for.
+/// Then resolve it against the catalog as the model will read it.
+async fn ensure_saved(
+    catalog: &Catalog,
+    dataset: &mut Dataset,
+    model: &str,
+    related: Option<&str>,
+) -> Result<()> {
+    let stored = sc_dataset::load_dataset(catalog, dataset.id).await?;
+    if let Some(existing) = &stored
+        && dataset.is_built()
+        && let Some(def) = dataset.def()
+    {
+        // The model's own built dataset, edited: saved under the name it has.
+        let mut def = def.clone();
+        def.name = existing.name.clone();
+        sc_dataset::save_dataset(catalog, &def).await?;
+    } else if stored.is_none()
+        && let Some(def) = dataset.def()
+    {
+        let mut def = def.clone();
+        let taken = |n: &str| {
+            let n = n.to_owned();
+            async move { sc_dataset::load_dataset_by_name(catalog, &n).await }
+        };
+        let mut candidate = def.name.clone();
+        if taken(&candidate).await?.is_some() {
+            candidate = match related {
+                Some(r) => format!("{model} — {r}"),
+                None => format!("{model} — data"),
+            };
+            let stem = candidate.clone();
+            let mut n = 2;
+            while taken(&candidate).await?.is_some() {
+                candidate = format!("{stem} {n}");
+                n += 1;
+            }
+        }
+        def.name = candidate;
+        sc_dataset::save_dataset(catalog, &def).await?;
+    }
+    let schema = Schema::of_catalog(catalog)?;
+    let library = sc_dataset::load_library(catalog).await?;
+    *dataset = Dataset::resolve(&schema, &library, dataset.id);
+    Ok(())
+}
+
 /// Load the model with this id, if it exists.
 pub async fn load_model(catalog: &Catalog, id: ModelId) -> Result<Option<Model>> {
     load_one(catalog, Expr::col(COL_ID).eq(Expr::lit(id.0))).await
@@ -194,10 +254,11 @@ pub async fn require_model(catalog: &Catalog, name: &str) -> Result<Model> {
 /// is [`Models::load`](crate::Models::load)'s job, not this one's.
 pub async fn list_models(catalog: &Catalog) -> Result<Vec<Model>> {
     let select = Select::from(Source::table(MODELS_TABLE));
+    let resolver = Resolver::of(catalog).await?;
     let mut out: Vec<Model> = rows(catalog, select)
         .await?
         .iter()
-        .map(model_from_row)
+        .map(|row| model_from_row(row, &resolver))
         .collect::<Result<_>>()?;
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
@@ -209,10 +270,11 @@ pub async fn list_models(catalog: &Catalog) -> Result<Vec<Model>> {
 pub async fn models_for_table(catalog: &Catalog, table: &str) -> Result<Vec<Model>> {
     let select = Select::from(Source::table(MODELS_TABLE))
         .filter(Expr::col(COL_TABLE_NAME).eq(Expr::lit(table)));
+    let resolver = Resolver::of(catalog).await?;
     let mut out: Vec<Model> = rows(catalog, select)
         .await?
         .iter()
-        .map(model_from_row)
+        .map(|row| model_from_row(row, &resolver))
         .collect::<Result<_>>()?;
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
@@ -290,7 +352,7 @@ fn model_values(model: &Model) -> Result<Vec<Value>> {
         // Derived, never separately edited — see the module docs.
         Value::Text(model.table().to_owned()),
         Value::Text(model.provider.trim().to_owned()),
-        Value::Json(to_json(&model.dataset, "dataset")?),
+        Value::Json(json!({ "dataset_id": model.dataset.id })),
         Value::Json(Json::Object(model.configuration.clone())),
         Value::Json(Json::Object(model.hyperparameters.clone())),
         Value::Json(to_json(&model.split, "split")?),
@@ -301,9 +363,53 @@ fn model_values(model: &Model) -> Result<Vec<Value>> {
         if model.related.is_empty() {
             Value::Null
         } else {
-            Value::Json(to_json(&model.related, "related datasets")?)
+            Value::Json(related_json(&model.related))
         },
     ])
+}
+
+/// A model's related datasets as they are stored and sent: each one's name,
+/// the id of the named dataset, and its label formula.
+pub fn related_json(related: &[NamedDataset]) -> Json {
+    Json::Array(
+        related
+            .iter()
+            .map(|r| json!({ "name": r.name, "dataset_id": r.dataset.id, "label": r.label }))
+            .collect(),
+    )
+}
+
+/// What resolving a model's dataset references needs: the schema and every
+/// dataset, read once for however many models are loaded.
+pub(crate) struct Resolver {
+    schema: Schema,
+    library: Library,
+}
+
+impl Resolver {
+    pub(crate) async fn of(catalog: &Catalog) -> Result<Resolver> {
+        Ok(Resolver {
+            schema: Schema::of_catalog(catalog)?,
+            library: sc_dataset::load_library(catalog).await?,
+        })
+    }
+
+    fn resolve(&self, id: DatasetId) -> Dataset {
+        Dataset::resolve(&self.schema, &self.library, id)
+    }
+}
+
+/// The dataset id a `dataset` JSON value refers to.
+pub fn dataset_ref(value: &Json) -> Result<DatasetId> {
+    value
+        .get("dataset_id")
+        .and_then(Json::as_str)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| {
+            Error::invalid(
+                "a model's dataset is a reference to a named dataset, `{ \"dataset_id\": \"…\" }`",
+            )
+        })
 }
 
 /// Serialise one structured column, naming it if it will not go.
@@ -314,7 +420,7 @@ fn to_json<T: serde::Serialize>(value: &T, what: &str) -> Result<Json> {
 
 /// Rebuild a [`Model`] from its `_fd_models` row. The strictness note in the
 /// module docs applies throughout.
-fn model_from_row(row: &Row) -> Result<Model> {
+fn model_from_row(row: &Row, resolver: &Resolver) -> Result<Model> {
     let id = match row.get(COL_ID) {
         Some(Value::Uuid(u)) => ModelId(*u),
         other => return Err(bad_column(COL_ID, "a uuid", other)),
@@ -322,7 +428,8 @@ fn model_from_row(row: &Row) -> Result<Model> {
     let name = text(row, COL_NAME)?;
     let at = |e: String| Error::invalid(format!("model `{name}`: {e}"));
 
-    let dataset: Dataset = structured(row, COL_DATASET).map_err(|e| at(e.to_string()))?;
+    let reference: Json = structured(row, COL_DATASET).map_err(|e| at(e.to_string()))?;
+    let dataset = resolver.resolve(dataset_ref(&reference).map_err(|e| at(e.to_string()))?);
     let split: Split = structured(row, COL_SPLIT).map_err(|e| at(e.to_string()))?;
     // Strict like every other column: a NULL (or an absent column, which is a
     // table `bootstrap_models` has not yet reached) is "none", and anything that
@@ -330,9 +437,20 @@ fn model_from_row(row: &Row) -> Result<Model> {
     // against half its datasets would be sampled.
     let related: Vec<NamedDataset> = match row.get(COL_RELATED) {
         None | Some(Value::Null) | Some(Value::Json(Json::Null)) => Vec::new(),
-        Some(Value::Json(Json::Array(_))) => {
-            structured(row, COL_RELATED).map_err(|e| at(e.to_string()))?
-        }
+        Some(Value::Json(Json::Array(items))) => items
+            .iter()
+            .map(|item| {
+                Ok(NamedDataset {
+                    name: item
+                        .get("name")
+                        .and_then(Json::as_str)
+                        .ok_or_else(|| at(format!("{COL_RELATED}: a related dataset has no name")))?
+                        .to_owned(),
+                    dataset: resolver.resolve(dataset_ref(item).map_err(|e| at(e.to_string()))?),
+                    label: item.get("label").and_then(Json::as_str).map(str::to_owned),
+                })
+            })
+            .collect::<Result<_>>()?,
         Some(Value::Json(other)) => {
             return Err(at(format!(
                 "{COL_RELATED} should be a json array, got {}",
@@ -342,16 +460,20 @@ fn model_from_row(row: &Row) -> Result<Model> {
         other => return Err(at(bad_column(COL_RELATED, "json", other).to_string())),
     };
 
-    // The derived column and the dataset must agree. They cannot drift through
-    // this code — `model_values` writes one from the other — so a disagreement
-    // means the row was edited by something else, and reading it either way
-    // would make one of the two questions ("which models are on `houses`" and
-    // "what is this model fitted over") answer wrong.
+    // The derived column is written from the dataset; a dataset that no
+    // longer resolves has no table of its own to say, and keeps the one it had
+    // so the model stays listed under it.
     let table_name = text(row, COL_TABLE_NAME)?;
-    if table_name != dataset.table {
+    let mut dataset = dataset;
+    if dataset.table.is_empty() {
+        dataset.table = table_name;
+    } else if table_name != dataset.table {
+        // Written from the dataset on every save, and a dataset's base cannot
+        // change, so a disagreement means the row was edited by something
+        // else — and reading it either way would make one of "which models are
+        // on `houses`" and "what is this fitted over" answer wrong.
         return Err(at(format!(
-            "{MODELS_TABLE}.{COL_TABLE_NAME} is `{table_name}` but its dataset is over \
-             `{}`",
+            "{MODELS_TABLE}.{COL_TABLE_NAME} is `{table_name}` but its dataset is over `{}`",
             dataset.table
         )));
     }
@@ -438,7 +560,7 @@ pub(crate) fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> E
 async fn load_one(catalog: &Catalog, filter: Expr) -> Result<Option<Model>> {
     let select = Select::from(Source::table(MODELS_TABLE)).filter(filter);
     match rows(catalog, select).await?.first() {
-        Some(row) => Ok(Some(model_from_row(row)?)),
+        Some(row) => Ok(Some(model_from_row(row, &Resolver::of(catalog).await?)?)),
         None => Ok(None),
     }
 }

@@ -149,6 +149,20 @@ struct Client {
 
 impl Client {
     async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let body = match body {
+            Some(mut b) if crate::named_datasets::carries_a_model(method, path) => {
+                let mut ids = Vec::new();
+                for (pointer, create) in crate::named_datasets::inline_datasets(&b) {
+                    let (status, made) =
+                        Box::pin(self.send("POST", "/api/datasets", Some(create))).await;
+                    assert!(status.is_success(), "creating a dataset: {status} {made}");
+                    ids.push((pointer, made["dataset"]["id"].as_str().unwrap().to_owned()));
+                }
+                crate::named_datasets::use_ids(&mut b, ids);
+                Some(b)
+            }
+            other => other,
+        };
         let mut builder = Request::builder().method(method).uri(path);
         if !self.cookies.is_empty() {
             let jar = self

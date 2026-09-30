@@ -87,7 +87,7 @@ pub const LABEL_COLUMN: &str = "_fd_label";
 /// the labels of that dataset's rows dimension.
 pub fn binding_dataset(related: &NamedDataset) -> Dataset {
     match &related.label {
-        Some(label) => related.dataset.clone().column(LABEL_COLUMN, label.clone()),
+        Some(label) => related.dataset.with_label(label),
         None => related.dataset.clone(),
     }
 }

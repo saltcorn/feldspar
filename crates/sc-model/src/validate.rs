@@ -43,7 +43,7 @@ use sc_types::validate_attrs;
 use serde_json::Value as Json;
 
 use crate::bind::check_bindings;
-use crate::dataset::{DatasetShape, validate_dataset, validate_label};
+use crate::dataset::DatasetShape;
 use crate::model::{MAIN_DATASET, Model};
 use crate::provider::{ModelProvider, OutcomeSpec};
 use crate::registry::ModelRegistry;
@@ -70,25 +70,41 @@ pub async fn validate_model(
     let problem = |msg: String| Error::invalid(format!("model `{name}`: {msg}"));
 
     // The dataset first, because everything else is about it: the provider's
-    // form is over its columns, and the split is over its rows.
-    let schema = catalog.schema_shape()?;
-    validate_dataset(&model.dataset, &schema).map_err(|e| problem(e.to_string()))?;
-
-    // The split's fractions, and — for a supervised fit — the primary key its
-    // hash needs. A table with a composite or absent primary key reads fine and
-    // cannot be split (§5), and refusing that here rather than at fit time is
-    // the difference between a form that will not save and a job that fails.
-    model.split.validate().map_err(|e| problem(e.to_string()))?;
+    // form is over its columns, and the split is over its rows. A named
+    // dataset that does not read — deleted, or with an operation marked
+    // invalid — is the model's problem to report, by the dataset's sentence.
+    let schema = sc_dataset::Schema::of_catalog(catalog)?;
     model
         .dataset
-        .primary_key(&schema)
+        .readable()
         .map_err(|e| problem(e.to_string()))?;
+    if model.dataset.columns.is_empty() {
+        return Err(problem(format!(
+            "the dataset `{}` has no columns",
+            model.dataset.name
+        )));
+    }
 
-    validate_related(model, &schema).map_err(|e| problem(e.to_string()))?;
+    // The split's fractions, and the identity its hash needs: a row of a
+    // table, or a group. Rows that are neither — a stack, a union — read fine
+    // and cannot be split (§5), and refusing that here rather than at fit time
+    // is the difference between a form that will not save and a job that fails.
+    model.split.validate().map_err(|e| problem(e.to_string()))?;
+    if let Some(refusal) = model.dataset.split_refusal() {
+        return Err(problem(refusal));
+    }
 
     let provider = registry
         .require(model.provider.trim())
         .map_err(|e| problem(e.to_string()))?;
+
+    // Stan's data is bound by rows of tables: a dimension is a table's rows
+    // and an index a key into one (analytics TODO A1.9 — A8 lifts this where
+    // it can).
+    if provider.binds_data() && !model.dataset.keeps_table_grain() {
+        return Err(problem(grain_refusal(&model.dataset)));
+    }
+    validate_related(model, &schema).map_err(|e| problem(e.to_string()))?;
 
     // The configuration: against the resolved form where a shape is at hand, and
     // against the declaration where it is not (same names and types, unrestricted
@@ -152,7 +168,7 @@ pub(crate) const NO_POSTERIOR_SEARCH: &str = "a posterior is sampled, not search
 /// reason a posterior needs related datasets at all: a related dataset is a
 /// **dimension**, its positions are recorded as keys, and a write-back matches
 /// by them. Rows that cannot be told apart cannot be written back to.
-fn validate_related(model: &Model, schema: &sc_expr::SchemaShape) -> Result<()> {
+fn validate_related(model: &Model, schema: &sc_dataset::Schema) -> Result<()> {
     let mut seen = std::collections::BTreeSet::new();
     for related in &model.related {
         let name = related.name.trim();
@@ -174,13 +190,29 @@ fn validate_related(model: &Model, schema: &sc_expr::SchemaShape) -> Result<()> 
             )));
         }
         let at = |e: Error| Error::invalid(format!("related dataset `{name}`: {e}"));
-        validate_dataset(&related.dataset, schema).map_err(at)?;
-        related.dataset.primary_key(schema).map_err(at)?;
+        related.dataset.readable().map_err(at)?;
+        if !related.dataset.keeps_table_grain() {
+            return Err(at(Error::invalid(grain_refusal(&related.dataset))));
+        }
         if let Some(label) = &related.label {
-            validate_label(&related.dataset, label, schema).map_err(at)?;
+            related.dataset.check_label(schema, label).map_err(at)?;
         }
     }
     Ok(())
+}
+
+/// Why a dataset whose rows are not rows of a table cannot be bound to a
+/// Stan program.
+pub(crate) fn grain_refusal(dataset: &crate::Dataset) -> String {
+    format!(
+        "a Stan program's data is bound from rows of tables — a dimension is a table's rows \
+         and an index a key into one — and in the dataset `{}` {}",
+        dataset.name,
+        dataset.grain.as_ref().map_or_else(
+            || "rows are not known".to_owned(),
+            sc_dataset::Grain::describe
+        )
+    )
 }
 
 /// `[A-Za-z_][A-Za-z0-9_]*`.

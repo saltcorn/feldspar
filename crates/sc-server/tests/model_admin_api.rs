@@ -78,6 +78,20 @@ struct Client {
 
 impl Client {
     async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let body = match body {
+            Some(mut b) if crate::named_datasets::carries_a_model(method, path) => {
+                let mut ids = Vec::new();
+                for (pointer, create) in crate::named_datasets::inline_datasets(&b) {
+                    let (status, made) =
+                        Box::pin(self.send("POST", "/api/datasets", Some(create))).await;
+                    assert!(status.is_success(), "creating a dataset: {status} {made}");
+                    ids.push((pointer, made["dataset"]["id"].as_str().unwrap().to_owned()));
+                }
+                crate::named_datasets::use_ids(&mut b, ids);
+                Some(b)
+            }
+            other => other,
+        };
         let mut builder = Request::builder().method(method).uri(path);
         if !self.cookies.is_empty() {
             let cookie_header = self
@@ -262,11 +276,18 @@ async fn a_model_is_previewed_saved_fitted_and_activated() -> sc_error::Result<(
 
     // The providers, resolved **against that dataset**: a label picker offers
     // these columns rather than a free-text box, which is the whole reason
-    // `config_spec` takes a shape.
-    let query = format!(
-        "/api/model-providers?dataset={}",
-        urlencoding(&dataset().to_string())
-    );
+    // `config_spec` takes a shape. A query string names the dataset by id.
+    let (status, made) = server
+        .client
+        .send(
+            "POST",
+            "/api/datasets",
+            Some(crate::named_datasets::create_body(&dataset())),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let reference = json!({ "dataset_id": made["dataset"]["id"] }).to_string();
+    let query = format!("/api/model-providers?dataset={}", urlencoding(&reference));
     let (status, listed) = server.client.send("GET", &query, None).await;
     assert_eq!(status, StatusCode::OK, "{listed}");
     assert_eq!(listed["builtins_compiled_out"], json!(false));
@@ -303,7 +324,7 @@ async fn a_model_is_previewed_saved_fitted_and_activated() -> sc_error::Result<(
     // The same call with a configuration resolves the outcome.
     let query = format!(
         "/api/model-providers?dataset={}&configuration={}",
-        urlencoding(&dataset().to_string()),
+        urlencoding(&reference),
         urlencoding(&json!({ "label": "price" }).to_string())
     );
     let (_, listed) = server.client.send("GET", &query, None).await;

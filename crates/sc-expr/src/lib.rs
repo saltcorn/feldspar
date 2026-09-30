@@ -71,10 +71,10 @@ pub use code::{
 pub use eval::DenoEvaluator;
 pub use eval::{FormulaCall, JsEvaluator, value_from_json, value_to_json};
 pub use formula::Formula;
-pub use shape::{FieldShape, KeyShape, SchemaShape, TableShape};
+pub use shape::{FieldShape, KeyShape, RowsOf, SchemaShape, TableShape};
 pub use subquery::{AggFunc, AggregateSpec, aggregate_expr, correlated_aggregate, correlation};
 pub use template::{Escape, MAX_PASSES, RenderMode, Template, Token};
 pub use translate::{
     AmbientValues, CalcFields, Env, Operation, TranslateError, USER_GUC, UserEnv, join_path_expr,
-    join_path_expr_rooted, translate, translate_rooted, translate_value,
+    join_path_expr_rooted, translate, translate_rooted, translate_value, translate_value_rooted,
 };

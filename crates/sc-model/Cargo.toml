@@ -41,6 +41,9 @@ sc-types.workspace = true
 # deliberately not enabled — this crate parses and translates, it does not run
 # an engine.
 sc-expr.workspace = true
+# Named datasets (analytics TODO A1.8): a model's dataset is a reference to one,
+# resolved and read through the compiler there.
+sc-dataset.workspace = true
 # A dataset becomes a `Select`: the projections and the filter this crate builds
 # are handed to the row layer, which is what actually reads (see `DatasetSource`).
 sc-query.workspace = true

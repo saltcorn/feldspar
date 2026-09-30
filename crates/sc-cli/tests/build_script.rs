@@ -67,6 +67,7 @@ fn a_prefix_re_roots_each_bundle_under_the_install_directory() {
         ("ui/ide", "/opt/feldspar/ui/ide/dist"),
         ("ui/saltcorn-ui", "/opt/feldspar/ui/saltcorn-ui/dist"),
         ("ui/builder", "/opt/feldspar/ui/builder/dist"),
+        ("ui/analytics", "/opt/feldspar/ui/analytics/dist"),
     ] {
         let built = PathBuf::from("/home/dev/feldspar")
             .join(subdir)

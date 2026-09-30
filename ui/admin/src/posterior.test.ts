@@ -44,7 +44,6 @@ import {
   parseDrafts,
   printDraft,
   printDrafts,
-  readDataset,
   readInterface,
   readOutcome,
   readPolicies,
@@ -223,16 +222,27 @@ describe("the policies", () => {
 });
 
 describe("reading what the API carries about a posterior", () => {
-  it("reads an interface, related datasets and a dataset's order", () => {
+  it("reads an interface and related datasets", () => {
     const iface = readInterface({ data: [{ name: "N", element: "int", dims: [], stan_type: "int" }, { junk: 1 }] });
     expect(iface?.data.map((d) => d.name)).toEqual(["N"]);
     expect(iface?.parameters).toEqual([]);
     expect(readInterface(null)).toBeNull();
     expect(
-      readRelated([{ name: "counties", dataset: { table: "counties", columns: [] }, label: "name" }, { nope: 1 }]),
-    ).toEqual([{ name: "counties", dataset: { table: "counties", columns: [], filter: null, order: [] }, label: "name" }]);
-    expect(readDataset({ table: "t", columns: [], order: [{ expr: "day" }, { expr: "id", descending: true }] }).order)
-      .toEqual([{ expr: "day" }, { expr: "id", descending: true }]);
+      readRelated([
+        { name: "counties", dataset_id: "d2", dataset_name: "Radon — counties", table: "counties", label: "name" },
+        { nope: 1 },
+      ]),
+    ).toEqual([
+      {
+        name: "counties",
+        dataset_id: "d2",
+        label: "name",
+        dataset_name: "Radon — counties",
+        table: "counties",
+        columns: [],
+        error: null,
+      },
+    ]);
   });
 
   it("reads a posterior outcome and its metrics", () => {

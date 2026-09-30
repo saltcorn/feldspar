@@ -39,12 +39,16 @@
 //!   answer is bounded by construction, so refusing it for being over the cap
 //!   would refuse the one screen that exists to say "your dataset is too big".
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use sc_error::Result;
-use sc_query::Expr;
+use sc_catalog::Catalog;
+use sc_dataset::{Grain, Options, Restriction, Schema, compile, count, read_rows};
+use sc_error::{Context, Error, Result};
+use sc_query::{Expr, Value};
 
 use crate::dataset::Dataset;
-use crate::frame::Frame;
+use crate::frame::{Column, Frame, canonical_key};
 
 /// The default ceiling on a dataset's rows (`--model-max-rows`).
 pub const DEFAULT_MAX_ROWS: u64 = 200_000;
@@ -126,8 +130,8 @@ impl<'a> Read<'a> {
     }
 }
 
-/// How a [`Dataset`] becomes a [`Frame`]. Implemented in `sc-server` over
-/// `sc_api::rows`.
+/// How a [`Dataset`] becomes a [`Frame`]. [`CompiledSource`] is the real
+/// one; tests hand in frames of their own.
 #[async_trait]
 pub trait DatasetSource: Send + Sync {
     /// Read `ds` as `how` asks, refusing by name if an unlimited read would
@@ -143,5 +147,124 @@ pub trait DatasetSource: Send + Sync {
     /// what a fit does.
     async fn materialise(&self, ds: &Dataset, cap: u64) -> Result<Frame> {
         self.read(ds, &Read::all(cap)).await
+    }
+}
+
+/// The [`DatasetSource`] that reads a named dataset the way everything else
+/// does: compiled by `sc-dataset` into one query and run on the primary
+/// database (analytics TODO A1.8).
+///
+/// As the admin, for now (A1.7): a model is the admin's, and A9 is where a
+/// restricted reader's permissions enter. A table's non-stored calculated
+/// fields are columns of a dataset over it where they become SQL, which is
+/// what the dataset compiler does with them.
+pub struct CompiledSource {
+    catalog: Arc<Catalog>,
+}
+
+impl CompiledSource {
+    /// A source reading from `catalog`.
+    pub fn new(catalog: Arc<Catalog>) -> CompiledSource {
+        CompiledSource { catalog }
+    }
+}
+
+#[async_trait]
+impl DatasetSource for CompiledSource {
+    async fn read(&self, ds: &Dataset, how: &Read<'_>) -> Result<Frame> {
+        let snapshot = ds.readable()?;
+        let schema = Schema::of_catalog(&self.catalog)?;
+        // A prediction reads past the filters: they say which rows the model
+        // was fitted from, not which rows it may be asked about.
+        let options = Options {
+            skip_filters: !how.filtered,
+        };
+        let compiled = compile(&schema, &snapshot.library(), snapshot.def(), options);
+        let stage = compiled
+            .last()
+            .map_err(|e| Error::invalid(format!("the dataset `{}` does not read: {e}", ds.name)))?;
+        let restriction = match how.restrict {
+            Some(filter) => {
+                let key = schema
+                    .tables
+                    .get(&ds.table)
+                    .and_then(|t| t.primary_key.clone())
+                    .ok_or_else(|| {
+                        Error::invalid(format!(
+                            "`{}` has no single primary key, so its rows cannot be asked for one \
+                             by one",
+                            ds.table
+                        ))
+                    })?;
+                Some(Restriction {
+                    table: ds.table.clone(),
+                    key,
+                    filter: filter.clone(),
+                })
+            }
+            None => None,
+        };
+        // The count first, and on purpose: a dataset is held in memory, so
+        // the refusal costs one `COUNT(*)` rather than a partial read. A
+        // limited read is bounded by construction and skips it.
+        if how.limit.is_none() {
+            let n = count(&self.catalog, stage, restriction.as_ref())
+                .await
+                .with_context(|| format!("counting the rows of the dataset `{}`", ds.name))?;
+            if how.cap < n {
+                return Err(Error::invalid(format!(
+                    "the dataset selects more than {} rows (it selects {n}); add a filter or \
+                     raise `--model-max-rows`",
+                    how.cap
+                )));
+            }
+        }
+        let limit = how.limit.map(|_| how.ceiling());
+        let rows = read_rows(&self.catalog, stage, restriction.as_ref(), limit)
+            .await
+            .with_context(|| format!("reading the dataset `{}`", ds.name))?;
+        let n = rows.rows.len();
+        let mut columns: Vec<(String, Column)> = Vec::with_capacity(rows.columns.len());
+        for (i, column) in rows.columns.iter().enumerate() {
+            let values: Vec<Value> = rows
+                .rows
+                .iter()
+                .map(|r| r.get(i).cloned().unwrap_or(Value::Null))
+                .collect();
+            columns.push((
+                column.name.clone(),
+                if n == 0 {
+                    Column::Null(0)
+                } else {
+                    Column::from_values(values)
+                },
+            ));
+        }
+        // Each row's identity, for the split to hash and a prediction to be
+        // matched back by: the table's primary key, or the group's keys.
+        let keys: Vec<String> = if !rows.keys.is_empty() {
+            rows.keys.iter().map(canonical_key).collect()
+        } else if let Grain::Group { keys } = &rows.grain {
+            let at: Vec<usize> = keys
+                .iter()
+                .filter_map(|k| rows.columns.iter().position(|c| &c.name == k))
+                .collect();
+            if at.is_empty() {
+                Vec::new()
+            } else {
+                rows.rows
+                    .iter()
+                    .map(|r| {
+                        at.iter()
+                            .map(|i| canonical_key(r.get(*i).unwrap_or(&Value::Null)))
+                            .collect::<Vec<_>>()
+                            .join("|")
+                    })
+                    .collect()
+            }
+        } else {
+            Vec::new()
+        };
+        Frame::new(columns, keys)
     }
 }

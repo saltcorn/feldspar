@@ -303,6 +303,25 @@ pub fn translate_value(
     tr.value(formula.ast())
 }
 
+/// [`translate_value`] with the formula's own row read through `root` — an
+/// alias — rather than through the table's name: the value-position twin of
+/// [`translate_rooted`].
+///
+/// A dataset stage (analytics TODO A1.3) is a subquery, so its formulas read
+/// `"_fd_s2"."price"` rather than `"houses"."price"`; `table` is still the
+/// shape's key, because an alias is not a table.
+pub fn translate_value_rooted(
+    formula: &Formula,
+    env: &Env<'_>,
+    shape: &SchemaShape,
+    table: &str,
+    root: &str,
+) -> Result<QExpr, TranslateError> {
+    let mut tr = translator(env, shape, table)?;
+    tr.root = root;
+    tr.value(formula.ast())
+}
+
 /// The translator both entry points build, with the one check they share.
 fn translator<'a>(
     env: &'a Env<'a>,
@@ -2034,6 +2053,53 @@ mod tests {
             join_path_expr(&shape(), "books", "publisherⱵname").unwrap(),
             join_path_expr_rooted(&shape(), "books", "books", "publisherⱵname").unwrap()
         );
+    }
+
+    #[test]
+    fn a_stage_whose_rows_are_another_tables_aggregates_over_its_children() {
+        // A dataset stage aggregated by `customer` is not a table, but each of
+        // its rows is a customer (analytics TODO A1.2): `rows_of` says so, and
+        // the child's key then correlates on the stage's `customer` column.
+        let shape = SchemaShape::new()
+            .table(
+                "orders",
+                TableShape::new()
+                    .field("id")
+                    .field("total")
+                    .key_field("customer", "customers", "id")
+                    .primary_key("id"),
+            )
+            .table("customers", TableShape::new().field("id").primary_key("id"))
+            .table(
+                "_fd_stage",
+                TableShape::new()
+                    .key_field("customer", "customers", "id")
+                    .field("n")
+                    .rows_of("customers", "id", "customer"),
+            );
+        let formula = Formula::parse("ordersↃcustomer.length").unwrap();
+        formula.validate(&shape, "_fd_stage").unwrap();
+        let user = UserEnv::Inline(None);
+        let expr =
+            translate_value_rooted(&formula, &Env::new(&user), &shape, "_fd_stage", "_fd_s1")
+                .unwrap();
+        let stmt: Statement = Select::from(Source::table("x"))
+            .columns(vec![Projection::expr(expr)])
+            .into();
+        let (sql, _) = Pg.render(&stmt).unwrap();
+        assert!(
+            sql.contains("(\"_fd_a1\".\"customer\" = \"_fd_s1\".\"customer\")"),
+            "{sql}"
+        );
+
+        // Without `rows_of` the same stage is refused, naming the table the
+        // key points at.
+        let mut bare = shape.clone();
+        if let Some(stage) = bare.tables.get_mut("_fd_stage") {
+            stage.rows_of = None;
+        }
+        let err = formula.validate(&bare, "_fd_stage").unwrap_err();
+        assert!(err.to_string().contains("points at `customers`"), "{err}");
     }
 
     fn calc_of(pairs: &[(&str, &str)]) -> CalcFields {

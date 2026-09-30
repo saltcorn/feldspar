@@ -26,7 +26,6 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { ideUrl } from "../App";
-import type { TableInfo } from "../codeTypes";
 import { IconPlus, IconTrash } from "../icons";
 import {
   BINDING_KINDS,
@@ -40,7 +39,6 @@ import {
   parseDraft,
   readInterface as parseInterface,
   shapeText,
-  type Dataset,
   type Declaration,
   type Interface,
   type KindDraft,
@@ -51,7 +49,7 @@ import {
   type VariablePreview,
 } from "../models";
 import { asString, type FieldSpec } from "../settings";
-import { DatasetBuilder } from "./DatasetBuilder";
+import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
 import { T, useT } from "../i18n";
 
 /** How long the form waits after the program's path is typed before reading
@@ -101,8 +99,7 @@ export function BindingSection({
   iface,
   setIface,
   main,
-  tables,
-  schema,
+  datasets: stored,
   modelBody,
   modelId,
 }: {
@@ -114,9 +111,11 @@ export function BindingSection({
   setState: (update: (s: BindingState) => BindingState) => void;
   iface: Interface | null;
   setIface: (iface: Interface | null) => void;
-  main: Dataset;
-  tables: string[];
-  schema: TableInfo[];
+  /** The model's own dataset, as the stored datasets list it; `null` while
+   * none is picked. */
+  main: DatasetItem | null;
+  /** Every stored dataset, for the related datasets' pickers. */
+  datasets: DatasetItem[];
   /** Everything on the form as `saveModel` takes it — what Preview data and
    * Bind automatically are asked about. */
   modelBody: () => Record<string, unknown>;
@@ -207,13 +206,15 @@ export function BindingSection({
 
   // --- the datasets and dimensions ------------------------------------------
 
-  const datasets: { name: string; dataset: Dataset }[] = [
-    { name: MAIN_DATASET, dataset: main },
-    ...state.related.map((r) => ({ name: r.name, dataset: r.dataset })),
+  // Each dataset's columns, from the stored datasets: what a binding may name.
+  const columnsOfStored = (id: string | undefined) =>
+    ((stored.find((d) => d.id === id)?.columns ?? []) as { name: string }[]).map((c) => c.name);
+  const datasets: { name: string; columns: string[] }[] = [
+    { name: MAIN_DATASET, columns: columnsOfStored(main?.id) },
+    ...state.related.map((r) => ({ name: r.name, columns: columnsOfStored(r.dataset_id) })),
   ];
   const datasetNames = datasets.map((d) => d.name);
-  const columnsOf = (name: string) =>
-    datasets.find((d) => d.name === name)?.dataset.columns.map((c) => c.name) ?? [];
+  const columnsOf = (name: string) => datasets.find((d) => d.name === name)?.columns ?? [];
   const dimensions = dimensionNames(
     datasetNames,
     Object.fromEntries(state.dimensions.map((d) => [d.name, d.draft])),
@@ -423,13 +424,12 @@ export function BindingSection({
                 </Button>
               </Card.Header>
               <Card.Body>
-                <DatasetBuilder
-                  dataset={r.dataset}
-                  onChange={(dataset) => editRelated(index, { dataset })}
-                  tables={tables}
-                  schema={schema}
+                <DatasetPicker
+                  value={r.dataset_id}
+                  onChange={(dataset_id) => editRelated(index, { dataset_id })}
+                  datasets={stored}
                   idPrefix={`model-related-${index}`}
-                  withOrder
+                  preview={false}
                 />
               </Card.Body>
             </Card>
@@ -441,7 +441,7 @@ export function BindingSection({
                 ...s,
                 related: [
                   ...s.related,
-                  { name: "", dataset: { table: tables[0] ?? "", columns: [], order: [] }, label: null },
+                  { name: "", dataset_id: "", label: null },
                 ],
               }))
             }

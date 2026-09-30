@@ -62,6 +62,30 @@ pub struct TableShape {
     /// `None` means the caller did not declare it — an aggregation that needs
     /// it then fails to translate rather than guessing.
     pub primary_key: Option<String>,
+    /// Whose rows these are, when this "table" is not a table of the database
+    /// but a query whose rows **correspond** to one: a dataset stage (analytics
+    /// TODO A1.2). `None` for every real table.
+    ///
+    /// What it buys is aggregations over child tables. `ordersↃcustomer` on a
+    /// stage aggregated by `customer` has no `customers` table to resolve
+    /// against, but each of its rows *is* a customer, identified by the stage's
+    /// `customer` column. [`RowsOf`] says exactly that, and an inverse relation
+    /// whose key targets `customers.id` then correlates on the stage's
+    /// `customer` column instead of on a column the stage does not have.
+    pub rows_of: Option<RowsOf>,
+}
+
+/// That a [`TableShape`]'s rows are rows of another table: `table`'s rows,
+/// identified by the value of `table.field`, which this shape holds in its
+/// `column`. See [`TableShape::rows_of`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowsOf {
+    /// The table the rows correspond to.
+    pub table: String,
+    /// The field of `table` that identifies a row — what a child's key targets.
+    pub field: String,
+    /// The column of *this* shape holding that field's value.
+    pub column: String,
 }
 
 /// What a formula needs to know about one field. A struct rather than a bare
@@ -194,6 +218,23 @@ impl TableShape {
     /// as a child — `length`'s count and `maxBy`/`minBy`'s tie-break).
     pub fn primary_key(mut self, name: impl Into<String>) -> TableShape {
         self.primary_key = Some(name.into());
+        self
+    }
+
+    /// Declare that this shape's rows are rows of `table`, identified by
+    /// `table.field` whose value this shape holds in `column` (see
+    /// [`RowsOf`]).
+    pub fn rows_of(
+        mut self,
+        table: impl Into<String>,
+        field: impl Into<String>,
+        column: impl Into<String>,
+    ) -> TableShape {
+        self.rows_of = Some(RowsOf {
+            table: table.into(),
+            field: field.into(),
+            column: column.into(),
+        });
         self
     }
 

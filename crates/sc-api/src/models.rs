@@ -103,6 +103,13 @@ pub async fn predict_for(
             model.table()
         )));
     }
+    if let Some(grain) = grain_refusal(&model) {
+        return Err(Error::invalid(format!(
+            "`{}` cannot predict a row of `{table}`: its dataset changes what a row is \
+             ({grain})",
+            model.name
+        )));
+    }
     let predictions = match rows {
         PredictRows::Values(values) => {
             if values.is_empty() {
@@ -221,7 +228,18 @@ pub async fn describe_model(
         prediction_types,
         no_prediction,
         active_fit,
+        not_rows_of_table: grain_refusal(&model),
     })
+}
+
+/// Why `model`'s dataset's rows are not rows of its table, when they are not
+/// (analytics TODO A1.9): what refuses a `predict("…")` over it.
+fn grain_refusal(model: &Model) -> Option<String> {
+    match &model.dataset.grain {
+        Some(sc_dataset::Grain::Table { .. }) => None,
+        Some(grain) => Some(grain.describe()),
+        None => None,
+    }
 }
 
 use crate::rows;

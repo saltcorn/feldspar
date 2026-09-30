@@ -7,15 +7,11 @@
 // a provider's own form is built over the dataset's columns, and its label
 // picker cannot offer `price` until `price` is a column of this dataset.
 //
-// The dataset builder is a **column list**, each row a name and a formula, with
-// a picker that writes formulas into it (§2). There is deliberately no second
-// vocabulary of "field / joinfield / aggregation": the picker's three groups all
-// write the one expression language the calc-field editor already speaks, so an
-// admin who wants `log(price)` types it and an admin who wants
-// `neighbourhoodⱵaverage_income` clicks for it. The preview beside it is what
-// makes that a thing you can see the answer of before you fit against it — and
-// the types it reports are the *data's*, which is what the provider's form is
-// built from and what no schema carries.
+// The dataset is a **named dataset** (analytics TODO A1.11), picked from the
+// ones the Analytics UI's Dataset editor builds, with a link to edit it there.
+// The preview under the picker is the first rows and the types they came back
+// as — the *data's* types, which is what the provider's form is built from and
+// what no schema carries.
 //
 // For a provider that **binds data** (a posterior — Stan TODO §18) the form
 // grows the parts a program needs, and none of them names the provider: the
@@ -39,7 +35,6 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
-import { catalog, type TableInfo } from "../codeTypes";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import {
@@ -63,21 +58,21 @@ import {
   parseDrafts,
   printDrafts,
   printGridValue,
-  readDataset,
   readHyperparameters,
+  readModelDataset,
   readMetrics,
   readOutcome,
   readPolicies,
   readProgress,
   readRelated,
   readSplit,
-  type Dataset,
+  relatedBody,
   type Interface,
   type InstanceItem,
   type ProviderItem,
 } from "../models";
 import { SettingsFields, buildConfig, readConfig } from "../settings";
-import { DatasetBuilder, datasetBody } from "./DatasetBuilder";
+import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
 import { BindingSection, type BindingState } from "./ModelBindings";
 import { fitTone } from "./Models";
 import { T, useT } from "../i18n";
@@ -104,12 +99,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const [id, setId] = useState<string | null>(modelId ?? null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [mainDataset, setMainDataset] = useState<Dataset>({
-    table: "",
-    columns: [],
-    filter: null,
-    order: [],
-  });
+  const [datasetId, setDatasetId] = useState("");
   const [provider, setProvider] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [hyper, setHyper] = useState<Record<string, string>>({});
@@ -120,8 +110,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     seed: "0",
   });
 
-  const [tables, setTables] = useState<string[]>([]);
-  const [schema, setSchema] = useState<TableInfo[]>([]);
+  const [datasets, setDatasets] = useState<DatasetItem[]>([]);
   const [providers, setProviders] = useState<ProviderItem[]>([]);
   const [resolved, setResolved] = useState(false);
   const [instances, setInstances] = useState<InstanceItem[]>([]);
@@ -135,12 +124,12 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const [iface, setIface] = useState<Interface | null>(null);
   const [programCheck, setProgramCheck] = useState<string | null>(null);
 
-  // The dataset as the API takes it, and as the provider lookup keys off.
-  // Stringified because that is what a query parameter carries and what an
-  // effect can compare — a fresh object every render would re-fetch on every
-  // keystroke.
-  const dataset = useMemo(() => datasetBody(mainDataset), [mainDataset]);
+  // The dataset as the API takes it — a reference — and as the provider
+  // lookup keys off. Stringified because that is what a query parameter
+  // carries and what an effect can compare.
+  const dataset = useMemo(() => ({ dataset_id: datasetId }), [datasetId]);
   const datasetJson = JSON.stringify(dataset);
+  const mainDataset = datasets.find((d) => d.id === datasetId) ?? null;
   const bindsData = Boolean(providers.find((p) => p.name === provider)?.binds_data);
   const configJson = JSON.stringify(
     configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
@@ -152,20 +141,16 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     let cancelled = false;
     const run = async () => {
       try {
-        const [tableList, schemaList] = await Promise.all([
-          api.listTables(),
-          catalog().catch((): TableInfo[] => []),
-        ]);
+        const datasetList = await api.listDatasets();
         let existing = null;
         if (modelId) existing = await api.getModel(modelId);
         if (cancelled) return;
-        setTables(tableList.map((t) => t.name));
-        setSchema(schemaList);
+        setDatasets(datasetList);
         if (existing) {
-          const stored = readDataset(existing.dataset, existing.table_name);
+          const stored = readModelDataset(existing.dataset);
           setName(existing.name);
           setDescription(existing.description);
-          setMainDataset(stored);
+          setDatasetId(stored?.dataset_id ?? "");
           setProvider(existing.provider);
           setConfig(readConfig(existing.configuration));
           const configuration = (existing.configuration ?? {}) as Record<string, unknown>;
@@ -187,7 +172,9 @@ export function ModelForm({ modelId }: { modelId?: string }) {
           });
           if (existing.error) setError(existing.error);
         } else {
-          setMainDataset({ table: tableList[0]?.name ?? "", columns: [], filter: null, order: [] });
+          // A link from the Analytics UI's dataset list names the dataset.
+          const asked = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("dataset");
+          setDatasetId(asked ?? "");
         }
         setReady(true);
       } catch (err) {
@@ -209,7 +196,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     if (!ready) return undefined;
     let cancelled = false;
     const parsed = JSON.parse(datasetJson) as typeof dataset;
-    const usable = parsed.table !== "" && parsed.columns.length > 0;
+    const usable = parsed.dataset_id !== "";
     const timer = window.setTimeout(() => {
       const query = usable ? { dataset: datasetJson, configuration: configJson } : undefined;
       void api
@@ -282,13 +269,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     description: description.trim(),
     provider,
     dataset,
-    related: bindsData
-      ? binding.related.map((r) => ({
-          name: r.name.trim(),
-          dataset: datasetBody(r.dataset),
-          ...(r.label && r.label.trim() !== "" ? { label: r.label.trim() } : {}),
-        }))
-      : [],
+    related: bindsData ? relatedBody(binding.related) : [],
     configuration: configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
     // A posterior is not searched and not divided (Stan TODO §13): nothing of
     // the hidden controls is sent for one.
@@ -431,13 +412,11 @@ export function ModelForm({ modelId }: { modelId?: string }) {
           <Card className="mb-3">
             <Card.Header><T text="Dataset" /></Card.Header>
             <Card.Body>
-              <DatasetBuilder
-                dataset={mainDataset}
-                onChange={setMainDataset}
-                tables={tables}
-                schema={schema}
+              <DatasetPicker
+                value={datasetId}
+                onChange={setDatasetId}
+                datasets={datasets}
                 idPrefix="model-main"
-                withOrder={bindsData}
                 previewNote={(preview) => (
                   <>
                     <T text="The first rows, and the type each column’s values came back as — which is what the provider’s form below is built from." />
@@ -590,8 +569,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
               iface={iface}
               setIface={setIface}
               main={mainDataset}
-              tables={tables}
-              schema={schema}
+              datasets={datasets}
               modelBody={body}
               modelId={id}
             />

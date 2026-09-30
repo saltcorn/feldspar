@@ -40,6 +40,12 @@ members = [
     "crates/sc-auth",
     "crates/sc-files",
     "crates/sc-config",
+    # Datasets (analytics TODO A1): a base and an ordered list of operations,
+    # compiled to one `sc-query` statement, and the `_fd_datasets` table. Layer
+    # 5 because it needs the catalog, the formula language and the query AST,
+    # and because `sc-model` (layer 6) fits models to datasets and must depend
+    # on it rather than the other way round.
+    "crates/sc-dataset",
     # Layer 6 — actions & triggers, the LLM provider seam and the mail transport
     "crates/sc-action",
     # Predictive models: the dataset, the frame, the split, the provider seam
@@ -49,6 +55,11 @@ members = [
     # a trait declared below it. The cost is that this crate cannot read a row:
     # it declares `DatasetSource` and `sc-server` fills it in (TODO §4).
     "crates/sc-model",
+    # The Analytics UI's server half (analytics TODO A1.12): workspaces now,
+    # and the plot spec, the stats, the tests and the map layers as the
+    # milestones bring them. Beside `sc-model`, which a model fit workspace and
+    # a scored dataset reach.
+    "crates/sc-analytics",
     # Bayesian models with Stan (TODO "Bayesian models with Stan" §4): CmdStan
     # discovery and installation, and — as the milestone lands — the program's
     # declaration parser, the compile cache, the runner and `StanProvider`.
@@ -140,8 +151,10 @@ sc-auth = { path = "crates/sc-auth" }
 sc-files = { path = "crates/sc-files" }
 sc-repomap = { path = "crates/sc-repomap" }
 sc-config = { path = "crates/sc-config" }
+sc-dataset = { path = "crates/sc-dataset" }
 sc-action = { path = "crates/sc-action" }
 sc-model = { path = "crates/sc-model" }
+sc-analytics = { path = "crates/sc-analytics" }
 sc-stan = { path = "crates/sc-stan" }
 sc-stream = { path = "crates/sc-stream" }
 sc-module = { path = "crates/sc-module" }
@@ -251,6 +264,11 @@ rusqlite = { version = "0.40", features = [
     # type — the one thing that lets a value be read back as the timestamp,
     # uuid or json it was written as, in a database that stores five types.
     "column_decltype",
+    # Scalar and aggregate functions defined in Rust. The bundled amalgamation
+    # is compiled without SQLite's math functions, and a dataset's standard
+    # deviation (analytics TODO A1.4) needs `sqrt` and `stddev_samp` to mean
+    # on SQLite what they mean on Postgres — see `sc-db-sqlite`'s `functions`.
+    "functions",
 ] }
 # tokio-postgres re-exports `bytes` in its `ToSql`/`FromSql` signatures; pinned
 # here so the Postgres driver names the same version.

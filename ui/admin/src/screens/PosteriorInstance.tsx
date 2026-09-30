@@ -43,7 +43,7 @@ import {
   matchElements,
   metricRows,
   orderWarnings,
-  readDataset,
+  readModelDataset,
   readMetrics,
   readParameters,
   readProgress,
@@ -116,8 +116,8 @@ export function PosteriorInstance({
     () =>
       model
         ? [
-            { name: MAIN_DATASET, table: readDataset(model.dataset, model.table_name).table },
-            ...readRelated(model.related).map((r) => ({ name: r.name, table: r.dataset.table })),
+            { name: MAIN_DATASET, table: readModelDataset(model.dataset)?.table ?? model.table_name },
+            ...readRelated(model.related).map((r) => ({ name: r.name, table: r.table ?? "" })),
           ]
         : [],
     [model],

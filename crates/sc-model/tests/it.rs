@@ -14,6 +14,9 @@
 #[path = "fit_job.rs"]
 mod fit_job;
 
+#[path = "migration.rs"]
+mod migration;
+
 #[path = "model_store.rs"]
 mod model_store;
 

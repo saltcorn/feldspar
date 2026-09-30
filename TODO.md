@@ -96,12 +96,12 @@ operations"), workspace persistence, the Analytics UI shell, and the Dataset edi
 
 ## Phase 1 — The dataset model (`sc-dataset`)
 
-- [ ] A1.1 The `sc-dataset` crate: `DatasetDef { id, name, description, base, operations }`,
+- [x] A1.1 The `sc-dataset` crate: `DatasetDef { id, name, description, base, operations }`,
       `Base::Table(name) | Base::Dataset(id)`, `Operation { id, kind, enabled, params }`. The
       `_fd_datasets` table with bootstrap and a store (create, read, update, delete, clone,
       list; names unique). Move `sc-model`'s `Dataset` code here. Tests: the store round-trips
       every operation kind; a duplicate name is refused with a sentence.
-- [ ] A1.2 Stage shapes and grain: for each position in the list, the columns and their types
+- [x] A1.2 Stage shapes and grain: for each position in the list, the columns and their types
       after that operation, and the grain (`Table { table, key }`, `Group { keys }` or
       `Derived`). A foreign key column stays a foreign key through every operation. Formulas in
       an operation are validated against a `SchemaShape` built from the stage before it:
@@ -109,74 +109,74 @@ operations"), workspace persistence, the Analytics UI shell, and the Dataset edi
       foreign key column (goals document, "How this fits Feldspar's relational model").
       Tests: `customerⱵregion` after an Aggregate grouped by `customer`; `ordersↃcustomer`
       refused after an Aggregate by month, with a sentence naming the grain.
-- [ ] A1.3 The operations that keep the grain: Calculated column, Filter, Select columns, Sort,
+- [x] A1.3 The operations that keep the grain: Calculated column, Filter, Select columns, Sort,
       Window column (lag, lead, difference, cumulative sum and mean, rank, row number, group
       summary, last non-missing value). Compiled to `sc-query` as nested subqueries, one per
       operation, collapsed where an operation can be merged into the one before. Tests on both
       drivers, comparing with rows computed by hand.
-- [ ] A1.4 The operations that change the grain: Aggregate (the summaries of the goals
+- [x] A1.4 The operations that change the grain: Aggregate (the summaries of the goals
       document except geometry union, which is A5; with no summaries it is `distinct`), Limit
       (first N, random sample with a seed, top N per group), Stack, Split (its new columns fixed
       when the operation is defined, pre-filled from the data), Complete (values from the data,
       from a date or number range, or from all rows of the table a foreign key refers to).
       Tests on both drivers.
-- [ ] A1.5 The operations that combine: Join (inner, left, full; equality keys; "nearest
+- [x] A1.5 The operations that combine: Join (inner, left, full; equality keys; "nearest
       earlier" on a date column) and Union (columns matched by name, an optional source
       column). Add `UNION ALL` to `sc-query` and both dialects. Tests on both drivers,
       including an as-of join.
-- [ ] A1.6 Datasets over datasets, and invalid operations: a base that is another dataset
+- [x] A1.6 Datasets over datasets, and invalid operations: a base that is another dataset
       contributes its operations first; a cycle is refused. Disabled operations are skipped.
       Evaluation stops at the first invalid enabled operation and reports it by id with its
       sentence, and the stages before it still read. Tests.
-- [ ] A1.7 Reading a stage: `read_stage(def, upto, page)` returns a page of rows, the column
+- [x] A1.7 Reading a stage: `read_stage(def, upto, page)` returns a page of rows, the column
       types and the total row count, reading as the caller (for now, only the admin reads).
       Tests: paging is stable under the dataset's order; the count matches.
 
 ## Phase 2 — Models use named datasets
 
-- [ ] A1.8 `Model.dataset` and each related dataset become references to named datasets
+- [x] A1.8 `Model.dataset` and each related dataset become references to named datasets
       (`dataset_id`, and `{ name, dataset_id, label }` for related ones). A fit snapshots the
       resolved definition and its hash into the instance, and the instance reports "the
       dataset has changed since this fit" when the hash differs. `DatasetSource` reads through
       `sc-dataset`. Tests: the existing `sc-model` and `sc-stan` tests pass with their
       datasets stored as named datasets; editing a dataset flags its existing fits.
-- [ ] A1.9 Row keys: a dataset that keeps its base table's grain has the table's primary key as
+- [x] A1.9 Row keys: a dataset that keeps its base table's grain has the table's primary key as
       its row key, so `predict("…")` in a calculated field works as before. Saving a
       `predict("…")` over a model whose dataset changes the grain is refused with a sentence.
       The Stan binder accepts a dataset that keeps the grain as before, and refuses one that
       does not with a sentence (A8 lifts this where it can). Tests.
-- [ ] A1.10 `TABLES_RENAME.sql`: an idempotent section, for Postgres and SQLite, creating a
+- [x] A1.10 `TABLES_RENAME.sql`: an idempotent section, for Postgres and SQLite, creating a
       named dataset from each `_fd_models.dataset` and `related` entry and setting the model's
       references. Test: running it twice over a database with old-style models gives the
       same result as running it once, and those models then fit.
-- [ ] A1.11 The admin's model form: `DatasetBuilder.tsx` gives way to a picker of named
+- [x] A1.11 The admin's model form: `DatasetBuilder.tsx` gives way to a picker of named
       datasets with "New dataset" and "Edit in Analytics" links. Tests (vitest).
 
 ## Phase 3 — Workspaces (`sc-analytics`)
 
-- [ ] A1.12 The `sc-analytics` crate and `_fd_workspaces { id, name, kind, state, created_by,
+- [x] A1.12 The `sc-analytics` crate and `_fd_workspaces { id, name, kind, state, created_by,
       updated_at }`. `kind` lists all eight workspace types of the goals document; creating
       one that is not implemented yet is refused with a sentence naming the milestone that
       brings it. `state` is JSON owned by the workspace type. Tests.
-- [ ] A1.13 `sc-api` endpoints: datasets (create, read, update, delete, clone, list),
+- [x] A1.13 `sc-api` endpoints: datasets (create, read, update, delete, clone, list),
       validating one operation, reading a stage, stage shapes; workspaces (create, read,
       update, delete, list, save state). Admin only in this milestone (A9 opens them up).
       Regenerate the clients. Tests in `sc-server`.
 
 ## Phase 4 — The Analytics UI
 
-- [ ] A1.14 `ui/analytics`: the bundle, served under `/analytics/` with its CSP, built into
+- [x] A1.14 `ui/analytics`: the bundle, served under `/analytics/` with its CSP, built into
       the binary, sharing the admin's session. A hash router, the `analytics` i18n domain, a
       light and dark theme following the admin's. The admin sidebar gains **Analytics**. Tests:
       an `analytics_spa_typecheck` test in `sc-server` like `admin_spa_typecheck`; a
       non-admin is refused.
-- [ ] A1.15 The workspace list: create by name and type (types not yet implemented shown
+- [x] A1.15 The workspace list: create by name and type (types not yet implemented shown
       disabled with their milestone), rename, delete with confirmation, open. The workspace
       frame saves state as it changes (debounced) and restores it on open. Tests (vitest).
-- [ ] A1.16 The Dataset editor workspace, list mode: the global list of datasets with edit,
+- [x] A1.16 The Dataset editor workspace, list mode: the global list of datasets with edit,
       clone and delete (delete warns and lists the models that use the dataset), and new with
       a base picker (a table, or another dataset). Tests.
-- [ ] A1.17 The Dataset editor workspace, edit mode: the operations side panel (add from a
+- [x] A1.17 The Dataset editor workspace, edit mode: the operations side panel (add from a
       menu, edit in a form for each kind, reorder by dragging, disable, delete, errors shown on
       the operation); the read-only spreadsheet of the selected stage, virtualised, reusing
       the admin's grid code where it fits; **+** in the last column header adds a Calculated
@@ -186,14 +186,14 @@ operations"), workspace persistence, the Analytics UI shell, and the Dataset edi
 
 ## Phase 5 — Demo data, documentation, definition of done
 
-- [ ] A1.18 `feldspar demo analytics [--replace]`: creates `neighbourhoods`, `houses` and
+- [x] A1.18 `feldspar demo analytics [--replace]`: creates `neighbourhoods`, `houses` and
       `viewings` (compatible with the models tutorial) with deterministic synthetic rows, and
       refuses to touch existing tables without `--replace`. Tests.
-- [ ] A1.19 Documentation: `TECHNICAL_DESIGN.md` (§14.2's dataset rewritten for named
+- [x] A1.19 Documentation: `TECHNICAL_DESIGN.md` (§14.2's dataset rewritten for named
       datasets and operations; new sections for `sc-dataset`, `sc-analytics` and the
       Analytics UI bundle); `docs/tutorial-analytics.md` part 1 (the Try it above);
       `tutorial-models.md` updated for named datasets; `OPERATIONS.md` for the demo command.
-- [ ] A1.20 Definition of done: an `sc-server` test that creates the Try it's dataset through
+- [x] A1.20 Definition of done: an `sc-server` test that creates the Try it's dataset through
       the API, reads every stage and checks the rows, breaks and repairs the Aggregate, and
       fits and predicts with a model over a named dataset. Walk the Try it by hand.
 

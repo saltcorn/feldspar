@@ -192,8 +192,10 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
             }
             self.projection(col)?;
         }
-        self.push(" FROM ");
-        self.source(&s.from)?;
+        if !matches!(s.from, Source::Nothing) {
+            self.push(" FROM ");
+            self.source(&s.from)?;
+        }
         for join in &s.joins {
             self.join(join)?;
         }
@@ -365,6 +367,35 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                 self.ident(alias);
                 Ok(())
             }
+            Source::UnionAll { parts, alias } => {
+                if parts.is_empty() {
+                    return Err(sc_error::Error::query("UNION ALL has no parts"));
+                }
+                self.push("(");
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        self.push(" UNION ALL ");
+                    }
+                    // A member with its own order or limit is wrapped (see
+                    // `Source::UnionAll`): SQLite refuses the clauses there, and
+                    // Postgres would read the last member's as the union's.
+                    if part.order.is_empty() && part.limit.is_none() && part.offset.is_none() {
+                        self.select(part)?;
+                    } else {
+                        let wrapped = Select::from(Source::Subquery {
+                            query: Box::new(part.clone()),
+                            alias: format!("_fd_u{}", i + 1),
+                        });
+                        self.select(&wrapped)?;
+                    }
+                }
+                self.push(") AS ");
+                self.ident(alias);
+                Ok(())
+            }
+            Source::Nothing => Err(sc_error::Error::query(
+                "a source with no table can only be a SELECT's whole FROM, not a join",
+            )),
         }
     }
 
@@ -720,6 +751,42 @@ mod tests {
             binds,
             vec![Value::Text("a@b.c".into()), Value::Int(10), Value::Int(5)]
         );
+    }
+
+    #[test]
+    fn union_all_is_a_source_and_a_part_with_its_own_limit_is_wrapped() {
+        let first = Select::from(Source::table("a"))
+            .columns(vec![Projection::expr_as(Expr::col("x"), "v")]);
+        let second = Select::from(Source::table("b"))
+            .columns(vec![Projection::expr_as(Expr::col("y"), "v")])
+            .limit(2);
+        let stmt = Select::from(Source::union_all(vec![first, second], "u"))
+            .columns(vec![Projection::expr(Expr::qcol("u", "v"))]);
+        let (sql, binds) = render(stmt);
+        assert_eq!(
+            sql,
+            "SELECT \"u\".\"v\" FROM (SELECT \"x\" AS \"v\" FROM \"a\" UNION ALL \
+             SELECT * FROM (SELECT \"y\" AS \"v\" FROM \"b\" LIMIT $1) AS \"_fd_u2\") AS \"u\""
+        );
+        assert_eq!(binds, vec![Value::Int(2)]);
+    }
+
+    #[test]
+    fn a_select_from_nothing_has_no_from_and_cannot_be_joined() {
+        let row = Select::from(Source::Nothing)
+            .columns(vec![Projection::expr_as(Expr::lit(1_i64), "one")]);
+        let (sql, binds) = render(row.clone());
+        assert_eq!(sql, "SELECT $1 AS \"one\"");
+        assert_eq!(binds, vec![Value::Int(1)]);
+
+        let joined = Select::from(Source::table("t")).join(Join {
+            kind: JoinKind::Cross,
+            source: Source::Nothing,
+            on: None,
+        });
+        assert!(TestDialect.render(&joined.into()).is_err());
+        let empty = Select::from(Source::union_all(Vec::new(), "u"));
+        assert!(TestDialect.render(&empty.into()).is_err());
     }
 
     #[test]

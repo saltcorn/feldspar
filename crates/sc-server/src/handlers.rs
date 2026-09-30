@@ -3087,7 +3087,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                 // `SchemaShape` carries no types at all.
                 let shape = match query_json(&ctx, "dataset")? {
                     Some(value) => {
-                        let dataset = dataset_from_json(&value)?;
+                        let dataset = dataset_from_json(&catalog, &value).await?;
                         let frame = models
                             .source()
                             .read(
@@ -3178,14 +3178,14 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                 let models = models_of(&apps)?;
                 let body = rows::require_object(&ctx.body)?;
                 let dataset = dataset_from_json(
+                    &catalog,
                     body.get("dataset")
                         .ok_or_else(|| Error::invalid("`dataset` is required"))?,
-                )?;
-                // Validated before it is read, so a formula that does not
-                // resolve is one message rather than a database error with a
-                // column name in it.
-                let schema = catalog.schema_shape()?;
-                sc_model::validate_dataset(&dataset, &schema)?;
+                )
+                .await?;
+                // A named dataset that does not read says why, before a read
+                // would say it with a database error.
+                dataset.readable()?;
                 let limit = body
                     .get("limit")
                     .and_then(Json::as_u64)
@@ -3199,13 +3199,14 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                     )
                     .await?;
                 let shape = sc_model::DatasetShape::of_frame(&dataset.table, &frame);
-                // The split's refusal, reported while the dataset is still being
-                // built: a table with a composite or absent primary key reads
+                // The split's refusal, reported while the model is still being
+                // built: rows that are neither a table's nor a group's read
                 // perfectly well and cannot be fitted (§5).
-                let (primary_key, split_error) = match dataset.primary_key(&schema) {
-                    Ok(pk) => (Json::String(pk), Json::Null),
-                    Err(e) => (Json::Null, Json::String(e.to_string())),
+                let primary_key = match &dataset.grain {
+                    Some(sc_dataset::Grain::Table { key, .. }) => Json::String(key.clone()),
+                    _ => Json::Null,
                 };
+                let split_error = dataset.split_refusal().map_or(Json::Null, Json::String);
                 Ok(HandlerResponse::ok(json!({
                     "columns": shape
                         .columns
@@ -3284,7 +3285,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                 let models = models_of(&apps)?;
                 let body = rows::require_object(&ctx.body)?;
                 let created = body.get("id").is_none_or(Json::is_null);
-                let model = model_from_body(body)?;
+                let model = model_from_body(&catalog, body).await?;
                 // A program is checked by its compiler before it is saved (Stan
                 // §5): `stanc` when this server has CmdStan, which refuses a
                 // program it would refuse at fit time a minute into a compile;
@@ -3377,10 +3378,11 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
             let catalog = catalog.clone();
             async move {
                 let id = sc_model::ModelId(parse_uuid(ctx.path_param("id")?, "model")?);
+                let model = sc_model::load_model(&catalog, id).await?;
                 let out: Vec<Json> = sc_model::list_model_instances(&catalog, id)
                     .await?
                     .iter()
-                    .map(model_instance_json)
+                    .map(|i| with_dataset_changed(model_instance_json(i), i, model.as_ref()))
                     .collect();
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
@@ -3396,7 +3398,15 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
             async move {
                 let id = sc_model::InstanceId(parse_uuid(ctx.path_param("id")?, "model instance")?);
                 let instance = sc_model::require_model_instance(&catalog, id).await?;
-                let mut out = model_instance_detail_json(&instance);
+                let owner = sc_model::load_model(&catalog, instance.model)
+                    .await
+                    .ok()
+                    .flatten();
+                let mut out = with_dataset_changed(
+                    model_instance_detail_json(&instance),
+                    &instance,
+                    owner.as_ref(),
+                );
                 // "The program has changed since this fit" (Stan TODO §18):
                 // the provider compares its snapshot with the model's program
                 // now. Null for a provider with no program, and whenever it
@@ -3589,12 +3599,14 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
     });
 
     reg.register("previewModelData", {
+        let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
+            let catalog = catalog.clone();
             let apps = apps.clone();
             async move {
                 let models = models_of(&apps)?;
-                let model = model_from_body(rows::require_object(&ctx.body)?)?;
+                let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
                 let (_, interface) = crate::posterior::binding_interface(&models, &model).await?;
                 let datasets = crate::posterior::posterior_datasets(&models, &model).await?;
                 let preview = sc_model::preview_data(
@@ -3619,7 +3631,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
             let apps = apps.clone();
             async move {
                 let models = models_of(&apps)?;
-                let model = model_from_body(rows::require_object(&ctx.body)?)?;
+                let model = model_from_body(&catalog, rows::require_object(&ctx.body)?).await?;
                 let (_, interface) = crate::posterior::binding_interface(&models, &model).await?;
                 let suggestions =
                     sc_model::suggest_bindings(&interface, &model, &catalog.schema_shape()?);
@@ -6059,6 +6071,9 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
             }
         }
     });
+
+    // --- the Analytics UI (analytics TODO A1.13) -----------------------------
+    crate::analytics::register(&mut reg, catalog.clone());
 
     reg
 }
@@ -9255,10 +9270,44 @@ fn plain_sentence(e: &Error) -> String {
     }
 }
 
-/// A [`Dataset`](sc_model::Dataset) off the wire.
-fn dataset_from_json(value: &Json) -> Result<sc_model::Dataset> {
-    serde_json::from_value(value.clone())
-        .map_err(|e| Error::invalid(format!("`dataset` is not a dataset: {e}")))
+/// A named dataset off the wire — `{ "dataset_id": "…" }` — resolved against
+/// the catalog and every stored dataset (analytics TODO A1.8).
+async fn dataset_from_json(catalog: &Catalog, value: &Json) -> Result<sc_model::Dataset> {
+    let id = sc_model::dataset_ref(value)?;
+    let schema = sc_dataset::Schema::of_catalog(catalog)?;
+    let library = sc_dataset::load_library(catalog).await?;
+    Ok(sc_model::Dataset::resolve(&schema, &library, id))
+}
+
+/// A model's dataset as the list and the form see it: the reference, and what
+/// it resolved to.
+fn dataset_json(dataset: &sc_model::Dataset) -> Json {
+    json!({
+        "dataset_id": dataset.id,
+        "name": dataset.name,
+        "table": dataset.table,
+        "grain": dataset.grain,
+        "columns": dataset
+            .columns
+            .iter()
+            .map(|c| json!({ "name": c.name, "expr": c.expr, "type": c.ty, "key": c.key }))
+            .collect::<Vec<_>>(),
+        "error": dataset.error,
+    })
+}
+
+/// A fit's JSON with whether its model's datasets have changed since it read
+/// them (`null` when it recorded none, or the model is gone).
+fn with_dataset_changed(
+    mut out: Json,
+    instance: &sc_model::ModelInstance,
+    model: Option<&sc_model::Model>,
+) -> Json {
+    let changed = model.and_then(|m| sc_model::dataset_changed(instance, &m.dataset, &m.related));
+    if let Json::Object(map) = &mut out {
+        map.insert("dataset_changed".to_owned(), json!(changed));
+    }
+    out
 }
 
 /// The dataset's columns and their types, read from the data, or `None` when it
@@ -9295,18 +9344,37 @@ async fn model_json(
 ) -> Result<Json> {
     let instances = sc_model::list_model_instances(catalog, model.id).await?;
     // Newest first is the store's order, so the head is the last fit.
-    let last_fit = instances.first().map(model_instance_json);
-    let active = instances.iter().find(|i| i.active).map(model_instance_json);
+    let summary =
+        |i: &sc_model::ModelInstance| with_dataset_changed(model_instance_json(i), i, Some(model));
+    let last_fit = instances.first().map(summary);
+    let active = instances.iter().find(|i| i.active).map(summary);
     Ok(json!({
         "id": model.id.0,
         "name": model.name,
         "description": model.description,
         "provider": model.provider,
         "table_name": model.table(),
-        "dataset": serde_json::to_value(&model.dataset)
-            .map_err(|e| Error::msg(format!("dataset: {e}")))?,
-        "related": serde_json::to_value(&model.related)
-            .map_err(|e| Error::msg(format!("related datasets: {e}")))?,
+        "dataset": dataset_json(&model.dataset),
+        "related": Json::Array(
+            model
+                .related
+                .iter()
+                .map(|r| json!({
+                    "name": r.name,
+                    "dataset_id": r.dataset.id,
+                    "label": r.label,
+                    "dataset_name": r.dataset.name,
+                    "table": r.dataset.table,
+                    "columns": r
+                        .dataset
+                        .columns
+                        .iter()
+                        .map(|c| json!({ "name": c.name, "type": c.ty, "key": c.key }))
+                        .collect::<Vec<_>>(),
+                    "error": r.dataset.error,
+                }))
+                .collect(),
+        ),
         "configuration": Json::Object(model.configuration.clone()),
         "hyperparameters": Json::Object(model.hyperparameters.clone()),
         "split": serde_json::to_value(model.split)
@@ -9326,16 +9394,18 @@ async fn model_json(
 /// an id is read from a payload here: there is no path-addressed update, because
 /// the form always sends the whole definition and two endpoints would be one
 /// behaviour under two names.
-fn model_from_body(body: &Map<String, Json>) -> Result<sc_model::Model> {
+async fn model_from_body(catalog: &Catalog, body: &Map<String, Json>) -> Result<sc_model::Model> {
     let id = match body.get("id") {
         None | Some(Json::Null) => sc_model::ModelId::new(),
         Some(Json::String(raw)) => sc_model::ModelId(parse_uuid(raw, "model")?),
         Some(_) => return Err(Error::invalid("`id` must be a model id")),
     };
     let dataset = dataset_from_json(
+        catalog,
         body.get("dataset")
             .ok_or_else(|| Error::invalid("`dataset` is required"))?,
-    )?;
+    )
+    .await?;
     let mut model = sc_model::Model::with_id(
         id,
         non_empty_str_field(body, "name")?,
@@ -9347,9 +9417,26 @@ fn model_from_body(body: &Map<String, Json>) -> Result<sc_model::Model> {
     model.hyperparameters = optional_attrs(body, "hyperparameters")?;
     model.attributes = optional_attrs(body, "attributes")?;
     if let Some(related) = body.get("related").filter(|v| !v.is_null()) {
-        model.related = serde_json::from_value(related.clone()).map_err(|e| {
-            Error::invalid(format!("`related` is not a list of named datasets: {e}"))
+        let items = related.as_array().ok_or_else(|| {
+            Error::invalid("`related` is a list of `{ name, dataset_id, label }`")
         })?;
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let name = item
+                .get("name")
+                .and_then(Json::as_str)
+                .ok_or_else(|| Error::invalid("a related dataset needs a `name`"))?;
+            let mut named =
+                sc_model::NamedDataset::new(name, dataset_from_json(catalog, item).await?);
+            named.label = item
+                .get("label")
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned);
+            out.push(named);
+        }
+        model.related = out;
     }
     if let Some(split) = body.get("split").filter(|v| !v.is_null()) {
         model.split = serde_json::from_value(split.clone())

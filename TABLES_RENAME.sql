@@ -20,7 +20,9 @@
 --   Then, for a database older than 2026-09-26, the stored-data upgrade in
 --   section 5 (Postgres) or 6 (SQLite), after the rename. It is not part of the
 --   rename; it lives here so that one file brings an older installation up to
---   date.
+--   date. Likewise, for a database older than 2026-09-29 with predictive
+--   models, section 7 (Postgres) or 8 (SQLite): models' datasets become named
+--   datasets.
 --
 --   Take a backup first. Run each section as one transaction, with the server
 --   stopped: Feldspar caches the catalog in memory and will not notice a table
@@ -330,3 +332,215 @@ $code$;
 --            FROM json_each("_fd_applications".apis) api,
 --                 json_each(api.value, '$.config.queries') q
 --           WHERE json_type(q.value, '$.sql') IS NOT NULL);
+
+-- ---------------------------------------------------------------------------
+-- 7. Postgres: models' datasets become named datasets (2026-09-29).
+-- ---------------------------------------------------------------------------
+--
+-- A model's dataset used to be written on the model, as `{ table, columns,
+-- filter, order }` in `_fd_models.dataset` (and the same inside each entry of
+-- `related`). It is now a named dataset of its own, in `_fd_datasets`, and the
+-- model holds `{ "dataset_id": … }` (analytics TODO A1.8). This creates one
+-- dataset per old-style dataset — a Calculated column per column, the Filter,
+-- the Sort and a Select columns keeping exactly those columns, which reads the
+-- same rows as before — names it after the model ("House prices — data", or
+-- "Radon — counties" for a related one), and points the model at it.
+--
+-- Run after section 1, with the server stopped. Re-running it is a no-op: a
+-- model whose dataset is already a reference is left alone. Fits made before it
+-- keep working; they only cannot say whether the dataset has changed since.
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS "_fd_datasets" (
+    "id" uuid NOT NULL PRIMARY KEY,
+    "name" text NOT NULL UNIQUE,
+    "description" text,
+    "base" jsonb NOT NULL,
+    "operations" jsonb NOT NULL,
+    "attributes" jsonb NOT NULL
+);
+
+-- The operations an old-style dataset is.
+CREATE OR REPLACE FUNCTION pg_temp.fd_dataset_operations(ds jsonb) RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $fn$
+    SELECT COALESCE(jsonb_agg(op ORDER BY ord), '[]'::jsonb) FROM (
+        SELECT c.i AS ord,
+               jsonb_build_object('id', 'c' || c.i, 'enabled', true, 'kind', 'calculated',
+                   'params', jsonb_build_object('name', c.v->>'name', 'formula', c.v->>'expr')) AS op
+          FROM jsonb_array_elements(COALESCE(ds->'columns', '[]'::jsonb)) WITH ORDINALITY AS c(v, i)
+        UNION ALL
+        SELECT 1000000,
+               jsonb_build_object('id', 'filter', 'enabled', true, 'kind', 'filter',
+                   'params', jsonb_build_object('formula', ds->>'filter'))
+         WHERE COALESCE(ds->>'filter', '') <> ''
+        UNION ALL
+        SELECT 1000001,
+               jsonb_build_object('id', 'sort', 'enabled', true, 'kind', 'sort',
+                   'params', jsonb_build_object('keys', (
+                       SELECT jsonb_agg(jsonb_build_object(
+                                  'formula', o.v->>'expr',
+                                  'descending', COALESCE((o.v->>'descending')::boolean, false))
+                              ORDER BY o.i)
+                         FROM jsonb_array_elements(ds->'order') WITH ORDINALITY AS o(v, i))))
+         WHERE jsonb_typeof(ds->'order') = 'array' AND jsonb_array_length(ds->'order') > 0
+        UNION ALL
+        SELECT 1000002,
+               jsonb_build_object('id', 'select', 'enabled', true, 'kind', 'select',
+                   'params', jsonb_build_object('columns', (
+                       SELECT jsonb_agg(jsonb_build_object('column', c.v->>'name') ORDER BY c.i)
+                         FROM jsonb_array_elements(ds->'columns') WITH ORDINALITY AS c(v, i))))
+         WHERE jsonb_array_length(COALESCE(ds->'columns', '[]'::jsonb)) > 0
+    ) ops
+$fn$;
+
+-- The main datasets.
+WITH legacy AS (
+    SELECT m.id AS model_id, m.name AS model_name, m.dataset AS ds,
+           gen_random_uuid() AS dataset_id
+      FROM "_fd_models" m
+     WHERE m.dataset ? 'table'
+), made AS (
+    INSERT INTO "_fd_datasets" (id, name, description, base, operations, attributes)
+    SELECT dataset_id, model_name || ' — data', '',
+           jsonb_build_object('kind', 'table', 'table', ds->>'table'),
+           pg_temp.fd_dataset_operations(ds), '{}'::jsonb
+      FROM legacy
+    RETURNING id
+)
+UPDATE "_fd_models" m
+   SET dataset = jsonb_build_object('dataset_id', l.dataset_id)
+  FROM legacy l
+ WHERE m.id = l.model_id;
+
+-- The related datasets.
+WITH legacy AS (
+    SELECT m.id AS model_id, m.name AS model_name, r.v AS item, r.i AS pos,
+           gen_random_uuid() AS dataset_id
+      FROM "_fd_models" m,
+           jsonb_array_elements(m.related) WITH ORDINALITY AS r(v, i)
+     WHERE jsonb_typeof(m.related) = 'array' AND r.v->'dataset' ? 'table'
+), made AS (
+    INSERT INTO "_fd_datasets" (id, name, description, base, operations, attributes)
+    SELECT dataset_id, model_name || ' — ' || (item->>'name'), '',
+           jsonb_build_object('kind', 'table', 'table', item->'dataset'->>'table'),
+           pg_temp.fd_dataset_operations(item->'dataset'), '{}'::jsonb
+      FROM legacy
+    RETURNING id
+)
+UPDATE "_fd_models" m
+   SET related = (
+       SELECT jsonb_agg(
+                  CASE WHEN l.dataset_id IS NULL THEN e.v
+                       ELSE jsonb_build_object('name', e.v->>'name', 'dataset_id', l.dataset_id,
+                                               'label', e.v->'label') END
+                  ORDER BY e.i)
+         FROM jsonb_array_elements(m.related) WITH ORDINALITY AS e(v, i)
+         LEFT JOIN legacy l ON l.model_id = m.id AND l.pos = e.i)
+ WHERE m.id IN (SELECT model_id FROM legacy);
+
+COMMIT;
+
+-- Check: this should return 0.
+--
+--   SELECT count(*) FROM "_fd_models"
+--    WHERE dataset ? 'table'
+--       OR (jsonb_typeof(related) = 'array'
+--           AND EXISTS (SELECT 1 FROM jsonb_array_elements(related) r
+--                        WHERE r->'dataset' ? 'table'));
+
+-- ---------------------------------------------------------------------------
+-- 8. SQLite primary: the same upgrade as section 7.
+-- ---------------------------------------------------------------------------
+--
+-- SQLite stores JSON and UUIDs as text and has no statement that inserts and
+-- updates at once, so the new ids go through a work table first. Run after
+-- section 3, with the server stopped, as one transaction. Re-running it is a
+-- no-op.
+--
+--   CREATE TABLE IF NOT EXISTS "_fd_datasets" (
+--       "id" uuid NOT NULL PRIMARY KEY,
+--       "name" text NOT NULL UNIQUE,
+--       "description" text,
+--       "base" jsonb NOT NULL,
+--       "operations" jsonb NOT NULL,
+--       "attributes" jsonb NOT NULL
+--   );
+--
+--   CREATE TABLE "_fd_legacy_datasets" AS
+--   SELECT m.id AS model_id, NULL AS pos, m.name || ' — data' AS name,
+--          json(m.dataset) AS ds,
+--          lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+--                substr(hex(randomblob(2)), 2) || '-8' || substr(hex(randomblob(2)), 2) ||
+--                '-' || hex(randomblob(6))) AS dataset_id
+--     FROM "_fd_models" m
+--    WHERE json_type(m.dataset, '$.table') IS NOT NULL
+--   UNION ALL
+--   SELECT m.id, r.key, m.name || ' — ' || json_extract(r.value, '$.name'),
+--          json_extract(r.value, '$.dataset'),
+--          lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+--                substr(hex(randomblob(2)), 2) || '-8' || substr(hex(randomblob(2)), 2) ||
+--                '-' || hex(randomblob(6)))
+--     FROM "_fd_models" m, json_each(m.related) r
+--    WHERE json_type(m.related) = 'array'
+--      AND json_type(r.value, '$.dataset.table') IS NOT NULL;
+--
+--   INSERT INTO "_fd_datasets" (id, name, description, base, operations, attributes)
+--   SELECT l.dataset_id, l.name, '',
+--          json_object('kind', 'table', 'table', json_extract(l.ds, '$.table')),
+--          (SELECT json_group_array(json(op) ORDER BY ord) FROM (
+--               SELECT c.key AS ord,
+--                      json_object('id', 'c' || (c.key + 1), 'enabled', json('true'),
+--                          'kind', 'calculated',
+--                          'params', json_object('name', json_extract(c.value, '$.name'),
+--                                                'formula', json_extract(c.value, '$.expr'))) AS op
+--                 FROM json_each(l.ds, '$.columns') c
+--               UNION ALL
+--               SELECT 1000000,
+--                      json_object('id', 'filter', 'enabled', json('true'), 'kind', 'filter',
+--                          'params', json_object('formula', json_extract(l.ds, '$.filter')))
+--                WHERE COALESCE(json_extract(l.ds, '$.filter'), '') <> ''
+--               UNION ALL
+--               SELECT 1000001,
+--                      json_object('id', 'sort', 'enabled', json('true'), 'kind', 'sort',
+--                          'params', json_object('keys', (
+--                              SELECT json_group_array(json_object(
+--                                         'formula', json_extract(o.value, '$.expr'),
+--                                         'descending',
+--                                         json(CASE WHEN json_extract(o.value, '$.descending')
+--                                                   THEN 'true' ELSE 'false' END))
+--                                     ORDER BY o.key)
+--                                FROM json_each(l.ds, '$.order') o)))
+--                WHERE json_array_length(l.ds, '$.order') > 0
+--               UNION ALL
+--               SELECT 1000002,
+--                      json_object('id', 'select', 'enabled', json('true'), 'kind', 'select',
+--                          'params', json_object('columns', (
+--                              SELECT json_group_array(
+--                                         json_object('column', json_extract(c.value, '$.name'))
+--                                     ORDER BY c.key)
+--                                FROM json_each(l.ds, '$.columns') c)))
+--                WHERE json_array_length(l.ds, '$.columns') > 0)),
+--          '{}'
+--     FROM "_fd_legacy_datasets" l;
+--
+--   UPDATE "_fd_models"
+--      SET dataset = json_object('dataset_id',
+--                        (SELECT l.dataset_id FROM "_fd_legacy_datasets" l
+--                          WHERE l.model_id = "_fd_models".id AND l.pos IS NULL))
+--    WHERE id IN (SELECT model_id FROM "_fd_legacy_datasets" WHERE pos IS NULL);
+--
+--   UPDATE "_fd_models"
+--      SET related = (
+--          SELECT json_group_array(json(
+--                   CASE WHEN l.dataset_id IS NULL THEN r.value
+--                        ELSE json_object('name', json_extract(r.value, '$.name'),
+--                                         'dataset_id', l.dataset_id,
+--                                         'label', json_extract(r.value, '$.label')) END)
+--                   ORDER BY r.key)
+--            FROM json_each("_fd_models".related) r
+--            LEFT JOIN "_fd_legacy_datasets" l
+--              ON l.model_id = "_fd_models".id AND l.pos = r.key)
+--    WHERE id IN (SELECT model_id FROM "_fd_legacy_datasets" WHERE pos IS NOT NULL);
+--
+--   DROP TABLE "_fd_legacy_datasets";

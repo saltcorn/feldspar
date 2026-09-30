@@ -1040,7 +1040,9 @@ mod tests {
         assert!(validate_custom_queries(&[q], &[]).is_err());
         let mut empty = js_query();
         empty.code = "  \n".into();
-        let msg = validate_custom_queries(&[empty], &[]).unwrap_err().to_string();
+        let msg = validate_custom_queries(&[empty], &[])
+            .unwrap_err()
+            .to_string();
         assert!(msg.contains("no javascript code"), "{msg}");
     }
 
@@ -1049,7 +1051,11 @@ mod tests {
         let ep = custom_endpoint("/api", &js_query());
         assert_eq!(ep.output, TypeSchema::json());
         assert_eq!(ep.handler, HandlerRef::Custom("greet".into()));
-        assert_eq!(ep.query.len(), 1, "declared parameters still type the client");
+        assert_eq!(
+            ep.query.len(),
+            1,
+            "declared parameters still type the client"
+        );
     }
 
     #[test]

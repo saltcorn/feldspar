@@ -215,6 +215,16 @@ export const NAV: NavItem[] = [
     matches: ["/agents", "/llm-providers"],
   },
   {
+    // The Analytics UI: its own bundle under `/analytics/` (analytics TODO
+    // A1.14), a full navigation rather than a hash route. Datasets, and from
+    // A3 the models, live there; *Predictive models* stays beside it until A3
+    // replaces it.
+    href: "/analytics/",
+    label: "Analytics",
+    icon: <IconChartHistogram />,
+    matches: [],
+  },
+  {
     href: "#/models",
     label: "Predictive models",
     icon: <IconChartHistogram />,

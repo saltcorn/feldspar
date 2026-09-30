@@ -64,6 +64,26 @@ form-action 'self'; \
 frame-ancestors 'none'; \
 object-src 'none'";
 
+/// The Content-Security-Policy served with the **Analytics UI** under
+/// `/analytics/` (analytics TODO A1.14).
+///
+/// The admin SPA's strict policy, word for word, for now: the bundle is React
+/// and react-bootstrap over the same stylesheet, and nothing in it is inline.
+/// It is a constant of its own, served per response on its own route like the
+/// IDE's, because the milestones after this one add renderers that will need
+/// their own relaxations — ECharts' SVG export, MapLibre's workers and tile
+/// hosts — and those must widen this policy and never the admin UI's.
+pub const ANALYTICS_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+script-src 'self'; \
+style-src 'self' 'unsafe-inline'; \
+img-src 'self' data:; \
+font-src 'self'; \
+connect-src 'self'; \
+base-uri 'none'; \
+form-action 'self'; \
+frame-ancestors 'none'; \
+object-src 'none'";
+
 /// [`CONTENT_SECURITY_POLICY`], with the **applications** the admin may frame.
 ///
 /// The admin frames an application in one place: the preview pane beside a

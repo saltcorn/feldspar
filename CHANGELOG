@@ -2,6 +2,129 @@
 
 Changes in reverse chronological order.
 
+## Analytics A1: workspaces and the dataset editor
+
+Milestone A1 of the Analytics UI (`TODO.md`, A1.1–A1.20). A dataset is now a **named, shared
+definition** — a base table or dataset and an ordered list of operations — built in a new
+Analytics UI and picked by models, rather than a column list written on each model.
+
+- **`sc-dataset`, a new crate (layer 5)** (A1.1–A1.7).
+  - `DatasetDef { id, name, description, base, operations }`; `Base::Table | Base::Dataset`;
+    `Operation { id, enabled, kind, params }` with twelve kinds: Calculated column, Filter,
+    Select columns, Sort, Window column, Aggregate, Limit, Stack, Split, Complete, Join and
+    Union.
+  - A compiler to `sc-query`. Each formula is translated against a table-shaped view of the stage
+    before it, then merged into that stage, or the stage is sealed as a subquery first when
+    merging would change the meaning. Hidden `_fd_key` (the row key) and `_fd_o…` (sort keys)
+    columns carry the key and the order through subqueries; a read orders by them, so paging is
+    stable.
+  - Stage shapes and grain (`Table`, `Group`, `Derived`). A foreign key stays a key through every
+    operation. `Ↄ` is allowed while rows are a table's rows, including after an Aggregate grouped
+    by one key: `sc-expr`'s `TableShape` gains `rows_of`, and `Chain::resolve` correlates a
+    child's key on it.
+  - Errors are sentences reported by operation id. Evaluation stops at the first invalid enabled
+    operation; the stages before it still read. A dataset over a dataset puts the base's
+    operations first; a cycle is an error, and a base that leads back is refused on save.
+  - `read_stage`, `read_page`, `count`, `read_rows` and `column_values`, typed the same way on
+    both backends.
+  - The `_fd_datasets` store: create, read, update, delete, clone and list. Names are unique; a
+    changed base, a delete while another dataset reads it, and empty or repeated operation ids
+    are refused with sentences.
+  - `Snapshot`: the dataset plus every dataset it reaches, with a canonical SHA-256.
+  - Tests on Postgres and SQLite for every operation, the grain rules, paging, the store and
+    cycles.
+- **`sc-query`, `sc-db` and the drivers.**
+  - `Source::UnionAll` and `Source::Nothing` are rendered by both dialects.
+  - A new capability, `native_temporal_types`, is true on Postgres and false on SQLite. On
+    SQLite, a cast to a date, time or UUID becomes a cast to text, since SQLite stores those as
+    text.
+  - The SQLite driver registers `sqrt` and a `stddev_samp` aggregate. This enables rusqlite's
+    `functions` feature.
+  - The Postgres driver encodes an integer parameter into a float placeholder.
+- **Models use named datasets** (A1.8–A1.11).
+  - `Model.dataset` is a named dataset's id, and each related dataset is
+    `{ name, dataset_id, label }`. `sc_model::Dataset` is now the *resolved* dataset: its
+    snapshot, table, columns, grain and error.
+  - A fit records every dataset it read (`datasets` on the instance: the hash, the main snapshot
+    and the related ones). `dataset_changed` is reported on the instance and shown on its screen.
+    Predictions read through the fit's own snapshot.
+  - A per-row prediction needs a dataset that keeps its table's grain. `predict("…")` in a
+    calculated field, `predictRows`, and a Stan binding that reads rows are each refused with a
+    sentence otherwise.
+  - The admin model form's `DatasetBuilder` is replaced by `DatasetPicker`: a dropdown of named
+    datasets, **Edit in Analytics**, **New dataset**, and the preview it had.
+  - `TABLES_RENAME.sql` sections 7 (Postgres) and 8 (SQLite) turn each model's inline dataset,
+    and each related one, into a named dataset and point the model at it. The sections are
+    idempotent; a test runs them twice and then fits.
+- **`sc-analytics`, a new crate (layer 6)** (A1.12, A1.18).
+  - `_fd_workspaces { id, name, kind, state, created_by, updated_at }`. There are eight kinds.
+    Creating any kind except the Dataset editor is refused with a sentence naming its milestone.
+  - The demo tables.
+- **The API** (A1.13). New endpoints, admin-only:
+  - datasets: `listDatasets`, `getDataset`, `createDataset`, `updateDataset`, `deleteDataset`,
+    `cloneDataset`, `datasetUsage` and `listDatasetTables`;
+  - reads that take a whole unsaved definition: `datasetShapes`, `validateDatasetOperation`,
+    `readDatasetStage` and `datasetColumnValues`;
+  - workspaces: `listWorkspaceKinds`, `listWorkspaces`, `getWorkspace`, `createWorkspace`,
+    `updateWorkspace`, `saveWorkspaceState` and `deleteWorkspace`.
+
+  `client.ts` is regenerated in `ui/admin`, `ui/ide`, `ui/builder` and `ui/analytics`, and the
+  sync test covers all four.
+- **The Analytics UI, `ui/analytics`** (A1.14–A1.17).
+  - A new Vite, React and react-bootstrap bundle, served under `/analytics/`:
+    - admin-only: a visitor is redirected to sign in, and a non-admin gets a 403;
+    - under its own CSP, `ANALYTICS_CONTENT_SECURITY_POLICY`;
+    - built into the binary by `sc-cli`'s build script (`SC_ANALYTICS_BUNDLE_DIR`).
+  - It uses a hash router, the admin UI's Tabler stylesheet and theme setting, and a new
+    `analytics` i18n domain. The admin sidebar gains **Analytics**.
+  - The workspace list: create (with unavailable kinds shown disabled and labelled), rename,
+    delete and open. The workspace frame saves its state as it changes, debounced, and restores
+    it on open.
+  - The Dataset editor has two modes.
+    - List mode: the datasets, with edit, clone, delete (which warns with the models and
+      datasets that use one) and new on a table or a dataset.
+    - Edit mode: the operations side panel. Operations are added from a menu or from a column
+      header's Filter, Sort, Group by or Stack; each is edited in a form for its kind that the
+      server checks as you type; operations can be dragged, switched off and deleted, and
+      errors are marked. Beside the panel, a virtualised spreadsheet of the selected stage,
+      paged with the admin grid's helpers. **+** in the last header adds a Calculated column.
+      The formula input completes columns, join paths and child aggregates.
+  - An `analytics_spa_typecheck` test, and 61 vitest tests.
+- **`feldspar demo analytics [--replace]`** (A1.18). It makes `neighbourhoods`, `houses` (200)
+  and `viewings` from a fixed seed, and refuses to touch tables that are already there.
+- **Documentation** (A1.19).
+  - `TECHNICAL_DESIGN.md`:
+    - §2: the crate graph;
+    - §9.2: the ER diagram;
+    - §14.2: a dataset is a named dataset; the seams, storage and API;
+    - new §14.4 (`sc-dataset`) and §14.5 (`sc-analytics` and the Analytics UI).
+  - New `docs/tutorial-analytics.md`, part 1.
+  - `tutorial-models.md` step 2 now builds the dataset in the Dataset editor, and step 7 reuses
+    it.
+  - `OPERATIONS.md` §8.6 covers the demo, and two new common failures.
+  - The README.
+- **Definition of done** (A1.20). `sc-server/tests/analytics_done.rs` creates the Try it's
+  dataset through the API and reads every stage. It breaks and repairs the Aggregate, then fits
+  and predicts with a model over a named dataset. The Try it was walked in a browser against a
+  Postgres server.
+
+Deviations from the plan:
+
+- **Limit keeps the grain.** Its rows are a subset of the rows before it, so they are still a
+  table's rows and `Ↄ` still works after it. Its sample is an arithmetic hash of the row
+  position, so it is the same on both databases.
+- **`sc_model::Dataset` stays in `sc-model`**, as the resolved form of a named dataset, and
+  `DatasetSource` is implemented there by `CompiledSource`. The definition, the compiler and
+  the store are in `sc-dataset`.
+- **`_fd_models.dataset` is reused** to hold `{"dataset_id": …}` rather than adding a column,
+  and `table_name` is kept (it must agree with the dataset's base table).
+- **Median, first and last** are computed with window functions a level below the aggregate,
+  so one SQL spelling works on both backends. **Complete** is a `UNION ALL` of the combinations
+  left-joined to the data, plus the rows outside them: Postgres cannot `FULL JOIN` on
+  `IS NOT DISTINCT FROM`.
+- **The demo lives in `sc-analytics`**, not `sc-cli`, so that server tests can make the same
+  tables.
+
 ## Models without actions of their own: documentation and the definition of done
 
 Phase 4, the last of milestone 31. The documents now teach `predict("…")` in formulas, the model

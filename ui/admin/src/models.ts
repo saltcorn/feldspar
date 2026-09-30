@@ -25,7 +25,6 @@
 //   - and the **instance order** is the active fit first, then newest, because
 //     the active one is what everything outside this screen means by "the model".
 
-import { columnType, type TableInfo } from "./codeTypes";
 import type {
   GetModelInstanceResponse,
   GetModelResponse,
@@ -36,23 +35,24 @@ import type { FieldSpec } from "./settings";
 
 // --- the JSON the API carries -----------------------------------------------
 
-/** One dataset column: the name it is known by, and the formula computing it. */
-export type DatasetColumn = { name: string; expr: string };
+/** One column of a named dataset's last stage, as the server compiled it. */
+export type DatasetColumnInfo = {
+  name: string;
+  type: string;
+  /** The formula that computed it, where a Calculated column did. */
+  expr?: string;
+  key?: { table: string; field: string } | null;
+};
 
-/** One key of a dataset's order: a formula, and whether largest comes first
- * (Stan TODO §7). The primary key is always appended by the server, so the
- * order is total. */
-export type DatasetOrder = { expr: string; descending?: boolean };
-
-/** Which rows and which derived values make up a model's data (§2). */
-export type Dataset = {
+/** A model's dataset: a **named dataset** (analytics TODO A1.8), which the
+ * model refers to by id and the server resolves — its name, the table its rows
+ * start from, its columns, and why it does not read when it does not. */
+export type ModelDataset = {
+  dataset_id: string;
+  name: string;
   table: string;
-  columns: DatasetColumn[];
-  /** One boolean formula restricting the rows, or none. */
-  filter?: string | null;
-  /** The order the rows come back in. Only a posterior cares (Stan TODO §7);
-   * every other provider splits by hash and ignores it. */
-  order?: DatasetOrder[];
+  columns: DatasetColumnInfo[];
+  error: string | null;
 };
 
 /** The fractions a fit divides its rows by, and the seed its hash is salted
@@ -190,27 +190,37 @@ export type FitStatus = "fitting" | "fitted" | "failed";
 // should still show its parameters and its status, which is more than an empty
 // page saying nothing.
 
-/** A dataset off the wire, or an empty one over `table` when there is none. */
-export function readDataset(raw: unknown, table = ""): Dataset {
-  if (raw && typeof raw === "object") {
-    const value = raw as Partial<Dataset>;
-    if (typeof value.table === "string" && Array.isArray(value.columns)) {
-      return {
-        table: value.table,
-        columns: value.columns.filter(
-          (c): c is DatasetColumn =>
-            Boolean(c) && typeof c.name === "string" && typeof c.expr === "string",
-        ),
-        filter: typeof value.filter === "string" ? value.filter : null,
-        order: Array.isArray(value.order)
-          ? value.order
-              .filter((o): o is DatasetOrder => Boolean(o) && typeof o.expr === "string")
-              .map((o) => (o.descending ? { expr: o.expr, descending: true } : { expr: o.expr }))
-          : [],
-      };
-    }
-  }
-  return { table, columns: [], filter: null, order: [] };
+/** A model's dataset off the wire, or `null` when it names none. */
+export function readModelDataset(raw: unknown): ModelDataset | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Partial<ModelDataset>;
+  if (typeof value.dataset_id !== "string") return null;
+  return {
+    dataset_id: value.dataset_id,
+    name: typeof value.name === "string" ? value.name : value.dataset_id,
+    table: typeof value.table === "string" ? value.table : "",
+    columns: readColumns(value.columns),
+    error: typeof value.error === "string" ? value.error : null,
+  };
+}
+
+/** A list of dataset columns off the wire. */
+export function readColumns(raw: unknown): DatasetColumnInfo[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (c): c is DatasetColumnInfo =>
+      Boolean(c) && typeof (c as { name?: unknown }).name === "string",
+  );
+}
+
+/** Where a dataset is edited: the Analytics UI's Dataset editor (A1.17). */
+export function analyticsDatasetUrl(datasetId: string): string {
+  return `/analytics/#/datasets/${encodeURIComponent(datasetId)}`;
+}
+
+/** Where a new dataset is made — over `table`, when one is given. */
+export function newDatasetUrl(table?: string): string {
+  return table ? `/analytics/#/datasets/new?table=${encodeURIComponent(table)}` : "/analytics/#/datasets/new";
 }
 
 /** The default split: four fifths fitted, one fifth held out, no validation
@@ -688,111 +698,6 @@ export function formatTimestamp(value: string): string {
 
 // --- the dataset builder's picker -------------------------------------------
 
-/** One thing the picker can add to a dataset: what it is called, the formula it
- * writes, and which group it belongs to. */
-export type FormulaChoice = {
-  /** The group heading — "Fields", "Join fields", "Aggregations". */
-  group: string;
-  /** What the option reads as in the picker. */
-  label: string;
-  /** The formula it writes into the column (§2: what a picker writes is a
-   * formula, and a user who wants `log(price)` types it). */
-  expr: string;
-  /** The column name it suggests, which the admin may then change. */
-  name: string;
-};
-
-/**
- * Everything the picker offers over one table: its own fields, one join path per
- * key field per column of the table it points at, and one aggregation per
- * incoming key.
- *
- * Three groups and one output, because there is no second vocabulary (§2): each
- * choice writes a **formula** into an ordinary column row, and the admin can
- * edit it afterwards into something no picker would have offered.
- */
-export function formulaChoices(tables: TableInfo[], table: string): FormulaChoice[] {
-  const byName = new Map(tables.map((t) => [t.name, t]));
-  const here = byName.get(table);
-  if (!here) return [];
-  const choices: FormulaChoice[] = [];
-
-  for (const column of here.columns) {
-    choices.push({ group: "Fields", label: column.name, expr: column.name, name: column.name });
-  }
-
-  for (const key of here.columns) {
-    const target = key.keyTo ? byName.get(key.keyTo) : undefined;
-    if (!target) continue;
-    for (const far of target.columns) {
-      // The key's own target field adds nothing: `authorⱵid` is `author`.
-      if (far.name === "id") continue;
-      choices.push({
-        group: "Join fields",
-        label: `${key.name}Ⱶ${far.name}  (${target.name}.${far.name})`,
-        expr: `${key.name}Ⱶ${far.name}`,
-        name: `${key.name}_${far.name}`,
-      });
-    }
-  }
-
-  for (const child of tables) {
-    for (const key of child.columns) {
-      if (key.keyTo !== table) continue;
-      const relation = `${child.name}Ↄ${key.name}`;
-      choices.push({
-        group: "Aggregations",
-        label: `${relation}.length  (how many ${child.name})`,
-        expr: `${relation}.length`,
-        name: `${child.name}_count`,
-      });
-      for (const value of child.columns) {
-        if (value.keyTo || value.name === "id" || !isNumeric(value)) continue;
-        for (const aggregate of ["sum", "avg", "max"] as const) {
-          choices.push({
-            group: "Aggregations",
-            label: `${relation}.${aggregate}("${value.name}")`,
-            expr: `${relation}.${aggregate}("${value.name}")`,
-            name: `${child.name}_${value.name}_${aggregate}`,
-          });
-        }
-      }
-    }
-  }
-
-  return choices;
-}
-
-/** Whether a column holds a number, which is what an aggregation other than a
- * count can be taken over. Decided by the same mapping the code editor's types
- * use, so "what is a number here" is answered in one place. */
-function isNumeric(column: TableInfo["columns"][number]): boolean {
-  return columnType(column).startsWith("number");
-}
-
-/**
- * A column name for a formula somebody typed: the formula itself when it is
- * already a plain name, and a readable flattening of it when it is not.
- *
- * A dataset column's name is what the provider's label picker offers and what
- * the encoding is keyed by, so it has to be a name — `neighbourhoodⱵaverage_income`
- * is a fine formula and a poor heading. Empty means "no suggestion", which is a
- * real answer for a formula that is all punctuation.
- */
-export function suggestColumnName(expr: string): string {
-  const trimmed = expr.trim();
-  if (trimmed === "") return "";
-  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) return trimmed;
-  return trimmed
-    .replace(/\.length\b/g, "_count")
-    .replace(/[^A-Za-z0-9_]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "")
-    .toLowerCase();
-}
-
-// --- asking a fit about a row -----------------------------------------------
-
 /** One box of the "try a row" form: which feature, how it is typed, and — for a
  * category — the values this fit actually saw. */
 export type FeatureInput = {
@@ -818,10 +723,12 @@ export type FeatureInput = {
  */
 export function featureInputs(
   encoding: Encoding | null,
-  dataset: Dataset | null,
+  dataset: ModelDataset | null,
 ): FeatureInput[] {
   if (!encoding) return [];
-  const formulas = new Map((dataset?.columns ?? []).map((c) => [c.name, c.expr]));
+  const formulas = new Map(
+    (dataset?.columns ?? []).filter((c) => c.expr && c.expr !== c.name).map((c) => [c.name, c.expr]),
+  );
   return encoding.columns.map((column) => ({
     name: column.column,
     kind:
@@ -863,17 +770,6 @@ export function typedFeatureValue(text: string, kind: FeatureInput["kind"]): unk
   return Number.isFinite(epoch) && trimmed !== "" ? epoch : text;
 }
 
-/** A name not already taken by another column, by adding `_2`, `_3`, … — so
- * clicking the same aggregation twice does not produce two columns the server
- * refuses as duplicates. */
-export function uniqueColumnName(name: string, taken: string[]): string {
-  if (name === "") return "";
-  if (!taken.includes(name)) return name;
-  for (let n = 2; ; n += 1) {
-    const candidate = `${name}_${n}`;
-    if (!taken.includes(candidate)) return candidate;
-  }
-}
 
 // --- a program's interface (Stan TODO §5) -----------------------------------
 //
@@ -931,7 +827,18 @@ export function readInterface(raw: unknown): Interface | null {
 
 /** A related dataset: a dataset over another table, under the name bindings
  * address it by (Stan TODO §7). */
-export type NamedDataset = { name: string; dataset: Dataset; label?: string | null };
+export type NamedDataset = {
+  name: string;
+  /** The named dataset's id; empty while none is picked. */
+  dataset_id: string;
+  label?: string | null;
+  /** What the server resolved it to, when it did. */
+  dataset_name?: string;
+  /** The table its rows start from. */
+  table?: string;
+  columns?: DatasetColumnInfo[];
+  error?: string | null;
+};
 
 /** The name bindings give the model's own dataset. */
 export const MAIN_DATASET = "main";
@@ -941,14 +848,27 @@ export function readRelated(raw: unknown): NamedDataset[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter(
-      (r): r is { name: string; dataset: unknown; label?: unknown } =>
+      (r): r is Record<string, unknown> & { name: string } =>
         Boolean(r) && typeof (r as { name?: unknown }).name === "string",
     )
     .map((r) => ({
       name: r.name,
-      dataset: readDataset(r.dataset),
+      dataset_id: typeof r.dataset_id === "string" ? r.dataset_id : "",
       label: typeof r.label === "string" && r.label.trim() !== "" ? r.label : null,
+      dataset_name: typeof r.dataset_name === "string" ? r.dataset_name : undefined,
+      table: typeof r.table === "string" ? r.table : undefined,
+      columns: readColumns(r.columns),
+      error: typeof r.error === "string" ? r.error : null,
     }));
+}
+
+/** The related datasets as `saveModel` takes them. */
+export function relatedBody(related: NamedDataset[]) {
+  return related.map((r) => ({
+    name: r.name.trim(),
+    dataset_id: r.dataset_id,
+    ...(r.label && r.label.trim() !== "" ? { label: r.label.trim() } : {}),
+  }));
 }
 
 // --- the binding editor (Stan TODO §§9, 18) ---------------------------------
