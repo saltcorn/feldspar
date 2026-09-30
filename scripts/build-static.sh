@@ -47,6 +47,7 @@
 #   /opt/feldspar/ui/ide/dist         the file-store IDE it serves
 #   /opt/feldspar/ui/saltcorn-ui/dist Saltcorn UI's view runtime and assets
 #   /opt/feldspar/ui/builder/dist     Saltcorn UI's builder, the layout editor
+#   /opt/feldspar/ui/analytics/dist   the Analytics UI, served under /analytics/
 #   /opt/feldspar/plugins/            the modules it ships with, installable in
 #                                     one click from Settings -> Modules
 #   /opt/feldspar/install.sh          copies the tree into place
@@ -153,7 +154,7 @@ Packaging
                         Compiled into the binary as the admin/IDE bundle location.
                         (default ${PREFIX})
   -o, --output DIR      Where to write the tarball (default ${OUTPUT_DIR}).
-      --no-ui           Skip the four front-end bundles (SC_BUILD_ADMIN=0).
+      --no-ui           Skip the five front-end bundles (SC_BUILD_ADMIN=0).
                         The server then serves the API only, or a --static-dir
                         you point at a bundle yourself.
       --no-strip        Keep debug symbols (the binary is ~2x larger).
@@ -425,7 +426,11 @@ build_native() {
     cp "${REPO_ROOT}/target/${TARGET}/release/feldspar" "${STAGE}/bin/feldspar"
     stage_plugins
     if [[ ${BUILD_UI} -eq 1 ]]; then
-        for bundle in admin ide saltcorn-ui builder; do
+        # Every bundle `crates/sc-cli/build.rs` builds (its `BUNDLES`), because the
+        # binary carries each one's path under the prefix: one missing here is a
+        # route that answers "not built" on the installed server
+        # (`tests/build_script.rs` holds this list to that one).
+        for bundle in admin ide saltcorn-ui builder analytics; do
             local dist="${REPO_ROOT}/ui/${bundle}/dist"
             [[ -d "${dist}" ]] || { echo "error: ${dist} was not built" >&2; exit 1; }
             mkdir -p "${STAGE}/ui/${bundle}"
@@ -652,10 +657,12 @@ cat <<INNER
                         serve Saltcorn 1 views
   ui/builder/dist       Saltcorn UI's builder: Saltcorn 1's drag-and-drop layout
                         editor, served on the admin server's builder routes
+  ui/analytics/dist     the Analytics UI: workspaces over datasets, models and
+                        panels, reached from the admin UI's sidebar (/analytics/)
 INNER
 else
 cat <<INNER
-  (built with --no-ui: no admin SPA, no IDE and no builder. \`serve\` will answer the API and
+  (built with --no-ui: no admin SPA, no IDE, no builder and no Analytics UI. \`serve\` will answer the API and
   serve the bootstrap page; point --static-dir at a bundle to serve one.)
 INNER
 fi)

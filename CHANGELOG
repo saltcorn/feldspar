@@ -2,6 +2,22 @@
 
 Changes in reverse chronological order.
 
+## The release tarball ships the Analytics UI
+
+A server installed from `scripts/build-static.sh` answered `/analytics/` with "the Analytics UI
+bundle is not built". The bundle *was* built — `crates/sc-cli/build.rs` builds all five UI
+bundles by default and compiled `$PREFIX/ui/analytics/dist` into the binary — but both packaging
+paths staged only the first four, so that directory never reached the machine.
+
+- `scripts/build-static.sh` (`--native`) and `scripts/static-build.Dockerfile` (`--docker`) now
+  stage `ui/analytics/dist`, and the tarball's README lists it. The Dockerfile's stage is one
+  loop over the five bundles and now fails when the UI build is on and any `dist` is missing,
+  rather than skipping it silently, which is what `--native` already did.
+- `build.rs`'s `BUNDLES` is `pub`, and `tests/build_script.rs` asserts that both packaging
+  scripts' `for bundle in …` loops stage every bundle in it, so a sixth bundle cannot be built
+  but left out of the release.
+- `docs/OPERATIONS.md` counts five bundles and names `SC_ANALYTICS_BUNDLE_DIR`.
+
 ## Analytics A1: workspaces and the dataset editor
 
 Milestone A1 of the Analytics UI (`TODO.md`, A1.1–A1.20). A dataset is now a **named, shared

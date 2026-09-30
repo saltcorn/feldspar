@@ -113,3 +113,42 @@ fn a_relative_prefix_fails_the_build() {
         Path::new("/src/ui/admin/dist"),
     );
 }
+
+use self::build_rs::BUNDLES;
+
+/// The bundle names a packaging script's `for bundle in …` loop stages.
+fn staged_bundles(script: &str) -> Vec<String> {
+    let line = script
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("for bundle in "))
+        .expect("the packaging script has a `for bundle in …` loop");
+    line.trim_start_matches("for bundle in ")
+        .split(';')
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_release_packaging_stages_every_bundle_the_build_script_builds() {
+    // `build.rs` compiles `$SC_BUNDLE_PREFIX/ui/<name>/dist` into the binary for
+    // each bundle; a packaging step that leaves one behind ships a binary whose
+    // route for it answers "not built" — which is how `/analytics/` came to say
+    // so on a deployed server while the bundle was built and sitting in the tree.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for script in ["scripts/build-static.sh", "scripts/static-build.Dockerfile"] {
+        let text = std::fs::read_to_string(root.join(script)).unwrap();
+        let staged = staged_bundles(&text);
+        for bundle in &BUNDLES {
+            let name = bundle.subdir.trim_start_matches("ui/");
+            assert!(
+                staged.iter().any(|s| s == name),
+                "{script} does not stage {} (it stages {staged:?})",
+                bundle.subdir
+            );
+        }
+    }
+}

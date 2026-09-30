@@ -153,9 +153,14 @@ pub fn build_requested(value: Option<&str>) -> bool {
 }
 
 /// One UI bundle the binary carries.
-struct Bundle {
+///
+/// `pub`, with `subdir`, so `tests/build_script.rs` can hold the release
+/// packaging (`scripts/build-static.sh`, `scripts/static-build.Dockerfile`) to
+/// this list: a bundle built here but not staged there is a path compiled into
+/// the binary that does not exist on the machine it is installed on.
+pub struct Bundle {
     /// The package directory, relative to the workspace root.
-    subdir: &'static str,
+    pub subdir: &'static str,
     /// The compile-time env its `dist` path is recorded in.
     env_var: &'static str,
     /// What a build failure calls it.
@@ -169,7 +174,7 @@ struct Bundle {
     marker: &'static str,
 }
 
-const BUNDLES: [Bundle; 5] = [
+pub const BUNDLES: [Bundle; 5] = [
     Bundle {
         subdir: "ui/admin",
         env_var: "SC_ADMIN_BUNDLE_DIR",

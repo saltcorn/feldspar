@@ -211,7 +211,7 @@ Build-environment options worth knowing:
 | `--native` | build with this machine's toolchain. Needs the target added to rustup, clang/libclang, cmake, a C compiler, `libz.a` (`zlib1g-dev`) and, unless `--no-ui`, node and npm |
 | `--target aarch64-unknown-linux-gnu` | the other supported target. The **musl** targets are refused by name: V8 reaches this build as `rusty_v8`'s prebuilt static archive, which upstream publishes for gnu, darwin and Windows only |
 | `--prefix PATH` | the absolute directory the artifact will be installed to, compiled into the binary |
-| `--no-ui` | skip the three front-end bundles (`SC_BUILD_ADMIN=0`), so no Node toolchain is needed — and the artifact has no admin UI, no IDE, **no Saltcorn UI** and no builder (§5.3) |
+| `--no-ui` | skip the five front-end bundles (`SC_BUILD_ADMIN=0`), so no Node toolchain is needed — and the artifact has no admin UI, no IDE, **no Saltcorn UI**, no builder and no Analytics UI (§5.3) |
 | `-j N` | lower cargo's parallelism if the linker runs the machine out of memory. This workspace links V8 |
 | `--no-verify` | skip the post-build checks — static linkage, and a smoke run in Debian and Alpine containers |
 
@@ -662,9 +662,9 @@ effect.**
 
 | Variable | Effect |
 |---|---|
-| `SC_BUILD_ADMIN` | set to `0`, `false`, `False` or `FALSE` to skip building the four front-end bundles, leaving a Rust-only build that needs no JS toolchain. Any other value, and leaving it unset, builds them |
-| `SC_BUNDLE_PREFIX` | absolute path the artifact will be *installed* at. The recorded bundle paths become `$SC_BUNDLE_PREFIX/ui/admin/dist`, `.../ui/ide/dist`, `.../ui/saltcorn-ui/dist`, `.../ui/builder/dist` and `.../plugins`, so they describe the target machine rather than the build machine. This is what `build-static.sh --prefix` sets |
-| `SC_ADMIN_BUNDLE_DIR`, `SC_IDE_BUNDLE_DIR`, `SC_SALTCORN_UI_BUNDLE_DIR`, `SC_BUILDER_BUNDLE_DIR`, `SC_PLUGINS_DIR` | the compile-time paths the four bundles and the bundled-module catalog are recorded at, set by the build script |
+| `SC_BUILD_ADMIN` | set to `0`, `false`, `False` or `FALSE` to skip building the five front-end bundles, leaving a Rust-only build that needs no JS toolchain. Any other value, and leaving it unset, builds them |
+| `SC_BUNDLE_PREFIX` | absolute path the artifact will be *installed* at. The recorded bundle paths become `$SC_BUNDLE_PREFIX/ui/admin/dist`, `.../ui/ide/dist`, `.../ui/saltcorn-ui/dist`, `.../ui/builder/dist`, `.../ui/analytics/dist` and `.../plugins`, so they describe the target machine rather than the build machine. This is what `build-static.sh --prefix` sets |
+| `SC_ADMIN_BUNDLE_DIR`, `SC_IDE_BUNDLE_DIR`, `SC_SALTCORN_UI_BUNDLE_DIR`, `SC_BUILDER_BUNDLE_DIR`, `SC_ANALYTICS_BUNDLE_DIR`, `SC_PLUGINS_DIR` | the compile-time paths the five bundles and the bundled-module catalog are recorded at, set by the build script |
 
 **What `SC_BUILD_ADMIN=0` (and `--no-ui`) costs, bundle by bundle.** The admin UI can
 be supplied at run time with `--static-dir`. The IDE and Saltcorn UI cannot: their
@@ -1164,7 +1164,7 @@ looking hung. Ctrl-C does the same interactively.
 | a Stan fit fails with "more than the … allowed (`--stan-max-data-values`)" | the bound data is too large for the ceiling (§9.4). Filter the datasets or raise the flag |
 | a Stan fit finishes with "the draws … were not kept" | they were over `--stan-max-draws-bytes` (§9.4). The summary and diagnostics are there; to keep the draws, `thin`, `exclude_variables`, or raise the flag |
 | `getModelDraws` refuses with "… numbers" and suggests `thin` | the answer would be over `--stan-max-draws-response` (§9.4). Ask for fewer elements, chains or draws |
-| `/analytics/` says "the Analytics UI bundle is not built" | the binary was built with `SC_BUILD_ADMIN=0` or `--no-ui` (§5.3). Rebuild with the variable unset, or run `npm ci && npm run build` in `ui/analytics` for a source tree |
+| `/analytics/` says "the Analytics UI bundle is not built" | the binary was built with `SC_BUILD_ADMIN=0` or `--no-ui` (§5.3), or `ui/analytics/dist` is missing under the install prefix — a release tarball from before the packaging staged it did not include it; rebuild and reinstall. Rebuild with the variable unset, or run `npm ci && npm run build` in `ui/analytics` for a source tree |
 | `feldspar demo analytics` says "the database already has `houses` …" | the demo never touches a table that is there. Use `--replace` to drop and remake its three tables, or run it against another database (§8.6) |
 
 ### 8.6 Demo data for the Analytics UI

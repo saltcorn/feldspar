@@ -100,11 +100,20 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # few kilobytes and not a vendored `node_modules`
 # (`crates/sc-module/src/bundled.rs`). It is copied whatever `SC_BUILD_ADMIN`
 # said, because there is nothing here to build.
+#
+# The bundles are every one `crates/sc-cli/build.rs` builds (its `BUNDLES`;
+# `tests/build_script.rs` holds this list to that one). When the UI build is on
+# each must be there: the binary carries its path under the prefix, and one left
+# behind is a route answering "not built" on the installed server.
 RUN set -eu; \
-    if [ -d ui/admin/dist ]; then mkdir -p /out/ui/admin && cp -r ui/admin/dist /out/ui/admin/; fi; \
-    if [ -d ui/ide/dist ]; then mkdir -p /out/ui/ide && cp -r ui/ide/dist /out/ui/ide/; fi; \
-    if [ -d ui/saltcorn-ui/dist ]; then mkdir -p /out/ui/saltcorn-ui && cp -r ui/saltcorn-ui/dist /out/ui/saltcorn-ui/; fi; \
-    if [ -d ui/builder/dist ]; then mkdir -p /out/ui/builder && cp -r ui/builder/dist /out/ui/builder/; fi; \
+    case "${SC_BUILD_ADMIN}" in 0|false|False|FALSE) ui=0 ;; *) ui=1 ;; esac; \
+    for bundle in admin ide saltcorn-ui builder analytics; do \
+        if [ -d "ui/${bundle}/dist" ]; then \
+            mkdir -p "/out/ui/${bundle}" && cp -r "ui/${bundle}/dist" "/out/ui/${bundle}/"; \
+        elif [ "${ui}" = 1 ]; then \
+            echo "ui/${bundle}/dist was not built" >&2; exit 1; \
+        fi; \
+    done; \
     if [ ! -d plugins ]; then echo "plugins/ is missing; it belongs in the artifact" >&2; exit 1; fi; \
     mkdir -p /out/plugins; \
     cp -r plugins/. /out/plugins/; \
