@@ -16,10 +16,15 @@ sc-types.workspace = true
 # `_fd_workspaces` is stored metadata, bootstrapped through the catalog.
 sc-catalog.workspace = true
 sc-db.workspace = true
+# A plot reads a dataset: its shape, and its compiled query as the source of
+# every stat (A2.3).
+sc-dataset.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The t quantiles of confidence intervals and bands (A2.3, A2.4).
+statrs.workspace = true
 
 [dev-dependencies]
 sc-db-postgres.workspace = true

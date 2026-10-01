@@ -2,6 +2,79 @@
 
 Changes in reverse chronological order.
 
+## Analytics A2 phases 1–2: the plot spec and stats on the server
+
+The server half of the Data explorer (`TODO.md` A2.1–A2.6): a plot is a declarative **spec**,
+checked against its dataset, and drawn by compiling each layer's stat to SQL over the dataset's
+query, so the browser receives bins, boxes and curves rather than rows. No UI yet (A2.7 on).
+
+- **The spec** (`sc-analytics::plot`, A2.1). `PlotSpec { data, fold, layers, scales, coord,
+  facet, references, selections }`; a layer is a mark (point, line, bar, area, box, band,
+  errorbar, text, rect), an encoding (x, y, color, size, shape, label — each a column, optionally
+  binned) and a stat (identity, count, aggregate, quantiles, boxplot, summary, density, smooth).
+  `DataRef` has one kind, a stored dataset; A3 adds fit output. `validate(spec, shape)` returns
+  every reason a spec cannot be drawn as a sentence ("Size shows an amount, and `street` is
+  text; put it on Color or Shape"), and makes each layer's plan: the channels that group its
+  rows, the columns its stat reads, and where a count or summary is drawn.
+- **Show me and the gallery** (A2.2). `show_me(data, shape, assignment, mark)` picks the mark
+  and stat from the types on the drop zones (a number alone is a histogram, a number by a
+  category a box plot, a number by a category on the other axis a flipped box plot, two
+  categories a heatmap…), honours the mark palette, folds several Y columns into
+  `variable`/`value` coloured by column, and bins a float on a grouping channel. `preset(…)`
+  fills the zones a gallery item needs from the dataset's columns (never the row key);
+  `gallery()` lists the map disabled until A5.
+- **The stat compiler** (A2.3–A2.5). Every layer is `points` (group keys `_g…` and inputs `_v…`
+  over the dataset's unordered last stage, or a `UNION ALL` per folded column) and a stat over
+  it. A binned key is `floor((x − origin)/width)`, the bins shared by every layer and facet;
+  Freedman–Diaconis by default, rounded to 1/2/2.5/5×10ᵏ (whole numbers for integers), at most
+  200. Box plots follow ggplot2: type-7 quartiles, whiskers to the furthest value within 1.5 IQR,
+  outliers returned separately (fences applied per group by a `CASE`). Summary is a mean with a
+  t interval; densities are Gaussian KDEs with `bw.nrd0` on R's 512-point grid, from the values
+  up to 20,000 rows and from 2,048 fine bins above; the linear smoother's sums come from SQL,
+  centred by window means; loess (local quadratic, tricube) is fitted in memory on a sample of at
+  most 1,000. Layers that draw rows sample above 10,000 (`sample` on the layer), reproducibly,
+  and say `sampled` with the `total`. A log or square-root scale leaves out what it cannot show
+  and warns with the count.
+- **`render_plot` and the endpoints** (A2.6). Each layer's data comes back as a small table
+  whose columns are named by channel (`x`, `x_end`, `y`, `y_lower`, `y_q1`, `color`, `wrap`…),
+  with the domains each channel spans over every layer, the facet values, the bins and the
+  warnings. `renderPlot` (`POST /api/plots/render`), plus `plotGallery` and `suggestPlot` so
+  the explorer (A2.9) does not re-implement the rules in TypeScript. The four `client.ts` copies
+  are regenerated.
+- **`sc-dataset`.** `Stage::unordered_query()` (a stage without its `ORDER BY`, which a histogram
+  of a million rows would only pay for), and `scramble`, the Limit's seeded sample order, made
+  public so plots sample the same way.
+- **`sc-db-sqlite`.** A Postgres-compatible `floor`, for bin numbers and percentile positions.
+- **Deviations from the plan.**
+  - Percentiles are taken with `row_number()` over each group on *both* databases, not with
+    `percentile_cont` on Postgres and in memory on SQLite: one code path, tested on both, and
+    no million-row read on SQLite.
+  - A spec that cannot be drawn answers `200` with `error` and `problems` rather than a `400`:
+    in the explorer it is a normal state, shown in place of the plot. A body that is not a spec
+    is still a `400`.
+  - Loess is R's `loess(degree = 2, surface = "direct")`, not ggplot2's default
+    `surface = "interpolate"` (a k-d tree of vertex fits blended by cubics), which differs from
+    it by up to about 0.5% near the ends of the range. Its band is ggplot2's: `predict(se = TRUE)`
+    with R's default approximation of δ₁ and δ₂ from the operator's trace (`ehg141`/`ehg176` in
+    R's `loessf.f`, ported), O(n) where the exact δ₂ costs an n×n matrix product. A span above
+    1 widens the radius by √span, as R's code does (`?loess` says span¹ᐟᵖ).
+- **Tests.** Unit tests for the spec (JSON round trip, a refusal sentence per kind of mismatch,
+  where a count is drawn), show me and every preset, bins, quantiles, intervals, KDE and both
+  smoothers. Integration tests on Postgres and SQLite against ten houses worked by hand: bins by
+  width and by Freedman–Diaconis, counts, means, medians, quartiles, a box plot with an outlier
+  and its shortened whisker, a t interval, reproducible samples, wrap facets, a fold, a log
+  scale's warning, densities per group, both smoothers, and the refusals. An `sc-server` test
+  drives the three endpoints, including a histogram of a million rows that returns its 100 bins
+  (under a second in a debug build) and a scatter plot of them that returns a 10,000-row sample.
+- **Reference values from R.** `crates/sc-analytics/tests/r/plot_reference.R` (base R only, on
+  R's `cars` and `faithful`) records `plot_reference.json`, which the `plot::math` tests read:
+  `quantile()` type 7 and `t.test()` intervals to 1e-12; `lm` coefficients, σ and the 80-point
+  confidence band at two levels to 1e-10; `bw.nrd0` and `density()`'s grid to 1e-14, the exact
+  Gaussian estimate at it to 1e-12, and `density()`'s binned values within 0.03% of the peak (our
+  fine-bin estimate within 0.05%); and three `loess(surface = "direct")` fits (spans 0.3, 0.75
+  and 2, with ties) whose curves agree to 1e-10, bands to 1e-8 and δs to 1e-10. Re-record with
+  `Rscript crates/sc-analytics/tests/r/plot_reference.R` (recorded with R 4.5.0).
+
 ## Analytics: the Dataset editor is not a workspace
 
 The Analytics UI's front page now lists the **datasets** and, below them, the **workspaces**.

@@ -234,27 +234,27 @@ explorer"). No drag and drop yet.
 
 ## Phase 1 — The plot spec
 
-- [ ] A2.1 The spec types in `sc-analytics`: data (a dataset reference), layers (mark,
+- [x] A2.1 The spec types in `sc-analytics`: data (a dataset reference), layers (mark,
       encodings, stat), scales, coordinates, facets and selections (declared now, used in
       A6), serialised as JSON. Validation against the dataset's shape: the columns exist and
       their types suit the encodings, with sentences for each refusal. Tests.
-- [ ] A2.2 Mark choice from column types (the "show me" rules) and the gallery presets as
+- [x] A2.2 Mark choice from column types (the "show me" rules) and the gallery presets as
       functions from a dataset shape to a spec: histogram, bar, line, scatter, box, heatmap,
       area, and the map item shown disabled until A5. Tests.
 
 ## Phase 2 — Stats on the server
 
-- [ ] A2.3 The stat compiler: a spec's stats become SQL over the dataset's compiled query, with
+- [x] A2.3 The stat compiler: a spec's stats become SQL over the dataset's compiled query, with
       facets and colour groups as extra `GROUP BY` keys. Bin (Freedman-Diaconis by default),
       count, aggregate, quantiles and the box plot's five-number summary (percentiles in SQL
       on Postgres; computed in memory on SQLite), summary with a confidence interval. Tests on
       both drivers.
-- [ ] A2.4 Density (kernel density estimate) and smoothers (linear from SQL regression
+- [x] A2.4 Density (kernel density estimate) and smoothers (linear from SQL regression
       aggregates; loess in memory on a sample) computed on the server and returned as shapes.
-      Tests against R reference values.
-- [ ] A2.5 Layers that draw rows take a random sample above a limit (10,000 by default) and
+      Tests against R reference values (`crates/sc-analytics/tests/r/plot_reference.R`).
+- [x] A2.5 Layers that draw rows take a random sample above a limit (10,000 by default) and
       return `sampled: true` with the total. Tests.
-- [ ] A2.6 The `render_plot(spec)` endpoint: each layer's data and the resolved scale domains,
+- [x] A2.6 The `render_plot(spec)` endpoint: each layer's data and the resolved scale domains,
       or the sentence saying why the spec cannot be drawn. Tests in `sc-server`, including a
       histogram of a million rows that returns only the bins.
 

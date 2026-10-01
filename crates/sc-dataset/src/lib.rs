@@ -33,7 +33,7 @@ mod walk;
 
 pub use compile::{
     BaseReport, Compilation, Library, MAX_RANGE_VALUES, OpStatus, OperationReport, Options,
-    ROW_KEY, Restriction, Stage, compile,
+    ROW_KEY, Restriction, Stage, compile, scramble,
 };
 pub use def::{
     AggregateOp, Base, CalculatedOp, CompleteColumn, CompleteOp, CompleteValues, DatasetDef,

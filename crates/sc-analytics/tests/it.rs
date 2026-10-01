@@ -4,3 +4,6 @@
 
 #[path = "workspaces.rs"]
 mod workspaces;
+
+#[path = "plots.rs"]
+mod plots;

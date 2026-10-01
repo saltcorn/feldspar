@@ -1,10 +1,11 @@
-//! The Analytics UI's handlers (analytics TODO A1.13): datasets and
-//! workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
+//! The Analytics UI's handlers (analytics TODO A1.13, A2.6): datasets, plots
+//! and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
 //! declared in `sc-api`'s `analytics.rs`, which says what each one is for.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use sc_analytics::plot::{self, PlotSpec};
 use sc_analytics::{Workspace, WorkspaceId, WorkspaceKind};
 use sc_catalog::Catalog;
 use sc_dataset::{
@@ -304,6 +305,86 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                         })
                         .collect(),
                 )))
+            }
+        }
+    });
+
+    // --- plots ---------------------------------------------------------------
+
+    reg.register("renderPlot", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let spec: PlotSpec = serde_json::from_value(
+                    ctx.body
+                        .get("spec")
+                        .cloned()
+                        .ok_or_else(|| Error::invalid("`spec` is required"))?,
+                )
+                .map_err(|e| Error::invalid(format!("`spec` is not a plot spec: {e}")))?;
+                let rendered = plot::render_plot(&catalog, &spec).await?;
+                Ok(HandlerResponse::ok(
+                    serde_json::to_value(rendered).map_err(|e| {
+                        Error::serde(format!("a plot's data does not serialise: {e}"))
+                    })?,
+                ))
+            }
+        }
+    });
+
+    reg.register("plotGallery", move |_ctx| async move {
+        Ok(HandlerResponse::ok(json!(plot::gallery())))
+    });
+
+    reg.register("suggestPlot", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id: DatasetId = ctx
+                    .body
+                    .get("dataset")
+                    .and_then(Json::as_str)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| Error::invalid("`dataset` is required, as a dataset's id"))?;
+                let assignment: plot::Assignment = match ctx.body.get("assignment") {
+                    None | Some(Json::Null) => plot::Assignment::default(),
+                    Some(a) => serde_json::from_value(a.clone()).map_err(|e| {
+                        Error::invalid(format!("`assignment` is not a set of drop zones: {e}"))
+                    })?,
+                };
+                let named = |key: &str| ctx.body.get(key).filter(|v| !v.is_null()).cloned();
+                let preset: Option<plot::Preset> = named("preset")
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|e| Error::invalid(format!("`preset` is not a gallery item: {e}")))?;
+                let mark: Option<plot::Mark> = named("mark")
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|e| Error::invalid(format!("`mark` is not a mark: {e}")))?;
+                let def = sc_dataset::require_dataset(&catalog, id).await?;
+                let (schema, library) = world(&catalog, &def).await?;
+                let compiled = compile(&schema, &library, &def, Options::default());
+                let shape = match compiled.last() {
+                    Ok(stage) => stage.shape(),
+                    Err(e) => {
+                        return Ok(HandlerResponse::ok(json!({
+                            "error": format!("the dataset `{}` does not read: {e}", def.name),
+                        })));
+                    }
+                };
+                let data = plot::DataRef::Dataset { dataset: id };
+                let answer = match preset {
+                    Some(p) => plot::preset(p, data, &shape, &assignment).map(
+                        |(spec, assignment)| json!({ "spec": spec, "assignment": assignment }),
+                    ),
+                    None => plot::show_me(data, &shape, &assignment, mark)
+                        .map(|spec| json!({ "spec": spec, "assignment": assignment })),
+                };
+                Ok(HandlerResponse::ok(
+                    answer.unwrap_or_else(|error| json!({ "error": error })),
+                ))
             }
         }
     });

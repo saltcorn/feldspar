@@ -1,5 +1,5 @@
-//! The Analytics UI's endpoints (analytics TODO A1.13): datasets and
-//! workspaces.
+//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6): datasets, plots
+//! and workspaces.
 //!
 //! Admin-only in this milestone, like everything else under `/api`: A9 is
 //! where a restricted application's users reach a subset of them under their
@@ -206,6 +206,80 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("columns", TypeSchema::array(TypeSchema::json())),
             StructField::new("primary_key", TypeSchema::optional(TypeSchema::text())),
         ])))
+        .auth(AuthRequirement::admin()),
+    );
+
+    // --- plots ---------------------------------------------------------------
+
+    // A plot's data (A2.6): each layer's rows after its stat — bins, boxes,
+    // curves, or a sample of the rows — and the domains each channel spans.
+    // A spec that cannot be drawn is not an error of the request: it answers
+    // `error` (the first reason, as a sentence) and `problems` (all of them),
+    // which the explorer shows in place of the plot.
+    set.register(
+        Endpoint::new("renderPlot", Method::Post, api().lit("plots").lit("render"))
+            .input(TypeSchema::struct_of([StructField::new(
+                "spec",
+                TypeSchema::json(),
+            )]))
+            .output(TypeSchema::struct_of([
+                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+                StructField::new(
+                    "problems",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+                ),
+                StructField::new(
+                    "layers",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+                ),
+                StructField::new("domains", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("facets", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("bins", TypeSchema::optional(TypeSchema::json())),
+                StructField::new(
+                    "warnings",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+                ),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    // The gallery's items, the map shown disabled until A5.
+    set.register(
+        Endpoint::new(
+            "plotGallery",
+            Method::Get,
+            api().lit("plots").lit("gallery"),
+        )
+        .output(TypeSchema::array(TypeSchema::struct_of([
+            StructField::new("preset", TypeSchema::text()),
+            StructField::new("label", TypeSchema::text()),
+            StructField::new("available", TypeSchema::bool()),
+            StructField::new("arrives_in", TypeSchema::optional(TypeSchema::text())),
+        ])))
+        .auth(AuthRequirement::admin()),
+    );
+
+    // The spec for what is on the drop zones (A2.2): by a gallery preset, which
+    // fills the zones it needs, or by the column types, drawn as `mark` when
+    // the mark palette chose one. Answers the spec and the drop zones as the
+    // preset left them, or `error` when nothing can be drawn yet.
+    set.register(
+        Endpoint::new(
+            "suggestPlot",
+            Method::Post,
+            api().lit("plots").lit("suggest"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("dataset", TypeSchema::uuid()),
+            StructField::new("assignment", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("preset", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("mark", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("spec", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("assignment", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+        ]))
         .auth(AuthRequirement::admin()),
     );
 

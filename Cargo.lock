@@ -8293,6 +8293,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "sc-catalog",
+ "sc-dataset",
  "sc-db",
  "sc-db-postgres",
  "sc-db-sqlite",
@@ -8302,6 +8303,7 @@ dependencies = [
  "sc-types",
  "serde",
  "serde_json",
+ "statrs",
  "tokio",
  "uuid",
 ]

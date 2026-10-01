@@ -370,6 +370,24 @@ impl Stage {
         Ok(self.finish(select))
     }
 
+    /// The query reading this stage's visible columns in no particular order:
+    /// what a plot's stats are computed over (analytics TODO A2.3), wrapped as
+    /// a subquery. Leaving the order out spares the database a sort that a
+    /// histogram of a million rows would only throw away.
+    pub fn unordered_query(&self) -> Result<Select, String> {
+        let (sealed, alias) = self.sealed_for_read();
+        let columns: Vec<Projection> = self
+            .cols
+            .iter()
+            .filter(|c| !c.hidden)
+            .map(|c| Projection::expr_as(Expr::qcol(alias.clone(), c.name.clone()), c.name.clone()))
+            .collect();
+        if columns.is_empty() {
+            return Err("the dataset has no columns at this stage".to_owned());
+        }
+        Ok(self.finish(Select::from(sealed.from).columns(columns)))
+    }
+
     /// The query counting this stage's rows, restricted.
     pub fn count_query(&self, restrict: Option<&Restriction>) -> Result<Select, String> {
         let (sealed, alias) = self.sealed_for_read();
@@ -1459,11 +1477,9 @@ impl Compiler<'_> {
                 stage.closed = true;
             }
             LimitMode::Sample => {
-                // A random sample reproducible from its seed on both
-                // databases, neither of which can seed `random()` per query:
-                // each row's position in the order is scrambled by
-                // multiply-and-square steps modulo the prime 2³¹−1 (every
-                // product fits in 63 bits), and the smallest N are kept.
+                // A random sample reproducible from its seed: each row's
+                // position in the order is scrambled (see `scramble`) and
+                // the smallest N are kept.
                 if stage.closed {
                     self.seal(&mut stage);
                 }
@@ -1480,22 +1496,7 @@ impl Compiler<'_> {
                     .col(&position)
                     .map(|c| c.expr.clone())
                     .unwrap_or(Expr::lit(0_i64));
-                const M: i64 = 2_147_483_647;
-                let int = |v: i64| typed(Value::Int(v), ColType::Int);
-                let modm = |e: Expr| Expr::binary(BinOp::Mod, e, int(M));
-                let seed = l.seed.rem_euclid(M);
-                let x1 = modm(Expr::binary(
-                    BinOp::Add,
-                    Expr::binary(BinOp::Mul, modm(p), int(48_271)),
-                    int(seed),
-                ));
-                let x2 = modm(Expr::binary(
-                    BinOp::Add,
-                    Expr::binary(BinOp::Mul, x1.clone(), x1),
-                    int(seed.wrapping_mul(7_919).rem_euclid(M)),
-                ));
-                let x3 = modm(Expr::binary(BinOp::Mul, x2, int(16_807)));
-                let mut order = vec![sorted(x3, false)];
+                let mut order = vec![sorted(scramble(p, l.seed), false)];
                 order.extend(stage.tie_break());
                 stage.limit_order = order;
                 stage.limit = Some(l.n);
@@ -2520,6 +2521,29 @@ fn text_cast(e: &Expr) -> Option<Expr> {
         }
         _ => None,
     }
+}
+
+/// A row's `position` (a whole number, e.g. a `row_number()`) scrambled into
+/// a pseudo-random sort key reproducible from `seed` on both databases, neither
+/// of which can seed `random()` per query: multiply-and-square steps modulo the
+/// prime 2³¹−1, every product fitting in 63 bits. Ordering by it and keeping the
+/// first N is a random sample of N — a Limit's (A1.4) and a plot's (A2.5).
+pub fn scramble(position: Expr, seed: i64) -> Expr {
+    const M: i64 = 2_147_483_647;
+    let int = |v: i64| typed(Value::Int(v), ColType::Int);
+    let modm = |e: Expr| Expr::binary(BinOp::Mod, e, int(M));
+    let seed = seed.rem_euclid(M);
+    let x1 = modm(Expr::binary(
+        BinOp::Add,
+        Expr::binary(BinOp::Mul, modm(position), int(48_271)),
+        int(seed),
+    ));
+    let x2 = modm(Expr::binary(
+        BinOp::Add,
+        Expr::binary(BinOp::Mul, x1.clone(), x1),
+        int(seed.wrapping_mul(7_919).rem_euclid(M)),
+    ));
+    modm(Expr::binary(BinOp::Mul, x2, int(16_807)))
 }
 
 /// A `lag`/`lead` offset: Postgres declares it `integer`, not `bigint`.

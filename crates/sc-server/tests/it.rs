@@ -33,6 +33,8 @@ mod agent_chat;
 mod analytics_api;
 #[path = "analytics_done.rs"]
 mod analytics_done;
+#[path = "analytics_plots.rs"]
+mod analytics_plots;
 #[path = "analytics_route.rs"]
 mod analytics_route;
 #[path = "analytics_spa_typecheck.rs"]
