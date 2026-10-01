@@ -302,7 +302,9 @@ export type DatasetColumnValuesResponse = Array<unknown>;
 export type ListDatasetTablesResponse = Array<{ name: string; columns: Array<unknown>; primary_key?: string | null }>;
 export type RenderPlotRequest = { spec: unknown };
 export type RenderPlotResponse = { error?: string | null; problems?: Array<string> | null; layers?: Array<unknown> | null; domains?: unknown | null; facets?: unknown | null; bins?: unknown | null; warnings?: Array<string> | null };
-export type PlotGalleryResponse = Array<{ preset: string; label: string; available: boolean; arrives_in?: string | null }>;
+export type RenderTableRequest = { spec: unknown };
+export type RenderTableResponse = { error?: string | null; problems?: Array<string> | null; rows?: Array<string> | null; columns?: Array<string> | null; cells?: Array<string> | null; body?: unknown | null; row_totals?: unknown | null; column_totals?: unknown | null; grand_total?: unknown | null; bins?: unknown | null; total?: number | null; truncated?: boolean | null };
+export type PlotGalleryResponse = Array<{ preset: string; label: string; available: boolean; reshapes: boolean; arrives_in?: string | null }>;
 export type SuggestPlotRequest = { dataset: string; assignment?: unknown | null; preset?: string | null; mark?: string | null };
 export type SuggestPlotResponse = { spec?: unknown | null; assignment?: unknown | null; error?: string | null };
 export type ListWorkspaceKindsResponse = Array<{ kind: string; label: string; available: boolean; arrives_in?: string | null }>;
@@ -513,6 +515,7 @@ export interface ApiClient {
   datasetColumnValues(body: DatasetColumnValuesRequest): Promise<DatasetColumnValuesResponse>;
   listDatasetTables(): Promise<ListDatasetTablesResponse>;
   renderPlot(body: RenderPlotRequest): Promise<RenderPlotResponse>;
+  renderTable(body: RenderTableRequest): Promise<RenderTableResponse>;
   plotGallery(): Promise<PlotGalleryResponse>;
   suggestPlot(body: SuggestPlotRequest): Promise<SuggestPlotResponse>;
   listWorkspaceKinds(): Promise<ListWorkspaceKindsResponse>;
@@ -2243,6 +2246,15 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("renderPlot", res);
       return (await res.json()) as RenderPlotResponse;
+    },
+    async renderTable(body) {
+      const res = await doFetch(`${baseUrl}/api/plots/table`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("renderTable", res);
+      return (await res.json()) as RenderTableResponse;
     },
     async plotGallery() {
       const res = await doFetch(`${baseUrl}/api/plots/gallery`, {

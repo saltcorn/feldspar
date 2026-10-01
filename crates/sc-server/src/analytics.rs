@@ -1,4 +1,4 @@
-//! The Analytics UI's handlers (analytics TODO A1.13, A2.6): datasets, plots
+//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8): datasets, plots
 //! and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
 //! declared in `sc-api`'s `analytics.rs`, which says what each one is for.
 
@@ -327,6 +327,28 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 Ok(HandlerResponse::ok(
                     serde_json::to_value(rendered).map_err(|e| {
                         Error::serde(format!("a plot's data does not serialise: {e}"))
+                    })?,
+                ))
+            }
+        }
+    });
+
+    reg.register("renderTable", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let spec: plot::TableSpec = serde_json::from_value(
+                    ctx.body
+                        .get("spec")
+                        .cloned()
+                        .ok_or_else(|| Error::invalid("`spec` is required"))?,
+                )
+                .map_err(|e| Error::invalid(format!("`spec` is not a summary table: {e}")))?;
+                let rendered = plot::render_table(&catalog, &spec).await?;
+                Ok(HandlerResponse::ok(
+                    serde_json::to_value(rendered).map_err(|e| {
+                        Error::serde(format!("a table's data does not serialise: {e}"))
                     })?,
                 ))
             }

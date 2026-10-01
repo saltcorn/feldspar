@@ -106,7 +106,7 @@ impl WorkspaceKind {
     /// is): the Analytics UI plan's A2–A9. The notebook is not scheduled.
     pub fn arrives_in(self) -> Option<&'static str> {
         match self {
-            WorkspaceKind::DataExplorer => Some("A2"),
+            WorkspaceKind::DataExplorer => None,
             WorkspaceKind::ModelFit => Some("A3"),
             WorkspaceKind::Report => Some("A4"),
             WorkspaceKind::Map => Some("A5"),
@@ -416,16 +416,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_seven_kinds_parse_and_none_is_here_before_a2() {
+    fn all_seven_kinds_parse_and_only_the_data_explorer_is_here() {
         for kind in WorkspaceKind::ALL {
             assert_eq!(WorkspaceKind::parse(kind.as_str()).expect("parses"), kind);
         }
-        assert!(WorkspaceKind::ALL.iter().all(|k| !k.is_available()));
+        let here: Vec<WorkspaceKind> = WorkspaceKind::ALL
+            .into_iter()
+            .filter(|k| k.is_available())
+            .collect();
+        assert_eq!(here, vec![WorkspaceKind::DataExplorer]);
+        WorkspaceKind::DataExplorer.check_available().expect("A2");
         assert_eq!(WorkspaceKind::Map.arrives_in(), Some("A5"));
-        let err = WorkspaceKind::DataExplorer
-            .check_available()
-            .expect_err("A2");
-        assert!(err.to_string().contains("milestone A2"), "{err}");
+        let err = WorkspaceKind::ModelFit.check_available().expect_err("A3");
+        assert!(err.to_string().contains("milestone A3"), "{err}");
         // The Dataset editor is not a kind of workspace.
         assert!(WorkspaceKind::parse("dataset_editor").is_err());
         assert!(WorkspaceKind::parse("spreadsheet").is_err());

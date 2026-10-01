@@ -1,4 +1,4 @@
-//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6): datasets, plots
+//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8): datasets, plots
 //! and workspaces.
 //!
 //! Admin-only in this milestone, like everything else under `/api`: A9 is
@@ -243,7 +243,47 @@ pub(crate) fn register(set: &mut EndpointSet) {
             .auth(AuthRequirement::admin()),
     );
 
-    // The gallery's items, the map shown disabled until A5.
+    // A summary table's data (A2.8): the cells for each combination of the
+    // row and column dimensions' values, and the totals. Answers `error` and
+    // `problems`, as `renderPlot` does, for a spec that cannot be made.
+    set.register(
+        Endpoint::new("renderTable", Method::Post, api().lit("plots").lit("table"))
+            .input(TypeSchema::struct_of([StructField::new(
+                "spec",
+                TypeSchema::json(),
+            )]))
+            .output(TypeSchema::struct_of([
+                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+                StructField::new(
+                    "problems",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+                ),
+                StructField::new(
+                    "rows",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+                ),
+                StructField::new(
+                    "columns",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+                ),
+                StructField::new(
+                    "cells",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+                ),
+                StructField::new("body", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("row_totals", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("column_totals", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("grand_total", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("bins", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("total", TypeSchema::optional(TypeSchema::int())),
+                StructField::new("truncated", TypeSchema::optional(TypeSchema::bool())),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    // The gallery's items, the map shown disabled until A5. `reshapes` marks
+    // the presets that build their spec from what is dropped every time
+    // (scatterplot matrix, parallel coordinates, correlation heatmap, mosaic).
     set.register(
         Endpoint::new(
             "plotGallery",
@@ -254,6 +294,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("preset", TypeSchema::text()),
             StructField::new("label", TypeSchema::text()),
             StructField::new("available", TypeSchema::bool()),
+            StructField::new("reshapes", TypeSchema::bool()),
             StructField::new("arrives_in", TypeSchema::optional(TypeSchema::text())),
         ])))
         .auth(AuthRequirement::admin()),

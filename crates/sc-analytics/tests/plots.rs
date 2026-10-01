@@ -31,10 +31,10 @@ use sc_test_harness::TestDb;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value as Json, json};
 
-struct Fixture {
-    cat: Catalog,
-    backend: &'static str,
-    houses: DatasetId,
+pub(crate) struct Fixture {
+    pub(crate) cat: Catalog,
+    pub(crate) backend: &'static str,
+    pub(crate) houses: DatasetId,
     _db: Option<TestDb>,
 }
 
@@ -133,7 +133,7 @@ async fn fill(cat: &Catalog) -> Result<DatasetId> {
     Ok(def.id)
 }
 
-async fn both() -> Result<Vec<Fixture>> {
+pub(crate) async fn both() -> Result<Vec<Fixture>> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let pg = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
@@ -157,11 +157,11 @@ async fn both() -> Result<Vec<Fixture>> {
     ])
 }
 
-fn spec(fx: &Fixture, layer: Layer) -> PlotSpec {
+pub(crate) fn spec(fx: &Fixture, layer: Layer) -> PlotSpec {
     PlotSpec::single(DataRef::Dataset { dataset: fx.houses }, layer)
 }
 
-async fn draw(fx: &Fixture, spec: &PlotSpec) -> PlotData {
+pub(crate) async fn draw(fx: &Fixture, spec: &PlotSpec) -> PlotData {
     match render_plot(&fx.cat, spec).await.expect("renders") {
         Rendered::Plot(data) => data,
         Rendered::Refused { problems, .. } => {
@@ -170,7 +170,7 @@ async fn draw(fx: &Fixture, spec: &PlotSpec) -> PlotData {
     }
 }
 
-async fn refused(fx: &Fixture, spec: &PlotSpec) -> String {
+pub(crate) async fn refused(fx: &Fixture, spec: &PlotSpec) -> String {
     match render_plot(&fx.cat, spec).await.expect("answers") {
         Rendered::Refused { error, .. } => error,
         Rendered::Plot(_) => panic!("on {}: drew {spec:?}", fx.backend),
@@ -179,7 +179,7 @@ async fn refused(fx: &Fixture, spec: &PlotSpec) -> String {
 
 /// Assert two tables of JSON are equal, numbers compared as numbers.
 #[track_caller]
-fn assert_rows(backend: &str, actual: &[Vec<Json>], expected: &[Vec<Json>]) {
+pub(crate) fn assert_rows(backend: &str, actual: &[Vec<Json>], expected: &[Vec<Json>]) {
     let same = actual.len() == expected.len()
         && actual.iter().zip(expected).all(|(a, e)| {
             a.len() == e.len()

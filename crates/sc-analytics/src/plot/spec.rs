@@ -91,6 +91,13 @@ impl PlotSpec {
 
 /// Several columns turned into two — which column a value came from, and the
 /// value — before anything is drawn.
+///
+/// With `pairs`, every row becomes one row per *pair* of the columns instead,
+/// with four columns: `{key}_x` and `{value}_x` for the first of the pair,
+/// `{key}_y` and `{value}_y` for the second. A scatterplot matrix is a scatter
+/// plot of `value_y` against `value_x` faceted by `variable_y` and
+/// `variable_x`, and a correlation heatmap is the correlation of the two
+/// values for each pair (A2.11).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fold {
     /// The columns, at least two, all numbers.
@@ -101,6 +108,17 @@ pub struct Fold {
     /// The name of the column holding the value.
     #[serde(default = "Fold::default_value")]
     pub value: String,
+    /// One row per pair of columns rather than per column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairs: Option<Pairs>,
+}
+
+/// Which pairs a fold into pairs makes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pairs {
+    /// Whether a column is paired with itself too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub diagonal: bool,
 }
 
 impl Fold {
@@ -118,7 +136,30 @@ impl Fold {
             columns: columns.into_iter().map(Into::into).collect(),
             key: Fold::default_key(),
             value: Fold::default_value(),
+            pairs: None,
         }
+    }
+
+    /// A fold of `columns` into pairs, each column paired with itself too
+    /// when `diagonal`.
+    pub fn pairs(columns: impl IntoIterator<Item = impl Into<String>>, diagonal: bool) -> Fold {
+        Fold {
+            pairs: Some(Pairs { diagonal }),
+            ..Fold::of(columns)
+        }
+    }
+
+    /// The columns a fold into pairs makes: the first column's name and value,
+    /// the second's name and value (`variable_x`, `value_x`, `variable_y`,
+    /// `value_y`).
+    pub fn pair_names(&self) -> [String; 4] {
+        let (key, value) = (self.key.trim(), self.value.trim());
+        [
+            format!("{key}_x"),
+            format!("{value}_x"),
+            format!("{key}_y"),
+            format!("{value}_y"),
+        ]
     }
 }
 
@@ -322,11 +363,14 @@ pub enum Mark {
     Text,
     /// A rectangle per X and Y: a heatmap's cell.
     Rect,
+    /// A mosaic's tiles: one column per value of X as wide as its share of the
+    /// rows, split by the values of Y in proportion to their counts (A2.11).
+    Mosaic,
 }
 
 impl Mark {
     /// Every mark, in the order the mark palette shows them.
-    pub const ALL: [Mark; 9] = [
+    pub const ALL: [Mark; 10] = [
         Mark::Point,
         Mark::Line,
         Mark::Bar,
@@ -336,6 +380,7 @@ impl Mark {
         Mark::Text,
         Mark::Band,
         Mark::Errorbar,
+        Mark::Mosaic,
     ];
 
     /// Its name in a sentence.
@@ -350,6 +395,7 @@ impl Mark {
             Mark::Errorbar => "error bars",
             Mark::Text => "text",
             Mark::Rect => "a heatmap",
+            Mark::Mosaic => "a mosaic",
         }
     }
 }
@@ -463,6 +509,16 @@ pub enum Stat {
         #[serde(default = "default_level")]
         level: f64,
     },
+    /// Pearson's correlation of two number columns for each combination of
+    /// the channels' values: a correlation heatmap's cells (A2.11). Its
+    /// columns are named here rather than encoded, because X and Y are what
+    /// the correlations are grouped by.
+    Correlation {
+        /// One column.
+        x: String,
+        /// The other.
+        y: String,
+    },
 }
 
 fn default_coef() -> f64 {
@@ -497,6 +553,7 @@ impl Stat {
             Stat::Summary { .. } => "summary",
             Stat::Density { .. } => "density",
             Stat::Smooth { .. } => "smooth",
+            Stat::Correlation { .. } => "correlation",
         }
     }
 
@@ -511,6 +568,7 @@ impl Stat {
             Stat::Summary { .. } => "a mean with a confidence interval",
             Stat::Density { .. } => "a density",
             Stat::Smooth { .. } => "a smoother",
+            Stat::Correlation { .. } => "a correlation",
         }
     }
 
@@ -635,6 +693,9 @@ pub enum Coord {
     Flipped,
     /// X around, Y outwards.
     Polar,
+    /// One vertical axis per value of X (a fold's columns), and each row a
+    /// line across them: parallel coordinates (A2.11).
+    Parallel,
 }
 
 impl Coord {
@@ -658,6 +719,27 @@ pub struct Facet {
     /// How many plots a wrapped row holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub columns: Option<u32>,
+    /// Whether the small multiples share their axes.
+    #[serde(default, skip_serializing_if = "FacetScales::is_fixed")]
+    pub scales: FacetScales,
+}
+
+/// Whether small multiples share their axes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FacetScales {
+    /// Every plot has the same axes.
+    #[default]
+    Fixed,
+    /// Each column of plots has its own X axis and each row its own Y (each
+    /// plot both, when wrapped): a scatterplot matrix's.
+    Free,
+}
+
+impl FacetScales {
+    fn is_fixed(&self) -> bool {
+        *self == FacetScales::Fixed
+    }
 }
 
 impl Facet {
@@ -715,4 +797,64 @@ pub struct Selection {
     pub kind: SelectionKind,
     /// The channels whose columns it filters on.
     pub channels: Vec<Channel>,
+}
+
+/// A summary table (A2.8): the rows of a dataset grouped by the values of the
+/// row and column dimensions, each cell a summary of a column — the explorer's
+/// drop zones read as a table rather than drawn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TableSpec {
+    /// Where the rows come from.
+    pub data: DataRef,
+    /// Several columns compared as one variable, as a plot's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold: Option<Fold>,
+    /// The columns whose values are the table's rows, outermost first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<FieldDef>,
+    /// The columns whose values are the table's columns, outermost first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<FieldDef>,
+    /// What each cell shows; a count of the rows when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cells: Vec<Cell>,
+    /// Whether to add a total for each row, each column and the whole table.
+    #[serde(default = "default_true")]
+    pub totals: bool,
+}
+
+/// One summary in each cell of a table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cell {
+    /// The column summarised; none for a count of the rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// The summary.
+    pub function: AggregateFn,
+}
+
+impl Cell {
+    /// How many rows.
+    pub fn count() -> Cell {
+        Cell {
+            field: None,
+            function: AggregateFn::Count,
+        }
+    }
+
+    /// `function` of `field`.
+    pub fn of(function: AggregateFn, field: impl Into<String>) -> Cell {
+        Cell {
+            field: Some(field.into()),
+            function,
+        }
+    }
+
+    /// What it shows, in words: "mean of price", "rows".
+    pub fn describe(&self) -> String {
+        match &self.field {
+            None => "rows".to_owned(),
+            Some(f) => format!("{} of {f}", self.function.describe()),
+        }
+    }
 }

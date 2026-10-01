@@ -158,10 +158,20 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
 async fn plots_are_suggested_drawn_and_refused_through_the_api() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
-    // The gallery: seven plot types, and the map waiting for A5.
+    // The gallery: eleven plot types, four of them reshaping the data
+    // themselves, and the map waiting for A5.
     let gallery = client.ok("GET", "/api/plots/gallery", None).await;
     let items = gallery.as_array().unwrap();
-    assert_eq!(items.len(), 8);
+    assert_eq!(items.len(), 12);
+    let reshaping: Vec<&str> = items
+        .iter()
+        .filter(|i| i["reshapes"] == json!(true))
+        .map(|i| i["preset"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        reshaping,
+        vec!["splom", "parallel", "correlation", "mosaic"]
+    );
     let map = items.iter().find(|i| i["preset"] == "map").unwrap();
     assert_eq!(map["available"], json!(false));
     assert_eq!(map["arrives_in"], json!("A5"));
@@ -248,6 +258,71 @@ async fn plots_are_suggested_drawn_and_refused_through_the_api() -> sc_error::Re
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn summary_tables_and_reshaping_presets_through_the_api() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let houses = client.dataset("Houses", "houses").await;
+    let data = json!({ "kind": "dataset", "dataset": houses });
+
+    // Rows by neighbourhood, the mean price in the cells, with totals. Prices
+    // are 1000·(50 + i) + 5000·(i mod 2): North's 30 houses are the even i
+    // (mean i 31), South's the odd (mean i 30, and 5000 more).
+    let table = client
+        .ok(
+            "POST",
+            "/api/plots/table",
+            Some(json!({ "spec": {
+                "data": data,
+                "rows": [{ "field": "neighbourhood" }],
+                "cells": [{ "field": "price", "function": "mean" }],
+            } })),
+        )
+        .await;
+    assert_eq!(table["cells"], json!(["mean of price"]));
+    assert_eq!(table["body"]["columns"], json!(["r0", "n", "v0"]));
+    assert_eq!(
+        table["body"]["rows"],
+        json!([[1, 30, 81000.0], [2, 30, 85000.0]])
+    );
+    assert_eq!(table["grand_total"]["rows"], json!([[60, 83000.0]]));
+    assert_eq!(table["total"], json!(60));
+
+    // A float as rows must be binned: a sentence, not an error.
+    let refused = client
+        .ok(
+            "POST",
+            "/api/plots/table",
+            Some(json!({ "spec": { "data": data, "rows": [{ "field": "area" }] } })),
+        )
+        .await;
+    assert!(
+        refused["error"].as_str().unwrap().ends_with("bin it"),
+        "{refused}"
+    );
+
+    // The correlation heatmap preset picks the numbers and draws every pair.
+    let suggested = client
+        .ok(
+            "POST",
+            "/api/plots/suggest",
+            Some(json!({ "dataset": houses, "preset": "correlation" })),
+        )
+        .await;
+    assert_eq!(
+        suggested["assignment"]["y"],
+        json!([{ "field": "area" }, { "field": "price" }])
+    );
+    let drawn = client.render(suggested["spec"].clone()).await;
+    assert_eq!(drawn["layers"][0]["rows"].as_array().unwrap().len(), 4);
+    let first = &drawn["layers"][0]["rows"][0];
+    assert_eq!(
+        (&first[0], &first[1], &first[3]),
+        (&json!("area"), &json!("area"), &json!(60))
+    );
+    assert!((first[2].as_f64().unwrap() - 1.0).abs() < 1e-12, "{first}");
     Ok(())
 }
 

@@ -2,6 +2,92 @@
 
 Changes in reverse chronological order.
 
+## Analytics A2 phases 3–4: rendering and the Data explorer
+
+The browser half of the Data explorer (`TODO.md` A2.7–A2.11): ECharts rendering of the server's
+plot data, summary tables, the explorer workspace with its gallery, drop zones and mark palette,
+the layers panel, and the gallery presets that reshape their data. The Data explorer is the
+first workspace kind that can be created.
+
+- **ECharts** (A2.7). `ui/analytics` depends on `echarts` 5, imported per chart type in
+  `src/plot/runtime.ts` (bar, line, scatter, box plot, heatmap, custom, parallel; canvas and SVG
+  renderers). `src/plot/echarts.ts` compiles a spec and its `renderPlot` data to an option, as a
+  pure function: small multiples to grids laid out in percentages (wrapped, or rows × columns
+  with column titles above and row titles beside), fixed facet scales to round shared bounds and
+  free ones left to ECharts per axis; layers to series per small multiple and colour group, with
+  `custom` series for what ECharts lacks (histogram bars from bin edges, stacked by colour;
+  confidence bands; error bars; mosaic tiles); discrete colour to series in the palette slot of
+  the value's place in the domain, with a legend, and numeric colour to a `visualMap`
+  (sequential, or diverging for a correlation); log scales, flipped and polar coordinates,
+  reference lines as `markLine`s, and the axis titles once for all the plots. `PlotView` mounts
+  it, resizes with its box and follows the colour scheme. The palette (`src/plot/palette.ts`) is
+  a validated eight-slot categorical one, a one-hue sequential ramp and a blue–grey–red diverging
+  one, each stepped separately for dark mode.
+- **Summary tables** (A2.8). `sc_analytics::plot::render_table` over a new `TableSpec { data,
+  fold, rows, columns, cells, totals }` (cells are an aggregate of a column, or a count of rows),
+  by the plot renderer's machinery: the body, and with totals the Total column, the Total row and
+  the corner, each its own grouped query so that a total summarises rows rather than cells
+  (medians from the percentile query). `validate_table` refuses an unbinned float as a dimension
+  and a summary that does not suit its column, in sentences. `renderTable` (`POST
+  /api/plots/table`) answers the parts as small tables (`r0`…, `c0`…, `n`, `v0`…), which
+  `src/plot/table.ts` lays out and `SummaryTable` draws. From the drop zones: X, Facet rows and
+  Wrap are rows, Color and Facet columns are columns, each number on Y is a cell (a category on Y
+  another column), and floats are binned.
+- **The Data explorer** (A2.9). `WorkspaceKind::DataExplorer` is available. The workspace
+  (`src/explorer/DataExplorer.tsx`): a dataset drop-down (with links to edit it or make a new
+  one), the column list with each column's type, the gallery (the map disabled until A5), nine
+  drop zones taking columns by drag and drop (from the list or from another zone) or from a menu,
+  each chip binnable and removable, the mark palette (Auto underlines the mark the explorer
+  chose), Plot or Summary table, Clear, and the sample and warning sentences under the plot. Its
+  state (`src/explorer/state.ts`) is the choices — dataset, drop zones, mark, a reshaping preset,
+  view, the table's summary and totals, the layers panel's changes — never the spec, which is
+  `suggestPlot`'s answer recomputed on open. A drop on Y replaces what is there; Shift-drop or
+  the zone's **+** adds a column, and several on Y are compared as one variable. The explorer is
+  a lazily loaded chunk, so the front page does not load ECharts.
+- **The layers panel** (A2.10). Add a linear fit, a loess smoother, points, a line, a mean with
+  its interval, a density curve or count labels; change an added layer's mark and stat (a
+  smoother's method, a summary's function) or the first layer's stat; one smoother per colour
+  group or one for all; the X and Y scales (linear, log, square root; from zero or fitted;
+  reversed), the colour scheme, reference lines on X or Y with a label, and the coordinates. Its
+  changes are laid over the explorer's spec (`composeSpec`): an added layer takes X, Y and Color
+  from the first unless its stat makes its own Y (a density, a count), and does not bin what its
+  stat reads as values.
+- **Presets that reshape** (A2.11). The spec gained what they need: `Fold.pairs` (each row once
+  per pair of the columns, as `variable_x`, `value_x`, `variable_y`, `value_y`, the diagonal
+  optional), `Facet.scales: free`, `Stat::Correlation { x, y }` (Pearson's, from the same centred
+  sums as the linear smoother, now shared as `linear_sums`), `Mark::Mosaic` (a count, drawn on
+  Size; X and Y must be categories or binned) and `Coord::Parallel` (the identity layer returns
+  the folded columns side by side as `y_0`, `y_1`…, named in `info.axes`, sampled by row). The
+  gallery's new items — *Scatterplot matrix*, *Parallel coordinates*, *Correlation heatmap*,
+  *Mosaic plot* — are marked `reshapes`, and the explorer keeps them in force so that later drops
+  are read by them again. Each uses the number columns on Y (or the dataset's first four), and
+  Color where it can; the matrix names each column on its diagonal.
+- **Docs.** `TECHNICAL_DESIGN.md` §14.5 describes the explorer, its rendering, summary tables and
+  the reshaping presets (the plot spec's own write-up is A2.15's); §2's crate table and diagram
+  gain the `sc-analytics → sc-dataset` dependency the previous milestone added, which
+  `repo_hygiene` had flagged.
+- **Deviations from the plan.**
+  - The reshaping presets are spec features (pairs, a correlation stat, a mosaic mark, parallel
+    coordinates) rather than reshaping in the browser, so that their stats run in SQL like every
+    other plot's and a panel copied in A4 is still a spec.
+  - Summary tables are their own spec and endpoint rather than a plot with a text mark: their
+    totals need grouping sets that a plot's layers cannot express.
+  - The explorer stores the drop zones, not the spec; `PlotView` is told which columns are
+    categories, since a foreign key's ids are numbers in the server's domains.
+- **Tests.** Rust: summary tables on Postgres and SQLite against the ten houses worked by hand
+  (body, Total column and row, corner; medians by binned rows; no dimensions; refusals); a
+  correlation heatmap, a scatterplot matrix, parallel coordinates and a mosaic through `preset`
+  and `render_plot`; their refusals; an `sc-server` test of `renderTable` and the correlation
+  preset through the API; the workspace kind tests updated now the explorer is here. vitest: the
+  ECharts compiler (histogram stacking, box plots with outliers, flipped bars, log scale with a
+  reference line and a smoother band, wrapped facets with shared bounds, a scatterplot matrix's
+  free axes and titles, a correlation heatmap's diverging scale, parallel coordinates, a foreign
+  key as categories, dark mode, round bounds, mosaic tiles, the notes), the table layout (all
+  four parts, binned rows, columns only), and the explorer's state (drop zones, binning, reading
+  stored state, the table spec, the layers panel). Walked by hand in headless Chromium against
+  `feldspar demo analytics`: every gallery item, drag and drop onto the zones, the mark palette,
+  the layers panel, the summary table, reopening, and dark mode, with no console errors.
+
 ## Analytics A2 phases 1–2: the plot spec and stats on the server
 
 The server half of the Data explorer (`TODO.md` A2.1–A2.6): a plot is a declarative **spec**,

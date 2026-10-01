@@ -195,6 +195,7 @@ graph TD
   analytics --> catalog
   model --> dataset["sc-dataset"]
   api --> dataset
+  analytics --> dataset
   dataset --> catalog
   cli --> stan["sc-stan"]
   server --> stan
@@ -268,7 +269,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-action` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-dataset` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
-| `sc-analytics` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
+| `sc-analytics` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stream` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
@@ -7941,8 +7942,8 @@ workspace and keeps no state of its own beyond the dataset.
 `updated_at`). `kind` is one of the seven of the goals document (Data explorer, Model fit,
 Report, Map, Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
 refuses one whose milestone has not arrived, naming it ("arrives with milestone A2"), and
-`listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — until
-A2, that is all of them. `state` is JSON owned by the kind — an explorer's is its dataset and
+`listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — since
+A2, all but the Data explorer. `state` is JSON owned by the kind — an explorer's is its dataset and
 drop zones — saved as it changes (`saveWorkspaceState`) and restored when the workspace is
 opened.
 
@@ -7974,6 +7975,47 @@ checks as it is typed, dragged to reorder, switched off, deleted, and marked wit
 beside a read-only, virtualised spreadsheet of the stage selected, paged with the admin grid's
 own helpers. The formula input offers the stage's columns, one step along each foreign key and,
 while rows are a table's rows, the child tables' counts and totals.
+
+**The Data explorer** (A2.7–A2.11; `ui/analytics/src/explorer`, `src/plot`). Its state is what
+the person chose — the dataset, the columns on the nine drop zones (X, Y, Color, Size, Shape,
+Label, Facet rows, Facet columns, Wrap; several on Y compared as one variable), the mark
+palette's choice, a gallery preset that reshapes, plot or summary table, and the layers panel's
+changes — never the spec. The spec is the server's answer to the drop zones (`suggestPlot`: the
+"show me" rules, a gallery preset or the chosen mark), with the layers panel's `Extras` laid over
+it in the browser (`composeSpec`: the first layer's stat, added layers that take X, Y and Color
+from the first unless the stat makes its own, scales, reference lines, coordinates); `renderPlot`
+draws it. So an old workspace picks up better rules, and the layers panel's changes survive new
+drops. A gallery preset fills the zones once and becomes the mark — except the four that
+reshape (scatterplot matrix, parallel coordinates, correlation heatmap, mosaic), which stay in
+force and read the zones again on every drop. A drop on Y replaces; Shift-drop or the zone's
+**+** adds a column beside it.
+
+*Rendering.* `plot/echarts.ts` compiles a spec and its layer data to an ECharts option, a pure
+function: a grid and axis pair per small multiple, laid out in percentages (column titles above,
+row titles beside, a free facet scale left to ECharts per axis, a fixed one given round shared
+bounds); a series per layer, small multiple and colour group, ECharts' own where it has the
+mark and a `custom` series where not (histogram bars from bin edges, stacked; confidence bands;
+error bars; mosaic tiles); a discrete colour as series in the palette slot of the value's place
+in the domain, a numeric one as a `visualMap`. It is told which columns are categories (a
+foreign key's ids are numbers to the server). ECharts is imported per chart type
+(`plot/runtime.ts`), and the explorer is a lazily loaded chunk, so the front page does not load
+it. The palette is a validated categorical eight, a one-hue sequential ramp and a blue–grey–red
+diverging one, stepped separately for the dark scheme.
+
+*Summary tables* (A2.8) use the same drop zones: X, Facet rows and Wrap are rows, Color and Facet
+columns are columns, each number on Y a cell (a category on Y another column), floats binned.
+`renderTable` (`sc_analytics::plot::render_table`, the plot renderer's machinery over a
+`TableSpec { data, fold, rows, columns, cells, totals }`) answers the body and, with totals, the
+Total column (by rows), the Total row (by columns) and the corner, each a query of its own so a
+total is a summary of rows, not of cells; `plot/table.ts` lays them out.
+
+*Reshaping presets* (A2.11) are grammar plots over reshaped data, so the spec grew what they
+need: a fold into **pairs** (`Fold.pairs`, one row per pair of columns: `variable_x`, `value_x`,
+`variable_y`, `value_y`), **free facet scales**, a **correlation** stat (Pearson's, from the
+linear smoother's centred sums), a **mosaic** mark (a count drawn on Size, tiles laid out in the
+browser) and **parallel** coordinates (the identity layer reads the folded columns side by side,
+`y_0`, `y_1`…, so that a row is one line). A scatterplot matrix is points of `value_y` against
+`value_x` faceted by the pairs, sampled at 1,000 rows per plot.
 
 **Demo data** (`sc_analytics::demo`, `feldspar demo analytics [--replace]`): `neighbourhoods`,
 `houses` and `viewings`, deterministic and synthetic, shaped as the models tutorial has them.

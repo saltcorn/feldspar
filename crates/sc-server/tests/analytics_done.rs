@@ -166,7 +166,8 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
     // 1. The front page: no datasets and no workspaces yet, and every kind of
-    // workspace listed with the milestone that brings it.
+    // workspace listed with the milestone that brings it — every kind but A2's
+    // Data explorer, which is here now.
     assert_eq!(client.ok("GET", "/api/datasets", None).await, json!([]));
     assert_eq!(client.ok("GET", "/api/workspaces", None).await, json!([]));
     let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
@@ -175,6 +176,7 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
             .as_array()
             .unwrap()
             .iter()
+            .filter(|k| k["kind"] != "data_explorer")
             .all(|k| k["available"] == json!(false) && k["arrives_in"].is_string()),
         "{kinds}"
     );
@@ -322,9 +324,7 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     assert_eq!(listed[0]["id"], json!(id));
     assert_eq!(listed[0]["name"], json!("House prices by area"));
     assert_eq!(listed[0]["operations"], json!(4));
-    let reopened = client
-        .ok("GET", &format!("/api/datasets/{id}"), None)
-        .await;
+    let reopened = client.ok("GET", &format!("/api/datasets/{id}"), None).await;
     let ids: Vec<&str> = reopened["dataset"]["operations"]
         .as_array()
         .unwrap()

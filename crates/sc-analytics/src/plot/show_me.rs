@@ -31,8 +31,10 @@
 use sc_dataset::{ColType, Grain, StageShape};
 use serde::{Deserialize, Serialize};
 
+use super::render::MAX_SAMPLE;
 use super::spec::{
-    AggregateFn, Channel, Coord, DataRef, Facet, FieldDef, Fold, Layer, Mark, PlotSpec, Stat,
+    AggregateFn, Channel, Coord, DataRef, Facet, FacetScales, FieldDef, Fold, Layer, Mark,
+    PlotSpec, Scale, Stat,
 };
 
 /// The columns on the explorer's drop zones.
@@ -85,13 +87,21 @@ pub enum Preset {
     Heatmap,
     /// A line filled to zero.
     Area,
+    /// Every pair of several numbers, a scatter plot each (A2.11).
+    Splom,
+    /// Several numbers, each row a line across one axis per number.
+    Parallel,
+    /// The correlation of every pair of several numbers.
+    Correlation,
+    /// Counts by two categories, as tiles in proportion.
+    Mosaic,
     /// Points or regions on a map (A5).
     Map,
 }
 
 impl Preset {
     /// Every item, in gallery order.
-    pub const ALL: [Preset; 8] = [
+    pub const ALL: [Preset; 12] = [
         Preset::Histogram,
         Preset::Bar,
         Preset::Line,
@@ -99,8 +109,21 @@ impl Preset {
         Preset::Box,
         Preset::Heatmap,
         Preset::Area,
+        Preset::Splom,
+        Preset::Parallel,
+        Preset::Correlation,
+        Preset::Mosaic,
         Preset::Map,
     ];
+
+    /// Whether it reshapes the data itself, so that what is dropped later is
+    /// read by it again rather than by the "show me" rules.
+    pub fn reshapes(self) -> bool {
+        matches!(
+            self,
+            Preset::Splom | Preset::Parallel | Preset::Correlation | Preset::Mosaic
+        )
+    }
 
     /// Its name as the JSON spells it.
     pub fn as_str(self) -> &'static str {
@@ -112,6 +135,10 @@ impl Preset {
             Preset::Box => "box",
             Preset::Heatmap => "heatmap",
             Preset::Area => "area",
+            Preset::Splom => "splom",
+            Preset::Parallel => "parallel",
+            Preset::Correlation => "correlation",
+            Preset::Mosaic => "mosaic",
             Preset::Map => "map",
         }
     }
@@ -126,6 +153,10 @@ impl Preset {
             Preset::Box => "Box plot",
             Preset::Heatmap => "Heatmap",
             Preset::Area => "Area chart",
+            Preset::Splom => "Scatterplot matrix",
+            Preset::Parallel => "Parallel coordinates",
+            Preset::Correlation => "Correlation heatmap",
+            Preset::Mosaic => "Mosaic plot",
             Preset::Map => "Map",
         }
     }
@@ -148,6 +179,8 @@ pub struct GalleryItem {
     pub label: &'static str,
     /// Whether it can be picked.
     pub available: bool,
+    /// Whether it reshapes the data itself ([`Preset::reshapes`]).
+    pub reshapes: bool,
     /// The milestone that brings it, when it cannot.
     pub arrives_in: Option<&'static str>,
 }
@@ -160,6 +193,7 @@ pub fn gallery() -> Vec<GalleryItem> {
             preset,
             label: preset.label(),
             available: preset.arrives_in().is_none(),
+            reshapes: preset.reshapes(),
             arrives_in: preset.arrives_in(),
         })
         .collect()
@@ -364,6 +398,19 @@ pub fn show_me(
                         (m, Stat::Count)
                     }
                 }
+                Mark::Mosaic => {
+                    if x.is_none() || y.is_none() {
+                        return Err("a mosaic needs a column on both X and Y".to_owned());
+                    }
+                    if kx == Some(C) {
+                        x = binned(&x);
+                    }
+                    if ky == Some(C) {
+                        y = binned(&y);
+                    }
+                    color = None;
+                    (m, Stat::Count)
+                }
                 Mark::Text => {
                     if x.is_none() && y.is_none() {
                         return Err("drop a column on X or Y to draw a plot".to_owned());
@@ -407,8 +454,10 @@ pub fn show_me(
     } else {
         few(color, false)
     };
-    layer.encoding.size = a.size.clone();
-    layer.encoding.shape = few(a.shape.clone(), true);
+    if mark != Mark::Mosaic {
+        layer.encoding.size = a.size.clone();
+        layer.encoding.shape = few(a.shape.clone(), true);
+    }
     layer.encoding.label = a.label.clone();
     let mut spec = PlotSpec::single(data, layer);
     spec.fold = fold;
@@ -417,7 +466,7 @@ pub fn show_me(
         row: few(a.row.clone(), true),
         column: few(a.column.clone(), true),
         wrap: few(wrap, true),
-        columns: None,
+        ..Facet::default()
     };
     Ok(spec)
 }
@@ -449,6 +498,9 @@ pub fn preset(
     };
     let first_y = a.y.first().cloned();
     let need = |what: &str| format!("{} needs {what}", preset.label().to_lowercase());
+    if preset.reshapes() {
+        return reshaping(preset, data, shape, a, &pick);
+    }
     let mark = match preset {
         Preset::Histogram => {
             if !is(&a.x, &[Kind::Continuous]) {
@@ -551,9 +603,159 @@ pub fn preset(
             }
             Mark::Rect
         }
-        Preset::Map => unreachable!("refused above"),
+        Preset::Map | Preset::Splom | Preset::Parallel | Preset::Correlation | Preset::Mosaic => {
+            unreachable!("refused or reshaped above")
+        }
     };
     let spec = show_me(data, shape, &a, Some(mark))?;
+    Ok((spec, a))
+}
+
+/// The most columns a scatterplot matrix, parallel coordinates or a
+/// correlation heatmap picks by itself; more can be dropped on Y.
+const PICKED_NUMBERS: usize = 4;
+
+/// The presets that reshape the data (A2.11): each builds its spec itself
+/// rather than through [`show_me`], over the number columns on Y (or X), or
+/// the first few of the dataset's when fewer than two are dropped.
+fn reshaping(
+    preset: Preset,
+    data: DataRef,
+    shape: &StageShape,
+    mut a: Assignment,
+    pick: &Picker,
+) -> Result<(PlotSpec, Assignment), String> {
+    let need = |what: &str| format!("{} needs {what}", preset.label().to_lowercase());
+    let of_kind =
+        |f: &FieldDef, k: Kind| shape.column(&f.field).is_some() && kind_of(shape, f) == k;
+    if preset == Preset::Mosaic {
+        let x =
+            a.x.clone()
+                .filter(|f| of_kind(f, Kind::Discrete))
+                .or_else(|| pick.category(&[]))
+                .ok_or_else(|| need("two category columns"))?;
+        let y =
+            a.y.iter()
+                .find(|f| of_kind(f, Kind::Discrete) && f.field != x.field)
+                .cloned()
+                .or_else(|| pick.category(&[&x.field]))
+                .ok_or_else(|| need("two category columns"))?;
+        a.x = Some(x.clone());
+        a.y = vec![y.clone()];
+        a.color = None;
+        a.size = None;
+        a.shape = None;
+        let layer = Layer::new(Mark::Mosaic, Stat::Count)
+            .with(Channel::X, x)
+            .with(Channel::Y, y);
+        let mut spec = PlotSpec::single(data, layer);
+        spec.facet = Facet {
+            row: a.row.clone(),
+            column: a.column.clone(),
+            wrap: a.wrap.clone(),
+            ..Facet::default()
+        };
+        return Ok((spec, a));
+    }
+    // The numbers: those dropped, else the dataset's first few.
+    let mut numbers: Vec<String> =
+        a.y.iter()
+            .chain(a.x.iter())
+            .filter(|f| f.bin.is_none() && of_kind(f, Kind::Continuous))
+            .map(|f| f.field.clone())
+            .collect();
+    numbers.dedup();
+    if numbers.len() < 2 {
+        while numbers.len() < PICKED_NUMBERS {
+            let avoid: Vec<&str> = numbers.iter().map(String::as_str).collect();
+            match pick.number(&avoid) {
+                Some(f) => numbers.push(f.field),
+                None => break,
+            }
+        }
+    }
+    if numbers.len() < 2 {
+        return Err(need("two number columns"));
+    }
+    a.x = None;
+    a.y = numbers.iter().map(FieldDef::of).collect();
+    // Color is kept unless it is one of the numbers compared.
+    if a.color.as_ref().is_some_and(|c| numbers.contains(&c.field)) {
+        a.color = None;
+    }
+    let color = a.color.clone();
+    let pairs_of = |diagonal: bool| Fold::pairs(numbers.clone(), diagonal);
+    let spec = match preset {
+        Preset::Splom => {
+            let fold = pairs_of(false);
+            let [kx, vx, ky, vy] = fold.pair_names();
+            let mut layer = Layer::new(Mark::Point, Stat::Identity)
+                .with(Channel::X, FieldDef::of(vx))
+                .with(Channel::Y, FieldDef::of(vy));
+            layer.encoding.color = color;
+            // A thousand points a plot, so the plots are not starved.
+            let plots = (numbers.len() * (numbers.len() - 1)) as u64;
+            layer.sample = Some((1_000 * plots).min(MAX_SAMPLE));
+            let mut spec = PlotSpec::single(data, layer);
+            spec.fold = Some(fold);
+            spec.facet = Facet {
+                row: Some(FieldDef::of(ky)),
+                column: Some(FieldDef::of(kx)),
+                scales: FacetScales::Free,
+                ..Facet::default()
+            };
+            spec
+        }
+        Preset::Parallel => {
+            let fold = Fold::of(numbers.clone());
+            let mut layer = Layer::new(Mark::Line, Stat::Identity)
+                .with(Channel::X, FieldDef::of(fold.key.clone()))
+                .with(Channel::Y, FieldDef::of(fold.value.clone()));
+            layer.encoding.color = color;
+            layer.sample = Some(5_000);
+            let mut spec = PlotSpec::single(data, layer);
+            spec.fold = Some(fold);
+            spec.coord = Coord::Parallel;
+            spec
+        }
+        Preset::Correlation => {
+            let fold = pairs_of(true);
+            let [kx, vx, ky, vy] = fold.pair_names();
+            let layer = |mark: Mark| {
+                Layer::new(
+                    mark,
+                    Stat::Correlation {
+                        x: vx.clone(),
+                        y: vy.clone(),
+                    },
+                )
+                .with(Channel::X, FieldDef::of(kx.clone()))
+                .with(Channel::Y, FieldDef::of(ky.clone()))
+            };
+            let mut spec = PlotSpec::single(data, layer(Mark::Rect));
+            spec.layers.push(layer(Mark::Text));
+            spec.fold = Some(fold);
+            spec.scales.insert(
+                Channel::Color,
+                Scale {
+                    domain: Some(vec![(-1).into(), 1.into()]),
+                    scheme: Some("diverging".to_owned()),
+                    ..Scale::default()
+                },
+            );
+            a.color = None;
+            spec
+        }
+        Preset::Histogram
+        | Preset::Bar
+        | Preset::Line
+        | Preset::Scatter
+        | Preset::Box
+        | Preset::Heatmap
+        | Preset::Area
+        | Preset::Mosaic
+        | Preset::Map => unreachable!("not a reshaping preset"),
+    };
     Ok((spec, a))
 }
 
@@ -839,7 +1041,7 @@ mod tests {
             "listed_on"
         );
         let items = gallery();
-        assert_eq!(items.len(), 8);
+        assert_eq!(items.len(), 12);
         assert!(
             !items
                 .iter()

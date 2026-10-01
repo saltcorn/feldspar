@@ -13,8 +13,8 @@ use std::collections::BTreeSet;
 use sc_dataset::{ColType, Grain, StageColumn, StageShape};
 
 use super::spec::{
-    AggregateFn, Bin, Channel, Coord, Facet, FieldDef, Fold, Layer, Mark, PlotSpec, ScaleKind,
-    SelectionKind, Stat,
+    AggregateFn, Bin, Cell, Channel, Coord, Facet, FieldDef, Fold, Layer, Mark, PlotSpec,
+    ScaleKind, SelectionKind, Stat, TableSpec,
 };
 
 /// A channel that groups a layer's rows, or — for a layer that draws rows —
@@ -77,8 +77,13 @@ pub fn folded_shape(shape: &StageShape, fold: Option<&Fold>) -> Result<StageShap
             "the comparison's two new columns are both called `{key}`"
         ));
     }
-    for name in [key, value] {
-        if !name.is_empty()
+    let made: Vec<String> = match fold.pairs {
+        None => vec![key.to_owned(), value.to_owned()],
+        Some(_) => fold.pair_names().to_vec(),
+    };
+    for name in &made {
+        if !key.is_empty()
+            && !value.is_empty()
             && !fold.columns.iter().any(|c| c == name)
             && shape.column(name).is_some()
         {
@@ -97,16 +102,18 @@ pub fn folded_shape(shape: &StageShape, fold: Option<&Fold>) -> Result<StageShap
         .filter(|c| !fold.columns.contains(&c.name))
         .cloned()
         .collect();
-    columns.push(StageColumn {
-        name: key.to_owned(),
-        ty: ColType::Text,
-        key: None,
-    });
-    columns.push(StageColumn {
-        name: value.to_owned(),
-        ty: ColType::Float,
-        key: None,
-    });
+    // The names are text and the values numbers, alternately.
+    for (i, name) in made.into_iter().enumerate() {
+        columns.push(StageColumn {
+            name,
+            ty: if i % 2 == 0 {
+                ColType::Text
+            } else {
+                ColType::Float
+            },
+            key: None,
+        });
+    }
     Ok(StageShape {
         columns,
         grain: Grain::Derived,
@@ -144,7 +151,7 @@ pub fn validate(spec: &PlotSpec, shape: &StageShape) -> Vec<String> {
         if spec.coord == Coord::Polar
             && matches!(
                 layer.mark,
-                Mark::Box | Mark::Band | Mark::Errorbar | Mark::Rect
+                Mark::Box | Mark::Band | Mark::Errorbar | Mark::Rect | Mark::Mosaic
             )
         {
             problems.push(format!(
@@ -152,6 +159,9 @@ pub fn validate(spec: &PlotSpec, shape: &StageShape) -> Vec<String> {
                 layer.mark.describe()
             ));
         }
+    }
+    if spec.coord == Coord::Parallel {
+        problems.extend(parallel_problems(spec));
     }
     // Scales: only the channels that have one, and a log or square-root scale
     // only over numbers.
@@ -238,6 +248,52 @@ pub fn validate(spec: &PlotSpec, shape: &StageShape) -> Vec<String> {
     problems
 }
 
+/// What parallel coordinates need: the columns compared as one variable, and
+/// each layer a line of the rows across them.
+fn parallel_problems(spec: &PlotSpec) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(fold) = spec.fold.as_ref().filter(|f| f.pairs.is_none()) else {
+        return vec![
+            "parallel coordinates draw several columns compared as one variable; put at least two number columns on Y"
+                .to_owned(),
+        ];
+    };
+    for layer in &spec.layers {
+        if layer.mark != Mark::Line || layer.stat != Stat::Identity {
+            problems.push(format!(
+                "parallel coordinates draw each row as a line, not {}",
+                if layer.stat == Stat::Identity {
+                    layer.mark.describe()
+                } else {
+                    layer.stat.describe()
+                }
+            ));
+        }
+        let on = |c: Channel| layer.encoding.get(c).map(|f| f.field.as_str());
+        if on(Channel::X) != Some(fold.key.trim()) || on(Channel::Y) != Some(fold.value.trim()) {
+            problems.push(format!(
+                "parallel coordinates put the compared columns' names (`{}`) on X and their values (`{}`) on Y",
+                fold.key.trim(),
+                fold.value.trim()
+            ));
+        }
+    }
+    if !spec.facet.is_empty() {
+        problems.push("parallel coordinates are not split into small multiples".to_owned());
+    }
+    if !spec.references.is_empty() {
+        problems.push("parallel coordinates have no reference lines".to_owned());
+    }
+    if spec
+        .scales
+        .iter()
+        .any(|(c, s)| c.is_positional() && s.kind != ScaleKind::Linear)
+    {
+        problems.push("parallel coordinates have an axis per column, each linear".to_owned());
+    }
+    problems
+}
+
 /// Whether a layer's stat computes `channel` itself rather than reading it
 /// from a column: a density's Y.
 fn drawn_by_stat(stat: &Stat, channel: Channel) -> bool {
@@ -313,6 +369,11 @@ pub(crate) fn plan(
         field: enc.get(c).map(|f| f.field.clone()).unwrap_or_default(),
     };
     match &layer.stat {
+        Stat::Identity if mark == Mark::Mosaic => {
+            problems.push(
+                "a mosaic is drawn from counts, so the layer needs the count stat".to_owned(),
+            );
+        }
         Stat::Identity => {
             if matches!(mark, Mark::Box | Mark::Band | Mark::Errorbar) {
                 problems.push(format!(
@@ -338,6 +399,33 @@ pub(crate) fn plan(
             if mark == Mark::Text && !has(Channel::Label) {
                 problems.push("text needs a column on Label".to_owned());
             }
+        }
+        Stat::Count if mark == Mark::Mosaic => {
+            // The count is the tile's area: drawn on Size, which nothing else
+            // may show.
+            if !(has(Channel::X) && has(Channel::Y)) {
+                problems.push("a mosaic needs a column on both X and Y".to_owned());
+            }
+            for c in [Channel::X, Channel::Y] {
+                if let (Some(f), Some(ColType::Float | ColType::Decimal)) = (enc.get(c), ty_of(c))
+                    && f.bin.is_none()
+                {
+                    problems.push(format!(
+                        "a mosaic's tiles are the values of `{}`, a number with many values; bin it",
+                        f.field
+                    ));
+                }
+            }
+            for c in [Channel::Color, Channel::Size, Channel::Shape] {
+                if let Some(f) = enc.get(c) {
+                    problems.push(format!(
+                        "a mosaic colours its tiles by Y and sizes them by the count, so `{}` cannot be on {}",
+                        f.field,
+                        c.describe()
+                    ));
+                }
+            }
+            out = Some(Channel::Size);
         }
         Stat::Count => {
             if !allowed(&[
@@ -506,6 +594,33 @@ pub(crate) fn plan(
             inputs.push(input(Channel::X));
             inputs.push(input(Channel::Y));
         }
+        Stat::Correlation { x, y } => {
+            if !allowed(&[Mark::Rect, Mark::Text, Mark::Point]) {
+                refuse_mark(&mut problems, "a correlation");
+            }
+            for name in [x, y] {
+                match shape.column(name) {
+                    None => problems.push(format!("a correlation: {}", missing(shape, name))),
+                    Some(c) if !c.ty.is_numeric() && c.ty != ColType::Unknown => {
+                        problems.push(format!(
+                            "a correlation needs numbers, and `{name}` is {}",
+                            article(c.ty)
+                        ))
+                    }
+                    Some(_) => {}
+                }
+            }
+            out = if mark == Mark::Text && !has(Channel::Label) {
+                Some(Channel::Label)
+            } else if !has(Channel::Color) {
+                Some(Channel::Color)
+            } else {
+                problems.push(
+                    "Color shows a column, so there is nowhere to draw the correlation".to_owned(),
+                );
+                None
+            };
+        }
     }
     if mark == Mark::Box
         && !matches!(layer.stat, Stat::Boxplot { .. })
@@ -538,6 +653,82 @@ pub(crate) fn plan(
         }
     }
     Ok(LayerPlan { dims, inputs, out })
+}
+
+/// Every reason a summary table cannot be made over a dataset whose last
+/// stage is `shape`; empty when it can.
+pub fn validate_table(spec: &TableSpec, shape: &StageShape) -> Vec<String> {
+    let shape = match folded_shape(shape, spec.fold.as_ref()) {
+        Ok(s) => s,
+        Err(problems) => return problems,
+    };
+    let mut problems = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (side, f) in spec
+        .rows
+        .iter()
+        .map(|f| ("rows", f))
+        .chain(spec.columns.iter().map(|f| ("columns", f)))
+    {
+        if !seen.insert(f.field.as_str()) {
+            problems.push(format!("`{}` is used twice as rows or columns", f.field));
+            continue;
+        }
+        match field_check(Channel::X, f, &shape, true) {
+            Err(e) => problems.push(e.trim_start_matches("X: ").to_owned()),
+            Ok(ty) => {
+                if matches!(ty, ColType::Float | ColType::Decimal) && f.bin.is_none() {
+                    problems.push(format!(
+                        "the table's {side} are the values of `{}`, a number with many values; bin it",
+                        f.field
+                    ));
+                }
+            }
+        }
+    }
+    for cell in &spec.cells {
+        problems.extend(cell_problems(cell, &shape));
+    }
+    problems
+}
+
+fn cell_problems(cell: &Cell, shape: &StageShape) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(name) = &cell.field else {
+        if cell.function != AggregateFn::Count {
+            problems.push(format!(
+                "the {} needs a column to summarise",
+                cell.function.describe()
+            ));
+        }
+        return problems;
+    };
+    let Some(column) = shape.column(name) else {
+        problems.push(format!("a cell: {}", missing(shape, name)));
+        return problems;
+    };
+    let ty = column.ty;
+    let numeric = matches!(
+        cell.function,
+        AggregateFn::Sum | AggregateFn::Mean | AggregateFn::Median | AggregateFn::Sd
+    );
+    if numeric && !ty.is_numeric() && ty != ColType::Unknown {
+        problems.push(format!(
+            "the {} needs numbers, and `{name}` is {}",
+            cell.function.describe(),
+            article(ty)
+        ));
+    }
+    if matches!(cell.function, AggregateFn::Min | AggregateFn::Max)
+        && !ty.is_ordered()
+        && ty != ColType::Unknown
+    {
+        problems.push(format!(
+            "`{name}` is {}, which has no smallest or largest value",
+            article(ty)
+        ));
+    }
+    problems
 }
 
 fn check_level(problems: &mut Vec<String>, level: f64) {
@@ -904,6 +1095,7 @@ mod tests {
             columns: vec!["price".into(), "area".into()],
             key: "street".into(),
             value: "value".into(),
+            pairs: None,
         });
         assert!(
             validate(&folded, &houses())[0]

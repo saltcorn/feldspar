@@ -260,22 +260,22 @@ explorer"). No drag and drop yet.
 
 ## Phase 3 — Rendering
 
-- [ ] A2.7 ECharts in `ui/analytics` (imported per chart type, so unused parts are left out of
+- [x] A2.7 ECharts in `ui/analytics` (imported per chart type, so unused parts are left out of
       the bundle) and the compiler from spec plus layer data to an ECharts option: layers to
       series, facets to grids, colour to series or a `visualMap`, log scales, flipped
       coordinates, themes. Tests (vitest): spec in, option out.
-- [ ] A2.8 The summary table renderer from the same drop zones: row and column dimensions,
+- [x] A2.8 The summary table renderer from the same drop zones: row and column dimensions,
       aggregate cells, totals. Tests.
 
 ## Phase 4 — The explorer
 
-- [ ] A2.9 The Data explorer workspace: dataset drop-down, gallery, the column list and the
+- [x] A2.9 The Data explorer workspace: dataset drop-down, gallery, the column list and the
       drop zones (X, Y, Color, Size, Shape, Label, Facet rows, Facet columns, Wrap), the mark
       palette, several columns on Y compared as one variable. State saved in the workspace.
       Tests.
-- [ ] A2.10 The layers panel: add and remove layers, change a layer's stat, scales, reference
+- [x] A2.10 The layers panel: add and remove layers, change a layer's stat, scales, reference
       lines, coordinates. Tests.
-- [ ] A2.11 The presets that do their own reshaping: scatterplot matrix, parallel coordinates,
+- [x] A2.11 The presets that do their own reshaping: scatterplot matrix, parallel coordinates,
       correlation heatmap, mosaic plot. Tests.
 
 ## Phase 5 — Hypothesis tests

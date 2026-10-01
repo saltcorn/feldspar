@@ -7,7 +7,7 @@
 // saves what is pending. So "reopen the workspace and it is as it was" is the
 // frame's promise, and no kind has to remember to keep it.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Alert from "react-bootstrap/Alert";
 import Spinner from "react-bootstrap/Spinner";
 
@@ -15,6 +15,10 @@ import { api, errorMessage } from "../api";
 import type { GetWorkspaceResponse } from "../client";
 import { T, useT } from "../i18n";
 import { StateSaver, type SaveStatus } from "./saver";
+
+/** The Data explorer, loaded when a workspace of its kind opens: it brings
+ * ECharts, which the front page does not need. */
+const DataExplorer = lazy(() => import("../explorer/DataExplorer").then((m) => ({ default: m.DataExplorer })));
 
 /** How long after the last change the state is saved. */
 const SAVE_DELAY_MS = 600;
@@ -124,8 +128,15 @@ export function WorkspaceFrame({ id }: { id: string }) {
 }
 
 /** The kind's screen, handed the state and its setter. Each kind's arrives with
- * its milestone; none is here before A2's Data explorer. */
-function KindScreen(_props: WorkspaceProps & { kind: string }) {
+ * its milestone: A2's Data explorer first. */
+function KindScreen({ kind, ...props }: WorkspaceProps & { kind: string }) {
+  if (kind === "data_explorer") {
+    return (
+      <Suspense fallback={<Spinner animation="border" size="sm" className="m-3" />}>
+        <DataExplorer {...props} />
+      </Suspense>
+    );
+  }
   return (
     <div className="an-page">
       <Alert variant="info">

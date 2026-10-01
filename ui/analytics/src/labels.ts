@@ -158,3 +158,137 @@ export function workspaceKindName(kind: string, t: Translate): string {
       return kind;
   }
 }
+
+/** A drop zone's name. */
+export function zoneName(zone: string, t: Translate): string {
+  switch (zone) {
+    case "x":
+      return t("X");
+    case "y":
+      return t("Y");
+    case "color":
+      return t("Color");
+    case "size":
+      return t("Size");
+    case "shape":
+      return t("Shape");
+    case "label":
+      return t("Label");
+    case "row":
+      return t("Facet rows");
+    case "column":
+      return t("Facet columns");
+    case "wrap":
+      return t("Wrap");
+    default:
+      return zone;
+  }
+}
+
+/** A mark's name, as the mark palette shows it. */
+export function markName(mark: string, t: Translate): string {
+  switch (mark) {
+    case "point":
+      return t("Points");
+    case "line":
+      return t("Line");
+    case "bar":
+      return t("Bars");
+    case "area":
+      return t("Area");
+    case "box":
+      return t("Box plot");
+    case "rect":
+      return t("Heatmap");
+    case "text":
+      return t("Text");
+    case "band":
+      return t("Band");
+    case "errorbar":
+      return t("Error bars");
+    case "mosaic":
+      return t("Mosaic");
+    default:
+      return mark;
+  }
+}
+
+/** A gallery item's name. */
+export function presetName(preset: string, t: Translate): string {
+  switch (preset) {
+    case "histogram":
+      return t("Histogram");
+    case "bar":
+      return t("Bar chart");
+    case "line":
+      return t("Line chart");
+    case "scatter":
+      return t("Scatter plot");
+    case "box":
+      return t("Box plot");
+    case "heatmap":
+      return t("Heatmap");
+    case "area":
+      return t("Area chart");
+    case "splom":
+      return t("Scatterplot matrix");
+    case "parallel":
+      return t("Parallel coordinates");
+    case "correlation":
+      return t("Correlation heatmap");
+    case "mosaic":
+      return t("Mosaic plot");
+    case "map":
+      return t("Map");
+    default:
+      return preset;
+  }
+}
+
+/** A stat's name, as the layers panel shows it. */
+export function statName(kind: string, t: Translate): string {
+  switch (kind) {
+    case "identity":
+      return t("The rows as they are");
+    case "count":
+      return t("Count");
+    case "aggregate":
+      return t("Summary");
+    case "quantiles":
+      return t("Quantiles");
+    case "boxplot":
+      return t("Box plot");
+    case "summary":
+      return t("Mean with interval");
+    case "density":
+      return t("Density");
+    case "smooth":
+      return t("Smoother");
+    case "correlation":
+      return t("Correlation");
+    default:
+      return kind;
+  }
+}
+
+/** A layer the layers panel adds. */
+export function layerKindName(id: string, t: Translate): string {
+  switch (id) {
+    case "linear":
+      return t("Linear fit");
+    case "loess":
+      return t("Loess smoother");
+    case "points":
+      return t("Points");
+    case "line":
+      return t("Line through the rows");
+    case "mean":
+      return t("Mean with interval");
+    case "density":
+      return t("Density curve");
+    case "counts":
+      return t("Count labels");
+    default:
+      return id;
+  }
+}

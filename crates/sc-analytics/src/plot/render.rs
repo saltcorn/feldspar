@@ -50,9 +50,10 @@ use super::math::{
     mean_interval, quantile,
 };
 use super::spec::{
-    AggregateFn, Channel, DataRef, Layer, Mark, PlotSpec, ScaleKind, SmoothMethod, Stat,
+    AggregateFn, Cell, Channel, Coord, DataRef, Layer, Mark, PlotSpec, ScaleKind, SmoothMethod,
+    Stat, TableSpec,
 };
-use super::validate::{Dim, LayerPlan, folded_shape, plan, validate};
+use super::validate::{Dim, LayerPlan, folded_shape, plan, validate, validate_table};
 
 /// The rows a layer that draws rows shows before it samples.
 pub const DEFAULT_SAMPLE: u64 = 10_000;
@@ -196,23 +197,9 @@ type Step<T> = std::result::Result<T, Halt>;
 /// why it cannot be drawn. Reads as the admin (A9 is where a restricted
 /// user's reads go through their permissions).
 pub async fn render_plot(catalog: &Catalog, spec: &PlotSpec) -> Result<Rendered> {
-    let DataRef::Dataset { dataset } = &spec.data;
-    let Some(def) = sc_dataset::load_dataset(catalog, *dataset).await? else {
-        return Ok(Rendered::refuse(
-            "the dataset this plot reads is gone; pick another",
-        ));
-    };
-    let schema = Schema::of_catalog(catalog)?;
-    let library = sc_dataset::load_library(catalog).await?;
-    let compiled = compile(&schema, &library, &def, Options::default());
-    let stage = match compiled.last() {
-        Ok(stage) => stage.clone(),
-        Err(e) => {
-            return Ok(Rendered::refuse(format!(
-                "the dataset `{}` does not read: {e}",
-                def.name
-            )));
-        }
+    let stage = match last_stage(catalog, &spec.data).await? {
+        Ok(stage) => stage,
+        Err(sentence) => return Ok(Rendered::refuse(sentence)),
     };
     let problems = validate(spec, &stage.shape());
     if let Some(first) = problems.first() {
@@ -223,15 +210,7 @@ pub async fn render_plot(catalog: &Catalog, spec: &PlotSpec) -> Result<Rendered>
     }
     let shape = folded_shape(&stage.shape(), spec.fold.as_ref())
         .map_err(|p| Error::invalid(p.join("; ")))?;
-    let mut renderer = Renderer {
-        catalog,
-        spec,
-        stage: &stage,
-        shape,
-        bins: BTreeMap::new(),
-        warnings: Vec::new(),
-        warned: BTreeSet::new(),
-    };
+    let mut renderer = Renderer::new(catalog, spec, &stage, shape);
     match renderer.render().await {
         Ok(data) => Ok(Rendered::Plot(data)),
         Err(Halt::Refuse(sentence)) => Ok(Rendered::refuse(sentence)),
@@ -239,7 +218,112 @@ pub async fn render_plot(catalog: &Catalog, spec: &PlotSpec) -> Result<Rendered>
     }
 }
 
+/// The last stage of the dataset `data` names, or the sentence saying why it
+/// does not read.
+async fn last_stage(
+    catalog: &Catalog,
+    data: &DataRef,
+) -> Result<std::result::Result<Stage, String>> {
+    let DataRef::Dataset { dataset } = data;
+    let Some(def) = sc_dataset::load_dataset(catalog, *dataset).await? else {
+        return Ok(Err(
+            "the dataset this plot reads is gone; pick another".to_owned()
+        ));
+    };
+    let schema = Schema::of_catalog(catalog)?;
+    let library = sc_dataset::load_library(catalog).await?;
+    let compiled = compile(&schema, &library, &def, Options::default());
+    Ok(match compiled.last() {
+        Ok(stage) => Ok(stage.clone()),
+        Err(e) => Err(format!("the dataset `{}` does not read: {e}", def.name)),
+    })
+}
+
+/// The most rows a summary table's body has; more are cut off, and said so.
+pub const MAX_TABLE_ROWS: usize = MAX_GROUP_ROWS;
+
+/// What `render_table` answers: the table, or why there is none.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum RenderedTable {
+    /// The table's data.
+    Table(Box<TableData>),
+    /// The spec cannot be made into a table.
+    Refused {
+        /// The first reason, as a sentence.
+        error: String,
+        /// Every reason.
+        problems: Vec<String>,
+    },
+}
+
+/// A summary table's data. Each part is a small table whose columns are the
+/// dimensions' values — `r0`, `r1`, … for the rows' and `c0`, … for the
+/// columns', a binned one followed by its upper edge (`r0_end`) — then `n`,
+/// the number of rows, and `v0`, `v1`, … one per cell.
+#[derive(Debug, Clone, Serialize)]
+pub struct TableData {
+    /// The row dimensions' columns, outermost first.
+    pub rows: Vec<String>,
+    /// The column dimensions' columns, outermost first.
+    pub columns: Vec<String>,
+    /// What each cell shows, in words ("mean of price").
+    pub cells: Vec<String>,
+    /// One row per combination of the row and column dimensions' values.
+    pub body: Table,
+    /// One row per combination of the row dimensions' values, over every
+    /// column: the Total column. With row and column dimensions and totals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_totals: Option<Table>,
+    /// One row per combination of the column dimensions' values: the Total
+    /// row. With row and column dimensions and totals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column_totals: Option<Table>,
+    /// The whole table's cells: the corner. With any dimension and totals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grand_total: Option<Table>,
+    /// Where each binned column's bins start and how wide they are.
+    pub bins: BTreeMap<String, BinParams>,
+    /// How many rows of the dataset the table summarises.
+    pub total: u64,
+    /// Whether the body had more rows than are returned.
+    pub truncated: bool,
+}
+
+/// Make the summary table `spec` describes: its body and totals, or the
+/// sentence saying why it cannot. Reads as the admin, as `render_plot` does.
+pub async fn render_table(catalog: &Catalog, spec: &TableSpec) -> Result<RenderedTable> {
+    let refuse = |error: String| RenderedTable::Refused {
+        problems: vec![error.clone()],
+        error,
+    };
+    let stage = match last_stage(catalog, &spec.data).await? {
+        Ok(stage) => stage,
+        Err(sentence) => return Ok(refuse(sentence)),
+    };
+    let problems = validate_table(spec, &stage.shape());
+    if let Some(first) = problems.first() {
+        return Ok(RenderedTable::Refused {
+            error: first.clone(),
+            problems,
+        });
+    }
+    let shape = folded_shape(&stage.shape(), spec.fold.as_ref())
+        .map_err(|p| Error::invalid(p.join("; ")))?;
+    // The plot machinery over a spec with no layers: the fold is its data.
+    let mut carrier = PlotSpec::single(spec.data.clone(), Layer::new(Mark::Text, Stat::Count));
+    carrier.layers.clear();
+    carrier.fold = spec.fold.clone();
+    let mut renderer = Renderer::new(catalog, &carrier, &stage, shape);
+    match renderer.table(spec).await {
+        Ok(data) => Ok(RenderedTable::Table(Box::new(data))),
+        Err(Halt::Refuse(sentence)) => Ok(refuse(sentence)),
+        Err(Halt::Fail(e)) => Err(e),
+    }
+}
+
 /// A group key as SQL: the column, or its bin number.
+#[derive(Clone)]
 struct Key {
     channel: Channel,
     expr: Expr,
@@ -259,7 +343,24 @@ struct Renderer<'a> {
     warned: BTreeSet<(String, &'static str)>,
 }
 
-impl Renderer<'_> {
+impl<'a> Renderer<'a> {
+    fn new(
+        catalog: &'a Catalog,
+        spec: &'a PlotSpec,
+        stage: &'a Stage,
+        shape: StageShape,
+    ) -> Renderer<'a> {
+        Renderer {
+            catalog,
+            spec,
+            stage,
+            shape,
+            bins: BTreeMap::new(),
+            warnings: Vec::new(),
+            warned: BTreeSet::new(),
+        }
+    }
+
     async fn render(&mut self) -> Step<PlotData> {
         let mut layers = Vec::with_capacity(self.spec.layers.len());
         for layer in &self.spec.layers {
@@ -279,6 +380,12 @@ impl Renderer<'_> {
     }
 
     async fn layer(&mut self, layer: &Layer, plan: &LayerPlan) -> Step<LayerData> {
+        if self.spec.coord == Coord::Parallel {
+            let mut data = self.parallel(layer, plan).await?;
+            data.mark = layer.mark;
+            data.stat = layer.stat.kind();
+            return Ok(data);
+        }
         let filters = self.scale_filters(layer, plan).await?;
         let mut keys = Vec::with_capacity(plan.dims.len());
         for dim in &plan.dims {
@@ -308,6 +415,7 @@ impl Renderer<'_> {
                 self.smooth(plan, *method, *span, *se, *level, &keys, filters)
                     .await?
             }
+            Stat::Correlation { x, y } => self.correlation(plan, x, y, &keys, filters).await?,
         };
         data.mark = layer.mark;
         data.stat = layer.stat.kind();
@@ -330,25 +438,46 @@ impl Renderer<'_> {
             .filter(|c| !fold.columns.contains(&c.name))
             .map(|c| c.name.clone())
             .collect();
-        let parts = fold
-            .columns
-            .iter()
-            .map(|folded| {
-                let mut columns: Vec<Projection> = kept
-                    .iter()
-                    .map(|k| Projection::expr_as(Expr::qcol("_fd_s", k.clone()), k.clone()))
-                    .collect();
-                columns.push(Projection::expr_as(
-                    cast(Expr::lit(Value::Text(folded.clone())), "text"),
-                    fold.key.trim(),
-                ));
-                columns.push(Projection::expr_as(
-                    cast(Expr::qcol("_fd_s", folded.clone()), "double precision"),
-                    fold.value.trim(),
-                ));
-                Select::from(Source::subquery(rows.clone(), "_fd_s")).columns(columns)
-            })
-            .collect();
+        let kept_columns = || -> Vec<Projection> {
+            kept.iter()
+                .map(|k| Projection::expr_as(Expr::qcol("_fd_s", k.clone()), k.clone()))
+                .collect()
+        };
+        let name = |c: &str| cast(Expr::lit(Value::Text(c.to_owned())), "text");
+        let value = |c: &str| cast(Expr::qcol("_fd_s", c.to_owned()), "double precision");
+        let parts = match fold.pairs {
+            None => fold
+                .columns
+                .iter()
+                .map(|folded| {
+                    let mut columns = kept_columns();
+                    columns.push(Projection::expr_as(name(folded), fold.key.trim()));
+                    columns.push(Projection::expr_as(value(folded), fold.value.trim()));
+                    Select::from(Source::subquery(rows.clone(), "_fd_s")).columns(columns)
+                })
+                .collect(),
+            // One SELECT per pair, the first column of the pair on `_x`.
+            Some(pairs) => {
+                let names = fold.pair_names();
+                let mut parts = Vec::new();
+                for (i, a) in fold.columns.iter().enumerate() {
+                    for (j, b) in fold.columns.iter().enumerate() {
+                        if i == j && !pairs.diagonal {
+                            continue;
+                        }
+                        let mut columns = kept_columns();
+                        columns.push(Projection::expr_as(name(a), names[0].clone()));
+                        columns.push(Projection::expr_as(value(a), names[1].clone()));
+                        columns.push(Projection::expr_as(name(b), names[2].clone()));
+                        columns.push(Projection::expr_as(value(b), names[3].clone()));
+                        parts.push(
+                            Select::from(Source::subquery(rows.clone(), "_fd_s")).columns(columns),
+                        );
+                    }
+                }
+                parts
+            }
+        };
         Ok(Source::union_all(parts, DATA))
     }
 
@@ -1019,78 +1148,16 @@ impl Renderer<'_> {
         };
         match method {
             SmoothMethod::Linear => {
-                // Sums about each group's means, the means from a window over
-                // the group so it is still one query.
-                let partition = group_exprs(POINTS, keys.len());
-                let mut inner_columns = group_projections(keys.len());
-                inner_columns.push(Projection::expr_as(x.clone(), v(0)));
-                inner_columns.push(Projection::expr_as(y.clone(), v(1)));
-                inner_columns.push(Projection::expr_as(
-                    win("avg", vec![x.clone()], partition.clone()),
-                    "_mx",
-                ));
-                inner_columns.push(Projection::expr_as(
-                    win("avg", vec![y.clone()], partition),
-                    "_my",
-                ));
-                let mut inner =
-                    Select::from(Source::subquery(points, POINTS)).columns(inner_columns);
-                inner.filter = Some(both);
-                let q = |c: &str| Expr::qcol(INNER, c);
-                let dx = Expr::binary(BinOp::Sub, q(&v(0)), q("_mx"));
-                let dy = Expr::binary(BinOp::Sub, q(&v(1)), q("_my"));
-                let mut outer_columns: Vec<Projection> = (0..keys.len())
-                    .map(|i| Projection::expr_as(q(&g(i)), g(i)))
-                    .collect();
-                outer_columns.extend([
-                    Projection::expr_as(agg("count", vec![]), "_n"),
-                    Projection::expr_as(agg("max", vec![q("_mx")]), "_mx"),
-                    Projection::expr_as(agg("max", vec![q("_my")]), "_my"),
-                    Projection::expr_as(
-                        agg(
-                            "sum",
-                            vec![Expr::binary(BinOp::Mul, dx.clone(), dx.clone())],
-                        ),
-                        "_sxx",
-                    ),
-                    Projection::expr_as(
-                        agg("sum", vec![Expr::binary(BinOp::Mul, dx, dy.clone())]),
-                        "_sxy",
-                    ),
-                    Projection::expr_as(
-                        agg("sum", vec![Expr::binary(BinOp::Mul, dy.clone(), dy)]),
-                        "_syy",
-                    ),
-                    Projection::expr_as(agg("min", vec![q(&v(0))]), "_x0"),
-                    Projection::expr_as(agg("max", vec![q(&v(0))]), "_x1"),
-                ]);
-                let mut outer = Select::from(Source::subquery(inner, INNER)).columns(outer_columns);
-                outer.group = group_exprs(INNER, keys.len());
-                outer.order = group_order(INNER, keys.len());
-                outer.limit = Some(MAX_CURVES as u64 + 1);
-                let rows = self.run(outer).await?;
+                let rows = self.linear_sums(points, keys.len()).await?;
                 if rows.len() > MAX_CURVES {
                     return Err(Halt::Refuse(too_many_curves("smoothers")));
                 }
                 let mut out = Vec::new();
                 let mut total = 0;
-                for row in rows {
-                    let values = row.into_values();
-                    let (k, s) = values.split_at(keys.len());
-                    let f = |i: usize| f64_of(&s[i]).unwrap_or(0.0);
-                    let sums = LinearSums {
-                        n: f(0) as u64,
-                        mean_x: f(1),
-                        mean_y: f(2),
-                        sxx: f(3),
-                        sxy: f(4),
-                        syy: f(5),
-                        min_x: f(6),
-                        max_x: f(7),
-                    };
+                for (k, sums) in rows {
                     total += sums.n;
                     if let Some(curve) = math::linear_curve(&sums, se, level) {
-                        out.extend(curve_rows(&key_values(keys, k), curve));
+                        out.extend(curve_rows(&key_values(keys, &k), curve));
                     }
                 }
                 Ok(LayerData {
@@ -1157,7 +1224,376 @@ impl Renderer<'_> {
         }
     }
 
+    /// Pearson's correlation of two columns for each group, from the same
+    /// sums as a linear smoother.
+    async fn correlation(
+        &mut self,
+        plan: &LayerPlan,
+        x: &str,
+        y: &str,
+        keys: &[Key],
+        filters: Vec<Expr>,
+    ) -> Step<LayerData> {
+        let points = self.points(
+            keys,
+            vec![
+                cast(self.field(x), "double precision"),
+                cast(self.field(y), "double precision"),
+            ],
+            &filters,
+        )?;
+        let groups = self.linear_sums(points, keys.len()).await?;
+        let truncated = groups.len() > MAX_GROUP_ROWS;
+        let mut total = 0;
+        let mut rows = Vec::new();
+        for (k, sums) in groups.into_iter().take(MAX_GROUP_ROWS) {
+            total += sums.n;
+            let r = (sums.n >= 2 && math::positive(sums.sxx) && math::positive(sums.syy))
+                .then(|| (sums.sxy / (sums.sxx * sums.syy).sqrt()).clamp(-1.0, 1.0));
+            let mut row = key_values(keys, &k);
+            row.push(r.map_or(Json::Null, json_num));
+            row.push(json!(sums.n));
+            rows.push(row);
+        }
+        let mut columns = key_columns(keys);
+        columns.push(plan.out.unwrap_or(Channel::Color).as_str().to_owned());
+        columns.push("n".to_owned());
+        Ok(LayerData {
+            columns,
+            rows,
+            total,
+            truncated,
+            info: json!({ "method": "pearson" }),
+            ..LayerData::empty()
+        })
+    }
+
+    /// Parallel coordinates: the rows themselves, each with the fold's
+    /// columns side by side (`y_0`, `y_1`, … in the fold's order, named in
+    /// `info.axes`) rather than folded, so that a row is one line.
+    async fn parallel(&mut self, layer: &Layer, plan: &LayerPlan) -> Step<LayerData> {
+        let Some(fold) = &self.spec.fold else {
+            return Err(Halt::Refuse(
+                "parallel coordinates need several columns compared as one variable".to_owned(),
+            ));
+        };
+        let mut keys = Vec::new();
+        for dim in plan.dims.iter().filter(|d| !d.channel.is_positional()) {
+            keys.push(self.key(dim).await?);
+        }
+        let mut columns: Vec<Projection> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, k)| Projection::expr_as(k.expr.clone(), g(i)))
+            .collect();
+        columns.extend(
+            fold.columns
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Projection::expr_as(cast(self.field(c), "double precision"), v(i))),
+        );
+        let rows = self.stage.unordered_query().map_err(Halt::Refuse)?;
+        let points = Select::from(Source::subquery(rows, DATA)).columns(columns);
+        let total = self.count_rows(points.clone()).await?;
+        let limit = layer.sample.unwrap_or(DEFAULT_SAMPLE).clamp(1, MAX_SAMPLE);
+        let sampled = total > limit;
+        let width = keys.len() + fold.columns.len();
+        let select = if sampled {
+            sample(points, width, limit)
+        } else {
+            points
+        };
+        let mut out = Vec::new();
+        for row in self.run(select).await? {
+            let values = row.into_values();
+            let (k, rest) = values.split_at(keys.len());
+            let mut line = key_values(&keys, k);
+            line.extend(rest.iter().map(value_json));
+            out.push(line);
+        }
+        let mut names = key_columns(&keys);
+        names.extend((0..fold.columns.len()).map(|i| format!("y_{i}")));
+        Ok(LayerData {
+            columns: names,
+            rows: out,
+            sampled,
+            total,
+            info: json!({ "axes": fold.columns }),
+            ..LayerData::empty()
+        })
+    }
+
+    // --- summary tables -----------------------------------------------------
+
+    async fn table(&mut self, spec: &TableSpec) -> Step<TableData> {
+        let cells: Vec<Cell> = if spec.cells.is_empty() {
+            vec![Cell::count()]
+        } else {
+            spec.cells.clone()
+        };
+        let mut row_keys = Vec::new();
+        for f in &spec.rows {
+            row_keys.push(self.key(&self.table_dim(f)).await?);
+        }
+        let mut column_keys = Vec::new();
+        for f in &spec.columns {
+            column_keys.push(self.key(&self.table_dim(f)).await?);
+        }
+        let all: Vec<Key> = row_keys.iter().chain(&column_keys).cloned().collect();
+        let names = |keys: &[Key], prefix: &str, from: usize| -> Vec<String> {
+            let mut out = Vec::new();
+            for (i, k) in keys.iter().enumerate() {
+                out.push(format!("{prefix}{}", i + from));
+                if k.bin.is_some() {
+                    out.push(format!("{prefix}{}_end", i + from));
+                }
+            }
+            out
+        };
+        let row_names = names(&row_keys, "r", 0);
+        let column_names = names(&column_keys, "c", 0);
+        let (body, total) = self
+            .table_part(&all, &[&row_names[..], &column_names[..]].concat(), &cells)
+            .await?;
+        let truncated = body.rows.len() > MAX_TABLE_ROWS;
+        let mut body = body;
+        body.rows.truncate(MAX_TABLE_ROWS);
+        let both = !row_keys.is_empty() && !column_keys.is_empty();
+        let any = !row_keys.is_empty() || !column_keys.is_empty();
+        let row_totals = if spec.totals && both {
+            Some(self.table_part(&row_keys, &row_names, &cells).await?.0)
+        } else {
+            None
+        };
+        let column_totals = if spec.totals && both {
+            Some(
+                self.table_part(&column_keys, &column_names, &cells)
+                    .await?
+                    .0,
+            )
+        } else {
+            None
+        };
+        let grand_total = if spec.totals && any {
+            Some(self.table_part(&[], &[], &cells).await?.0)
+        } else {
+            None
+        };
+        let truncate = |t: Option<Table>| {
+            t.map(|mut t| {
+                t.rows.truncate(MAX_TABLE_ROWS);
+                t
+            })
+        };
+        Ok(TableData {
+            rows: spec.rows.iter().map(|f| f.field.clone()).collect(),
+            columns: spec.columns.iter().map(|f| f.field.clone()).collect(),
+            cells: cells.iter().map(Cell::describe).collect(),
+            body,
+            row_totals: truncate(row_totals),
+            column_totals: truncate(column_totals),
+            grand_total,
+            bins: std::mem::take(&mut self.bins),
+            total,
+            truncated,
+        })
+    }
+
+    /// A dimension of a table, as a plot's group key is made.
+    fn table_dim(&self, f: &super::spec::FieldDef) -> Dim {
+        Dim {
+            channel: Channel::X,
+            field: f.field.clone(),
+            ty: self
+                .shape
+                .column(&f.field)
+                .map_or(ColType::Unknown, |c| c.ty),
+            bin: f.bin,
+        }
+    }
+
+    /// The cells grouped by `keys` (named `names`): at most
+    /// [`MAX_TABLE_ROWS`] + 1 rows in key order, and how many dataset rows
+    /// they summarise.
+    async fn table_part(
+        &mut self,
+        keys: &[Key],
+        names: &[String],
+        cells: &[Cell],
+    ) -> Step<(Table, u64)> {
+        let numeric = |f: AggregateFn| {
+            matches!(
+                f,
+                AggregateFn::Sum | AggregateFn::Mean | AggregateFn::Median | AggregateFn::Sd
+            )
+        };
+        let inputs: Vec<Expr> = cells
+            .iter()
+            .map(|c| match &c.field {
+                None => int(1),
+                Some(f) if numeric(c.function) => cast(self.field(f), "double precision"),
+                Some(f) => self.field(f),
+            })
+            .collect();
+        let points = self.points(keys, inputs, &[])?;
+        let mut columns = group_projections(keys.len());
+        columns.push(Projection::expr_as(agg("count", vec![]), "_n"));
+        for (i, c) in cells.iter().enumerate() {
+            let value = Expr::qcol(POINTS, v(i));
+            let func = match c.function {
+                AggregateFn::Count => "count",
+                AggregateFn::Sum => "sum",
+                AggregateFn::Mean => "avg",
+                AggregateFn::Min => "min",
+                AggregateFn::Max => "max",
+                AggregateFn::Sd => "stddev_samp",
+                // Filled in below from the percentiles.
+                AggregateFn::Median => "count",
+            };
+            columns.push(Projection::expr_as(
+                agg(func, vec![value]),
+                format!("_c{i}"),
+            ));
+        }
+        let select = grouped(points.clone(), columns, keys.len(), MAX_TABLE_ROWS + 1);
+        let rows = self.run(select).await?;
+        let mut out: Vec<(Vec<Value>, Vec<Json>)> = Vec::with_capacity(rows.len());
+        let mut total = 0;
+        for row in rows {
+            let values = row.into_values();
+            let (k, rest) = values.split_at(keys.len());
+            let n = f64_of(&rest[0]).unwrap_or(0.0) as u64;
+            total += n;
+            let mut line = vec![json!(n)];
+            for (c, value) in cells.iter().zip(&rest[1..]) {
+                line.push(match (c.function, &c.field) {
+                    (AggregateFn::Min | AggregateFn::Max, Some(f))
+                        if self.shape.column(f).is_some_and(|c| c.ty == ColType::Bool) =>
+                    {
+                        match value {
+                            Value::Int(b) => json!(*b != 0),
+                            other => value_json(other),
+                        }
+                    }
+                    _ => value_json(value),
+                });
+            }
+            out.push((k.to_vec(), line));
+        }
+        // Medians, one percentile query per cell, matched to the groups.
+        for (i, c) in cells.iter().enumerate() {
+            if c.function != AggregateFn::Median {
+                continue;
+            }
+            for line in &mut out {
+                line.1[i + 1] = Json::Null;
+            }
+            let Some(f) = &c.field else { continue };
+            let points = self.points(keys, vec![cast(self.field(f), "double precision")], &[])?;
+            for q in self
+                .percentiles(points, keys.len(), &[0.5], MAX_TABLE_ROWS + 1)
+                .await?
+            {
+                if let Some(line) = out.iter_mut().find(|(k, _)| same_keys(k, &q.keys)) {
+                    line.1[i + 1] = json_num(q.q[0]);
+                }
+            }
+        }
+        let mut columns = names.to_vec();
+        columns.push("n".to_owned());
+        columns.extend((0..cells.len()).map(v_name));
+        let rows = out
+            .into_iter()
+            .map(|(k, line)| {
+                let mut row = key_values(keys, &k);
+                row.extend(line);
+                row
+            })
+            .collect();
+        Ok((Table { columns, rows }, total))
+    }
+
     // --- shared queries ------------------------------------------------------
+
+    /// For each group of `points` (its first `groups` columns the keys, `_v0`
+    /// and `_v1` the two values, rows missing either left out): the sums a
+    /// least-squares line and a correlation need, about the group's means —
+    /// the means from a window over the group, so it is one query. At most
+    /// [`MAX_GROUP_ROWS`] + 1 groups, in key order.
+    async fn linear_sums(
+        &self,
+        points: Select,
+        groups: usize,
+    ) -> Step<Vec<(Vec<Value>, LinearSums)>> {
+        let (x, y) = (Expr::qcol(POINTS, v(0)), Expr::qcol(POINTS, v(1)));
+        let both =
+            Expr::unary(UnOp::IsNotNull, x.clone()).and(Expr::unary(UnOp::IsNotNull, y.clone()));
+        let partition = group_exprs(POINTS, groups);
+        let mut inner_columns = group_projections(groups);
+        inner_columns.push(Projection::expr_as(x.clone(), v(0)));
+        inner_columns.push(Projection::expr_as(y.clone(), v(1)));
+        inner_columns.push(Projection::expr_as(
+            win("avg", vec![x.clone()], partition.clone()),
+            "_mx",
+        ));
+        inner_columns.push(Projection::expr_as(win("avg", vec![y], partition), "_my"));
+        let mut inner = Select::from(Source::subquery(points, POINTS)).columns(inner_columns);
+        inner.filter = Some(both);
+        let q = |c: &str| Expr::qcol(INNER, c);
+        let dx = Expr::binary(BinOp::Sub, q(&v(0)), q("_mx"));
+        let dy = Expr::binary(BinOp::Sub, q(&v(1)), q("_my"));
+        let mut outer_columns: Vec<Projection> = (0..groups)
+            .map(|i| Projection::expr_as(q(&g(i)), g(i)))
+            .collect();
+        outer_columns.extend([
+            Projection::expr_as(agg("count", vec![]), "_n"),
+            Projection::expr_as(agg("max", vec![q("_mx")]), "_mx"),
+            Projection::expr_as(agg("max", vec![q("_my")]), "_my"),
+            Projection::expr_as(
+                agg(
+                    "sum",
+                    vec![Expr::binary(BinOp::Mul, dx.clone(), dx.clone())],
+                ),
+                "_sxx",
+            ),
+            Projection::expr_as(
+                agg("sum", vec![Expr::binary(BinOp::Mul, dx, dy.clone())]),
+                "_sxy",
+            ),
+            Projection::expr_as(
+                agg("sum", vec![Expr::binary(BinOp::Mul, dy.clone(), dy)]),
+                "_syy",
+            ),
+            Projection::expr_as(agg("min", vec![q(&v(0))]), "_x0"),
+            Projection::expr_as(agg("max", vec![q(&v(0))]), "_x1"),
+        ]);
+        let mut outer = Select::from(Source::subquery(inner, INNER)).columns(outer_columns);
+        outer.group = group_exprs(INNER, groups);
+        outer.order = group_order(INNER, groups);
+        outer.limit = Some(MAX_GROUP_ROWS as u64 + 1);
+        let rows = self.run(outer).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let values = row.into_values();
+                let (k, s) = values.split_at(groups);
+                let f = |i: usize| f64_of(&s[i]).unwrap_or(0.0);
+                (
+                    k.to_vec(),
+                    LinearSums {
+                        n: f(0) as u64,
+                        mean_x: f(1),
+                        mean_y: f(2),
+                        sxx: f(3),
+                        sxy: f(4),
+                        syy: f(5),
+                        min_x: f(6),
+                        max_x: f(7),
+                    },
+                )
+            })
+            .collect())
+    }
 
     /// For each group of `points` (its first `groups` columns are the keys,
     /// `_v0` the value): how many values, the smallest, largest, mean and
@@ -1438,6 +1874,11 @@ fn g(i: usize) -> String {
 
 fn v(i: usize) -> String {
     format!("_v{i}")
+}
+
+/// A table cell's column.
+fn v_name(i: usize) -> String {
+    format!("v{i}")
 }
 
 /// A typed number, so Postgres knows what the placeholder is.

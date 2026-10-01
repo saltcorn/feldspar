@@ -52,3 +52,18 @@ export function useTheme(): [Theme, () => void] {
 
   return [theme, toggle];
 }
+
+/** The colour scheme in force, read off the document (which `useTheme` keeps
+ * current), for the screens that draw — plots are drawn in the scheme's own
+ * colours, not the stylesheet's. */
+export function useDocumentTheme(): Theme {
+  const read = (): Theme =>
+    document.documentElement.getAttribute("data-bs-theme") === "dark" ? "dark" : "light";
+  const [theme, setTheme] = useState<Theme>(read);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setTheme(read()));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-bs-theme"] });
+    return () => observer.disconnect();
+  }, []);
+  return theme;
+}
