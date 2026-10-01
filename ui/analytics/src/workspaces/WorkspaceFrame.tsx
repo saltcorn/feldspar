@@ -13,7 +13,6 @@ import Spinner from "react-bootstrap/Spinner";
 
 import { api, errorMessage } from "../api";
 import type { GetWorkspaceResponse } from "../client";
-import { DatasetEditorWorkspace } from "../datasets/DatasetEditorWorkspace";
 import { T, useT } from "../i18n";
 import { StateSaver, type SaveStatus } from "./saver";
 
@@ -118,16 +117,20 @@ export function WorkspaceFrame({ id }: { id: string }) {
         </span>
       </div>
       <div className="flex-grow-1" style={{ minHeight: 0 }}>
-        {workspace.kind === "dataset_editor" ? (
-          <DatasetEditorWorkspace state={state} setState={setState} />
-        ) : (
-          <div className="an-page">
-            <Alert variant="info">
-              <T text="This kind of workspace is not here yet." />
-            </Alert>
-          </div>
-        )}
+        <KindScreen kind={workspace.kind} state={state} setState={setState} />
       </div>
+    </div>
+  );
+}
+
+/** The kind's screen, handed the state and its setter. Each kind's arrives with
+ * its milestone; none is here before A2's Data explorer. */
+function KindScreen(_props: WorkspaceProps & { kind: string }) {
+  return (
+    <div className="an-page">
+      <Alert variant="info">
+        <T text="This kind of workspace is not here yet." />
+      </Alert>
     </div>
   );
 }

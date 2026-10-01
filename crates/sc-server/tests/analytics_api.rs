@@ -418,26 +418,18 @@ async fn datasets_are_created_read_edited_and_deleted_through_the_api() -> sc_er
 }
 
 #[tokio::test]
-async fn workspaces_are_created_renamed_saved_and_deleted() -> sc_error::Result<()> {
-    let (mut client, _db) = setup().await?;
+async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<()> {
+    let (mut client, db) = setup().await?;
 
+    // Seven kinds, none here before A2's Data explorer; the Dataset editor is
+    // not a kind of workspace.
     let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
     let kinds = kinds.as_array().unwrap();
-    assert_eq!(kinds.len(), 8);
+    assert_eq!(kinds.len(), 7);
+    assert!(kinds.iter().all(|k| k["available"] == json!(false)));
+    assert!(!kinds.iter().any(|k| k["kind"] == "dataset_editor"));
     let explorer = kinds.iter().find(|k| k["kind"] == "data_explorer").unwrap();
-    assert_eq!(explorer["available"], json!(false));
     assert_eq!(explorer["arrives_in"], json!("A2"));
-
-    let ws = client
-        .ok(
-            "POST",
-            "/api/workspaces",
-            Some(json!({ "name": "Houses data", "kind": "dataset_editor" })),
-        )
-        .await;
-    let id = ws["id"].as_str().unwrap().to_owned();
-    assert_eq!(ws["state"], json!({}));
-    assert!(ws["created_by"].is_string());
 
     let err = client
         .refused(
@@ -447,8 +439,32 @@ async fn workspaces_are_created_renamed_saved_and_deleted() -> sc_error::Result<
         )
         .await;
     assert!(err.contains("milestone A2"), "{err}");
+    let err = client
+        .refused(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Houses data", "kind": "dataset_editor" })),
+        )
+        .await;
+    assert!(err.contains("not a kind of workspace"), "{err}");
 
-    let state = json!({ "dataset": "d1", "operation": "op2" });
+    // What the endpoints do to one that exists, put there through the store.
+    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
+    let catalog = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+    let seeded = sc_analytics::Workspace::new(
+        "House plots",
+        sc_analytics::WorkspaceKind::DataExplorer,
+        None,
+    );
+    sc_analytics::create_workspace(&catalog, &seeded).await?;
+    let id = seeded.id.to_string();
+    let ws = client
+        .ok("GET", &format!("/api/workspaces/{id}"), None)
+        .await;
+    assert_eq!(ws["state"], json!({}));
+    assert_eq!(ws["kind"], json!("data_explorer"));
+
+    let state = json!({ "dataset": "d1", "x": ["area"] });
     client
         .ok(
             "PUT",

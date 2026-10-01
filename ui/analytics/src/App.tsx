@@ -12,13 +12,13 @@ import Spinner from "react-bootstrap/Spinner";
 
 import { api, errorMessage } from "./api";
 import type { AuthStatusResponse } from "./client";
-import { DatasetEditorStandalone } from "./datasets/DatasetEditorWorkspace";
 import { NewDatasetPage } from "./datasets/DatasetList";
+import { DatasetPage } from "./datasets/DatasetPage";
+import { Home } from "./Home";
 import { I18nProvider, T, useT } from "./i18n";
 import { parseRoute, type Route } from "./router";
 import { useTheme } from "./theme";
 import { WorkspaceFrame } from "./workspaces/WorkspaceFrame";
-import { WorkspaceList } from "./workspaces/WorkspaceList";
 
 /** The route the hash names, kept current. */
 function useRoute(): Route {
@@ -109,11 +109,11 @@ function Shell({ email }: { email: string }) {
 function Page({ route }: { route: Route }) {
   switch (route.name) {
     case "home":
-      return <WorkspaceList />;
+      return <Home />;
     case "workspace":
       return <WorkspaceFrame id={route.id} key={route.id} />;
     case "dataset":
-      return <DatasetEditorStandalone id={route.id} key={route.id} />;
+      return <DatasetPage id={route.id} key={route.id} />;
     case "newDataset":
       return <NewDatasetPage table={route.table} />;
     case "notFound":
@@ -122,7 +122,7 @@ function Page({ route }: { route: Route }) {
           <Alert variant="warning">
             <T text="There is nothing at {path}." args={{ path: route.path }} />{" "}
             <a href="#/">
-              <T text="Back to the workspaces" />
+              <T text="Back to the front page" />
             </a>
           </Alert>
         </div>

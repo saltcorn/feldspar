@@ -37,27 +37,27 @@ see here is what everyone sees. It refuses to touch tables that are already ther
 
 Sign in to the admin UI as an administrator.
 
-### Step 2 — A workspace
+### Step 2 — The front page
 
 The admin sidebar has an **Analytics** link, beside *Predictive models* (which stays until a later
 milestone folds it in). It opens the Analytics UI at `/analytics/`, a separate application from
-the admin UI that shares its sign-in and its light or dark setting. The list of workspaces is
-empty.
+the admin UI that shares its sign-in and its light or dark setting.
 
-A **workspace** is a place you work in, of one kind, that remembers where you were. Press **New
-workspace**, call it `Houses data`, and look at the kinds. Only **Dataset editor** can be chosen.
-The others (Data explorer, Dashboard, Model fit, Notebook, Report, Map, Simulation) are listed
-and disabled, each labelled with the milestone that brings it. Choose *Dataset editor* and
-**Create**.
+The front page has two lists, both empty. **Datasets** are the definitions of rows this part is
+about; each opens in the **Dataset editor**. **Workspaces** are places you work in, each of one
+kind and remembering where you were: a Data explorer, a Model fit, a Map and so on. Look at the
+kinds under **New workspace**: they are all listed and disabled, each labelled with the
+milestone that brings it, because none is here yet. The first, the Data explorer, comes in
+part 2.
 
 ### Step 3 — A dataset on a table
 
-The workspace opens on its list of datasets, which is empty. Press **New dataset**, call it
-`House prices by area`, and choose `houses` under **Based on**. The base cannot be changed later:
-every operation is written against the columns it provides. (To start the same work from
-another base, clone the dataset and edit the clone.)
+In the **New dataset** box, call it `House prices by area`, choose `houses` under **Based on**,
+and press **Create**. The base cannot be changed later: every operation is written against the
+columns it provides. (To start the same work from another base, clone the dataset and edit the
+clone.)
 
-The editor opens. On the left is the **side panel**: the base, then the operations in order,
+The Dataset editor opens. On the left is the **side panel**: the base, then the operations in order,
 none yet. On the right is a **spreadsheet** of the rows: the 200 rows of `houses`, scrolling
 smoothly because only what is on screen is drawn, with the row count and what a row is — *one
 row per houses* — above it.
@@ -124,13 +124,14 @@ Operations can be dragged to reorder. Drag the Filter above the Calculated colum
 changes in the result, because the Filter only reads `price`. Drag the Aggregate above the Filter
 and the Filter is marked: after the Aggregate there is no `price` column any more.
 
-### Step 7 — It remembers
+### Step 7 — Back to the list
 
-Close the browser tab. Open **Analytics** again, and open `Houses data`: it opens on the same
-dataset with the same operation selected. A workspace saves what it is showing as it changes,
-and there is no Save button.
+There is no Save button: every change was saved as you made it. Press **All datasets** above
+the side panel to go back to the front page, where `House prices by area` is listed with its
+four operations and what a row is. Click it and it opens as you left it. The editor's address
+is `#/datasets/<id>`, so a bookmark or a reload comes back to it too.
 
-Back on the workspace's list of datasets, **Clone** copies a dataset (as `House prices by area
+On the front page, **Clone** copies a dataset (as `House prices by area
 (copy)`), and **Delete** warns you first: it lists the models that use the dataset, which
 will not fit until they are given another one, and it refuses while another dataset reads it.
 

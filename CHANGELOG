@@ -2,6 +2,32 @@
 
 Changes in reverse chronological order.
 
+## Analytics: the Dataset editor is not a workspace
+
+The Analytics UI's front page now lists the **datasets** and, below them, the **workspaces**.
+Clicking a dataset opens the Dataset editor at `#/datasets/<id>`; there is no longer a
+*Dataset editor* workspace to create first (`TODO.md` A1.21). The editor itself is unchanged.
+
+- **`sc-analytics`.** The `dataset_editor` workspace kind is gone; there are seven kinds, and
+  none can be created until A2's Data explorer. `create_workspace` stores any kind, and the new
+  `WorkspaceKind::check_available` is what the `createWorkspace` endpoint asks, so the refusal
+  ("arrives with milestone A2") is unchanged for a user while the store stays testable.
+- **`ui/analytics`.** A new `Home` page holds `DatasetList` and `WorkspaceList` as two
+  sections; `datasets/DatasetPage.tsx` is the editor at its route, its back link reading *All
+  datasets*. `DatasetEditorWorkspace.tsx` and `editorState.ts` (the workspace state that
+  remembered the open dataset and operation) are deleted, and `WorkspaceFrame` no longer knows
+  any kind's screen. The workspace list says when no kind can be created yet.
+- **Migration.** `TABLES_RENAME.sql` §9 deletes stored `dataset_editor` workspaces, which would
+  otherwise fail to read and break the workspace list. The datasets they edited are untouched.
+- **Tests.** The store round-trips a Data explorer workspace on both backends; the endpoint
+  test checks every kind is refused (and `dataset_editor` is not a kind) and drives rename,
+  state and delete on a workspace seeded through the store; the A1 definition-of-done test
+  follows the new Try it (both lists empty, then the dataset listed with its four operations);
+  vitest covers a kind picker with nothing to start on.
+- **Docs.** The A1 Try it, `tutorial-analytics.md` part 1 (steps 2, 3 and 7),
+  `tutorial-models.md` step 2, `analytics-ui-goals.md`'s Workspaces, `TECHNICAL_DESIGN.md`
+  §14.5 and the README.
+
 ## The release tarball ships the Analytics UI
 
 A server installed from `scripts/build-static.sh` answered `/analytics/` with "the Analytics UI

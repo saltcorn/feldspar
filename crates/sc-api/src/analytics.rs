@@ -24,7 +24,7 @@ fn api() -> PathSpec {
 pub(crate) fn register(set: &mut EndpointSet) {
     // --- datasets ------------------------------------------------------------
 
-    // Every stored dataset, with whether it reads: the Dataset editor's list,
+    // Every stored dataset, with whether it reads: the Analytics UI's front page,
     // the model form's picker and the explorer's drop-down.
     set.register(
         Endpoint::new("listDatasets", Method::Get, api().lit("datasets"))

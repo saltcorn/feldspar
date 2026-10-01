@@ -357,6 +357,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
             async move {
                 let name = text(&ctx.body, "name")?;
                 let kind = WorkspaceKind::parse(&text(&ctx.body, "kind")?)?;
+                kind.check_available()?;
                 let ws = Workspace::new(name, kind, ctx.user.as_ref().map(|u| u.id));
                 sc_analytics::create_workspace(&catalog, &ws).await?;
                 let ws = sc_analytics::require_workspace(&catalog, ws.id).await?;

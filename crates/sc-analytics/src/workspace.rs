@@ -1,13 +1,16 @@
-//! Workspaces (analytics TODO A1.12): the eight kinds of the goals document,
-//! and the `_fd_workspaces` table that keeps each one's state.
+//! Workspaces (analytics TODO A1.12, A1.21): the seven kinds of the goals
+//! document, and the `_fd_workspaces` table that keeps each one's state.
 //!
 //! A workspace is a name, a kind and a **state** — JSON owned by the kind's
 //! screen, restored when the workspace is opened again. This crate does not
-//! look inside the state: a Dataset editor's is which dataset is open and which
-//! operation is selected, an explorer's (A2) is its drop zones, and neither is
-//! the other's business. What it does check is the kind: a kind whose
-//! milestone has not arrived yet is refused by name, so there is never a
-//! workspace in the list that opens onto nothing.
+//! look inside the state: an explorer's (A2) is its drop zones, a model fit's
+//! (A3) is the model open, and neither is the other's business. The Dataset
+//! editor is not a workspace: datasets are listed beside the workspaces and
+//! each opens in the editor on its own.
+//!
+//! The store keeps a workspace of any kind. Whether a kind can be created yet
+//! is [`WorkspaceKind::check_available`]'s question, which the API asks, so
+//! there is never a workspace in the list that opens onto nothing.
 
 use chrono::{DateTime, Utc};
 use sc_catalog::{Catalog, DataField, Table};
@@ -28,8 +31,6 @@ pub const WORKSPACES_TABLE: &str = "_fd_workspaces";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
-    /// The list of datasets, and one dataset's operations beside its rows.
-    DatasetEditor,
     /// Plots, summary tables and tests from drop zones.
     DataExplorer,
     /// Tiles of panels, cross-filtered.
@@ -48,8 +49,7 @@ pub enum WorkspaceKind {
 
 impl WorkspaceKind {
     /// Every kind, in the order the create dialog lists them.
-    pub const ALL: [WorkspaceKind; 8] = [
-        WorkspaceKind::DatasetEditor,
+    pub const ALL: [WorkspaceKind; 7] = [
         WorkspaceKind::DataExplorer,
         WorkspaceKind::ModelFit,
         WorkspaceKind::Report,
@@ -62,7 +62,6 @@ impl WorkspaceKind {
     /// The kind's name as it is stored and sent.
     pub fn as_str(self) -> &'static str {
         match self {
-            WorkspaceKind::DatasetEditor => "dataset_editor",
             WorkspaceKind::DataExplorer => "data_explorer",
             WorkspaceKind::Dashboard => "dashboard",
             WorkspaceKind::ModelFit => "model_fit",
@@ -93,7 +92,6 @@ impl WorkspaceKind {
     /// Its name for a person.
     pub fn label(self) -> &'static str {
         match self {
-            WorkspaceKind::DatasetEditor => "Dataset editor",
             WorkspaceKind::DataExplorer => "Data explorer",
             WorkspaceKind::Dashboard => "Dashboard",
             WorkspaceKind::ModelFit => "Model fit",
@@ -108,7 +106,6 @@ impl WorkspaceKind {
     /// is): the Analytics UI plan's A2–A9. The notebook is not scheduled.
     pub fn arrives_in(self) -> Option<&'static str> {
         match self {
-            WorkspaceKind::DatasetEditor => None,
             WorkspaceKind::DataExplorer => Some("A2"),
             WorkspaceKind::ModelFit => Some("A3"),
             WorkspaceKind::Report => Some("A4"),
@@ -122,6 +119,18 @@ impl WorkspaceKind {
     /// Whether a workspace of this kind can be created and opened.
     pub fn is_available(self) -> bool {
         self.arrives_in().is_none()
+    }
+
+    /// Refuse, naming the milestone, a kind that is not here yet.
+    pub fn check_available(self) -> Result<()> {
+        match self.arrives_in() {
+            Some(when) => Err(Error::invalid(format!(
+                "a {} workspace cannot be created yet: it arrives with milestone {when} of the \
+                 Analytics UI",
+                self.label()
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -211,17 +220,11 @@ pub async fn bootstrap_workspaces(catalog: &Catalog) -> Result<Table> {
         .await
 }
 
-/// Create a workspace. Refused, naming the milestone, for a kind that is not
-/// here yet; and for an empty name.
+/// Create a workspace. Refused for an empty name. Any kind is stored: whether
+/// one can be created yet is [`WorkspaceKind::check_available`], asked by the
+/// API.
 pub async fn create_workspace(catalog: &Catalog, workspace: &Workspace) -> Result<()> {
     check(workspace)?;
-    if let Some(when) = workspace.kind.arrives_in() {
-        return Err(Error::invalid(format!(
-            "a {} workspace cannot be created yet: it arrives with milestone {when} of the \
-             Analytics UI",
-            workspace.kind.label()
-        )));
-    }
     let insert = Insert::row(
         WORKSPACES_TABLE,
         [
@@ -413,16 +416,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_eight_kinds_parse_and_only_the_dataset_editor_is_here() {
+    fn all_seven_kinds_parse_and_none_is_here_before_a2() {
         for kind in WorkspaceKind::ALL {
             assert_eq!(WorkspaceKind::parse(kind.as_str()).expect("parses"), kind);
         }
-        let available: Vec<WorkspaceKind> = WorkspaceKind::ALL
-            .into_iter()
-            .filter(|k| k.is_available())
-            .collect();
-        assert_eq!(available, [WorkspaceKind::DatasetEditor]);
+        assert!(WorkspaceKind::ALL.iter().all(|k| !k.is_available()));
         assert_eq!(WorkspaceKind::Map.arrives_in(), Some("A5"));
+        let err = WorkspaceKind::DataExplorer
+            .check_available()
+            .expect_err("A2");
+        assert!(err.to_string().contains("milestone A2"), "{err}");
+        // The Dataset editor is not a kind of workspace.
+        assert!(WorkspaceKind::parse("dataset_editor").is_err());
         assert!(WorkspaceKind::parse("spreadsheet").is_err());
     }
 }

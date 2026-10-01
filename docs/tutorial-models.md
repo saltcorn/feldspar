@@ -75,11 +75,11 @@ houses in them, on a fixed seed ([OPERATIONS.md](OPERATIONS.md) §8.6).
 
 A model reads a **dataset**: a named, saved definition of rows — a base table and a list of
 operations applied to it in order. Datasets are built in the **Analytics** UI (the sidebar link
-of that name), in a *Dataset editor* workspace, and every model that wants those rows picks the
+of that name), in its *Dataset editor*, and every model that wants those rows picks the
 same one. [tutorial-analytics.md](tutorial-analytics.md) part 1 walks through the editor; this
 step builds just what the model needs.
 
-Open **Analytics**, create a workspace of type *Dataset editor*, press **New dataset**, call it
+Open **Analytics**, and in the front page's **New dataset** box call it
 `Sold houses` and choose the table `houses`. The spreadsheet shows the rows of `houses`. Now add
 these operations, in this order — the **+** in the last column header adds a Calculated column,
 and **Add an operation** adds the rest:

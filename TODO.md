@@ -72,25 +72,27 @@ where the code shows a better way, and record the deviation in the CHANGELOG.
 # A1 — Workspaces and the dataset editor
 
 The new dataset model (a base and an ordered list of operations, goals document "Dataset
-operations"), workspace persistence, the Analytics UI shell, and the Dataset editor workspace.
+operations"), workspace persistence, the Analytics UI shell, and the Dataset editor. The
+Dataset editor is not a workspace: the front page lists the datasets beside the workspaces.
 
 **Try it.** Run `feldspar demo analytics`, then `feldspar serve`, and log in as the admin.
 1. The admin sidebar has an **Analytics** link (beside *Predictive models*, which stays until
-   A3). It opens the Analytics UI with an empty list of workspaces.
-2. Create a workspace "Houses data" of type *Dataset editor*. The other types are listed but
-   disabled, each labelled with the milestone that brings it.
-3. Create a dataset "House prices by area" on the base table `houses`. The spreadsheet shows
-   the rows of `houses`.
-4. Click the **+** in the last column header and add `price_per_m2 = price / area`. Add
+   A3). It opens the Analytics UI's front page: an empty list of datasets, and below it an
+   empty list of workspaces whose kinds are all listed but disabled, each labelled with the
+   milestone that brings it.
+2. Create a dataset "House prices by area" on the base table `houses`. The Dataset editor
+   opens, and the spreadsheet shows the rows of `houses`.
+3. Click the **+** in the last column header and add `price_per_m2 = price / area`. Add
    `neighbourhoodⱵname` the same way.
-5. From the `price` column header's menu, add a Filter `price > 100000`. Then add an Aggregate
+4. From the `price` column header's menu, add a Filter `price > 100000`. Then add an Aggregate
    by `neighbourhood` with the mean of `price_per_m2` and a count.
-6. Click each operation in the side panel: the spreadsheet shows the data after that
+5. Click each operation in the side panel: the spreadsheet shows the data after that
    operation. Disable the Filter and watch the counts change. Rename the column the Aggregate
    uses in the Calculated column: the Aggregate is marked with an error naming the missing
    column.
-7. Close the browser tab and reopen the workspace: it opens on the same dataset and operation.
-8. In the admin's *Predictive models*, create a linear regression. Its dataset is picked from
+6. Go back to **All datasets**: the front page lists the dataset with its four operations.
+   Open it again: it is as it was saved.
+7. In the admin's *Predictive models*, create a linear regression. Its dataset is picked from
    the named datasets, with a link to edit it in the Analytics UI. Fit it, and check that the
    `estimated_price` calculated field from the models tutorial still returns numbers.
 
@@ -196,6 +198,11 @@ operations"), workspace persistence, the Analytics UI shell, and the Dataset edi
 - [x] A1.20 Definition of done: an `sc-server` test that creates the Try it's dataset through
       the API, reads every stage and checks the rows, breaks and repairs the Aggregate, and
       fits and predicts with a model over a named dataset. Walk the Try it by hand.
+- [x] A1.21 The Dataset editor is not a workspace: the Analytics UI's front page lists the
+      datasets and the workspaces, and a dataset opens in the Dataset editor at
+      `#/datasets/<id>`. The `dataset_editor` workspace kind goes (no kind can be created
+      until A2's Data explorer); the store keeps any kind and the API refuses the ones not
+      here yet. Tests.
 
 ---
 
@@ -312,7 +319,7 @@ and the admin's *Predictive models* screens are retired. No drag and drop yet.
    plot of residuals against fitted values, and actual against predicted. A normal Q-Q plot
    of the residuals is in the "More plots" drop-down.
 4. Clone the model, add `year_built`, fit it, and compare the two coefficient tables.
-5. Edit the model's dataset in a Dataset editor workspace, then return: the fit says the
+5. Edit the model's dataset in the Dataset editor, then return: the fit says the
    dataset has changed since it was fitted.
 6. With CmdStan installed, open the Radon model from the Stan tutorial: edit the program,
    check the bindings, fit, and see the posterior summary with trace and rank plots.
@@ -696,7 +703,7 @@ end users (goals document, the introduction's "application").
 2. Log in as a `staff` user at the application's address: the dashboard is there and
    interactive, and nothing else is: no workspace list, no admin links.
 3. Create a second application in *self-serve* mode with the tables `houses` and
-   `neighbourhoods` allowed and the Data explorer and Dataset editor types enabled.
+   `neighbourhoods` allowed, the Dataset editor on and the Data explorer type enabled.
 4. As a `staff` user there, create a dataset on `houses` and explore it. `incidents` is not
    offered as a base, and asking the API for it directly is refused.
 5. Give `staff` read access to only some `houses` rows (an ownership formula): the user's

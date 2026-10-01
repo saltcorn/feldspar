@@ -544,3 +544,17 @@ COMMIT;
 --    WHERE id IN (SELECT model_id FROM "_fd_legacy_datasets" WHERE pos IS NOT NULL);
 --
 --   DROP TABLE "_fd_legacy_datasets";
+
+-- ---------------------------------------------------------------------------
+-- 9. Postgres and SQLite: the Dataset editor is no longer a workspace
+--    (2026-10-01).
+-- ---------------------------------------------------------------------------
+--
+-- The Analytics UI's front page lists the datasets beside the workspaces, and
+-- a dataset opens in the Dataset editor on its own; the `dataset_editor`
+-- workspace kind is gone. A stored workspace of that kind no longer reads, and
+-- would make the whole list fail, so delete them. The datasets they edited are
+-- in `_fd_datasets` and are untouched. Re-running it is a no-op; skip it where
+-- `_fd_workspaces` does not exist.
+
+DELETE FROM "_fd_workspaces" WHERE kind = 'dataset_editor';

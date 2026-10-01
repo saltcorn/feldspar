@@ -15,7 +15,7 @@ describe("the names of things kept as data", () => {
     }
     for (const f of WINDOW_FUNCTIONS) expect(windowFunctionName(f.value, t)).toBe(f.label);
     for (const f of SUMMARY_FUNCTIONS) expect(summaryName(f.value, t)).toBe(f.label);
-    expect(workspaceKindName("dataset_editor", t)).toBe("Dataset editor");
+    expect(workspaceKindName("data_explorer", t)).toBe("Data explorer");
     expect(workspaceKindName("simulation", t)).toBe("Simulation");
     expect(workspaceKindName("mystery", t)).toBe("mystery");
   });

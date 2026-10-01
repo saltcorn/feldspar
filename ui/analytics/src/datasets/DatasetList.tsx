@@ -1,7 +1,7 @@
-// The Dataset editor's list mode (analytics TODO A1.16): every dataset, each
-// edited, cloned or deleted from its row, and a new one made on a base — a
-// table, or another dataset. The list is global: every workspace sees the same
-// datasets, because models and panels share them.
+// The list of datasets, on the Analytics UI's front page (analytics TODO A1.16,
+// A1.21): every dataset, each edited, cloned or deleted from its row, and a new
+// one made on a base — a table, or another dataset. The list is global, because
+// models and panels share the datasets; one opens in the Dataset editor.
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -70,7 +70,7 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
   };
 
   return (
-    <div className="an-page">
+    <section className="mb-5">
       <h2 className="h3 mb-3">
         <T text="Datasets" />
       </h2>
@@ -194,7 +194,7 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
           </Button>
         </Modal.Footer>
       </Modal>
-    </div>
+    </section>
   );
 }
 
@@ -288,8 +288,8 @@ export function NewDatasetForm({
   );
 }
 
-/** `#/datasets/new`: a new dataset outside any workspace — where the admin
- * UI's model form sends someone who has no dataset yet. */
+/** `#/datasets/new`: a new dataset on a page of its own — where the admin UI's
+ * model form sends someone who has no dataset yet. */
 export function NewDatasetPage({ table }: { table: string | null }) {
   const [datasets, setDatasets] = useState<DatasetItem[]>([]);
   useEffect(() => {

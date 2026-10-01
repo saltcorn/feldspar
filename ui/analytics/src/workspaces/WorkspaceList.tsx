@@ -1,4 +1,5 @@
-// The list of workspaces: the Analytics UI's front page (analytics TODO A1.15).
+// The list of workspaces, on the Analytics UI's front page below the datasets
+// (analytics TODO A1.15, A1.21).
 //
 // Every workspace, most recently used first, each opened, renamed or deleted
 // from its row; and a new one made by name and kind, the kinds not here yet
@@ -57,11 +58,13 @@ export function WorkspaceList() {
     }
   };
 
+  const noneHere = kinds.length > 0 && firstAvailable(kinds) === "";
+
   return (
-    <div className="an-page">
-      <h1 className="h2 mb-3">
+    <section className="mb-5">
+      <h2 className="h3 mb-3">
         <T text="Workspaces" />
-      </h1>
+      </h2>
       {error && (
         <Alert variant="danger" onClose={() => setError(null)} dismissible>
           {error}
@@ -97,12 +100,17 @@ export function WorkspaceList() {
               <T text="Create" />
             </Button>
           </Form>
+          {noneHere && (
+            <Form.Text muted>
+              <T text="No kind of workspace can be created yet: each arrives with the milestone it names." />
+            </Form.Text>
+          )}
         </Card.Body>
       </Card>
 
       {workspaces && workspaces.length === 0 && (
         <p className="text-secondary">
-          <T text="No workspaces yet. Create one above: a Dataset editor is where datasets are built." />
+          <T text="No workspaces yet." />
         </p>
       )}
       {workspaces && workspaces.length > 0 && (
@@ -186,7 +194,7 @@ export function WorkspaceList() {
           </Button>
         </Modal.Footer>
       </Modal>
-    </div>
+    </section>
   );
 }
 

@@ -4,10 +4,10 @@
 // (`/analytics/`): a route is the part after `#`, so a reload or a bookmark
 // comes back to the same screen without the server knowing any of them.
 //
-//   #/                        the workspace list
+//   #/                        the front page: the datasets and the workspaces
 //   #/w/<id>                  a workspace, opened on the state it was left in
-//   #/datasets/<id>           a dataset in the Dataset editor, outside any
-//                             workspace — what "Edit in Analytics" links to
+//   #/datasets/<id>           a dataset in the Dataset editor — where the front
+//                             page's datasets and "Edit in Analytics" lead
 //   #/datasets/new?table=t    a new dataset, over `t` when one is named
 
 /** Where the Analytics UI is. */

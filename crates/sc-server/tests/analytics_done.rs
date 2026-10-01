@@ -1,12 +1,13 @@
-//! Milestone A1's definition of done (analytics TODO A1.20): the Try it,
-//! through the API, over `feldspar demo analytics`'s rows.
+//! Milestone A1's definition of done (analytics TODO A1.20, A1.21): the Try
+//! it, through the API, over `feldspar demo analytics`'s rows.
 //!
-//! A workspace of the one kind that is here; the dataset "House prices by
-//! area" built operation by operation; every stage read and its rows checked
-//! against the same numbers computed here from the base rows; the Filter
-//! switched off and on; the Aggregate broken by renaming the column it reads,
-//! and repaired; the workspace's state reopened; and a model over a named
-//! dataset fitted, predicting through a calculated field on every house.
+//! The front page's two lists, empty, with no kind of workspace here yet; the
+//! dataset "House prices by area" built operation by operation; every stage
+//! read and its rows checked against the same numbers computed here from the
+//! base rows; the Filter switched off and on; the Aggregate broken by renaming
+//! the column it reads, and repaired; the dataset in the front page's list;
+//! and a model over a named dataset fitted, predicting through a calculated
+//! field on every house.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -164,26 +165,21 @@ fn f(v: &Value) -> Option<f64> {
 async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
-    // 1–2. A workspace "Houses data" of the one kind that is here.
+    // 1. The front page: no datasets and no workspaces yet, and every kind of
+    // workspace listed with the milestone that brings it.
+    assert_eq!(client.ok("GET", "/api/datasets", None).await, json!([]));
+    assert_eq!(client.ok("GET", "/api/workspaces", None).await, json!([]));
     let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
-    let available: Vec<&str> = kinds
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|k| k["available"] == json!(true))
-        .map(|k| k["kind"].as_str().unwrap())
-        .collect();
-    assert_eq!(available, ["dataset_editor"]);
-    let workspace = client
-        .ok(
-            "POST",
-            "/api/workspaces",
-            Some(json!({ "name": "Houses data", "kind": "dataset_editor" })),
-        )
-        .await;
-    let workspace_id = workspace["id"].as_str().unwrap().to_owned();
+    assert!(
+        kinds
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|k| k["available"] == json!(false) && k["arrives_in"].is_string()),
+        "{kinds}"
+    );
 
-    // 3. The dataset on `houses`: its base is the table's rows.
+    // 2. The dataset on `houses`: its base is the table's rows.
     let created = client
         .ok(
             "POST",
@@ -221,7 +217,7 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
         }
     }
 
-    // 4–5. The operations, saved as the editor saves them.
+    // 3–4. The operations, saved as the editor saves them.
     def["operations"] = json!([
         op(
             "c1",
@@ -256,7 +252,7 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
         "{report}"
     );
 
-    // 6. Every stage, checked.
+    // 5. Every stage, checked.
     let (names, rows, total) = client.stage(&def, 1).await;
     assert_eq!(total, 200);
     let ppm = names.iter().position(|n| n == "price_per_m2").unwrap();
@@ -320,23 +316,24 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     let report = client.save(&id, &def).await;
     assert_eq!(report["operations"][3]["status"], json!("ok"));
 
-    // 7. The workspace reopens on the dataset and the operation it was left on.
-    client
-        .ok(
-            "PUT",
-            &format!("/api/workspaces/{workspace_id}/state"),
-            Some(json!({ "state": { "dataset": id, "operation": "f1" } })),
-        )
-        .await;
+    // 6. The front page lists the dataset with its four operations, and it
+    // opens as it was saved.
+    let listed = client.ok("GET", "/api/datasets", None).await;
+    assert_eq!(listed[0]["id"], json!(id));
+    assert_eq!(listed[0]["name"], json!("House prices by area"));
+    assert_eq!(listed[0]["operations"], json!(4));
     let reopened = client
-        .ok("GET", &format!("/api/workspaces/{workspace_id}"), None)
+        .ok("GET", &format!("/api/datasets/{id}"), None)
         .await;
-    assert_eq!(
-        reopened["state"],
-        json!({ "dataset": id, "operation": "f1" })
-    );
+    let ids: Vec<&str> = reopened["dataset"]["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["c1", "c2", "f1", "a1"]);
 
-    // 8. A model over a named dataset that keeps the grain: fitted, and
+    // 7. A model over a named dataset that keeps the grain: fitted, and
     // predicting every house through the models tutorial's calculated field.
     let prices = client
         .ok(

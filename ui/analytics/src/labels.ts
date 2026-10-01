@@ -140,8 +140,6 @@ export function summaryName(fn: string, t: Translate): string {
 /** A workspace kind's name. */
 export function workspaceKindName(kind: string, t: Translate): string {
   switch (kind) {
-    case "dataset_editor":
-      return t("Dataset editor");
     case "data_explorer":
       return t("Data explorer");
     case "dashboard":

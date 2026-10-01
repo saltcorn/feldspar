@@ -1,4 +1,4 @@
-//! `_fd_workspaces` on both backends (analytics TODO A1.12).
+//! `_fd_workspaces` on both backends (analytics TODO A1.12, A1.21).
 
 use std::sync::Arc;
 
@@ -17,16 +17,17 @@ use serde_json::json;
 async fn round_trip(cat: &Catalog) -> Result<()> {
     bootstrap_workspaces(cat).await?;
     let me = uuid::Uuid::new_v4();
-    let ws = Workspace::new("Houses data", WorkspaceKind::DatasetEditor, Some(me));
+    // The store keeps any kind; the API is what refuses one not here yet.
+    let ws = Workspace::new("House plots", WorkspaceKind::DataExplorer, Some(me));
     create_workspace(cat, &ws).await?;
     let back = load_workspace(cat, ws.id).await?.expect("stored");
-    assert_eq!(back.name, "Houses data");
-    assert_eq!(back.kind, WorkspaceKind::DatasetEditor);
+    assert_eq!(back.name, "House plots");
+    assert_eq!(back.kind, WorkspaceKind::DataExplorer);
     assert_eq!(back.state, json!({}));
     assert_eq!(back.created_by, Some(me));
 
     // The state is the screen's, stored whole and handed back as it was.
-    let state = json!({ "dataset": "abc", "operation": "op3", "scroll": 120 });
+    let state = json!({ "dataset": "abc", "x": ["area"], "scroll": 120 });
     let saved = save_workspace_state(cat, ws.id, state.clone()).await?;
     assert_eq!(saved.state, state);
     assert!(save_workspace_state(cat, ws.id, json!([1])).await.is_err());
@@ -35,15 +36,11 @@ async fn round_trip(cat: &Catalog) -> Result<()> {
     assert_eq!(renamed.name, "Houses");
     assert_eq!(renamed.state, state);
     assert!(rename_workspace(cat, ws.id, "").await.is_err());
-
-    // A kind not here yet is refused, naming its milestone.
-    let err = create_workspace(
-        cat,
-        &Workspace::new("Plots", WorkspaceKind::DataExplorer, None),
-    )
-    .await
-    .expect_err("A2");
-    assert!(err.to_string().contains("milestone A2"), "{err}");
+    assert!(
+        create_workspace(cat, &Workspace::new(" ", WorkspaceKind::Map, None))
+            .await
+            .is_err()
+    );
 
     assert_eq!(list_workspaces(cat).await?.len(), 1);
     assert!(delete_workspace(cat, ws.id).await?);

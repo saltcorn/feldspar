@@ -157,7 +157,7 @@ feldspar/
 │  ├─ builder/                    # Saltcorn 1's Craft.js layout builder, vendored (JSX) and
 │  │                              #    hosted by a TypeScript `src/`: its own admin document
 │  │                              #    under `/builder/` (§13.3, "The builder")
-│  ├─ analytics/                  # the Analytics UI (§14.5): workspaces, the Dataset editor —
+│  ├─ analytics/                  # the Analytics UI (§14.5): datasets, workspaces, the Dataset editor —
 │  │                              #    React + react-bootstrap over the generated client, served
 │  │                              #    admin-only under `/analytics/`
 │  └─ form-runtime/               # React dynamic-form framework (conditional/repeated/dynamic)
@@ -7932,15 +7932,19 @@ sections 7 (Postgres) and 8 (SQLite): one named dataset per old dataset, built a
 ### 14.5 The Analytics UI (`sc-analytics`, `ui/analytics`)
 
 The Analytics UI (`docs/analytics-ui-goals.md`) is where datasets are built and, milestone by
-milestone, explored, modelled, mapped and reported. Milestone A1 is its frame and its first
-workspace kind.
+milestone, explored, modelled, mapped and reported. Milestone A1 is its frame, the workspaces'
+persistence and the Dataset editor. Its front page (`#/`) lists the datasets and, below them,
+the workspaces; a dataset opens in the Dataset editor at `#/datasets/<id>`, which is not a
+workspace and keeps no state of its own beyond the dataset.
 
 **Workspaces** (`sc-analytics`, `_fd_workspaces`: `id`, `name`, `kind`, `state`, `created_by`,
-`updated_at`). `kind` is one of the eight of the goals document; creating one whose milestone
-has not arrived is refused naming it ("arrives with milestone A2"), and `listWorkspaceKinds`
-says which are here so the create dialog lists the rest disabled. `state` is JSON owned by the
-kind — the Dataset editor's is which dataset is open and which operation is selected — saved as
-it changes (`saveWorkspaceState`) and restored when the workspace is opened.
+`updated_at`). `kind` is one of the seven of the goals document (Data explorer, Model fit,
+Report, Map, Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
+refuses one whose milestone has not arrived, naming it ("arrives with milestone A2"), and
+`listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — until
+A2, that is all of them. `state` is JSON owned by the kind — an explorer's is its dataset and
+drop zones — saved as it changes (`saveWorkspaceState`) and restored when the workspace is
+opened.
 
 **The API** (`sc-api`'s `analytics.rs`, handled in `sc-server`'s `analytics.rs`; admin-only
 until A9): datasets (`listDatasets`, `getDataset`, `createDataset`, `updateDataset`,
@@ -7957,13 +7961,13 @@ the admin shell. It is served under `/analytics/` in the way the IDE is (§12.1)
 visitor is sent to sign in, a non-admin refused), under its own CSP
 (`ANALYTICS_CONTENT_SECURITY_POLICY`, strict for now, widened by later milestones' renderers
 without touching the admin UI's), built into the binary by `sc-cli`'s build script, and sharing
-the admin UI's session cookie. It routes on the hash (`#/`, `#/w/<id>`, `#/datasets/<id>`,
-`#/datasets/new`), uses the admin UI's vendored Tabler stylesheet and its colour-scheme setting,
+the admin UI's session cookie. It routes on the hash (`#/` the front page, `#/w/<id>`,
+`#/datasets/<id>`, `#/datasets/new`), uses the admin UI's vendored Tabler stylesheet and its colour-scheme setting,
 and its strings are the `analytics` i18n domain. The admin sidebar's **Analytics** entry leads
 to it; *Predictive models* stays beside it until A3.
 
-**The Dataset editor** lists the datasets (edit, clone, delete with a warning naming the models
-that use one, new on a table or a dataset) and edits one: the operations in a side panel — added
+**The Dataset editor.** The front page lists the datasets (edit, clone, delete with a warning
+naming the models that use one, new on a table or a dataset), and the editor edits one: the operations in a side panel — added
 from a menu or from the spreadsheet's column headers (Filter, Sort, Group by, Stack with the
 selected columns; **+** adds a Calculated column), edited in a form of their kind that the server
 checks as it is typed, dragged to reorder, switched off, deleted, and marked with their error —
