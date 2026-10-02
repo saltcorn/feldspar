@@ -16,9 +16,10 @@ use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_model::{
     ATTR_ROWS, Column, Dataset, DatasetSource, FitResult, FitStatus, Frame, Model, ModelInstance,
-    ModelProvider, ModelRegistry, Outcome, OutcomeSpec, ParameterBlock, Prediction, Read, Split,
-    bootstrap_model_instances, bootstrap_models, fit_model, numeric_column_field, predict_rows,
-    require_model_instance, save_model_instance,
+    ModelProvider, ModelRegistry, Outcome, OutcomeSpec, ParameterBlock, Prediction, ROWS_OUTPUT,
+    Read, Split, bootstrap_model_instances, bootstrap_models, fit_model, instance_outputs,
+    load_output_data, numeric_column_field, predict_rows, require_model_instance,
+    save_model_instance,
 };
 use sc_test_harness::TestDb;
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
@@ -305,5 +306,101 @@ async fn a_search_records_every_point_it_tried_and_the_one_it_chose() -> Result<
         .expect("the search is a list");
     assert_eq!(search.len(), 2);
     assert!(search.iter().all(|p| p.get("score").is_some()));
+    Ok(())
+}
+
+/// What a fit shows (analytics TODO A3.1): the outputs it declares go on the
+/// instance, the frames its plots read go to `_fd_model_outputs` in the same
+/// transaction, and both go when the instance does.
+#[tokio::test]
+async fn a_fit_stores_its_outputs_and_they_go_with_the_instance() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    let started = ModelInstance::starting(model("mean").id);
+    save_model_instance(&cat, &started).await?;
+    let finished = fit_model(
+        &cat,
+        &registry()?,
+        &Houses(200),
+        &model("mean"),
+        started.id,
+        1000,
+    )
+    .await?;
+    assert_eq!(finished.status, FitStatus::Fitted);
+
+    let stored = require_model_instance(&cat, started.id).await?;
+    let outputs = instance_outputs(&stored)?;
+    let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "statistics",
+            "metrics",
+            "residuals_fitted",
+            "actual_predicted",
+            "qq",
+            "residual_histogram"
+        ]
+    );
+
+    // Every scored row of every split, with the columns the model read.
+    let rows = load_output_data(&cat, started.id, ROWS_OUTPUT)
+        .await?
+        .expect("the rows were stored");
+    let counts = &stored.attributes[ATTR_ROWS];
+    let scored = ["train", "validation", "test"]
+        .iter()
+        .map(|p| counts[p].as_u64().unwrap_or(0))
+        .sum::<u64>();
+    assert_eq!(rows.frame.rows as u64, scored);
+    assert!(!rows.sampled());
+    assert_eq!(
+        rows.frame.names(),
+        [
+            "area",
+            "region",
+            "split",
+            "actual",
+            "fitted",
+            "residual",
+            "standardised_residual",
+            "theoretical_quantile"
+        ]
+    );
+    // The mean model's residuals are price − the training mean.
+    let (Some(Column::Float(actual)), Some(Column::Float(fitted)), Some(Column::Float(residual))) = (
+        rows.frame.column("actual"),
+        rows.frame.column("fitted"),
+        rows.frame.column("residual"),
+    ) else {
+        panic!("float columns");
+    };
+    for i in 0..rows.frame.rows {
+        let expected = actual[i].unwrap() - fitted[i].unwrap();
+        assert!((residual[i].unwrap() - expected).abs() < 1e-12);
+    }
+    assert!(load_output_data(&cat, started.id, "draws").await?.is_none());
+
+    // Deleting the instance deletes its outputs.
+    sc_model::delete_model_instance(&cat, &registry()?, started.id).await?;
+    assert!(
+        load_output_data(&cat, started.id, ROWS_OUTPUT)
+            .await?
+            .is_none()
+    );
+    Ok(())
+}
+
+/// A fit asked to stop is stopped between its stages, whichever provider it
+/// is (analytics TODO A3.3) — here before it has read anything.
+#[tokio::test]
+async fn a_cancelled_fit_stops_at_its_next_stage() -> Result<()> {
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let ctx = sc_model::FitContext::new(&sc_model::NoProgress, &cancel);
+    let err = sc_model::run_fit_with(&registry()?, &Houses(50), &model("mean"), 1000, &ctx)
+        .await
+        .expect_err("cancelled");
+    assert!(err.to_string().ends_with(sc_model::CANCELLED), "{err}");
     Ok(())
 }

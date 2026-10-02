@@ -188,15 +188,49 @@ class FixtureMean:
     config=[sc.Field.column("on", label="Column", required=True)],
     outcome=sc.Outcome.cluster(),
     standardise=True,
+    # What a fit shows (analytics TODO A3.2): its rule, and a bar chart over a
+    # frame of its own.
+    outputs=[
+        {"name": "rule", "label": "Rule", "kind": "parameters", "block": "Rule"},
+        {
+            "name": "signs",
+            "label": "Rows by sign",
+            "kind": "plot",
+            "data": "signs",
+            "spec": {
+                "layers": [
+                    {
+                        "mark": "bar",
+                        "encoding": {"x": {"field": "sign"}, "y": {"field": "rows"}},
+                    }
+                ]
+            },
+        },
+    ],
 )
 class FixtureSign:
     """The other direction: a cluster number is not a number a regression
     predicts, so it is written out in full."""
 
     def fit(self, frame, configuration, hyperparameters):
+        values = [float(v) for v in frame[configuration["on"]]]
+        negative = sum(1 for v in values if v < 0)
         return {
             "state": {"on": configuration["on"]},
             "parameters": [sc.Parameter.text("Rule", "negative is 0, otherwise 1")],
+            "outputs": {
+                "signs": {
+                    "rows": 2,
+                    "columns": [
+                        {"name": "sign", "type": "str", "values": ["negative", "positive"]},
+                        {
+                            "name": "rows",
+                            "type": "int",
+                            "values": [negative, len(values) - negative],
+                        },
+                    ],
+                }
+            },
         }
 
     def predict(self, state, frame):

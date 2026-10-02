@@ -2,6 +2,93 @@
 
 Changes in reverse chronological order.
 
+## Analytics A3 phases 1–2: a fit's outputs, and the model editor's API
+
+Milestone A3's server half (`TODO.md` A3.1–A3.4): a fit now says what it shows — tables, and plots
+as plot specs over **fit output data** stored beside the instance — and the endpoints the model
+editor (A3.5) will be built on: the outputs drawn, a fit's progress pushed over a socket, cancel
+for any fit, the fits saying which are out of date, and the model's **view state**.
+
+- **Outputs** (A3.1; `sc-model`'s `outputs.rs`). `OutputDecl { name, label, optional, kind }`,
+  `kind` being a parameter block, the metrics, an output frame as a table, or a plot spec (JSON,
+  without its `data`) over an output frame. `ModelProvider::outputs(&OutputContext)` declares them
+  after the fit — the context is the outcome, the configuration, the features, the parameter
+  blocks and the stored frames — and the instance records them (`ATTR_OUTPUTS`). Output frames go
+  to a new `_fd_model_outputs` table (bootstrapped with the instances), written in the transaction
+  that marks the instance fitted and deleted with the instance or the model. A provider may return
+  frames of its own in `FitResult::outputs`.
+- **`DataRef::FitOutput { instance, name }`** (A3.1; `sc-analytics`). `render_plot`,
+  `render_table` and `run_tests` read their rows through a `PlotRows` (a query, its shape and the
+  database it runs on): a dataset's last stage on the primary database, or a fit's output frame
+  loaded into a private in-memory SQLite database for the length of the render, so every stat
+  runs on it unchanged. `sc-analytics` now depends on `sc-model` and `sc-db-sqlite`.
+- **The standard outputs** (A3.2), what every built-in provider shows: a table per parameter block
+  (and the scalars as one), the metrics, and by outcome — regression: residuals against fitted
+  values with a loess, actual against predicted, and optional Q-Q plot and residual histogram;
+  classification: actual against predicted classes, how often the predicted class is right by its
+  probability, an optional probability box plot; clustering: cluster sizes and the clusters on
+  the first two numeric features; embedding: the first two components; posterior: trace plots,
+  and optional rank and density plots, faceted by parameter. The host makes the data: `rows`
+  (every scored row with the model's columns, `split`, `actual`, `fitted`, `residual`,
+  `standardised_residual`, `theoretical_quantile` — R's `ppoints` — and the rest by outcome; at
+  most 20 000, thinned by a stride) and `draws` (at most eight parameters, scalars first, 500
+  draws a chain, with each draw's rank; made before `keep_draws` discards any). A JavaScript or
+  Python module's provider declares `outputs` in its manifest in the same JSON and returns frames
+  as `outputs: { name: frame }`; the Python decorator takes `outputs=[…]`.
+- **The model editor's API** (A3.3). `getModelOutputs` (`GET /api/models/{id}/outputs?fit=
+  &include=`): the outputs of the named fit, else the active one, else the newest fitted, with
+  `dataset_changed`; tables filled, plot specs pointed at the fit, every plot drawn but the
+  optional ones not named in `include` (`sc_analytics::model_outputs`). **Progress pushed**:
+  `GET /api/model-instances/{id}/progress` is a WebSocket (`sc-server`'s `fit_progress.rs`) that
+  re-reads the fit's row twice a second, sends a `progress` frame when it changes and a
+  `finished` one at the end, then closes; every fit now reports `reading`, `fitting` and
+  `scoring` stages beside a posterior's. **Cancel for any fit**: `cancelModelFit` no longer
+  refuses a provider that is not `cancellable` — such a fit stops at its next stage (after
+  reading, between grid points, before scoring) with "the fit was cancelled". `dataset_changed`
+  is on every fit in `listModelInstances`' schema (it was answered but only declared on the
+  detail).
+- **Model view state** (A3.4). `_fd_models.view_state`, a nullable JSON object (`{}` for a new
+  model), outside the model: `saveModel` neither reads nor writes it (`save_model`'s update leaves
+  the column out), a fit does not record it, and the changed-since-fit checks never see it.
+  `patchModelViewState` (`PATCH /api/models/{id}/view-state`, `{ patch }`) sets or (with `null`)
+  removes top-level keys, one patch at a time in a process; `getModel` (and every model answer)
+  returns it. **`cloneModel`** (`POST /api/models/{id}/clone`) copies a model under a free name
+  ("… (copy)", "… (copy 2)") or the one given, sharing its datasets, with no fits and the view
+  state. `TABLES_RENAME.sql` section 10 adds the column on Postgres (`ADD COLUMN IF NOT EXISTS`)
+  and says how on SQLite; the server adds it on start anyway.
+- **Clients** regenerated in `ui/admin`, `ui/ide`, `ui/builder` and `ui/analytics`. The admin's
+  instance screen took any progress to mean a posterior; it now looks for a posterior's own
+  stages (`isPosteriorStage`), and its stage label names the three new ones.
+- **Documentation.** `TECHNICAL_DESIGN.md` §14.2 (*What a fit shows*, cancel and progress,
+  `_fd_model_outputs`, the API list), §14.5 (`fit_output` data, the model editor's endpoints),
+  §2 (the dependency table and graph), §9.2's ER diagram (`_fd_model_outputs`).
+  `repo_hygiene.rs` pinned "There is no cancel"; it now pins the sentence that replaced it.
+- **Tests.** `sc-model`: the declarations' JSON, the standard outputs per outcome, the Q-Q
+  positions against `ppoints`, a posterior's draws thinned and ranked, a fit storing its outputs
+  and losing them with the instance, a cancelled fit, the view state patched key by key and left
+  alone by a save and carried by a clone, section 10 on both databases. `sc-analytics`: plots over
+  stored output data on both databases; linear regression, logistic regression and k-means fitted
+  over the plot fixture with every declared output drawn on both databases; a posterior's three
+  plots. `sc-module`/`sc-python`: a module provider's declared outputs and its own frame crossing
+  the seam. `sc-server` (`model_editor_api.rs`): a fit watched over its socket, its outputs and
+  optional plots drawn, the fits flagged after a dataset edit; the view state through the API, a
+  save and a clone. `posterior_api.rs` now expects a linear regression's cancel to be accepted.
+- **Deviations.**
+  - The output declarations are made **after** the fit and recorded on the instance, rather than
+    being a static list per provider: the k-means scatter plot names the model's first two
+    numeric columns and the posterior plots exist only when there are draws, so the provider
+    declares from what it fitted. A module's manifest declares a static list.
+  - The fit output data is computed on with SQL on an in-memory SQLite database rather than by an
+    in-memory implementation of each stat: the TODO's "computed in memory" without a second
+    stat compiler.
+  - "The list of a model's fits with the dataset changed flag" is the existing
+    `listModelInstances`, whose schema now declares the flag, rather than a new endpoint; cancel
+    is the existing `cancelModelFit`, widened to every fit.
+  - Logistic regression's plots are a classification's (confusion heatmap, calibration, and the
+    probability by class) rather than residual plots, which mean little for a class.
+  - The `python-host` tests could not be run on this machine (no `libpython3.13` to link); the
+    decorator's manifest was checked with the system Python and `sc-python` compiles.
+
 ## Analytics: models are not a workspace
 
 A design change before A3 starts (`TODO.md` A3.0): a model opens in a **model editor** at

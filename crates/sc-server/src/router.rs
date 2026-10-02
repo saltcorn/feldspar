@@ -41,6 +41,7 @@ use crate::apps::{AppMounts, MountedApp, subdomain_of};
 use crate::backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 use crate::chat::{AGENT_CHAT_ROUTE, agent_chat_upgrade};
 use crate::config::ServerConfig;
+use crate::fit_progress::{FIT_PROGRESS_ROUTE, fit_progress_upgrade};
 use crate::handler::{HandlerCtx, HandlerRegistry, HandlerResponse};
 use crate::lsp::{LSP_ROUTE, ServerSlots, language_server_upgrade, server_slots};
 use crate::mcp::MCP_ROUTE;
@@ -299,6 +300,9 @@ pub fn build_router_with_apps(
         // literal route ahead of the `dispatch` fallback the rest of `/api`
         // goes through.
         .route(STREAM_OBSERVE_ROUTE, axum::routing::get(stream_observe))
+        // A fit's progress, pushed to the model editor (analytics TODO A3.3).
+        // An upgrade for the reason the Observe socket's is.
+        .route(FIT_PROGRESS_ROUTE, axum::routing::get(fit_progress))
         // The administration MCP server (§13.6). A real route rather than a
         // typed endpoint for the reason the upload and backup routes are:
         // JSON-RPC over a raw body is not a shape `TypeSchema` describes.
@@ -704,6 +708,49 @@ async fn stream_observe(
         sc_stream::StreamId(id),
     )
     .await
+}
+
+/// `GET /api/model-instances/{id}/progress`: a fit's progress socket
+/// (analytics TODO A3.3). Admin only, decided before the upgrade as the
+/// Observe socket's is.
+async fn fit_progress(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    jar: CookieJar,
+    AxumPath(id): AxumPath<String>,
+    MaybeUpgrade(ws): MaybeUpgrade,
+) -> Response {
+    // An application's request on a path spelled like this one is not a fit's:
+    // applications have no model editor.
+    if let Resolved::App(_) = resolve_app(&state, &headers, &jar) {
+        return json_error(StatusCode::NOT_FOUND, "there is nothing at this path");
+    }
+    let user = match session_user(&state, &jar).await {
+        Ok(user) => user,
+        Err(response) => return *response,
+    };
+    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
+        return rejection;
+    }
+    let Ok(id) = id.parse::<uuid::Uuid>() else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "the fit id in the path is not a uuid",
+        );
+    };
+    let Some(catalog) = state.apps.catalog().cloned() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server has no catalog, so it has no fits",
+        );
+    };
+    let Some(ws) = ws else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "this path is a WebSocket: connect to it with `ws:`/`wss:` rather than fetching it",
+        );
+    };
+    fit_progress_upgrade(ws, catalog, sc_model::InstanceId(id))
 }
 
 /// The supervisor inside a server's stream services — a named function rather

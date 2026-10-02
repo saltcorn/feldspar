@@ -107,6 +107,8 @@ mod metadata_tables_api;
 mod model_admin_api;
 #[path = "model_dataset.rs"]
 mod model_dataset;
+#[path = "model_editor_api.rs"]
+mod model_editor_api;
 #[path = "model_fit_job.rs"]
 mod model_fit_job;
 #[path = "model_formulas.rs"]

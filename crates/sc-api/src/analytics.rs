@@ -1,5 +1,5 @@
-//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8): datasets, plots
-//! and workspaces.
+//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8, A3.3): datasets,
+//! plots, a model's outputs and workspaces.
 //!
 //! Admin-only in this milestone, like everything else under `/api`: A9 is
 //! where a restricted application's users reach a subset of them under their
@@ -13,7 +13,7 @@
 //! What is stored changes only through `createDataset`, `updateDataset`,
 //! `cloneDataset` and `deleteDataset`.
 
-use crate::endpoint::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
+use crate::endpoint::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec, QueryParam};
 use crate::schema::{StructField, TypeSchema, ValueType};
 
 fn api() -> PathSpec {
@@ -361,6 +361,51 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("spec", TypeSchema::optional(TypeSchema::json())),
             StructField::new("assignment", TypeSchema::optional(TypeSchema::json())),
             StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
+    // --- the model editor -----------------------------------------------------
+
+    // What a fit shows (A3.1–A3.3): its outputs as its provider declared them,
+    // in order — tables filled from the fit, plots as specs over the fit's
+    // output data, each drawn as `renderPlot` draws it. `fit` is the fit to
+    // show; without it, the model's active fit, else its newest fitted one.
+    // Optional plots ("More plots") come with their spec but are drawn only
+    // when named in `include` (comma-separated), so opening a model draws what
+    // is on the screen; `renderPlot` draws one later from its spec. `fit` is
+    // null, with no outputs, for a model that has never been fitted.
+    //
+    // The rest of the model editor's needs are the model endpoints:
+    // `listModelInstances` (each fit with `dataset_changed`), `fitModel`,
+    // `cancelModelFit` (any fit, stopped between its stages unless its provider
+    // can kill it sooner), `patchModelViewState` and `cloneModel`. A fit's
+    // progress is **pushed**: `GET /api/model-instances/{id}/progress` is a
+    // WebSocket, beside this set for the reason a stream's Observe socket is —
+    // a socket has no shape in an `EndpointSet` (§13.1). It sends
+    // `{"type":"progress","status","progress"}` whenever the fit's row
+    // changes, then `{"type":"finished","status","error"}`, and closes.
+    set.register(
+        Endpoint::new(
+            "getModelOutputs",
+            Method::Get,
+            api()
+                .lit("models")
+                .param("id", ValueType::Uuid)
+                .lit("outputs"),
+        )
+        .query([
+            QueryParam::new("fit", ValueType::Uuid),
+            QueryParam::new("include", ValueType::Text),
+        ])
+        .output(TypeSchema::struct_of([
+            StructField::new("model", TypeSchema::uuid()),
+            // The fit shown: its id, name, status, when, whether active, and
+            // `dataset_changed`.
+            StructField::new("fit", TypeSchema::optional(TypeSchema::json())),
+            // `{ name, label, optional, kind: "table" | "plot", table?, spec?,
+            // plot?, error? }`, `plot` being `renderPlot`'s answer.
+            StructField::new("outputs", TypeSchema::array(TypeSchema::json())),
         ]))
         .auth(AuthRequirement::admin()),
     );

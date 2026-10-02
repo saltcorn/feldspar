@@ -28,11 +28,9 @@ use std::collections::BTreeMap;
 use sc_dataset::DatasetId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use uuid::Uuid;
 
 /// Where a plot's rows come from.
-///
-/// One kind now; A3 adds a fit's output data, which is read from the instance
-/// rather than through SQL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DataRef {
@@ -40,6 +38,16 @@ pub enum DataRef {
     Dataset {
         /// The dataset's id.
         dataset: DatasetId,
+    },
+    /// A fit's **output data** (analytics TODO A3.1): a frame the fit stored
+    /// beside its instance — each scored row's fitted value and residual, a
+    /// posterior's draws — read from the instance rather than through SQL,
+    /// so its stats are computed in memory.
+    FitOutput {
+        /// The model instance (the fit).
+        instance: Uuid,
+        /// The output data's name (`rows`, `draws`, or a provider's own).
+        name: String,
     },
 }
 

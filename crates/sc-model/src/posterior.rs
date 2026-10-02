@@ -239,6 +239,13 @@ pub enum FitStage {
     Sampling,
     /// Reading the draws back and computing the summary.
     Summarising,
+    /// Reading the dataset (analytics TODO A3.3: every fit reports where it
+    /// is, not only a posterior).
+    Reading,
+    /// Fitting — the provider's own work, and a hyperparameter search's.
+    Fitting,
+    /// Scoring each split, and making the fit's outputs.
+    Scoring,
 }
 
 /// Which half of its run a chain is in.

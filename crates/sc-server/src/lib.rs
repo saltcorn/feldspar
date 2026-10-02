@@ -27,6 +27,7 @@ mod browser;
 mod builder;
 mod chat;
 mod config;
+mod fit_progress;
 mod handler;
 mod handlers;
 mod i18n;

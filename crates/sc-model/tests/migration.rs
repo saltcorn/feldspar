@@ -270,3 +270,86 @@ async fn section_8_names_the_datasets_of_old_models_on_sqlite_and_twice_is_once(
     assert_eq!(once.len(), 5, "three datasets and two models: {once:#?}");
     the_models_fit(cat).await
 }
+
+/// The view states of the models a database holds, by name.
+async fn view_states(cat: &Catalog) -> Result<Vec<(String, Json)>> {
+    let mut out = Vec::new();
+    for model in list_models(cat).await? {
+        let state = sc_model::model_view_state(cat, model.id).await?;
+        out.push((model.name, Json::Object(state)));
+    }
+    Ok(out)
+}
+
+/// A database from before view states: the models table without the column,
+/// holding the two old models after section 7's or 8's upgrade.
+async fn without_view_states(cat: &Arc<Catalog>, upgrade: impl AsyncFnOnce()) -> Result<()> {
+    old_installation(cat).await?;
+    upgrade().await;
+    run(
+        cat,
+        Statement::raw(
+            r#"ALTER TABLE "_fd_models" DROP COLUMN "view_state""#,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    cat.reload().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn section_10_gives_models_a_view_state_on_postgres_and_twice_is_once() -> Result<()> {
+    let db = TestDb::new().await?;
+    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
+    let cat = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let client = db.client().await?;
+    without_view_states(&cat, async || {
+        client.batch_execute(&section(7)).await.expect("section 7");
+    })
+    .await?;
+    for _ in 0..2 {
+        client
+            .batch_execute(&section(10))
+            .await
+            .map_err(|e| sc_error::Error::database(format!("section 10: {e}")))?;
+    }
+    cat.reload().await?;
+    let states = view_states(&cat).await?;
+    assert_eq!(states.len(), 2);
+    assert!(states.iter().all(|(_, s)| *s == json!({})), "{states:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn section_10_gives_models_a_view_state_on_sqlite() -> Result<()> {
+    let driver: Arc<dyn DatabaseDriver> = Arc::new(SqliteDriver::open_in_memory()?);
+    let cat = Arc::new(Catalog::init(driver).await?);
+    let upgrade = sqlite_statements();
+    without_view_states(&cat, async || {
+        for statement in &upgrade {
+            run(&cat, Statement::raw(statement.clone(), Vec::new()))
+                .await
+                .expect("section 8");
+        }
+    })
+    .await?;
+    let statements: Vec<String> = section(10)
+        .lines()
+        .filter_map(|l| l.strip_prefix("--   "))
+        .map(str::trim)
+        .filter(|l| l.starts_with("ALTER") || l.starts_with("UPDATE"))
+        .map(|l| l.trim_end_matches(';').to_owned())
+        .collect();
+    assert_eq!(statements.len(), 2, "{statements:#?}");
+    // The column once, as the section says; the update is safe to repeat.
+    run(&cat, Statement::raw(statements[0].clone(), Vec::new())).await?;
+    for _ in 0..2 {
+        run(&cat, Statement::raw(statements[1].clone(), Vec::new())).await?;
+    }
+    cat.reload().await?;
+    let states = view_states(&cat).await?;
+    assert_eq!(states.len(), 2);
+    assert!(states.iter().all(|(_, s)| *s == json!({})), "{states:?}");
+    Ok(())
+}

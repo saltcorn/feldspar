@@ -73,11 +73,18 @@ use crate::dataset::DatasetShape;
 use crate::diagnose;
 use crate::draws::{check_planned_draws, declared_elements, human_bytes, plan_draws, stored_bytes};
 use crate::encode::{Encoded, Encoding, apply_encoding_dropping, fit_encoding};
+use crate::frame::ColumnType;
 use crate::frame::Frame;
 use crate::instance::{InstanceId, ModelInstance};
-use crate::instance_store::{require_model_instance, save_fitted_instance, save_model_instance};
+use crate::instance_store::{
+    require_model_instance, save_fitted_instance_with_outputs, save_model_instance,
+};
 use crate::metrics::{Metrics, SplitMetrics};
 use crate::model::{MAIN_DATASET, Model};
+use crate::outputs::{
+    ATTR_OUTPUTS, DRAWS_OUTPUT, OutputContext, OutputData, OutputDecl, ROWS_OUTPUT, ScoredPart,
+    draws_output, rows_output, tidy_outputs,
+};
 use crate::posterior::{DrawSeries, FitContext, FitStage, PosteriorInput, Progress};
 use crate::provider::{ModelProvider, Outcome, ParameterBlock};
 use crate::registry::ModelRegistry;
@@ -199,6 +206,13 @@ pub struct Fit {
     /// A posterior's output variables: their shapes and what labels each
     /// axis. Written to [`ATTR_AXES`].
     pub axes: BTreeMap<String, RecordedAxes>,
+    /// What the fit shows (analytics TODO A3.1): written to
+    /// [`ATTR_OUTPUTS`](crate::ATTR_OUTPUTS).
+    pub outputs: Vec<OutputDecl>,
+    /// The output frames its plots read, by name. Not written by
+    /// [`apply`](Fit::apply): they go to `_fd_model_outputs`, in the
+    /// transaction that saves the instance.
+    pub output_data: BTreeMap<String, OutputData>,
 }
 
 impl Fit {
@@ -249,6 +263,13 @@ impl Fit {
                 ATTR_SEARCH.to_owned(),
                 serde_json::to_value(&self.search)
                     .map_err(|e| Error::msg(format!("search: {e}")))?,
+            );
+        }
+        if !self.outputs.is_empty() {
+            instance.attributes.insert(
+                ATTR_OUTPUTS.to_owned(),
+                serde_json::to_value(&self.outputs)
+                    .map_err(|e| Error::msg(format!("outputs: {e}")))?,
             );
         }
         Ok(instance)
@@ -313,7 +334,14 @@ pub async fn fit_model_with(
             // The draws and the row in one transaction: a fitted instance has
             // all of its draws, and a write that failed half way has none of
             // them and is recorded as the failure it is.
-            Ok(finished) => match save_fitted_instance(catalog, &finished, &fit.draws).await {
+            Ok(finished) => match save_fitted_instance_with_outputs(
+                catalog,
+                &finished,
+                &fit.draws,
+                &fit.output_data,
+            )
+            .await
+            {
                 Ok(()) => return Ok(finished),
                 Err(e) => {
                     // What the fit kept outside the database (a published raw
@@ -361,7 +389,9 @@ pub async fn run_fit_with(
     ctx: &FitContext<'_>,
 ) -> Result<Fit> {
     let provider = registry.require(model.provider.trim())?;
+    ctx.report(&Progress::stage(FitStage::Reading));
     let frame = source.materialise(&model.dataset, cap).await?;
+    stop_if_cancelled(ctx)?;
     if frame.rows == 0 {
         return Err(Error::invalid(
             "this dataset selects no rows, so there is nothing to fit",
@@ -389,6 +419,7 @@ pub async fn run_fit_with(
     }
 
     if !outcome.predicts() {
+        ctx.report(&Progress::stage(FitStage::Fitting));
         return fit_test(provider.as_ref(), model, &frame, outcome, points).await;
     }
 
@@ -408,6 +439,7 @@ pub async fn run_fit_with(
     // the encoding has seen them.
     let outcome = with_classes(outcome, &encoding);
 
+    ctx.report(&Progress::stage(FitStage::Fitting));
     let (chosen, search) = search_grid(
         provider.as_ref(),
         &model.configuration,
@@ -415,14 +447,18 @@ pub async fn run_fit_with(
         &train,
         &validation,
         points,
+        ctx,
     )
     .await?;
 
     let result = provider
         .fit(&train.frame(), &model.configuration, &chosen)
         .await?;
+    stop_if_cancelled(ctx)?;
 
+    ctx.report(&Progress::stage(FitStage::Scoring));
     let mut metrics = SplitMetrics::default();
+    let mut scored = Vec::new();
     for (part, encoded) in [
         (Part::Train, &train),
         (Part::Validation, &validation),
@@ -435,7 +471,48 @@ pub async fn run_fit_with(
             .predict(&result.state, &encoded.features_frame())
             .await?;
         metrics.set(part, Metrics::of(&outcome, &predictions, encoded)?);
+        scored.push((part, encoded, predictions));
     }
+
+    // What the fit shows: each scored row, and the provider's own frames.
+    let parts: Vec<ScoredPart<'_>> = scored
+        .iter()
+        .map(|(part, encoded, predictions)| ScoredPart {
+            part: *part,
+            frame: match part {
+                Part::Train => &splits.train,
+                Part::Validation => &splits.validation,
+                Part::Test => &splits.test,
+            },
+            encoded,
+            predictions,
+        })
+        .collect();
+    let mut output_data = BTreeMap::from([(
+        ROWS_OUTPUT.to_owned(),
+        rows_output(&outcome, &encoding, &parts)?,
+    )]);
+    output_data.extend(result.outputs);
+    let features: Vec<(String, ColumnType)> = encoding
+        .columns
+        .iter()
+        .map(|c| {
+            let name = c.column().to_owned();
+            let ty = splits
+                .train
+                .column(&name)
+                .map_or(ColumnType::Null, |col| col.kind());
+            (name, ty)
+        })
+        .collect();
+    let outputs = declared_outputs(
+        provider.as_ref(),
+        &outcome,
+        &model.configuration,
+        &features,
+        &result.parameters,
+        &output_data,
+    );
 
     Ok(Fit {
         outcome,
@@ -454,6 +531,8 @@ pub async fn run_fit_with(
         binding: None,
         warnings: result.warnings,
         axes: BTreeMap::new(),
+        outputs,
+        output_data,
     })
 }
 
@@ -479,6 +558,19 @@ async fn fit_test(
     }
     let chosen = points.into_iter().next().unwrap_or_default();
     let result = provider.fit(frame, &model.configuration, &chosen).await?;
+    let features: Vec<(String, ColumnType)> = frame
+        .columns
+        .iter()
+        .map(|(n, c)| (n.clone(), c.kind()))
+        .collect();
+    let outputs = declared_outputs(
+        provider,
+        &outcome,
+        &model.configuration,
+        &features,
+        &result.parameters,
+        &result.outputs,
+    );
     Ok(Fit {
         outcome,
         state: result.state,
@@ -500,6 +592,8 @@ async fn fit_test(
         binding: None,
         warnings: result.warnings,
         axes: BTreeMap::new(),
+        outputs,
+        output_data: result.outputs,
     })
 }
 
@@ -613,6 +707,12 @@ async fn fit_posterior(
     )?;
     let mut warnings = report.warnings;
     let axes = recorded_axes(&result.draws, input.interface.as_ref(), &labeller);
+    // What the plots read: every draw, before any is discarded — a fit that
+    // keeps none still shows its trace plots.
+    let mut output_data = BTreeMap::new();
+    if let Some(data) = draws_output(&result.draws, input.interface.as_ref())? {
+        output_data.insert(DRAWS_OUTPUT.to_owned(), data);
+    }
     let mut draws = result.draws;
     if keep {
         draws.retain(|s| !excluded.contains(&s.variable));
@@ -638,6 +738,24 @@ async fn fit_posterior(
     metrics.set(Part::Train, report.metrics);
     let mut parameters = report.tables;
     parameters.extend(result.parameters);
+    let features: Vec<(String, ColumnType)> = input
+        .datasets
+        .first()
+        .map(|(_, f)| {
+            f.columns
+                .iter()
+                .map(|(n, c)| (n.clone(), c.kind()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let outputs = declared_outputs(
+        provider,
+        &outcome,
+        config,
+        &features,
+        &parameters,
+        &output_data,
+    );
 
     Ok(Fit {
         outcome,
@@ -660,8 +778,40 @@ async fn fit_posterior(
         binding: bound.map(|b| (b.coordinates, b.report)),
         warnings,
         axes,
+        outputs,
+        output_data,
     })
 }
+
+/// What `provider` says a fit shows, tidied (analytics TODO A3.1).
+fn declared_outputs(
+    provider: &dyn ModelProvider,
+    outcome: &Outcome,
+    configuration: &Attrs,
+    features: &[(String, ColumnType)],
+    parameters: &[ParameterBlock],
+    data: &BTreeMap<String, OutputData>,
+) -> Vec<OutputDecl> {
+    tidy_outputs(provider.outputs(&OutputContext {
+        outcome,
+        configuration,
+        features,
+        parameters,
+        data,
+    }))
+}
+
+/// Stop a fit somebody asked to stop, between its stages — every provider's
+/// fit, not only one that runs as a process it can kill (analytics TODO A3.3).
+fn stop_if_cancelled(ctx: &FitContext<'_>) -> Result<()> {
+    if ctx.cancelled() {
+        return Err(Error::msg(CANCELLED));
+    }
+    Ok(())
+}
+
+/// The sentence a fit stopped between its stages fails with.
+pub const CANCELLED: &str = "the fit was cancelled";
 
 /// When a new fit becomes its model's active one — `fit_model`'s `activate`
 /// (milestone 31 §2).
@@ -758,6 +908,7 @@ async fn search_grid(
     train: &Encoded,
     validation: &Encoded,
     points: Vec<Attrs>,
+    ctx: &FitContext<'_>,
 ) -> Result<(Attrs, Vec<GridPoint>)> {
     if points.len() < 2 {
         return Ok((points.into_iter().next().unwrap_or_default(), Vec::new()));
@@ -770,6 +921,7 @@ async fn search_grid(
     }
     let mut search = Vec::with_capacity(points.len());
     for point in points {
+        stop_if_cancelled(ctx)?;
         let scored = match score_point(provider, config, outcome, train, validation, &point).await {
             Ok(Some(score)) if score.is_finite() => GridPoint {
                 hyperparameters: point,
@@ -1441,10 +1593,28 @@ mod tests {
         assert!(fit.search.is_empty());
         assert_eq!(fit.rows.selected, 50);
         assert_eq!(fit.rows.split.train, 50);
-        // The provider's progress and then the host's.
+        // The host's reading, the provider's progress, and then the host's.
         assert_eq!(
             *reports.0.lock().expect("lock"),
-            vec![FitStage::Sampling, FitStage::Summarising]
+            vec![FitStage::Reading, FitStage::Sampling, FitStage::Summarising]
+        );
+        // What it shows (analytics TODO A3.2): the summary tables, and the
+        // trace, rank and density plots of the draws, two of them optional.
+        let draws = &fit.output_data[DRAWS_OUTPUT];
+        // Every alpha (lp__ is the sampler's), six draws a chain, none thinned.
+        assert_eq!(draws.total, 6 * (fit.draws.len() - 2));
+        assert_eq!(draws.frame.rows, draws.total);
+        let shown: Vec<(&str, bool)> = fit
+            .outputs
+            .iter()
+            .filter(|o| o.data().is_some())
+            .map(|o| (o.name.as_str(), o.optional))
+            .collect();
+        assert_eq!(shown, [("trace", false), ("rank", true), ("density", true)]);
+        assert!(
+            fit.outputs
+                .iter()
+                .any(|o| matches!(o.kind, crate::OutputKind::Parameters { .. }))
         );
         // The instance records the outcome; the draws go elsewhere.
         let instance = fit

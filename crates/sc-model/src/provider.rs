@@ -38,6 +38,8 @@
 //! usable at all — the call is the cost, not the arithmetic — and it is what
 //! lets the metric pass score 50 000 rows in one call rather than in 50 000.
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use sc_error::{Error, Result};
 use sc_types::{Attrs, BasicType, FormField};
@@ -46,6 +48,7 @@ use serde_json::Value as Json;
 use crate::dataset::DatasetShape;
 use crate::frame::{ColumnType, Frame};
 use crate::interface::Interface;
+use crate::outputs::{OutputContext, OutputData, OutputDecl, standard_outputs};
 use crate::posterior::{DrawPlan, FitContext, PosteriorInput, PosteriorResult};
 
 /// The [`OptionsSource::ServerQuery`] name meaning "every column of the
@@ -520,6 +523,13 @@ pub struct FitResult {
     /// "fitted cleanly" means the same thing for every provider.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Output frames of the provider's own, by name, for the plots it
+    /// declares in [`ModelProvider::outputs`] (analytics TODO A3.1). Stored
+    /// with the instance beside the host's ([`ROWS_OUTPUT`](crate::ROWS_OUTPUT),
+    /// [`DRAWS_OUTPUT`](crate::DRAWS_OUTPUT)), which a name here replaces. Over
+    /// a module seam each is the frame's JSON (`{ "rows": …, "columns": […] }`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, OutputData>,
 }
 
 impl FitResult {
@@ -529,6 +539,7 @@ impl FitResult {
             state,
             parameters: Vec::new(),
             warnings: Vec::new(),
+            outputs: BTreeMap::new(),
         }
     }
 
@@ -539,6 +550,12 @@ impl FitResult {
     }
 
     /// Append a warning, returning `self` for chaining.
+    /// This result with the output frame `name`.
+    pub fn output(mut self, name: impl Into<String>, data: OutputData) -> FitResult {
+        self.outputs.insert(name.into(), data);
+        self
+    }
+
     pub fn warning(mut self, sentence: impl Into<String>) -> FitResult {
         self.warnings.push(sentence.into());
         self
@@ -693,6 +710,11 @@ pub struct ModelProviderKind {
     /// refused by name for every other, since stopping a `smartcore` or a
     /// Python call mid-flight is not something the host can do.
     pub cancellable: bool,
+    /// The outputs a module's provider declares in its manifest (analytics
+    /// TODO A3.1), or `None` for the [standard ones](crate::standard_outputs).
+    /// A provider written in Rust decides them in
+    /// [`ModelProvider::outputs`] and leaves this `None`.
+    pub outputs: Option<Vec<OutputDecl>>,
 }
 
 impl ModelProviderKind {
@@ -712,6 +734,7 @@ impl ModelProviderKind {
             standardise: false,
             binds_data: false,
             cancellable: false,
+            outputs: None,
         }
     }
 
@@ -837,6 +860,17 @@ pub trait ModelProvider: Send + Sync {
         Ok(())
     }
 
+    /// What a fit of this provider shows (analytics TODO A3.1): its tables,
+    /// and its plots as plot specs over the fit's output data. Asked once a
+    /// fit has finished, so it can name the fit's own parameter blocks and
+    /// output frames; the instance records the answer.
+    ///
+    /// The default is [`standard_outputs`]: the parameter tables, the metrics,
+    /// and the plots that suit the outcome.
+    fn outputs(&self, ctx: &OutputContext<'_>) -> Vec<OutputDecl> {
+        standard_outputs(ctx)
+    }
+
     /// Everything this provider is, as the picker and the module seam see it.
     ///
     /// The default assembles it from the methods above, so a built-in declares
@@ -853,6 +887,7 @@ pub trait ModelProvider: Send + Sync {
             standardise: self.standardise(),
             binds_data: self.binds_data(),
             cancellable: self.cancellable(),
+            outputs: None,
         }
     }
 
@@ -1039,6 +1074,13 @@ impl ModelProvider for HostProvider {
 
     fn kind(&self) -> ModelProviderKind {
         self.kind.clone()
+    }
+
+    fn outputs(&self, ctx: &OutputContext<'_>) -> Vec<OutputDecl> {
+        match &self.kind.outputs {
+            Some(declared) => declared.clone(),
+            None => standard_outputs(ctx),
+        }
     }
 
     async fn fit(&self, frame: &Frame, config: &Attrs, hyper: &Attrs) -> Result<FitResult> {

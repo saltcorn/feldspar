@@ -830,6 +830,12 @@ export function stageText(
       return t("sampling");
     case "summarising":
       return t("summarising");
+    case "reading":
+      return t("reading the data");
+    case "fitting":
+      return t("fitting");
+    case "scoring":
+      return t("scoring");
     default:
       return "";
   }

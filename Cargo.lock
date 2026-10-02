@@ -8298,6 +8298,7 @@ dependencies = [
  "sc-db-postgres",
  "sc-db-sqlite",
  "sc-error",
+ "sc-model",
  "sc-query",
  "sc-test-harness",
  "sc-types",

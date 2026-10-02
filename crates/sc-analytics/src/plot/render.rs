@@ -34,13 +34,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use std::sync::Arc;
+
 use sc_catalog::Catalog;
-use sc_dataset::{ColType, Options, Schema, Stage, StageShape, compile, scramble, value_json};
-use sc_db::Row;
+use sc_dataset::{
+    ColType, Grain, Options, Schema, StageColumn, StageShape, compile, scramble, value_json,
+};
+use sc_db::{ColumnDef, DatabaseDriver, Row, SchemaChange};
 use sc_error::{Error, Result};
 use sc_query::{
-    BinOp, CaseArm, Expr, Nulls, OrderBy, OrderDir, Projection, Select, Source, Statement, UnOp,
-    Value,
+    BinOp, CaseArm, Expr, Insert, Nulls, OrderBy, OrderDir, Projection, Select, Source, Statement,
+    UnOp, Value,
 };
 use serde::Serialize;
 use serde_json::{Value as Json, json};
@@ -197,20 +201,20 @@ pub(crate) type Step<T> = std::result::Result<T, Halt>;
 /// why it cannot be drawn. Reads as the admin (A9 is where a restricted
 /// user's reads go through their permissions).
 pub async fn render_plot(catalog: &Catalog, spec: &PlotSpec) -> Result<Rendered> {
-    let stage = match last_stage(catalog, &spec.data).await? {
-        Ok(stage) => stage,
+    let rows = match plot_rows(catalog, &spec.data).await? {
+        Ok(rows) => rows,
         Err(sentence) => return Ok(Rendered::refuse(sentence)),
     };
-    let problems = validate(spec, &stage.shape());
+    let problems = validate(spec, &rows.shape);
     if let Some(first) = problems.first() {
         return Ok(Rendered::Refused {
             error: first.clone(),
             problems,
         });
     }
-    let shape = folded_shape(&stage.shape(), spec.fold.as_ref())
-        .map_err(|p| Error::invalid(p.join("; ")))?;
-    let mut renderer = Renderer::new(catalog, spec, &stage, shape);
+    let shape =
+        folded_shape(&rows.shape, spec.fold.as_ref()).map_err(|p| Error::invalid(p.join("; ")))?;
+    let mut renderer = Renderer::new(spec, &rows, shape);
     match renderer.render().await {
         Ok(data) => Ok(Rendered::Plot(data)),
         Err(Halt::Refuse(sentence)) => Ok(Rendered::refuse(sentence)),
@@ -218,24 +222,163 @@ pub async fn render_plot(catalog: &Catalog, spec: &PlotSpec) -> Result<Rendered>
     }
 }
 
-/// The last stage of the dataset `data` names, or the sentence saying why it
-/// does not read.
-pub(crate) async fn last_stage(
+/// The rows a plot reads: a query, the columns it answers, and the database
+/// it runs on.
+///
+/// A dataset's rows are its last stage's query on the primary database. A
+/// fit's output data (analytics TODO A3.1) is read from the instance and put
+/// in a private in-memory SQLite database for the length of one render, so
+/// every stat this module compiles to SQL runs on it unchanged — "computed in
+/// memory" without a second implementation of each stat.
+pub(crate) struct PlotRows {
+    /// The rows, in no particular order.
+    pub(crate) query: Select,
+    /// Their columns.
+    pub(crate) shape: StageShape,
+    /// Where `query` runs.
+    pub(crate) db: Arc<dyn DatabaseDriver>,
+}
+
+/// The rows `data` names, or the sentence saying why there are none.
+pub(crate) async fn plot_rows(
     catalog: &Catalog,
     data: &DataRef,
-) -> Result<std::result::Result<Stage, String>> {
-    let DataRef::Dataset { dataset } = data;
-    let Some(def) = sc_dataset::load_dataset(catalog, *dataset).await? else {
-        return Ok(Err(
-            "the dataset this plot reads is gone; pick another".to_owned()
-        ));
+) -> Result<std::result::Result<PlotRows, String>> {
+    match data {
+        DataRef::Dataset { dataset } => {
+            let Some(def) = sc_dataset::load_dataset(catalog, *dataset).await? else {
+                return Ok(Err(
+                    "the dataset this plot reads is gone; pick another".to_owned()
+                ));
+            };
+            let schema = Schema::of_catalog(catalog)?;
+            let library = sc_dataset::load_library(catalog).await?;
+            let compiled = compile(&schema, &library, &def, Options::default());
+            let stage = match compiled.last() {
+                Ok(stage) => stage,
+                Err(e) => {
+                    return Ok(Err(format!(
+                        "the dataset `{}` does not read: {e}",
+                        def.name
+                    )));
+                }
+            };
+            Ok(match stage.unordered_query() {
+                Ok(query) => Ok(PlotRows {
+                    query,
+                    shape: stage.shape(),
+                    db: Arc::clone(catalog.primary()),
+                }),
+                Err(e) => Err(format!("the dataset `{}` does not read: {e}", def.name)),
+            })
+        }
+        DataRef::FitOutput { instance, name } => {
+            let id = sc_model::InstanceId(*instance);
+            let Some(data) = sc_model::load_output_data(catalog, id, name).await? else {
+                return Ok(Err(
+                    if sc_model::load_model_instance(catalog, id).await?.is_none() {
+                        "the fit this plot reads is gone".to_owned()
+                    } else {
+                        format!("the fit this plot reads has no output data `{name}`")
+                    },
+                ));
+            };
+            Ok(Ok(fit_output_rows(&data).await?))
+        }
+    }
+}
+
+/// The table a fit's output data is loaded into.
+const FIT_OUTPUT_TABLE: &str = "fit_output";
+
+/// Rows per `INSERT` when loading a fit's output data.
+const LOAD_BATCH: usize = 500;
+
+/// `data` in a fresh in-memory SQLite database, as [`PlotRows`].
+async fn fit_output_rows(data: &sc_model::OutputData) -> Result<PlotRows> {
+    use sc_model::Column;
+    let db: Arc<dyn DatabaseDriver> = Arc::new(sc_db_sqlite::SqliteDriver::open_in_memory()?);
+    let frame = &data.frame;
+    let typed: Vec<(&str, &Column, ColType, &str)> = frame
+        .columns
+        .iter()
+        .map(|(name, column)| {
+            let (ty, sql) = match column {
+                Column::Float(_) => (ColType::Float, "double precision"),
+                Column::Int(_) => (ColType::Int, "bigint"),
+                Column::Bool(_) => (ColType::Bool, "boolean"),
+                Column::Str(_) | Column::Null(_) => (ColType::Text, "text"),
+                Column::Date(_) => (ColType::Timestamp, "timestamptz"),
+            };
+            (name.as_str(), column, ty, sql)
+        })
+        .collect();
+    db.apply_schema(&SchemaChange::CreateTable {
+        name: FIT_OUTPUT_TABLE.to_owned(),
+        columns: typed
+            .iter()
+            .map(|(name, _, _, sql)| ColumnDef::new(*name, *sql))
+            .collect(),
+        primary_key: Vec::new(),
+        unlogged: false,
+    })
+    .await?;
+    let value = |column: &Column, i: usize| -> Value {
+        match column {
+            Column::Float(v) => v[i].map_or(Value::Null, Value::Float),
+            Column::Int(v) => v[i].map_or(Value::Null, Value::Int),
+            Column::Bool(v) => v[i].map_or(Value::Null, Value::Bool),
+            Column::Str(v) => v[i].clone().map_or(Value::Null, Value::Text),
+            Column::Date(v) => v[i]
+                .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+                .map_or(Value::Null, Value::Timestamp),
+            Column::Null(_) => Value::Null,
+        }
     };
-    let schema = Schema::of_catalog(catalog)?;
-    let library = sc_dataset::load_library(catalog).await?;
-    let compiled = compile(&schema, &library, &def, Options::default());
-    Ok(match compiled.last() {
-        Ok(stage) => Ok(stage.clone()),
-        Err(e) => Err(format!("the dataset `{}` does not read: {e}", def.name)),
+    let names: Vec<String> = typed.iter().map(|(n, ..)| (*n).to_owned()).collect();
+    let mut start = 0;
+    while start < frame.rows && !names.is_empty() {
+        let end = (start + LOAD_BATCH).min(frame.rows);
+        let rows = (start..end)
+            .map(|i| {
+                typed
+                    .iter()
+                    .map(|(_, column, ..)| Expr::Lit(value(column, i)))
+                    .collect()
+            })
+            .collect();
+        let insert = Insert {
+            table: FIT_OUTPUT_TABLE.to_owned(),
+            columns: names.clone(),
+            rows,
+            returning: Vec::new(),
+        };
+        db.query(&Statement::from(insert))
+            .await?
+            .try_collect()
+            .await?;
+        start = end;
+    }
+    let query = Select::from(Source::table(FIT_OUTPUT_TABLE)).columns(
+        names
+            .iter()
+            .map(|n| Projection::expr_as(Expr::col(n.clone()), n.clone()))
+            .collect(),
+    );
+    Ok(PlotRows {
+        query,
+        shape: StageShape {
+            columns: typed
+                .iter()
+                .map(|(name, _, ty, _)| StageColumn {
+                    name: (*name).to_owned(),
+                    ty: *ty,
+                    key: None,
+                })
+                .collect(),
+            grain: Grain::Derived,
+        },
+        db,
     })
 }
 
@@ -297,24 +440,24 @@ pub async fn render_table(catalog: &Catalog, spec: &TableSpec) -> Result<Rendere
         problems: vec![error.clone()],
         error,
     };
-    let stage = match last_stage(catalog, &spec.data).await? {
-        Ok(stage) => stage,
+    let rows = match plot_rows(catalog, &spec.data).await? {
+        Ok(rows) => rows,
         Err(sentence) => return Ok(refuse(sentence)),
     };
-    let problems = validate_table(spec, &stage.shape());
+    let problems = validate_table(spec, &rows.shape);
     if let Some(first) = problems.first() {
         return Ok(RenderedTable::Refused {
             error: first.clone(),
             problems,
         });
     }
-    let shape = folded_shape(&stage.shape(), spec.fold.as_ref())
-        .map_err(|p| Error::invalid(p.join("; ")))?;
+    let shape =
+        folded_shape(&rows.shape, spec.fold.as_ref()).map_err(|p| Error::invalid(p.join("; ")))?;
     // The plot machinery over a spec with no layers: the fold is its data.
     let mut carrier = PlotSpec::single(spec.data.clone(), Layer::new(Mark::Text, Stat::Count));
     carrier.layers.clear();
     carrier.fold = spec.fold.clone();
-    let mut renderer = Renderer::new(catalog, &carrier, &stage, shape);
+    let mut renderer = Renderer::new(&carrier, &rows, shape);
     match renderer.table(spec).await {
         Ok(data) => Ok(RenderedTable::Table(Box::new(data))),
         Err(Halt::Refuse(sentence)) => Ok(refuse(sentence)),
@@ -332,9 +475,8 @@ pub(crate) struct Key {
 }
 
 pub(crate) struct Renderer<'a> {
-    catalog: &'a Catalog,
     spec: &'a PlotSpec,
-    stage: &'a Stage,
+    rows: &'a PlotRows,
     /// The columns the layers read (after the fold).
     shape: StageShape,
     /// The bins of each binned column, worked out once per render.
@@ -344,16 +486,10 @@ pub(crate) struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
-    pub(crate) fn new(
-        catalog: &'a Catalog,
-        spec: &'a PlotSpec,
-        stage: &'a Stage,
-        shape: StageShape,
-    ) -> Renderer<'a> {
+    pub(crate) fn new(spec: &'a PlotSpec, rows: &'a PlotRows, shape: StageShape) -> Renderer<'a> {
         Renderer {
-            catalog,
             spec,
-            stage,
+            rows,
             shape,
             bins: BTreeMap::new(),
             warnings: Vec::new(),
@@ -426,13 +562,13 @@ impl<'a> Renderer<'a> {
 
     /// The rows every layer reads: the dataset's last stage, folded.
     fn data(&self) -> Step<Source> {
-        let rows = self.stage.unordered_query().map_err(Halt::Refuse)?;
+        let rows = self.rows.query.clone();
         let Some(fold) = &self.spec.fold else {
             return Ok(Source::subquery(rows, DATA));
         };
         let kept: Vec<String> = self
-            .stage
-            .shape()
+            .rows
+            .shape
             .columns
             .iter()
             .filter(|c| !fold.columns.contains(&c.name))
@@ -1292,7 +1428,7 @@ impl<'a> Renderer<'a> {
                 .enumerate()
                 .map(|(i, c)| Projection::expr_as(cast(self.field(c), "double precision"), v(i))),
         );
-        let rows = self.stage.unordered_query().map_err(Halt::Refuse)?;
+        let rows = self.rows.query.clone();
         let points = Select::from(Source::subquery(rows, DATA)).columns(columns);
         let total = self.count_rows(points.clone()).await?;
         let limit = layer.sample.unwrap_or(DEFAULT_SAMPLE).clamp(1, MAX_SAMPLE);
@@ -1739,8 +1875,8 @@ impl<'a> Renderer<'a> {
 
     pub(crate) async fn run(&self, select: Select) -> Step<Vec<Row>> {
         Ok(self
-            .catalog
-            .primary()
+            .rows
+            .db
             .query(&Statement::from(select))
             .await?
             .try_collect()

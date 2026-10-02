@@ -77,6 +77,9 @@ statrs.workspace = true
 # (Stan TODO §12). Not behind the `smartcore` feature: binding is the host's,
 # whichever providers are compiled in.
 nalgebra.workspace = true
+# A model's view state is patched key by key (analytics TODO A3.4); the
+# patches of one process are applied one at a time, behind an async mutex.
+tokio = { workspace = true }
 
 [dev-dependencies]
 # The dataset's `Select` is asserted as rendered SQL rather than as a tree: the
@@ -90,7 +93,6 @@ sc-db-postgres.workspace = true
 # the draws store is pinned on SQLite as well as Postgres.
 sc-db-sqlite.workspace = true
 sc-test-harness.workspace = true
-tokio = { workspace = true }
 
 [lints]
 workspace = true

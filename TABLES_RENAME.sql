@@ -22,7 +22,8 @@
 --   rename; it lives here so that one file brings an older installation up to
 --   date. Likewise, for a database older than 2026-09-29 with predictive
 --   models, section 7 (Postgres) or 8 (SQLite): models' datasets become named
---   datasets.
+--   datasets. And for one older than 2026-10-02 with models, section 10 (a
+--   model's view state).
 --
 --   Take a backup first. Run each section as one transaction, with the server
 --   stopped: Feldspar caches the catalog in memory and will not notice a table
@@ -558,3 +559,28 @@ COMMIT;
 -- `_fd_workspaces` does not exist.
 
 DELETE FROM "_fd_workspaces" WHERE kind = 'dataset_editor';
+
+-- ---------------------------------------------------------------------------
+-- 10. Postgres and SQLite: a model's view state, and a fit's outputs
+--    (2026-10-02).
+-- ---------------------------------------------------------------------------
+--
+-- The Analytics UI's model editor keeps how it was left in the model's view
+-- state (`_fd_models.view_state`, a JSON object outside the model's
+-- definition), and a fit stores the frames its plots read in
+-- `_fd_model_outputs`. The server adds both when it starts — the column
+-- nullable, NULL reading as `{}` — so this is only for bringing a database up
+-- to date with the server stopped. Fits made before this have no outputs; refit
+-- them to see their plots. Re-running it is a no-op.
+--
+-- Postgres:
+
+ALTER TABLE IF EXISTS "_fd_models" ADD COLUMN IF NOT EXISTS "view_state" jsonb;
+UPDATE "_fd_models" SET "view_state" = '{}'::jsonb WHERE "view_state" IS NULL;
+
+-- SQLite has no `ADD COLUMN IF NOT EXISTS`: run the first statement only when
+-- `PRAGMA table_info("_fd_models")` has no `view_state` (the server adds it on
+-- start anyway), then the second, which is safe to repeat:
+--
+--   ALTER TABLE "_fd_models" ADD COLUMN "view_state" json;
+--   UPDATE "_fd_models" SET "view_state" = '{}' WHERE "view_state" IS NULL;

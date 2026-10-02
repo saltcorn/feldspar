@@ -3055,6 +3055,56 @@ pub fn admin_endpoints() -> EndpointSet {
             .auth(AuthRequirement::admin()),
     );
 
+    // A copy of a model under a new name — the given one, or "… (copy)" —
+    // reading the same named datasets, with no fits, and with the original's
+    // view state, so it opens laid out as the original was (analytics TODO
+    // A3.4–A3.5: the model list's Clone).
+    set.register(
+        Endpoint::new(
+            "cloneModel",
+            Method::Post,
+            api()
+                .lit("models")
+                .param("id", ValueType::Uuid)
+                .lit("clone"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "name",
+            TypeSchema::optional(TypeSchema::text()),
+        )]))
+        .output(model_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    // A model's **view state** (analytics TODO A3.4): the dictionary the
+    // screens showing a model keep their layout in — which outputs are open,
+    // the optional plots chosen, the selected fit — so that it reopens as it
+    // was left. Not part of the model: `saveModel` neither reads nor writes it,
+    // a fit does not record it, and nothing about "changed since this fit"
+    // looks at it. Patched key by key — a key set to `null` is removed, the
+    // others are set, keys not named are left — so two screens keeping
+    // different keys do not overwrite each other without a read first. Answers
+    // the view state as it now is; `getModel` answers it too.
+    set.register(
+        Endpoint::new(
+            "patchModelViewState",
+            Method::Patch,
+            api()
+                .lit("models")
+                .param("id", ValueType::Uuid)
+                .lit("view-state"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "patch",
+            TypeSchema::json(),
+        )]))
+        .output(TypeSchema::struct_of([StructField::new(
+            "view_state",
+            TypeSchema::json(),
+        )]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // Deleting a model takes its instances with it, and that is the difference
     // from an agent (whose runs outlive it): an instance is not a record of what
     // happened, it is a fit *of this model* — its coefficients are meaningless
@@ -5667,6 +5717,9 @@ fn model_schema() -> TypeSchema {
         // or the notice that the program was not checked (Stan TODO §5). Null
         // everywhere else.
         StructField::new("program_check", TypeSchema::optional(TypeSchema::json())),
+        // The screens' layout (analytics TODO A3.4), written only by
+        // `patchModelViewState`; `{}` for a new model.
+        StructField::new("view_state", TypeSchema::optional(TypeSchema::json())),
     ])
 }
 
@@ -5718,6 +5771,11 @@ fn model_instance_schema() -> TypeSchema {
         // A posterior's diagnostic warnings, as sentences that say what to do
         // (§15); empty for every other fit.
         StructField::new("warnings", TypeSchema::array(TypeSchema::text())),
+        // Whether the model's datasets differ now from the ones this fit read
+        // (analytics TODO A1.10, A3.3): on every fit a list or a model shows,
+        // so the model editor's list of fits can say which are out of date;
+        // null when it cannot tell, or where it was not asked.
+        StructField::new("dataset_changed", TypeSchema::optional(TypeSchema::bool())),
     ])
 }
 
@@ -5756,9 +5814,6 @@ fn model_instance_detail_schema() -> TypeSchema {
                 // fit snapshotted (Stan TODO §§6, 18); null for a provider with
                 // no program, or when it cannot tell.
                 StructField::new("program_changed", TypeSchema::optional(TypeSchema::bool())),
-                // Whether the model's datasets differ now from the ones this
-                // fit read (analytics TODO A1.10); null when it cannot tell.
-                StructField::new("dataset_changed", TypeSchema::optional(TypeSchema::bool())),
             ])
             .collect(),
     )

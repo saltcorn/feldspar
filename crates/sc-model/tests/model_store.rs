@@ -19,9 +19,10 @@ use sc_model::{
     Dataset, DatasetOrder, FitResult, FitStatus, Frame, INSTANCES_TABLE, MODELS_TABLE, Model,
     ModelInstance, ModelProvider, ModelProviderKind, ModelRegistry, Models, NamedDataset,
     OutcomeSpec, ParameterBlock, ParameterRow, Prediction, RESTARTED, Split, active_model_instance,
-    bootstrap_model_instances, bootstrap_models, delete_model, delete_model_instance,
-    list_model_instances, list_models, load_model, load_model_by_name, models_for_table,
-    numeric_column_field, reap_fitting_instances, require_model, save_model, save_model_instance,
+    bootstrap_model_instances, bootstrap_models, clone_model, delete_model, delete_model_instance,
+    list_model_instances, list_models, load_model, load_model_by_name, model_view_state,
+    models_for_table, numeric_column_field, patch_model_view_state, reap_fitting_instances,
+    require_model, save_model, save_model_instance,
 };
 use sc_query::{Assignment, Expr, Statement, Update, Value};
 use sc_test_harness::TestDb;
@@ -787,5 +788,78 @@ async fn an_existing_models_table_gains_the_related_column_on_boot() -> Result<(
     let loaded = load_model(&cat, model.id).await?.expect("stored");
     assert!(loaded.related.is_empty());
     assert_same(&loaded, &model);
+    Ok(())
+}
+
+/// The view state (analytics TODO A3.4): beside the model, never part of it.
+#[tokio::test]
+async fn a_view_state_is_patched_key_by_key_and_a_save_leaves_it_alone() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    let reg = registry()?;
+    let model = house_prices();
+    save_model(&cat, &reg, &model, None).await?;
+
+    // A new model starts with an empty one.
+    assert!(model_view_state(&cat, model.id).await?.is_empty());
+
+    // Two screens, two keys: the second patch leaves the first's key.
+    let patch = |v: Json| v.as_object().cloned().expect("an object");
+    patch_model_view_state(&cat, model.id, &patch(json!({ "open": ["qq"] }))).await?;
+    let state = patch_model_view_state(
+        &cat,
+        model.id,
+        &patch(json!({ "collapsed": ["coefficients"], "fit": "abc" })),
+    )
+    .await?;
+    assert_eq!(
+        Json::Object(state),
+        json!({ "open": ["qq"], "collapsed": ["coefficients"], "fit": "abc" })
+    );
+
+    // `null` removes a key; one key's last write wins.
+    let state = patch_model_view_state(
+        &cat,
+        model.id,
+        &patch(json!({ "fit": null, "open": ["qq", "residual_histogram"] })),
+    )
+    .await?;
+    assert_eq!(
+        Json::Object(state),
+        json!({ "open": ["qq", "residual_histogram"], "collapsed": ["coefficients"] })
+    );
+
+    // Saving the model — what `saveModel` does with the whole definition —
+    // neither reads nor writes it.
+    let mut edited = load_model(&cat, model.id).await?.expect("stored");
+    edited.description = "edited".to_owned();
+    save_model(&cat, &reg, &edited, None).await?;
+    assert_eq!(
+        Json::Object(model_view_state(&cat, model.id).await?),
+        json!({ "open": ["qq", "residual_histogram"], "collapsed": ["coefficients"] })
+    );
+
+    // A clone carries it, under a free name, reading the same dataset.
+    let copy = clone_model(&cat, &reg, model.id, None).await?;
+    assert_eq!(copy.name, "house prices (copy)");
+    assert_eq!(copy.dataset.id, model.dataset.id);
+    assert_eq!(
+        model_view_state(&cat, copy.id).await?,
+        model_view_state(&cat, model.id).await?
+    );
+    let again = clone_model(&cat, &reg, model.id, None).await?;
+    assert_eq!(again.name, "house prices (copy 2)");
+    let named = clone_model(&cat, &reg, model.id, Some("bigger model")).await?;
+    assert_eq!(named.name, "bigger model");
+
+    // A model that is not there is named.
+    let err = patch_model_view_state(&cat, sc_model::ModelId::new(), &Attrs::new())
+        .await
+        .expect_err("no such model");
+    assert!(err.to_string().contains("no model"), "{err}");
+
+    // Deleting the model takes the view state with the row.
+    delete_model(&cat, &reg, copy.id).await?;
+    assert!(model_view_state(&cat, copy.id).await.is_err());
     Ok(())
 }

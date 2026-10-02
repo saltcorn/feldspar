@@ -42,6 +42,7 @@ import {
   formatParameterCell,
   formatTimestamp,
   instanceLabel,
+  isPosteriorStage,
   isPValueColumn,
   metricRows,
   outcomeSummary,
@@ -53,6 +54,7 @@ import {
   readOutcome,
   readParameters,
   readPrediction,
+  readProgress,
   readRowCounts,
   readSearch,
   significanceStars,
@@ -173,10 +175,12 @@ export function ModelInstance({ instanceId }: { instanceId: string }) {
   const search = readSearch(instance.search);
   const rows = readRowCounts(instance.rows);
   // A running fit has no outcome yet, so a posterior is also known by its
-  // provider, or by the progress only a posterior reports.
+  // provider, or by the stages only a posterior reports (every fit reports
+  // `reading`, `fitting` and `scoring`).
   const posterior =
     outcome?.outcome === "posterior" ||
-    (instance.status === "fitting" && (bindsData || instance.progress != null));
+    (instance.status === "fitting" &&
+      (bindsData || isPosteriorStage(readProgress(instance.progress)?.stage)));
 
   return (
     <>

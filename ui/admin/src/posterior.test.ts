@@ -40,6 +40,7 @@ import {
   niceTicks,
   orderWarnings,
   outcomeSummary,
+  isPosteriorStage,
   parseDraft,
   parseDrafts,
   printDraft,
@@ -270,6 +271,14 @@ describe("reading what the API carries about a posterior", () => {
     expect(progress?.chains.map(chainPercent)).toEqual([100, 25]);
     expect(readProgress({ stage: "queued" })).toEqual({ stage: "queued", chains: [] });
     expect(readProgress(null)).toBeNull();
+  });
+
+  it("tells a posterior's stages from the ones every fit reports", () => {
+    // Every fit reports where it is now, so progress alone no longer means a
+    // posterior: only its own four stages do.
+    expect(["queued", "compiling", "sampling", "summarising"].every(isPosteriorStage)).toBe(true);
+    expect(["reading", "fitting", "scoring"].some(isPosteriorStage)).toBe(false);
+    expect(isPosteriorStage(undefined)).toBe(false);
   });
 
   it("leaves the sampler's own variables out of the list", () => {

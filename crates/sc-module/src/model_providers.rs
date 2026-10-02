@@ -36,6 +36,16 @@
 //!
 //! # Metrics are not asked for, and cannot be sent
 //!
+//! # Outputs
+//!
+//! A provider may declare `outputs` (analytics TODO A3.2): what a fit of it
+//! shows, as `sc_model::OutputDecl`'s JSON — `{ name, label, kind:
+//! "parameters", block }`, `{ kind: "metrics" }`, or `{ kind: "plot", data,
+//! spec }` with a plot spec over output data. The data may be the host's
+//! (`rows`, each scored row with `actual`, `fitted`, …) or the provider's own,
+//! answered by `fit` as `outputs: { name: frame }` in the frame's JSON.
+//! Without a declaration a fit shows the standard outputs of its outcome.
+//!
 //! A provider answers its state, its parameters and, optionally, `warnings`:
 //! sentences the admin should read before trusting the fit, which make it
 //! not "clean" for `fit_model`'s `activate: if_clean`. Everything scored — R²,
@@ -47,7 +57,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use sc_error::{Error, Result};
-use sc_model::{FitResult, Frame, ModelProviderHost, ModelProviderKind, OutcomeSpec, Prediction};
+use sc_model::{
+    FitResult, Frame, ModelProviderHost, ModelProviderKind, OutcomeSpec, OutputDecl, Prediction,
+};
 use sc_types::Attrs;
 use serde_json::Value as Json;
 
@@ -92,6 +104,7 @@ impl ModuleModelProviders {
                         .hyperparameters(hyperparameters)
                         .module(loaded.module.name.clone());
                 kind.standardise = provider.standardise;
+                kind.outputs = declared_outputs(&provider.outputs);
                 providers.push(kind);
             }
         }
@@ -180,6 +193,16 @@ impl ModelProviderHost for ModuleModelProviders {
             .await?;
         read_predictions(module, provider, answer, frame.rows)
     }
+}
+
+/// The outputs a module's provider declares (analytics TODO A3.2), or `None`
+/// — the standard ones — when it declares none or declares them in a shape
+/// this server cannot read.
+pub fn declared_outputs(json: &Json) -> Option<Vec<OutputDecl>> {
+    if json.is_null() {
+        return None;
+    }
+    serde_json::from_value(json.clone()).ok()
 }
 
 /// What a module answered a fit with, as a [`FitResult`].

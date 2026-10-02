@@ -7,6 +7,7 @@
 //! here: they are `sc-dataset`'s, because models read them too.
 
 pub mod demo;
+pub mod model_outputs;
 pub mod plot;
 pub mod stats;
 mod workspace;

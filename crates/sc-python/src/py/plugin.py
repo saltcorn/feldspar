@@ -499,11 +499,20 @@ class _ModelProvider:
         "hyperparameters",
         "outcome",
         "standardise",
+        "outputs",
         "_instance",
     )
 
     def __init__(
-        self, name, cls, description, config, hyperparameters, outcome, standardise
+        self,
+        name,
+        cls,
+        description,
+        config,
+        hyperparameters,
+        outcome,
+        standardise,
+        outputs=None,
     ):
         self.name = name
         self.cls = cls
@@ -512,6 +521,7 @@ class _ModelProvider:
         self.hyperparameters = hyperparameters
         self.outcome = outcome
         self.standardise = standardise
+        self.outputs = outputs
         self._instance = None
 
     def instance(self):
@@ -723,6 +733,7 @@ def model_provider(
     hyperparameters=(),
     outcome=None,
     standardise=False,
+    outputs=None,
 ):
     """Register a **model provider**: code that can fit something (TODO §10, §14).
 
@@ -749,6 +760,17 @@ def model_provider(
             def fit(self, frame, configuration, hyperparameters): ...
             def predict(self, state, frame): ...
 
+    ``outputs`` says what a fit shows (analytics TODO A3.2), as a list of
+    dicts: ``{"name": "coefficients", "label": "Coefficients", "kind":
+    "parameters", "block": "Coefficients"}``, ``{"name": "metrics", "label":
+    "Metrics", "kind": "metrics"}``, or a plot — ``{"name": "fitted", "label":
+    "Fitted values", "kind": "plot", "data": "rows", "spec": {...}, "optional":
+    True}`` — whose ``spec`` is a plot spec over output data: the host's
+    ``rows`` (each scored row, with ``actual``, ``fitted`` and ``residual``) or
+    a frame of the provider's own, which ``fit`` returns as ``"outputs":
+    {"name": {"rows": n, "columns": [{"name": ..., "type": "float", "values":
+    [...]}]}}``. Without it, a fit shows the standard outputs of its outcome.
+
     It declares **no metrics**, and cannot: R², RMSE, accuracy and the confusion
     matrix are computed by the host over the same splits with the same code for
     every provider, which is what makes this estimator's number comparable with
@@ -765,6 +787,7 @@ def model_provider(
             _fields(hyperparameters, what),
             _outcome(outcome, what),
             bool(standardise),
+            list(outputs) if outputs is not None else None,
         )
         return cls
 
@@ -906,6 +929,7 @@ def manifest(distribution, registry):
                 ],
                 "outcome": provider.outcome,
                 "standardise": provider.standardise,
+                "outputs": provider.outputs,
             }
             for provider in registry.model_providers.values()
         ],
@@ -1203,6 +1227,10 @@ def op_model_fit(payload):
             "parameters": list(result.get("parameters") or ()),
             "warnings": [str(w) for w in result.get("warnings") or ()],
         }
+        # A frame of the provider's own per name, for the plots it declares
+        # (analytics TODO A3.2), in the frame's JSON.
+        if result.get("outputs"):
+            answer["outputs"] = dict(result["outputs"])
     else:
         answer = {"state": result, "parameters": [], "warnings": []}
     for w in caught:

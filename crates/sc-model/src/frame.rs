@@ -27,6 +27,8 @@
 //! numbers, and the question "was this row in the training set" is the host's to
 //! answer.
 
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use sc_error::{Error, Result};
 use sc_query::Value;
@@ -60,7 +62,9 @@ pub enum Column {
 /// A column's type, without its values — what a provider's `config_spec` is
 /// handed to build its form against (a label picker offers the numeric columns;
 /// a classification target offers the rest).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnType {
     /// [`Column::Float`].
@@ -208,8 +212,71 @@ impl Column {
         Column::Null(values.len())
     }
 
+    /// `parts` one after another, as one column. Parts of one type stay that
+    /// type, and an all-null part takes the type of the others; parts of
+    /// different types become text, as [`from_values`](Column::from_values)
+    /// makes a mixed column.
+    pub(crate) fn concat(parts: Vec<Column>) -> Column {
+        let len: usize = parts.iter().map(Column::len).sum();
+        let kinds: BTreeSet<ColumnType> = parts
+            .iter()
+            .map(Column::kind)
+            .filter(|k| *k != ColumnType::Null)
+            .collect();
+        fn join<T: Clone>(
+            parts: &[Column],
+            get: impl Fn(&Column) -> Option<&Vec<Option<T>>>,
+        ) -> Vec<Option<T>> {
+            let mut out = Vec::new();
+            for part in parts {
+                match get(part) {
+                    Some(values) => out.extend(values.iter().cloned()),
+                    None => out.extend(std::iter::repeat_n(None, part.len())),
+                }
+            }
+            out
+        }
+        match kinds.into_iter().collect::<Vec<_>>().as_slice() {
+            [] => Column::Null(len),
+            [ColumnType::Float] => Column::Float(join(&parts, |c| match c {
+                Column::Float(v) => Some(v),
+                _ => None,
+            })),
+            [ColumnType::Int] => Column::Int(join(&parts, |c| match c {
+                Column::Int(v) => Some(v),
+                _ => None,
+            })),
+            [ColumnType::Bool] => Column::Bool(join(&parts, |c| match c {
+                Column::Bool(v) => Some(v),
+                _ => None,
+            })),
+            [ColumnType::Str] => Column::Str(join(&parts, |c| match c {
+                Column::Str(v) => Some(v),
+                _ => None,
+            })),
+            [ColumnType::Date] => Column::Date(join(&parts, |c| match c {
+                Column::Date(v) => Some(v),
+                _ => None,
+            })),
+            _ => Column::Str(
+                parts
+                    .iter()
+                    .flat_map(|c| match c.to_json() {
+                        Json::Array(values) => values,
+                        _ => Vec::new(),
+                    })
+                    .map(|v| match v {
+                        Json::Null => None,
+                        Json::String(s) => Some(s),
+                        other => Some(other.to_string()),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
     /// This column restricted to `rows`, in the order given.
-    fn take(&self, rows: &[usize]) -> Column {
+    pub(crate) fn take(&self, rows: &[usize]) -> Column {
         fn pick<T: Clone>(v: &[Option<T>], rows: &[usize]) -> Vec<Option<T>> {
             rows.iter().map(|i| v.get(*i).cloned().flatten()).collect()
         }

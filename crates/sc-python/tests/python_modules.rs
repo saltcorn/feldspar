@@ -738,6 +738,15 @@ async fn a_python_model_provider_declares_itself_and_then_fits_and_predicts() ->
     assert_eq!(kinds[0].hyperparameters[0].name(), "shift");
     assert!(!kinds[0].standardise);
     assert!(kinds[1].standardise);
+    // Outputs declared the same way as a JavaScript module's (analytics TODO
+    // A3.2); the other declares none and shows its outcome's standard ones.
+    assert!(kinds[0].outputs.is_none());
+    let outputs = kinds[1]
+        .outputs
+        .as_ref()
+        .expect("fixture_sign declares outputs");
+    let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, ["rule", "signs"]);
 
     // Through the registry, because that is how a fit reaches one.
     let mut models = sc_model::ModelRegistry::new();
@@ -815,6 +824,11 @@ async fn a_python_model_provider_declares_itself_and_then_fits_and_predicts() ->
     assert_eq!(
         fitted.parameters[0],
         sc_model::ParameterBlock::text("Rule", "negative is 0, otherwise 1")
+    );
+    // Its own frame for the plot it declares.
+    assert_eq!(
+        fitted.outputs["signs"].frame.column("rows"),
+        Some(&sc_model::Column::Int(vec![Some(2), Some(2)]))
     );
     assert_eq!(
         sign.predict(&fitted.state, &frame).await?,

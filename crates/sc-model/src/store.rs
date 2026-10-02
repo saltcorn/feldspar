@@ -81,6 +81,10 @@ pub const COL_ATTRIBUTES: &str = "attributes";
 /// installation whose `_fd_models` already has rows — a required column could
 /// not be added there without a value for each. NULL reads as "none".
 pub const COL_RELATED: &str = "related";
+/// Column: the model's **view state** (analytics TODO A3.4) — a JSON object
+/// the screens showing the model keep their layout in. Not part of the model:
+/// see [`model_view_state`].
+pub const COL_VIEW_STATE: &str = "view_state";
 
 /// The fields of the `_fd_models` table, in declaration order.
 fn model_fields() -> Vec<DataField> {
@@ -103,6 +107,9 @@ fn model_fields() -> Vec<DataField> {
         DataField::plain(COL_SPLIT, json()).required(),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
         DataField::plain(COL_RELATED, json()),
+        // Nullable, as a column added to a table that has rows must be; NULL
+        // reads as `{}`.
+        DataField::plain(COL_VIEW_STATE, json()),
     ]
 }
 
@@ -171,6 +178,12 @@ pub async fn save_model(
             .filter(Expr::col(COL_ID).eq(Expr::lit(model.id.0)));
         exec(catalog, Statement::from(update)).await
     } else {
+        // A new model starts with an empty view state. An update leaves it
+        // alone: it is not part of what a save sends.
+        let mut columns = columns;
+        let mut values = values;
+        columns.push(COL_VIEW_STATE.to_owned());
+        values.push(Value::Json(Json::Object(Attrs::new())));
         let insert = Insert::row(
             MODELS_TABLE,
             columns,
@@ -178,6 +191,118 @@ pub async fn save_model(
         );
         exec(catalog, Statement::from(insert)).await
     }
+}
+
+/// A model's **view state** (analytics TODO A3.4): the dictionary the model
+/// editor, a comparison or a split view keeps its layout in — which outputs
+/// are open, the optional plots chosen, the selected fit — so that a model
+/// reopens as it was left.
+///
+/// It is **not part of the model**: `validate_model` does not read it, a fit
+/// does not record it, the "changed since fit" checks never see it, and
+/// [`save_model`] neither reads nor writes it. It has no schema; its keys are
+/// the screens' business. Shared by everyone who opens the model.
+///
+/// `{}` for a model whose row has none, and an error naming the model when
+/// there is no such model.
+pub async fn model_view_state(catalog: &Catalog, id: ModelId) -> Result<Attrs> {
+    let mut select =
+        Select::from(Source::table(MODELS_TABLE)).filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
+    select.columns = vec![sc_query::Projection::expr(Expr::col(COL_VIEW_STATE))];
+    let Some(row) = rows(catalog, select).await?.into_iter().next() else {
+        return Err(Error::not_found(format!("no model with id {id}")));
+    };
+    match row.get(COL_VIEW_STATE) {
+        Some(Value::Null) | None => Ok(Attrs::new()),
+        Some(Value::Text(text)) => match serde_json::from_str(text) {
+            Ok(Json::Object(o)) => Ok(o),
+            _ => Err(bad_column(
+                COL_VIEW_STATE,
+                "a json object",
+                row.get(COL_VIEW_STATE),
+            )),
+        },
+        Some(_) => object(&row, COL_VIEW_STATE),
+    }
+}
+
+/// Patches of view states are applied one at a time in this process, so two
+/// screens patching different keys of one model at once both land.
+static VIEW_STATE_PATCHES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Set or remove top-level keys of a model's view state, leaving the others:
+/// a key whose value is `null` is removed, any other is set. Answers the view
+/// state as it now is.
+///
+/// Key by key rather than whole, so that two screens keeping different keys
+/// (the editor's open plots, a comparison's choices) do not overwrite each
+/// other without a read first; for one key, the last write wins.
+pub async fn patch_model_view_state(
+    catalog: &Catalog,
+    id: ModelId,
+    patch: &Attrs,
+) -> Result<Attrs> {
+    let _one_at_a_time = VIEW_STATE_PATCHES.lock().await;
+    let mut state = model_view_state(catalog, id).await?;
+    for (key, value) in patch {
+        if value.is_null() {
+            state.remove(key);
+        } else {
+            state.insert(key.clone(), value.clone());
+        }
+    }
+    write_view_state(catalog, id, &state).await?;
+    Ok(state)
+}
+
+/// Replace a model's whole view state.
+async fn write_view_state(catalog: &Catalog, id: ModelId, state: &Attrs) -> Result<()> {
+    let update = Update::new(
+        MODELS_TABLE,
+        vec![Assignment::new(
+            COL_VIEW_STATE,
+            Expr::lit(Value::Json(Json::Object(state.clone()))),
+        )],
+    )
+    .filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
+    exec(catalog, Statement::from(update)).await
+}
+
+/// A copy of the model `id`, under `name` — or, without one, the first of
+/// "`<name>` (copy)", "`<name>` (copy 2)", … that is free. It reads the same
+/// named datasets (a dataset is shared, not copied), has no fits, and carries
+/// the original's view state, so the copy opens laid out as the original was.
+pub async fn clone_model(
+    catalog: &Catalog,
+    registry: &ModelRegistry,
+    id: ModelId,
+    name: Option<&str>,
+) -> Result<Model> {
+    let original = load_model(catalog, id)
+        .await?
+        .ok_or_else(|| Error::not_found(format!("no model with id {id}")))?;
+    let name = match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => name.to_owned(),
+        None => {
+            let stem = format!("{} (copy)", original.name);
+            let mut candidate = stem.clone();
+            let mut n = 2;
+            while load_model_by_name(catalog, &candidate).await?.is_some() {
+                candidate = format!("{} (copy {n})", original.name);
+                n += 1;
+            }
+            candidate
+        }
+    };
+    let mut copy = original.clone();
+    copy.id = ModelId::new();
+    copy.name = name;
+    save_model(catalog, registry, &copy, None).await?;
+    let state = model_view_state(catalog, id).await?;
+    if !state.is_empty() {
+        write_view_state(catalog, copy.id, &state).await?;
+    }
+    Ok(copy)
 }
 
 /// Save a dataset a model was built with, when it is not stored yet, under
@@ -635,7 +760,12 @@ mod tests {
         let model = Model::new("m", "linear_regression", Dataset::new("houses"));
         assert_eq!(model_columns().len(), model_values(&model).unwrap().len());
         let declared: Vec<String> = model_fields().iter().map(|f| f.base.name.clone()).collect();
-        assert_eq!(model_columns(), declared);
+        // Every declared column but the view state, which a save of the model
+        // never writes (analytics TODO A3.4).
+        let mut written = model_columns();
+        written.push(COL_VIEW_STATE.to_owned());
+        assert_eq!(written, declared);
+        assert!(!model_columns().contains(&COL_VIEW_STATE.to_owned()));
     }
 
     #[test]

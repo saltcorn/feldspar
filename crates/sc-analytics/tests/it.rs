@@ -13,3 +13,6 @@ mod reshaped;
 
 #[path = "hypothesis.rs"]
 mod hypothesis;
+
+#[path = "fit_outputs.rs"]
+mod fit_outputs;

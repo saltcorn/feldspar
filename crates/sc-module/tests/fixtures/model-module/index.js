@@ -89,10 +89,39 @@ module.exports = {
         }),
       outcome: { kind: "cluster" },
       standardise: true,
-      fit: async ({ frame, configuration }) => ({
-        state: { on: configuration.on },
-        parameters: [{ block: "text", name: "Rule", body: "negative is 0, otherwise 1" }],
-      }),
+      // What a fit shows (analytics TODO A3.2): its rule, and a bar chart over
+      // a frame of its own.
+      outputs: [
+        { name: "rule", label: "Rule", kind: "parameters", block: "Rule" },
+        {
+          name: "signs",
+          label: "Rows by sign",
+          kind: "plot",
+          data: "signs",
+          spec: {
+            layers: [
+              { mark: "bar", encoding: { x: { field: "sign" }, y: { field: "rows" } } },
+            ],
+          },
+        },
+      ],
+      fit: async ({ frame, configuration }) => {
+        const values = column(frame, configuration.on).map(Number);
+        const negative = values.filter((v) => v < 0).length;
+        return {
+          state: { on: configuration.on },
+          parameters: [{ block: "text", name: "Rule", body: "negative is 0, otherwise 1" }],
+          outputs: {
+            signs: {
+              rows: 2,
+              columns: [
+                { name: "sign", type: "str", values: ["negative", "positive"] },
+                { name: "rows", type: "int", values: [negative, values.length - negative] },
+              ],
+            },
+          },
+        };
+      },
       predict: async ({ state, frame }) =>
         column(frame, state.on).map((v) => ({
           prediction: "cluster",

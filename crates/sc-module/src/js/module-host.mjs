@@ -931,7 +931,8 @@ function readOutcome(declared) {
  *     hyperparameters: [{ name: "alpha", type: "Float", default: 1 }],
  *     outcome: { kind: "regression", label: "label" },
  *     standardise: true,
- *     fit: async ({ frame, configuration, hyperparameters }) => ({ state, parameters }),
+ *     outputs: [{ name: "fitted", label: "Fitted", kind: "plot", data: "rows", spec }],
+ *     fit: async ({ frame, configuration, hyperparameters }) => ({ state, parameters, outputs }),
  *     predict: async ({ state, frame }) => [1.2, 3.4],
  *   },
  * }
@@ -990,6 +991,9 @@ async function evalModelProviders(plugin, configuration) {
       hyperparameters: Array.isArray(impl.hyperparameters) ? impl.hyperparameters : [],
       outcome: read.outcome,
       standardise: !!impl.standardise,
+      // What a fit shows (analytics TODO A3.2); absent for the standard
+      // outputs of the outcome.
+      outputs: Array.isArray(impl.outputs) ? impl.outputs : null,
     });
   }
   return { providers, set, issues };
@@ -1413,11 +1417,16 @@ async function modelFit({ module: name, provider: providerName, frame, configura
   // `warnings` are sentences the admin should read before trusting the fit;
   // the host records them on the instance, and a fit with any is not clean.
   const warnings = Array.isArray(pair.warnings) ? pair.warnings.map(String) : [];
-  return {
+  const answer = {
     state: pair.state === undefined ? null : pair.state,
     parameters: pair.parameters || [],
     warnings,
   };
+  // Frames of the provider's own, by name, for the plots it declares in
+  // `outputs` (analytics TODO A3.2), each in the frame's JSON.
+  if (pair.outputs && typeof pair.outputs === "object" && !Array.isArray(pair.outputs))
+    answer.outputs = pair.outputs;
+  return answer;
 }
 
 /** Predict with one, over a frame of any height. Always a list, one per row. */

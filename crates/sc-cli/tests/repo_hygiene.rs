@@ -1437,7 +1437,9 @@ fn the_design_records_what_the_models_milestone_actually_built() {
         "Fitting is a job, not a request",
         "the row is the registry",
         "the server restarted while this fit was running",
-        "There is no cancel",
+        // Once "There is no cancel"; since analytics A3.3 any fit stops at its
+        // next stage, and a posterior's processes are killed.
+        "A cancel stops a fit between its stages",
         // The grid, the feature, and the third source of providers.
         "validation",
         "`smartcore` feature",

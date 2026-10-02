@@ -3322,6 +3322,51 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
         }
     });
 
+    reg.register("cloneModel", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let models = models_of(&apps)?;
+                let id = sc_model::ModelId(parse_uuid(ctx.path_param("id")?, "model")?);
+                let name = match &ctx.body {
+                    Json::Object(body) => {
+                        body.get("name").and_then(Json::as_str).map(str::to_owned)
+                    }
+                    _ => None,
+                };
+                let copy = sc_model::clone_model(&catalog, &models.registry(), id, name.as_deref())
+                    .await?;
+                Ok(HandlerResponse::ok(model_json(&catalog, &copy, None).await?).with_status(201))
+            }
+        }
+    });
+
+    reg.register("patchModelViewState", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = sc_model::ModelId(parse_uuid(ctx.path_param("id")?, "model")?);
+                let patch = match ctx.body.get("patch") {
+                    Some(Json::Object(patch)) => patch.clone(),
+                    _ => {
+                        return Err(Error::invalid(
+                            "`patch` is an object of the keys to set, and `null` for each key \
+                             to remove",
+                        ));
+                    }
+                };
+                let state = sc_model::patch_model_view_state(&catalog, id, &patch).await?;
+                Ok(HandlerResponse::ok(
+                    json!({ "view_state": Json::Object(state) }),
+                ))
+            }
+        }
+    });
+
     reg.register("deleteModel", {
         let catalog = catalog.clone();
         let apps = apps.clone();
@@ -3697,14 +3742,12 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                     .ok_or_else(|| {
                         Error::not_found(format!("the model of instance {id} is gone"))
                     })?;
-                let registry = models.registry();
-                let provider = registry.require(model.provider.trim())?;
-                if !provider.cancellable() {
-                    return Err(Error::invalid(format!(
-                        "a fit of `{}` cannot be cancelled: it runs inside this server rather                          than as a process it can stop, so it runs to the end",
-                        provider.name()
-                    )));
-                }
+                // Any fit (analytics TODO A3.3): a provider whose fit is a
+                // process is killed within a second; any other is stopped at
+                // the next stage of the fit — after the read, between grid
+                // points, before scoring — since a call into a library cannot
+                // be interrupted halfway.
+                models.registry().require(model.provider.trim())?;
                 if !sc_model::request_fit_cancel(&catalog, id).await? {
                     return Err(Error::invalid(format!(
                         "instance {id} is `{}`: there is no running fit to cancel",
@@ -9385,6 +9428,9 @@ async fn model_json(
         "last_fit": last_fit,
         "active_instance": active,
         "program_check": Json::Null,
+        // The screens' layout (analytics TODO A3.4); `{}` where the row has
+        // none yet.
+        "view_state": Json::Object(sc_model::model_view_state(catalog, model.id).await?),
     }))
 }
 

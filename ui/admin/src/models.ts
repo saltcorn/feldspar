@@ -1320,11 +1320,19 @@ export type ChainProgress = {
   phase: "warmup" | "sampling";
 };
 
-/** Where a running posterior fit has got to. */
+/** Where a running fit has got to: every fit's `reading`, `fitting` and
+ *  `scoring`, or a posterior's four stages and its chains. */
 export type FitProgress = {
-  stage: "queued" | "compiling" | "sampling" | "summarising";
+  stage: "reading" | "fitting" | "scoring" | "queued" | "compiling" | "sampling" | "summarising";
   chains: ChainProgress[];
 };
+
+/** Whether `stage` is one only a posterior's fit reports. */
+export function isPosteriorStage(stage: string | undefined): boolean {
+  return (
+    stage === "queued" || stage === "compiling" || stage === "sampling" || stage === "summarising"
+  );
+}
 
 /** An instance's `progress`, or `null` when there is none. */
 export function readProgress(raw: unknown): FitProgress | null {

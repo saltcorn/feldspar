@@ -19,6 +19,11 @@ sc-db.workspace = true
 # A plot reads a dataset: its shape, and its compiled query as the source of
 # every stat (A2.3).
 sc-dataset.workspace = true
+# A plot over a fit's output data (A3.1) reads the frame the fit stored, and
+# runs its stats on a private in-memory SQLite database — the same SQL the
+# stat compiler writes for a dataset.
+sc-model.workspace = true
+sc-db-sqlite.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 serde.workspace = true
@@ -28,7 +33,6 @@ statrs.workspace = true
 
 [dev-dependencies]
 sc-db-postgres.workspace = true
-sc-db-sqlite.workspace = true
 sc-test-harness.workspace = true
 tokio.workspace = true
 

@@ -34,7 +34,7 @@ use async_trait::async_trait;
 use sc_error::Result;
 use sc_model::{FitResult, Frame, ModelProviderHost, ModelProviderKind, OutcomeSpec, Prediction};
 use sc_module::LoadedModule;
-use sc_module::model_providers::{read_fit, read_predictions};
+use sc_module::model_providers::{declared_outputs, read_fit, read_predictions};
 use sc_types::Attrs;
 use serde_json::Value as Json;
 
@@ -71,6 +71,7 @@ impl PyModuleModelProviders {
                         .hyperparameters(fields::form_fields(&provider.hyperparameters))
                         .module(loaded.module.name.clone());
                 kind.standardise = provider.standardise;
+                kind.outputs = declared_outputs(&provider.outputs);
                 providers.push(kind);
             }
         }

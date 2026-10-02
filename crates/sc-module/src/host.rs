@@ -249,6 +249,12 @@ pub struct ModelProviderManifest {
     /// instance and applied again at predict time.
     #[serde(default)]
     pub standardise: bool,
+    /// What a fit of it shows (analytics TODO A3.2): a list of
+    /// `sc_model::OutputDecl`'s JSON — parameter tables, the metrics, and plot
+    /// specs over the fit's output data. Absent for the standard outputs of
+    /// its outcome. JSON for the reason `outcome` is.
+    #[serde(default)]
+    pub outputs: Json,
 }
 
 /// One **stream provider** a module supplies (TODO "Streams" §12).

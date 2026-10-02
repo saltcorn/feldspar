@@ -24,6 +24,21 @@ const MAX_VALUES: u64 = 200;
 /// The rows a stage read answers when the caller does not say.
 const DEFAULT_PAGE: u64 = 100;
 
+/// The fit a model's outputs show when none is named: the active one, else
+/// the newest that fitted.
+async fn shown_fit(
+    catalog: &Catalog,
+    model: sc_model::ModelId,
+) -> Result<Option<sc_model::ModelInstance>> {
+    let fits = sc_model::list_model_instances(catalog, model).await?;
+    if let Some(active) = fits.iter().find(|i| i.active) {
+        return Ok(Some(active.clone()));
+    }
+    Ok(fits
+        .into_iter()
+        .find(|i| i.status == sc_model::FitStatus::Fitted))
+}
+
 /// Register the Analytics UI's handlers on `reg`.
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
     // --- datasets ------------------------------------------------------------
@@ -428,6 +443,72 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 Ok(HandlerResponse::ok(
                     answer.unwrap_or_else(|error| json!({ "error": error })),
                 ))
+            }
+        }
+    });
+
+    // --- the model editor ----------------------------------------------------
+
+    reg.register("getModelOutputs", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let raw = ctx.path_param("id")?;
+                let id = sc_model::ModelId(
+                    raw.parse()
+                        .map_err(|_| Error::invalid(format!("`{raw}` is not a model id")))?,
+                );
+                let model = sc_model::load_model(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no model with id {id}")))?;
+                let instance = match ctx.query_get("fit").filter(|f| !f.is_empty()) {
+                    Some(raw) => {
+                        let fit =
+                            sc_model::InstanceId(raw.parse().map_err(|_| {
+                                Error::invalid(format!("`{raw}` is not a fit's id"))
+                            })?);
+                        let instance = sc_model::require_model_instance(&catalog, fit).await?;
+                        if instance.model != id {
+                            return Err(Error::invalid(format!(
+                                "fit {fit} is not a fit of the model `{}`",
+                                model.name
+                            )));
+                        }
+                        Some(instance)
+                    }
+                    None => shown_fit(&catalog, id).await?,
+                };
+                let Some(instance) = instance else {
+                    return Ok(HandlerResponse::ok(json!({
+                        "model": id.0, "fit": null, "outputs": [],
+                    })));
+                };
+                let include: std::collections::BTreeSet<String> = ctx
+                    .query_get("include")
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                let outputs =
+                    sc_analytics::model_outputs::render_outputs(&catalog, &instance, &include)
+                        .await?;
+                Ok(HandlerResponse::ok(json!({
+                    "model": id.0,
+                    "fit": {
+                        "id": instance.id.0,
+                        "name": instance.name,
+                        "status": instance.status.as_str(),
+                        "created": instance.created,
+                        "active": instance.active,
+                        "error": instance.error(),
+                        "dataset_changed":
+                            sc_model::dataset_changed(&instance, &model.dataset, &model.related),
+                    },
+                    "outputs": outputs,
+                })))
             }
         }
     });

@@ -86,6 +86,7 @@ mod instance_store;
 mod interface;
 mod metrics;
 mod model;
+mod outputs;
 mod posterior;
 mod predict;
 mod provider;
@@ -127,8 +128,9 @@ pub use encode::{
 };
 pub use fit::{
     ATTR_AXES, ATTR_BINDING, ATTR_CANCEL_REQUESTED, ATTR_COORDINATES, ATTR_OUTCOME, ATTR_PROGRESS,
-    ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Activation, Fit, FitStarter, GridPoint, MAX_GRID_POINTS,
-    RowCounts, fit_model, fit_model_with, fitted_cleanly, grid, run_fit, run_fit_with,
+    ATTR_ROWS, ATTR_SEARCH, ATTR_WARNINGS, Activation, CANCELLED, Fit, FitStarter, GridPoint,
+    MAX_GRID_POINTS, RowCounts, fit_model, fit_model_with, fitted_cleanly, grid, run_fit,
+    run_fit_with,
 };
 pub use frame::{Column, ColumnType, Frame, canonical_key};
 pub use instance::{ATTR_ERROR, FitStatus, InstanceId, ModelInstance, RESTARTED};
@@ -136,13 +138,19 @@ pub use instance_store::{
     INSTANCES_TABLE, ProgressWrite, active_model_instance, bootstrap_model_instances,
     cancel_requested, delete_model_instance, fitted, list_model_instances, load_model_instance,
     reap_fitting_instances, record_fit_progress, request_fit_cancel, require_model_instance,
-    save_fitted_instance, save_model_instance,
+    save_fitted_instance, save_fitted_instance_with_outputs, save_model_instance,
 };
 pub use interface::{Declaration, Element, Interface, SizeExpr, SizeOp, SizeTree};
 pub use metrics::{
     ApproximationMetrics, ClassMetrics, Metrics, ModeMetrics, PosteriorMetrics, SplitMetrics,
 };
 pub use model::{MAIN_DATASET, Model, ModelId, NamedDataset};
+pub use outputs::{
+    ATTR_OUTPUTS, DRAWS_OUTPUT, MAX_DRAWS_PER_CHAIN, MAX_OUTPUT_PARAMETERS, MAX_OUTPUT_ROWS,
+    OUTPUTS_TABLE, OutputContext, OutputData, OutputDecl, OutputKind, ROWS_OUTPUT, SCALARS,
+    bootstrap_model_outputs, instance_outputs, load_output_data, outcome_plots, parameter_tables,
+    posterior_plots, standard_outputs, tidy_outputs,
+};
 pub use posterior::{
     ChainPhase, ChainProgress, DEFAULT_MAX_DRAWS_BYTES, DEFAULT_SUMMARY_MAX_ELEMENTS, DrawPlan,
     DrawSeries, FitContext, FitProgress, FitStage, NoProgress, PosteriorInput, PosteriorLimits,
@@ -169,8 +177,9 @@ pub use registry::ModelRegistry;
 pub use source::{CompiledSource, DEFAULT_MAX_ROWS, DatasetSource, Read, SPLIT_KEY};
 pub use split::{Part, Split, SplitCounts, Splits};
 pub use store::{
-    MODELS_QUERY, MODELS_TABLE, bootstrap_models, dataset_ref, delete_model, list_models,
-    load_model, load_model_by_name, models_for_table, related_json, require_model, save_model,
+    COL_VIEW_STATE, MODELS_QUERY, MODELS_TABLE, bootstrap_models, clone_model, dataset_ref,
+    delete_model, list_models, load_model, load_model_by_name, model_view_state, models_for_table,
+    patch_model_view_state, related_json, require_model, save_model,
 };
 pub use summary::{ElementSummary, ess_bulk, ess_mean, ess_tail, quantile, rhat};
 pub use validate::{ModelIssue, Models, validate_model};

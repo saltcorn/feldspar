@@ -33,7 +33,7 @@ use super::hypothesis::{
 };
 use crate::plot::render::{
     Halt, INNER, Key, POINTS, Renderer, SEED, Step, agg, cast, f64_of, group_exprs, group_order,
-    group_projections, key_values, last_stage, v,
+    group_projections, key_values, plot_rows, v,
 };
 use crate::plot::validate::Dim;
 use crate::plot::{Channel, FieldDef, Layer, LinearSums, Mark, PlotSpec, Stat};
@@ -251,11 +251,11 @@ impl Section {
 /// group's results, or the sentence saying why there is no test. Reads as
 /// the admin, as `render_plot` does.
 pub async fn run_tests(catalog: &Catalog, spec: &TestSpec) -> Result<TestsAnswer> {
-    let stage = match last_stage(catalog, &spec.data).await? {
-        Ok(stage) => stage,
+    let rows = match plot_rows(catalog, &spec.data).await? {
+        Ok(rows) => rows,
         Err(sentence) => return Ok(TestsAnswer::refuse(sentence)),
     };
-    let shape = stage.shape();
+    let shape = rows.shape.clone();
     let choice = match choose(spec, &shape) {
         Ok(c) => c,
         Err(sentence) => return Ok(TestsAnswer::refuse(sentence)),
@@ -263,7 +263,7 @@ pub async fn run_tests(catalog: &Catalog, spec: &TestSpec) -> Result<TestsAnswer
     let mut carrier = PlotSpec::single(spec.data.clone(), Layer::new(Mark::Point, Stat::Identity));
     carrier.layers.clear();
     let mut tester = Tester {
-        r: Renderer::new(catalog, &carrier, &stage, shape.clone()),
+        r: Renderer::new(&carrier, &rows, shape.clone()),
         spec,
         choice: &choice,
         shape: &shape,

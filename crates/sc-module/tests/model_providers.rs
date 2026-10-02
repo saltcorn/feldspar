@@ -159,6 +159,17 @@ async fn a_module_supplies_model_providers_and_reports_the_ones_it_cannot() {
     assert!(sign.standardise);
     assert_eq!(sign.config_spec.len(), 1);
     assert_eq!(sign.config_spec[0].name(), "on");
+
+    // Its outputs crossed as declared (analytics TODO A3.2); the other
+    // declares none, and shows the standard ones of its outcome.
+    let outputs = sign
+        .outputs
+        .as_ref()
+        .expect("echo_sign declares its outputs");
+    let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, ["rule", "signs"]);
+    assert_eq!(outputs[1].data(), Some("signs"));
+    assert!(mean.outputs.is_none());
 }
 
 #[tokio::test]
@@ -229,6 +240,14 @@ async fn a_module_provider_fits_and_predicts_across_the_seam() {
     assert_eq!(
         fitted.parameters[0],
         ParameterBlock::text("Rule", "negative is 0, otherwise 1")
+    );
+    // A frame of its own for the plot it declares, read off the wire.
+    let signs = &fitted.outputs["signs"];
+    assert_eq!(signs.frame.rows, 2);
+    assert_eq!(signs.total, 2);
+    assert_eq!(
+        signs.frame.column("rows"),
+        Some(&sc_model::Column::Int(vec![Some(2), Some(3)]))
     );
     let predicted = sign
         .predict(&fitted.state, &frame())
@@ -306,4 +325,15 @@ fn a_fit_answer_carries_its_warnings_and_one_without_any_is_clean() {
     )
     .expect("readable");
     assert!(clean.warnings.is_empty());
+    assert!(clean.outputs.is_empty());
+
+    // A frame of its own crosses in the frame's JSON (analytics TODO A3.2).
+    let framed = model_providers::read_fit(
+        "@saltcorn-test/model",
+        "echo_mean",
+        json!({ "state": 1, "outputs": { "steps": { "rows": 1, "columns": [
+            { "name": "x", "type": "float", "values": [0.5] } ] } } }),
+    )
+    .expect("readable");
+    assert_eq!(framed.outputs["steps"].frame.rows, 1);
 }

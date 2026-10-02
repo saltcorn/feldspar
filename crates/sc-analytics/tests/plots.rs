@@ -42,7 +42,7 @@ fn column(name: &str, ty: BasicType) -> DataField {
     DataField::plain(name, TypeRef::Basic(ty))
 }
 
-async fn fill(cat: &Catalog) -> Result<DatasetId> {
+pub(crate) async fn fill(cat: &Catalog) -> Result<DatasetId> {
     sc_dataset::bootstrap_datasets(cat).await?;
     let id = || column("id", BasicType::Int).required().primary_key();
     cat.create_table("neighbourhoods", &[id(), column("name", BasicType::Text)])

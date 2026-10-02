@@ -346,11 +346,11 @@ that nothing about fitting or prediction reads.
 
 ## Phase 1 — Outputs as panels
 
-- [ ] A3.1 Model providers declare their outputs: tables, and plots as plot specs over **fit
+- [x] A3.1 Model providers declare their outputs: tables, and plots as plot specs over **fit
       output data** (a new kind of data reference, `FitOutput { instance, name }`, read from
       the instance rather than through SQL, so stats on it are computed in memory). Plots
       can be marked optional. Tests.
-- [ ] A3.2 Outputs of the built-in providers: linear and logistic regression (coefficients,
+- [x] A3.2 Outputs of the built-in providers: linear and logistic regression (coefficients,
       residuals against fitted values, actual against predicted, Q-Q), k-means (cluster
       sizes, centroids, a scatter plot coloured by cluster), Stan (the posterior summary, and
       trace, rank and density plots per parameter over the draws). Python module providers
@@ -358,11 +358,11 @@ that nothing about fitting or prediction reads.
 
 ## Phase 2 — The API
 
-- [ ] A3.3 Endpoints for the model editor: a model's outputs with each plot rendered by
+- [x] A3.3 Endpoints for the model editor: a model's outputs with each plot rendered by
       `render_plot`, fit progress (the existing `Progress`, pushed to the browser), cancelling
       a fit, and the list of a model's fits with the "dataset changed" flag. Tests in
       `sc-server`.
-- [ ] A3.4 **Model view state.** A `view_state` JSON object column on `_fd_models` (`{}` for
+- [x] A3.4 **Model view state.** A `view_state` JSON object column on `_fd_models` (`{}` for
       a new model), outside the model's definition: `validate_model` does not look at it, a
       fit does not record it, the "dataset changed" and "settings changed since fit" checks
       ignore it, and `updateModel` neither reads nor writes it. It is written by its own

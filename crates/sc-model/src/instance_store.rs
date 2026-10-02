@@ -17,6 +17,8 @@
 //!   model would be a second way to say the same thing, and two ways to say one
 //!   thing eventually disagree.
 
+use std::collections::BTreeMap;
+
 use sc_catalog::{Catalog, DataField, Table};
 use sc_db::{Row, Transaction};
 use sc_error::{Error, Result};
@@ -30,6 +32,9 @@ use serde_json::Value as Json;
 use crate::draws::{DRAWS_TABLE, delete_instance_draws, delete_model_draws, write_draws};
 use crate::instance::{ATTR_ERROR, FitStatus, InstanceId, ModelInstance, RESTARTED};
 use crate::model::ModelId;
+use crate::outputs::{
+    OUTPUTS_TABLE, OutputData, delete_instance_outputs, delete_model_outputs, write_outputs,
+};
 use crate::posterior::DrawSeries;
 use crate::provider::ParameterBlock;
 use crate::registry::ModelRegistry;
@@ -100,9 +105,12 @@ fn instance_fields() -> Vec<DataField> {
 
 /// Ensure the `_fd_model_instances` table exists, creating it if absent.
 pub async fn bootstrap_model_instances(catalog: &Catalog) -> Result<Table> {
-    catalog
+    let table = catalog
         .bootstrap_table(INSTANCES_TABLE, &instance_fields())
-        .await
+        .await?;
+    // Where a fit's output frames go (analytics TODO A3.1).
+    crate::outputs::bootstrap_model_outputs(catalog).await?;
+    Ok(table)
 }
 
 /// Save an instance: insert its row, or update it in place.
@@ -139,6 +147,31 @@ pub async fn save_fitted_instance(
     instance: &ModelInstance,
     draws: &[DrawSeries],
 ) -> Result<()> {
+    save_fitted_instance_with_outputs(catalog, instance, draws, &BTreeMap::new()).await
+}
+
+/// [`save_fitted_instance`], with the fit's output frames (analytics TODO
+/// A3.1) in the same transaction: a fitted instance has all of its outputs.
+pub async fn save_fitted_instance_with_outputs(
+    catalog: &Catalog,
+    instance: &ModelInstance,
+    draws: &[DrawSeries],
+    outputs: &BTreeMap<String, OutputData>,
+) -> Result<()> {
+    if !outputs.is_empty() {
+        if instance.status != FitStatus::Fitted {
+            return Err(Error::invalid(format!(
+                "a model instance that is `{}` cannot store outputs: only a fitted one has any",
+                instance.status
+            )));
+        }
+        if catalog.get(OUTPUTS_TABLE)?.is_none() {
+            return Err(Error::config(format!(
+                "`{OUTPUTS_TABLE}` does not exist, so this fit's outputs have nowhere to go: \
+                 the server bootstraps it at start-up"
+            )));
+        }
+    }
     if instance.active && !instance.status.is_usable() {
         return Err(Error::invalid(format!(
             "a model instance that is `{}` cannot be the active one: only a fitted instance \
@@ -164,6 +197,9 @@ pub async fn save_fitted_instance(
     let mut tx = catalog.primary().begin().await?;
     let written = async {
         write_draws_if_any(tx.as_mut(), instance.id, draws).await?;
+        if !outputs.is_empty() {
+            write_outputs(tx.as_mut(), instance.id, outputs).await?;
+        }
         write_instance(tx.as_mut(), instance, values).await
     }
     .await;
@@ -323,10 +359,14 @@ pub async fn delete_model_instance(
         return Ok(false);
     };
     let draws = catalog.get(DRAWS_TABLE)?.is_some();
+    let outputs = catalog.get(OUTPUTS_TABLE)?.is_some();
     let mut tx = catalog.primary().begin().await?;
     let deleted = async {
         if draws {
             delete_instance_draws(tx.as_mut(), id).await?;
+        }
+        if outputs {
+            delete_instance_outputs(tx.as_mut(), id).await?;
         }
         let delete = Delete::from(INSTANCES_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
         run(tx.as_mut(), Statement::from(delete)).await.map(drop)
@@ -347,6 +387,9 @@ pub(crate) async fn delete_instances_on(
 ) -> Result<()> {
     if catalog.get(DRAWS_TABLE)?.is_some() {
         delete_model_draws(tx, model).await?;
+    }
+    if catalog.get(OUTPUTS_TABLE)?.is_some() {
+        delete_model_outputs(tx, model).await?;
     }
     let delete = Delete::from(INSTANCES_TABLE).filter(Expr::col(COL_MODEL).eq(Expr::lit(model.0)));
     run(tx, Statement::from(delete)).await.map(drop)
