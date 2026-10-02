@@ -20,20 +20,25 @@ The unrestricted version of the analytics UI appears as the Analytics link in th
 
 ### Workspaces
 
-The full analytics UI consists of the dataset editor and a number of workspaces each of which takes a specific form. When entering the analytics UI, the user sees the list of datasets and the list of existing workspaces. They can open a dataset in the dataset editor, or enter a workspace, or create a new one by name and type.
+The full analytics UI consists of the dataset editor, the model editor and a number of workspaces each of which takes a specific form. When entering the analytics UI, the user sees the list of datasets, the list of models and the list of existing workspaces. They can open a dataset in the dataset editor, open a model in the model editor, or enter a workspace, or create a new one by name and type.
+
+The rule that separates them: datasets and models are the reusable nouns, global and named, referenced by other things (a model reads a dataset, a formula calls `predict("…")`, a map layer shows a scored dataset), so each has an editor of its own and a link of its own. A workspace is a composition or a session that references them, and it has state of its own that is not any one dataset or model (an explorer's drop zones, a map's layers, a report's blocks, a simulation's scenarios).
 
 Dataset editor (not a workspace): the list of datasets on the front page has, for each dataset, a link to edit, clone and delete, or create new. Each dataset is based on a base (a table, another dataset or a generated grid) which is picked when creating new but cannot be changed. A dataset is defined by its base and an ordered list of operations (see [Dataset operations](#dataset-operations)). Clicking a dataset opens the dataset editor, which shows the list of operations beside a spreadsheet like read only view of the data as it is after the selected operation. New columns can be added with a plus in the last column header, which adds a Calculated column operation at the end. The persisted list of datasets is global.
 
+Model editor (not a workspace): the list of models on the front page has, for each model, a link to edit, clone and delete, or create new (also from a dataset's row in the dataset list, which picks the dataset). Each model has a dataset and the model provider. Clicking a model opens the model editor: an interface for editing the model parameters, fitting the model, seeing fit progress, and then the fit output for that model below when done, with the model's earlier fits. The persisted list of models is global. For Bayesian models, the model editor is organised around the stages of the Bayesian workflow (see [Bayesian workflow](#bayesian-workflow)). Selecting several models in the list and pressing Compare shows them side by side.
+
+A model also persists its **view state**: a dictionary that the model editor (and anything else that shows the model) reads and writes freely, e.g. which output plots are open, the optional plots chosen from the drop-down, the selected fit, the Bayesian workflow stage, collapsed sections. It is what makes a model reopen as it was left, as a workspace does. The view state has no effect on fitting or predictions: it is not part of the model's definition, it is not validated, it is not recorded with a fit and changing it does not mark anything as changed since a fit. Like the model, it is shared by everyone who opens the model.
+
 Workspace type:
-* Data explorer: interactively creating different visualizations and summary tables without any persistence other than opening up in the same state where it was left off last time. A single screen where the data set is chosen in a drop-down and then the plot / summary table type from a gallery. Columns are then dragged onto drop zones (X, Y, Color, Facet, ...) and the plot is shown (see [Plots and the grammar of graphics](#plots-and-the-grammar-of-graphics)). The data explorer can also produce a map panel of a single dataset for quick spatial exploration; multi-layer GIS work is done in the Map workspace. The data explorer can also perform simple hypothesis tests, which sit alongside a plot type. Large models like general linear models are done through the model fit interface. The tests are chosen from the types of the variables, as in JMP's "Fit Y by X" (see [Hypothesis tests in the data explorer](#hypothesis-tests-in-the-data-explorer)).
+* Data explorer: interactively creating different visualizations and summary tables without any persistence other than opening up in the same state where it was left off last time. A single screen where the data set is chosen in a drop-down and then the plot / summary table type from a gallery. Columns are then dragged onto drop zones (X, Y, Color, Facet, ...) and the plot is shown (see [Plots and the grammar of graphics](#plots-and-the-grammar-of-graphics)). The data explorer can also produce a map panel of a single dataset for quick spatial exploration; multi-layer GIS work is done in the Map workspace. The data explorer can also perform simple hypothesis tests, which sit alongside a plot type. Large models like general linear models are done through the model editor. The tests are chosen from the types of the variables, as in JMP's "Fit Y by X" (see [Hypothesis tests in the data explorer](#hypothesis-tests-in-the-data-explorer)).
 * Dashboard: a tiled view including multiple plots and summary table and summary statistics cards, it may be interactive to enable drill down / cross filtering. There is no base data set for a dashboard; it can freely combine plots and summary tables across multiple datasets.
-* Model fit: a workspace for creating and editing model fits to datasets. Starts with a list of existing models each of which can be edited, cloned or deleted or the user can create a new model. Each model has a dataset and the model provider. There is an interface for editing the model parameters, fitting to a model, seeing fit progress, and then the fit output for that model below when done. Like the dataset editor, the list of models is global and the model fit it tied to one of them, unless it is in the initial state of picking a model to edit. For Bayesian models, the workspace is organised around the stages of the Bayesian workflow (see [Bayesian workflow](#bayesian-workflow)).
 * Notebook: the notebook is a jupyter- style notebook that contains code blocks, text blocks and output blocks. The code blocks are in a language that is set at creation time; it can be either JavaScript, Python or it can be natural language prompts to an LLM. The functions available allow it to generate panels, fit models or create non-persisted datasets.
 * Report: similar to a dashboard but intended to generate printable PDFs. Not interactive for drill down statistics.
 * Map: a map for GIS work. Has a base map and layers of data that can be added. The data for these layers comes from datasets. Layers are styled with the same encodings as plot layers (color, size, shape and label by column). A toolbox of spatial analysis tools creates new datasets, or models and scored datasets, which are added as layers (see [Map workspace](#map-workspace)).
-* Simulation: a workspace for using a fitted model rather than building it: what-if exploration of inputs, named scenarios compared side by side, and scoring a dataset with the model's predictions. Like model fit, it is tied to one model from the global list of models, unless it is in the initial state of picking one (see [Simulation workspace](#simulation-workspace)).
+* Simulation: a workspace for using a fitted model rather than building it: what-if exploration of inputs, named scenarios compared side by side, and scoring a dataset with the model's predictions. It is tied to one model from the global list of models, unless it is in the initial state of picking one (see [Simulation workspace](#simulation-workspace)).
 
-Initially only one workspace is open at a time, however the display can be split side by side to have two open workspaces. 
+Initially only one thing is open at a time, however the display can be split side by side to have two open at once. Either side can be a workspace, the dataset editor or the model editor, e.g. a data explorer beside the model being built from it, or a dataset beside a model that reads it.
 
 #### Dataset operations
 
@@ -120,7 +125,7 @@ The spec is Feldspar's own format, independent of the library that renders it, s
 
 **Facets** (small multiples) split any plot into one panel per value of a column, e.g. one per region or year, with one drag.
 
-**Layers** combine data and models. A model layer draws a fitted model's predictions and uncertainty band over the data, which connects the data explorer to the model fit and simulation workspaces. Checking whether a model fits the data is then a plot with two layers.
+**Layers** combine data and models. A model layer draws a fitted model's predictions and uncertainty band over the data, which connects the data explorer to the model editor and the simulation workspace. Checking whether a model fits the data is then a plot with two layers.
 
 **Cross-filtering** in dashboards comes from selections. A click or brush on a plot turns into a filter condition on the columns it encodes, and that condition is applied to the other panels. The relational model makes this work across datasets: selecting a district in one panel filters every panel whose dataset has a column that is a foreign key to the districts table, not only panels on the same dataset.
 
@@ -162,11 +167,11 @@ Paired data (e.g. before and after measurements on the same subject) is handled 
 
 The plot and the test results form a single panel, so they are dragged together. Results are shown as a short table (the test statistic, degrees of freedom, p-value, effect size and confidence interval) together with a plain-language sentence, for example "The mean of weight differs between groups A and B (p = 0.003)". Where a test's assumptions are doubtful (small groups, clearly non-normal data, unequal variances) the explorer says so and shows the non-parametric alternative alongside.
 
-The boundary with the model fit workspace: the data explorer handles one response and at most one factor, and nothing is persisted beyond the explorer's own state. Anything with several predictors, covariates, interactions or random effects, or that needs to be saved and reused, is a model. An "Open as model" button creates a model in the model fit workspace with the same dataset, response and factor, so that the user can extend a simple analysis without starting over.
+The boundary with the model editor: the data explorer handles one response and at most one factor, and nothing is persisted beyond the explorer's own state. Anything with several predictors, covariates, interactions or random effects, or that needs to be saved and reused, is a model. An "Open as model" button creates a model with the same dataset, response and factor and opens it in the model editor, so that the user can extend a simple analysis without starting over.
 
 #### Simulation workspace
 
-The model fit workspace is where an analyst builds a model. The simulation workspace is where the analyst, or an end user in a restricted application, uses it. It has three parts:
+The model editor is where an analyst builds a model. The simulation workspace is where the analyst, or an end user in a restricted application, uses it. It has three parts:
 
 * Profiler: one input control per predictor (slider, drop-down or date picker), starting at typical values (the mean or the most common level). It shows the predicted outcome with its uncertainty interval and, for each predictor, a profile curve showing how the prediction changes as that predictor varies with the others held fixed. Changing an input updates the prediction and all the curves immediately.
 * Scenarios: the current input values can be saved as a named scenario, e.g. "price +10%" or "baseline". Scenarios are compared side by side, showing the distribution of the predicted outcome where the model provides one, and not only point predictions. Scenarios are persisted with the workspace.
@@ -229,7 +234,7 @@ How the stages of the workflow map onto the framework:
 
 | Stage (section of the paper) | Where it lives | What is needed |
 |---|---|---|
-| Initial models from templates, built from modular pieces (§2) | Model fit workspace | A structured model builder (outcome family, predictors, varying effects, priors) that generates Stan, in the style of brms. Raw Stan remains available for experts. For most users this is the entry point to Bayesian modelling. |
+| Initial models from templates, built from modular pieces (§2) | Model editor | A structured model builder (outcome family, predictors, varying effects, priors) that generates Stan, in the style of brms. Raw Stan remains available for experts. For most users this is the entry point to Bayesian modelling. |
 | Prior predictive checks (§2.4) | A "simulate from prior" action before fitting. The simulated data is a fit output, and the check is a plot of prior predictive draws over the observed data. | Prior-only runs in the provider. |
 | Fit fast, fail fast, approximate algorithms (§3) | Fit settings: quick (e.g. Pathfinder or Laplace approximation) or full (sampling) | |
 | Diagnostics: R-hat, effective sample size, divergences (§3, §5) | Fit output tables and a warnings panel. Trace, rank and pair plots are presets over the draws dataset. | Plain-language explanations with suggested remedies, e.g. "divergences: try stronger priors or a non-centred parameterisation". |
@@ -240,28 +245,28 @@ How the stages of the workflow map onto the framework:
 | Prior sensitivity (§6.3) | A table in the fit output | Power-scaling sensitivity analysis, which is computed from the existing draws without refitting |
 | Propagating uncertainty, poststratification (§6.4) | Scoring and dataset operations | Model predictions with draws (below) |
 | Modifying and expanding models (§7) | Cloning a model, editing and refitting | Recording which model a model was cloned from |
-| Comparing and combining models (§8) | A comparison view in the model fit workspace for selected models: a LOO table and key estimates side by side | Stacking as a model provider whose configuration is a list of models. Its predictions are usable in the simulation workspace and in scoring like those of any other model. |
+| Comparing and combining models (§8) | A comparison view for models selected in the model list: a LOO table and key estimates side by side | Stacking as a model provider whose configuration is a list of models. Its predictions are usable in the simulation workspace and in scoring like those of any other model. |
 | Modelling as software development (§9) | Source control; fits recording their dataset definition; notebooks as the record of an analysis | |
 
 The workflow requires four changes to the framework:
 
 1. **Data flows back from models.** The framework otherwise flows one way, from tables to datasets to models to outputs. The workflow also runs the other way, from a model to simulated data to a new fit. A fit output can therefore be the base of a dataset.
 2. **Predictions with draws.** Aggregating point predictions and intervals loses the uncertainty (averaging the bounds of intervals is wrong). The Model predictions operation can instead output draws: one row per input row and draw, with a `draw` column. An Aggregate grouped by the original groups and `draw`, followed by a summary, then propagates the uncertainty correctly through any operations. Multilevel regression and poststratification then needs no special support: score the population cells, then aggregate with population weights by region and draw. As this multiplies the number of rows, it uses a subsample of a few hundred draws.
-3. **The model fit workspace follows the workflow.** For Bayesian providers, the fit area is organised as stages: prior check, fit, diagnostics, posterior check and comparison. Each stage shows a status (good, warning or problem) and the user can return to any stage at any time, since the workflow is iterative rather than linear. This guides users who have never heard of a prior predictive check, without constraining those who have.
+3. **The model editor follows the workflow.** For Bayesian providers, the fit area is organised as stages: prior check, fit, diagnostics, posterior check and comparison. Each stage shows a status (good, warning or problem) and the user can return to any stage at any time, since the workflow is iterative rather than linear. This guides users who have never heard of a prior predictive check, without constraining those who have.
 4. **Many fits.** Simulation-based calibration, model comparison and the general advice to fit many models all assume that fits are cheap to start and are kept. Fits run in the background from a queue, with a limit on concurrent fits, and fits and their draws are persisted.
 
 The computational remedies of the paper's §5 (reparameterisation, marginalisation, handling multimodality) are skills exercised in Stan code and do not get their own interface. The framework suggests them through the diagnostics, and the model builder applies the common ones by default (e.g. non-centred parameterisations of varying effects).
 
 ### Panels
 
-One thing that is bringing these workspace types together is a unifying notion of panels. Panel is an elementary output, most importantly a plot, but also summary tables. A plot panel is stored as its plot spec (see [Plots and the grammar of graphics](#plots-and-the-grammar-of-graphics)), so dragging a panel copies its spec. Panels can then be dragged between workspaces. Drag and drop is always copy it never deletes a panel in the source
+One thing that is bringing these workspace types together is a unifying notion of panels. Panel is an elementary output, most importantly a plot, but also summary tables. A plot panel is stored as its plot spec (see [Plots and the grammar of graphics](#plots-and-the-grammar-of-graphics)), so dragging a panel copies its spec. Panels can then be dragged between workspaces, and from the model editor. Drag and drop is always copy it never deletes a panel in the source
 
 Some rules for drag and drop of panels
 
 Sources:
 
 * The current output of the data explorer is a draggable panel
-* The model fit producers and number of draggable panels 
+* The model editor's fit outputs are draggable panels
 * The notebook output may be a panel that can be dragged. 
 * Reports or dashboards are also sources
 * Any map as a whole is a single panel that can be dragged. A map panel from the data explorer is draggable like any other plot.
@@ -272,7 +277,7 @@ Sinks:
 
 ### Additional changes to core
 * Feldspar's dataset model changes. Today a dataset is a list of formula columns, a filter and an order, stored as JSON on the model that uses it (TECHNICAL_DESIGN.md §14.2). It becomes a persistent, named definition in its own table: a base (a table, another dataset or a generated grid) and an ordered list of operations (see [Dataset operations](#dataset-operations)). Today's model is the special case of a series of Calculated column operations, one Filter and one Sort. The rows are still not materialised.
-* Datasets are shared, so one dataset can be used by several models, panels and other datasets. A model fit records the dataset definition it was fitted with, so that changing a dataset does not silently change the meaning of existing fits, and the model fit workspace shows when the dataset has changed since the fit.
+* Datasets are shared, so one dataset can be used by several models, panels and other datasets. A model fit records the dataset definition it was fitted with, so that changing a dataset does not silently change the meaning of existing fits, and the model editor shows when the dataset has changed since the fit.
 * The predictive models menu link is replaced by a link to the unrestricted analytics UI
 * Models fits have outputs: tables and plots. Some plots may be optional, i.e. not initially shown but available in a drop-down. Where possible, a provider's plots are plot specs over a dataset of the fit's outputs rather than images, so that they can be restyled, faceted and layered like any other plot.
 * the definition of models and models providers is still open and should be tweaked to align with the goals in this specification
@@ -288,7 +293,7 @@ There is no coding agent for this application type at this point. 
 
 1. Workspace persistence+UI, the new dataset model, the Dataset editor
 2. Add Data explorer workspace which defines the plot spec, the drop zones and the available plot types. No drag and drop
-3. Model fit workspace with output panels. No drag and drop.
+3. Models in the analytics UI: the model list, and the model editor with output panels and a persisted view state. No drag and drop.
 4. Reports and enabling drag and drop of panels from the data explorer.
 5. Maps: the geometry field type and import, geometry functions and the Spatial join operation, the Map workspace with layers, symbology, attribute table, selection and reference layers, and toolbox tools for what dataset operations can do.
 6. Dashboards

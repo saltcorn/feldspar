@@ -144,8 +144,6 @@ export function workspaceKindName(kind: string, t: Translate): string {
       return t("Data explorer");
     case "dashboard":
       return t("Dashboard");
-    case "model_fit":
-      return t("Model fit");
     case "notebook":
       return t("Notebook");
     case "report":

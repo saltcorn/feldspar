@@ -2,6 +2,30 @@
 
 Changes in reverse chronological order.
 
+## Analytics: models are not a workspace
+
+A design change before A3 starts (`TODO.md` A3.0): a model opens in a **model editor** at
+`#/models/<id>`, listed on the Analytics front page beside the datasets, rather than in a *Model
+fit* workspace. A model is a global, named entity other things refer to (`predict("…")`, the
+Model predictions operation, simulation, map layers), as a dataset is, and a workspace that only
+pointed at one would have had no state of its own — while creating one per model, finding the
+right one from a bookmark or from **Open as model**, and keeping its name in step with the
+model's would all have been the person's problem.
+
+- **The `model_fit` workspace kind goes** (`sc-analytics`'s `WorkspaceKind`, now six kinds, and
+  `ui/analytics`'s labels). `createWorkspace` refuses `model_fit` as not a kind of workspace.
+  Tests: `workspace.rs`'s kinds test and `analytics_api.rs`'s workspaces test.
+- **Model view state** is planned (A3.4): a `view_state` JSON object on `_fd_models`, outside
+  the model's definition — not validated, not recorded by a fit, ignored by the "changed since
+  fit" checks — written by `patchModelViewState` key by key, so that the model editor reopens
+  as it was left, which was the one thing the workspace would have given.
+- **Split view** (A4.1) holds the Dataset editor or the model editor as well as a workspace on
+  either side.
+- **Documents**: `analytics-ui-goals.md` (the model editor beside the Dataset editor, the rule
+  separating entities from workspaces, view state, split view, comparison from the model
+  list), `TECHNICAL_DESIGN.md` §14.2 (`view_state`) and §14.5 (front page, routes, six kinds),
+  `TODO.md`'s A3 rewritten (A3.0–A3.10) and A4.1, `tutorial-analytics.md`.
+
 ## Analytics A2 phase 6: demo data, documentation, definition of done
 
 Milestone A2's last phase (`TODO.md` A2.15–A2.16): the demo's paired measurements and a million

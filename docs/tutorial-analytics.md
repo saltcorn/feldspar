@@ -48,7 +48,7 @@ the admin UI that shares its sign-in and its light or dark setting.
 The front page has two lists. **Datasets** are the definitions of rows this part is about; each
 opens in the **Dataset editor**. Three are there already — `Houses`, `Measurements` and `Events`,
 which the demo made for part 2. **Workspaces** are places you work in, each of one kind and
-remembering where you were: a Data explorer, a Model fit, a Map and so on. There are none yet.
+remembering where you were: a Data explorer, a Report, a Map and so on. There are none yet.
 Look at the kinds under **New workspace**: all are listed, and all but the Data explorer
 (part 2) are disabled, each labelled with the milestone that brings it.
 

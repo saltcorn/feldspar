@@ -1524,6 +1524,7 @@ erDiagram
     json hyperparameters "per key a value, or a list to search over"
     json split "train/validation/test fractions + the hash seed"
     json attributes
+    json view_state "A3.4: the model editor's, never read by a fit"
   }
   DATASETS["_fd_datasets"] {
     uuid id PK
@@ -1536,7 +1537,7 @@ erDiagram
   WORKSPACES["_fd_workspaces"] {
     uuid id PK
     text name
-    text kind "one of the eight; only those whose milestone arrived can be made"
+    text kind "one of the six; only those whose milestone arrived can be made"
     json state "the kind's own, restored when it is opened"
     uuid created_by "-> users.id, by value"
     timestamp updated_at
@@ -7314,7 +7315,16 @@ dataset's rows start from, written on save), `provider`, `dataset` (JSON, `{ "da
 `related` (JSON, nullable — a posterior's related datasets, `[{ name, dataset_id, label }]`),
 `configuration` (JSON),
 `hyperparameters` (JSON — values or lists), `split` (JSON — fractions and seed), `attributes`
-(JSON).
+(JSON), `view_state` (JSON object, A3.4).
+
+`view_state` is **not part of the model**: a dictionary the Analytics UI's model editor (and any
+other screen showing the model) keeps its layout in — which outputs are open, the optional plots
+chosen, the selected fit, the Bayesian workflow stage — so that a model reopens as it was left,
+as a workspace's `state` does. `validate_model` does not read it, a fit does not record it, the
+"changed since fit" checks ignore it and `updateModel` leaves it alone; it is written only by
+`patchModelViewState`, which sets or (with `null`) removes top-level keys so that two screens
+keeping different keys do not overwrite each other. It is shared by everyone who opens the model
+and copied by a clone.
 
 `_fd_model_instances`: `id` (uuid pk), `model` (uuid), `name`, `description`, `status`
 (`fitting` | `fitted` | `failed`), `created`, `active` (bool), `state` (JSON — the provider's
@@ -7934,13 +7944,17 @@ sections 7 (Postgres) and 8 (SQLite): one named dataset per old dataset, built a
 
 The Analytics UI (`docs/analytics-ui-goals.md`) is where datasets are built and, milestone by
 milestone, explored, modelled, mapped and reported. Milestone A1 is its frame, the workspaces'
-persistence and the Dataset editor. Its front page (`#/`) lists the datasets and, below them,
-the workspaces; a dataset opens in the Dataset editor at `#/datasets/<id>`, which is not a
-workspace and keeps no state of its own beyond the dataset.
+persistence and the Dataset editor. Its front page (`#/`) lists the datasets, the models (A3)
+and the workspaces; a dataset opens in the Dataset editor at `#/datasets/<id>` and a model in
+the model editor at `#/models/<id>`. Neither editor is a workspace. Datasets and models are
+global, named entities that other things refer to, while a workspace is a composition with state
+of its own. The Dataset editor keeps no state beyond the dataset; the model editor keeps how it
+was left in the model's **view state** (§14.2, A3.4), which nothing about fitting or prediction
+reads. Split view (A4) holds either editor or a workspace on each side.
 
 **Workspaces** (`sc-analytics`, `_fd_workspaces`: `id`, `name`, `kind`, `state`, `created_by`,
-`updated_at`). `kind` is one of the seven of the goals document (Data explorer, Model fit,
-Report, Map, Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
+`updated_at`). `kind` is one of the six of the goals document (Data explorer, Report, Map,
+Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
 refuses one whose milestone has not arrived, naming it ("arrives with milestone A2"), and
 `listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — since
 A2, all but the Data explorer. `state` is JSON owned by the kind — an explorer's is its dataset and
@@ -7963,7 +7977,7 @@ visitor is sent to sign in, a non-admin refused), under its own CSP
 (`ANALYTICS_CONTENT_SECURITY_POLICY`, strict for now, widened by later milestones' renderers
 without touching the admin UI's), built into the binary by `sc-cli`'s build script, and sharing
 the admin UI's session cookie. It routes on the hash (`#/` the front page, `#/w/<id>`,
-`#/datasets/<id>`, `#/datasets/new`), uses the admin UI's vendored Tabler stylesheet and its colour-scheme setting,
+`#/datasets/<id>`, `#/datasets/new`, and from A3 `#/models/<id>`, `#/models/new`), uses the admin UI's vendored Tabler stylesheet and its colour-scheme setting,
 and its strings are the `analytics` i18n domain. The admin sidebar's **Analytics** entry leads
 to it; *Predictive models* stays beside it until A3.
 
