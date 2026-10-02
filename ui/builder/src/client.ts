@@ -305,6 +305,8 @@ export type RenderPlotResponse = { error?: string | null; problems?: Array<strin
 export type RenderTableRequest = { spec: unknown };
 export type RenderTableResponse = { error?: string | null; problems?: Array<string> | null; rows?: Array<string> | null; columns?: Array<string> | null; cells?: Array<string> | null; body?: unknown | null; row_totals?: unknown | null; column_totals?: unknown | null; grand_total?: unknown | null; bins?: unknown | null; total?: number | null; truncated?: boolean | null };
 export type PlotGalleryResponse = Array<{ preset: string; label: string; available: boolean; reshapes: boolean; arrives_in?: string | null }>;
+export type RunTestsRequest = { spec: unknown };
+export type RunTestsResponse = { error?: string | null; problems?: Array<string> | null; design?: string | null; y?: Array<string> | null; x?: string | null; by?: string | null; mu?: number | null; level?: number | null; sections?: Array<unknown> | null };
 export type SuggestPlotRequest = { dataset: string; assignment?: unknown | null; preset?: string | null; mark?: string | null };
 export type SuggestPlotResponse = { spec?: unknown | null; assignment?: unknown | null; error?: string | null };
 export type ListWorkspaceKindsResponse = Array<{ kind: string; label: string; available: boolean; arrives_in?: string | null }>;
@@ -517,6 +519,7 @@ export interface ApiClient {
   renderPlot(body: RenderPlotRequest): Promise<RenderPlotResponse>;
   renderTable(body: RenderTableRequest): Promise<RenderTableResponse>;
   plotGallery(): Promise<PlotGalleryResponse>;
+  runTests(body: RunTestsRequest): Promise<RunTestsResponse>;
   suggestPlot(body: SuggestPlotRequest): Promise<SuggestPlotResponse>;
   listWorkspaceKinds(): Promise<ListWorkspaceKindsResponse>;
   listWorkspaces(): Promise<ListWorkspacesResponse>;
@@ -2263,6 +2266,15 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("plotGallery", res);
       return (await res.json()) as PlotGalleryResponse;
+    },
+    async runTests(body) {
+      const res = await doFetch(`${baseUrl}/api/plots/tests`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("runTests", res);
+      return (await res.json()) as RunTestsResponse;
     },
     async suggestPlot(body) {
       const res = await doFetch(`${baseUrl}/api/plots/suggest`, {

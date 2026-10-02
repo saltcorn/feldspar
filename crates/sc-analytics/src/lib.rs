@@ -8,6 +8,7 @@
 
 pub mod demo;
 pub mod plot;
+pub mod stats;
 mod workspace;
 
 pub use workspace::{

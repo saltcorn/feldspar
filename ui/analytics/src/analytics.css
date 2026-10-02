@@ -399,3 +399,84 @@
   font-weight: 600;
   background: var(--tblr-bg-surface-secondary);
 }
+
+/* The plot (or table) and its hypothesis tests, as one panel: side by side,
+   the tests below the plot when there is no room (A2.14). */
+.an-panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  min-height: 0;
+}
+
+.an-panel > .an-output {
+  flex: 1 1 28rem;
+  min-width: 0;
+}
+
+.an-tests {
+  flex: 0 1 26rem;
+  min-width: 18rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  border-left: 1px solid var(--tblr-border-color);
+  padding-left: 0.75rem;
+}
+
+.an-tests.an-stale {
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.an-tests-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.an-tests-section + .an-tests-section {
+  border-top: 1px solid var(--tblr-border-color);
+  padding-top: 0.5rem;
+}
+
+.an-test-sentence {
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+}
+
+.an-test-table {
+  font-size: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+
+.an-test-table td,
+.an-test-table th {
+  font-variant-numeric: tabular-nums;
+}
+
+.an-test-preferred .an-test-name,
+.an-test-preferred .an-test-p {
+  font-weight: 600;
+}
+
+.an-test-p {
+  text-align: end;
+  white-space: nowrap;
+}
+
+.an-test-detail {
+  color: var(--tblr-secondary);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.an-test-alt {
+  margin-inline-start: 0.35rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  background: var(--tblr-bg-surface-secondary, rgba(127, 127, 127, 0.15));
+  color: var(--tblr-secondary);
+}

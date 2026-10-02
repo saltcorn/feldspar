@@ -280,7 +280,7 @@ explorer"). No drag and drop yet.
 
 ## Phase 5 — Hypothesis tests
 
-- [ ] A2.12 The tests of the goals document's table, in `sc-analytics::stats`: one-sample t,
+- [x] A2.12 The tests of the goals document's table, in `sc-analytics::stats`: one-sample t,
       normality (Shapiro-Wilk), chi-square goodness of fit, binomial, Welch t, Mann-Whitney,
       one-way ANOVA, Kruskal-Wallis, pairwise comparisons (Tukey HSD), chi-square test of
       independence, Fisher's exact, Pearson and Spearman correlation, simple linear and
@@ -288,10 +288,10 @@ explorer"). No drag and drop yet.
       computed in SQL where the test allows it; rank tests read the column (sampling above a
       limit, and saying so). Each returns the statistic, degrees of freedom, p-value, effect
       size and confidence interval. Tests against R reference values.
-- [ ] A2.13 Choosing the tests from the Y, X and Wrap roles and the column types; assumption
+- [x] A2.13 Choosing the tests from the Y, X and Wrap roles and the column types; assumption
       checks (group sizes, normality, equal variances) with the non-parametric alternative
       shown alongside; the plain-language sentence in the `analytics` domain. Tests.
-- [ ] A2.14 The results beside the plot as one panel; paired mode; Wrap repeating the analysis
+- [x] A2.14 The results beside the plot as one panel; paired mode; Wrap repeating the analysis
       per group. Tests.
 
 ## Phase 6 — Demo data, documentation, definition of done

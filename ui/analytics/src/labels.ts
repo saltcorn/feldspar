@@ -292,3 +292,99 @@ export function layerKindName(id: string, t: Translate): string {
       return id;
   }
 }
+
+/** A hypothesis test's name. */
+export function testName(kind: string, t: Translate): string {
+  switch (kind) {
+    case "one_sample_t":
+      return t("One-sample t-test");
+    case "shapiro_wilk":
+      return t("Shapiro-Wilk normality test");
+    case "signed_rank":
+      return t("Wilcoxon signed-rank test");
+    case "chi_square_fit":
+      return t("Chi-square goodness of fit");
+    case "binomial":
+      return t("Binomial test");
+    case "welch_t":
+      return t("Welch's t-test");
+    case "mann_whitney":
+      return t("Mann-Whitney test");
+    case "anova":
+      return t("One-way ANOVA");
+    case "kruskal_wallis":
+      return t("Kruskal-Wallis test");
+    case "levene":
+      return t("Levene's test");
+    case "chi_square_independence":
+      return t("Chi-square test of independence");
+    case "fisher_exact":
+      return t("Fisher's exact test");
+    case "pearson":
+      return t("Pearson correlation");
+    case "spearman":
+      return t("Spearman correlation");
+    case "linear_regression":
+      return t("Linear regression");
+    case "logistic_regression":
+      return t("Logistic regression");
+    case "paired_t":
+      return t("Paired t-test");
+    case "paired_signed_rank":
+      return t("Wilcoxon signed-rank test (paired)");
+    default:
+      return kind;
+  }
+}
+
+/** What a test estimates. */
+export function estimateName(of: string, t: Translate): string {
+  switch (of) {
+    case "mean":
+      return t("Mean");
+    case "mean_difference":
+      return t("Mean difference");
+    case "location_shift":
+      return t("Location shift");
+    case "pseudomedian":
+      return t("Pseudomedian");
+    case "pseudomedian_difference":
+      return t("Median difference");
+    case "proportion":
+      return t("Proportion");
+    case "odds_ratio":
+      return t("Odds ratio");
+    case "correlation":
+      return t("Correlation");
+    case "slope":
+      return t("Slope");
+    default:
+      return of;
+  }
+}
+
+/** An effect size's name. */
+export function effectName(kind: string, t: Translate): string {
+  switch (kind) {
+    case "cohens_d":
+      return t("Cohen's d");
+    case "eta_squared":
+      return t("η²");
+    case "epsilon_squared":
+      return t("ε²");
+    case "rank_biserial":
+      return t("Rank-biserial r");
+    case "cohens_w":
+      return t("Cohen's w");
+    case "cohens_h":
+      return t("Cohen's h");
+    case "cramers_v":
+      return t("Cramér's V");
+    case "r_squared":
+      return t("R²");
+    case "mcfadden_r_squared":
+      return t("McFadden's R²");
+    default:
+      return kind;
+  }
+}

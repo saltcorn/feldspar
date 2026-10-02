@@ -7976,11 +7976,11 @@ beside a read-only, virtualised spreadsheet of the stage selected, paged with th
 own helpers. The formula input offers the stage's columns, one step along each foreign key and,
 while rows are a table's rows, the child tables' counts and totals.
 
-**The Data explorer** (A2.7–A2.11; `ui/analytics/src/explorer`, `src/plot`). Its state is what
+**The Data explorer** (A2.7–A2.14; `ui/analytics/src/explorer`, `src/plot`). Its state is what
 the person chose — the dataset, the columns on the nine drop zones (X, Y, Color, Size, Shape,
 Label, Facet rows, Facet columns, Wrap; several on Y compared as one variable), the mark
-palette's choice, a gallery preset that reshapes, plot or summary table, and the layers panel's
-changes — never the spec. The spec is the server's answer to the drop zones (`suggestPlot`: the
+palette's choice, a gallery preset that reshapes, plot or summary table, the layers panel's
+changes and the tests' settings — never the spec. The spec is the server's answer to the drop zones (`suggestPlot`: the
 "show me" rules, a gallery preset or the chosen mark), with the layers panel's `Extras` laid over
 it in the browser (`composeSpec`: the first layer's stat, added layers that take X, Y and Color
 from the first unless the stat makes its own, scales, reference lines, coordinates); `renderPlot`
@@ -8016,6 +8016,56 @@ linear smoother's centred sums), a **mosaic** mark (a count drawn on Size, tiles
 browser) and **parallel** coordinates (the identity layer reads the folded columns side by side,
 `y_0`, `y_1`…, so that a row is one line). A scatterplot matrix is points of `value_y` against
 `value_x` faceted by the pairs, sampled at 1,000 rows per plot.
+
+*Hypothesis tests* (A2.12–A2.14; `sc_analytics::stats`, `ui/analytics/src/explorer/tests.ts`)
+sit beside the plot, as JMP's "Fit Y by X" does: the person assigns roles, never a test. The
+roles are the Y, X and Wrap drop zones; `runTests` (`POST /api/plots/tests`, a `TestSpec { data,
+y, x, by, paired, mu, level }`) chooses the **design** from their types — a *number* is an
+integer, number or decimal that is neither a foreign key nor binned, a *category* is text, a
+boolean, a key or a binned number, and dates are refused with a sentence:
+
+| Y | X | design | main tests | alternative |
+|---|---|---|---|---|
+| number | — | `one_number` | one-sample t, Shapiro–Wilk | signed-rank |
+| category | — | `one_category` | chi-square fit; binomial for two values | — |
+| number | category | `number_by_groups` | Welch t (two groups); ANOVA and Tukey (more) | Mann–Whitney; Kruskal–Wallis |
+| category | category | `two_categories` | chi-square independence | Fisher's exact |
+| number | number | `two_numbers` | Pearson, linear regression | Spearman |
+| category (two values) | number | `category_by_number` | logistic regression | — |
+| two numbers, paired | — | `paired` | paired t | signed-rank |
+
+The tests are pure functions over **sufficient statistics** where the test allows it — each
+group's count, mean and deviation, the counts of a contingency table, the centred sums the
+linear smoother already uses — and SQL computes those over any number of rows, Wrap's value one
+more `GROUP BY` key so that Wrap repeats the analysis without repeating the queries. The tests
+that need the **values** (the rank tests, Shapiro–Wilk, logistic regression, the assumption
+checks) read at most `TEST_SAMPLE` (5,000) of each Wrap group, a seeded sample taken as a plot's
+is, and say so (`Section.sampled`, `TestResult.sampled`). Each answers a `TestResult`: the
+statistic, its degrees of freedom, the two-sided p-value, an estimate with its interval and an
+effect size. The conventions are R's — Welch's t by default, rank tests exact below 50 values
+without ties and otherwise normal with a continuity correction, the Hodges–Lehmann estimate with
+R's interval, `TukeyHSD`'s studentized range, `fisher.test`'s conditional odds ratio, `glm`'s
+fitting with a likelihood-ratio test — and what `statrs` lacks is ported from R's C
+(`stats/dist.rs`: `ptukey`/`qtukey`, `swilk`, the exact rank-sum and signed-rank
+distributions, AS 89 for Spearman). An r × c Fisher test is a simplified network algorithm
+(columns placed one at a time, partial tables leaving the same row totals merged, the last two
+columns settled in closed form), giving up past two million partial tables with a sentence.
+`tests/r/test_reference.R` records R's answers on R's own data sets, and the unit tests compare.
+The chi-square test of independence has no continuity correction (Fisher's test is beside it).
+
+**Assumption checks** (`Check`): each group's size (fewer than 10 rows is small), normality by
+Shapiro–Wilk at 0.05 (each group's values, the residuals of the fitted line, or the paired
+differences — not counted against a group of 50 or more), equal variances by Brown–Forsythe's
+Levene test (three groups or more; Welch's t needs none), expected counts of at least 5, and at
+least 10 of the rarer outcome for a logistic regression. When one fails, the section's
+`preferred` test — the one the sentence reports — is the alternative; both are always shown. The
+server answers numbers and the names of things only: the **plain-language sentence** ("The mean
+of price differs between North and South (p = 0.003).") and the notes on the checks are composed
+in the browser (`sentence`, `notes`), so they are in the `analytics` i18n domain. The panel shows
+each Wrap group's sentence, a short table (test, statistic and degrees of freedom, estimate with
+its interval, effect size, p-value), Tukey's pairwise comparisons folded away, and the notes; the
+explorer's state keeps whether it is shown, paired mode (two numbers on Y measured on the same
+rows) and the value a single mean is tested against.
 
 **Demo data** (`sc_analytics::demo`, `feldspar demo analytics [--replace]`): `neighbourhoods`,
 `houses` and `viewings`, deterministic and synthetic, shaped as the models tutorial has them.

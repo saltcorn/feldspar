@@ -77,11 +77,11 @@ const DENSITY_BINS: f64 = 2_048.0;
 /// The most points a loess is fitted to; more are sampled.
 pub const LOESS_SAMPLE: u64 = 1_000;
 /// The seed of every sample, so a plot draws the same points each time.
-const SEED: i64 = 20_240_601;
+pub(crate) const SEED: i64 = 20_240_601;
 
-const DATA: &str = "_fd_d";
-const POINTS: &str = "_fd_p";
-const INNER: &str = "_fd_q";
+pub(crate) const DATA: &str = "_fd_d";
+pub(crate) const POINTS: &str = "_fd_p";
+pub(crate) const INNER: &str = "_fd_q";
 
 /// What `render_plot` answers: the data to draw, or why there is none.
 #[derive(Debug, Clone, Serialize)]
@@ -180,7 +180,7 @@ pub struct Domain {
 pub const DOMAIN_VALUES: usize = 100;
 
 /// Why a render stopped: a sentence for the person, or a failure.
-enum Halt {
+pub(crate) enum Halt {
     Refuse(String),
     Fail(Error),
 }
@@ -191,7 +191,7 @@ impl From<Error> for Halt {
     }
 }
 
-type Step<T> = std::result::Result<T, Halt>;
+pub(crate) type Step<T> = std::result::Result<T, Halt>;
 
 /// Draw `spec`: every layer's data and the domains, or the sentence saying
 /// why it cannot be drawn. Reads as the admin (A9 is where a restricted
@@ -220,7 +220,7 @@ pub async fn render_plot(catalog: &Catalog, spec: &PlotSpec) -> Result<Rendered>
 
 /// The last stage of the dataset `data` names, or the sentence saying why it
 /// does not read.
-async fn last_stage(
+pub(crate) async fn last_stage(
     catalog: &Catalog,
     data: &DataRef,
 ) -> Result<std::result::Result<Stage, String>> {
@@ -324,14 +324,14 @@ pub async fn render_table(catalog: &Catalog, spec: &TableSpec) -> Result<Rendere
 
 /// A group key as SQL: the column, or its bin number.
 #[derive(Clone)]
-struct Key {
-    channel: Channel,
-    expr: Expr,
-    ty: ColType,
-    bin: Option<BinParams>,
+pub(crate) struct Key {
+    pub(crate) channel: Channel,
+    pub(crate) expr: Expr,
+    pub(crate) ty: ColType,
+    pub(crate) bin: Option<BinParams>,
 }
 
-struct Renderer<'a> {
+pub(crate) struct Renderer<'a> {
     catalog: &'a Catalog,
     spec: &'a PlotSpec,
     stage: &'a Stage,
@@ -344,7 +344,7 @@ struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
-    fn new(
+    pub(crate) fn new(
         catalog: &'a Catalog,
         spec: &'a PlotSpec,
         stage: &'a Stage,
@@ -481,13 +481,13 @@ impl<'a> Renderer<'a> {
         Ok(Source::union_all(parts, DATA))
     }
 
-    fn field(&self, name: &str) -> Expr {
+    pub(crate) fn field(&self, name: &str) -> Expr {
         Expr::qcol(DATA, name)
     }
 
     /// The points a stat reads: the group keys as `_g0…`, the inputs as
     /// `_v0…`, and only rows the scales can show.
-    fn points(&self, keys: &[Key], inputs: Vec<Expr>, filters: &[Expr]) -> Step<Select> {
+    pub(crate) fn points(&self, keys: &[Key], inputs: Vec<Expr>, filters: &[Expr]) -> Step<Select> {
         let mut columns: Vec<Projection> = keys
             .iter()
             .enumerate()
@@ -505,7 +505,7 @@ impl<'a> Renderer<'a> {
     }
 
     /// The SQL a group key is: the column, or the number of its bin.
-    async fn key(&mut self, dim: &Dim) -> Step<Key> {
+    pub(crate) async fn key(&mut self, dim: &Dim) -> Step<Key> {
         let column = self.field(&dim.field);
         let bin = match &dim.bin {
             None => None,
@@ -1520,7 +1520,7 @@ impl<'a> Renderer<'a> {
     /// least-squares line and a correlation need, about the group's means —
     /// the means from a window over the group, so it is one query. At most
     /// [`MAX_GROUP_ROWS`] + 1 groups, in key order.
-    async fn linear_sums(
+    pub(crate) async fn linear_sums(
         &self,
         points: Select,
         groups: usize,
@@ -1722,7 +1722,7 @@ impl<'a> Renderer<'a> {
         })
     }
 
-    async fn count_rows(&self, points: Select) -> Step<u64> {
+    pub(crate) async fn count_rows(&self, points: Select) -> Step<u64> {
         let count = Select::from(Source::subquery(points, POINTS))
             .columns(vec![Projection::expr_as(agg("count", vec![]), "n")]);
         self.scalar_count(count).await
@@ -1737,7 +1737,7 @@ impl<'a> Renderer<'a> {
             .map_or(0, |n| n as u64))
     }
 
-    async fn run(&self, select: Select) -> Step<Vec<Row>> {
+    pub(crate) async fn run(&self, select: Select) -> Step<Vec<Row>> {
         Ok(self
             .catalog
             .primary()
@@ -1868,11 +1868,11 @@ impl LayerData {
 
 // --- helpers ---------------------------------------------------------------
 
-fn g(i: usize) -> String {
+pub(crate) fn g(i: usize) -> String {
     format!("_g{i}")
 }
 
-fn v(i: usize) -> String {
+pub(crate) fn v(i: usize) -> String {
     format!("_v{i}")
 }
 
@@ -1882,7 +1882,7 @@ fn v_name(i: usize) -> String {
 }
 
 /// A typed number, so Postgres knows what the placeholder is.
-fn num(x: f64) -> Expr {
+pub(crate) fn num(x: f64) -> Expr {
     cast(Expr::lit(Value::Float(x)), "double precision")
 }
 
@@ -1890,14 +1890,14 @@ fn int(n: i64) -> Expr {
     cast(Expr::lit(Value::Int(n)), "bigint")
 }
 
-fn cast(expr: Expr, type_name: &str) -> Expr {
+pub(crate) fn cast(expr: Expr, type_name: &str) -> Expr {
     Expr::Cast {
         expr: Box::new(expr),
         type_name: type_name.to_owned(),
     }
 }
 
-fn agg(func: &str, args: Vec<Expr>) -> Expr {
+pub(crate) fn agg(func: &str, args: Vec<Expr>) -> Expr {
     Expr::Agg {
         func: func.to_owned(),
         distinct: false,
@@ -1925,18 +1925,18 @@ fn case_when(cond: Expr, value: Expr) -> Expr {
     }
 }
 
-fn group_exprs(alias: &str, n: usize) -> Vec<Expr> {
+pub(crate) fn group_exprs(alias: &str, n: usize) -> Vec<Expr> {
     (0..n).map(|i| Expr::qcol(alias, g(i))).collect()
 }
 
-fn group_projections(n: usize) -> Vec<Projection> {
+pub(crate) fn group_projections(n: usize) -> Vec<Projection> {
     (0..n)
         .map(|i| Projection::expr_as(Expr::qcol(POINTS, g(i)), g(i)))
         .collect()
 }
 
 /// Order by the keys, missing values last (both databases agree then).
-fn group_order(alias: &str, n: usize) -> Vec<OrderBy> {
+pub(crate) fn group_order(alias: &str, n: usize) -> Vec<OrderBy> {
     group_exprs(alias, n)
         .into_iter()
         .map(|e| OrderBy {
@@ -1948,7 +1948,12 @@ fn group_order(alias: &str, n: usize) -> Vec<OrderBy> {
 }
 
 /// `SELECT columns FROM (points) GROUP BY keys ORDER BY keys LIMIT limit`.
-fn grouped(points: Select, columns: Vec<Projection>, keys: usize, limit: usize) -> Select {
+pub(crate) fn grouped(
+    points: Select,
+    columns: Vec<Projection>,
+    keys: usize,
+    limit: usize,
+) -> Select {
     let mut select = Select::from(Source::subquery(points, POINTS)).columns(columns);
     select.group = group_exprs(POINTS, keys);
     select.order = group_order(POINTS, keys);
@@ -2037,7 +2042,7 @@ fn key_column_index(keys: &[Key], i: usize) -> usize {
 
 /// The key values of a row as JSON: a bin number as its edges, a boolean
 /// SQLite returned as an integer as a boolean.
-fn key_values(keys: &[Key], values: &[Value]) -> Vec<Json> {
+pub(crate) fn key_values(keys: &[Key], values: &[Value]) -> Vec<Json> {
     let mut out = Vec::new();
     for (k, value) in keys.iter().zip(values) {
         match k.bin {
@@ -2071,7 +2076,7 @@ fn tidy(x: f64) -> f64 {
     }
 }
 
-fn same_keys(a: &[Value], b: &[Value]) -> bool {
+pub(crate) fn same_keys(a: &[Value], b: &[Value]) -> bool {
     a.len() == b.len()
         && a.iter()
             .zip(b)
@@ -2089,7 +2094,7 @@ fn compare_keys(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
 }
 
 /// Numbers by value, text by its characters, missing values last.
-fn compare_json(a: &Json, b: &Json) -> std::cmp::Ordering {
+pub(crate) fn compare_json(a: &Json, b: &Json) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a, b) {
         (Json::Null, Json::Null) => Ordering::Equal,
@@ -2107,7 +2112,7 @@ fn compare_json(a: &Json, b: &Json) -> std::cmp::Ordering {
     }
 }
 
-fn f64_of(value: &Value) -> Option<f64> {
+pub(crate) fn f64_of(value: &Value) -> Option<f64> {
     match value {
         Value::Int(n) => Some(*n as f64),
         Value::Float(f) => Some(*f),
@@ -2116,7 +2121,7 @@ fn f64_of(value: &Value) -> Option<f64> {
     }
 }
 
-fn json_num(x: f64) -> Json {
+pub(crate) fn json_num(x: f64) -> Json {
     serde_json::Number::from_f64(x).map_or(Json::Null, Json::Number)
 }
 

@@ -10,3 +10,6 @@ mod plots;
 
 #[path = "reshaped.rs"]
 mod reshaped;
+
+#[path = "hypothesis.rs"]
+mod hypothesis;

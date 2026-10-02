@@ -1,11 +1,12 @@
-//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8): datasets, plots
-//! and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
+//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8, A2.14): datasets,
+//! plots, hypothesis tests and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
 //! declared in `sc-api`'s `analytics.rs`, which says what each one is for.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_analytics::plot::{self, PlotSpec};
+use sc_analytics::stats;
 use sc_analytics::{Workspace, WorkspaceId, WorkspaceKind};
 use sc_catalog::Catalog;
 use sc_dataset::{
@@ -351,6 +352,26 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                         Error::serde(format!("a table's data does not serialise: {e}"))
                     })?,
                 ))
+            }
+        }
+    });
+
+    reg.register("runTests", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let spec: stats::TestSpec = serde_json::from_value(
+                    ctx.body
+                        .get("spec")
+                        .cloned()
+                        .ok_or_else(|| Error::invalid("`spec` is required"))?,
+                )
+                .map_err(|e| Error::invalid(format!("`spec` is not a set of test roles: {e}")))?;
+                let answer = stats::run_tests(&catalog, &spec).await?;
+                Ok(HandlerResponse::ok(serde_json::to_value(answer).map_err(
+                    |e| Error::serde(format!("a test's results do not serialise: {e}")),
+                )?))
             }
         }
     });

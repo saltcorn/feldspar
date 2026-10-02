@@ -740,7 +740,7 @@ fn check_level(problems: &mut Vec<String>, level: f64) {
 /// Check one column on one channel and answer its type. `grouping` is whether
 /// the layer groups its rows by the channel (any stat but the identity, and
 /// every facet).
-fn field_check(
+pub(crate) fn field_check(
     channel: Channel,
     f: &FieldDef,
     shape: &StageShape,

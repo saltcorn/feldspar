@@ -5,8 +5,10 @@
 // The server chooses: the drop zones go to `suggestPlot`, which answers the
 // spec the "show me" rules (or a gallery preset, or the mark palette's choice)
 // make of them; the layers panel's changes are laid over it; `renderPlot`
-// draws it. Every choice is the workspace's state, saved by the frame as it
-// changes, so reopening the workspace shows the same plot.
+// draws it. Beside it, the hypothesis tests the Y, X and Wrap drop zones make
+// (`runTests`, A2.12–A2.14), as one panel with the plot. Every choice is the
+// workspace's state, saved by the frame as it changes, so reopening the
+// workspace shows the same plot and tests.
 
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -38,6 +40,8 @@ import { SummaryTable } from "../plot/SummaryTable";
 import { useDocumentTheme } from "../theme";
 import type { WorkspaceProps, WorkspaceState } from "../workspaces/WorkspaceFrame";
 import { LayersPanel } from "./LayersPanel";
+import { TestResults } from "./TestResults";
+import { isAnalysis, testSpecOf, type Analysis } from "./tests";
 import {
   ZONES,
   clear,
@@ -48,6 +52,7 @@ import {
   pickMark,
   readState,
   remove,
+  setTests,
   tableSpecOf,
   toggleBin,
   type Assignment,
@@ -205,6 +210,35 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
       live = false;
     };
   }, [tableKey, state.view, t]);
+
+  // --- the hypothesis tests --------------------------------------------------
+  const testSpec = useMemo(() => (state.tests.show ? testSpecOf(state) : null), [state]);
+  const testKey = testSpec ? JSON.stringify(testSpec) : "";
+  const [tests, setTestResults] = useState<{ analysis?: Analysis; error?: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+  useEffect(() => {
+    if (!testSpec) {
+      setTestResults(null);
+      return;
+    }
+    let live = true;
+    setTesting(true);
+    const timer = window.setTimeout(() => {
+      api
+        .runTests({ spec: testSpec })
+        .then((answer) => {
+          if (!live) return;
+          setTestResults(isAnalysis(answer) ? { analysis: answer } : { error: answer.error ?? t("No test applies.") });
+        })
+        .catch((err: unknown) => live && setTestResults({ error: errorMessage(err, t("Could not run the tests.")) }))
+        .finally(() => live && setTesting(false));
+    }, SETTLE_MS);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+    // The spec is compared by value (`testKey`).
+  }, [testKey, t]);
 
   // --- the gallery -----------------------------------------------------------
   const [presetError, setPresetError] = useState<string | null>(null);
@@ -364,6 +398,14 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
             />
           )}
           <div className="ms-auto d-flex gap-2">
+            <Button
+              size="sm"
+              variant={state.tests.show ? "secondary" : "outline-secondary"}
+              aria-pressed={state.tests.show}
+              onClick={() => update((s) => setTests(s, { show: !s.tests.show }))}
+            >
+              <T text="Tests" />
+            </Button>
             {state.view === "plot" && (
               <Button size="sm" variant={layersOpen ? "secondary" : "outline-secondary"} onClick={() => setLayersOpen((o) => !o)}>
                 <T text="Layers" />
@@ -386,27 +428,39 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
           </Alert>
         )}
 
-        <div className="an-output">
-          {!state.dataset ? (
-            <p className="text-secondary p-3">
-              <T text="Pick a dataset, then a plot from the gallery or drag columns onto the drop zones." />
-            </p>
-          ) : message ? (
-            <Alert variant="info" className="m-2">
-              {message}
-            </Alert>
-          ) : state.view === "plot" ? (
-            drawn ? (
-              <div className={drawing ? "an-plot-box an-stale" : "an-plot-box"}>
-                <PlotView spec={drawn.spec} data={drawn.data} theme={theme} categorical={categorical} />
-              </div>
+        <div className="an-panel">
+          <div className="an-output">
+            {!state.dataset ? (
+              <p className="text-secondary p-3">
+                <T text="Pick a dataset, then a plot from the gallery or drag columns onto the drop zones." />
+              </p>
+            ) : message ? (
+              <Alert variant="info" className="m-2">
+                {message}
+              </Alert>
+            ) : state.view === "plot" ? (
+              drawn ? (
+                <div className={drawing ? "an-plot-box an-stale" : "an-plot-box"}>
+                  <PlotView spec={drawn.spec} data={drawn.data} theme={theme} categorical={categorical} />
+                </div>
+              ) : (
+                <Spinner animation="border" size="sm" className="m-3" />
+              )
+            ) : table?.data ? (
+              <SummaryTable data={table.data} />
             ) : (
               <Spinner animation="border" size="sm" className="m-3" />
-            )
-          ) : table?.data ? (
-            <SummaryTable data={table.data} />
-          ) : (
-            <Spinner animation="border" size="sm" className="m-3" />
+            )}
+          </div>
+          {state.tests.show && state.dataset && (
+            <TestResults
+              analysis={tests?.analysis ?? null}
+              error={tests?.error ?? null}
+              loading={testing}
+              settings={state.tests}
+              yCount={(state.assignment.y ?? []).length}
+              onChange={(change) => update((s) => setTests(s, change))}
+            />
           )}
         </div>
         {notes.length > 0 && !message && (

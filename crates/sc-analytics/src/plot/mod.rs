@@ -14,10 +14,10 @@
 //!   totals.
 
 mod math;
-mod render;
+pub(crate) mod render;
 mod show_me;
 mod spec;
-mod validate;
+pub(crate) mod validate;
 
 pub use math::{BinParams, CurvePoint, LinearFit, LinearSums};
 pub use render::{

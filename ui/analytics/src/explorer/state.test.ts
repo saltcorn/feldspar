@@ -90,6 +90,7 @@ describe("readState", () => {
       view: "plot",
       table: { function: "mean", totals: true },
       extras: noExtras(),
+      tests: { show: true, paired: false, mu: 0 },
     });
     const s = readState({
       dataset: "d1",

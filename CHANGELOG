@@ -2,6 +2,69 @@
 
 Changes in reverse chronological order.
 
+## Analytics A2 phase 5: hypothesis tests in the Data explorer
+
+The tests of the goals document's "Fit Y by X" table (`TODO.md` A2.12–A2.14), chosen from the Y, X
+and Wrap drop zones, computed on the server and shown beside the plot with a plain-language
+sentence.
+
+- **The tests** (A2.12). A new module `sc_analytics::stats`: one-sample t, Shapiro–Wilk,
+  chi-square goodness of fit, the exact binomial test, Welch's t, Mann–Whitney, one-way ANOVA,
+  Kruskal–Wallis, Tukey's honest significant differences, Levene (Brown–Forsythe), the
+  chi-square test of independence, Fisher's exact test (2 × 2 with the conditional odds ratio
+  and its interval; r × c by a simplified network algorithm), Pearson and Spearman correlation,
+  simple linear and logistic regression, the paired t-test and the Wilcoxon signed-rank test
+  (one sample and paired). Each is a pure function answering a `TestResult` — statistic, degrees
+  of freedom, two-sided p-value, an estimate with its interval, an effect size — or a sentence
+  saying why it cannot be computed. R's conventions throughout; what `statrs` lacks is ported
+  from R's C in `stats/dist.rs` (`ptukey`/`qtukey`, `swilk`, the exact rank-sum and signed-rank
+  distributions, AS 89). `run_tests` computes the sufficient statistics in SQL (moments per
+  group, contingency counts, the centred sums of two columns) and reads values only for the
+  tests that need them, at most 5,000 per Wrap group by a seeded sample, saying so.
+- **Choosing the tests** (A2.13). `stats/choose.rs` maps the roles' column types to a design
+  (number, category — a binned number or a foreign key is a category — dates refused with a
+  sentence; paired mode for two numbers on Y). Assumption checks — group sizes, normality
+  (Shapiro–Wilk; not counted against groups of 50 or more), equal variances, expected counts,
+  events per outcome — pick the test the sentence reports (`Section.preferred`); the main test
+  and its non-parametric alternative are both always shown. The sentence and the notes are made
+  in the browser (`ui/analytics/src/explorer/tests.ts`) in the `analytics` i18n domain: "The mean
+  of price differs between North and South (p = 0.003)."
+- **The panel** (A2.14). `runTests` (`POST /api/plots/tests`) answers one section per Wrap value;
+  `TestResults` shows each beside the plot (or the summary table) in one `an-panel`: its
+  sentence, a short table (test with statistic, estimate and effect size beneath; p-value), the
+  pairwise comparisons folded away, and the notes. A **Tests** toggle, a **Paired** switch when
+  Y has two columns, and the value a mean is tested against are part of the workspace's state.
+- **Plumbing.** The plot renderer's query helpers (`Renderer::key`, `points`, `linear_sums`, the
+  key and sampling helpers) are now `pub(crate)` so the tests reuse them; `field_check` too.
+  Clients regenerated in all four UIs.
+- **Docs.** `TECHNICAL_DESIGN.md` §14.5 gains *Hypothesis tests*: the design table, sufficient
+  statistics and sampling, R's conventions, the checks and where the sentence is made.
+- **Deviations from the plan.**
+  - The rank tests' estimate is the Hodges–Lehmann median of the pairwise differences (Walsh
+    averages) whenever there are at most two million of them; R reports that only in its exact
+    case, and otherwise a `uniroot` of the statistic that approximates it. The intervals are R's,
+    found by bisection rather than `uniroot` (and agree to R's tolerance).
+  - Fisher's exact odds-ratio interval is solved to full precision; `fisher.test` uses
+    `uniroot`'s default tolerance and is up to 0.7% off at the upper end on small tables. The
+    fixture records both.
+  - The chi-square test of independence has no continuity correction (as JMP and SPSS report
+    it); Fisher's exact test stands beside it for small tables.
+  - Tukey's comparisons are made for up to 20 groups, a test compares up to 50, and Wrap repeats
+    the analysis for up to 48 groups; past those, a sentence.
+  - A single mean is tested against 0 by default, settable in the panel; the binomial test is of
+    an even split.
+- **Tests.** Rust: every test against R's answers on R's own data sets
+  (`crates/sc-analytics/tests/r/test_reference.R` → `test_reference.json`, base R and MASS),
+  the distributions' edge cases, the chooser's table and its refusals, the preferred test after
+  a failed check; on Postgres and SQLite, every design over the ten houses of `plots.rs` against
+  R's values for the same rows, Wrap (including a group with one level and binned groups), and
+  sampling above 5,000 rows that is the same each time; an `sc-server` test of `runTests`
+  (Welch and Mann–Whitney against R, a million rows sampled, Wrap, the sentence for no test).
+  Vitest: the spec from the drop zones, p-values and numbers as written, a sentence for every
+  design, the notes gathered per check, and every name the server can answer. Checked in
+  Chromium against `feldspar demo analytics`, which caught the results table overflowing the
+  side panel (now a two-column table with details beneath).
+
 ## Analytics A2 phases 3–4: rendering and the Data explorer
 
 The browser half of the Data explorer (`TODO.md` A2.7–A2.11): ECharts rendering of the server's

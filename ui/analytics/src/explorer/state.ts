@@ -1,9 +1,10 @@
 // The Data explorer's state, and what is made of it (analytics TODO A2.9,
-// A2.10).
+// A2.10, A2.14).
 //
 // What the workspace stores is what the person chose — the dataset, the
 // columns on each drop zone, the mark palette's choice, the gallery preset
-// that reshapes, plot or table, and what the layers panel added — never the
+// that reshapes, plot or table, what the layers panel added, and the tests'
+// settings (shown, paired, the value a mean is tested against) — never the
 // spec: the spec is the server's answer to the drop zones (`suggestPlot`)
 // with the layers panel's changes laid over it (`composeSpec`). So a dataset
 // whose columns change still opens, and a later milestone's better rules
@@ -55,6 +56,11 @@ export type Extras = {
   coord?: Coord;
 };
 
+/** The hypothesis tests beside the plot (A2.12–A2.14): whether they are
+ * shown, whether two columns on Y are paired measurements, and the value a
+ * single number's mean is tested against. */
+export type TestsState = { show: boolean; paired: boolean; mu: number };
+
 /** The explorer's whole state, as its workspace stores it. */
 export type ExplorerState = {
   dataset?: string;
@@ -66,6 +72,7 @@ export type ExplorerState = {
   view: "plot" | "table";
   table: { function: AggregateFn; totals: boolean };
   extras: Extras;
+  tests: TestsState;
 };
 
 /** An empty layers panel. */
@@ -99,6 +106,7 @@ export function readState(raw: unknown): ExplorerState {
   }
   const table = isObject(s.table) ? s.table : {};
   const extras = isObject(s.extras) ? s.extras : {};
+  const tests = isObject(s.tests) ? s.tests : {};
   return {
     dataset: typeof s.dataset === "string" ? s.dataset : undefined,
     assignment,
@@ -115,6 +123,11 @@ export function readState(raw: unknown): ExplorerState {
       scales: isObject(extras.scales) ? (extras.scales as Extras["scales"]) : {},
       references: Array.isArray(extras.references) ? (extras.references.filter(isObject) as Reference[]) : [],
       coord: typeof extras.coord === "string" ? (extras.coord as Coord) : undefined,
+    },
+    tests: {
+      show: tests.show !== false,
+      paired: tests.paired === true,
+      mu: typeof tests.mu === "number" && Number.isFinite(tests.mu) ? tests.mu : 0,
     },
   };
 }
@@ -164,7 +177,19 @@ export function toggleBin(state: ExplorerState, zone: Zone, field: string): Expl
 
 /** Start again on the same dataset: nothing dropped, nothing chosen. */
 export function clear(state: ExplorerState): ExplorerState {
-  return { ...state, assignment: {}, mark: undefined, preset: undefined, extras: noExtras() };
+  return {
+    ...state,
+    assignment: {},
+    mark: undefined,
+    preset: undefined,
+    extras: noExtras(),
+    tests: { ...state.tests, paired: false, mu: 0 },
+  };
+}
+
+/** Change the tests' settings. */
+export function setTests(state: ExplorerState, change: Partial<TestsState>): ExplorerState {
+  return { ...state, tests: { ...state.tests, ...change } };
 }
 
 /** Explore another dataset: its columns are not this one's. */

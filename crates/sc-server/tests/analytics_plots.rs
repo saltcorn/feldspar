@@ -379,3 +379,121 @@ async fn a_histogram_of_a_million_rows_returns_only_its_bins() -> sc_error::Resu
     assert_eq!(layer["rows"].as_array().unwrap().len(), 10_000);
     Ok(())
 }
+
+/// The hypothesis tests (A2.12–A2.14) through `runTests`: Welch's t-test and
+/// the rank-sum test of price by neighbourhood (R: `t.test(price[hood == 1],
+/// price[hood == 2])` and `wilcox.test` of the same, for the sixty houses),
+/// the million events tested with their rank tests on a sample, Wrap
+/// repeating the analysis, and the sentence for roles with no test.
+#[tokio::test]
+async fn hypothesis_tests_run_through_the_api() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let houses = client.dataset("Houses", "houses").await;
+    let events = client.dataset("Events", "events").await;
+    let data = |id: &str| json!({ "kind": "dataset", "dataset": id });
+
+    let answer = client
+        .ok(
+            "POST",
+            "/api/plots/tests",
+            Some(json!({ "spec": {
+                "data": data(&houses),
+                "y": [{ "field": "price" }],
+                "x": { "field": "neighbourhood" },
+            }})),
+        )
+        .await;
+    assert_eq!(answer["design"], "number_by_groups", "{answer}");
+    let section = &answer["sections"][0];
+    assert_eq!(section["n"], 60);
+    assert_eq!(section["levels"][0]["value"], 1);
+    assert_eq!(section["levels"][0]["mean"], 81000.0);
+    assert_eq!(section["levels"][1]["mean"], 85000.0);
+    let welch = &section["tests"][0];
+    assert_eq!(welch["test"], "welch_t");
+    assert_eq!(welch["role"], "main");
+    let t = welch["result"]["statistic"]["value"].as_f64().unwrap();
+    assert!((t + 0.87988269012812).abs() < 1e-9, "{t}");
+    let p = welch["result"]["p_value"].as_f64().unwrap();
+    assert!((p - 0.382554069814939).abs() < 1e-9, "{p}");
+    assert_eq!(welch["result"]["df"][0], 58.0);
+    let rank = &section["tests"][1];
+    assert_eq!(
+        (rank["test"].as_str(), rank["role"].as_str()),
+        (Some("mann_whitney"), Some("alternative"))
+    );
+    assert_eq!(rank["result"]["statistic"]["value"], 392.0);
+    let p = rank["result"]["p_value"].as_f64().unwrap();
+    assert!((p - 0.395083093639199).abs() < 1e-9, "{p}");
+    assert_eq!(rank["result"]["method"], "normal approximation");
+    assert_eq!(section["preferred"], "welch_t");
+    assert!(
+        section["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["ok"] == true),
+        "{section}"
+    );
+
+    // A million events: the t-test reads them all, in SQL; the rank tests
+    // read a sample of 5,000 and say so.
+    let answer = client
+        .ok(
+            "POST",
+            "/api/plots/tests",
+            Some(json!({ "spec": {
+                "data": data(&events),
+                "y": [{ "field": "value" }],
+                "x": { "field": "kind" },
+            }})),
+        )
+        .await;
+    let section = &answer["sections"][0];
+    assert_eq!(section["n"], 1_000_000);
+    assert_eq!(section["sampled"], 5000);
+    assert_eq!(section["tests"][0]["result"]["n"], 1_000_000);
+    assert_eq!(section["tests"][0]["result"]["sampled"], false);
+    assert_eq!(section["tests"][1]["result"]["sampled"], true);
+
+    // Wrap: one section per kind.
+    let answer = client
+        .ok(
+            "POST",
+            "/api/plots/tests",
+            Some(json!({ "spec": {
+                "data": data(&events),
+                "y": [{ "field": "value" }],
+                "by": { "field": "kind" },
+            }})),
+        )
+        .await;
+    assert_eq!(answer["design"], "one_number");
+    let by: Vec<&Value> = answer["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| &s["by"])
+        .collect();
+    assert_eq!(by, vec![&json!("a"), &json!("b")]);
+    assert_eq!(answer["sections"][0]["n"], 333_333);
+
+    // Roles with no test answer a sentence, not an error.
+    let answer = client
+        .ok(
+            "POST",
+            "/api/plots/tests",
+            Some(json!({ "spec": { "data": data(&houses), "y": [] }})),
+        )
+        .await;
+    assert_eq!(answer["error"], "put a column on Y to test it");
+    let (status, _) = client
+        .send(
+            "POST",
+            "/api/plots/tests",
+            Some(json!({ "spec": { "y": [] } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    Ok(())
+}
