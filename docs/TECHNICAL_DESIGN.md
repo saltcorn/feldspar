@@ -7191,8 +7191,10 @@ A fit reads every row of a dataset and runs an optimiser over it: seconds at bes
 worst, which must not be an HTTP request a proxy times out halfway through while the work carries
 on invisibly. So `fitModel` **creates the instance row first**, with `status = "fitting"`, returns
 its id, and runs the fit on a spawned task that writes `fitted` (with parameters and metrics) or
-`failed` (with the sentence, including the whole error chain) when it finishes. The screen polls.
-There is no in-memory job registry, because **the row is the registry**.
+`failed` (with the sentence, including the whole error chain) when it finishes. The model editor
+is pushed the row's progress over a socket that watches the row (A3.3), and falls back to
+reading it when the socket cannot open. There is no in-memory job registry, because
+**the row is the registry**.
 
 Two consequences, stated rather than discovered:
 
@@ -7432,8 +7434,11 @@ milestone already established for a record whose world changed underneath it.
 `previewDataset` (a named dataset's column types and first rows — what the model form shows under
 the dataset picked), `listModels` / `getModel` / `saveModel` / `deleteModel` / `cloneModel` (a
 copy under a free name, sharing the datasets, with no fits and the original's view state) /
-`patchModelViewState`, `fitModel` / `cancelModelFit` / `listModelInstances` (each fit with
-`dataset_changed`) / `getModelInstance` / `activateModelInstance` / `deleteModelInstance`, and
+`patchModelViewState` / `modelUsage` (what names the model: calculated fields whose formula
+calls `predict("…")` on it, and triggers or workflow steps that fit it with `fit_model` or
+mention it in their configuration — the model list's delete warning), `fitModel` /
+`cancelModelFit` / `listModelInstances` (each fit with `dataset_changed`) / `getModelInstance` /
+`activateModelInstance` / `deleteModelInstance`, and
 `predictRows` — an instance, or a model meaning its active instance,
 plus either literal rows or a filter over the model's table. These are the admin's own tools, not
 the action namespace, which is why they outlived the `predict_row` and `write_posterior`
@@ -7441,12 +7446,14 @@ actions. `predictRows` and a formula's `predict` both end in `sc_model::predict_
 `writePosterior` and a handle's `writePosterior` call the same
 `sc_api::models::write_posterior`.
 
-The admin UI is a **Models** tab (§12): the model form with a picker of named datasets — and
-links to edit the one picked, or make a new one, in the Analytics UI (§14.5) — over its preview,
-the provider's own form rendered from `config_spec`, the hyperparameter grid and the
-split; then the instance list, which polls while anything says `fitting`; then the instance
-screen, which renders the three parameter variants, the metrics per split, the search results,
-the row counts and what was dropped, and a "try a row" box over `predictRows`. An
+The screens are the Analytics UI's **model editor** (§14.5, analytics A3.5–A3.6), which replaced
+the admin UI's *Predictive models* tab; the admin's `#/models/…` and `#/model-instances/…` links
+redirect to it. It is the model form — a picker of named datasets over its preview, the
+provider's own form rendered from `config_spec`, the hyperparameter grid and the split, and for
+a provider that binds data the program, its editor and the bindings — then the fit shown: its
+outputs (§ *What a fit shows*), the row counts and what was dropped, the search results, a
+posterior's warnings, diagnostics and variables, and a "try a row" box over `predictRows`; then
+the list of fits. An
 application-facing prediction endpoint is deliberately not here: which application, which
 permission and what shape are application-API questions, and this API is the admin's. An
 application that wants predictions reads a calculated field that calls `predict`, which its
@@ -8064,9 +8071,11 @@ visitor is sent to sign in, a non-admin refused), under its own CSP
 (`ANALYTICS_CONTENT_SECURITY_POLICY`, strict for now, widened by later milestones' renderers
 without touching the admin UI's), built into the binary by `sc-cli`'s build script, and sharing
 the admin UI's session cookie. It routes on the hash (`#/` the front page, `#/w/<id>`,
-`#/datasets/<id>`, `#/datasets/new`, and from A3 `#/models/<id>`, `#/models/new`), uses the admin UI's vendored Tabler stylesheet and its colour-scheme setting,
-and its strings are the `analytics` i18n domain. The admin sidebar's **Analytics** entry leads
-to it; *Predictive models* stays beside it until A3.
+`#/datasets/<id>` with `?back=` naming where its Back returns, `#/datasets/new`, and from A3
+`#/models/<id>` with `?fit=`, `#/models/new?dataset=`, `#/models/compare?ids=` and
+`#/model-instances/<id>`, which finds the fit's model and opens it), uses the admin UI's vendored
+Tabler stylesheet and its colour-scheme setting, and its strings are the `analytics` i18n domain.
+The admin sidebar's **Analytics** entry leads to it; it replaced *Predictive models* in A3.
 
 **The Dataset editor.** The front page lists the datasets (edit, clone, delete with a warning
 naming the models that use one, new on a table or a dataset), and the editor edits one: the operations in a side panel — added
@@ -8076,6 +8085,34 @@ checks as it is typed, dragged to reorder, switched off, deleted, and marked wit
 beside a read-only, virtualised spreadsheet of the stage selected, paged with the admin grid's
 own helpers. The formula input offers the stage's columns, one step along each foreign key and,
 while rows are a table's rows, the child tables' counts and totals.
+
+**The model editor** (A3.5–A3.7; `ui/analytics/src/models`). The front page lists the models
+(edit, clone, delete with a warning from `modelUsage`, new — also from a dataset's row, which
+picks the dataset — and ticked ones compared). The editor is the admin UI's model form and
+instance screen moved over and joined (`ModelEditor.tsx`, `FitView.tsx`, `ModelBindings.tsx`,
+`PosteriorInstance.tsx`, `models.ts`): the form above; a running fit's stage, chains and Cancel
+from the progress socket (`progress.ts`, `FitRunning.tsx`); the fit shown, chosen from the list of
+fits, with its outputs (`Outputs.tsx`) — a card each, folded from its header, the optional plots
+added from **More plots**; and the earlier fits. What it keeps is the model's view state, three
+keys each patched on its own as it changes: `editor_collapsed` (the outputs folded),
+`editor_plots` (the optional plots open, in order) and `editor_fit` (the fit selected; `?fit=` in
+the address overrides it). A new model is saved before its first fit, and its address replaced
+without rebuilding the page. The dataset picker's **Use a copy** clones the dataset and picks the
+copy, since a cloned model shares its datasets. **Compare** (`ModelCompare.tsx`) reads each ticked
+model's outputs for the fit it would show and lines the outputs that are not optional up by name,
+one column per model, keeping nothing.
+
+A posterior's program is shown in an editor pane (`ProgramEditor.tsx`: Monaco, loaded on demand
+as the admin's code editor is, with a small Stan grammar) that reads the file from its store and
+writes it back with `writeFile`, after which the program's interface is read again; the IDE is
+still a button away. Its per-element plots — a trace per chain, a histogram, a forest plot — are
+plot specs with data made in the browser from `getModelDraws` (`posteriorPlots.ts`), drawn by the
+explorer's ECharts compiler like every other plot; their data reference names the fit's draws.
+
+**Open as model** (A3.7; `explorer/openAsModel.ts`) asks the explorer's question as a model when
+the roles are one response on Y and one factor on X: a dataset based on the explorer's with a
+Select columns keeping the two (a model's features are every column but its label), and a linear
+regression of Y — a logistic one when Y is not a number — opened in the editor.
 
 **The Data explorer** (A2.7–A2.14; `ui/analytics/src/explorer`, `src/plot`). Its state is what
 the person chose — the dataset, the columns on the nine drop zones (X, Y, Color, Size, Shape,

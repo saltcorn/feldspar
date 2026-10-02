@@ -37,9 +37,11 @@ import {
   type TableData,
 } from "../plot/spec";
 import { SummaryTable } from "../plot/SummaryTable";
+import { navigate } from "../router";
 import { useDocumentTheme } from "../theme";
 import type { WorkspaceProps, WorkspaceState } from "../workspaces/WorkspaceFrame";
 import { LayersPanel } from "./LayersPanel";
+import { modelPlan, planDataset, planModel } from "./openAsModel";
 import { TestResults } from "./TestResults";
 import { isAnalysis, testSpecOf, type Analysis } from "./tests";
 import {
@@ -216,6 +218,35 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
   const testKey = testSpec ? JSON.stringify(testSpec) : "";
   const [tests, setTestResults] = useState<{ analysis?: Analysis; error?: string } | null>(null);
   const [testing, setTesting] = useState(false);
+
+  // Open as model (A3.7): Y by X as a regression, on a dataset of its own
+  // keeping the two columns, opened in the model editor.
+  const canOpenAsModel = Boolean(dataset && modelPlan(testSpec, shape, dataset.name, [], []));
+  const openAsModel = async () => {
+    if (!dataset) return;
+    try {
+      const [models, all] = await Promise.all([api.listModels(), api.listDatasets()]);
+      // A key on X is named by a text column of the table it points at.
+      const key = shape?.columns.find((c) => c.name === testSpec?.x?.field)?.key;
+      const keyLabel = key
+        ? (await api.listFields(key.table)).find((f) => f.type === "text" && !f.primary_key)?.name
+        : undefined;
+      const plan = modelPlan(
+        testSpec,
+        shape,
+        dataset.name,
+        models.map((m) => m.name),
+        all.map((d) => d.name),
+        keyLabel,
+      );
+      if (!plan) return;
+      const made = await api.createDataset(planDataset(plan));
+      const model = await api.saveModel(planModel(plan, (made.dataset as { id: string }).id));
+      navigate({ name: "model", id: model.id });
+    } catch (err) {
+      setTestResults({ error: errorMessage(err, t("Could not make the model.")) });
+    }
+  };
   useEffect(() => {
     if (!testSpec) {
       setTestResults(null);
@@ -460,6 +491,7 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
               settings={state.tests}
               yCount={(state.assignment.y ?? []).length}
               onChange={(change) => update((s) => setTests(s, change))}
+              onOpenAsModel={canOpenAsModel ? () => void openAsModel() : undefined}
             />
           )}
         </div>

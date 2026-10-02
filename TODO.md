@@ -379,7 +379,7 @@ that nothing about fitting or prediction reads.
 
 ## Phase 3 — The model editor
 
-- [ ] A3.5 The model list on the front page (edit, clone, delete with a warning naming what
+- [x] A3.5 The model list on the front page (edit, clone, delete with a warning naming what
       uses the model, new — also from a dataset's row, which picks the dataset — and a
       multi-select **Compare**). The model editor at `#/models/<id>` and `#/models/new`: the
       dataset picker (with a link to the dataset in the Dataset editor), provider picker, the
@@ -388,27 +388,27 @@ that nothing about fitting or prediction reads.
       editor keeps which outputs are open or collapsed, the optional plots chosen and the
       selected fit in the view state, and restores them on open. Compare shows the selected
       models' key outputs side by side, without persistence. Tests.
-- [ ] A3.6 Stan models in the model editor: the program in an embedded editor (opening the IDE
+- [x] A3.6 Stan models in the model editor: the program in an embedded editor (opening the IDE
       for the file store as now), the bindings, the posterior plots. Move `ModelForm.tsx`,
       `ModelBindings.tsx`, `ModelInstance.tsx`, `PosteriorInstance.tsx` and
       `PosteriorPlots.tsx` from `ui/admin` into `ui/analytics`, replacing their plots with
       plot specs. Tests moved with them.
-- [ ] A3.7 **Open as model** in the Data explorer: a linear or logistic regression, by the
+- [x] A3.7 **Open as model** in the Data explorer: a linear or logistic regression, by the
       response's type, with the explorer's dataset, Y and X, opened in the model editor.
       Tests.
 
 ## Phase 4 — Retiring *Predictive models*
 
-- [ ] A3.8 The admin sidebar entry and its routes go; `#/models/…` and `#/model-instances/…`
+- [x] A3.8 The admin sidebar entry and its routes go; `#/models/…` and `#/model-instances/…`
       redirect to the model editor. `repo_hygiene.rs` fragments and the admin's `models.ts`
       follow. Tests.
 
 ## Phase 5 — Documentation, definition of done
 
-- [ ] A3.9 `tutorial-models.md` and `tutorial-stan.md` rewritten around the model
+- [x] A3.9 `tutorial-models.md` and `tutorial-stan.md` rewritten around the model
       editor; `TECHNICAL_DESIGN.md` §14.2 (outputs, fit output data); `tutorial-analytics.md`
       part 3.
-- [ ] A3.10 Definition of done: an `sc-server` test that fits a linear regression and the stub
+- [x] A3.10 Definition of done: an `sc-server` test that fits a linear regression and the stub
       posterior provider through the API and renders every declared output; the Radon half
       behind `#[ignore]` in `stan_models.rs`. Walk the Try it by hand.
 

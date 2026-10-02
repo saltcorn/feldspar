@@ -3076,6 +3076,41 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // What refers to a model by name (analytics TODO A3.5): the calculated
+    // fields whose formula calls `predict("…")` on it, and the triggers and
+    // workflows that fit it (`fit_model`) or name it in their configuration.
+    // The model list's delete warning lists them; deleting is not refused,
+    // since each of them reports the missing model by name when it next runs.
+    set.register(
+        Endpoint::new(
+            "modelUsage",
+            Method::Get,
+            api()
+                .lit("models")
+                .param("id", ValueType::Uuid)
+                .lit("usage"),
+        )
+        .output(TypeSchema::struct_of([
+            StructField::new(
+                "fields",
+                TypeSchema::array(TypeSchema::struct_of([
+                    StructField::new("table", TypeSchema::text()),
+                    StructField::new("field", TypeSchema::text()),
+                ])),
+            ),
+            StructField::new(
+                "triggers",
+                TypeSchema::array(TypeSchema::struct_of([
+                    StructField::new("id", TypeSchema::text()),
+                    StructField::new("name", TypeSchema::text()),
+                    // `fits` (a `fit_model` step) or `names` (any other mention).
+                    StructField::new("how", TypeSchema::text()),
+                ])),
+            ),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // A model's **view state** (analytics TODO A3.4): the dictionary the
     // screens showing a model keep their layout in — which outputs are open,
     // the optional plots chosen, the selected fit — so that it reopens as it

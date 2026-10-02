@@ -243,6 +243,7 @@ export type SaveModelRequest = { id?: string | null; name: string; description?:
 export type SaveModelResponse = { id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null } | null; program_check?: unknown | null; view_state?: unknown | null };
 export type CloneModelRequest = { name?: string | null };
 export type CloneModelResponse = { id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null } | null; program_check?: unknown | null; view_state?: unknown | null };
+export type ModelUsageResponse = { fields: Array<{ table: string; field: string }>; triggers: Array<{ id: string; name: string; how: string }> };
 export type PatchModelViewStateRequest = { patch: unknown };
 export type PatchModelViewStateResponse = { view_state: unknown };
 export type DeleteModelResponse = { deleted: boolean };
@@ -483,6 +484,7 @@ export interface ApiClient {
   getModel(id: string): Promise<GetModelResponse>;
   saveModel(body: SaveModelRequest): Promise<SaveModelResponse>;
   cloneModel(id: string, body: CloneModelRequest): Promise<CloneModelResponse>;
+  modelUsage(id: string): Promise<ModelUsageResponse>;
   patchModelViewState(id: string, body: PatchModelViewStateRequest): Promise<PatchModelViewStateResponse>;
   deleteModel(id: string): Promise<DeleteModelResponse>;
   fitModel(id: string, body: FitModelRequest): Promise<FitModelResponse>;
@@ -1903,6 +1905,14 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("cloneModel", res);
       return (await res.json()) as CloneModelResponse;
+    },
+    async modelUsage(id) {
+      const res = await doFetch(`${baseUrl}/api/models/${id}/usage`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("modelUsage", res);
+      return (await res.json()) as ModelUsageResponse;
     },
     async patchModelViewState(id, body) {
       const res = await doFetch(`${baseUrl}/api/models/${id}/view-state`, {

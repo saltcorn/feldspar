@@ -4,6 +4,7 @@
 // found — once per Wrap group. Paired mode and the value a mean is tested
 // against are set here.
 
+import Button from "react-bootstrap/Button";
 import Form from "react-bootstrap/Form";
 import Spinner from "react-bootstrap/Spinner";
 
@@ -31,6 +32,7 @@ export function TestResults({
   settings,
   yCount,
   onChange,
+  onOpenAsModel,
 }: {
   analysis: Analysis | null;
   error: string | null;
@@ -39,6 +41,9 @@ export function TestResults({
   /** How many columns are on Y: paired mode is offered for two. */
   yCount: number;
   onChange: (change: Partial<TestsState>) => void;
+  /** Ask the same question as a model (A3.7); absent when the roles are not
+   * one response and one factor. */
+  onOpenAsModel?: () => void;
 }) {
   const { t, locale } = useT();
   return (
@@ -48,6 +53,17 @@ export function TestResults({
           <T text="Tests" />
         </strong>
         {loading && <Spinner animation="border" size="sm" />}
+        {onOpenAsModel && (
+          <Button
+            size="sm"
+            variant="outline-primary"
+            className="ms-2"
+            title={t("A regression of Y on X, opened in the model editor")}
+            onClick={onOpenAsModel}
+          >
+            <T text="Open as model" />
+          </Button>
+        )}
         {yCount === 2 && (
           <Form.Check
             type="switch"

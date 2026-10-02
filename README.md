@@ -34,7 +34,7 @@ own, for every other kind of box. (Design and planning docs live under
 - **Predictive models** over your own tables: a dataset built out of the same formula
   language as calculated fields, fitted by a built-in provider (regression, classification,
   clustering, dimensionality reduction, hypothesis tests) or by one a module supplies, with
-  the coefficients and metrics on a screen. A fit is applied by `predict("House prices")` in
+  the coefficients, metrics and diagnostic plots in the Analytics UI's model editor. A fit is applied by `predict("House prices")` in
   any formula, including a calculated field that predicts every row it lists, and by a model
   handle in code (`models.get(…)`). `fit_model` refits on a schedule. The built-in providers are a **default-on cargo feature** (§3). See
   [`docs/tutorial-models.md`](docs/tutorial-models.md).
@@ -520,7 +520,7 @@ database (§7).
 --no-default-features` is the opt-out, and it is a supported build rather than a broken
 one — `t_test` and `anova` are not behind the feature (they need a distribution function
 and nothing else), so such a server can still answer whether two groups differ, and the
-Models tab says on the screen that the machine-learning built-ins were compiled out
+Analytics UI's model list says on the screen that the machine-learning built-ins were compiled out
 rather than showing an empty list that reads like a bug. A module can supply more
 providers either way: `feldspar-sklearn` is bundled, and needs the Python build below.
 

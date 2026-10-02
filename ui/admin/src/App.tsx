@@ -60,9 +60,6 @@ import { GraphqlExplorer } from "./screens/GraphqlExplorer";
 import { LlmProviders } from "./screens/LlmProviders";
 import { LlmProviderForm } from "./screens/LlmProviderForm";
 import { Login } from "./screens/Login";
-import { ModelForm } from "./screens/ModelForm";
-import { ModelInstance } from "./screens/ModelInstance";
-import { Models } from "./screens/Models";
 import { Roles } from "./screens/Roles";
 import { Settings } from "./screens/Settings";
 import { StreamForm } from "./screens/StreamForm";
@@ -78,6 +75,7 @@ import { Users } from "./screens/Users";
 import { WorkflowEditor } from "./screens/WorkflowEditor";
 import { WorkflowRuns } from "./screens/WorkflowRuns";
 import { T, useT } from "./i18n";
+import { modelRedirect } from "./modelRedirect";
 
 /** The authenticated user, as reported by `authStatus` / `login`. */
 export type CurrentUser = NonNullable<AuthStatusResponse["current_user"]>;
@@ -216,24 +214,16 @@ export const NAV: NavItem[] = [
   },
   {
     // The Analytics UI: its own bundle under `/analytics/` (analytics TODO
-    // A1.14), a full navigation rather than a hash route. Datasets, and from
-    // A3 the models, live there; *Predictive models* stays beside it until A3
-    // replaces it.
+    // A1.14), a full navigation rather than a hash route. Datasets, models and
+    // workspaces live there; it replaced *Predictive models* in A3, and the old
+    // `#/models/…` links redirect into its model editor (`modelRedirect.ts`).
+    // Beside Agents rather than under Tables: a model is a question asked *of*
+    // a table, and the section it belongs to is the one about answering
+    // questions rather than the one about storing rows.
     href: "/analytics/",
     label: "Analytics",
     icon: <IconChartHistogram />,
     matches: [],
-  },
-  {
-    href: "#/models",
-    label: "Predictive models",
-    icon: <IconChartHistogram />,
-    // Beside Agents rather than under Tables: a model is a question asked *of*
-    // a table, and the section it belongs to is the one about answering
-    // questions rather than the one about storing rows. A dataset has no entry
-    // of its own on purpose — it belongs to its model and has no life without
-    // one (§3).
-    matches: ["/models", "/model-instances"],
   },
   {
     href: "#/streams",
@@ -541,6 +531,15 @@ function ThemeToggle({
  * `user` reaches only the screens that are *about* the signed-in admin rather
  * than about a record — today the GraphQL explorer, which runs its queries under
  * that admin's own authority and has to say whose. */
+/** Leave for another page — a model link that now lives in the Analytics UI.
+ * `replace`, so Back does not return to a hash that only redirects again. */
+function Redirect({ to }: { to: string }) {
+  useEffect(() => {
+    window.location.replace(to);
+  }, [to]);
+  return null;
+}
+
 function Screen({ route, user }: { route: string; user: CurrentUser }) {
   // Routes are matched on their path; a query is what a screen is opened with
   // (the builder's way back to `views/:name?step=n`).
@@ -735,29 +734,11 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   if (path.startsWith("/db-connections")) {
     return <DbConnections />;
   }
-  if (path === "/models/new") {
-    return <ModelForm />;
-  }
-  // A fit is addressed by its own id, as `getModelInstance` is: which model it
-  // is of is the server's answer, not the URL's.
-  const instanceMatch = path.match(/^\/model-instances\/([^/]+)$/);
-  if (instanceMatch) {
-    const instanceId = decodeURIComponent(instanceMatch[1]);
-    // Keyed, so moving from one fit to another **remounts** rather than
-    // re-rendering: the screen holds a fit's own answers (the "try a row" box's
-    // reply, most of all), and one fit's answer shown under another fit's
-    // coefficients is exactly the confident-wrong-answer this milestone is most
-    // careful about.
-    return <ModelInstance key={instanceId} instanceId={instanceId} />;
-  }
-  // The model *is* its form: a model is edited and refitted continuously, so
-  // there is no read-only screen it would be opened into first.
-  const modelMatch = path.match(/^\/models\/([^/]+)$/);
-  if (modelMatch) {
-    return <ModelForm modelId={decodeURIComponent(modelMatch[1])} />;
-  }
-  if (path.startsWith("/models")) {
-    return <Models />;
+  // The model screens moved to the Analytics UI's model editor (analytics
+  // TODO A3.8); a bookmark to one of them lands there.
+  const moved = modelRedirect(path);
+  if (moved) {
+    return <Redirect to={moved} />;
   }
   // A run is addressed by its own id, as `getRun` is: which workflow it is of is
   // the server's answer, not the URL's.

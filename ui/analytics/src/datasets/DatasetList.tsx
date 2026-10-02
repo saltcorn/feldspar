@@ -131,6 +131,14 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
                   <Button size="sm" variant="outline-secondary" onClick={() => void clone(d)}>
                     <T text="Clone" />
                   </Button>{" "}
+                  <Button
+                    size="sm"
+                    variant="outline-secondary"
+                    title={t("A new model on this dataset")}
+                    onClick={() => navigate({ name: "newModel", dataset: d.id })}
+                  >
+                    <T text="New model" />
+                  </Button>{" "}
                   <Button size="sm" variant="outline-danger" onClick={() => void askDelete(d)}>
                     <T text="Delete" />
                   </Button>

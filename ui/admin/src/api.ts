@@ -123,27 +123,6 @@ export async function createBackup(include: unknown): Promise<void> {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-/**
- * Download a posterior fit's run as a zip (`downloadModelRun`, Stan TODO §16).
- *
- * The endpoint is in the typed set, but its answer is bytes, which the
- * generated client would try to read as JSON — so the request is made here, and
- * handed to the browser the way a backup is.
- */
-export async function downloadModelRun(instance: string): Promise<void> {
-  const res = await browserFetch(`/api/model-instances/${encodeURIComponent(instance)}/run`);
-  if (!res.ok) throw await rawError("downloadModelRun", res);
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filenameFrom(res.headers.get("content-disposition")) ?? "run.zip";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
 /** The `filename="…"` of a `Content-Disposition` header, if it has one. */
 function filenameFrom(header: string | null): string | null {
   const match = header?.match(/filename="([^"]+)"/);

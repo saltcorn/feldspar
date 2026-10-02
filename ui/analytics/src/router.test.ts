@@ -10,6 +10,13 @@ describe("the Analytics UI's routes", () => {
       { name: "dataset", id: "d1" },
       { name: "newDataset", table: "houses" },
       { name: "newDataset", table: null },
+      { name: "dataset", id: "d1", back: "#/models/m1" },
+      { name: "model", id: "m1" },
+      { name: "model", id: "m1", fit: "f 2" },
+      { name: "newModel", dataset: "d1" },
+      { name: "newModel", dataset: null },
+      { name: "compareModels", ids: ["m1", "m2"] },
+      { name: "fit", id: "f1" },
     ];
     for (const route of routes) {
       expect(parseRoute(routeHash(route))).toEqual(route);
@@ -20,5 +27,6 @@ describe("the Analytics UI's routes", () => {
     expect(parseRoute("")).toEqual({ name: "home" });
     expect(parseRoute("#")).toEqual({ name: "home" });
     expect(parseRoute("#/nope/x")).toEqual({ name: "notFound", path: "/nope/x" });
+    expect(parseRoute("#/models/compare")).toEqual({ name: "compareModels", ids: [] });
   });
 });

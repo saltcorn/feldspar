@@ -37,7 +37,6 @@ import {
   kindsFor,
   matchElements,
   metricRows,
-  niceTicks,
   orderWarnings,
   outcomeSummary,
   isPosteriorStage,
@@ -398,12 +397,6 @@ describe("the plots' arithmetic", () => {
     expect(histogram([])).toEqual([]);
   });
 
-  it("puts ticks on round numbers", () => {
-    expect(niceTicks(0, 1, 5)).toEqual([0, 0.2, 0.4, 0.6, 0.8, 1]);
-    expect(niceTicks(-0.37, 2.1, 4)).toEqual([0, 1, 2]);
-    expect(niceTicks(0, 1000, 4)).toEqual([0, 500, 1000]);
-    expect(niceTicks(3, 3)).toEqual([3]);
-  });
 });
 
 describe("the write-back", () => {

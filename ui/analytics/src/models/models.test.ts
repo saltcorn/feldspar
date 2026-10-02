@@ -21,7 +21,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  analyticsDatasetUrl,
   buildHyperparameters,
   featureInputs,
   formatNumber,
@@ -31,7 +30,6 @@ import {
   headlineMetric,
   instanceLabel,
   metricRows,
-  newDatasetUrl,
   orderInstances,
   outcomeSummary,
   parseGridValue,
@@ -264,12 +262,6 @@ describe("reading the API's JSON blobs", () => {
     // The shape it used to have — the formulas written on the model — is not one.
     expect(readModelDataset({ table: "houses", columns: [] })).toBeNull();
     expect(readModelDataset(null)).toBeNull();
-  });
-
-  it("links a dataset to the Analytics UI, where datasets are edited", () => {
-    expect(analyticsDatasetUrl("a b")).toBe("/analytics/#/datasets/a%20b");
-    expect(newDatasetUrl()).toBe("/analytics/#/datasets/new");
-    expect(newDatasetUrl("houses")).toBe("/analytics/#/datasets/new?table=houses");
   });
 
   it("sends a related dataset as its name, its dataset's id and its label", () => {

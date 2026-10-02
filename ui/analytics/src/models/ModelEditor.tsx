@@ -1,27 +1,27 @@
-// One model: its dataset, its provider, its hyperparameter space, its split —
-// and the fits it has had (TODO "Predictive models", tasks 6.2, 6.3, 6.4).
+// The model editor (analytics TODO A3.5–A3.6), at `#/models/<id>` and
+// `#/models/new`: one model — its dataset, its provider, its settings and
+// hyperparameters, its split — and below it the fit being looked at, with its
+// outputs, and the model's earlier fits.
 //
-// Three cards and one form, and the order is the order the questions come in:
-// **which data**, then **which provider and with what settings**, then **how the
-// rows are divided**. The dataset is first because everything else is about it —
-// a provider's own form is built over the dataset's columns, and its label
-// picker cannot offer `price` until `price` is a column of this dataset.
+// A model is not a workspace: it is a global, named entity that formulas,
+// actions and panels refer to, as a dataset is. What a workspace would have
+// given — reopening as it was left — is the model's **view state**
+// (`viewState.ts`): which outputs are folded, the optional plots chosen and
+// the fit selected, written key by key as they change and read back on open.
+// None of it touches the model: a fit does not record it, and nothing about
+// "changed since this fit" looks at it.
 //
-// The dataset is a **named dataset** (analytics TODO A1.11), picked from the
-// ones the Analytics UI's Dataset editor builds, with a link to edit it there.
-// The preview under the picker is the first rows and the types they came back
-// as — the *data's* types, which is what the provider's form is built from and
-// what no schema carries.
+// The form is the admin UI's model form, moved here (TODO "Predictive
+// models" 6.2–6.4), and the order is the order the questions come in: **which
+// data**, then **which provider and with what settings**, then **how the rows
+// are divided**. For a provider that **binds data** (a posterior — Stan TODO
+// §18) the form grows the program, its editor, the related datasets,
+// dimensions and the binding table (`ModelBindings.tsx`), and the split and
+// the grid are hidden, because a posterior is not divided and not searched.
 //
-// For a provider that **binds data** (a posterior — Stan TODO §18) the form
-// grows the parts a program needs, and none of them names the provider: the
-// program's place, related datasets, dimensions and the binding table
-// (`ModelBindings.tsx`). The split and the hyperparameter grid are hidden for
-// it, because a posterior is not divided and not searched.
-//
-// **Fit saves first.** A fit of what is on the screen and a save of what is on
-// the screen are the same intention, and the alternative is a button that
-// silently fits the last saved version of a form the admin has been editing.
+// **Fit saves first**: a fit of what is on the screen and a save of what is on
+// the screen are the same intention. While a fit runs its progress is pushed
+// by the server (`progress.ts`); when it finishes it becomes the fit shown.
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -34,9 +34,12 @@ import Spinner from "react-bootstrap/Spinner";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
-import { navigate } from "../App";
-import { IconArrowLeft } from "../icons";
-import { PageBody, PageHeader, StatusBadge } from "../layout";
+import { T, useT } from "../i18n";
+import { navigate, routeHash } from "../router";
+import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
+import { FitRunning } from "./FitRunning";
+import { FitView } from "./FitView";
+import { BindingSection, type BindingState } from "./ModelBindings";
 import {
   BINDINGS_KEY,
   BINDING_FORM_KEYS,
@@ -59,37 +62,48 @@ import {
   printDrafts,
   printGridValue,
   readHyperparameters,
-  readModelDataset,
   readMetrics,
+  readModelDataset,
   readOutcome,
   readPolicies,
-  readProgress,
   readRelated,
   readSplit,
   relatedBody,
-  type Interface,
   type InstanceItem,
+  type Interface,
+  type ModelItem,
   type ProviderItem,
-} from "../models";
-import { SettingsFields, buildConfig, readConfig } from "../settings";
-import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
-import { BindingSection, type BindingState } from "./ModelBindings";
-import { fitTone } from "./Models";
-import { T, useT } from "../i18n";
+} from "./models";
+import { useFitProgress } from "./progress";
+import { SettingsFields, buildConfig, readConfig } from "./settings";
+import { StatusBadge, fitTone } from "./StatusBadge";
+import { chosenFit, editorPatch, readEditorView, toggled, type EditorView } from "./viewState";
 
 /** How long the form waits after a keystroke before asking the server which
  * providers this dataset resolves. */
 const DEBOUNCE_MS = 600;
 
-/** How often a `fitting` instance is re-read (§8: the row is the registry, so
- * the screen polls — there is nothing to await). */
-const POLL_MS = 1500;
-
 /** The split as the form edits it: four boxes of text, so a half-typed `0.` is
  * not a number this form has to have an opinion about. */
 type SplitForm = { train: string; validation: string; test: string; seed: string };
 
-export function ModelForm({ modelId }: { modelId?: string }) {
+/** A split's part, as its box is labelled. */
+function splitName(part: "train" | "validation" | "test", t: (s: string) => string): string {
+  return part === "train" ? t("Train") : part === "validation" ? t("Validation") : t("Test");
+}
+
+export function ModelEditor({
+  modelId,
+  fit: routeFit,
+  dataset: askedDataset,
+}: {
+  /** The model; none for a new one. */
+  modelId?: string;
+  /** The fit the address names (`?fit=`). */
+  fit?: string;
+  /** A new model's dataset, when it was made from one (`?dataset=`). */
+  dataset?: string | null;
+}) {
   const { t } = useT();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +111,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const [busy, setBusy] = useState(false);
 
   const [id, setId] = useState<string | null>(modelId ?? null);
+  const [model, setModel] = useState<ModelItem | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [datasetId, setDatasetId] = useState("");
@@ -114,7 +129,6 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const [providers, setProviders] = useState<ProviderItem[]>([]);
   const [resolved, setResolved] = useState(false);
   const [instances, setInstances] = useState<InstanceItem[]>([]);
-  // The binding half, for a provider that binds data (Stan TODO §18).
   const [binding, setBinding] = useState<BindingState>({
     related: [],
     dimensions: [],
@@ -124,9 +138,12 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const [iface, setIface] = useState<Interface | null>(null);
   const [programCheck, setProgramCheck] = useState<string | null>(null);
 
-  // The dataset as the API takes it — a reference — and as the provider
-  // lookup keys off. Stringified because that is what a query parameter
-  // carries and what an effect can compare.
+  // The view state's part that is the editor's, and the fit on the screen.
+  const [view, setView] = useState<EditorView>({ collapsed: [], plots: [], fit: null });
+  const [selected, setSelected] = useState<string | null>(null);
+  // The fit running now, followed over its progress socket.
+  const [running, setRunning] = useState<string | null>(null);
+
   const dataset = useMemo(() => ({ dataset_id: datasetId }), [datasetId]);
   const datasetJson = JSON.stringify(dataset);
   const mainDataset = datasets.find((d) => d.id === datasetId) ?? null;
@@ -137,61 +154,71 @@ export function ModelForm({ modelId }: { modelId?: string }) {
 
   // --- loading ---------------------------------------------------------------
 
+  const fill = useCallback((existing: ModelItem) => {
+    const stored = readModelDataset(existing.dataset);
+    setModel(existing);
+    setName(existing.name);
+    setDescription(existing.description);
+    setDatasetId(stored?.dataset_id ?? "");
+    setProvider(existing.provider);
+    setConfig(readConfig(existing.configuration));
+    const configuration = (existing.configuration ?? {}) as Record<string, unknown>;
+    setBinding({
+      related: readRelated(existing.related),
+      dimensions: Object.entries(printDrafts(DIMENSION_KINDS, configuration[DIMENSIONS_KEY])).map(
+        ([dimension, draft]) => ({ name: dimension, draft }),
+      ),
+      policies: readPolicies(configuration[POLICIES_KEY]),
+      bindings: printDrafts(BINDING_KINDS, configuration[BINDINGS_KEY]),
+    });
+    setHyper(readHyperparameters(existing.hyperparameters));
+    const storedSplit = readSplit(existing.split);
+    setSplit({
+      train: String(storedSplit.train),
+      validation: String(storedSplit.validation),
+      test: String(storedSplit.test),
+      seed: String(storedSplit.seed),
+    });
+    if (existing.error) setError(existing.error);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       try {
-        const datasetList = await api.listDatasets();
-        let existing = null;
-        if (modelId) existing = await api.getModel(modelId);
+        const [datasetList, existing, fits] = await Promise.all([
+          api.listDatasets(),
+          modelId ? api.getModel(modelId) : Promise.resolve(null),
+          modelId ? api.listModelInstances(modelId) : Promise.resolve([]),
+        ]);
         if (cancelled) return;
         setDatasets(datasetList);
         if (existing) {
-          const stored = readModelDataset(existing.dataset);
-          setName(existing.name);
-          setDescription(existing.description);
-          setDatasetId(stored?.dataset_id ?? "");
-          setProvider(existing.provider);
-          setConfig(readConfig(existing.configuration));
-          const configuration = (existing.configuration ?? {}) as Record<string, unknown>;
-          setBinding({
-            related: readRelated(existing.related),
-            dimensions: Object.entries(printDrafts(DIMENSION_KINDS, configuration[DIMENSIONS_KEY])).map(
-              ([dimension, draft]) => ({ name: dimension, draft }),
-            ),
-            policies: readPolicies(configuration[POLICIES_KEY]),
-            bindings: printDrafts(BINDING_KINDS, configuration[BINDINGS_KEY]),
-          });
-          setHyper(readHyperparameters(existing.hyperparameters));
-          const storedSplit = readSplit(existing.split);
-          setSplit({
-            train: String(storedSplit.train),
-            validation: String(storedSplit.validation),
-            test: String(storedSplit.test),
-            seed: String(storedSplit.seed),
-          });
-          if (existing.error) setError(existing.error);
+          fill(existing);
+          const remembered = readEditorView(existing.view_state);
+          const ordered = orderInstances(fits);
+          setView(remembered);
+          setInstances(ordered);
+          setSelected(chosenFit(routeFit, remembered.fit, ordered));
+          setRunning(ordered.find((f) => f.status === "fitting")?.id ?? null);
         } else {
-          // A link from the Analytics UI's dataset list names the dataset.
-          const asked = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("dataset");
-          setDatasetId(asked ?? "");
+          setDatasetId(askedDataset ?? "");
         }
         setReady(true);
       } catch (err) {
-        if (!cancelled) setLoadError(errorMessage(err, "Could not load this model."));
+        if (!cancelled) setLoadError(errorMessage(err, t("Could not load this model.")));
       }
     };
     void run();
     return () => {
       cancelled = true;
     };
-  }, [modelId]);
+  }, [modelId, routeFit, askedDataset, fill, t]);
 
   // The providers, resolved against this dataset and this configuration where
   // they can be: `config_spec` then offers *these* columns and `outcome` says
   // what a fit would produce. A dataset that cannot be read falls back to the
-  // unresolved declaration rather than an empty picker — the form still works,
-  // and the preview beside it is where the reason is.
+  // unresolved declaration rather than an empty picker.
   useEffect(() => {
     if (!ready) return undefined;
     let cancelled = false;
@@ -226,26 +253,40 @@ export function ModelForm({ modelId }: { modelId?: string }) {
 
   const loadInstances = useCallback(async (model: string) => {
     try {
-      setInstances(orderInstances(await api.listModelInstances(model)));
+      const fits = orderInstances(await api.listModelInstances(model));
+      setInstances(fits);
+      return fits;
     } catch {
-      // A model that has just been created has no instances and no endpoint
-      // trouble worth a banner; the list simply stays empty.
+      return [];
     }
   }, []);
 
-  useEffect(() => {
-    if (id) void loadInstances(id);
-  }, [id, loadInstances]);
+  // --- the view state --------------------------------------------------------
 
-  // The poll (§8). A fit is a spawned task and the row is the registry, so the
-  // screen asks again until nothing says `fitting` — and stops, rather than
-  // holding a timer open on a screen where nothing is happening.
-  const fitting = instances.some((instance) => instance.status === "fitting");
-  useEffect(() => {
-    if (!id || !fitting) return undefined;
-    const timer = window.setTimeout(() => void loadInstances(id), POLL_MS);
-    return () => window.clearTimeout(timer);
-  }, [id, fitting, instances, loadInstances]);
+  /** Record a change to what the editor shows, here and in the model's view
+   * state. Only the keys that changed are sent. */
+  const changeView = (change: Partial<EditorView>) => {
+    setView((v) => ({ ...v, ...change }));
+    if (id) {
+      void api.patchModelViewState(id, { patch: editorPatch(change) }).catch(() => undefined);
+    }
+  };
+
+  const select = (fit: string) => {
+    setSelected(fit);
+    changeView({ fit });
+  };
+
+  // The fit that finished becomes the fit shown, and the model is read again
+  // for its last fit.
+  const live = useFitProgress(running, () => {
+    const finished = running;
+    setRunning(null);
+    if (!id) return;
+    void loadInstances(id);
+    void api.getModel(id).then(setModel).catch(() => undefined);
+    if (finished) select(finished);
+  });
 
   // --- what the form knows ---------------------------------------------------
 
@@ -259,6 +300,10 @@ export function ModelForm({ modelId }: { modelId?: string }) {
   const settingsSpec = (chosen?.config_spec ?? []).filter(
     (field) => !bindsData || !BINDING_FORM_KEYS.includes(field.name),
   );
+  // The fit on the screen: the one chosen, else the active one, else the
+  // newest that fitted.
+  const shown =
+    selected ?? instances.find((f) => f.active)?.id ?? instances.find((f) => f.status === "fitted")?.id ?? null;
 
   // --- saving and fitting ----------------------------------------------------
 
@@ -271,8 +316,6 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     dataset,
     related: bindsData ? relatedBody(binding.related) : [],
     configuration: configurationOf(specOf(providers, provider), config, bindsData ? binding : null),
-    // A posterior is not searched and not divided (Stan TODO §13): nothing of
-    // the hidden controls is sent for one.
     hyperparameters: bindsData ? {} : hyperSpace,
     split: bindsData
       ? DEFAULT_SPLIT
@@ -285,17 +328,29 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     attributes: {},
   });
 
-  /** Save, and answer the model's id — the same path the Fit button takes,
-   * because fitting what is on the screen means saving it first. */
-  const save = async (): Promise<string> => {
-    const saved = await api.saveModel(body());
+  /** Save, and answer the model's id — the same path Fit takes. `over`
+   * replaces parts of the form's body, for a change made in the same breath. */
+  const save = async (over: Partial<ReturnType<typeof body>> = {}): Promise<string> => {
+    const saved = await api.saveModel({ ...body(), ...over });
     setId(saved.id);
+    setModel(saved);
     setError(saved.error ?? null);
     setProgramCheck(programCheckText(saved.program_check));
-    // A new model now has a URL of its own, so a reload comes back to it rather
-    // than to an empty form.
-    if (!modelId) window.location.hash = `/models/${encodeURIComponent(saved.id)}`;
+    // A new model now has an address of its own, so a reload comes back to it.
+    // Replaced rather than navigated to, so the form is not built again under
+    // the fit that is about to start.
+    if (!modelId && !id) window.history.replaceState(null, "", routeHash({ name: "model", id: saved.id }));
     return saved.id;
+  };
+
+  /** Save, showing a refusal on the form and rejecting with it. */
+  const saveQuietly = async (over: Partial<ReturnType<typeof body>>) => {
+    try {
+      await save(over);
+    } catch (err) {
+      setError(errorMessage(err, t("Could not save the model.")));
+      throw err;
+    }
   };
 
   const submit = async (e: FormEvent) => {
@@ -307,7 +362,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     } catch (err) {
       // The server's own refusal names the dataset column, the setting or the
       // hyperparameter that is wrong, which is the message to show.
-      setError(errorMessage(err, "Could not save the model."));
+      setError(errorMessage(err, t("Could not save the model.")));
     } finally {
       setBusy(false);
     }
@@ -318,10 +373,11 @@ export function ModelForm({ modelId }: { modelId?: string }) {
     setError(null);
     try {
       const saved = await save();
-      await api.fitModel(saved, { name: null, description: null });
+      const started = await api.fitModel(saved, { name: null, description: null });
       await loadInstances(saved);
+      setRunning(started.id);
     } catch (err) {
-      setError(errorMessage(err, "Could not start the fit."));
+      setError(errorMessage(err, t("Could not start the fit.")));
     } finally {
       setBusy(false);
     }
@@ -332,57 +388,53 @@ export function ModelForm({ modelId }: { modelId?: string }) {
       await api.activateModelInstance(instance.id);
       if (id) await loadInstances(id);
     } catch (err) {
-      setError(errorMessage(err, "Could not activate that fit."));
+      setError(errorMessage(err, t("Could not activate that fit.")));
     }
   };
 
   const removeInstance = async (instance: InstanceItem) => {
-    if (
-      !window.confirm(
-        t('Remove the fit "{name}"?', { name: instanceLabel(instance) }),
-      )
-    ) {
-      return;
-    }
+    if (!window.confirm(t('Remove the fit "{name}"?', { name: instanceLabel(instance) }))) return;
     try {
       await api.deleteModelInstance(instance.id);
+      if (selected === instance.id) {
+        setSelected(null);
+        changeView({ fit: null });
+      }
       if (id) await loadInstances(id);
     } catch (err) {
-      setError(errorMessage(err, "Could not remove that fit."));
+      setError(errorMessage(err, t("Could not remove that fit.")));
     }
   };
 
   if (loadError) {
     return (
-      <PageBody>
+      <div className="an-page">
         <Alert variant="danger">{loadError}</Alert>
-      </PageBody>
+      </div>
     );
   }
   if (!ready) {
     return (
-      <PageBody>
-        <div className="py-5 text-center">
-          <Spinner animation="border" role="status" />
-        </div>
-      </PageBody>
+      <div className="an-page">
+        <Spinner animation="border" size="sm" />
+      </div>
     );
   }
 
   return (
-    <>
-      <PageHeader
-        pretitle="Models"
-        title={modelId ? name || "Model" : "New model"}
-        actions={
-          <Button variant="outline-secondary" onClick={() => navigate("/models")}>
-            <IconArrowLeft className="icon-2" />
-            <T text="Back" />
-          </Button>
-        }
-      />
-      <PageBody>
-        {error && <Alert variant="danger">{error}</Alert>}
+    <div className="an-page an-model-editor">
+      <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
+        <Button variant="outline-secondary" size="sm" onClick={() => navigate({ name: "home" })}>
+          ← <T text="All models" />
+        </Button>
+        <h2 className="h3 mb-0">{id ? name || t("Model") : t("New model")}</h2>
+        {model?.error && (
+          <StatusBadge tone="red" title={model.error}>
+            <T text="Cannot be fitted" />
+          </StatusBadge>
+        )}
+      </div>
+      {error && <Alert variant="danger">{error}</Alert>}
 
         <Form onSubmit={(e) => void submit(e)}>
           <Row>
@@ -417,6 +469,15 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                 onChange={setDatasetId}
                 datasets={datasets}
                 idPrefix="model-main"
+                back={id ? routeHash({ name: "model", id }) : undefined}
+                onCopied={async (copy) => {
+                  setDatasets((list) => [...list.filter((d) => d.id !== copy.id), copy]);
+                  setDatasetId(copy.id);
+                  // Saved at once: the copy is this model's from now on, and
+                  // the next thing done with it is usually to edit it.
+                  if (id) await saveQuietly({ dataset: { dataset_id: copy.id } });
+                }}
+                beforeEdit={id ? () => saveQuietly({}) : undefined}
                 previewNote={(preview) => (
                   <>
                     <T text="The first rows, and the type each column’s values came back as — which is what the provider’s form below is built from." />
@@ -477,8 +538,8 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                       <span className="text-muted">
                         {chosen?.outcome_error ??
                           (resolved
-                            ? "Pick a provider."
-                            : "Build a dataset that reads, and this says what a fit would produce.")}
+                            ? t("Pick a provider.")
+                            : t("Pick a dataset that reads, and this says what a fit would produce."))}
                       </span>
                     )}
                   </div>
@@ -523,7 +584,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                           <Form.Control
                             className="font-monospace"
                             value={hyper[field.name] ?? ""}
-                            placeholder={printGridValue(field.default) || "the default"}
+                            placeholder={printGridValue(field.default) || t("the default")}
                             onChange={(e) =>
                               setHyper((h) => ({ ...h, [field.name]: e.target.value }))
                             }
@@ -599,7 +660,7 @@ export function ModelForm({ modelId }: { modelId?: string }) {
                 {(["train", "validation", "test"] as const).map((part) => (
                   <Col md={3} key={part}>
                     <Form.Group className="mb-3" controlId={`model-split-${part}`}>
-                      <Form.Label className="text-capitalize">{part}</Form.Label>
+                      <Form.Label>{splitName(part, t)}</Form.Label>
                       <Form.Control
                         type="number"
                         step="0.05"
@@ -642,9 +703,9 @@ export function ModelForm({ modelId }: { modelId?: string }) {
 
           <div className="btn-list mb-4">
             <Button type="submit" disabled={busy}>
-              {busy ? "Saving…" : id ? "Save changes" : "Create model"}
+              {busy ? <T text="Saving…" /> : id ? <T text="Save changes" /> : <T text="Create model" />}
             </Button>
-            <Button variant="success" disabled={busy} onClick={() => void fit()}>
+            <Button variant="success" disabled={busy || running !== null} onClick={() => void fit()}>
               <T text="Fit" />
             </Button>
             <span className="text-muted small align-self-center">
@@ -653,114 +714,110 @@ export function ModelForm({ modelId }: { modelId?: string }) {
           </div>
         </Form>
 
-        {/* --- the fits ----------------------------------------------------- */}
-        {id && (
-          <Card className="mb-3">
-            <Card.Header><T text="Fits" /></Card.Header>
-            <Table hover responsive className="card-table table-vcenter">
-              <thead>
+      {/* --- the fit ------------------------------------------------------------ */}
+      {running && <FitRunning instance={running} live={live} />}
+      {model && shown && (
+        <section className="mb-4" aria-label={t("The fit")}>
+          <FitView
+            key={shown}
+            model={model}
+            instanceId={shown}
+            collapsed={view.collapsed}
+            plots={view.plots}
+            onToggle={(output) => changeView({ collapsed: toggled(view.collapsed, output) })}
+            onPlots={(plots) => changeView({ plots })}
+            onChanged={() => id && void loadInstances(id)}
+          />
+        </section>
+      )}
+
+      {/* --- the fits ----------------------------------------------------------- */}
+      {id && (
+        <Card className="mb-3">
+          <Card.Header>
+            <T text="Fits" />
+          </Card.Header>
+          <Table hover responsive className="card-table table-vcenter">
+            <thead>
+              <tr>
+                <th>
+                  <T text="Fit" />
+                </th>
+                <th>
+                  <T text="Status" />
+                </th>
+                <th>
+                  <T text="Result" />
+                </th>
+                <th>
+                  <T text="Hyperparameters" />
+                </th>
+                <th className="text-end">
+                  <T text="Actions" />
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {instances.length === 0 && (
                 <tr>
-                  <th><T text="Fit" /></th>
-                  <th><T text="Status" /></th>
-                  <th><T text="Result" /></th>
-                  <th><T text="Hyperparameters" /></th>
-                  <th className="text-end"><T text="Actions" /></th>
+                  <td colSpan={5} className="text-muted">
+                    <T text="Not fitted yet. A fit reads every row of the dataset and runs on the server; this list says how it went." />
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {instances.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="text-muted">
-                      <T text="Not fitted yet. A fit reads every row of the dataset and runs on the server; this list says how it went." />
-                    </td>
-                  </tr>
-                )}
-                {instances.map((instance) => (
-                  <tr key={instance.id}>
-                    <td>
-                      <a href={`#/model-instances/${encodeURIComponent(instance.id)}`}>
-                        {instanceLabel(instance)}
-                      </a>
-                      {/* An unnamed fit is already addressed by when it
-                          happened, so the time is not printed under itself. */}
-                      {instance.name.trim() !== "" && (
-                        <div className="text-muted small">
-                          {formatTimestamp(instance.created)}
-                        </div>
-                      )}
-                    </td>
-                    <td>
-                      <div className="d-flex align-items-center gap-2">
-                        <StatusBadge tone={fitTone(instance.status)}>
-                          {instance.status}
-                        </StatusBadge>
-                        {instance.active && <StatusBadge tone="green"><T text="active" /></StatusBadge>}
-                      </div>
-                      {/* A fit that failed says so **here**, because the request
-                          that started it returned long before it failed. */}
-                      {instance.error && (
-                        <div className="text-danger small">{instance.error}</div>
-                      )}
-                      {instance.status === "fitting" && readProgress(instance.progress) && (
-                        <div className="text-muted small">
-                          {stageText(t, readProgress(instance.progress)?.stage)}
-                        </div>
-                      )}
-                      {instance.warnings.length > 0 && (
-                        <div className="text-warning small">
-                          {t("{count} warnings", { count: instance.warnings.length })}
-                        </div>
-                      )}
-                    </td>
-                    <td>
-                      {headlineMetric(readMetrics(instance.metrics)) ??
-                        outcomeSummary(readOutcome(instance.outcome))}
-                    </td>
-                    <td className="text-muted small font-monospace">
-                      {hyperparameterText(instance.hyperparameters)}
-                    </td>
-                    <td className="text-end">
-                      <div className="btn-list justify-content-end flex-nowrap">
-                        {instance.status === "fitted" && !instance.active && (
-                          <Button
-                            size="sm"
-                            variant="outline-primary"
-                            onClick={() => void activate(instance)}
-                          >
-                            <T text="Activate" />
-                          </Button>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="outline-secondary"
-                          href={`#/model-instances/${encodeURIComponent(instance.id)}`}
-                        >
-                          <T text="Open" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline-danger"
-                          onClick={() => void removeInstance(instance)}
-                        >
-                          <T text="Remove" />
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
-            <Card.Footer className="text-muted small">
-              {chosen?.cancellable ? (
-                <T text="A fit runs on the server and this list polls until it finishes; its screen can cancel it. Nothing survives a restart: an instance still fitting when the server stops is failed at boot." />
-              ) : (
-                <T text="A fit runs on the server and this list polls until it finishes. Nothing survives a restart: an instance still fitting when the server stops is failed at boot, because there is no cancel and no way to pick it back up." />
               )}
-            </Card.Footer>
-          </Card>
-        )}
-      </PageBody>
-    </>
+              {instances.map((instance) => (
+                <tr key={instance.id} className={instance.id === shown ? "table-active" : undefined}>
+                  <td>
+                    <Button variant="link" className="p-0" onClick={() => select(instance.id)}>
+                      {instanceLabel(instance)}
+                    </Button>
+                    {instance.name.trim() !== "" && (
+                      <div className="text-muted small">{formatTimestamp(instance.created)}</div>
+                    )}
+                  </td>
+                  <td>
+                    <div className="d-flex align-items-center gap-2">
+                      <StatusBadge tone={fitTone(instance.status)}>{instance.status}</StatusBadge>
+                      {instance.active && (
+                        <StatusBadge tone="green">
+                          <T text="active" />
+                        </StatusBadge>
+                      )}
+                      {instance.dataset_changed && (
+                        <StatusBadge tone="yellow" title={t("The dataset has changed since this fit.")}>
+                          <T text="dataset changed" />
+                        </StatusBadge>
+                      )}
+                    </div>
+                    {instance.error && <div className="text-danger small">{instance.error}</div>}
+                    {instance.warnings.length > 0 && (
+                      <div className="text-warning small">{t("{count} warnings", { count: instance.warnings.length })}</div>
+                    )}
+                  </td>
+                  <td>{headlineMetric(readMetrics(instance.metrics)) ?? outcomeSummary(readOutcome(instance.outcome))}</td>
+                  <td className="text-muted small font-monospace">{hyperparameterText(instance.hyperparameters)}</td>
+                  <td className="text-end">
+                    <div className="btn-list justify-content-end flex-nowrap">
+                      {instance.status === "fitted" && !instance.active && (
+                        <Button size="sm" variant="outline-primary" onClick={() => void activate(instance)}>
+                          <T text="Activate" />
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline-danger" onClick={() => void removeInstance(instance)}>
+                        <T text="Remove" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+          <Card.Footer className="text-muted small">
+            <T text='The active fit is the one predict("…") and models.get("…") answer with. A fit still running when the server stops is failed at boot.' />
+          </Card.Footer>
+        </Card>
+      )}
+    </div>
   );
 }
 
@@ -814,31 +871,6 @@ function programCheckText(raw: unknown): string | null {
     (p): p is string => typeof p === "string" && p.trim() !== "",
   );
   return parts.length > 0 ? parts.join("\n\n") : null;
-}
-
-/** A running fit's stage, as a word. */
-export function stageText(
-  t: (text: string) => string,
-  stage: string | undefined,
-): string {
-  switch (stage) {
-    case "queued":
-      return t("queued for a process");
-    case "compiling":
-      return t("compiling");
-    case "sampling":
-      return t("sampling");
-    case "summarising":
-      return t("summarising");
-    case "reading":
-      return t("reading the data");
-    case "fitting":
-      return t("fitting");
-    case "scoring":
-      return t("scoring");
-    default:
-      return "";
-  }
 }
 
 /** The hyperparameter point a fit used, on one line. */

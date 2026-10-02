@@ -7,6 +7,8 @@ models, draw maps and write reports. Its design is in
 
 - **Part 1 — Workspaces and the dataset editor.**
 - **Part 2 — The data explorer:** plots, summary tables and hypothesis tests.
+- **Part 3 — Models:** the model editor, a fit's outputs, comparing models, and a model from a
+  box plot.
 
 You need a server and an admin login. Nothing else: the data comes from a command.
 
@@ -41,14 +43,14 @@ Sign in to the admin UI as an administrator.
 
 ### Step 2 — The front page
 
-The admin sidebar has an **Analytics** link, beside *Predictive models* (which stays until a later
-milestone folds it in). It opens the Analytics UI at `/analytics/`, a separate application from
-the admin UI that shares its sign-in and its light or dark setting.
+The admin sidebar has an **Analytics** link. It opens the Analytics UI at `/analytics/`, a
+separate application from the admin UI that shares its sign-in and its light or dark setting.
 
-The front page has two lists. **Datasets** are the definitions of rows this part is about; each
+The front page has three lists. **Datasets** are the definitions of rows this part is about; each
 opens in the **Dataset editor**. Three are there already — `Houses`, `Measurements` and `Events`,
-which the demo made for part 2. **Workspaces** are places you work in, each of one kind and
-remembering where you were: a Data explorer, a Report, a Map and so on. There are none yet.
+which the demo made for part 2. **Models** are part 3's. **Workspaces** are places you work in,
+each of one kind and remembering where you were: a Data explorer, a Report, a Map and so on.
+There are none yet.
 Look at the kinds under **New workspace**: all are listed, and all but the Data explorer
 (part 2) are disabled, each labelled with the milestone that brings it.
 
@@ -139,15 +141,14 @@ will not fit until they are given another one, and it refuses while another data
 
 ### Step 8 — A model reads it
 
-The *Predictive models* screens in the admin UI now pick a dataset instead of building one.
-Follow [tutorial-models.md](tutorial-models.md) step 2 to make the `Sold houses` dataset, then
-create a linear regression on it. The **Dataset** card is a dropdown of the named datasets, with
-**Edit in Analytics** beside it, and the preview under it shows the rows and their types. Fit it.
-The `estimated_price` calculated field from the models tutorial (`predict("House prices")`)
-returns a number for every house, sold or not.
+A model picks a dataset rather than building one. Follow [tutorial-models.md](tutorial-models.md)
+step 2 to make the `Sold houses` dataset, then press **New model** on its row: the model editor
+opens with the dataset chosen. Make it a linear regression of `price` and fit it. The
+`estimated_price` calculated field from the models tutorial (`predict("House prices")`) returns a
+number for every house, sold or not. Part 3 is the model editor itself.
 
-A fit records the version of the dataset it read. Change the dataset afterwards, and the fit's
-screen says the dataset has changed since it was fitted; its predictions keep reading the rows the
+A fit records the version of the dataset it read. Change the dataset afterwards, and the model
+editor says the dataset has changed since the fit; its predictions keep reading the rows the
 way they were read when it was fitted, until you fit again.
 
 ### What to remember
@@ -321,4 +322,126 @@ chose, not the plot itself, so it is redrawn from the dataset's rows as they are
 - **The database does the counting.** Bins, quartiles, means and sums of squares are SQL, so a
   million rows is quick; rows that are drawn one by one are sampled, and the plot says so.
 - **A workspace remembers choices**, so the plot follows the data.
+
+---
+
+## Part 3 — Models
+
+A **model** is a dataset and a provider that answers a question about it: a linear regression's
+coefficients, a classifier's classes, a posterior's draws. Models are listed on the front page
+between the datasets and the workspaces, and a model opens in the **model editor** at
+`#/models/<id>`. A model is not a workspace: like a dataset, it is a named thing other things
+refer to — a `predict("…")` in a calculated field, a `fit_model` trigger — and there is one of
+each, whoever opens it. ([tutorial-models.md](tutorial-models.md) is the longer story of what a
+model is; this part is the editor.)
+
+### Step 1 — The way in
+
+The admin sidebar's *Predictive models* is gone: **Analytics** is the way in. An old link to a
+model — `/#/models/<id>` in the admin UI, or a fit's `/#/model-instances/<id>` — lands in the
+model editor, the fit selected.
+
+### Step 2 — A model on a dataset
+
+A model's features are every column of its dataset but the label, so the dataset is where you
+choose them. Make a dataset `Price, area and neighbourhood` on the table `houses` with three
+operations: a Filter `sold === true` (an unsold house has no price to learn from), a Calculated
+column `neighbourhood_name = neighbourhoodⱵname`, and a Select columns keeping `price`, `area`
+and `neighbourhood_name`.
+
+Why the name and not `neighbourhood` itself: the key's values are numbers, the ids of rows of
+`neighbourhoods`, and a regression would fit one slope across them as if neighbourhood 4 were
+twice neighbourhood 2. A text column is a **category**, and gets a coefficient per level.
+
+On its row on the front page, press **New model**. The model editor opens with the dataset
+chosen and its first rows previewed, each column with the type its values came back as. Call the
+model `House prices`, choose the provider **linear_regression**, and set its **Label** to
+`price`. The outcome reads **Regression on price**. Leave the split as it is.
+
+### Step 3 — Fit it, and read the outputs
+
+Press **Fit**. The model is saved first, then a card shows what the fit is doing — reading the
+data, fitting, scoring — sent by the server as it happens, with **Cancel**. A moment later the
+**outputs** appear below the form:
+
+- **Coefficients** — an intercept, `area`, and a row for each neighbourhood but the first
+  (`Harbour`, alphabetically), the baseline the others are compared with. Each has its standard error, *t*, *p* and stars.
+- **Statistics** — R², adjusted R², the residual standard error.
+- **Metrics** — R², RMSE and MAE on the training and the test rows.
+- **Residuals against fitted values**, with a smoother: flat and centred on zero when a straight
+  line suits the data.
+- **Actual against predicted**, with the line a perfect model would lie on.
+
+The **More plots** drop-down has the two a regression does not show unasked: a **Normal Q-Q
+plot of the residuals** and their histogram. Every plot is a plot spec over the fit's output
+data — its scored rows, with fitted values and residuals — drawn by the same code as the Data
+explorer's plots.
+
+Below the outputs, **Try a row** asks this fit about a house that is not in the table, and the
+**Fits** table lists every fit of the model with what it scored: click one to see its outputs,
+**Activate** the one `predict("House prices")` should use.
+
+### Step 4 — The editor remembers
+
+Open the Q-Q plot from **More plots**, and fold **Coefficients** by clicking its header. Go back
+to the front page and open the model again: the Q-Q plot is still open and the table still
+folded. That is the model's **view state**, a dictionary kept beside the model that the editor
+writes as you go. Nothing about fitting reads it, so none of this marks the fit as out of date.
+
+### Step 5 — Clone, change, compare
+
+On the front page, **Clone** the model. The copy, `House prices (copy)`, opens in the editor with
+the same dataset — shared, so changing it would change the original model's too. Press **Use a
+copy** beside the dataset: the dataset is cloned and the copy chosen. **Edit dataset** opens it
+in the Dataset editor; add `year_built` to its Select columns and press **Back to the model**.
+Fit.
+
+Back on the front page, tick both models and press **Compare**: their outputs side by side, the
+coefficient tables next to each other — the copy's has a `year_built` row — and the metrics and
+plots beneath. Nothing about a comparison is kept; it is read and left.
+
+### Step 6 — When the dataset changes
+
+Open `Price, area and neighbourhood` in the Dataset editor and add a Filter `area > 60`. Return to
+`House prices`: the fit says *the dataset has changed since this fit*, and its row in **Fits** is
+marked *dataset changed*. The fit keeps reading the rows the way it read them; fit again to use
+the new definition. `House prices (copy)`, on its own copy of the dataset, is not affected.
+
+### Step 7 — A Stan model
+
+With CmdStan installed, follow [tutorial-stan.md](tutorial-stan.md) part 1 in the model editor:
+the program is shown in an editor pane beside the bindings and saved back to its file store
+(**Open in IDE** is still there for anything bigger), **Bind automatically** and **Preview data**
+check the bindings, and **Fit** shows a progress bar per chain. The warnings come first, since
+they say whether anything below can be trusted; then the outputs — a summary table per variable
+and **Trace plots**, with **Rank plots** and **Posterior densities** in More plots; then the
+diagnostics, and one variable at a time with its trace, its histogram and, for a variable over
+a dimension, its forest plot.
+
+### Step 8 — A model from a box plot
+
+In the Data explorer workspace of part 2, put `price` on Y and `neighbourhood` on X: a box plot,
+with a one-way ANOVA beside it. Press **Open as model** at the top of the tests. A linear
+regression opens in the model editor, named `price by neighbourhood`, on a new dataset
+`Houses: price by neighbourhood` — the explorer's dataset with the neighbourhood named by its
+`name` (a key is a category, not a number) and a Select columns keeping the two columns. Fit it:
+the coefficients are the differences between the neighbourhoods' means, the ANOVA's question
+asked as a model. (Y a category instead of a number makes it a logistic
+regression.)
+
+### Step 9 — Deleting a model
+
+Delete warns with what uses the model by name: a calculated field calling `predict("House
+prices")`, a trigger whose `fit_model` fits it, a code body that asks `models.get("House
+prices")`. Its fits go with it.
+
+### What to remember
+
+- **A model is a dataset and a provider.** The dataset chooses the rows and the features; the
+  provider's settings choose the label.
+- **A fit's outputs are what its provider declared**: tables, and plots over the fit's own output
+  data, the optional ones a drop-down away.
+- **The editor remembers** how you left it, in the model's view state, which no fit reads.
+- **A clone shares its dataset**; *Use a copy* gives it one of its own to change.
+- **Compare** puts models side by side; **Open as model** turns a box plot into one.
 

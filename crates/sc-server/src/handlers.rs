@@ -3344,6 +3344,22 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
         }
     });
 
+    reg.register("modelUsage", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = sc_model::ModelId(parse_uuid(ctx.path_param("id")?, "model")?);
+                let model = sc_model::load_model(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no model with id {id}")))?;
+                Ok(HandlerResponse::ok(
+                    model_usage(&catalog, &model.name).await?,
+                ))
+            }
+        }
+    });
+
     reg.register("patchModelViewState", {
         let catalog = catalog.clone();
         move |ctx| {
@@ -9373,6 +9389,100 @@ async fn dataset_shape(
         .await
         .ok()?;
     Some(sc_model::DatasetShape::of_frame(&dataset.table, &frame))
+}
+
+/// What refers to the model `name` (`modelUsage`, analytics TODO A3.5).
+///
+/// A calculated field calls it when its formula's analysis has a
+/// `predict("name")`; a formula that no longer validates is matched on its
+/// text instead, since it is exactly the kind of use a delete warning should
+/// still find. A trigger, or a step of a workflow's current version, **fits**
+/// it when it is a `fit_model` naming it, and otherwise **names** it when its
+/// configuration mentions `predict("name")` or `models.get("name")` — a stored
+/// calculation's `update_rows`, a code body.
+async fn model_usage(catalog: &Catalog, name: &str) -> Result<Json> {
+    let quoted = serde_json::to_string(name).unwrap_or_default();
+    let mentions = |text: &str| {
+        [
+            format!("predict({quoted})"),
+            format!("models.get({quoted})"),
+        ]
+        .iter()
+        .any(|needle| text.contains(needle.as_str()))
+    };
+    let shape = catalog.schema_shape()?;
+    let mut fields = Vec::new();
+    for table in catalog.tables()? {
+        if table.is_system() {
+            continue;
+        }
+        for field in &table.fields {
+            let DataFieldKind::Calc { expression } = &field.kind else {
+                continue;
+            };
+            let calls = sc_expr::Formula::parse(expression)
+                .ok()
+                .and_then(|f| f.validate(&shape, &table.name).ok())
+                .map(|a| a.model_calls.iter().any(|c| c.model == name));
+            if calls.unwrap_or_else(|| mentions(expression)) {
+                fields.push(json!({ "table": table.name, "field": field.base.name }));
+            }
+        }
+    }
+    let how = |action: &str, configuration: &Attrs| -> Option<&'static str> {
+        let config = Json::Object(configuration.clone());
+        // `fit_model`'s name and its `model` setting.
+        if action == "fit_model" && config.get("model").and_then(Json::as_str) == Some(name) {
+            Some("fits")
+        } else if any_string(&config, &mentions) {
+            Some("names")
+        } else {
+            None
+        }
+    };
+    let mut triggers = Vec::new();
+    for trigger in list_triggers(catalog).await? {
+        let found = match &trigger.body {
+            TriggerBody::Action {
+                action,
+                configuration,
+            } => how(action, configuration),
+            TriggerBody::Workflow => {
+                let mut found = None;
+                if let Some(workflow) = sc_workflow::current_workflow(catalog, trigger.id).await? {
+                    for step in &workflow.steps {
+                        if let sc_workflow::StepKind::Action {
+                            action,
+                            configuration,
+                        } = &step.kind
+                            && let Some(h) = how(action, configuration)
+                        {
+                            // A fit outranks a mention.
+                            if found != Some("fits") {
+                                found = Some(h);
+                            }
+                        }
+                    }
+                }
+                found
+            }
+        };
+        if let Some(how) = found {
+            triggers.push(json!({ "id": trigger.id.0, "name": trigger.name, "how": how }));
+        }
+    }
+    Ok(json!({ "fields": fields, "triggers": triggers }))
+}
+
+/// Whether any string inside `value` satisfies `test` — a code body, a
+/// formula, at any depth of an action's configuration.
+fn any_string(value: &Json, test: &impl Fn(&str) -> bool) -> bool {
+    match value {
+        Json::String(s) => test(s),
+        Json::Array(items) => items.iter().any(|v| any_string(v, test)),
+        Json::Object(map) => map.values().any(|v| any_string(v, test)),
+        _ => false,
+    }
 }
 
 /// One stored model as JSON (matching `model_schema`), with the reason it cannot

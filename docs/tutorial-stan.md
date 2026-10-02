@@ -28,8 +28,8 @@ becomes a Stan program's data:
 Then there is a section on **doing prediction in code**, which is how a posterior answers a
 question about a new row for now.
 
-This continues from [tutorial-models.md](tutorial-models.md): you know the **Predictive models** screen, a dataset
-and a fit. You don't need to know much Stan to follow along, since the programs are given in
+This continues from [tutorial-models.md](tutorial-models.md): you know the Analytics UI's
+**model editor**, a named dataset and a fit. You don't need to know much Stan to follow along, since the programs are given in
 full. You do need to be comfortable reading one.
 
 ---
@@ -52,7 +52,7 @@ feldspar cmdstan install --jobs 1
 ```
 
 Restart the server, and its startup log says which CmdStan it will use. Without one, the
-**stan** provider is still on the model form's provider picker, with the sentence saying why it can't
+**stan** provider is still on the model editor's provider picker, with the sentence saying why it can't
 fit. [OPERATIONS.md](OPERATIONS.md) §9 has the details: memory, the compile cache, where
 it looks, and the service account under systemd.
 
@@ -120,10 +120,11 @@ So the truth is `gamma0 = 1.5`, `gamma1 = 0.7`, `beta = −0.7`, `sigma_a = 0.3`
 
 ### Step 2 — The program, in a file store
 
-**The configuration of a Stan model is a Stan file.** There is no form that writes Stan, and no
-text box on the model form to paste one into. The program lives where every other file this
-system edits lives, in a **file store**. So you edit it in the IDE, version it in a git store,
-and the coding agent can write it with the tools it already has.
+**The configuration of a Stan model is a Stan file.** There is no form that writes Stan. The
+program lives where every other file this system edits lives, in a **file store**: the model
+editor shows it in an editor pane that reads and writes that file, and for anything bigger you
+open the IDE. Either way it is versioned with the store, and the coding agent can write it with
+the tools it already has.
 
 Under **File stores → New file store**, make a store called `stan`: backend `local`, a
 directory such as `/srv/stan`, and tick **Create the directory**. Open it in the IDE (**(edit
@@ -176,24 +177,18 @@ including file, and a path that leaves the store is refused.
 
 ### Step 3 — The model: a dataset, a related dataset, a program
 
-**Predictive models → New model**, named `Radon`. Pick **stan** as the **Model provider**. The form grows
-the parts a posterior needs; none of them says "Stan", because any provider that binds data
-gets them.
+First the two datasets, in **Analytics**: a dataset `Radon homes` on the table `homes` with a
+Calculated column `y = log_radon` and a Select columns operation keeping `county`, `floor` and
+`y`; and a dataset `Counties` on the table `counties`, with no operations. The dataset's column
+names are the ones the bindings will use, so naming this one `y` means **Bind automatically**
+can match it to the program's `y`.
 
-**Dataset.** Table `homes`, with three columns:
+Then **New model** on the Analytics front page, named `Radon`, with the dataset `Radon homes`.
+Pick **stan** as the **Model provider**. The model editor grows the parts a posterior needs;
+none of them says "Stan", because any provider that binds data gets them.
 
-| Name | Formula |
-|---|---|
-| `county` | `county` |
-| `floor` | `floor` |
-| `y` | `log_radon` |
-
-The dataset's column names are the ones the bindings will use, so naming this one `y` means
-**Bind automatically** can match it to the program's `y`.
-
-**Related datasets → Add a related dataset.** Name it `counties`, over table `counties`, with
-one column `log_uranium` (formula `log_uranium`). Set its **label formula** to `name`. The
-model's own dataset is called `main` from now on.
+**Related datasets → Add a related dataset.** Name it `counties`, with the dataset `Counties`.
+Set its **label** to `name`. The model's own dataset is called `main` from now on.
 
 Every dataset is also a **dimension**: an ordered set of positions `1..n`, one per row, each
 with its key and its label. That is where a Stan index comes from. **A county's position comes
@@ -201,10 +196,11 @@ from the `counties` table, not from the homes.** County 85 has no homes, but it 
 `counties`, so it gets a position and an `alpha`. A numbering built from "the distinct counties
 in `homes`" would silently drop exactly the county partial pooling says the most about.
 
-**Program.** File store `stan`, path `models/radon.stan`. Press **Check program**. With CmdStan
-available this runs `stanc`, the Stan compiler's front end: about a second and no C++. Its
-warnings (or its error, with the store path it is about) appear under the card. **Open in IDE**
-takes you back to the file.
+**Program.** File store `stan`, path `models/radon.stan`. The program appears below in an
+editor; change it there and **Save program** writes the file back to the store and reads its
+interface again. Press **Check program**. With CmdStan available this runs `stanc`, the Stan
+compiler's front end: about a second and no C++. Its warnings (or its error, with the store path
+it is about) appear under the card. **Open in IDE** opens the store in the IDE, on the file.
 
 **Settings.** The sampler's settings are ordinary provider settings, with the defaults CmdStan
 users know: 4 chains, 1 000 warmup and 1 000 sampling iterations, `adapt_delta` 0.8, tree
@@ -213,7 +209,7 @@ which makes a fit reproducible. Leave it empty for a fresh seed each fit; the on
 recorded on the fit either way. Set **File store for the raw CmdStan run** to `stan`, so the
 fit keeps CmdStan's own output for **Download run** (Step 8).
 
-There is no split and no hyperparameter grid for a posterior: the form hides them. Save.
+There is no split and no hyperparameter grid for a posterior: the editor hides them. Save.
 
 ### Step 4 — Bind the data block
 
@@ -261,7 +257,8 @@ key that isn't in `counties` follows its **unknown** policy the same way. Put `u
 
 ### Step 6 — Fit
 
-Press **Fit**. The fit screen shows the stage and a progress bar per chain:
+Press **Fit**. The model editor shows the stage and a progress bar per chain, pushed by the
+server as they change:
 
 - **compiling**: the first fit of a program is a C++ compile, a minute or so. It happens once
   per program, and the next fit starts sampling at once. **Compile** on the program card warms
@@ -283,11 +280,17 @@ more iterations. If it says there were divergent transitions, raise `adapt_delta
 reparameterise. A fit with warnings is still a fit: a posterior isn't wrong for being hard, and
 the warning is the honest output.
 
+**Then the outputs**: a summary table per variable, and **Trace plots** of the first
+parameters — one small plot per parameter, a line per chain. **More plots** adds their **Rank
+plots** (a chain whose ranks are not flat has not mixed with the others) and **Posterior
+densities**, one curve per chain. Like a regression's residual plots, they are plot specs over
+the fit's own draws.
+
 **Diagnostics**: divergent transitions per chain (0), iterations that hit the maximum tree
 depth (0), E-BFMI per chain, the worst R̂ and the smallest bulk and tail effective sample sizes
 across every parameter, and each chain's wall time.
 
-**Then one section per variable.** The scalars `gamma0`, `gamma1`, `beta`, `sigma_a` and
+**Then one section per variable**, picked from the list of variables. The scalars `gamma0`, `gamma1`, `beta`, `sigma_a` and
 `sigma_y` each have one row: mean, sd, MCSE, the 5 %, 50 % and 95 % quantiles, R̂, and bulk and
 tail ESS. These are the same definitions the R `posterior` package and ArviZ use. Compare them
 with the truth from Step 1: each true value should sit inside its 5–95 % interval.

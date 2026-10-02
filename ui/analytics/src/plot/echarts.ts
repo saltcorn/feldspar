@@ -333,7 +333,16 @@ function axisInfo(
           if (t && i !== -1) for (const r of t.rows) seen.set(keyOf(r[i]), r[i]);
         }
       }
-      const values = orderedValues({ spec }, field, [...seen.values()].sort(compareValues));
+      const sorted = orderedValues({ spec }, field, [...seen.values()].sort(compareValues));
+      // A fixed domain on the scale is the order to draw them in; values it
+      // does not list follow.
+      const fixed = scale.domain;
+      const values = fixed
+        ? [
+            ...fixed.filter((v) => seen.has(keyOf(v))),
+            ...sorted.filter((v) => !fixed.some((f) => keyOf(f) === keyOf(v))),
+          ]
+        : sorted;
       categories = values.map((v) => labelOf(v, missing));
       category = (l, r) => labelOf(r[idx(l, channel)], missing);
     }

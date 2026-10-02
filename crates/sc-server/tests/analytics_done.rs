@@ -19,6 +19,18 @@
 //! reopened. The bins and box statistics are checked against the rows read
 //! through the dataset; the tests against R's answers for the same rows
 //! (`tests/r/demo_reference.R` → `demo_reference.json`).
+//!
+//! **A3** (analytics TODO A3.10): the model editor's Try it — the front
+//! page's models, a linear regression of `price` on `area` and
+//! `neighbourhood` fitted with every output it declares drawn (the optional
+//! Q-Q plot only when asked for), the editor's view state kept without making
+//! the fit out of date, a clone given a copy of the dataset with `year_built`
+//! and the two compared, the dataset edited and the fits flagged, the stub
+//! posterior provider (`posterior_api.rs`'s sampler) bound over the
+//! neighbourhoods with its summary and its trace, rank and density plots
+//! drawn, **Open as model** as the explorer does it, and what uses a model
+//! listed for the delete warning. The real CmdStan half is
+//! `stan_models.rs`'s `radon_in_the_model_editor`, behind `#[ignore]`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -136,6 +148,10 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
     sc_analytics::demo::demo_analytics(&catalog, false).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
+    // The stub posterior provider, for A3's posterior half without CmdStan.
+    let mut registry = models.base_registry()?;
+    registry.register(Arc::new(crate::posterior_api::Sampler))?;
+    models.set_registry(Arc::new(registry));
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
     let apps = Arc::new(
         AppMounts::new(catalog.clone())
@@ -907,4 +923,473 @@ async fn the_try_it_of_milestone_a2() -> sc_error::Result<()> {
     assert_eq!(reopened["state"], state);
     assert_eq!(reopened["kind"], json!("data_explorer"));
     Ok(())
+}
+
+// --- A3: models in the Analytics UI ------------------------------------------
+
+impl Client {
+    /// Start a fit of `model` and wait for it, answering the finished fit.
+    async fn fit(&mut self, model: &str) -> Value {
+        let started = self
+            .ok("POST", &format!("/api/models/{model}/fit"), Some(json!({})))
+            .await;
+        let instance = started["id"].as_str().unwrap().to_owned();
+        for _ in 0..800 {
+            let fit = self
+                .ok("GET", &format!("/api/model-instances/{instance}"), None)
+                .await;
+            if fit["status"] != json!("fitting") {
+                assert_eq!(fit["status"], json!("fitted"), "{fit}");
+                return fit;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("the fit {instance} never finished");
+    }
+
+    /// A model's outputs, with the optional plots `include` drawn.
+    async fn outputs(&mut self, model: &str, include: &str) -> Value {
+        self.ok(
+            "GET",
+            &format!("/api/models/{model}/outputs?include={include}"),
+            None,
+        )
+        .await
+    }
+
+    /// A new dataset, answering its id.
+    async fn dataset(&mut self, def: Value) -> String {
+        let made = self.ok("POST", "/api/datasets", Some(def)).await;
+        made["dataset"]["id"].as_str().unwrap().to_owned()
+    }
+}
+
+/// The output `name` of a `getModelOutputs` answer.
+fn output_of<'a>(answer: &'a Value, name: &str) -> &'a Value {
+    answer["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == json!(name))
+        .unwrap_or_else(|| panic!("no output `{name}` in {answer}"))
+}
+
+/// The names of a `getModelOutputs` answer's outputs.
+fn output_names(answer: &Value) -> Vec<String> {
+    answer["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Every output of `answer` is shown: a table with its rows, or a plot drawn
+/// with data in its first layer — none refused, none with an error.
+fn all_drawn(answer: &Value) {
+    for o in answer["outputs"].as_array().unwrap() {
+        assert!(o.get("error").is_none(), "{} has an error: {o}", o["name"]);
+        match o["kind"].as_str().unwrap() {
+            "table" => assert!(
+                !o["table"]["rows"].as_array().unwrap().is_empty()
+                    || o["table"]["text"].is_string(),
+                "{} is an empty table",
+                o["name"]
+            ),
+            _ => {
+                assert!(o["spec"].is_object(), "{} has no spec", o["name"]);
+                let plot = &o["plot"];
+                assert!(plot["error"].is_null(), "{} was refused: {plot}", o["name"]);
+                assert!(
+                    !plot["layers"][0]["rows"].as_array().unwrap().is_empty(),
+                    "{} drew nothing: {plot}",
+                    o["name"]
+                );
+            }
+        }
+    }
+}
+
+/// The terms of a coefficient table.
+fn terms(answer: &Value) -> Vec<String> {
+    output_of(answer, "coefficients")["table"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r[0].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_try_it_of_milestone_a3() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let client = &mut client;
+
+    // 2. The front page's models: none yet. A dataset of the sold houses'
+    //    price, area and neighbourhood, and a linear regression of price on
+    //    the other two.
+    assert_eq!(client.ok("GET", "/api/models", None).await, json!([]));
+    let prices = client
+        .dataset(json!({
+            "name": "House prices",
+            "base": { "kind": "table", "table": "houses" },
+            "operations": [
+                op("sold", "filter", json!({ "formula": "sold === true" })),
+                op("name", "calculated", json!({
+                    "name": "neighbourhood_name", "formula": "neighbourhoodⱵname",
+                })),
+                op("keep", "select", json!({ "columns": [
+                    { "column": "price" }, { "column": "area" }, { "column": "neighbourhood_name" },
+                ] })),
+            ],
+        }))
+        .await;
+    let model = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "House prices",
+                "provider": "linear_regression",
+                "dataset": { "dataset_id": prices },
+                "configuration": { "label": "price" },
+            })),
+        )
+        .await;
+    let model = model["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        view_state(client, &model).await,
+        json!({}),
+        "a new model's view state is empty"
+    );
+
+    // 3. Fit it: the outputs are the coefficient table, the metrics and the
+    //    two residual plots, drawn; the Q-Q plot and the histogram are in
+    //    "More plots", declared but not drawn.
+    let first = client.fit(&model).await;
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    let outputs = client.outputs(&model, "").await;
+    assert_eq!(outputs["fit"]["id"], json!(first_id));
+    assert_eq!(outputs["fit"]["dataset_changed"], json!(false));
+    assert_eq!(
+        output_names(&outputs),
+        [
+            "coefficients",
+            "statistics",
+            "metrics",
+            "residuals_fitted",
+            "actual_predicted",
+            "qq",
+            "residual_histogram",
+        ]
+    );
+    // An intercept, `area`, and a level per neighbourhood but the baseline.
+    let terms_first = terms(&outputs);
+    assert!(terms_first.contains(&"area".to_owned()), "{terms_first:?}");
+    assert_eq!(
+        terms_first
+            .iter()
+            .filter(|t| t.starts_with("neighbourhood_name"))
+            .count(),
+        4,
+        "{terms_first:?}"
+    );
+    for optional in ["qq", "residual_histogram"] {
+        assert_eq!(output_of(&outputs, optional)["optional"], json!(true));
+        assert!(output_of(&outputs, optional).get("plot").is_none());
+    }
+    // Every declared output, drawn when asked for.
+    let every = client.outputs(&model, "qq,residual_histogram").await;
+    all_drawn(&every);
+    let qq = &output_of(&every, "qq")["plot"]["layers"][0];
+    assert_eq!(
+        qq["rows"].as_array().unwrap().len() as i64,
+        first["rows"]["selected"].as_i64().unwrap() - first["rows"]["dropped"].as_i64().unwrap(),
+        "a point per scored row"
+    );
+
+    // 4. The editor's view state: the Q-Q plot opened, the coefficients
+    //    folded, this fit selected — read back as it was left, and the fit
+    //    not out of date for it.
+    client
+        .ok(
+            "PATCH",
+            &format!("/api/models/{model}/view-state"),
+            Some(json!({ "patch": {
+                "editor_plots": ["qq"],
+                "editor_collapsed": ["coefficients"],
+                "editor_fit": first_id,
+            } })),
+        )
+        .await;
+    assert_eq!(
+        view_state(client, &model).await,
+        json!({
+            "editor_plots": ["qq"],
+            "editor_collapsed": ["coefficients"],
+            "editor_fit": first_id,
+        })
+    );
+    let fits = client
+        .ok("GET", &format!("/api/models/{model}/instances"), None)
+        .await;
+    assert_eq!(fits[0]["dataset_changed"], json!(false));
+
+    // 5. Clone it, give the clone a copy of the dataset with `year_built`,
+    //    fit it, and compare: the clone's coefficients have the new term.
+    let clone = client
+        .ok(
+            "POST",
+            &format!("/api/models/{model}/clone"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(clone["name"], json!("House prices (copy)"));
+    assert_eq!(clone["view_state"]["editor_plots"], json!(["qq"]));
+    let clone_id = clone["id"].as_str().unwrap().to_owned();
+    let copy = client
+        .ok(
+            "POST",
+            &format!("/api/datasets/{prices}/clone"),
+            Some(json!({})),
+        )
+        .await;
+    let copy_id = copy["dataset"]["id"].as_str().unwrap().to_owned();
+    let mut copy_def = copy["dataset"].clone();
+    copy_def["operations"][2]["params"]["columns"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "column": "year_built" }));
+    client
+        .ok("PUT", &format!("/api/datasets/{copy_id}"), Some(copy_def))
+        .await;
+    let mut clone_body = clone.clone();
+    clone_body["dataset"] = json!({ "dataset_id": copy_id });
+    client.ok("POST", "/api/models", Some(clone_body)).await;
+    client.fit(&clone_id).await;
+    let compared = [
+        client.outputs(&model, "").await,
+        client.outputs(&clone_id, "").await,
+    ];
+    assert!(!terms(&compared[0]).contains(&"year_built".to_owned()));
+    assert!(terms(&compared[1]).contains(&"year_built".to_owned()));
+    assert_eq!(
+        output_names(&compared[0]),
+        output_names(&compared[1]),
+        "two regressions line up output by output"
+    );
+
+    // 6. Edit the model's dataset: its fit says the dataset has changed; the
+    //    clone's, on the copy, does not.
+    let mut def = client
+        .ok("GET", &format!("/api/datasets/{prices}"), None)
+        .await["dataset"]
+        .clone();
+    def["operations"]
+        .as_array_mut()
+        .unwrap()
+        .insert(1, op("big", "filter", json!({ "formula": "area > 60" })));
+    client
+        .ok("PUT", &format!("/api/datasets/{prices}"), Some(def))
+        .await;
+    assert_eq!(
+        client.outputs(&model, "").await["fit"]["dataset_changed"],
+        json!(true)
+    );
+    let fits = client
+        .ok("GET", &format!("/api/models/{model}/instances"), None)
+        .await;
+    assert_eq!(fits[0]["dataset_changed"], json!(true));
+    assert_eq!(
+        client.outputs(&clone_id, "").await["fit"]["dataset_changed"],
+        json!(false)
+    );
+
+    // 7. A posterior — the stub sampler standing in for CmdStan — bound over
+    //    the houses and their neighbourhoods: its summary per variable, and
+    //    its trace, rank and density plots, all drawn.
+    let homes = client
+        .dataset(json!({
+            "name": "Sold houses",
+            "base": { "kind": "table", "table": "houses" },
+            "operations": [
+                op("sold", "filter", json!({ "formula": "sold === true" })),
+                op("keep", "select", json!({ "columns": [
+                    { "column": "neighbourhood" }, { "column": "area" }, { "column": "price" },
+                ] })),
+            ],
+        }))
+        .await;
+    let areas = client
+        .dataset(json!({
+            "name": "Neighbourhoods",
+            "base": { "kind": "table", "table": "neighbourhoods" },
+            "operations": [],
+        }))
+        .await;
+    let posterior = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "Prices by neighbourhood",
+                "provider": "sampler",
+                "dataset": { "dataset_id": homes },
+                "related": [{ "name": "neighbourhoods", "dataset_id": areas, "label": "name" }],
+                "configuration": { "bindings": {
+                    "N": { "kind": "count", "dataset": "main" },
+                    "J": { "kind": "size", "dimension": "neighbourhoods" },
+                    "county": { "kind": "index", "dataset": "main", "column": "neighbourhood",
+                                "dimension": "neighbourhoods" },
+                    "x": { "kind": "column", "dataset": "main", "column": "area" },
+                    "y": { "kind": "column", "dataset": "main", "column": "price" },
+                } },
+            })),
+        )
+        .await;
+    let posterior = posterior["id"].as_str().unwrap().to_owned();
+    let sampled = client.fit(&posterior).await;
+    assert_eq!(sampled["outcome"]["outcome"], json!("posterior"));
+    let drawn = client.outputs(&posterior, "rank,density").await;
+    let names = output_names(&drawn);
+    for name in ["alpha", "sigma", "trace", "rank", "density"] {
+        assert!(names.contains(&name.to_owned()), "no {name} in {names:?}");
+    }
+    assert!(output_of(&drawn, "rank")["optional"] == json!(true));
+    all_drawn(&drawn);
+    // The summary of `alpha` is labelled by the neighbourhoods' names.
+    let alpha = &output_of(&drawn, "alpha")["table"];
+    assert_eq!(alpha["rows"].as_array().unwrap().len(), 5, "{alpha}");
+    // The trace plot is one small multiple per parameter, a line per chain.
+    let trace = &output_of(&drawn, "trace")["plot"];
+    assert!(
+        trace["facets"]["wrap"].as_array().unwrap().len() >= 2,
+        "{trace}"
+    );
+
+    // 8. Open as model, as the Data explorer does it from a box plot of
+    //    `price` by `neighbourhood`: a dataset on the explorer's naming the
+    //    neighbourhood by its `name` (a key is a category, not a number) and
+    //    keeping the two columns, and a linear regression of the one on the
+    //    other.
+    let houses = client.ok("GET", "/api/datasets", None).await;
+    let houses = houses
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == json!("Houses"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let by = client
+        .dataset(json!({
+            "name": "Houses: price by neighbourhood",
+            "description": "",
+            "base": { "kind": "dataset", "dataset": houses },
+            "operations": [
+                op("op1", "calculated", json!({
+                    "name": "neighbourhood_name", "formula": "neighbourhoodⱵname",
+                })),
+                op("op2", "select", json!({ "columns": [
+                    { "column": "price" }, { "column": "neighbourhood_name" },
+                ] })),
+            ],
+        }))
+        .await;
+    let opened = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "id": null, "name": "price by neighbourhood", "description": "",
+                "provider": "linear_regression", "dataset": { "dataset_id": by },
+                "related": [], "configuration": { "label": "price" },
+                "hyperparameters": {},
+                "split": { "train": 0.8, "validation": 0, "test": 0.2, "seed": 0 },
+                "attributes": {},
+            })),
+        )
+        .await;
+    let opened = opened["id"].as_str().unwrap().to_owned();
+    let fitted = client.fit(&opened).await;
+    // The unsold houses have no price, and are dropped.
+    assert!(fitted["rows"]["dropped"].as_i64().unwrap() > 0);
+    let opened_terms = terms(&client.outputs(&opened, "").await);
+    assert_eq!(
+        opened_terms.len(),
+        5,
+        "an intercept and four levels: {opened_terms:?}"
+    );
+    assert!(
+        opened_terms
+            .iter()
+            .all(|t| t == "(intercept)" || t.starts_with("neighbourhood_name"))
+    );
+
+    // The delete warning: what uses "House prices" by name.
+    assert_eq!(
+        client
+            .ok("GET", &format!("/api/models/{model}/usage"), None)
+            .await,
+        json!({ "fields": [], "triggers": [] })
+    );
+    client
+        .ok(
+            "POST",
+            &format!("/api/model-instances/{first_id}/activate"),
+            None,
+        )
+        .await;
+    client
+        .ok(
+            "POST",
+            "/api/tables/houses/fields",
+            Some(json!({
+                "name": "estimated_price",
+                "type": "float8",
+                "kind": { "type": "calc", "expression": "predict(\"House prices\") + 0" },
+            })),
+        )
+        .await;
+    client
+        .ok(
+            "POST",
+            "/api/triggers",
+            Some(json!({
+                "name": "nightly refit", "description": "", "when": "none", "channel": null,
+                "only_if": null, "action": "fit_model",
+                "configuration": { "model": "House prices" },
+                "min_role": null, "enabled": true,
+            })),
+        )
+        .await;
+    assert_eq!(
+        client
+            .ok("GET", &format!("/api/models/{model}/usage"), None)
+            .await,
+        json!({
+            "fields": [{ "table": "houses", "field": "estimated_price" }],
+            "triggers": [{
+                "id": client.ok("GET", "/api/triggers", None).await[0]["id"],
+                "name": "nightly refit", "how": "fits",
+            }],
+        })
+    );
+    // The clone is used by nothing.
+    assert_eq!(
+        client
+            .ok("GET", &format!("/api/models/{clone_id}/usage"), None)
+            .await,
+        json!({ "fields": [], "triggers": [] })
+    );
+    Ok(())
+}
+
+/// A model's view state, as `getModel` answers it.
+async fn view_state(client: &mut Client, model: &str) -> Value {
+    client
+        .ok("GET", &format!("/api/models/{model}"), None)
+        .await["view_state"]
+        .clone()
 }

@@ -50,3 +50,56 @@ export function errorMessage(err: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+/** The server's error for a request made outside the generated client, in the
+ * generated client's shape (`<op> failed: <status>: <sentence>`), so
+ * [`errorMessage`] reads it the same way. */
+async function rawError(op: string, res: Response): Promise<Error> {
+  let detail = "";
+  try {
+    const body: unknown = await res.json();
+    if (body && typeof body === "object" && "error" in body) {
+      const message = (body as { error: unknown }).error;
+      if (typeof message === "string") detail = `: ${message}`;
+    }
+  } catch {
+    // Non-JSON body: the status alone will have to describe the failure.
+  }
+  return new Error(`${op} failed: ${res.status}${detail}`);
+}
+
+/**
+ * Download a posterior fit's run as a zip (`downloadModelRun`, Stan TODO §16).
+ *
+ * The endpoint is in the typed set, but its answer is bytes, which the
+ * generated client would try to read as JSON — so the request is made here, and
+ * handed to the browser as a file.
+ */
+export async function downloadModelRun(instance: string): Promise<void> {
+  const res = await browserFetch(`/api/model-instances/${encodeURIComponent(instance)}/run`);
+  if (!res.ok) throw await rawError("downloadModelRun", res);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filenameFrom(res.headers.get("content-disposition")) ?? "run.zip";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Freed on the next tick: revoking before the click is dispatched cancels
+  // the download in some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/** The `filename="…"` of a `Content-Disposition` header, if it has one. */
+function filenameFrom(header: string | null): string | null {
+  const match = header?.match(/filename="([^"]+)"/);
+  return match ? match[1] : null;
+}
+
+/** The address of a fit's progress socket (`GET /api/model-instances/{id}/progress`,
+ * analytics TODO A3.3): the page's own host, over `wss:` when the page is `https:`. */
+export function progressSocketUrl(instance: string, location: Pick<Location, "protocol" | "host">): string {
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${scheme}//${location.host}/api/model-instances/${encodeURIComponent(instance)}/progress`;
+}

@@ -370,7 +370,7 @@ body.
 A code body is one trigger's worth of Python. A **plugin** is a package: importable, installable,
 versioned, and able to supply things a body cannot — an **action** that appears in the trigger
 form with its own settings, a **function** callable from a formula, a **table provider** that
-backs a whole table, and a **model provider** that the Models screen can fit.
+backs a whole table, and a **model provider** that the model editor can fit.
 
 Make a directory on the **server's** disk. Three files:
 
@@ -539,7 +539,7 @@ writable.
 
 ### A model provider, and the warnings it gives
 
-A plugin can also supply a **model provider**: something the Models screen can fit
+A plugin can also supply a **model provider**: something the model editor can fit
 ([tutorial-models.md](tutorial-models.md)). It is a class with `fit` and `predict` over a
 columnar frame. This one predicts the label's mean, which is useless as a model and short enough
 to read:

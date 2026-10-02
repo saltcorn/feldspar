@@ -940,6 +940,104 @@ async fn radon_is_bound_sampled_labelled_by_county_and_written_back() -> Result<
     Ok(())
 }
 
+/// The Radon model in the Analytics UI's model editor (analytics TODO A3.10),
+/// against a real CmdStan: the program read and written back through the
+/// file store as the editor's program pane does, the bindings checked, a fit,
+/// and every output the posterior declares drawn — the summary of each
+/// variable labelled by county, and the trace, rank and density plots of its
+/// first parameters. (`analytics_done.rs` walks the same over the stub
+/// sampler.)
+#[tokio::test]
+#[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+async fn radon_in_the_model_editor() -> Result<()> {
+    let mut server = setup(
+        "radon-editor",
+        &radon_sql(),
+        &[("models/radon.stan", RADON)],
+    )
+    .await?;
+    let client = &mut server.client;
+
+    // The program pane reads the program from its store and saves it back.
+    let read = client
+        .ok(
+            "POST",
+            "/api/file-stores/stan/read",
+            Some(json!({ "path": "models/radon.stan" })),
+        )
+        .await;
+    assert_eq!(read["text"], json!(RADON));
+    let edited = format!("// Edited in the model editor.\n{RADON}");
+    client
+        .ok(
+            "POST",
+            "/api/file-stores/stan/write",
+            Some(json!({ "path": "models/radon.stan", "text": edited })),
+        )
+        .await;
+    let checked = client
+        .ok(
+            "GET",
+            "/api/model-programs?store=stan&path=models%2Fradon.stan",
+            None,
+        )
+        .await;
+    assert!(checked["error"].is_null(), "{checked}");
+
+    // The bindings, as Bind automatically and the admin make them.
+    let mut bindings = client
+        .ok(
+            "POST",
+            "/api/model-bindings/suggest",
+            Some(radon_model(json!({}))),
+        )
+        .await["bindings"]
+        .clone();
+    bindings["x"] = json!({ "kind": "column", "dataset": "main", "column": "floor" });
+    bindings["u"] = json!({ "kind": "column", "dataset": "counties", "column": "log_uranium" });
+    let instance = client.fit(radon_model(bindings)).await;
+    let model = instance["model"].as_str().unwrap().to_owned();
+
+    // Every output, the optional plots asked for.
+    let outputs = client
+        .ok(
+            "GET",
+            &format!("/api/models/{model}/outputs?include=rank,density"),
+            None,
+        )
+        .await;
+    let names: Vec<&str> = outputs["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["name"].as_str().unwrap())
+        .collect();
+    for name in ["alpha", "beta", "trace", "rank", "density"] {
+        assert!(names.contains(&name), "no {name} in {names:?}");
+    }
+    for o in outputs["outputs"].as_array().unwrap() {
+        assert!(o.get("error").is_none(), "{o}");
+        if o["kind"] == json!("plot") {
+            assert!(o["plot"]["error"].is_null(), "{o}");
+            assert!(
+                !o["plot"]["layers"][0]["rows"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "{o}"
+            );
+        }
+    }
+    let alpha = outputs["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == json!("alpha"))
+        .unwrap();
+    assert_eq!(alpha["table"]["rows"].as_array().unwrap().len(), COUNTIES);
+    Ok(())
+}
+
 /// Milestone 31's Radon half, against a real CmdStan: a workflow refits the
 /// model with `fit_model`, and a `run_js_code` step writes the new fit's
 /// posterior back through `models.get("Radon")`, firing the `counties` update

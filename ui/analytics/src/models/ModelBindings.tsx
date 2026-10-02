@@ -1,5 +1,7 @@
-// The model form's half for a provider that binds data (Stan TODO §18): where
-// the program is, the datasets beside the main one, the dimensions, and the
+// The model editor's half for a provider that binds data (Stan TODO §18;
+// analytics TODO A3.6, moved from the admin UI): where the program is and the
+// program itself, in an editor (`ProgramEditor.tsx`), the datasets beside the
+// main one, the dimensions, and the
 // **binding table** — one row per `data` variable the program declares, each
 // with a kind picker offering only the kinds that can produce that
 // declaration, the kind's fields, and what Preview data bound it to.
@@ -25,8 +27,8 @@ import Row from "react-bootstrap/Row";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
-import { ideUrl } from "../App";
-import { IconPlus, IconTrash } from "../icons";
+import { T, useT } from "../i18n";
+import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
 import {
   BINDING_KINDS,
   DIMENSION_KINDS,
@@ -47,10 +49,16 @@ import {
   type NamedDataset,
   type Policies,
   type VariablePreview,
-} from "../models";
-import { asString, type FieldSpec } from "../settings";
-import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
-import { T, useT } from "../i18n";
+} from "./models";
+import { ProgramEditor } from "./ProgramEditor";
+import { asString, type FieldSpec } from "./settings";
+
+/** Where a file store is edited as code: the IDE, a page of its own at
+ * `/ide/`, opened on the program when one is named (Stan TODO §18). */
+export function ideUrl(store: string, path?: string): string {
+  const base = `/ide/?store=${encodeURIComponent(store)}`;
+  return path && path.trim() !== "" ? `${base}&path=${encodeURIComponent(path.trim())}` : base;
+}
 
 /** How long the form waits after the program's path is typed before reading
  * its interface — a `stanc` run, about a second. */
@@ -324,7 +332,7 @@ export function BindingSection({
                   ))}
                 </datalist>
                 <Form.Text muted>
-                  <T text="The program lives in the file store and nowhere else: it is edited in the IDE, versioned with the store, and a fit keeps a copy of what it ran." />
+                  <T text="The program lives in the file store and nowhere else: edited below or in the IDE, versioned with the store, and a fit keeps a copy of what it ran." />
                 </Form.Text>
               </Form.Group>
             </Col>
@@ -353,6 +361,9 @@ export function BindingSection({
               {busy === "compile" ? <T text="Compiling…" /> : <T text="Compile" />}
             </Button>
           </div>
+          {store.trim() !== "" && path.trim() !== "" && (
+            <ProgramEditor key={`${store}:${path}`} store={store} path={path} onSaved={() => void readInterface(true)} />
+          )}
           {compiled && <p className="small mt-3 mb-0">{compiled}</p>}
           {check?.error && (
             <Alert variant="danger" className="mt-3 mb-0">
@@ -420,7 +431,7 @@ export function BindingSection({
                     setState((s) => ({ ...s, related: s.related.filter((_, i) => i !== index) }))
                   }
                 >
-                  <IconTrash className="icon-2" />
+                  ×
                 </Button>
               </Card.Header>
               <Card.Body>
@@ -446,7 +457,7 @@ export function BindingSection({
               }))
             }
           >
-            <IconPlus className="icon-2" />
+            + 
             <T text="Add a related dataset" />
           </Button>
         </Card.Body>
@@ -508,7 +519,7 @@ export function BindingSection({
                     }))
                   }
                 >
-                  <IconTrash className="icon-2" />
+                  ×
                 </Button>
               </div>
               <DraftProblems specs={DIMENSION_KINDS} draft={d.draft} />
@@ -524,7 +535,7 @@ export function BindingSection({
               }))
             }
           >
-            <IconPlus className="icon-2" />
+            + 
             <T text="Declare a dimension" />
           </Button>
           <p className="text-muted small mt-2 mb-0">

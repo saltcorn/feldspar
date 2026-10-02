@@ -1,8 +1,10 @@
-// The Analytics UI's front page (analytics TODO A1.21): the datasets, and
-// below them the workspaces. A dataset opens in the Dataset editor at
-// `#/datasets/<id>`; a workspace opens in its frame at `#/w/<id>`.
+// The Analytics UI's front page (analytics TODO A1.21, A3.5): the datasets,
+// the models, and the workspaces. A dataset opens in the Dataset editor at
+// `#/datasets/<id>`, a model in the model editor at `#/models/<id>`, a
+// workspace in its frame at `#/w/<id>`.
 
 import { DatasetList } from "./datasets/DatasetList";
+import { ModelList } from "./models/ModelList";
 import { navigate } from "./router";
 import { WorkspaceList } from "./workspaces/WorkspaceList";
 
@@ -10,6 +12,7 @@ export function Home() {
   return (
     <div className="an-page">
       <DatasetList onOpen={(id) => navigate({ name: "dataset", id })} />
+      <ModelList />
       <WorkspaceList />
     </div>
   );

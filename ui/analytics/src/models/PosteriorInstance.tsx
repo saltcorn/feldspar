@@ -1,14 +1,17 @@
-// A posterior fit on the instance screen (Stan TODO §18).
+// A posterior fit in the model editor (Stan TODO §18; analytics TODO A3.6,
+// moved from the admin UI's instance screen).
 //
-// While it runs: the stage, a progress bar per chain, and Cancel — a fit here
-// is compiles and processes, and can take an hour. After: the **warnings first**,
+// While it runs, the editor shows the stage, a progress bar per chain, and
+// Cancel (`FitRunning.tsx`). After: the **warnings first**,
 // in plain language and in the order they matter (chains that disagree before
 // a tree depth that was hit), then the diagnostics, then one section per
 // variable: its summary labelled by the database (`alpha[Aitkin]`, not
 // `alpha.1`), and for a chosen element its trace per chain and its histogram;
 // for a one-axis labelled variable, the forest plot a hierarchical model is
 // read by. Download run and Write back are here because this is where the
-// admin decides the fit is worth keeping.
+// admin decides the fit is worth keeping. The plots are plot specs drawn by
+// the explorer's compiler (`posteriorPlots.ts`); the fit's own trace, rank and
+// density plots of its first parameters are among its outputs, above.
 //
 // Like the rest of the model screens, **nothing here names Stan**: it renders
 // what the host computed from the draws, which is the same for any provider
@@ -21,17 +24,18 @@ import Card from "react-bootstrap/Card";
 import Col from "react-bootstrap/Col";
 import Form from "react-bootstrap/Form";
 import Modal from "react-bootstrap/Modal";
-import ProgressBar from "react-bootstrap/ProgressBar";
 import Row from "react-bootstrap/Row";
 import Spinner from "react-bootstrap/Spinner";
 import Table from "react-bootstrap/Table";
 
 import { api, downloadModelRun, errorMessage } from "../api";
-import { catalog, columnType, type TableInfo } from "../codeTypes";
+import { T, useT } from "../i18n";
+import { PlotView } from "../plot/PlotView";
+import { useDocumentTheme } from "../theme";
+import { catalog, numericColumns, type TableInfo } from "./catalog";
 import {
   MAIN_DATASET,
   buildPosteriorWrite,
-  chainPercent,
   chainTraces,
   elementAt,
   elementCount,
@@ -46,7 +50,6 @@ import {
   readModelDataset,
   readMetrics,
   readParameters,
-  readProgress,
   readRelated,
   readVariables,
   summaryTable,
@@ -59,11 +62,9 @@ import {
   type SummaryTable,
   type WarningKind,
   type WriteBackForm,
-} from "../models";
+} from "./models";
 import type { BindReport } from "./ModelBindings";
-import { stageText } from "./ModelForm";
-import { ForestPlot, HistogramPlot, TracePlot, chainClass } from "./PosteriorPlots";
-import { T, useT } from "../i18n";
+import { forestHeight, forestPlot, histogramPlot, tracePlot } from "./posteriorPlots";
 
 /** How many rows of a summary are listed before the search box is the way to
  * the rest — `log_lik` has one per observation. */
@@ -72,17 +73,13 @@ const LISTED_ROWS = 100;
 export function PosteriorInstance({
   instance,
   model,
-  cancellable,
   onChanged,
 }: {
   instance: InstanceDetail;
   model: ModelItem | null;
-  /** Whether the provider can stop a running fit. */
-  cancellable: boolean;
-  /** Re-read the instance: after a cancel, a write-back. */
+  /** Re-read the instance: after a write-back. */
   onChanged: () => void;
 }) {
-  const { t } = useT();
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
 
@@ -110,7 +107,6 @@ export function PosteriorInstance({
   const variable = chosen && variables[chosen] ? chosen : (ordered[0] ?? null);
 
   const metrics = readMetrics(instance.metrics).train ?? null;
-  const progress = readProgress(instance.progress);
   const binding = (instance.binding ?? null) as BindReport | null;
   const datasets = useMemo(
     () =>
@@ -122,16 +118,6 @@ export function PosteriorInstance({
         : [],
     [model],
   );
-
-  const cancel = async () => {
-    setError(null);
-    try {
-      await api.cancelModelFit(instance.id);
-      onChanged();
-    } catch (err) {
-      setError(errorMessage(err, "Could not cancel the fit."));
-    }
-  };
 
   const download = async () => {
     setDownloading(true);
@@ -148,71 +134,6 @@ export function PosteriorInstance({
   return (
     <>
       {error && <Alert variant="danger">{error}</Alert>}
-
-      {instance.status === "fitting" && (
-        <Card className="mb-3">
-          <Card.Header className="d-flex align-items-center gap-2">
-            <Spinner animation="border" size="sm" />
-            <span>
-              {progress ? stageText(t, progress.stage) : t("starting")}
-            </span>
-            {cancellable && (
-              <Button
-                size="sm"
-                variant="outline-danger"
-                className="ms-auto"
-                disabled={instance.cancel_requested}
-                onClick={() => void cancel()}
-              >
-                {instance.cancel_requested ? <T text="Stopping…" /> : <T text="Cancel" />}
-              </Button>
-            )}
-          </Card.Header>
-          {/* `.viz`, so the chain keys have the plots' colours. */}
-          <Card.Body className="viz">
-            {progress && progress.chains.length > 0 ? (
-              progress.chains.map((c) => (
-                <div className="mb-2" key={c.chain}>
-                  <div className="d-flex small text-secondary">
-                    <span>
-                      <span className={`viz-key ${chainClass(c.chain)}`} />
-                      {t("Chain {chain}", { chain: c.chain })}
-                    </span>
-                    <span className="ms-auto">
-                      {c.phase === "warmup"
-                        ? t("warmup, iteration {i} of {n}", { i: c.iteration, n: c.total })
-                        : t("sampling, iteration {i} of {n}", { i: c.iteration, n: c.total })}
-                    </span>
-                  </div>
-                  <ProgressBar
-                    now={chainPercent(c)}
-                    variant={c.phase === "warmup" ? "secondary" : "primary"}
-                    aria-label={t("Chain {chain}", { chain: c.chain })}
-                  />
-                </div>
-              ))
-            ) : (
-              <p className="text-muted mb-0">
-                {progress?.stage === "compiling" ? (
-                  <T text="Compiling the program — a C++ compile, a minute or so, once per program: the next fit of the same program starts sampling at once." />
-                ) : progress?.stage === "queued" ? (
-                  <T text="Waiting for the server's process budget: other fits' chains are running." />
-                ) : (
-                  <T text="The fit is running on the server; this screen asks again every second or so." />
-                )}
-              </p>
-            )}
-          </Card.Body>
-        </Card>
-      )}
-
-      <Warnings warnings={instance.warnings} />
-
-      {instance.program_changed && (
-        <Alert variant="info">
-          <T text="The program has changed since this fit. This instance keeps the copy it ran, so what it says is still about that program; fit again to see the new one." />
-        </Alert>
-      )}
 
       {instance.status === "fitted" && (
         <div className="btn-list mb-3">
@@ -316,9 +237,11 @@ function useWarningTitle(): (kind: WarningKind) => string {
   };
 }
 
-/** The warnings, ordered and headed. A fit with warnings is still fitted — a
- * posterior is not wrong because it is hard — and these say what to do. */
-function Warnings({ warnings }: { warnings: string[] }) {
+/** The warnings, ordered and headed — shown above a posterior's outputs
+ * (`FitView.tsx`), because they say whether any of them can be trusted. A fit
+ * with warnings is still fitted — a posterior is not wrong because it is hard
+ * — and these say what to do. */
+export function Warnings({ warnings }: { warnings: string[] }) {
   const title = useWarningTitle();
   if (warnings.length === 0) return null;
   return (
@@ -392,6 +315,7 @@ function VariableView({
   onWritten: () => void;
 }) {
   const { t } = useT();
+  const theme = useDocumentTheme();
   const [table, setTable] = useState<SummaryTable | null>(stored);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [summarising, setSummarising] = useState(false);
@@ -477,6 +401,9 @@ function VariableView({
   );
   const label = elementName(name, table?.rows[row]?.labels ?? [], element);
   const pooled = useMemo(() => (traces ?? []).flatMap((c) => c.values), [traces]);
+  const trace = useMemo(() => (traces ? tracePlot(instanceId, label, traces) : null), [instanceId, label, traces]);
+  const hist = useMemo(() => histogramPlot(instanceId, label, pooled), [instanceId, label, pooled]);
+  const forestDrawn = useMemo(() => forestPlot(instanceId, name, forest), [instanceId, name, forest]);
 
   return (
     <>
@@ -590,10 +517,12 @@ function VariableView({
             </Form.Select>
           </Card.Header>
           <Card.Body>
-            <ForestPlot rows={forest} selected={row} onSelect={setRow} />
+            <div style={{ height: forestHeight(forest.length) }} className="an-forest">
+              <PlotView spec={forestDrawn.spec} data={forestDrawn.data} theme={theme} />
+            </div>
           </Card.Body>
           <Card.Footer className="text-muted small">
-            <T text="The mean and the 90% interval (5% to 95%) of each element. A group with little data has a wide interval, pulled toward the others — that is partial pooling. Click a row for its trace." />
+            <T text="The mean and the 90% interval (5% to 95%) of each element. A group with little data has a wide interval, pulled toward the others — that is partial pooling. Click a row of the table for its trace." />
           </Card.Footer>
         </Card>
       )}
@@ -609,15 +538,19 @@ function VariableView({
               <Spinner animation="border" size="sm" />
             </div>
           )}
-          {traces && traces.length > 0 && (
+          {trace && traces && traces.length > 0 && (
             <Row>
               <Col xl={7}>
                 <h4 className="h5"><T text="Trace per chain" /></h4>
-                <TracePlot traces={traces} />
+                <div className="an-output-plot">
+                  <PlotView spec={trace.spec} data={trace.data} theme={theme} categorical={["chain"]} />
+                </div>
               </Col>
               <Col xl={5}>
                 <h4 className="h5"><T text="Histogram" /></h4>
-                <HistogramPlot values={pooled} />
+                <div className="an-output-plot">
+                  <PlotView spec={hist.spec} data={hist.data} theme={theme} />
+                </div>
               </Col>
             </Row>
           )}
@@ -687,7 +620,7 @@ function WriteBack({
 
   const into = form.mode === "update" ? target ?? "" : form.table;
   const fields = schema.find((s) => s.name === into)?.columns ?? [];
-  const numeric = fields.filter((c) => columnType(c).startsWith("number")).map((c) => c.name);
+  const numeric = numericColumns(fields);
   const statistics = table?.statColumns ?? ["mean", "sd", "q5", "q50", "q95"];
 
   const submit = async () => {

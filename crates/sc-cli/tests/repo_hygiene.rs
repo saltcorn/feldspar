@@ -1531,12 +1531,64 @@ fn the_models_tutorial_walks_the_definition_of_done() {
         // …and the two operational facts a reader will meet in production.
         "--model-max-rows",
         "compiled out",
+        // Where it all happens since analytics A3: the model editor, its
+        // outputs, and the comparison of two models.
+        "model editor",
+        "More plots",
+        "Compare",
     ] {
         assert!(
             tutorial.contains(fragment),
             "the models tutorial should cover `{fragment}`"
         );
     }
+}
+
+/// The admin UI's *Predictive models* screens were retired in analytics A3
+/// (TODO A3.8): models are made, fitted and read in the Analytics UI's model
+/// editor, and the admin's old links redirect there. A document that still
+/// sends a reader to the old screens would send them somewhere that is not
+/// there, and the screens' source must not creep back into the admin bundle.
+#[test]
+fn no_document_teaches_the_retired_model_screens() {
+    let root = workspace_root();
+    for doc in [
+        "README.md",
+        "docs/OPERATIONS.md",
+        "docs/tutorial-models.md",
+        "docs/tutorial-stan.md",
+        "docs/tutorial-analytics.md",
+        "docs/tutorial-python.md",
+        "docs/tutorial-triggers.md",
+    ] {
+        let text = read(&root, doc);
+        for gone in [
+            "Predictive models →",
+            "**Predictive models** is in the sidebar",
+            "the Models tab",
+            "Models tab says",
+            "the instance screen",
+            "Edit in Analytics",
+        ] {
+            assert!(!text.contains(gone), "{doc} still teaches `{gone}`");
+        }
+    }
+    for gone in [
+        "ui/admin/src/screens/ModelForm.tsx",
+        "ui/admin/src/screens/ModelInstance.tsx",
+        "ui/admin/src/screens/PosteriorInstance.tsx",
+        "ui/admin/src/models.ts",
+    ] {
+        assert!(
+            !root.join(gone).exists(),
+            "{gone} moved to ui/analytics in A3.6 and should not be back"
+        );
+    }
+    let redirect = read(&root, "ui/admin/src/modelRedirect.ts");
+    assert!(
+        redirect.contains("/analytics/#/models/"),
+        "the admin's old model links should lead to the model editor"
+    );
 }
 
 /// Every `_fd_*` table (and `users`) that some crate bootstraps must appear in

@@ -16,6 +16,8 @@ import { NewDatasetPage } from "./datasets/DatasetList";
 import { DatasetPage } from "./datasets/DatasetPage";
 import { Home } from "./Home";
 import { I18nProvider, T, useT } from "./i18n";
+import { FitRedirect, ModelCompare } from "./models/ModelCompare";
+import { ModelEditor } from "./models/ModelEditor";
 import { parseRoute, type Route } from "./router";
 import { useTheme } from "./theme";
 import { WorkspaceFrame } from "./workspaces/WorkspaceFrame";
@@ -113,9 +115,19 @@ function Page({ route }: { route: Route }) {
     case "workspace":
       return <WorkspaceFrame id={route.id} key={route.id} />;
     case "dataset":
-      return <DatasetPage id={route.id} key={route.id} />;
+      return <DatasetPage id={route.id} back={route.back} key={route.id} />;
     case "newDataset":
       return <NewDatasetPage table={route.table} />;
+    // Keyed by the model and the fit, so moving between them builds the
+    // editor again rather than showing one model's answers under another's.
+    case "model":
+      return <ModelEditor modelId={route.id} fit={route.fit} key={`${route.id}:${route.fit ?? ""}`} />;
+    case "newModel":
+      return <ModelEditor dataset={route.dataset} key={`new:${route.dataset ?? ""}`} />;
+    case "compareModels":
+      return <ModelCompare ids={route.ids} key={route.ids.join(",")} />;
+    case "fit":
+      return <FitRedirect id={route.id} key={route.id} />;
     case "notFound":
       return (
         <div className="an-page">

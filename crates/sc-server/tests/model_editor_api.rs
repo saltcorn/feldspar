@@ -166,6 +166,9 @@ async fn serve() -> sc_error::Result<Server> {
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     sc_auth::bootstrap(&catalog).await?;
+    // For a calculated field that predicts (`what_uses_a_model…`).
+    sc_catalog::bootstrap_table_meta(&catalog).await?;
+    sc_catalog::bootstrap_field_meta(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
@@ -498,4 +501,138 @@ async fn the_view_state_is_patched_beside_the_model_and_a_clone_carries_it() -> 
         .await;
     assert_eq!(named["name"], "Bigger model");
     Ok(())
+}
+
+/// What uses a model (analytics TODO A3.5), for the model list's delete
+/// warning: a calculated field calling `predict("…")` on it, a code body
+/// naming it with `models.get("…")`, and a workflow whose `fit_model` step
+/// fits it — and nothing for a model nobody names.
+#[tokio::test]
+async fn what_uses_a_model_is_listed_for_the_delete_warning() -> sc_error::Result<()> {
+    let mut server = serve().await?;
+    let (model, dataset) = house_prices(&mut server.client).await;
+    let client = &mut server.client;
+    let usage = format!("/api/models/{model}/usage");
+    assert_eq!(
+        client.ok("GET", &usage, None).await,
+        json!({ "fields": [], "triggers": [] })
+    );
+
+    // A field that predicts with it needs an active fit to be saved.
+    let started = client
+        .ok("POST", &format!("/api/models/{model}/fit"), Some(json!({})))
+        .await;
+    let fit = started["id"].as_str().unwrap().to_owned();
+    for _ in 0..400 {
+        let got = client
+            .ok("GET", &format!("/api/model-instances/{fit}"), None)
+            .await;
+        if got["status"] != json!("fitting") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    client
+        .ok(
+            "POST",
+            &format!("/api/model-instances/{fit}/activate"),
+            None,
+        )
+        .await;
+    client
+        .ok(
+            "POST",
+            "/api/tables/houses/fields",
+            Some(json!({
+                "name": "guess", "type": "float8",
+                "kind": { "type": "calc", "expression": "predict(\"House prices\")" },
+            })),
+        )
+        .await;
+    let code = client
+        .ok(
+            "POST",
+            "/api/triggers",
+            Some(json!({
+                "name": "report", "description": "", "when": "none", "channel": null,
+                "only_if": null, "action": "run_js_code",
+                "configuration": { "code": "const m = await models.get(\"House prices\"); return m.fit.id;" },
+                "min_role": null, "enabled": true,
+            })),
+        )
+        .await;
+    let flow = client
+        .ok(
+            "POST",
+            "/api/triggers",
+            Some(json!({
+                "name": "nightly", "description": "", "when": "none", "channel": null,
+                "only_if": null, "body": "workflow", "action": null, "configuration": null,
+                "min_role": null, "enabled": true,
+            })),
+        )
+        .await;
+    let flow_id = flow["id"].as_str().unwrap().to_owned();
+    client
+        .ok(
+            "POST",
+            &format!("/api/workflows/{flow_id}"),
+            Some(json!({ "description": "refit", "workflow": {
+                "start": "refit",
+                "steps": [{
+                    "name": "refit",
+                    "kind": { "type": "action", "action": "fit_model",
+                              "configuration": { "model": "House prices" } },
+                    "next": { "type": "end" },
+                }],
+            } })),
+        )
+        .await;
+
+    let used = client.ok("GET", &usage, None).await;
+    assert_eq!(
+        used["fields"],
+        json!([{ "table": "houses", "field": "guess" }])
+    );
+    let mut triggers = used["triggers"].as_array().unwrap().clone();
+    triggers.sort_by_key(|t| t["name"].as_str().unwrap().to_owned());
+    assert_eq!(
+        triggers,
+        vec![
+            json!({ "id": flow_id, "name": "nightly", "how": "fits" }),
+            json!({ "id": code["id"], "name": "report", "how": "names" }),
+        ]
+    );
+
+    // Another model on the same dataset is named by none of them.
+    let other = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "House prices, again",
+                "provider": "linear_regression",
+                "dataset": { "dataset_id": dataset },
+                "configuration": { "label": "price" },
+            })),
+        )
+        .await;
+    let other = other["id"].as_str().unwrap();
+    assert_eq!(
+        client
+            .ok("GET", &format!("/api/models/{other}/usage"), None)
+            .await,
+        json!({ "fields": [], "triggers": [] })
+    );
+    let missing = uuid_like();
+    let (status, _) = client
+        .send("GET", &format!("/api/models/{missing}/usage"), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+/// An id no model has.
+fn uuid_like() -> &'static str {
+    "00000000-0000-4000-8000-000000000000"
 }

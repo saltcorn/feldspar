@@ -111,8 +111,11 @@ export type Fold = {
 /** A line at a fixed value of X or Y. */
 export type Reference = { channel: "x" | "y"; value: number | string; label?: string };
 
-/** Where a plot's rows come from. */
-export type DataRef = { kind: "dataset"; dataset: string };
+/** Where a plot's rows come from: a dataset's last stage, or a fit's output
+ * data (analytics TODO A3.1), read from the instance rather than through SQL. */
+export type DataRef =
+  | { kind: "dataset"; dataset: string }
+  | { kind: "fit_output"; instance: string; name: string };
 
 /** A plot. */
 export type PlotSpec = {

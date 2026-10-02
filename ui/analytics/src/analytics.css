@@ -485,3 +485,60 @@
   background: var(--tblr-bg-surface-secondary, rgba(127, 127, 127, 0.15));
   color: var(--tblr-secondary);
 }
+
+/* The model editor (analytics TODO A3.5). */
+.an-output-plot {
+  display: flex;
+  height: 22rem;
+  padding: 0.5rem;
+}
+
+.an-output-plot .an-plot {
+  min-height: 0;
+}
+
+.an-fold {
+  display: inline-block;
+  width: 1em;
+}
+
+.an-model-compare {
+  display: grid;
+  gap: 1rem;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(22rem, 1fr);
+  overflow-x: auto;
+}
+
+/* A posterior summary of 85 counties scrolls in its card, its headings kept in
+ * view, so the forest plot and the trace below it are not a page away. */
+.summary-scroll {
+  max-height: 28rem;
+  overflow-y: auto;
+}
+
+.summary-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--tblr-bg-surface);
+}
+
+.an-program-editor {
+  height: 22rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius);
+}
+
+.an-page-wide {
+  max-width: none;
+}
+
+/* A forest plot is as tall as its rows need, not the plots' minimum. */
+.an-forest {
+  display: flex;
+}
+
+.an-forest .an-plot {
+  min-height: 0;
+}

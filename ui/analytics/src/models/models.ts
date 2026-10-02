@@ -1,6 +1,7 @@
 // The model screens' model: the JSON the model API carries, and the handful of
 // pure functions three screens would otherwise each invent (TODO "Predictive
-// models", task 6.6).
+// models", task 6.6). Moved from the admin UI with the screens, into the
+// model editor (analytics TODO A3.6).
 //
 // Four of the endpoints' fields are declared `json` in the endpoint set and
 // therefore arrive as `unknown` in the generated client — the dataset, the
@@ -30,7 +31,7 @@ import type {
   GetModelResponse,
   ListModelInstancesResponse,
   ListModelProvidersResponse,
-} from "./client";
+} from "../client";
 import type { FieldSpec } from "./settings";
 
 // --- the JSON the API carries -----------------------------------------------
@@ -211,16 +212,6 @@ export function readColumns(raw: unknown): DatasetColumnInfo[] {
     (c): c is DatasetColumnInfo =>
       Boolean(c) && typeof (c as { name?: unknown }).name === "string",
   );
-}
-
-/** Where a dataset is edited: the Analytics UI's Dataset editor (A1.17). */
-export function analyticsDatasetUrl(datasetId: string): string {
-  return `/analytics/#/datasets/${encodeURIComponent(datasetId)}`;
-}
-
-/** Where a new dataset is made — over `table`, when one is given. */
-export function newDatasetUrl(table?: string): string {
-  return table ? `/analytics/#/datasets/new?table=${encodeURIComponent(table)}` : "/analytics/#/datasets/new";
 }
 
 /** The default split: four fifths fitted, one fifth held out, no validation
@@ -1614,21 +1605,6 @@ export function histogram(values: number[]): Bin[] {
     count: 0,
   }));
   for (const x of xs) out[Math.min(bins - 1, Math.floor((x - min) / step))].count += 1;
-  return out;
-}
-
-/** Round axis ticks spanning `[min, max]`: about `count` of them, each a 1, 2
- * or 5 times a power of ten. */
-export function niceTicks(min: number, max: number, count = 5): number[] {
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
-  if (min === max) return [min];
-  const raw = (max - min) / Math.max(1, count);
-  const power = 10 ** Math.floor(Math.log10(raw));
-  const step = [1, 2, 5, 10].map((m) => m * power).find((s) => s >= raw) ?? 10 * power;
-  const out: number[] = [];
-  for (let t = Math.ceil(min / step) * step; t <= max + step * 1e-9; t += step) {
-    out.push(Number(t.toPrecision(12)));
-  }
   return out;
 }
 

@@ -54,7 +54,7 @@ Two consequences of the static build are worth knowing before you choose it:
   `smartcore` feature carries `linear_regression`, `logistic_regression`,
   `random_forest`, `kmeans` and `pca`; a build with `--no-default-features` leaves
   only `t_test` and `anova`, which need a distribution function and nothing else. That
-  is a supported build, not a broken one — the Models tab says on the screen that the
+  is a supported build, not a broken one — the Analytics UI's model list says on the screen that the
   machine-learning built-ins were compiled out, and a module can still supply
   providers. Like `--features python`, it is decided at build time and no run-time flag
   substitutes for it.
@@ -1158,7 +1158,7 @@ looking hung. Ctrl-C does the same interactively.
 | a model fit says "the server restarted while this fit was running" | it did. A fit is a spawned job whose only record is its instance row, so boot marks a `fitting` row failed rather than leaving it running for ever (§3.5). Press **Fit** again |
 | every read of a table fails with "`estimated_price` of `houses` could not be computed … has no active fit" | a calculated field calls `predict("…")` and its model has no active fit, perhaps because the active one was deleted. Activate a fit on the model's Fits list. A read fails rather than answering null, so a model a field depends on must always have an active fit. A nightly `fit_model` with `activate: if_clean` never deactivates one |
 | a fit fails with "the dataset selects more than … rows" | the dataset is over `--model-max-rows` (§8.3). Add a filter to the dataset, or raise the flag |
-| the Models tab lists only `t_test` and `anova` | the binary was built `--no-default-features`, so the smartcore providers were compiled out (§1). It is a build, not a setting |
+| the model editor offers only `t_test` and `anova` | the binary was built `--no-default-features`, so the smartcore providers were compiled out (§1). It is a build, not a setting |
 | the `stan` provider says "CmdStan was not found" | the server looked where §9.1 says and found none, or found one it refused (too old, not built, a named directory that is not there). The startup log has the same sentence. Under systemd, `~` is `/var/lib/feldspar`, not your home |
 | a Stan fit says `queued` for a long time | every chain process the node allows is taken by other fits (§9.2). It starts when one finishes; raise `--stan-max-processes` if the machine has the cores |
 | a Stan fit fails with "more than the … allowed (`--stan-max-data-values`)" | the bound data is too large for the ceiling (§9.4). Filter the datasets or raise the flag |
@@ -1265,7 +1265,7 @@ CmdStan version is part of the compile cache's key.
 Every chain of every fit is **one CmdStan process**, and every chain process on the node
 draws from one budget: `--stan-max-processes` (default: half the available CPUs, at least
 one). A fit's own `parallel_chains` setting caps it further. A chain waiting for the budget
-leaves its fit saying `queued` on the instance screen; nothing is refused.
+leaves its fit saying `queued` in the model editor; nothing is refused.
 
 A chain is single-threaded (the server compiles without `STAN_THREADS`), so the budget is
 roughly the cores Stan may keep busy. The default leaves half of them for the server, the
@@ -1291,7 +1291,7 @@ radon model).
 
 **One compile at a time per node**: a second fit of the same program waits for the first
 compile and then finds it cached; a fit of another program waits its turn. The **Compile**
-button on the model form warms the cache without fitting.
+button in the model editor warms the cache without fitting.
 
 Nothing prunes the cache — old entries are only disk. Deleting the directory, or any entry in
 it, is always safe while no compile is running: the next fit recompiles. A compile interrupted
@@ -1311,7 +1311,7 @@ Four ceilings, each a server flag because each is about this host's memory, and 
 
 And one that is a trade rather than a ceiling: **`--stan-summary-max-elements`** (default
 1 000). A generated quantity with more elements than this — a `y_rep` over every row — is not
-summarised when the fit finishes; the instance screen summarises it on demand from the stored
+summarised when the fit finishes; the model editor summarises it on demand from the stored
 draws. `0` summarises every generated quantity on demand. On demand needs the draws: a
 generated quantity over the ceiling whose draws are not kept (§9.5) is not read back from
 CmdStan at all.

@@ -68,11 +68,12 @@ describe("the admin sidebar", () => {
   });
 
   /** The Analytics UI is a bundle of its own, so its entry is a page and not
-   * a hash route; it sits beside *Predictive models*, which A3 retires. */
-  it("links to the Analytics UI beside Predictive models", () => {
+   * a hash route; it replaced *Predictive models* (analytics TODO A3.8). */
+  it("links to the Analytics UI where Predictive models was", () => {
     const labels = NAV.map((item) => item.label);
-    expect(labels.indexOf("Analytics")).toBe(labels.indexOf("Predictive models") - 1);
+    expect(labels).not.toContain("Predictive models");
+    expect(labels.indexOf("Analytics")).toBe(labels.indexOf("Agents") + 1);
     expect(NAV.find((item) => item.label === "Analytics")?.href).toBe("/analytics/");
-    expect(activeLabels("/models")).toEqual(["Predictive models"]);
+    expect(activeLabels("/models")).toEqual([]);
   });
 });
