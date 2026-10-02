@@ -572,11 +572,11 @@ function seriesForLayer(ctx: Ctx, layer: Layer, l: LayerData, panel: Panel, laye
     return { series: built.series, legend: [...out.legend, ...built.legend.filter((n) => !out.legend.includes(n))] };
   }
 
-  // Histogram bars from bin edges on a value axis.
-  const binnedBars =
-    l.mark === "bar" && idx(l, `${across(ctx)}_end`) !== -1 && ctx.axes[across(ctx)].kind !== "category";
-  if (binnedBars) {
-    out.series.push(...histogramSeries(ctx, l, panel, groupsOf, named));
+  // Histogram bars from bin edges on a value axis — along X, or along Y when
+  // a number on Y alone is binned and X is its count.
+  const binnedOn = (["x", "y"] as const).find((c) => idx(l, `${c}_end`) !== -1);
+  if (l.mark === "bar" && binnedOn && ctx.axes[binnedOn].kind !== "category") {
+    out.series.push(...histogramSeries(ctx, l, panel, groupsOf, named, binnedOn));
     return out;
   }
 
@@ -701,10 +701,16 @@ function histogramSeries(
   panel: Panel,
   groupsOf: ReturnType<typeof splitGroups>,
   named: (n: string) => string,
+  binned: "x" | "y",
 ): Option[] {
-  const a = across(ctx);
-  const up = a === "x" ? "y" : "x";
-  const [lo, hi, v] = [idx(l, a), idx(l, `${a}_end`), idx(l, up)];
+  const counted = binned === "x" ? "y" : "x";
+  const [lo, hi, v] = [idx(l, binned), idx(l, `${binned}_end`), idx(l, counted)];
+  // Whether the bins run across the screen (bars standing up) or down it.
+  const standing = binned === across(ctx);
+  // A data item is [bin start, bin end, bar start, bar end, count]; a corner
+  // of its bar, as the axes take it.
+  const corner = (edge: number, value: number) =>
+    binned === "x" ? at(ctx, edge, value) : at(ctx, value, edge);
   // Stacked: each group's bars start where the groups before ended.
   const base = new Map<number, number>();
   return groupsOf.map((g) => {
@@ -724,18 +730,20 @@ function histogramSeries(
       xAxisIndex: panel.index,
       yAxisIndex: panel.index,
       itemStyle: { color: g.color },
-      encode: ctx.flipped ? { x: [2, 3], y: [0, 1], tooltip: [4] } : { x: [0, 1], y: [2, 3], tooltip: [4] },
+      encode: standing ? { x: [0, 1], y: [2, 3], tooltip: [4] } : { x: [2, 3], y: [0, 1], tooltip: [4] },
       data,
       renderItem: (_params: unknown, api: RenderApi) => {
-        const [x0, x1, y0, y1] = [api.value(0), api.value(1), api.value(2), api.value(3)];
-        const p0 = api.coord(ctx.flipped ? [y0, x0] : [x0, y0]);
-        const p1 = api.coord(ctx.flipped ? [y1, x1] : [x1, y1]);
+        const [e0, e1, b0, b1] = [api.value(0), api.value(1), api.value(2), api.value(3)];
+        const p0 = api.coord(corner(e0, b0));
+        const p1 = api.coord(corner(e1, b1));
         const gap = 1;
+        const [left, top] = [Math.min(p0[0], p1[0]), Math.min(p0[1], p1[1])];
+        const [width, height] = [Math.abs(p1[0] - p0[0]), Math.abs(p1[1] - p0[1])];
         return {
           type: "rect",
-          shape: ctx.flipped
-            ? { x: p0[0], y: Math.min(p0[1], p1[1]) + gap, width: p1[0] - p0[0], height: Math.abs(p1[1] - p0[1]) - 2 * gap }
-            : { x: Math.min(p0[0], p1[0]) + gap, y: p1[1], width: Math.abs(p1[0] - p0[0]) - 2 * gap, height: p0[1] - p1[1] },
+          shape: standing
+            ? { x: left + gap, y: top, width: width - 2 * gap, height }
+            : { x: left, y: top + gap, width, height: height - 2 * gap },
           style: api.style(),
         };
       },
@@ -1112,7 +1120,13 @@ export function toOption(spec: PlotSpec, data: PlotData, options: CompileOptions
         silent: true,
         symbol: "none",
         lineStyle: { color: palette.secondary, type: "dashed", width: 1 },
-        label: { color: palette.secondary, formatter: (d: { name?: string; value?: unknown }) => d.name || labelOf(d.value) },
+        // Inside the plot, above the line's end: past it, the label is cut
+        // off by the edge of the chart.
+        label: {
+          color: palette.secondary,
+          position: "insideEndTop",
+          formatter: (d: { name?: string; value?: unknown }) => d.name || labelOf(d.value),
+        },
         data: refs.map((r) => {
           const onAcross = (r.channel === "x") !== ctx.flipped;
           return { [onAcross ? "xAxis" : "yAxis"]: r.value, name: r.label ?? "" };

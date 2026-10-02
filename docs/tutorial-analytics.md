@@ -5,7 +5,8 @@ The Analytics UI is where you look at your data rather than at your application:
 models, draw maps and write reports. Its design is in
 [analytics-ui-goals.md](analytics-ui-goals.md). This tutorial grows by one part per milestone.
 
-- **Part 1 — Workspaces and the dataset editor** (this part).
+- **Part 1 — Workspaces and the dataset editor.**
+- **Part 2 — The data explorer:** plots, summary tables and hypothesis tests.
 
 You need a server and an admin login. Nothing else: the data comes from a command.
 
@@ -29,11 +30,12 @@ feldspar demo analytics
 feldspar serve
 ```
 
-The first command makes three tables: `neighbourhoods` (5 rows), `houses` (200, each with a
-key to its neighbourhood, some not yet sold and so with no price) and `viewings` (a key to a
-house, a date, and whether anyone came). The rows are generated from a fixed seed, so what you
-see here is what everyone sees. It refuses to touch tables that are already there;
-`--replace` drops and remakes those three ([OPERATIONS.md](OPERATIONS.md) §8.6).
+The first command makes three tables for this part: `neighbourhoods` (5 rows), `houses` (200,
+each with a key to its neighbourhood, some not yet sold and so with no price) and `viewings` (a
+key to a house, a date, and whether anyone came). It also makes the tables and datasets part 2
+explores: ignore them for now. The rows are generated from a fixed seed, so what you see here is
+what everyone sees. It refuses to touch tables that are already there; `--replace` drops and
+remakes the demo's tables ([OPERATIONS.md](OPERATIONS.md) §8.6).
 
 Sign in to the admin UI as an administrator.
 
@@ -43,12 +45,12 @@ The admin sidebar has an **Analytics** link, beside *Predictive models* (which s
 milestone folds it in). It opens the Analytics UI at `/analytics/`, a separate application from
 the admin UI that shares its sign-in and its light or dark setting.
 
-The front page has two lists, both empty. **Datasets** are the definitions of rows this part is
-about; each opens in the **Dataset editor**. **Workspaces** are places you work in, each of one
-kind and remembering where you were: a Data explorer, a Model fit, a Map and so on. Look at the
-kinds under **New workspace**: they are all listed and disabled, each labelled with the
-milestone that brings it, because none is here yet. The first, the Data explorer, comes in
-part 2.
+The front page has two lists. **Datasets** are the definitions of rows this part is about; each
+opens in the **Dataset editor**. Three are there already — `Houses`, `Measurements` and `Events`,
+which the demo made for part 2. **Workspaces** are places you work in, each of one kind and
+remembering where you were: a Data explorer, a Model fit, a Map and so on. There are none yet.
+Look at the kinds under **New workspace**: all are listed, and all but the Data explorer
+(part 2) are disabled, each labelled with the milestone that brings it.
 
 ### Step 3 — A dataset on a table
 
@@ -160,3 +162,163 @@ way they were read when it was fitted, until you fit again.
   be made in its place.
 - **Workspaces remember**, and datasets are shared: the model you fit and the plots of later
   milestones read the same definition.
+
+---
+
+## Part 2 — The data explorer
+
+A **Data explorer** workspace turns a dataset into plots, summary tables and hypothesis tests
+by dropping columns on **drop zones**. You never choose a chart type or a test by name unless
+you want to: a number by a category is a box plot with an analysis of variance beside it,
+because that is what it usually is. Everything is computed by the database and the server, so
+a table of a million rows draws as quickly as one of a hundred.
+
+### Step 1 — The demo's other tables
+
+`feldspar demo analytics` from part 1 also made `patients` (90, a third each on a placebo, a
+low dose and a high dose of a drug), `measurements` (each patient's blood pressure before and
+after the treatment) and `events` (a million requests to a web site: a kind, a duration in
+milliseconds, a size in kilobytes and an hour of the day), and three datasets over them:
+
+- **Houses** — every row of `houses`.
+- **Measurements** — every row of `measurements`, with two calculated columns: `treatment`
+  (`patientⱵtreatment`, along the key) and `change` (`after - before`).
+- **Events** — every row of `events`.
+
+If you ran part 1 before these existed, run `feldspar demo analytics --replace`: it remakes the
+demo's tables and makes the datasets, and leaves your own datasets (and any of these three that
+is already there) alone.
+
+### Step 2 — A workspace
+
+On the Analytics front page, under **New workspace**, call it `Exploring houses`, choose the
+kind *Data explorer* and press **Create**. It opens at `#/w/<id>`. Pick `Houses` from the
+**Dataset** drop-down at the top left. Under it are the dataset's columns, each with a mark for
+its type (`#` a number, `Aa` text, `→` a key, `✓` a yes/no); along the top, the **gallery**; under
+that, nine drop zones: X, Y, Color, Size, Shape, Label, Facet rows, Facet columns and Wrap.
+
+### Step 3 — A scatter plot
+
+Press **Scatter plot** in the gallery. It fills X and Y with the first two numbers, `area` and
+`bedrooms`. Drag `price` from the column list onto Y (a drop on Y replaces what is there; hold
+Shift to add instead), and `neighbourhood` onto Color: one colour per neighbourhood, with a
+legend. The neighbourhoods are shown by their key, 1 to 5; a Calculated column
+`neighbourhoodⱵname` in the dataset would show their names.
+
+Beside the plot, the **Tests** panel already says something: *price rises with area: r = 0.94
+(p < 0.001)*, with Pearson's correlation, the linear regression (a slope of about 2,121 per
+square metre) and Spearman's correlation as the alternative.
+
+The row of marks under the drop zones is the **mark palette**. *Auto* underlines the mark the
+explorer chose — *Points*. Press *Line*: the same columns, drawn as a line through the rows.
+Press *Auto* again to go back.
+
+### Step 4 — Small multiples
+
+Drag `year_built` onto **Wrap**. A year has too many values to make a plot of each, so it is
+binned — the chip says *bins* — into decades: eight small plots, 1950–1960 to 2020–2030, sharing
+their axes. Click the chip's *bins* to see the problem it solves: a plot for every year is more
+than the 48 the explorer draws, and it says so in a sentence; click again to bin it back. The tests repeat for each decade, one
+section each, headed by its decade.
+
+Remove `year_built` from Wrap with its **×**.
+
+### Step 5 — Layers
+
+Press **Layers**. A panel opens on the right:
+
+- **Add layer → Linear fit**: a straight line per neighbourhood with its 95% confidence band.
+  Switch its *One per colour group* off for one line through all the houses.
+- Under **Scales**, set Y to **Log**. Prices are positive, so nothing is left out; a column with
+  zeros would be, and the explorer would say how many rows.
+- Under **Reference lines**, add one on Y at `300000` with the label `300k`: a dashed line
+  across the plot.
+
+The layers panel's changes are laid over whatever the drop zones make, so they stay when you
+drop other columns. Close the panel, and remove the fit and the log scale again, or press
+**Clear** to start from nothing.
+
+### Step 6 — A box plot and its tests
+
+Put `price` on Y and `neighbourhood` on X (press **Clear** first if anything else is on the
+zones). A number by a category: a **box plot**, one box per neighbourhood — the quartiles, the
+whiskers to the furthest prices within 1.5 box-lengths, and any prices beyond them as points.
+
+The **Tests** panel now compares the groups:
+
+- **One-way ANOVA**: F = 0.74, p = 0.56.
+- **Kruskal–Wallis test**, its *alternative* that does not assume the prices are normal:
+  p = 0.63.
+- **Pairwise comparisons (Tukey)**, folded away: every pair of neighbourhoods, the difference
+  of their means with an interval, and a p-value adjusted for making ten comparisons at once.
+
+Its sentence reads *No clear difference in price between the groups of neighbourhood
+(p = 0.63)*. That is the honest answer for this data: a house's price here depends far more on
+its area than on its neighbourhood, and the boxes overlap almost entirely. Under the table, the
+notes say why the sentence reports Kruskal–Wallis rather than the ANOVA: the prices of
+neighbourhood 4 are *clearly not normal* (Shapiro–Wilk, p = 0.024). The explorer always shows
+both tests and reports the one whose assumptions hold.
+
+Now compare only two neighbourhoods. Press **Edit dataset** under the Dataset drop-down: the
+Dataset editor opens on `Houses`. Add a **Filter** `neighbourhood <= 2` and go back to the
+workspace (the browser's back button, or the front page). With two groups the explorer switches
+to **Welch's t-test** (t = 0.10, p = 0.92) and the **Mann–Whitney test** (p = 0.99): with two
+groups there is nothing pairwise to compare. Switch the Filter off in the Dataset editor when you
+are done, so that `Houses` is every house again.
+
+### Step 7 — Paired measurements
+
+Pick `Measurements` from the Dataset drop-down and press **Clear**. Drag `before` onto Y, then
+Shift-drag `after` onto Y too: two columns on Y are compared as one variable — a histogram of
+both, bars along Y, coloured by which column a value came from.
+
+In the Tests panel, switch on **Paired**: the two columns are measurements of the same patients,
+so what matters is each patient's difference, not the two columns' spread. *before and after
+differ by 6.744 on average (p < 0.001)*: the **paired t-test** (t = 8.22 on 89 degrees of
+freedom, the mean difference 6.74 mmHg with a 95% interval of 5.11 to 8.37) and the **Wilcoxon
+signed-rank test** beside it. Switch Paired off and there is no test: two columns on Y are
+either paired, or one too many, and the panel says so.
+
+Did the drug work, or would the pressure have fallen anyway? Clear the zones and put `change` on
+Y and `treatment` on X: a box plot per treatment, an ANOVA that finds a difference, and Tukey's
+comparisons naming the pairs that differ — each dose against the placebo.
+
+### Step 8 — A summary table
+
+Back on `Houses`, put `price` on Y and `neighbourhood` on X, and press **Summary table** (beside
+**Plot**). The same drop zones, as a table: a row per neighbourhood, the number of houses and the
+mean price, with a total row. X, Facet rows and Wrap become rows; Color and Facet columns
+become columns; each number on Y is a column of cells. The **Cells** drop-down changes the mean
+to a median, a sum, a count and so on, and **Totals** switches the totals off. Note that the
+count is of houses — unsold ones too — while the mean is of the prices there are.
+
+### Step 9 — A million rows
+
+Pick `Events`, press **Clear**, then **Histogram** in the gallery and put `duration_ms` on X. A
+million rows are counted into a few hundred bins by the database, and only the bins reach the
+browser: it draws in about a second. Drag `kind` onto Color: the bars split by kind, stacked —
+pages are slow, API calls quicker, assets quickest.
+
+Now press **Scatter plot**, and put `duration_ms` on X and `size_kb` on Y (unbinned: a binned
+number on X is a category, and would make box plots). Two numbers make a scatter plot, and a
+million points is more than a browser can usefully draw: under the plot, *Showing a random sample of 10,000 of 1,000,000 rows*.
+The sample is the same every time you draw it, so the plot does not flicker as you work. The
+tests do the same where they must: an ANOVA's sums are computed by the database over every row,
+but a rank test reads a sample of at most 5,000 values (for each Wrap group), and says so.
+
+### Step 10 — Coming back
+
+Go back to the front page and open `Exploring houses` again: the dataset, the drop zones, the
+mark, the layers and the tests' settings are as you left them. The workspace stores what you
+chose, not the plot itself, so it is redrawn from the dataset's rows as they are now.
+
+### What to remember
+
+- **Drop columns, not chart types.** The types of the columns on X and Y choose the plot — the
+  mark palette and the gallery are there when you want something else.
+- **Tests come from the same roles.** Y, X and Wrap decide the test; its assumptions are checked
+  and the alternative is shown beside it; the sentence says what the numbers mean.
+- **The database does the counting.** Bins, quartiles, means and sums of squares are SQL, so a
+  million rows is quick; rows that are drawn one by one are sampled, and the plot says so.
+- **A workspace remembers choices**, so the plot follows the data.
+

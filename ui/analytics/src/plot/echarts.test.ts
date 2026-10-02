@@ -69,6 +69,64 @@ describe("toOption", () => {
     expect((o.legend as Option).data).toEqual(["a", "b"]);
   });
 
+  it("draws a histogram binned along Y as bars lying down, from the count on X", () => {
+    // Two numbers on Y and nothing on X: the folded values binned on Y.
+    const spec: PlotSpec = {
+      data,
+      fold: { columns: ["before", "after"], key: "variable", value: "value" },
+      layers: [
+        {
+          mark: "bar",
+          stat: { kind: "count" },
+          encoding: { y: { field: "value", bin: {} }, color: { field: "variable" } },
+        },
+      ],
+    };
+    const drawn = plot({
+      layers: [
+        layer({
+          mark: "bar",
+          stat: "count",
+          columns: ["y", "y_end", "color", "x"],
+          rows: [
+            [110, 120, "after", 6],
+            [110, 120, "before", 3],
+            [120, 130, "after", 21],
+          ],
+        }),
+      ],
+      domains: {
+        x: { kind: "continuous", min: 3, max: 21 },
+        y: { kind: "continuous", min: 110, max: 130 },
+        color: { kind: "discrete", values: ["after", "before"] },
+      },
+    });
+    const o = toOption(spec, drawn, light);
+    expect(axes(o, "yAxis")[0].type).toBe("value");
+    const s = series(o);
+    expect(s.map((x) => x.type)).toEqual(["custom", "custom"]);
+    const [first, second] = s;
+    expect(s.map((x) => x.name)).toEqual(["before", "after"]);
+    // `after` starts where `before` ended in the same bin.
+    expect(first.data).toEqual([[110, 120, 0, 3, 3]]);
+    expect(second.data).toEqual([
+      [110, 120, 3, 9, 6],
+      [120, 130, 0, 21, 21],
+    ]);
+    // The edges on Y, the counts on X.
+    expect(first.encode).toEqual({ x: [2, 3], y: [0, 1], tooltip: [4] });
+    // A bar from the count's start to its end across, between the edges
+    // down: with the axes as the identity, [0, 3] across and [110, 120] down,
+    // less the gap between bars.
+    const item = [110, 120, 0, 3, 3];
+    const render = first.renderItem as (p: unknown, api: unknown) => { shape: Record<string, number> };
+    const { shape } = render(
+      {},
+      { value: (i: number) => item[i], coord: (p: number[]) => p, style: () => ({}) },
+    );
+    expect(shape).toEqual({ x: 0, y: 111, width: 3, height: 8 });
+  });
+
   it("draws a box plot from the five numbers, with its outliers, on a category axis", () => {
     const spec: PlotSpec = {
       data,
@@ -171,6 +229,8 @@ describe("toOption", () => {
       [60, 200000],
     ]);
     expect((s[0].markLine as Option).data).toEqual([{ yAxis: 100000, name: "target" }]);
+    // Its label inside the plot, where the chart's edge does not cut it off.
+    expect(((s[0].markLine as Option).label as Option).position).toBe("insideEndTop");
     // One series, no colour: no legend.
     expect(o.legend).toBeUndefined();
   });

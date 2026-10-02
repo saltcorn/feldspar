@@ -1205,12 +1205,8 @@ async fn i18n_command(args: &[String]) -> Result<()> {
     }
 }
 
-/// `feldspar cmdstan status | install` (TODO "Bayesian models with Stan" §20).
-///
-/// No database: `status` reports what is on this machine, and `install` is a
-/// download and a build the operator asked for.
 /// `feldspar demo analytics [--replace] [database flags]`: the Analytics UI's
-/// demo tables (analytics TODO A1.18).
+/// demo tables and datasets (analytics TODO A1.18, A2.15).
 async fn demo_command(args: &[String]) -> Result<()> {
     let (db, rest) = DbConfig::extract(args)?;
     let parsed = sc_cli::demo::DemoArgs::parse(&rest)?;
@@ -1225,6 +1221,12 @@ async fn demo_command(args: &[String]) -> Result<()> {
     for (table, rows) in &report.tables {
         println!("made {table}: {rows} rows");
     }
+    for name in &report.datasets {
+        println!("made the dataset {name}");
+    }
+    for name in &report.kept {
+        println!("kept the dataset {name}, which was already there");
+    }
     println!(
         "Now run `feldspar serve`, sign in, and open Analytics in the admin sidebar \
          (docs/tutorial-analytics.md)."
@@ -1232,6 +1234,10 @@ async fn demo_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `feldspar cmdstan status | install` (TODO "Bayesian models with Stan" §20).
+///
+/// No database: `status` reports what is on this machine, and `install` is a
+/// download and a build the operator asked for.
 async fn cmdstan_command(args: &[String]) -> Result<()> {
     use sc_cli::cmdstan::{CmdStanArgs, install, status};
 

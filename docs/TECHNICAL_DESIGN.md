@@ -7990,11 +7990,77 @@ reshape (scatterplot matrix, parallel coordinates, correlation heatmap, mosaic),
 force and read the zones again on every drop. A drop on Y replaces; Shift-drop or the zone's
 **+** adds a column beside it.
 
+*The plot spec* (A2.1; `sc_analytics::plot::spec`) is a declarative subset of Vega-Lite's ideas
+in Feldspar's own JSON, so that the stats are computed on the server and the renderer can change
+without changing what is stored:
+
+```json
+{ "data": { "kind": "dataset", "dataset": "…uuid…" },
+  "fold": { "columns": ["before", "after"] },
+  "layers": [
+    { "mark": "point", "encoding": { "x": { "field": "area" }, "y": { "field": "price" },
+                                     "color": { "field": "neighbourhood" } } },
+    { "mark": "line", "stat": { "kind": "smooth", "method": "linear" },
+      "encoding": { "x": { "field": "area" }, "y": { "field": "price" } } } ],
+  "scales": { "y": { "kind": "log" } },
+  "facet": { "wrap": { "field": "year_built", "bin": {} } },
+  "references": [ { "channel": "y", "value": 300000, "label": "300k" } ] }
+```
+
+`data` is a stored dataset's last stage (A3 adds a fit's output data); `fold` stacks several
+number columns into `variable` and `value` before any layer reads them (the explorer's several
+columns on Y), or into pairs (A2.11). A **layer** is a mark (point, line, bar, area, box, band,
+error bar, text, rect, mosaic), an encoding of the six channels (X, Y, Color, Size, Shape, Label;
+each a column, optionally binned — `{}` is Freedman–Diaconis, or a `width`, or about `bins`) and
+a **stat**: identity, count, aggregate (count, sum, mean, median, minimum, maximum, standard
+deviation),
+quantiles, box plot (`coef` 1.5), summary (a mean with its confidence interval), density
+(Gaussian, `bw.nrd0` unless a bandwidth is given), smooth (linear or loess, with a band) or
+correlation. Scales are linear, log or square root, from zero or fitted (or a fixed domain), reversed, with a
+colour scheme; coordinates are Cartesian, flipped or polar; facets are rows, columns or wrap (fixed or
+free scales); references are lines at a value of X or Y; selections are declared and validated
+now, and dashboards (A6) turn them into filters.
+
+`validate` checks a spec against the dataset's shape and answers **every** refusal at once, each
+a sentence naming the channel and the column ("X: `colour` is not a column of the dataset"): the
+columns exist, their types suit their channels and the layer's stat, the marks suit the stats,
+a number with many values is binned before it is a facet, a Shape or a group. The same walk makes each layer's **plan** — the channels that
+group its rows, the columns its stat reads, the channel a count or summary is drawn on — so a
+spec that validates is one that renders. `show_me` and the gallery's presets (A2.2) are
+functions from a dataset shape and the drop zones to a spec: a number alone is a histogram, a
+category a bar chart of counts, a number by a category a box plot, two numbers a scatter plot, a
+date by a number a line of the mean, two categories a heatmap of counts; a binned number counts
+as a category, a foreign key too (its ids are numbers to the database, values to the reader).
+
+*The stat compiler* (A2.3–A2.6; `sc_analytics::plot::render`, `render_plot` behind `POST
+/api/plots/render`). Datasets are not materialised, so a layer is one or a few queries over the
+dataset's compiled query: `data` (the last stage, or a `UNION ALL` per folded column) → `points`
+(the group keys as `_g0…` — X for a bar chart, Color, the facets, a binned channel's key being
+its bin number `floor((x − origin)/width)` — and the stat's inputs as `_v0…`, leaving out what a
+log scale cannot show) → the stat, a `GROUP BY` of the keys. Percentiles (box plots, medians,
+the interquartile range a bin width or bandwidth needs) are taken with `row_number()` and a count
+over each group, R's type 7, on both databases alike: neither has a percentile aggregate the
+other shares. What SQL cannot do is done in memory on what it returns: a density from 2,048 fine
+bins (from the values themselves below 20,000), a loess on a seeded sample of 1,000 points
+(`loess(degree = 2, surface = "direct")` with ggplot2's band), confidence intervals from counts,
+means and deviations; a linear smoother is `lm`'s line and band from the centred sums SQL
+returns. Layers that draw rows show at most 10,000 (up to 100,000 if asked) and above that a
+**seeded sample** — the rows numbered in order of every column, the numbers scrambled from a
+fixed seed as a dataset's Limit does, the smallest kept — and say `sampled: true` with the total.
+Capped answers say so too (5,000 groups, 48 small multiples, 50 curves, 500 boxes, 2,000
+outliers). A layer's data comes back **by channel** — `x`, `x_end` for a bin's upper edge, `y`,
+`y_lower`/`y_upper` for a band, `y_q1`/`y_median`/`y_q3` for a box, `color`, `wrap` — with the
+resolved domains of every channel over every layer, the facet values and each binned column's
+origin and width, so the renderer needs no knowledge of the stat to place a value. A histogram of
+the demo's million events is a few hundred bins, drawn in under a second; `tests/r/
+plot_reference.R` records R's densities and smoothers for the unit tests.
+
 *Rendering.* `plot/echarts.ts` compiles a spec and its layer data to an ECharts option, a pure
 function: a grid and axis pair per small multiple, laid out in percentages (column titles above,
 row titles beside, a free facet scale left to ECharts per axis, a fixed one given round shared
 bounds); a series per layer, small multiple and colour group, ECharts' own where it has the
-mark and a `custom` series where not (histogram bars from bin edges, stacked; confidence bands;
+mark and a `custom` series where not (histogram bars from bin edges, stacked, along X or —
+for a number on Y alone — along Y; confidence bands;
 error bars; mosaic tiles); a discrete colour as series in the palette slot of the value's place
 in the domain, a numeric one as a `visualMap`. It is told which columns are categories (a
 foreign key's ids are numbers to the server). ECharts is imported per chart type
@@ -8067,8 +8133,28 @@ its interval, effect size, p-value), Tukey's pairwise comparisons folded away, a
 explorer's state keeps whether it is shown, paired mode (two numbers on Y measured on the same
 rows) and the value a single mean is tested against.
 
-**Demo data** (`sc_analytics::demo`, `feldspar demo analytics [--replace]`): `neighbourhoods`,
-`houses` and `viewings`, deterministic and synthetic, shaped as the models tutorial has them.
+Beside the plot, the tests column scrolls on its own (`.an-tests`'s `max-height`): with Wrap it
+has a section per group, and stretching the plot to its height made the plot thousands of
+pixels tall, its percentage margins blank bands.
+
+**Demo data** (`sc_analytics::demo`, `feldspar demo analytics [--replace]`), deterministic and
+synthetic: `neighbourhoods`, `houses` and `viewings` (A1), shaped as the models tutorial has
+them; `patients` and `measurements` (A2: 90 patients, a third on each of placebo, a low and a high
+dose, with a blood pressure before and after); and `events` (A2: a million requests to a web
+site — a kind, a duration, a size, an hour). The events are one `INSERT … SELECT` over a recursive
+CTE, the same SQL text on Postgres and SQLite: integer hashes of the row number modulo 2³¹ − 1
+(every product under 2⁶²), each computed from the row number alone and one CTE `MATERIALIZED`,
+because a database inlines a CTE read once and a chain of hashes each squaring the one before is
+an expression that doubles at every step (18 s rather than 3 on Postgres). Both backends make the
+same rows. The demo also makes the datasets `Houses`, `Measurements` (with `treatment =
+patientⱵtreatment` and `change = after - before`) and `Events`, since the explorer reads datasets;
+one of those names that is there already is kept, and `--replace` never drops a dataset.
+
+**Definitions of done** (`sc-server`'s `tests/analytics_done.rs`): each milestone's Try it through
+the API over the demo's rows. A2's checks the bins and box statistics against the rows read
+through the dataset, and every test statistic and p-value against R's answers for the same rows
+(`tests/r/demo_reference.R` reads the demo's tables exported as CSV and writes
+`demo_reference.json`).
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

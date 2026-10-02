@@ -415,10 +415,15 @@
   min-width: 0;
 }
 
+/* The tests scroll on their own: one section per Wrap group would otherwise
+   make the panel, and the plot stretched beside them, thousands of pixels
+   tall, with the plot's margins (in percent) growing into blank bands. */
 .an-tests {
   flex: 0 1 26rem;
   min-width: 18rem;
+  max-height: calc(100vh - 14rem);
   overflow-x: auto;
+  overflow-y: auto;
   font-size: 0.85rem;
   border-left: 1px solid var(--tblr-border-color);
   padding-left: 0.75rem;

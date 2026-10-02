@@ -151,11 +151,24 @@ export function formatP(p: number, locale?: string): string {
   return text.startsWith("<") ? `p\u00a0${text}` : `p\u00a0=\u00a0${text}`;
 }
 
+/** A column's value, rather than a statistic: as `num` writes it, but with
+ * no separator below 10,000, so that years read as years (as the plot's axes
+ * write them). */
+export function valueNum(x: number, locale?: string): string {
+  const abs = Math.abs(x);
+  if (!Number.isFinite(x) || abs >= 10000 || (abs !== 0 && abs < 0.001)) return num(x, locale);
+  return new Intl.NumberFormat(locale, {
+    maximumSignificantDigits: abs >= 1000 ? undefined : 4,
+    maximumFractionDigits: abs >= 1000 ? 0 : undefined,
+    useGrouping: false,
+  }).format(x);
+}
+
 /** A group's or a category's value as a reader sees it: a bin as its range. */
 export function levelLabel(level: { value: unknown; end?: unknown } | undefined, t: Translate, locale?: string): string {
   if (!level) return "";
   const show = (v: unknown) =>
-    v === null || v === undefined ? t("(missing)") : typeof v === "number" ? num(v, locale) : String(v);
+    v === null || v === undefined ? t("(missing)") : typeof v === "number" ? valueNum(v, locale) : String(v);
   return level.end === undefined || level.end === null ? show(level.value) : `${show(level.value)}–${show(level.end)}`;
 }
 

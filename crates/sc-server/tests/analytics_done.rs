@@ -1,13 +1,24 @@
-//! Milestone A1's definition of done (analytics TODO A1.20, A1.21): the Try
-//! it, through the API, over `feldspar demo analytics`'s rows.
+//! The milestones' definitions of done: each Try it, through the API, over
+//! `feldspar demo analytics`'s rows.
 //!
-//! The front page's two lists, empty, with no kind of workspace here yet; the
-//! dataset "House prices by area" built operation by operation; every stage
-//! read and its rows checked against the same numbers computed here from the
-//! base rows; the Filter switched off and on; the Aggregate broken by renaming
-//! the column it reads, and repaired; the dataset in the front page's list;
-//! and a model over a named dataset fitted, predicting through a calculated
-//! field on every house.
+//! **A1** (analytics TODO A1.20, A1.21):
+//! the front page's two lists, holding only the demo's datasets, with no kind
+//! of workspace but the Data explorer here yet; the dataset "House prices by
+//! area" built operation by operation; every stage read and its rows checked
+//! against the same numbers computed here from the base rows; the Filter
+//! switched off and on; the Aggregate broken by renaming the column it reads,
+//! and repaired; the dataset in the front page's list; and a model over a
+//! named dataset fitted, predicting through a calculated field on every
+//! house.
+//!
+//! **A2** (analytics TODO A2.16): the Data explorer's Try it — a workspace,
+//! the demo's datasets, a scatter plot coloured and wrapped, a smoother on a
+//! log scale with a reference line, a box plot with its tests, the same
+//! filtered to two neighbourhoods, paired measurements, a summary table, a
+//! histogram and a sampled scatter plot of a million events, and the state
+//! reopened. The bins and box statistics are checked against the rows read
+//! through the dataset; the tests against R's answers for the same rows
+//! (`tests/r/demo_reference.R` → `demo_reference.json`).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -165,10 +176,18 @@ fn f(v: &Value) -> Option<f64> {
 async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
-    // 1. The front page: no datasets and no workspaces yet, and every kind of
-    // workspace listed with the milestone that brings it — every kind but A2's
-    // Data explorer, which is here now.
-    assert_eq!(client.ok("GET", "/api/datasets", None).await, json!([]));
+    // 1. The front page: only the demo's datasets (A2.15) and no workspaces
+    // yet, and every kind of workspace listed with the milestone that brings
+    // it — every kind but A2's Data explorer, which is here now.
+    let listed = client.ok("GET", "/api/datasets", None).await;
+    let mut names: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Events", "Houses", "Measurements"]);
     assert_eq!(client.ok("GET", "/api/workspaces", None).await, json!([]));
     let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
     assert!(
@@ -321,9 +340,14 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     // 6. The front page lists the dataset with its four operations, and it
     // opens as it was saved.
     let listed = client.ok("GET", "/api/datasets", None).await;
-    assert_eq!(listed[0]["id"], json!(id));
-    assert_eq!(listed[0]["name"], json!("House prices by area"));
-    assert_eq!(listed[0]["operations"], json!(4));
+    let ours = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == json!(id))
+        .unwrap();
+    assert_eq!(ours["name"], json!("House prices by area"));
+    assert_eq!(ours["operations"], json!(4));
     let reopened = client.ok("GET", &format!("/api/datasets/{id}"), None).await;
     let ids: Vec<&str> = reopened["dataset"]["operations"]
         .as_array()
@@ -421,5 +445,466 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
             .all(|h| h["estimated_price"].as_f64().is_some())
     );
     assert!(houses.iter().any(|h| h["sold"] == json!(false)));
+    Ok(())
+}
+
+/// R's answers for the demo's rows (`tests/r/demo_reference.R`).
+fn reference() -> Value {
+    serde_json::from_str(include_str!("r/demo_reference.json")).unwrap()
+}
+
+/// `a` and `b` agree to nine significant digits.
+fn close(a: &Value, b: &Value) -> bool {
+    match (a.as_f64(), b.as_f64()) {
+        (Some(a), Some(b)) => (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0),
+        _ => false,
+    }
+}
+
+macro_rules! assert_close {
+    ($a:expr, $b:expr, $what:expr) => {
+        assert!(close(&$a, &$b), "{}: {} against R's {}", $what, $a, $b)
+    };
+}
+
+impl Client {
+    /// The id of the stored dataset called `name`.
+    async fn dataset_named(&mut self, name: &str) -> String {
+        let listed = self.ok("GET", "/api/datasets", None).await;
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no dataset `{name}` in {listed}"))["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// What the explorer asks for when the drop zones change.
+    async fn suggest(&mut self, body: Value) -> Value {
+        let answer = self.ok("POST", "/api/plots/suggest", Some(body)).await;
+        assert!(answer.get("error").is_none(), "{answer}");
+        answer
+    }
+
+    /// A spec drawn; a refusal is a failure here.
+    async fn draw(&mut self, spec: &Value) -> Value {
+        let drawn = self
+            .ok("POST", "/api/plots/render", Some(json!({ "spec": spec })))
+            .await;
+        assert!(drawn.get("error").is_none(), "{drawn}");
+        drawn
+    }
+
+    async fn tests(&mut self, spec: Value) -> Value {
+        let answer = self
+            .ok("POST", "/api/plots/tests", Some(json!({ "spec": spec })))
+            .await;
+        assert!(answer.get("error").is_none(), "{answer}");
+        answer
+    }
+}
+
+/// The value of `column` in `row` of a layer's data.
+fn cell<'a>(layer: &'a Value, row: &'a Value, column: &str) -> &'a Value {
+    let at = layer["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|c| c == column)
+        .unwrap_or_else(|| panic!("no column `{column}` in {}", layer["columns"]));
+    &row[at]
+}
+
+/// The test `kind` of a section, and what it answered.
+fn result<'a>(section: &'a Value, kind: &str) -> &'a Value {
+    let entry = section["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["test"] == json!(kind))
+        .unwrap_or_else(|| panic!("no {kind} in {section}"));
+    &entry["result"]
+}
+
+#[tokio::test]
+async fn the_try_it_of_milestone_a2() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let r = reference();
+
+    // 1. A Data explorer workspace, and the demo's dataset of houses.
+    let workspace = client
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Exploring houses", "kind": "data_explorer" })),
+        )
+        .await;
+    let workspace = workspace["id"].as_str().unwrap().to_owned();
+    let houses = client.dataset_named("Houses").await;
+    let houses_def = client
+        .ok("GET", &format!("/api/datasets/{houses}"), None)
+        .await["dataset"]
+        .clone();
+    let (names, rows, total) = client.stage(&houses_def, 0).await;
+    assert_eq!(total, r["houses"].as_i64().unwrap());
+    let col = |name: &str| names.iter().position(|n| n == name).unwrap();
+    let (price, year) = (col("price"), col("year_built"));
+    let sold: Vec<&Vec<Value>> = rows.iter().filter(|r| !r[price].is_null()).collect();
+    assert_eq!(sold.len() as i64, r["scatter"]["n"].as_i64().unwrap());
+
+    // 2. The scatter plot from the gallery fills X and Y with the first two
+    // numbers; `price` dragged onto Y, `neighbourhood` onto Color; the mark
+    // changed to a line and back.
+    let scatter = client
+        .suggest(json!({ "dataset": houses, "preset": "scatter" }))
+        .await;
+    let mut assignment = scatter["assignment"].clone();
+    assert_eq!(assignment["x"]["field"], json!("area"));
+    assert_eq!(assignment["y"][0]["field"], json!("bedrooms"));
+    assert_eq!(scatter["spec"]["layers"][0]["mark"], json!("point"));
+    assignment["y"] = json!([{ "field": "price" }]);
+    assignment["color"] = json!({ "field": "neighbourhood" });
+    let suggested = client
+        .suggest(json!({ "dataset": houses, "assignment": assignment }))
+        .await;
+    let spec = suggested["spec"].clone();
+    assert_eq!(spec["layers"][0]["mark"], json!("point"));
+    let drawn = client.draw(&spec).await;
+    let points = &drawn["layers"][0];
+    // Every house is a row; those with no price are not drawn.
+    let drawn_rows = points["rows"].as_array().unwrap();
+    assert_eq!(drawn_rows.len(), rows.len());
+    let with_price = drawn_rows
+        .iter()
+        .filter(|row| !cell(points, row, "y").is_null())
+        .count();
+    assert_eq!(with_price, sold.len());
+    assert_eq!(points["sampled"], json!(false));
+    assert_eq!(drawn["domains"]["color"]["values"], json!([1, 2, 3, 4, 5]));
+    let line = client
+        .suggest(json!({ "dataset": houses, "assignment": assignment, "mark": "line" }))
+        .await;
+    assert_eq!(line["spec"]["layers"][0]["mark"], json!("line"));
+    client.draw(&line["spec"]).await;
+    let back = client
+        .suggest(json!({ "dataset": houses, "assignment": assignment, "mark": "point" }))
+        .await;
+    assert_eq!(back["spec"], spec);
+
+    // 3. `year_built`, binned, on Wrap: one small plot per bin, the points
+    // shared out as the rows say.
+    let mut wrapped = assignment.clone();
+    wrapped["wrap"] = json!({ "field": "year_built", "bin": {} });
+    let suggested = client
+        .suggest(json!({ "dataset": houses, "assignment": wrapped }))
+        .await;
+    let drawn = client.draw(&suggested["spec"]).await;
+    let bins = &drawn["bins"]["year_built"];
+    let (origin, width) = (
+        bins["origin"].as_f64().unwrap(),
+        bins["width"].as_f64().unwrap(),
+    );
+    let bin_of = |row: &Vec<Value>| ((row[year].as_f64().unwrap() - origin) / width).floor() as i64;
+    let every_bin: std::collections::BTreeSet<i64> = rows.iter().map(bin_of).collect();
+    let mut expected: BTreeMap<i64, usize> = BTreeMap::new();
+    for row in &sold {
+        *expected.entry(bin_of(row)).or_default() += 1;
+    }
+    let facets = drawn["facets"]["wrap"].as_array().unwrap();
+    assert_eq!(facets.len(), every_bin.len(), "{bins} {facets:?}");
+    let layer = &drawn["layers"][0];
+    let mut drawn_per_bin: BTreeMap<i64, usize> = BTreeMap::new();
+    for row in layer["rows"].as_array().unwrap() {
+        if cell(layer, row, "y").is_null() {
+            continue;
+        }
+        let lower = cell(layer, row, "wrap").as_f64().unwrap();
+        *drawn_per_bin
+            .entry(((lower - origin) / width).round() as i64)
+            .or_default() += 1;
+    }
+    assert_eq!(drawn_per_bin, expected);
+
+    // 4. The layers panel: a linear smoother, Y on a log scale, a reference
+    // line. The smoother is R's `lm(price ~ area)`.
+    let mut layered = spec.clone();
+    layered["layers"].as_array_mut().unwrap().push(
+        json!({ "mark": "line", "stat": { "kind": "smooth", "method": "linear" },
+                      "encoding": { "x": { "field": "area" }, "y": { "field": "price" } } }),
+    );
+    layered["scales"] = json!({ "y": { "kind": "log" } });
+    layered["references"] = json!([{ "channel": "y", "value": 300000, "label": "300k" }]);
+    let drawn = client.draw(&layered).await;
+    assert_eq!(drawn["warnings"], json!([]));
+    let smoother = &drawn["layers"][1];
+    assert_eq!(smoother["total"], json!(sold.len()));
+    let curve = smoother["rows"].as_array().unwrap();
+    let fit = &r["smoother"];
+    let line_at = |x: f64| fit["intercept"].as_f64().unwrap() + fit["slope"].as_f64().unwrap() * x;
+    for end in [&curve[0], curve.last().unwrap()] {
+        let x = cell(smoother, end, "x").as_f64().unwrap();
+        let y = cell(smoother, end, "y");
+        assert_close!(*y, json!(line_at(x)), format!("the smoother at {x}"));
+        let (lo, hi) = (
+            cell(smoother, end, "y_lower").as_f64().unwrap(),
+            cell(smoother, end, "y_upper").as_f64().unwrap(),
+        );
+        assert!(lo < y.as_f64().unwrap() && y.as_f64().unwrap() < hi);
+    }
+    assert_close!(
+        *cell(smoother, &curve[0], "x"),
+        fit["x_min"],
+        "where it starts"
+    );
+    assert_close!(
+        *cell(smoother, curve.last().unwrap(), "x"),
+        fit["x_max"],
+        "where it ends"
+    );
+
+    // 5. `price` on Y and `neighbourhood` on X: a box plot, its statistics
+    // R's quartiles and whiskers, and an ANOVA, Kruskal–Wallis and Tukey's
+    // comparisons as R has them.
+    let boxed = json!({ "x": { "field": "neighbourhood" }, "y": [{ "field": "price" }] });
+    let suggested = client
+        .suggest(json!({ "dataset": houses, "assignment": boxed }))
+        .await;
+    assert_eq!(suggested["spec"]["layers"][0]["mark"], json!("box"));
+    let drawn = client.draw(&suggested["spec"]).await;
+    let layer = &drawn["layers"][0];
+    let boxes = layer["rows"].as_array().unwrap();
+    assert_eq!(boxes.len(), 5);
+    for (row, expected) in boxes.iter().zip(r["boxes"].as_array().unwrap()) {
+        let what = format!("box {}", cell(layer, row, "x"));
+        assert_eq!(cell(layer, row, "n"), &expected["n"], "{what}");
+        for (column, name) in [
+            ("y_q1", "q1"),
+            ("y_median", "median"),
+            ("y_q3", "q3"),
+            ("y_lower", "lower"),
+            ("y_upper", "upper"),
+        ] {
+            assert_close!(
+                *cell(layer, row, column),
+                expected[name],
+                format!("{what} {name}")
+            );
+        }
+    }
+    let data = |id: &str| json!({ "kind": "dataset", "dataset": id });
+    let answer = client
+        .tests(json!({ "data": data(&houses), "y": [{ "field": "price" }],
+                       "x": { "field": "neighbourhood" } }))
+        .await;
+    assert_eq!(answer["design"], json!("number_by_groups"));
+    let section = &answer["sections"][0];
+    assert_eq!(section["n"], json!(sold.len()));
+    let anova = result(section, "anova");
+    assert_close!(anova["statistic"]["value"], r["anova"]["statistic"], "F");
+    assert_close!(anova["df"][0], r["anova"]["df"][0], "ANOVA's df");
+    assert_close!(anova["df"][1], r["anova"]["df"][1], "ANOVA's residual df");
+    assert_close!(anova["p_value"], r["anova"]["p"], "ANOVA's p");
+    let kruskal = result(section, "kruskal_wallis");
+    assert_close!(
+        kruskal["statistic"]["value"],
+        r["kruskal"]["statistic"],
+        "H"
+    );
+    assert_close!(kruskal["p_value"], r["kruskal"]["p"], "Kruskal–Wallis's p");
+    let comparisons = section["comparisons"].as_array().unwrap();
+    assert_eq!(comparisons.len(), 10);
+    for (c, expected) in comparisons.iter().zip(r["tukey"].as_array().unwrap()) {
+        let level =
+            |i: &Value| section["levels"][i.as_u64().unwrap() as usize]["value"].to_string();
+        assert_eq!(
+            (level(&c["a"]), level(&c["b"])),
+            (
+                expected["a"].as_str().unwrap().to_owned(),
+                expected["b"].as_str().unwrap().to_owned()
+            )
+        );
+        assert_close!(c["difference"], expected["diff"], "Tukey's difference");
+        assert_close!(c["p_value"], expected["p"], "Tukey's p");
+    }
+    // Neighbourhood makes no difference to price here that the tests can
+    // see — area does. Harbour's prices fail the normality check, so the
+    // sentence reports Kruskal–Wallis rather than the ANOVA.
+    let failed: Vec<&Value> = section["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["ok"] == json!(false))
+        .collect();
+    assert_eq!(failed.len(), 1, "{section}");
+    assert_eq!(
+        (&failed[0]["check"], &failed[0]["of"]),
+        (&json!("normality"), &json!(4))
+    );
+    assert_eq!(section["preferred"], json!("kruskal_wallis"));
+
+    // Filtered to two neighbourhoods, the explorer switches to Welch's t-test
+    // and the rank-sum test.
+    let mut filtered = houses_def.clone();
+    filtered["operations"] = json!([op(
+        "two",
+        "filter",
+        json!({ "formula": "neighbourhood <= 2" })
+    )]);
+    client.save(&houses, &filtered).await;
+    let answer = client
+        .tests(json!({ "data": data(&houses), "y": [{ "field": "price" }],
+                       "x": { "field": "neighbourhood" } }))
+        .await;
+    let section = &answer["sections"][0];
+    assert_eq!(section["levels"].as_array().unwrap().len(), 2);
+    let welch = result(section, "welch_t");
+    assert_close!(
+        welch["statistic"]["value"],
+        r["welch"]["statistic"],
+        "Welch's t"
+    );
+    assert_close!(welch["df"][0], r["welch"]["df"], "Welch's df");
+    assert_close!(welch["p_value"], r["welch"]["p"], "Welch's p");
+    let rank_sum = result(section, "mann_whitney");
+    assert_close!(
+        rank_sum["statistic"]["value"],
+        r["rank_sum"]["statistic"],
+        "W"
+    );
+    assert_close!(rank_sum["p_value"], r["rank_sum"]["p"], "the rank-sum p");
+    let kinds: Vec<&Value> = section["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| &t["test"])
+        .collect();
+    assert_eq!(kinds, [&json!("welch_t"), &json!("mann_whitney")]);
+    assert_eq!(section["preferred"], json!("welch_t"));
+    client.save(&houses, &houses_def).await;
+
+    // 6. Paired measurements: before and after on Y, in paired mode.
+    let measurements = client.dataset_named("Measurements").await;
+    let paired = json!({ "y": [{ "field": "before" }, { "field": "after" }] });
+    let suggested = client
+        .suggest(json!({ "dataset": measurements, "assignment": paired }))
+        .await;
+    client.draw(&suggested["spec"]).await;
+    let answer = client
+        .tests(json!({ "data": data(&measurements),
+                       "y": [{ "field": "before" }, { "field": "after" }],
+                       "paired": true }))
+        .await;
+    assert_eq!(answer["design"], json!("paired"));
+    let section = &answer["sections"][0];
+    assert_eq!(section["n"], r["measurements"]);
+    let t = result(section, "paired_t");
+    assert_close!(
+        t["statistic"]["value"],
+        r["paired_t"]["statistic"],
+        "the paired t"
+    );
+    assert_close!(t["df"][0], r["paired_t"]["df"], "the paired t's df");
+    assert_close!(t["p_value"], r["paired_t"]["p"], "the paired t's p");
+    assert_close!(
+        t["estimate"]["value"],
+        r["paired_t"]["estimate"],
+        "the mean difference"
+    );
+    let v = result(section, "paired_signed_rank");
+    assert_close!(v["statistic"]["value"], r["signed_rank"]["statistic"], "V");
+    assert_close!(v["p_value"], r["signed_rank"]["p"], "the signed-rank p");
+
+    // 7. The same drop zones as a summary table: rows by neighbourhood, the
+    // mean price in the cells.
+    let table = client
+        .ok(
+            "POST",
+            "/api/plots/table",
+            Some(json!({ "spec": {
+                "data": data(&houses),
+                "rows": [{ "field": "neighbourhood" }],
+                "cells": [{ "field": "price", "function": "mean" }],
+            } })),
+        )
+        .await;
+    assert_eq!(table["body"]["columns"], json!(["r0", "n", "v0"]));
+    let body = table["body"]["rows"].as_array().unwrap();
+    for (row, expected) in body.iter().zip(r["table"].as_array().unwrap()) {
+        assert_eq!(row[0], expected["neighbourhood"]);
+        assert_eq!(row[1], expected["n"]);
+        assert_close!(row[2], expected["mean"], "a mean price");
+    }
+    assert_eq!(table["total"], r["houses"]);
+
+    // 8. A million events: the histogram returns only its bins, and a bin
+    // holds the rows a Filter over the same range leaves.
+    let events = client.dataset_named("Events").await;
+    let events_def = client
+        .ok("GET", &format!("/api/datasets/{events}"), None)
+        .await["dataset"]
+        .clone();
+    let histogram = client
+        .suggest(json!({ "dataset": events, "preset": "histogram",
+                         "assignment": { "x": { "field": "duration_ms" } } }))
+        .await;
+    let started = std::time::Instant::now();
+    let drawn = client.draw(&histogram["spec"]).await;
+    eprintln!(
+        "a histogram of a million events took {:?}",
+        started.elapsed()
+    );
+    let layer = &drawn["layers"][0];
+    let bins = layer["rows"].as_array().unwrap();
+    assert!(bins.len() > 20 && bins.len() < 500, "{} bins", bins.len());
+    let counted: u64 = bins
+        .iter()
+        .map(|b| cell(layer, b, "y").as_u64().unwrap())
+        .sum();
+    assert_eq!(counted, 1_000_000);
+    assert_eq!(layer["total"], json!(1_000_000));
+    let fullest = bins
+        .iter()
+        .max_by_key(|b| cell(layer, b, "y").as_u64().unwrap())
+        .unwrap();
+    let (lo, hi) = (cell(layer, fullest, "x"), cell(layer, fullest, "x_end"));
+    let mut in_bin = events_def.clone();
+    in_bin["operations"] = json!([op(
+        "bin",
+        "filter",
+        json!({ "formula": format!("duration_ms >= {lo} && duration_ms < {hi}") })
+    )]);
+    let (_, _, total) = client.stage(&in_bin, 1).await;
+    assert_eq!(json!(total), *cell(layer, fullest, "y"));
+
+    // A scatter plot of them says it shows a sample.
+    let scatter = client
+        .suggest(json!({ "dataset": events, "assignment": {
+            "x": { "field": "duration_ms" }, "y": [{ "field": "size_kb" }] } }))
+        .await;
+    assert_eq!(scatter["spec"]["layers"][0]["mark"], json!("point"));
+    let drawn = client.draw(&scatter["spec"]).await;
+    let layer = &drawn["layers"][0];
+    assert_eq!(layer["sampled"], json!(true));
+    assert_eq!(layer["total"], json!(1_000_000));
+    assert_eq!(layer["rows"].as_array().unwrap().len(), 10_000);
+
+    // 9. The workspace keeps what it was left with.
+    let state = json!({ "dataset": houses, "assignment": boxed, "view": "plot",
+                        "tests": { "show": true, "paired": false, "mu": 0 } });
+    client
+        .ok(
+            "PUT",
+            &format!("/api/workspaces/{workspace}/state"),
+            Some(json!({ "state": state })),
+        )
+        .await;
+    let reopened = client
+        .ok("GET", &format!("/api/workspaces/{workspace}"), None)
+        .await;
+    assert_eq!(reopened["state"], state);
+    assert_eq!(reopened["kind"], json!("data_explorer"));
     Ok(())
 }

@@ -222,8 +222,8 @@ explorer"). No drag and drop yet.
    line.
 5. Start again with `price` on Y and `neighbourhood` on X: a box plot appears with a one-way
    ANOVA, a Kruskal-Wallis test and pairwise comparisons, and a sentence saying what they mean.
-   Drop two neighbourhoods from the dataset with a Filter: the explorer switches to a Welch
-   t-test and Mann-Whitney.
+   Filter the dataset down to two neighbourhoods: the explorer switches to a Welch t-test and
+   Mann-Whitney.
 6. Pick the demo `measurements` dataset, choose *paired* mode with `before` and `after` on Y:
    a paired t-test and a Wilcoxon signed-rank test.
 7. Switch the same assignment to a *summary table*: rows by neighbourhood, cells with the mean
@@ -296,10 +296,10 @@ explorer"). No drag and drop yet.
 
 ## Phase 6 — Demo data, documentation, definition of done
 
-- [ ] A2.15 Demo data: `patients` and `measurements` (before and after), and `events` with a
+- [x] A2.15 Demo data: `patients` and `measurements` (before and after), and `events` with a
       million rows (generated in SQL so it is quick). Documentation: `TECHNICAL_DESIGN.md`
       (the plot spec, the stat compiler, the tests); `tutorial-analytics.md` part 2.
-- [ ] A2.16 Definition of done: an `sc-server` test that renders the Try it's specs and checks
+- [x] A2.16 Definition of done: an `sc-server` test that renders the Try it's specs and checks
       the returned bins, box statistics and test results. Walk the Try it by hand.
 
 ---

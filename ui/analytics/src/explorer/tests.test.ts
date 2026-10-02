@@ -108,7 +108,7 @@ describe("numbers as the panel writes them", () => {
   });
 
   it("labels a bin as its range and a missing value as missing", () => {
-    expect(levelLabel({ value: 1990, end: 2000 }, t, L)).toBe("1,990–2,000");
+    expect(levelLabel({ value: 1990, end: 2000 }, t, L)).toBe("1990–2000");
     expect(levelLabel({ value: "North" }, t, L)).toBe("North");
     expect(levelLabel({ value: null }, t, L)).toBe("(missing)");
   });
@@ -195,7 +195,10 @@ describe("the plain-language sentence", () => {
 
   it("heads each Wrap group with its value", () => {
     const s = section({ by: 1990, by_end: 2000 });
-    expect(sectionHeading(analysis("one_number", s, { by: "year_built" }), s, t, L)).toBe("year_built: 1,990–2,000");
+    // Years as years, with no thousands separator, as the plot's axes have them.
+    expect(sectionHeading(analysis("one_number", s, { by: "year_built" }), s, t, L)).toBe("year_built: 1990–2000");
+    const big = section({ by: 100000, by_end: 150000.5 });
+    expect(sectionHeading(analysis("one_number", big, { by: "price" }), big, t, L)).toBe("price: 100,000–150,001");
     expect(sectionHeading(analysis("one_number", s), s, t, L)).toBeNull();
   });
 });

@@ -2,6 +2,65 @@
 
 Changes in reverse chronological order.
 
+## Analytics A2 phase 6: demo data, documentation, definition of done
+
+Milestone A2's last phase (`TODO.md` A2.15–A2.16): the demo's paired measurements and a million
+events, the plot spec and stat compiler documented, the tutorial's part 2, and the Try it as a
+server test checked against R. Walking it in the browser found four rendering faults, fixed here.
+
+- **Demo data** (A2.15). `feldspar demo analytics` now also makes `patients` (90, a third each
+  on a placebo, a low and a high dose) and `measurements` (a key to the patient, a date, a blood
+  pressure `before` and `after`; the doses lower it), generated in Rust from a seed of their own
+  so the houses are the rows they were; and `events`, a million web requests (`kind`,
+  `duration_ms`, `size_kb`, `hour`) made by one `INSERT … SELECT` over a recursive CTE whose text
+  is the same on Postgres and SQLite — integer hashes of the row number modulo 2³¹ − 1, every
+  product under 2⁶², and a final division both backends round alike, so they make identical rows.
+  About 4 s on Postgres and 2.5 s on SQLite. It also makes the datasets `Houses`, `Measurements`
+  (with `treatment = patientⱵtreatment` and `change = after - before`) and `Events`, since the
+  explorer reads datasets; a dataset of one of those names that is there is kept, and the report
+  and the command's output say which were made and which kept. `--replace` covers the six tables
+  and never drops a dataset.
+- **Documentation.** `TECHNICAL_DESIGN.md` §14.5 gains *The plot spec* (its JSON, layers, stats,
+  scales, facets, validation and the "show me" rules) and *The stat compiler* (data → points →
+  stat queries, percentiles by `row_number()`, what is computed in memory, seeded sampling, the
+  caps, data by channel), and the demo data and definitions of done. `tutorial-analytics.md`
+  part 2 walks the Try it with the numbers the demo gives; part 1 mentions the demo's datasets.
+  `OPERATIONS.md` §8.6 lists the new tables and datasets.
+- **Definition of done** (A2.16). `analytics_done.rs` gains `the_try_it_of_milestone_a2`, over
+  `feldspar demo analytics`'s rows through the API: a Data explorer workspace; the scatter
+  preset, `price` on Y and `neighbourhood` on Color, the mark to a line and back; `year_built`
+  binned on Wrap, each decade's points counted against the stage's rows; a linear smoother on a
+  log scale with a reference line, against R's `lm`; the box plot's quartiles and whiskers against
+  R's type-7 quantiles; the ANOVA, Kruskal–Wallis and all ten Tukey comparisons, then Welch and
+  Mann–Whitney after a Filter to two neighbourhoods, then the paired t-test and signed-rank test,
+  all against R; the summary table's means; a histogram of the million events (0.8 s) whose
+  fullest bin holds the rows a Filter over its range leaves, and a scatter plot that samples; the
+  workspace state reopened. R's values come from `crates/sc-server/tests/r/demo_reference.R`
+  (base R, over the demo's tables exported as CSV) → `demo_reference.json`. The A1 test now
+  expects the demo's three datasets on the front page.
+- **Fixed on the walk through the Try it** (in Chromium, against a scratch database):
+  - A number alone on Y — `price` on Y, or `before` and `after` — is a histogram binned along Y,
+    and `plot/echarts.ts` drew it as vertical bars at the counts. Histogram bars are now drawn
+    along whichever channel is binned (and so also right in flipped coordinates).
+  - With Wrap, the tests column has a section per group; the plot beside it was stretched to that
+    height (2,300 px for eight decades) and its percentage margins became blank bands. The tests
+    column now scrolls on its own.
+  - A reference line's label was drawn past the plot's right edge and cut off ("30" for "300k");
+    it is now inside, above the line's end.
+  - The tests' Wrap headings and levels wrote years with a thousands separator ("1,950–1,960");
+    a column's value is now written as the plot's axes write it, with no separator below 10,000.
+- **Deviations.**
+  - The Try it's "drop two neighbourhoods" read as if there were three; the demo has five, so it
+    now says to filter down to two.
+  - Price by neighbourhood is not significant in the demo (ANOVA p = 0.56; area dominates), and
+    Harbour's prices fail the normality check, so the sentence reports Kruskal–Wallis. The demo's
+    houses were left as they were rather than tuned for a result; the tutorial says what the
+    answer means, and the measurements' change by treatment gives a significant ANOVA instead.
+- **Tests.** Rust: `sc-cli`'s demo test checks the new tables, the datasets (made once, kept on
+  `--replace`, each compiling) and that Postgres and SQLite make the same events; the A2 Try it
+  above. Vitest: a histogram binned along Y, its bars' geometry; the reference line's label
+  position; years without separators in the tests' headings.
+
 ## Analytics A2 phase 5: hypothesis tests in the Data explorer
 
 The tests of the goals document's "Fit Y by X" table (`TODO.md` A2.12–A2.14), chosen from the Y, X

@@ -1,10 +1,10 @@
-//! `feldspar demo analytics` (analytics TODO A1.18): the demo's tables, the
-//! same rows on every run and on both backends, and nothing touched without
-//! `--replace`.
+//! `feldspar demo analytics` (analytics TODO A1.18, A2.15): the demo's tables
+//! and datasets, the same rows on every run and on both backends, and nothing
+//! touched without `--replace`.
 
 use std::sync::Arc;
 
-use sc_analytics::demo::{DEMO_HOUSES, demo_analytics};
+use sc_analytics::demo::{DEMO_DATASETS, DEMO_EVENTS, DEMO_HOUSES, DEMO_PATIENTS, demo_analytics};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -26,6 +26,64 @@ async fn houses(cat: &Catalog) -> Result<Vec<String>> {
     Ok(rows.iter().map(|r| format!("{:?}", r.values())).collect())
 }
 
+/// The events, summarised: how many of each kind, and the sums of their
+/// durations, sizes and hours — what the two backends' SQL must agree on.
+async fn events(cat: &Catalog) -> Result<Vec<String>> {
+    let sum = |c: &str| {
+        Projection::expr(Expr::Agg {
+            func: "sum".into(),
+            distinct: false,
+            args: vec![Expr::col(c)],
+        })
+    };
+    let mut select = Select::from(Source::table("events")).columns(vec![
+        Projection::expr(Expr::col("kind")),
+        Projection::expr(Expr::Agg {
+            func: "count".into(),
+            distinct: false,
+            args: Vec::new(),
+        }),
+        sum("duration_ms"),
+        sum("size_kb"),
+        sum("hour"),
+        Projection::expr(Expr::Agg {
+            func: "min".into(),
+            distinct: false,
+            args: vec![Expr::col("duration_ms")],
+        }),
+        Projection::expr(Expr::Agg {
+            func: "max".into(),
+            distinct: false,
+            args: vec![Expr::col("duration_ms")],
+        }),
+    ]);
+    select.group = vec![Expr::col("kind")];
+    select.order = vec![OrderBy::asc(Expr::col("kind"))];
+    let rows = cat
+        .primary()
+        .query(&Statement::from(select))
+        .await?
+        .try_collect()
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            r.values()
+                .iter()
+                .map(|v| match v {
+                    // Sums of a million tenths, rounded to compare; a sum of
+                    // integers is a decimal on Postgres.
+                    Value::Float(f) => format!("{f:.1}"),
+                    Value::Decimal(d) => format!("{d:.1}"),
+                    Value::Int(n) => format!("{n}.0"),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect())
+}
+
 async fn count(cat: &Catalog, table: &str) -> Result<i64> {
     let select = Select::from(Source::table(table)).columns(vec![Projection::expr(Expr::Agg {
         func: "count".into(),
@@ -44,8 +102,10 @@ async fn count(cat: &Catalog, table: &str) -> Result<i64> {
     }
 }
 
-async fn the_demo(cat: &Catalog, backend: &str) -> Result<Vec<String>> {
+async fn the_demo(cat: &Catalog, backend: &str) -> Result<(Vec<String>, Vec<String>)> {
+    let started = std::time::Instant::now();
     let report = demo_analytics(cat, false).await?;
+    eprintln!("{backend}: the demo took {:?}", started.elapsed());
     assert!(report.replaced.is_empty());
     assert_eq!(report.tables[1], ("houses".to_owned(), DEMO_HOUSES));
     assert_eq!(count(cat, "neighbourhoods").await?, 5);
@@ -53,6 +113,31 @@ async fn the_demo(cat: &Catalog, backend: &str) -> Result<Vec<String>> {
     let viewings = report.tables[2].1 as i64;
     assert!(viewings > 300, "{backend}: {viewings} viewings");
     assert_eq!(count(cat, "viewings").await?, viewings);
+    assert_eq!(count(cat, "patients").await?, DEMO_PATIENTS as i64);
+    assert_eq!(count(cat, "measurements").await?, DEMO_PATIENTS as i64);
+    assert_eq!(count(cat, "events").await?, DEMO_EVENTS as i64);
+
+    // The datasets the Data explorer reads, each reading.
+    assert_eq!(report.datasets, DEMO_DATASETS.map(str::to_owned).to_vec());
+    assert!(report.kept.is_empty());
+    let library = sc_dataset::load_library(cat).await?;
+    let schema = sc_dataset::Schema::of_catalog(cat)?;
+    for name in DEMO_DATASETS {
+        let def = sc_dataset::load_dataset_by_name(cat, name)
+            .await?
+            .expect("the demo's dataset");
+        let compiled = sc_dataset::compile(&schema, &library, &def, Default::default());
+        let stage = compiled
+            .last()
+            .unwrap_or_else(|e| panic!("{backend}: `{name}` does not read: {e}"));
+        if name == "Measurements" {
+            let columns: Vec<String> = stage.shape().columns.into_iter().map(|c| c.name).collect();
+            assert!(
+                columns.ends_with(&["treatment".to_owned(), "change".to_owned()]),
+                "{backend}: {columns:?}"
+            );
+        }
+    }
 
     // Keys and types as the models tutorial has them.
     let houses_table = cat.require("houses")?;
@@ -67,21 +152,26 @@ async fn the_demo(cat: &Catalog, backend: &str) -> Result<Vec<String>> {
         .await
         .expect_err("tables are there");
     assert!(
-        err.to_string()
-            .contains("`neighbourhoods`, `houses`, `viewings`")
-            && err.to_string().contains("--replace"),
+        err.to_string().contains(
+            "`neighbourhoods`, `houses`, `viewings`, `patients`, `measurements`, `events`"
+        ) && err.to_string().contains("--replace"),
         "{err}"
     );
     assert_eq!(houses(cat).await?, before);
+    let events_before = events(cat).await?;
+    assert_eq!(events_before.len(), 3, "{backend}: {events_before:?}");
 
-    // With it, the same rows again.
+    // With it, the same rows again; the datasets are kept, not made twice.
     let again = demo_analytics(cat, true).await?;
-    assert_eq!(again.replaced.len(), 3);
+    assert_eq!(again.replaced.len(), 6);
+    assert!(again.datasets.is_empty());
+    assert_eq!(again.kept, DEMO_DATASETS.map(str::to_owned).to_vec());
     assert_eq!(
         houses(cat).await?,
         before,
         "{backend}: the rows are deterministic"
     );
+    assert_eq!(events(cat).await?, events_before, "{backend}");
 
     // A row added later is numbered after the demo's.
     let insert = Insert::row(
@@ -95,7 +185,7 @@ async fn the_demo(cat: &Catalog, backend: &str) -> Result<Vec<String>> {
         .try_collect()
         .await?;
     assert_eq!(count(cat, "neighbourhoods").await?, 6);
-    Ok(before)
+    Ok((before, events_before))
 }
 
 #[tokio::test]
@@ -104,13 +194,15 @@ async fn the_demo_is_deterministic_and_leaves_existing_tables_alone() -> Result<
     let pg =
         Catalog::init(Arc::new(PgDriver::from_pool(db.pool().clone())) as Arc<dyn DatabaseDriver>)
             .await?;
-    let on_postgres = the_demo(&pg, "postgres").await?;
+    let (on_postgres, pg_events) = the_demo(&pg, "postgres").await?;
 
     let driver: Arc<dyn DatabaseDriver> = Arc::new(SqliteDriver::open_in_memory()?);
     let sqlite = Catalog::init(driver).await?;
-    let on_sqlite = the_demo(&sqlite, "sqlite").await?;
+    let (on_sqlite, sqlite_events) = the_demo(&sqlite, "sqlite").await?;
     // One generator, so one set of houses — as far as the two backends'
     // readings of a row agree (SQLite has no boolean of its own).
     assert_eq!(on_postgres.len(), on_sqlite.len());
+    // One statement, so one set of events: the same counts and sums.
+    assert_eq!(pg_events, sqlite_events);
     Ok(())
 }
