@@ -2612,9 +2612,15 @@ async fn an_ownership_formula_is_restored_after_the_columns_it_reads() -> sc_err
                 "target_field": "id", "summary_field": "email" } })
     };
     for (table, field) in [
-        ("assignment", json!({ "name": "id", "type": "int", "primary_key": true })),
+        (
+            "assignment",
+            json!({ "name": "id", "type": "int", "primary_key": true }),
+        ),
         ("assignment", users_key("assigned_by")),
-        ("run", json!({ "name": "id", "type": "int", "primary_key": true })),
+        (
+            "run",
+            json!({ "name": "id", "type": "int", "primary_key": true }),
+        ),
         (
             "run",
             json!({ "name": "assignment", "kind": { "type": "key",
@@ -2671,7 +2677,11 @@ async fn an_ownership_formula_is_restored_after_the_columns_it_reads() -> sc_err
     let report = restore_everything(&mut target, &archive).await;
     for table in ["assignment", "run"] {
         assert!(
-            report_has(&report, "restored", &format!("the ownership rule of `{table}`")),
+            report_has(
+                &report,
+                "restored",
+                &format!("the ownership rule of `{table}`")
+            ),
             "`{table}`'s ownership rule should be restored: {report}"
         );
     }
@@ -2694,5 +2704,157 @@ async fn an_ownership_formula_is_restored_after_the_columns_it_reads() -> sc_err
         assert_eq!(body["ownership_formula"], json!(formula), "{body}");
         assert_eq!(body["rls_enabled"], json!(rls), "{body}");
     }
+    Ok(())
+}
+
+/// The id an account has on one server.
+async fn user_id(server: &Server, email: &str) -> uuid::Uuid {
+    server
+        .db
+        .client()
+        .await
+        .unwrap()
+        .query_one("SELECT id FROM users WHERE email = $1", &[&email])
+        .await
+        .unwrap()
+        .get(0)
+}
+
+/// A row that refers to an account the other server already has, under its
+/// own id, refers to that account there.
+///
+/// The restore keeps an account that is already on the server, matched by email.
+/// Its id there is not the backup's, so a row keeping the backup's id broke the
+/// foreign key, and so did every row that referred to that row.
+#[tokio::test]
+async fn a_row_referring_to_a_kept_account_refers_to_it_by_its_id_here() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    for field in [
+        json!({ "name": "id", "type": "int", "primary_key": true }),
+        json!({ "name": "owner", "kind": { "type": "key", "target_table": "users",
+                "target_field": "id", "summary_field": "email" } }),
+    ] {
+        if field["name"] == json!("id") {
+            let (status, body) = source
+                .client
+                .send("POST", "/api/tables", Some(json!({ "name": "notes" })))
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+        }
+        let (status, body) = source
+            .client
+            .send("POST", "/api/tables/notes/fields", Some(field))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let there = user_id(&source, "admin@example.com").await;
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/tables/notes/rows",
+            Some(json!({ "id": 1, "owner": there.to_string() })),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    let archive = backup_everything(&mut source).await;
+
+    let mut target = setup().await?;
+    let here = user_id(&target, "admin@example.com").await;
+    assert_ne!(
+        there, here,
+        "two servers should give their admin different ids"
+    );
+    let report = restore_everything(&mut target, &archive).await;
+    assert!(
+        report_has(&report, "restored", "1 rows into `notes`"),
+        "the row should go in: {report}"
+    );
+    let owner: uuid::Uuid = target
+        .db
+        .client()
+        .await
+        .unwrap()
+        .query_one("SELECT owner FROM notes WHERE id = 1", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(owner, here);
+    Ok(())
+}
+
+/// `node_modules` is neither backed up nor restored.
+///
+/// Its `.bin` entries are symlinks, which a backup held as copies of their
+/// targets, so the restored `tsc` imported `../lib/tsc.js` from the wrong place.
+/// And with a `node_modules` there, the build does not install, so the broken
+/// copy stayed. A backup taken before this change still carries one, and the
+/// restore leaves it out.
+#[tokio::test]
+async fn node_modules_is_neither_backed_up_nor_restored() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    sc_catalog::save_file_store(
+        &source.catalog,
+        &FileStoreDef::local("code", source.files.to_string_lossy()),
+    )
+    .await?;
+    sc_catalog::connect_file_store_def(
+        &source.catalog,
+        &sc_catalog::load_file_store_by_name(&source.catalog, "code")
+            .await?
+            .expect("the store just saved"),
+    )?;
+    std::fs::create_dir_all(source.files.join("web/src")).unwrap();
+    std::fs::create_dir_all(source.files.join("web/node_modules/.bin")).unwrap();
+    std::fs::write(source.files.join("web/src/main.ts"), "export {}\n").unwrap();
+    std::fs::write(
+        source.files.join("web/node_modules/.bin/tsc"),
+        "import \"../lib/tsc.js\";\n",
+    )
+    .unwrap();
+    let archive = backup_everything(&mut source).await;
+    assert!(has_entry(
+        &archive,
+        "file-stores/code/files/web/src/main.ts"
+    ));
+    assert!(!has_entry(
+        &archive,
+        "file-stores/code/files/web/node_modules/.bin/tsc"
+    ));
+
+    // A backup from before: the same, with the `node_modules` entry in it.
+    let old = {
+        let mut source = zip::ZipArchive::new(std::io::Cursor::new(&archive)).expect("a zip");
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..source.len() {
+            out.raw_copy_file(source.by_index_raw(i).unwrap()).unwrap();
+        }
+        out.start_file(
+            "file-stores/code/files/web/node_modules/.bin/tsc",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        std::io::Write::write_all(&mut out, b"import \"../lib/tsc.js\";\n").unwrap();
+        out.finish().unwrap().into_inner()
+    };
+    let mut target = setup().await?;
+    sc_catalog::save_file_store(
+        &target.catalog,
+        &FileStoreDef::local("code", target.files.to_string_lossy()),
+    )
+    .await?;
+    sc_catalog::connect_file_store_def(
+        &target.catalog,
+        &sc_catalog::load_file_store_by_name(&target.catalog, "code")
+            .await?
+            .expect("the store just saved"),
+    )?;
+    let report = restore_everything(&mut target, &old).await;
+    assert!(
+        report_has(&report, "warnings", "1 file in `node_modules` of `code`"),
+        "{report}"
+    );
+    assert!(target.files.join("web/src/main.ts").is_file());
+    assert!(!target.files.join("web/node_modules").exists());
     Ok(())
 }

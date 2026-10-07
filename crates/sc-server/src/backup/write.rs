@@ -761,12 +761,16 @@ fn file_mode(_store: &dyn sc_files::FileStore, _path: &str) -> Option<u32> {
 ///
 /// Directories are not recorded: an empty directory carries no information a
 /// restore could not recreate, and every non-empty one is implied by the paths of
-/// the files in it.
+/// the files in it. A `node_modules` is not descended into
+/// ([`super::is_installed_dependency`]).
 async fn walk(store: &dyn sc_files::FileStore, dir: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     let mut pending = vec![dir.to_owned()];
     while let Some(dir) = pending.pop() {
         for entry in store.list(&dir).await? {
+            if super::is_installed_dependency(&entry.path) {
+                continue;
+            }
             if entry.is_dir {
                 pending.push(entry.path);
             } else {

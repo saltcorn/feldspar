@@ -368,6 +368,18 @@ impl Available {
     }
 }
 
+/// Whether a store-relative path is in (or is) a `node_modules` directory.
+///
+/// Neither written to a backup nor restored from one. An installed dependency
+/// tree is built for the machine it was installed on (native binaries), and its
+/// `.bin` entries are symlinks that a zip read through the store holds as copies
+/// of their targets, where a relative `import` no longer resolves. A build
+/// installs the dependencies when `node_modules` is missing, so leaving it out
+/// is how it comes back working.
+pub(crate) fn is_installed_dependency(path: &str) -> bool {
+    path.split('/').any(|part| part == "node_modules")
+}
+
 fn items(obj: &Map<String, Json>, key: &str) -> Result<Vec<Item>> {
     match obj.get(key) {
         None | Some(Json::Null) => Ok(Vec::new()),

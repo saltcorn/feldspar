@@ -2,6 +2,27 @@
 
 Changes in reverse chronological order.
 
+## Fix: restored rows pointing at a kept account, and a restored `node_modules` that would not run
+
+Two more problems from restoring a real backup onto a second server.
+
+- **Rows that refer to an account already on the server now refer to it by its id there**
+  (`sc-server/src/backup/restore.rs`). The restore keeps an existing account, matched by email,
+  but the account has a different id on each server. A row such as `clients.therapist` kept the
+  backup's id and broke its foreign key. Every row that referred to that row failed too
+  (`assignment` → `exercise_run` → `answer`). `restore_users` now returns the backup id → local id
+  of each account kept by email, and `repoint_users` rewrites every `Key` to `users` in the rows
+  before they are inserted.
+- **`node_modules` is neither backed up nor restored** (`sc-server/src/backup/{mod,write,restore}.rs`,
+  `is_installed_dependency`). A store's files were read through the store, which follows symlinks,
+  so `.bin/tsc` came back as a copy of `typescript/bin/tsc`. Its `import "../lib/tsc.js"` then
+  resolved from the wrong directory and the build failed. Because a `node_modules` was present,
+  the build also did not run its install. The writer no longer descends into `node_modules`. The
+  restore leaves it out of older backups and reports how many files it skipped, so the first build
+  installs the dependencies.
+- Tests: `a_row_referring_to_a_kept_account_refers_to_it_by_its_id_here` and
+  `node_modules_is_neither_backed_up_nor_restored` (`sc-server/tests/backup_api.rs`).
+
 ## Fix: restoring a backup refused every table with an ownership formula
 
 Restoring a backup onto another server skipped each table that had an ownership formula, even

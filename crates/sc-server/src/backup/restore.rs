@@ -123,8 +123,12 @@ pub async fn restore_backup(
     }
 
     // --- roles and users, before anything points at them --------------------
+    //
+    // An account that is already here keeps its own id, so the rows that pointed
+    // at the backup's id for it are pointed at this one as they go in.
+    let mut user_ids = BTreeMap::new();
     if selection.users {
-        restore_users(catalog, &entries, &mut report).await;
+        user_ids = restore_users(catalog, &entries, &mut report).await;
     }
 
     // --- modules, before anything that might be one of theirs ----------------
@@ -192,6 +196,7 @@ pub async fn restore_backup(
                         continue;
                     }
                 };
+                let rows = repoint_users(&table, rows, &user_ids);
                 let (inserted, problems) = insert_rows(catalog, &table, &rows).await;
                 report.did(format!("{inserted} rows into `{name}`"));
                 for problem in problems {
@@ -300,12 +305,21 @@ pub async fn restore_backup(
 /// somebody is signed in to: the alternative would let a backup overwrite the
 /// password of the admin running it, and lock them out of the screen they are
 /// standing on.
-async fn restore_users(catalog: &Catalog, entries: &Entries, report: &mut RestoreReport) {
+///
+/// Returns, for each account kept that has a different id here than in the
+/// backup (the same email, a different server), the backup's id mapped to this
+/// one — what [`repoint_users`] rewrites the rows' references with.
+async fn restore_users(
+    catalog: &Catalog,
+    entries: &Entries,
+    report: &mut RestoreReport,
+) -> BTreeMap<String, String> {
+    let mut repointed = BTreeMap::new();
     let document = match json_entry(entries, "users.json") {
         Ok(document) => document,
         Err(e) => {
             report.skipped(format!("users: {}", e.causes()));
-            return;
+            return repointed;
         }
     };
 
@@ -322,7 +336,7 @@ async fn restore_users(catalog: &Catalog, entries: &Entries, report: &mut Restor
     let users = array_field(&document, "users");
     if catalog.require(sc_auth::USERS_TABLE).is_err() {
         report.skipped("users: this server has no users table");
-        return;
+        return repointed;
     }
 
     // The columns an admin added to the users table where the backup was taken —
@@ -353,7 +367,7 @@ async fn restore_users(catalog: &Catalog, entries: &Entries, report: &mut Restor
 
     let Ok(table) = catalog.require(sc_auth::USERS_TABLE) else {
         report.skipped("users: this server has no users table");
-        return;
+        return repointed;
     };
     let existing = existing_users(catalog).await.unwrap_or_default();
     let mut restored = 0;
@@ -367,10 +381,18 @@ async fn restore_users(catalog: &Catalog, entries: &Entries, report: &mut Restor
             .get(sc_auth::COL_ID)
             .and_then(Json::as_str)
             .unwrap_or("");
-        if existing.contains(&email) || existing.contains(id) {
+        if existing.ids.contains(id) {
             report.skipped(format!(
                 "user `{email}` is already on this server; kept as it is"
             ));
+            continue;
+        }
+        if let Some(here) = existing.by_email.get(&email) {
+            report.skipped(format!(
+                "user `{email}` is already on this server; kept as it is, and the restored \
+                 rows that referred to it refer to it here"
+            ));
+            repointed.insert(id.to_owned(), here.clone());
             continue;
         }
         let (inserted, problems) = insert_rows(catalog, &table, std::slice::from_ref(user)).await;
@@ -382,22 +404,67 @@ async fn restore_users(catalog: &Catalog, entries: &Entries, report: &mut Restor
     if restored > 0 {
         report.did(format!("{restored} users"));
     }
+    repointed
 }
 
-/// Every identifier an existing account can be recognised by: its id and its
-/// email, in one set, because either colliding means "this account is here".
-async fn existing_users(catalog: &Catalog) -> Result<BTreeSet<String>> {
+/// The accounts already here, by id and by email: either colliding means "this
+/// account is here".
+#[derive(Default)]
+struct ExistingUsers {
+    ids: BTreeSet<String>,
+    /// Email → the id it has here.
+    by_email: BTreeMap<String, String>,
+}
+
+async fn existing_users(catalog: &Catalog) -> Result<ExistingUsers> {
     let table = catalog.require(sc_auth::USERS_TABLE)?;
-    let mut out = BTreeSet::new();
+    let mut out = ExistingUsers::default();
     for row in rows_of(catalog, &table).await? {
-        if let Some(id) = row.get(sc_auth::COL_ID).and_then(Json::as_str) {
-            out.insert(id.to_owned());
+        let id = row.get(sc_auth::COL_ID).and_then(Json::as_str);
+        if let Some(id) = id {
+            out.ids.insert(id.to_owned());
         }
-        if let Some(email) = row.get(sc_auth::COL_EMAIL).and_then(Json::as_str) {
-            out.insert(email.to_owned());
+        if let (Some(id), Some(email)) = (id, row.get(sc_auth::COL_EMAIL).and_then(Json::as_str)) {
+            out.by_email.insert(email.to_owned(), id.to_owned());
         }
     }
     Ok(out)
+}
+
+/// `rows` with every reference to the users table that names a kept account by
+/// its backup id ([`restore_users`]) naming it by its id here instead.
+fn repoint_users(
+    table: &Table,
+    mut rows: Vec<Json>,
+    user_ids: &BTreeMap<String, String>,
+) -> Vec<Json> {
+    if user_ids.is_empty() {
+        return rows;
+    }
+    let columns: Vec<&str> = table
+        .fields
+        .iter()
+        .filter(|field| {
+            matches!(&field.kind, DataFieldKind::Key { target_table, .. }
+                if target_table.0 == sc_auth::USERS_TABLE)
+        })
+        .map(|field| field.base.name.as_str())
+        .collect();
+    for row in &mut rows {
+        let Some(obj) = row.as_object_mut() else {
+            continue;
+        };
+        for column in &columns {
+            let here = obj
+                .get(*column)
+                .and_then(Json::as_str)
+                .and_then(|id| user_ids.get(id));
+            if let Some(here) = here {
+                obj.insert((*column).to_owned(), Json::String(here.clone()));
+            }
+        }
+    }
+    rows
 }
 
 async fn restore_role(catalog: &Catalog, value: &Json) -> Result<String> {
@@ -474,7 +541,11 @@ async fn restore_table(
         format!("table `{name}`")
     };
     let nothing_to_apply = !exists
-        && access.ownership_formula.as_deref().unwrap_or_default().is_empty()
+        && access
+            .ownership_formula
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty()
         && access.rls_enabled != Some(true);
     Ok((line, (!nothing_to_apply).then_some(access)))
 }
@@ -926,6 +997,23 @@ async fn restore_file_store(
         .filter_map(|(entry, bytes)| Some((entry.strip_prefix(&prefix)?, bytes)))
         .filter(|(path, _)| !path.is_empty())
         .collect();
+    // A backup written before `node_modules` was left out still carries it, and
+    // a copy of it does not run here ([`super::is_installed_dependency`]).
+    let installed = files
+        .iter()
+        .filter(|(path, _)| super::is_installed_dependency(path))
+        .count();
+    let files: Vec<(&str, &Vec<u8>)> = files
+        .into_iter()
+        .filter(|(path, _)| !super::is_installed_dependency(path))
+        .collect();
+    if installed > 0 {
+        report.skipped(format!(
+            "{} in `node_modules` of `{name}`: dependencies are installed by the build, \
+             not restored",
+            counted(installed, "file", "files")
+        ));
+    }
     let carries_checkout = files.iter().any(|(path, _)| is_git_path(path));
 
     // Set when this restore defined a git store whose checkout is in the backup:
