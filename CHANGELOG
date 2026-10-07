@@ -2,6 +2,49 @@
 
 Changes in reverse chronological order.
 
+## MCP: translating an application from a coding agent
+
+A user driving Claude Code over MCP should be able to say "translate this app to German" or
+"the translation of 'Save' is wrong, it should be …". Before this, nothing on the MCP surface
+reached an application's catalogue, and Claude Code never read the `t()`/`<T>` rules because
+they were only in `AGENTS.md`, which Claude Code does not load.
+
+- **Two new tools** (`sc-app/src/mcp/translate.rs`, applications area) and a new section of
+  `update_application`. The agent is the translator, so no tool calls the server's own LLM:
+  - `describe_translations`: every string the source wraps (or a Saltcorn UI app's views show),
+    the locales with their coverage, `problems` (non-literal call sites) and `unwrapped`
+    literals (capped at 200, with `unwrapped_count`). With `locale` it gives one `translation`
+    per message, and `missing_only` keeps just the untranslated ones.
+  - `update_application` gains a **`locales` section** (`add`, `remove`, `default_locale`) rather
+    than a tool of its own, because the locales are part of the application record and the tool
+    list should not grow. It writes the record's `attributes` through the same
+    `updateApplication` save, so it can be combined with the other sections and the mount is
+    refreshed with no build. A default that was just removed is dropped rather than refusing
+    the call. A default that is not enabled is refused. Needs `allow_edit`.
+  - `save_translations`: `messages` maps an English key to a translation, or to `null` to
+    remove it. It **merges** into the locale's current catalogue, because `saveTranslations`
+    replaces the catalogue and a one-word correction must not wipe the rest. Keys the source
+    does not use are saved but reported under `not_in_source`. Needs `allow_edit`.
+  - Both tools run the Translations screen's own handlers (`getTranslations`,
+    `saveTranslations`) through the `AdminHost`. So the placeholder
+    check, orphan keeping and catalogue cache invalidation are the screen's, and the change is
+    live without a build. With no running server, they refuse.
+- **The MCP handshake `instructions`** (`sc-server/src/mcp.rs`) gain a translating paragraph,
+  and step 5 of building an app now says to wrap user-visible strings in `t()`/`<T>`. Claude Code
+  puts these instructions in its system prompt, so this is the part that reaches it whatever
+  the project contains.
+- **Scaffolded projects get a `CLAUDE.md`** containing `@AGENTS.md`, so Claude Code reads the
+  same guide as other agents. It is written once, like `AGENTS.md`. `AGENTS.md` and the
+  regenerated `src/feldspar/SKILL.md` gain a short "Translating this application" section.
+- The built-in `admin_copilot` shares this tool set, so it offers the two tools too (17 tool
+  names, up from 15).
+- Tests: `app_i18n::a_coding_agent_translates_an_application_through_the_mcp_tools` (enable `de`
+  through `update_application`,
+  list what is missing, save, correct one key and check the rest survive, a renamed placeholder
+  refused, served JSON checked) and
+  `scaffold::files::tests::claude_md_imports_agents_md_which_says_how_to_translate` and
+  `mcp::update::tests::locales_are_added_and_removed_and_a_removed_default_goes_with_them`.
+
 ## MCP: File fields, static directories, the CSP, and compressed responses
 
 An external coding agent built two applications through the administration MCP server (TODO

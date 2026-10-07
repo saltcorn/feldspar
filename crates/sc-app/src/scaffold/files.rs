@@ -106,6 +106,11 @@ const RUNTIME_SKILL_FILE: &str = crate::SKILL_FILE;
 /// destroy their work.
 const AGENTS_FILE: &str = "AGENTS.md";
 
+/// The project root's guide for Claude Code, which reads `CLAUDE.md` and not
+/// `AGENTS.md`: one import line, so the two agents read one file. Written once,
+/// like [`AGENTS_FILE`], and the developer's from then on.
+const CLAUDE_FILE: &str = "CLAUDE.md";
+
 /// Everything the generator needs about the application it is writing a project
 /// for, gathered once by the caller (which is the half that has a [`Catalog`]).
 ///
@@ -425,6 +430,7 @@ pub fn project_files(ctx: &ProjectContext<'_>) -> Vec<GeneratedFile> {
         // The project root's, not the generated directory's: written here and
         // never again, because the developer and their agents own it.
         GeneratedFile::new(AGENTS_FILE, agents_md(ctx)),
+        GeneratedFile::new(CLAUDE_FILE, format!("@{AGENTS_FILE}\n")),
         GeneratedFile::new("src/main.tsx", main_tsx(auth)),
         GeneratedFile::new("src/App.tsx", app_tsx(project, auth)),
         GeneratedFile::new("src/routes.tsx", routes_tsx(&exposed, auth)),
@@ -993,6 +999,18 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          written `<T text=\"Read the {{guide}} first.\" values={{{{ guide: <a … /> }}}} />` \
          rather than cut into three fragments no translator can reorder. \
          Outside a component, import `t` itself rather than the hook.\n\
+         \n\
+         ## Translating this application\n\
+         \n\
+         The translations are not in this project's source: they are a catalogue \
+         per locale that the server holds and serves. To translate the app (\"into \
+         German\") or fix one translation, use the administration MCP tools: \
+         `describe_translations` lists the wrapped strings, the locales and what \
+         is missing; the `locales` section of `update_application` enables a \
+         locale; `save_translations` writes translations — only the keys it names change. You write the \
+         translations yourself; keep every `{{placeholder}}` name unchanged. A \
+         saved translation is live without a build; a string you newly wrap in \
+         `t()` needs one before the running app renders it translated.\n\
          \n\
          ## The half of this application that is not in this project\n\
          \n\
@@ -3682,6 +3700,28 @@ mod tests {
         // It says it is the developer's, because that is the only thing stopping
         // an agent from treating it as generated and leaving it alone.
         assert!(agents.contains("never overwrites it"), "{agents}");
+    }
+
+    /// Claude Code reads `CLAUDE.md`, not `AGENTS.md`, so the scaffold writes one
+    /// that imports the other — and what it imports says how to translate.
+    #[test]
+    fn claude_md_imports_agents_md_which_says_how_to_translate() {
+        let tables = [tasks()];
+        let app = todo();
+        let files = project_files(&ctx(&app, &tables, &endpoints(&tables), None));
+        assert_eq!(file(&files, "CLAUDE.md"), "@AGENTS.md\n");
+        let agents = file(&files, "AGENTS.md");
+        for tool in [
+            "describe_translations",
+            "update_application",
+            "save_translations",
+        ] {
+            assert!(
+                agents.contains(tool),
+                "AGENTS.md should name `{tool}`: {agents}"
+            );
+        }
+        assert!(agents.contains("<T text="), "{agents}");
     }
 
     /// Both documents carry the loop between an edit and a screenshot of it:

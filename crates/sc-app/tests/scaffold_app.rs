@@ -122,6 +122,7 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
         "src/SetPassword.tsx",
         "src/app.css",
         "AGENTS.md",
+        "CLAUDE.md",
         "src/feldspar/client.ts",
         "src/feldspar/helper.ts",
         "src/feldspar/hooks.ts",
@@ -134,11 +135,11 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
     ] {
         assert!(project.join(expected).is_file(), "missing {expected}");
     }
-    // 13 project files + one page for the app's one table + the nine-file
+    // 14 project files (`CLAUDE.md` importing `AGENTS.md`) + one page for the app's one table + the nine-file
     // runtime (the client, its helper, the hooks, the store, the two halves of
     // the message runtime, the schema, and the two documents — one for a
     // person, one for a coding agent).
-    assert_eq!(report.files.len(), 23);
+    assert_eq!(report.files.len(), 24);
 
     // What a coding agent opening this project finds: a root file pointing at the
     // generated directory, and in it a README and a `schema.sql` describing the

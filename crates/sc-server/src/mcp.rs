@@ -1,7 +1,7 @@
 //! The administration MCP server: `POST /mcp` (design §13.6).
 //!
 //! One route, streamable HTTP, no server-initiated stream. It projects the
-//! administrative tool surface — the thirteen composite tools of `sc_api::mcp` and
+//! administrative tool surface — the fifteen composite tools of `sc_api::mcp` and
 //! `sc_app::mcp`, plus the tools generated from the endpoints tagged
 //! [`Endpoint::mcp`](sc_api::Endpoint::mcp) — to an external coding agent
 //! holding a bearer token an administrator minted.
@@ -390,13 +390,26 @@ code, because the client is generated from them. \
 application; this regenerates \
 `src/feldspar/` so the client has a typed method for each. \
 (5) Write the pages in the project directory, using only the generated client to reach the \
-data. \
+data, and every user-visible string through `t(\"…\")` (or `<T text=\"…\" />` for a sentence \
+with an element inside it) — the project's `AGENTS.md` has the call shapes. \
 (6) `buildApplication` (its id is in `describe_applications`) to build it and serve it on its \
 subdomain; fix whatever the diagnostics report and build again until it succeeds. \
 (7) Tell the user the address and what the draft does.
 
 To change an existing application, `describe_applications` gives its `project_dir`: work \
-there, connect any new table with `update_application`, and rebuild.";
+there, connect any new table with `update_application`, and rebuild.
+
+Translating an application (\"translate this app to German\", \"the German for 'Save' should \
+be …\"). You are the translator; the tools hold the strings and check your work. \
+(1) `describe_translations` lists every string the source wraps in `t()`, the locales the app \
+serves and what each has; its `unwrapped` list is user-visible text nothing wraps, which cannot \
+be translated until you wrap it in the source (and rebuild). \
+(2) `update_application` with `locales: { add: [\"de\"] }` if the locale is not served yet. \
+(3) `describe_translations` with `locale` and `missing_only: true`, then `save_translations` \
+with your translations, in batches of about a hundred. The key is the English source text \
+exactly; keep every `{placeholder}` name unchanged. A correction is one `save_translations` \
+call naming just that key — other translations are kept. No build is needed: the app serves \
+the change on its next page load.";
 
 async fn call_tool(
     state: &AppState,
@@ -497,7 +510,7 @@ fn tool_result(outcome: Result<Json>) -> Json {
     }
 }
 
-/// The tools this token was granted: the thirteen composite ones and the tagged
+/// The tools this token was granted: the fifteen composite ones and the tagged
 /// endpoints, under the token's six flags.
 ///
 /// Built per request rather than cached, because the flags are the token's and

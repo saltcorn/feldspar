@@ -10,13 +10,15 @@
 //!   `edit_schema` and writing code.
 //! - **`static_dirs`**: a file store's folder served on a URL path of the app.
 //! - **`csp`**: single directives of the app's Content-Security-Policy.
+//! - **`locales`**: the languages the app is served in (§16.1). The
+//!   translations themselves are written by `save_translations`.
 //!
 //! ## A grant per section, checked before anything changes
 //!
 //! As `edit_schema` checks a grant per operation, this checks one per section,
 //! and a call naming a section it may not touch changes nothing at all. The
-//! connected tables are an edit: connecting a table does not open its rows,
-//! whose own roles still decide who reads them. A static directory is an edit
+//! connected tables are an edit, and so are the locales: connecting a table
+//! does not open its rows, whose own roles still decide who reads them. A static directory is an edit
 //! too, because a mount is not a grant — every file it serves goes through the
 //! same access check as the file manager, as the request's user (the router's
 //! `serve_static_dir`). A CSP **is** a security boundary — it decides what a
@@ -44,9 +46,9 @@ use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
 use super::{TOOL_DESCRIBE_APPS, load_app, required_str};
-use crate::{Application, CspPolicy, StaticDir};
+use crate::{Application, CspPolicy, StaticDir, app_default_locale, app_locales, set_app_locales};
 
-/// Changes an application's connected tables, static directories or CSP.
+/// Changes an application's connected tables, static directories, CSP or locales.
 pub const TOOL_UPDATE_APP: &str = "update_application";
 
 /// The tool.
@@ -64,6 +66,8 @@ const ARG_SET: &str = "set";
 const ARG_MOUNT: &str = "mount";
 const ARG_STORE: &str = "file_store";
 const ARG_PATH: &str = "path";
+const ARG_LOCALES: &str = "locales";
+const ARG_DEFAULT_LOCALE: &str = "default_locale";
 
 struct UpdateApp;
 
@@ -93,7 +97,10 @@ impl AdminTool for UpdateApp {
 fn update_description(grants: &Grants) -> String {
     let edit = match grants.edit {
         true => "",
-        false => " You may **not** change `tables` or `static_dirs`: they need `allow_edit`.",
+        false => {
+            " You may **not** change `tables`, `static_dirs` or `locales`: they need \
+             `allow_edit`."
+        }
     };
     let csp = match grants.access_changes {
         true => {
@@ -107,7 +114,8 @@ fn update_description(grants: &Grants) -> String {
     };
     format!(
         "Change an application: the tables it serves, the store folders it serves \
-         as files, or its Content-Security-Policy. Give only the sections you are \
+         as files, its Content-Security-Policy, or the languages it is served in. \
+         Give only the sections you are \
          changing; one call may change several, and is saved as one, so a refused \
          section changes nothing.\n\n\
          - `{ARG_TABLES}` — its **connected tables**. An application reaches only \
@@ -129,7 +137,15 @@ fn update_description(grants: &Grants) -> String {
          https://admin.example.com`) so it may show this one in an iframe; \
          `style-src 'self' 'unsafe-inline'` for `style` attributes written into \
          markup; `img-src` or `connect-src` naming an outside host. Widen only \
-         what the code needs.\n\n\
+         what the code needs.\n\
+         - `{ARG_LOCALES}` — the **languages** it is served in and offers on its \
+         language picker: `{ARG_ADD}` and `{ARG_REMOVE}` take locale tags (`de`, \
+         `pt-BR`), and `{ARG_DEFAULT_LOCALE}` names the one a visitor whose \
+         browser asks for none of them gets (it must be enabled; null clears it). \
+         Enable a locale before `save_translations` writes into it. English is \
+         the source language and needs no translations, but list `en` if \
+         visitors should be able to pick it. Removing a locale keeps its \
+         translations.\n\n\
          `{TOOL_DESCRIBE_APPS}` shows what each application has now. The running \
          app serves the change at once; a bundle written against tables it did \
          not have still needs a rebuild.{edit}{csp}"
@@ -181,7 +197,7 @@ fn update_parameters() -> Json {
                             "additionalProperties": false,
                         },
                     },
-                    ARG_REMOVE: names,
+                    ARG_REMOVE: names.clone(),
                 },
                 "additionalProperties": false,
             },
@@ -195,6 +211,19 @@ fn update_parameters() -> Json {
                     "items": { "type": "string" },
                 },
             },
+            ARG_LOCALES: {
+                "type": "object",
+                "description": "Change the languages it is served in.",
+                "properties": {
+                    ARG_ADD: names.clone(),
+                    ARG_REMOVE: names,
+                    ARG_DEFAULT_LOCALE: {
+                        "type": ["string", "null"],
+                        "description": "The fallback locale; null to clear it.",
+                    },
+                },
+                "additionalProperties": false,
+            },
         },
         "required": [ARG_APPLICATION],
         "additionalProperties": false,
@@ -204,18 +233,29 @@ fn update_parameters() -> Json {
 async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
     let args = arguments(
         args,
-        &[ARG_APPLICATION, ARG_TABLES, ARG_STATIC_DIRS, ARG_CSP],
+        &[
+            ARG_APPLICATION,
+            ARG_TABLES,
+            ARG_STATIC_DIRS,
+            ARG_CSP,
+            ARG_LOCALES,
+        ],
     )?;
     let tables = section(&args, ARG_TABLES, &[ARG_ADD, ARG_REMOVE, ARG_SET])?;
     let static_dirs = section(&args, ARG_STATIC_DIRS, &[ARG_ADD, ARG_REMOVE])?;
+    let locales = section(
+        &args,
+        ARG_LOCALES,
+        &[ARG_ADD, ARG_REMOVE, ARG_DEFAULT_LOCALE],
+    )?;
     let csp = match args.get(ARG_CSP) {
         None | Some(Json::Null) => None,
         Some(directives) => Some(directives),
     };
-    if tables.is_none() && static_dirs.is_none() && csp.is_none() {
+    if tables.is_none() && static_dirs.is_none() && csp.is_none() && locales.is_none() {
         return Err(Error::invalid(format!(
-            "name at least one of `{ARG_TABLES}`, `{ARG_STATIC_DIRS}` and `{ARG_CSP}`; \
-             nothing was changed"
+            "name at least one of `{ARG_TABLES}`, `{ARG_STATIC_DIRS}`, `{ARG_CSP}` and \
+             `{ARG_LOCALES}`; nothing was changed"
         )));
     }
     // Every grant before any change: a refused section refuses the call.
@@ -230,6 +270,13 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         require_grant(
             grants.edit,
             "change which folders an application serves",
+            GRANT_EDIT,
+        )?;
+    }
+    if locales.is_some() {
+        require_grant(
+            grants.edit,
+            "change which languages an application is served in",
             GRANT_EDIT,
         )?;
     }
@@ -262,6 +309,10 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         was.insert(ARG_CSP.to_owned(), csp_json(&app.csp));
         app.csp = changed_csp(&app.csp, directives)?;
     }
+    if let Some(locales) = &locales {
+        was.insert(ARG_LOCALES.to_owned(), locales_json(&app)?);
+        change_locales(&mut app, locales)?;
+    }
 
     let saved = save(ctx, &app, &mut out).await?;
     if tables.is_some() {
@@ -273,6 +324,9 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     if csp.is_some() {
         out[ARG_CSP] = csp_json(&saved.csp);
         out["csp_header"] = json!(saved.csp.header_value());
+    }
+    if locales.is_some() {
+        out[ARG_LOCALES] = locales_json(&saved)?;
     }
     out["was"] = Json::Object(was);
     Ok(out)
@@ -298,6 +352,58 @@ fn section(
                 .join(", ")
         ))),
     }
+}
+
+// --- locales ------------------------------------------------------------------
+
+/// Enable and disable locales, and set the fallback, on `app`'s attributes —
+/// through [`set_app_locales`], so the attribute's shape is spelled once.
+fn change_locales(app: &mut Application, section: &Map<String, Json>) -> Result<()> {
+    let mut locales = app_locales(app)?;
+    for tag in names(section, ARG_ADD)? {
+        let locale = sc_i18n::Locale::parse(&tag)?;
+        if !locales.iter().any(|l| l.as_str() == locale.as_str()) {
+            locales.push(locale);
+        }
+    }
+    let removed = names(section, ARG_REMOVE)?
+        .iter()
+        .map(|tag| sc_i18n::Locale::parse(tag).map(|l| l.as_str().to_owned()))
+        .collect::<Result<Vec<_>>>()?;
+    locales.retain(|l| !removed.iter().any(|r| r == l.as_str()));
+    let default = match section.get(ARG_DEFAULT_LOCALE) {
+        // Kept unless it was just removed: a default that is not enabled would
+        // refuse the call over something it did not ask to change.
+        None => {
+            app_default_locale(app)?.filter(|d| locales.iter().any(|l| l.as_str() == d.as_str()))
+        }
+        Some(Json::Null) => None,
+        Some(Json::String(tag)) => {
+            let default = sc_i18n::Locale::parse(tag.trim())?;
+            if !locales.iter().any(|l| l.as_str() == default.as_str()) {
+                return Err(Error::invalid(format!(
+                    "`{}` is the default locale but is not enabled; add it too. \
+                     Nothing was changed.",
+                    default.as_str()
+                )));
+            }
+            Some(default)
+        }
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "`{ARG_DEFAULT_LOCALE}` should be a locale tag or null, got {other}"
+            )));
+        }
+    };
+    set_app_locales(app, &locales, default.as_ref());
+    Ok(())
+}
+
+fn locales_json(app: &Application) -> Result<Json> {
+    Ok(json!({
+        ARG_LOCALES: app_locales(app)?.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
+        ARG_DEFAULT_LOCALE: app_default_locale(app)?.map(|l| l.as_str().to_owned()),
+    }))
 }
 
 // --- tables -------------------------------------------------------------------
@@ -546,6 +652,8 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
             .collect::<Vec<_>>()
     );
     body["csp"] = csp_json(&app.csp);
+    // Where the locales live (§9's column-vs-attributes rule).
+    body["attributes"] = Json::Object(app.attributes.clone());
     let updated = host
         .call_admin(
             AdminCall::new("updateApplication", body)
@@ -597,6 +705,36 @@ fn quoted(names: &[String]) -> String {
 mod tests {
     use super::*;
 
+    fn section(value: Json) -> Map<String, Json> {
+        value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn locales_are_added_and_removed_and_a_removed_default_goes_with_them() {
+        let mut app = Application::new("Tasks", "tasks", crate::FrameworkRef::new("react"));
+        change_locales(
+            &mut app,
+            &section(json!({ "add": ["de", "fr"], "default_locale": "de" })),
+        )
+        .unwrap();
+        assert_eq!(
+            locales_json(&app).unwrap(),
+            json!({ "locales": ["de", "fr"], "default_locale": "de" })
+        );
+        // Removing the default drops it rather than refusing the call.
+        change_locales(&mut app, &section(json!({ "remove": ["de"] }))).unwrap();
+        assert_eq!(
+            locales_json(&app).unwrap(),
+            json!({ "locales": ["fr"], "default_locale": null })
+        );
+        // A default that is not enabled is refused, and nothing changes.
+        let refused = change_locales(&mut app, &section(json!({ "default_locale": "es" })))
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("`es`"), "{refused}");
+        assert_eq!(locales_json(&app).unwrap()["locales"], json!(["fr"]));
+    }
+
     #[test]
     fn a_directive_is_replaced_or_removed_and_the_rest_kept() {
         let csp = CspPolicy::strict()
@@ -637,7 +775,9 @@ mod tests {
         assert!(!all.contains("You may **not**"), "{all}");
         let none = update_description(&Grants::none());
         assert!(
-            none.contains("**not** change `tables` or `static_dirs`: they need `allow_edit`"),
+            none.contains(
+                "**not** change `tables`, `static_dirs` or `locales`: they need `allow_edit`"
+            ),
             "{none}"
         );
         assert!(

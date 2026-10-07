@@ -80,9 +80,11 @@ use serde_json::{Map, Value as Json, json};
 use crate::{ApiConfig, Application};
 
 mod create;
+mod translate;
 mod update;
 
 pub use create::{TOOL_CREATE_APP, TOOL_CREATE_STORE};
+pub use translate::{TOOL_DESCRIBE_TRANSLATIONS, TOOL_SAVE_TRANSLATIONS};
 pub use update::TOOL_UPDATE_APP;
 
 /// The whole administrative tool surface: the schema's two, the triggers' four
@@ -103,6 +105,7 @@ pub fn app_tools() -> Vec<Arc<dyn AdminTool>> {
     let mut tools: Vec<Arc<dyn AdminTool>> = vec![Arc::new(DescribeApps)];
     tools.extend(create::create_tools());
     tools.extend(update::update_tools());
+    tools.extend(translate::translate_tools());
     tools.push(Arc::new(SaveQuery));
     tools.push(Arc::new(DeleteQuery));
     tools

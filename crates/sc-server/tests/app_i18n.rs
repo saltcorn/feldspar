@@ -557,3 +557,131 @@ async fn an_orphan_survives_a_save_that_never_showed_it() -> Result<()> {
 
     Ok(())
 }
+
+/// The MCP tools an external coding agent translates with: enable a locale,
+/// read what is missing, write its own translations, and correct one — over the
+/// same handlers as the Translations screen, so a save is checked, merged and
+/// live without a build.
+#[tokio::test]
+async fn a_coding_agent_translates_an_application_through_the_mcp_tools() -> Result<()> {
+    use sc_api::mcp::{Areas, ToolContext};
+    use sc_api::schema_edit::Grants;
+    use serde_json::json;
+
+    // No locales yet: "translate this app to German" starts from nothing.
+    let server = setup(tasks_app(&[])).await?;
+    write_project(server.store.path())?;
+    // Enabling a locale refreshes the mount, which for this fixture's framework
+    // (no prebuilt bundle) means a build: one that does nothing.
+    let web = server.store.path().join("web");
+    std::fs::create_dir_all(web.join("dist"))?;
+    std::fs::write(web.join("dist/index.html"), "<!doctype html>")?;
+    std::fs::write(
+        web.join("package.json"),
+        r#"{ "name": "tasks", "scripts": { "build": "true" } }"#,
+    )?;
+    let tools = sc_app::mcp::tool_set(Grants::all(), Areas::all());
+    let ctx = ToolContext {
+        catalog: &server.catalog,
+        user: None,
+        role: 1,
+        triggers: None,
+        actor: "the test agent",
+    };
+
+    let before = tools
+        .call(
+            "describe_translations",
+            &json!({ "application": "tasks" }),
+            &ctx,
+        )
+        .await?;
+    assert_eq!(before["messages"].as_array().unwrap().len(), 3);
+    assert_eq!(before["unwrapped_count"], 1, "{before}");
+    assert!(
+        before["notes"].to_string().contains("update_application"),
+        "{before}"
+    );
+
+    let enabled = tools
+        .call(
+            "update_application",
+            &json!({ "application": "tasks",
+                     "locales": { "add": ["de"], "default_locale": "de" } }),
+            &ctx,
+        )
+        .await?;
+    assert_eq!(enabled["locales"]["locales"], json!(["de"]));
+    assert_eq!(enabled["locales"]["default_locale"], "de");
+    assert_eq!(enabled["was"]["locales"]["locales"], json!([]));
+
+    let missing = tools
+        .call(
+            "describe_translations",
+            &json!({ "application": "tasks", "locale": "de", "missing_only": true }),
+            &ctx,
+        )
+        .await?;
+    let keys: Vec<&str> = missing["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["Add a task", "Delete {name}?", "Tasks"]);
+
+    tools
+        .call(
+            "save_translations",
+            &json!({ "application": "tasks", "locale": "de", "messages": {
+                "Tasks": "Aufgaben",
+                "Add a task": "Aufgabe hinzufügen",
+                "Delete {name}?": "{name} löschen?",
+            }}),
+            &ctx,
+        )
+        .await?;
+
+    // "The translation of 'Add a task' is wrong": one key, and the others stay.
+    let fixed = tools
+        .call(
+            "save_translations",
+            &json!({ "application": "tasks", "locale": "de",
+                     "messages": { "Add a task": "Neue Aufgabe" } }),
+            &ctx,
+        )
+        .await?;
+    assert_eq!(fixed["written"], 1);
+    let served = server.get("/api/i18n/de.json", None).await.json();
+    assert_eq!(served["Add a task"], "Neue Aufgabe");
+    assert_eq!(served["Tasks"], "Aufgaben");
+    assert_eq!(served["Delete {name}?"], "{name} löschen?");
+
+    // A renamed placeholder is refused naming the key, and nothing changes.
+    let refused = tools
+        .call(
+            "save_translations",
+            &json!({ "application": "tasks", "locale": "de",
+                     "messages": { "Delete {name}?": "{Name} löschen?" } }),
+            &ctx,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("Delete {name}?"), "{refused}");
+    assert_eq!(
+        server.get("/api/i18n/de.json", None).await.json()["Delete {name}?"],
+        "{name} löschen?"
+    );
+
+    let after = tools
+        .call(
+            "describe_translations",
+            &json!({ "application": "tasks", "locale": "de", "missing_only": true }),
+            &ctx,
+        )
+        .await?;
+    assert!(after["messages"].as_array().unwrap().is_empty(), "{after}");
+    assert_eq!(after["locales"][0]["percent"], 100);
+    Ok(())
+}
