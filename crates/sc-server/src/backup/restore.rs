@@ -151,11 +151,13 @@ pub async fn restore_backup(
     // exists, and *all* of them exist once the first pass is done — which is what
     // lets a backup with two tables referencing each other be restored at all.
     let mut restored_tables = Vec::new();
+    let mut deferred_access = Vec::new();
     for name in &selection.tables {
         match restore_table(catalog, &entries, name).await {
-            Ok(line) => {
+            Ok((line, access)) => {
                 report.did(line);
                 restored_tables.push(name.clone());
+                deferred_access.extend(access.map(|access| (name.clone(), access)));
             }
             Err(e) => report.skipped(format!("table `{name}`: {}", e.causes())),
         }
@@ -199,6 +201,25 @@ pub async fn restore_backup(
             }
             Err(e) => report.skipped(format!("rows of `{name}`: {}", e.causes())),
         }
+    }
+
+    // The ownership formula and row-level security, now that every column is
+    // here and the rows are in. The formula is checked against the columns it
+    // reads (`therapist`, or `assignmentⱵassigned_by` through a `Key`), none of
+    // which exist when the table is created; and a forced RLS policy switched on
+    // before the rows would judge each insert against them.
+    for (name, access) in deferred_access {
+        let result = schema_edit::apply(
+            catalog,
+            &[schema_edit::Operation::AlterTable {
+                table: name.clone(),
+                settings: access,
+            }],
+            &schema_edit::ApplyOptions::default(),
+        )
+        .await
+        .map(|_| String::new());
+        report.outcome(&format!("the ownership rule of `{name}`"), result);
     }
 
     // Constraints last, **after** the rows, exactly as `pg_dump` orders them: a
@@ -407,13 +428,26 @@ async fn restore_role(catalog: &Catalog, value: &Json) -> Result<String> {
 
 /// Create the table if it is not here, or apply the backup's settings to it if it
 /// is. Columns are a separate pass — see [`restore_backup`].
-async fn restore_table(catalog: &Catalog, entries: &Entries, name: &str) -> Result<String> {
+///
+/// The ownership formula and row-level security are held back and returned, to
+/// be applied once the columns they read exist — `None` when there is nothing to
+/// apply (a new table with neither).
+async fn restore_table(
+    catalog: &Catalog,
+    entries: &Entries,
+    name: &str,
+) -> Result<(String, Option<schema_edit::TableSettings>)> {
     let document = json_entry(entries, &format!("tables/{name}/table.json"))?;
     let table = document
         .get("table")
         .and_then(Json::as_object)
         .ok_or_else(|| Error::invalid("a table entry must carry a `table` object"))?;
-    let settings = table_settings_from_body(table)?;
+    let mut settings = table_settings_from_body(table)?;
+    let access = schema_edit::TableSettings {
+        ownership_formula: settings.ownership_formula.take(),
+        rls_enabled: settings.rls_enabled.take(),
+        ..Default::default()
+    };
     let exists = catalog.get(name)?.is_some();
     let operation = if exists {
         schema_edit::Operation::AlterTable {
@@ -434,11 +468,15 @@ async fn restore_table(catalog: &Catalog, entries: &Entries, name: &str) -> Resu
         }
     };
     schema_edit::apply(catalog, &[operation], &schema_edit::ApplyOptions::default()).await?;
-    Ok(if exists {
+    let line = if exists {
         format!("table `{name}` (settings; it was already here)")
     } else {
         format!("table `{name}`")
-    })
+    };
+    let nothing_to_apply = !exists
+        && access.ownership_formula.as_deref().unwrap_or_default().is_empty()
+        && access.rls_enabled != Some(true);
+    Ok((line, (!nothing_to_apply).then_some(access)))
 }
 
 /// Which of the column passes in [`restore_backup`] a field belongs to.

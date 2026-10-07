@@ -2,6 +2,23 @@
 
 Changes in reverse chronological order.
 
+## Fix: restoring a backup refused every table with an ownership formula
+
+Restoring a backup onto another server skipped each table that had an ownership formula, even
+one that reads only the table's own column (`clients`, whose formula reads its `therapist`
+column). Then everything that needed those tables failed too: a custom query, an application build, a trigger.
+A restored table is created with no columns, and they are added in later passes. But the formula
+was part of the create, and it is checked against the columns it reads, which were not there yet.
+
+- **The ownership formula and RLS are applied after the columns and rows**
+  (`sc-server/src/backup/restore.rs`). `restore_table` holds both back, and they go on with one
+  `AlterTable` per table once every column, including references and calculated fields, is in
+  place. They are applied after the rows because RLS is `FORCE`d and would otherwise judge each
+  insert. A failure is reported as "the ownership rule of `name`", and the table is kept.
+- Test: `an_ownership_formula_is_restored_after_the_columns_it_reads`
+  (`sc-server/tests/backup_api.rs`). It covers an own-column formula with RLS on and a row to
+  insert, and a formula that reads through a `Key`.
+
 ## Fix: the admin copilot's chat history was always empty
 
 The chat panel's rail of past conversations was blank for `Admin copilot`, however many

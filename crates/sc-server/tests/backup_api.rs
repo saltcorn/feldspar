@@ -2596,3 +2596,103 @@ async fn a_calculated_field_reading_through_a_reference_is_restored() -> sc_erro
     );
     Ok(())
 }
+
+/// A table's ownership formula comes back, whether it reads one of the table's
+/// own columns (`therapist`) or reads through a reference
+/// (`assignmentⱵassigned_by`), and with row-level security on.
+///
+/// The table is created with no columns (they go in on later passes), and the
+/// formula is checked against the columns it reads. So the formula and RLS are
+/// applied only after the columns and the rows are in.
+#[tokio::test]
+async fn an_ownership_formula_is_restored_after_the_columns_it_reads() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    let users_key = |name: &str| {
+        json!({ "name": name, "kind": { "type": "key", "target_table": "users",
+                "target_field": "id", "summary_field": "email" } })
+    };
+    for (table, field) in [
+        ("assignment", json!({ "name": "id", "type": "int", "primary_key": true })),
+        ("assignment", users_key("assigned_by")),
+        ("run", json!({ "name": "id", "type": "int", "primary_key": true })),
+        (
+            "run",
+            json!({ "name": "assignment", "kind": { "type": "key",
+                    "target_table": "assignment", "target_field": "id",
+                    "summary_field": "id" } }),
+        ),
+    ] {
+        if field["name"] == json!("id") {
+            let (status, body) = source
+                .client
+                .send("POST", "/api/tables", Some(json!({ "name": table })))
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+        }
+        let (status, body) = source
+            .client
+            .send("POST", &format!("/api/tables/{table}/fields"), Some(field))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    for (table, formula, rls) in [
+        ("assignment", "assigned_by === user.id", true),
+        ("run", "assignmentⱵassigned_by === user.id", false),
+    ] {
+        let (status, body) = source
+            .client
+            .send(
+                "PUT",
+                &format!("/api/tables/{table}"),
+                Some(json!({
+                    "label": table,
+                    "description": "",
+                    "min_role_read": 100,
+                    "min_role_write": 100,
+                    "ownership_formula": formula,
+                    "rls_enabled": rls,
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/tables/assignment/rows",
+            Some(json!({ "id": 1, "assigned_by": null })),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    let archive = backup_everything(&mut source).await;
+
+    let mut target = setup().await?;
+    let report = restore_everything(&mut target, &archive).await;
+    for table in ["assignment", "run"] {
+        assert!(
+            report_has(&report, "restored", &format!("the ownership rule of `{table}`")),
+            "`{table}`'s ownership rule should be restored: {report}"
+        );
+    }
+    assert!(
+        report_has(&report, "restored", "1 rows into `assignment`"),
+        "the row should go in before RLS is switched on: {report}"
+    );
+    let (status, tables) = target.client.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::OK, "{tables}");
+    for (table, formula, rls) in [
+        ("assignment", "assigned_by === user.id", true),
+        ("run", "assignmentⱵassigned_by === user.id", false),
+    ] {
+        let body = tables
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == json!(table))
+            .unwrap_or_else(|| panic!("`{table}` should be restored: {tables}"));
+        assert_eq!(body["ownership_formula"], json!(formula), "{body}");
+        assert_eq!(body["rls_enabled"], json!(rls), "{body}");
+    }
+    Ok(())
+}
