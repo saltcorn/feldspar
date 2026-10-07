@@ -2,6 +2,42 @@
 
 Changes in reverse chronological order.
 
+## Fix: Clear all removed the TLS settings, and `feldspar.toml` can now pin them
+
+After Clear all, `_fd_config` had no TLS settings. Nothing changed until the next restart; then
+the server listened only on plain HTTP. Behind a TLS-passthrough proxy that sends traffic to
+8443, every application and the admin UI stopped answering, and the settings can only be put
+back from that admin UI (or `feldspar set-cfg` on the host). The cause was Clear all, which
+deleted every row of `_fd_config`. Restore only adds settings and never removed any.
+
+- **Clear all keeps the TLS settings and the ACME cache** (`sc-server/src/clear_all.rs`). The
+  `_fd_config` delete leaves out every key in the SSL / TLS section (`sc_config::ssl_keys`). The
+  certificate and key are kept too, because `custom` mode without its certificate would stop the
+  boot. `_fd_acme_cache` is not cleared, so a restart does not order new certificates against
+  the CA's rate limits. The report says the TLS settings were kept.
+- **An `[environments.*]` section of `feldspar.toml` may pin `ssl_mode`, `acme_contact_email`,
+  `acme_directory_url`, `redirect_http_to_https` and `ssl_extra_domains`** (a TOML list)
+  (`sc-config-file`). `connect_catalog` passes them to `sc_config::set_host_config`, which checks
+  each against its declaration (a mistyped mode stops the boot by name) and holds them on the
+  `Catalog` (`set_host_config` / `host_config`). A pinned key wins:
+  - `all_config` and `config_value` return it, so the boot serves what the file says.
+  - `set_config` / `set_config_many` write nothing when the value is the pinned one (the form
+    sends back what it was shown), and refuse any other value before writing anything, naming
+    the file.
+  - A restore skips it and reports "`ssl_mode` kept from this host's feldspar.toml".
+  - `getSettings` / `updateSettings` return `host_keys`, and the settings screen shows those
+    fields read-only with a note to change them in the file (`SettingField`'s new `pinned` prop).
+    The generated clients were regenerated.
+  - `feldspar serve --help` lists the new keys.
+- `https_port` was already a host setting and was never stored in `_fd_config`.
+- Tests: `an_environment_may_pin_the_tls_settings` (`sc-config-file`),
+  `the_kept_keys_are_the_whole_section_and_the_pinnable_ones_are_in_it` (`sc-config/src/ssl.rs`),
+  `a_key_the_host_pins_wins_over_the_table_and_cannot_be_saved_over`
+  (`sc-config/tests/config_store.rs`), `the_file_s_tls_keys_become_the_settings_they_pin`
+  (`sc-cli/src/db.rs`), `a_restore_leaves_the_tls_keys_the_host_pins_alone`
+  (`sc-server/tests/backup_api.rs`). `clear_all_empties_the_installation_and_removes_only_ticked_stores`
+  now checks that the TLS settings and the ACME cache survive.
+
 ## Fix: restored rows pointing at a kept account, and a restored `node_modules` that would not run
 
 Two more problems from restoring a real backup onto a second server.

@@ -45,6 +45,18 @@ pub const SSL_EXTRA_DOMAINS: &str = "ssl_extra_domains";
 /// Whether the plain-HTTP listener redirects to HTTPS.
 pub const REDIRECT_HTTP_TO_HTTPS: &str = "redirect_http_to_https";
 
+/// The TLS keys a host may pin over `_fd_config`, from its `feldspar.toml`
+/// environment ([`crate::store::set_host_config`]). The certificate and its
+/// private key are not among them: they are pasted into the settings screen,
+/// and a PEM in a TOML string is a file nobody wants to maintain.
+pub const HOST_KEYS: [&str; 5] = [
+    SSL_MODE,
+    ACME_CONTACT_EMAIL,
+    ACME_DIRECTORY_URL,
+    REDIRECT_HTTP_TO_HTTPS,
+    SSL_EXTRA_DOMAINS,
+];
+
 /// `ssl_mode = "off"`: serve plain HTTP.
 pub const MODE_OFF: &str = "off";
 /// `ssl_mode = "letsencrypt"`: obtain certificates from an ACME CA.
@@ -58,6 +70,23 @@ pub const LETSENCRYPT_PRODUCTION: &str = "https://acme-v02.api.letsencrypt.org/d
 /// limits. Named here because it is what an admin should try first, and having
 /// to find the URL is what stops them.
 pub const LETSENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+/// Every key of the TLS section — what Clear all leaves in `_fd_config`, for the
+/// reason a backup leaves the section out by default: it says how *this host*
+/// serves, and losing it takes offline, at the next restart, the admin UI that
+/// would put it back. The whole section rather than [`HOST_KEYS`], because a
+/// `custom` mode kept without its certificate is a server that will not boot.
+pub fn ssl_keys() -> Vec<&'static str> {
+    vec![
+        SSL_MODE,
+        SSL_CERTIFICATE,
+        SSL_PRIVATE_KEY,
+        ACME_CONTACT_EMAIL,
+        ACME_DIRECTORY_URL,
+        SSL_EXTRA_DOMAINS,
+        REDIRECT_HTTP_TO_HTTPS,
+    ]
+}
 
 /// The TLS settings, as one section of the settings screen.
 pub fn ssl_section() -> ConfigSection {
@@ -362,6 +391,17 @@ mod tests {
             ["a.example.com", "b.example.com", "c.example.com"]
         );
         assert!(parse_domains("   \n ").is_empty());
+    }
+
+    #[test]
+    fn the_kept_keys_are_the_whole_section_and_the_pinnable_ones_are_in_it() {
+        let section = ssl_section();
+        let mut declared: Vec<&str> = section.fields.iter().map(|d| d.key()).collect();
+        let mut kept = ssl_keys();
+        declared.sort_unstable();
+        kept.sort_unstable();
+        assert_eq!(kept, declared);
+        assert!(HOST_KEYS.iter().all(|key| kept.contains(key)));
     }
 
     #[test]

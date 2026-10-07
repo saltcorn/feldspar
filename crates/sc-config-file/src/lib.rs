@@ -47,6 +47,8 @@
 //! bind = "0.0.0.0:80"
 //! https_port = 8443                # only when TLS is not on 443
 //! secure_cookies = true
+//! ssl_mode = "letsencrypt"         # pins the TLS settings; the admin UI shows
+//! acme_contact_email = "ops@example.com" # them read-only
 //! ```
 //!
 //! Those mirror `serve`'s flags of the same names, so `feldspar serve
@@ -190,6 +192,34 @@ pub struct Environment {
     /// kept in the database travels with a backup into a deployment whose
     /// firewall knows nothing about it.
     pub https_port: Option<u16>,
+    /// The TLS settings, pinned on this host — `ssl_mode`, `acme_contact_email`,
+    /// `acme_directory_url`, `redirect_http_to_https` and `ssl_extra_domains`,
+    /// the `_fd_config` keys of the same names (design §13.5). This first one is
+    /// `ssl_mode`: `off`, `letsencrypt` or `custom`.
+    ///
+    /// Each is optional, and one given here **wins over the database**: the
+    /// settings screen shows it read-only, a save cannot change it, and neither a
+    /// restore nor Clear all can take it away. That is the point of having them
+    /// here as well as there. TLS decides whether this host answers on the port
+    /// its proxy sends traffic to, and a setting that only the admin UI can
+    /// repair is a setting that, once lost, locks the admin out of the UI that
+    /// would repair it. With them in a file the instance can read but not write,
+    /// the operator of the machine — who on managed hosting is not the admin of
+    /// the instance — decides how it serves.
+    ///
+    /// Inline rather than a nested struct: `serde(flatten)` and
+    /// `deny_unknown_fields` do not combine, and the unknown-key check is worth
+    /// more than the grouping.
+    pub ssl_mode: Option<String>,
+    /// `acme_contact_email`: the ACME account's contact address.
+    pub acme_contact_email: Option<String>,
+    /// `acme_directory_url`: the ACME directory URL.
+    pub acme_directory_url: Option<String>,
+    /// `redirect_http_to_https`: whether plain HTTP redirects to HTTPS.
+    pub redirect_http_to_https: Option<bool>,
+    /// `ssl_extra_domains`: domains to certify beyond the ones the server
+    /// derives — a TOML list here, where the settings screen has one per line.
+    pub ssl_extra_domains: Option<Vec<String>>,
     /// The headless Chromium the coding agent's `view_app` drives — `--browser`
     /// (TODO §7b). Unset, the server looks on `PATH` for `chromium`,
     /// `chromium-browser` and `google-chrome`, skipping a snap shim.
@@ -682,6 +712,33 @@ test_template = "saltcorn_template"
 
     /// The HTTPS port is a property of the host, so it lives here and not in
     /// the database; absent is the default (443), not an error.
+    #[test]
+    fn an_environment_may_pin_the_tls_settings() {
+        let file = parse(
+            "[environments.production]\nssl_mode = \"letsencrypt\"\n\
+             acme_contact_email = \"ops@example.com\"\n\
+             acme_directory_url = \"https://acme.example/dir\"\n\
+             redirect_http_to_https = false\n\
+             ssl_extra_domains = [\"www.example.com\"]\n",
+        )
+        .expect("parses");
+        let env = &file.environments["production"];
+        assert_eq!(env.ssl_mode.as_deref(), Some("letsencrypt"));
+        assert_eq!(env.acme_contact_email.as_deref(), Some("ops@example.com"));
+        assert_eq!(
+            env.acme_directory_url.as_deref(),
+            Some("https://acme.example/dir")
+        );
+        assert_eq!(env.redirect_http_to_https, Some(false));
+        assert_eq!(
+            env.ssl_extra_domains.as_deref(),
+            Some(&["www.example.com".to_owned()][..])
+        );
+        // The certificate itself is not a host key: a pasted PEM belongs to the
+        // settings screen, and a typo near these keys must still be refused.
+        assert!(parse("[environments.production]\nssl_certificate = \"x\"\n").is_err());
+    }
+
     #[test]
     fn an_environment_may_name_its_https_port() {
         let file = parse("[environments.production]\ndatabase = \"a\"\nhttps_port = 8443\n")

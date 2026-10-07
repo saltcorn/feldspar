@@ -24,8 +24,11 @@
 //! - **File stores' directories**, only for the stores the admin ticked.
 //!
 //! Settings go back to their defaults at once where this process applies them
-//! from the database (localisation, development logging); the ones read at boot
-//! (the listen address, TLS) take their defaults at the next restart.
+//! from the database (localisation, development logging). **The TLS settings
+//! stay**, with the ACME cache: they say how this host serves, a backup leaves
+//! them out for that reason, and an admin who cleared them would find out at the
+//! next restart, with the admin UI that sets them unreachable on the port the
+//! proxy forwards to.
 //!
 //! **The tables go first, and a failure there stops everything.** Dropping is
 //! the step most likely to refuse, and refusing before anything else has
@@ -39,7 +42,7 @@ use std::collections::BTreeSet;
 use sc_api::schema_edit::{self, ApplyOptions, Operation};
 use sc_catalog::{Catalog, DataField, DataFieldKind, DbId, Table};
 use sc_error::Result;
-use sc_query::{Delete, Statement};
+use sc_query::{BinOp, Delete, Expr, Statement};
 use serde_json::{Value as Json, json};
 
 use crate::apps::AppMounts;
@@ -327,7 +330,8 @@ async fn clear_system_rows(catalog: &Catalog, report: &mut ClearReport) {
     if last_errors.is_empty() {
         report.cleared.push(
             "removed every user, application, file store, connection, provider, agent, \
-             trigger, stream, model, dataset, workspace, module and setting"
+             trigger, stream, model, dataset, workspace, module and setting \
+             (the SSL / TLS settings were kept)"
                 .to_owned(),
         );
     } else {
@@ -337,11 +341,32 @@ async fn clear_system_rows(catalog: &Catalog, report: &mut ClearReport) {
     }
 }
 
-/// Empty one table.
+/// Empty one table — all but the host's TLS settings.
+///
+/// `_fd_config` keeps the TLS section's rows and the ACME cache is left alone:
+/// how this host serves is the host's, as a backup already treats it (its
+/// `ssl` part is off by default). Clearing them would change nothing until the
+/// next restart and then take every application *and* the admin UI off the
+/// port the proxy sends traffic to, which no one can repair from a browser.
+/// The ACME cache goes with them because a cleared account and certificate is
+/// a fresh order against the CA's rate limits for names it already certified.
 async fn delete_rows(catalog: &Catalog, table: &str) -> Result<()> {
+    if table == sc_config::ACME_CACHE_TABLE {
+        return Ok(());
+    }
+    let mut delete = Delete::from(table);
+    if table == sc_config::CONFIG_TABLE {
+        let kept = sc_config::ssl_keys()
+            .into_iter()
+            .map(|key| Expr::binary(BinOp::Ne, Expr::col("key"), Expr::lit(key)))
+            .reduce(Expr::and);
+        if let Some(kept) = kept {
+            delete = delete.filter(kept);
+        }
+    }
     catalog
         .primary()
-        .query(&Statement::from(Delete::from(table)))
+        .query(&Statement::from(delete))
         .await?
         .try_collect()
         .await?;

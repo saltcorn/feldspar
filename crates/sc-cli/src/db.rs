@@ -92,6 +92,41 @@ impl Serving<'_> {
         self.section.and_then(|s| s.https_port)
     }
 
+    /// The TLS settings the file pins over `_fd_config`, keyed and typed as the
+    /// settings they override — what [`sc_config::set_host_config`] takes.
+    /// `ssl_extra_domains` is a list in the file and one name per line in the
+    /// setting.
+    pub fn host_config(&self) -> sc_types::Attrs {
+        use serde_json::Value as Json;
+        let mut out = sc_types::Attrs::new();
+        let Some(s) = self.section else {
+            return out;
+        };
+        let texts = [
+            (sc_config::SSL_MODE, &s.ssl_mode),
+            (sc_config::ACME_CONTACT_EMAIL, &s.acme_contact_email),
+            (sc_config::ACME_DIRECTORY_URL, &s.acme_directory_url),
+        ];
+        for (key, value) in texts {
+            if let Some(value) = value {
+                out.insert(key.to_owned(), Json::from(value.clone()));
+            }
+        }
+        if let Some(redirect) = s.redirect_http_to_https {
+            out.insert(
+                sc_config::REDIRECT_HTTP_TO_HTTPS.to_owned(),
+                Json::Bool(redirect),
+            );
+        }
+        if let Some(domains) = &s.ssl_extra_domains {
+            out.insert(
+                sc_config::SSL_EXTRA_DOMAINS.to_owned(),
+                Json::from(domains.join("\n")),
+            );
+        }
+        out
+    }
+
     /// The configured headless browser, if the file named one.
     pub fn browser(&self) -> Option<&str> {
         self.section.and_then(|s| s.browser.as_deref())
@@ -449,6 +484,37 @@ fn redact(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_file_s_tls_keys_become_the_settings_they_pin() {
+        let section = Environment {
+            ssl_mode: Some("letsencrypt".to_owned()),
+            acme_contact_email: Some("ops@example.com".to_owned()),
+            redirect_http_to_https: Some(false),
+            ssl_extra_domains: Some(vec!["a.example.com".to_owned(), "b.example.com".to_owned()]),
+            ..Environment::default()
+        };
+        let pinned = Serving {
+            section: Some(&section),
+        }
+        .host_config();
+        assert_eq!(
+            serde_json::Value::Object(pinned.clone()),
+            serde_json::json!({
+                "ssl_mode": "letsencrypt",
+                "acme_contact_email": "ops@example.com",
+                "redirect_http_to_https": false,
+                "ssl_extra_domains": "a.example.com\nb.example.com",
+            })
+        );
+        // Every one of them is a key the host may pin, typed as declared.
+        assert!(
+            pinned
+                .keys()
+                .all(|key| sc_config::HOST_KEYS.contains(&key.as_str()))
+        );
+        assert!(Serving { section: None }.host_config().is_empty());
+    }
 
     #[test]
     fn extract_pulls_db_flags_and_leaves_the_rest() {

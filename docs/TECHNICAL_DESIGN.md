@@ -6489,7 +6489,14 @@ remains available.
 `off`/`letsencrypt`/`custom`, the pasted chain and key, the ACME contact and directory URL,
 extra domains, `redirect_http_to_https`); the HTTPS port is the host's, not a stored
 setting — `https_port` in the `feldspar.toml` environment or `serve --https-port`, default
-443 — so a backup does not carry it to another deployment; `sc-server::tls` turns those into a
+443 — so a backup does not carry it to another deployment. The same environment may also
+**pin** `ssl_mode`, `acme_contact_email`, `acme_directory_url`, `redirect_http_to_https` and
+`ssl_extra_domains` (`sc_config::set_host_config`, held on the `Catalog` for the life of the
+process): a pinned key wins over its row, the settings screen shows it read-only (`host_keys`
+in the settings response), a save that would change it is refused, and a restore skips it. For
+installs with no file, **Clear all keeps the whole TLS section and `_fd_acme_cache`**, since
+losing them takes the host off the port its proxy forwards to at the next restart, and with
+it the admin UI that would put them back. `sc-server::tls` turns those into a
 serving plan and an `axum-server` acceptor — a fixed `rustls::ServerConfig` for a pasted
 certificate, `rustls-acme`'s resolver for an ACME one — and `sc-cli` reads the settings at
 boot, after the mounts, so the certificate covers the base domain plus every mounted app's

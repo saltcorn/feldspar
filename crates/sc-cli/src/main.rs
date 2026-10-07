@@ -1918,4 +1918,11 @@ fn print_usage() {
   and so a build from the command line writes the same application URL into the
   generated documentation that the server would."
     );
+    eprintln!();
+    eprintln!(
+        "  it may also pin the TLS settings — `ssl_mode`, `acme_contact_email`,
+  `acme_directory_url`, `redirect_http_to_https` and `ssl_extra_domains` (a list). A key
+  given there wins over the stored setting: Settings → SSL / TLS shows it read-only, and
+  neither a restore nor Clear all can change it."
+    );
 }

@@ -1557,6 +1557,54 @@ async fn rows_are_never_backed_up_without_their_table() -> sc_error::Result<()> 
     Ok(())
 }
 
+/// A TLS key this host pins in `feldspar.toml` is not restored over: the file
+/// wins, so the backup's value is reported as kept from the file and the rest
+/// of the section is restored beside it. The settings screen is told which keys
+/// are pinned, so it can show them read-only.
+#[tokio::test]
+async fn a_restore_leaves_the_tls_keys_the_host_pins_alone() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": {
+                SSL_MODE: sc_config::MODE_LETSENCRYPT,
+                sc_config::ACME_CONTACT_EMAIL: "ops@example.com",
+            }})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let archive = backup_everything(&mut source).await;
+    assert!(has_entry(&archive, "settings/ssl.json"));
+
+    let mut target = setup().await?;
+    sc_config::set_host_config(
+        &target.catalog,
+        json!({ SSL_MODE: sc_config::MODE_OFF })
+            .as_object()
+            .unwrap()
+            .clone(),
+    )?;
+    let (_, settings) = target.client.send("GET", "/api/settings", None).await;
+    assert_eq!(settings["host_keys"], json!([SSL_MODE]), "{settings}");
+    assert_eq!(settings["values"][SSL_MODE], json!(sc_config::MODE_OFF));
+
+    let report = restore_everything(&mut target, &archive).await;
+    assert!(
+        report_has(&report, "restored", "kept from this host's feldspar.toml"),
+        "{report}"
+    );
+    assert!(!report_has(&report, "warnings", "SSL"), "{report}");
+    assert_eq!(stored_config(&target.catalog, SSL_MODE).await?, None);
+    assert_eq!(
+        stored_config(&target.catalog, sc_config::ACME_CONTACT_EMAIL).await?,
+        Some(json!("ops@example.com"))
+    );
+    Ok(())
+}
+
 /// A zip that is not a backup is refused where the admin can see it, rather than
 /// restored as nothing.
 #[tokio::test]

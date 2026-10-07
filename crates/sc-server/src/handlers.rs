@@ -5469,8 +5469,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
             let apps = apps.clone();
             async move {
                 let app = require_app(&catalog, ctx.path_param("id")?).await?;
-                let locale =
-                    sc_i18n::Locale::parse(ctx.path_param("locale")?)?;
+                let locale = sc_i18n::Locale::parse(ctx.path_param("locale")?)?;
                 let obj = require_object(&ctx.body)?;
                 let messages = obj
                     .get("messages")
@@ -5491,8 +5490,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
             let apps = apps.clone();
             async move {
                 let app = require_app(&catalog, ctx.path_param("id")?).await?;
-                let locale =
-                    sc_i18n::Locale::parse(ctx.path_param("locale")?)?;
+                let locale = sc_i18n::Locale::parse(ctx.path_param("locale")?)?;
                 let translator = crate::translations::configured_translator(&catalog, None).await?;
                 Ok(HandlerResponse::ok(
                     crate::translations::fill_missing(&catalog, &apps, &app, &locale, &translator)
@@ -9417,7 +9415,13 @@ async fn settings_json(catalog: &Catalog, locale: &Locale) -> Result<Json> {
         &sc_config::config_spec(),
         &sc_config::all_config(catalog).await?,
     );
-    Ok(json!({ "sections": sections, "values": Json::Object(values) }))
+    Ok(json!({
+        "sections": sections,
+        "values": Json::Object(values),
+        // The keys this host's `feldspar.toml` pins (§13.5): shown read-only,
+        // because a save cannot change them.
+        "host_keys": sc_config::host_config_keys(catalog),
+    }))
 }
 
 /// One [`sc_python::PythonStatus`] as the API returns it.

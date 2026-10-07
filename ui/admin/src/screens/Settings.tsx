@@ -133,6 +133,8 @@ export function Settings() {
   // the MCP token panel offers to mint against a route that is either served or
   // not — and a ticked-but-unsaved checkbox is neither.
   const [stored, setStored] = useState<Record<string, string>>({});
+  // The keys this host's `feldspar.toml` pins: shown, never editable.
+  const [hostKeys, setHostKeys] = useState<string[]>([]);
   const [tab, setTab] = useState<SettingsTab>(BACKUP_TAB);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -144,6 +146,7 @@ export function Settings() {
     setSections(response.sections);
     setValues(initialValues(allFields(response.sections), config));
     setStored(config);
+    setHostKeys(response.host_keys);
     if (opening) setTab(initialTab(response.sections));
   };
 
@@ -238,6 +241,7 @@ export function Settings() {
               <SectionCard
                 section={section}
                 values={values}
+                hostKeys={hostKeys}
                 onChange={(name, v) => setValues((current) => ({ ...current, [name]: v }))}
               />
               <div className="btn-list">
@@ -285,12 +289,18 @@ function TabPanel({
 function SectionCard({
   section,
   values,
+  hostKeys,
   onChange,
 }: {
   section: Section;
   values: Record<string, string>;
+  hostKeys: string[];
   onChange: (name: string, value: string) => void;
 }) {
+  const { t } = useT();
+  const pinned = t(
+    "Set in this server's feldspar.toml, which wins over this screen. Change it there and restart the server.",
+  );
   return (
     <div className="card mb-4">
       <div className="card-header">
@@ -307,6 +317,7 @@ function SectionCard({
               value={values[field.name] ?? ""}
               onChange={(v) => onChange(field.name, v)}
               idPrefix={`setting-${section.name}`}
+              pinned={hostKeys.includes(field.name) ? pinned : undefined}
             />
             {/* The help sits under the control rather than in the label:
                 these are sentences, and a label is a name. */}

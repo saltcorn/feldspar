@@ -156,6 +156,11 @@ pub struct Catalog {
     /// `feldspar.toml` environment. `None` where nobody said, which is a normal
     /// state: a server with no base domain serves no applications.
     public_origin: RwLock<Option<crate::PublicOrigin>>,
+    /// Configuration values this **host** pins over `_fd_config` — the TLS keys
+    /// an `[environments.*]` section of `feldspar.toml` may give. Set once at
+    /// boot by the process that read the file, and read by `sc-config`, which
+    /// is what gives the values their meaning; empty where nothing is pinned.
+    host_config: RwLock<sc_types::Attrs>,
     /// How many times this catalog has been (re)loaded — the **generation
     /// stamp**, bumped by [`reload`](Catalog::reload) and by nothing else.
     ///
@@ -259,6 +264,7 @@ impl Catalog {
             table_providers: RwLock::new(None),
             provided_table_issues: RwLock::new(Vec::new()),
             public_origin: RwLock::new(None),
+            host_config: RwLock::new(sc_types::Attrs::new()),
             table_events: RwLock::new(None),
             generation: AtomicU64::new(0),
             code_schema: RwLock::new(None),
@@ -983,6 +989,25 @@ impl Catalog {
             .read()
             .ok()
             .and_then(|guard| guard.clone())
+    }
+
+    /// Replace the configuration values this host pins over `_fd_config`.
+    ///
+    /// Not checked here: this layer does not know what a setting is.
+    /// `sc_config::set_host_config` checks each against its declaration and is
+    /// the way to call this.
+    pub fn set_host_config(&self, values: sc_types::Attrs) {
+        if let Ok(mut guard) = self.host_config.write() {
+            *guard = values;
+        }
+    }
+
+    /// The configuration values this host pins, empty where it pins none.
+    pub fn host_config(&self) -> sc_types::Attrs {
+        self.host_config
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
     }
 
     /// What this process believes about workflow runs that want the engine.

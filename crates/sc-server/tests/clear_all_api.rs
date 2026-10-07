@@ -242,12 +242,24 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
         json!({ "role": 40, "name": "Staff", "description": "" }),
     )
     .await;
-    sc_config::set_config(
+    sc_config::set_config(&server.catalog, sc_config::SMTP_PORT, json!(2525)).await?;
+    // The TLS settings and the ACME cache, which stay: they are how this host
+    // serves, and clearing them would take it off the port its proxy forwards
+    // to at the next restart.
+    sc_config::set_config_many(
         &server.catalog,
-        sc_config::SSL_MODE,
-        json!(sc_config::MODE_CUSTOM),
+        &json!({
+            sc_config::SSL_MODE: sc_config::MODE_LETSENCRYPT,
+            sc_config::ACME_CONTACT_EMAIL: "ops@example.com",
+            sc_config::REDIRECT_HTTP_TO_HTTPS: false,
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
     )
     .await?;
+    let acme = sc_config::AcmeCache::new(server.catalog.clone());
+    acme.store("account", b"the account key").await?;
 
     // Two file stores with a file each; only one will be ticked.
     let gone = temp_dir("gone");
@@ -303,10 +315,26 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
         "a column the admin added to users goes"
     );
     assert!(
-        sc_config::stored_config(&server.catalog, sc_config::SSL_MODE)
+        sc_config::stored_config(&server.catalog, sc_config::SMTP_PORT)
             .await?
             .is_none(),
         "settings go"
+    );
+    for (key, value) in [
+        (sc_config::SSL_MODE, json!(sc_config::MODE_LETSENCRYPT)),
+        (sc_config::ACME_CONTACT_EMAIL, json!("ops@example.com")),
+        (sc_config::REDIRECT_HTTP_TO_HTTPS, json!(false)),
+    ] {
+        assert_eq!(
+            sc_config::stored_config(&server.catalog, key).await?,
+            Some(value),
+            "the TLS setting `{key}` stays"
+        );
+    }
+    assert_eq!(
+        acme.load("account").await?.as_deref(),
+        Some(&b"the account key"[..]),
+        "the ACME cache stays"
     );
     let roles = sc_auth::list_roles(&server.catalog).await?;
     assert_eq!(

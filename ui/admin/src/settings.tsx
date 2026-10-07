@@ -186,12 +186,17 @@ export function SettingField({
   codeScope,
   extraOptions = [],
   pickerHint,
+  pinned,
 }: {
   field: FieldSpec;
   value: string;
   onChange: (value: string) => void;
   idPrefix?: string;
   locked?: boolean;
+  /** Why this setting cannot be edited here at all — a TLS key this host's
+   * `feldspar.toml` pins. Read-only whatever `locked` says, with this sentence
+   * under it in place of the create-only one. */
+  pinned?: string;
   /** Makes the field a drop-down even while it has no choices, with this
    * sentence under it saying why there are none and what to do — an app icon
    * picked from a store that holds no images yet. A text box there would
@@ -208,11 +213,14 @@ export function SettingField({
   codeScope?: CodeScope;
 }) {
   const controlId = `${idPrefix}-${field.name}`;
-  const fixed = locked && Boolean(field.create_only);
+  const fixed = pinned !== undefined || (locked && Boolean(field.create_only));
   // Why the control cannot be edited, said once, wherever it is rendered.
-  const fixedHint = fixed ? (
-    <Form.Text muted><T text="Chosen when this was created; it cannot be changed." /></Form.Text>
-  ) : null;
+  const fixedHint =
+    pinned !== undefined ? (
+      <Form.Text muted>{pinned}</Form.Text>
+    ) : fixed ? (
+      <Form.Text muted><T text="Chosen when this was created; it cannot be changed." /></Form.Text>
+    ) : null;
   const choices = field.options.length + extraOptions.length;
   if (choices > 0 || pickerHint !== undefined) {
     return (

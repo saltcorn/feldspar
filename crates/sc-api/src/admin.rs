@@ -5863,6 +5863,9 @@ fn settings_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("sections", TypeSchema::array(settings_section_schema())),
         StructField::new("values", TypeSchema::json()),
+        // The keys pinned by this host's `feldspar.toml`, which win over the
+        // stored values and which a save cannot change.
+        StructField::new("host_keys", TypeSchema::array(TypeSchema::text())),
     ])
 }
 

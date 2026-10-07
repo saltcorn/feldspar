@@ -59,14 +59,14 @@ pub use localisation::{
     localisation_settings, localisation_settings_from,
 };
 pub use ssl::{
-    ACME_CONTACT_EMAIL, ACME_DIRECTORY_URL, LETSENCRYPT_PRODUCTION, LETSENCRYPT_STAGING,
+    ACME_CONTACT_EMAIL, ACME_DIRECTORY_URL, HOST_KEYS, LETSENCRYPT_PRODUCTION, LETSENCRYPT_STAGING,
     MODE_CUSTOM, MODE_LETSENCRYPT, MODE_OFF, REDIRECT_HTTP_TO_HTTPS, SSL_CERTIFICATE,
-    SSL_EXTRA_DOMAINS, SSL_MODE, SSL_PRIVATE_KEY, SslMode, SslSettings, parse_domains,
+    SSL_EXTRA_DOMAINS, SSL_MODE, SSL_PRIVATE_KEY, SslMode, SslSettings, parse_domains, ssl_keys,
     ssl_settings, ssl_settings_from,
 };
 pub use store::{
-    CONFIG_TABLE, all_config, bootstrap_config, config_value, delete_config, set_config,
-    set_config_many, stored_config, stray_config_keys,
+    CONFIG_TABLE, all_config, bootstrap_config, config_value, delete_config, host_config_keys,
+    set_config, set_config_many, set_host_config, stored_config, stray_config_keys,
 };
 
 /// Ensure every table this crate owns exists: the configuration values and the

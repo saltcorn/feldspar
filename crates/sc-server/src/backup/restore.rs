@@ -1964,7 +1964,7 @@ async fn restore_ssl(catalog: &Catalog, entries: &Entries) -> Result<String> {
 
 /// One settings section's stored values, checked against their declarations on
 /// the way in like any other save. Empty on success; a detail when there was
-/// nothing to restore.
+/// nothing to restore, or when keys this host pins were kept.
 async fn restore_settings_section(
     catalog: &Catalog,
     entries: &Entries,
@@ -1983,18 +1983,35 @@ async fn restore_settings_section(
         .filter(|s| s.name == section)
         .flat_map(|s| s.fields.iter().map(|def| def.key()))
         .collect();
+    // And not a key this host pins in its `feldspar.toml`: the file wins over
+    // the table, so restoring one would either be refused (and take the rest of
+    // the section with it) or store a value nothing reads.
+    let pinned = sc_config::host_config_keys(catalog);
     let mut attrs = sc_types::Attrs::new();
+    let mut kept = Vec::new();
     for (key, value) in values {
         if !keys.contains(&key.as_str()) {
             continue;
         }
+        if pinned.contains(key) {
+            kept.push(format!("`{key}`"));
+            continue;
+        }
         attrs.insert(key.clone(), value.clone());
     }
+    let kept = match kept.as_slice() {
+        [] => String::new(),
+        keys => format!("{} kept from this host's feldspar.toml", keys.join(", ")),
+    };
     if attrs.is_empty() {
-        return Ok("nothing to restore".to_owned());
+        return Ok(if kept.is_empty() {
+            "nothing to restore".to_owned()
+        } else {
+            kept
+        });
     }
     sc_config::set_config_many(catalog, &attrs).await?;
-    Ok(String::new())
+    Ok(kept)
 }
 
 /// A workflow trigger's steps, as its first version here — unless it already

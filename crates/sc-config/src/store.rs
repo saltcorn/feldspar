@@ -75,26 +75,36 @@ pub async fn stored_config(catalog: &Catalog, key: &str) -> Result<Option<Json>>
     Ok(Some(value))
 }
 
-/// The value the server should act on for `key`: what is stored, else the
-/// declared default, else `Json::Null` for a key with neither.
+/// The value the server should act on for `key`: what this host pins
+/// ([`set_host_config`]), else what is stored, else the declared default, else
+/// `Json::Null` for a key with none of them.
 pub async fn config_value(catalog: &Catalog, key: &str) -> Result<Json> {
     let field = require_definition(key)?;
+    if let Some(pinned) = catalog.host_config().get(key) {
+        return Ok(pinned.clone());
+    }
     Ok(stored_config(catalog, key)
         .await?
         .or_else(|| field.default.clone())
         .unwrap_or(Json::Null))
 }
 
-/// Every declared key with the value the server acts on — stored where set,
-/// declared default where not, absent where there is neither.
+/// Every declared key with the value the server acts on — pinned by this host
+/// where it is ([`set_host_config`]), stored where set, declared default where
+/// not, absent where there is none of them.
 ///
 /// This is what the settings screen renders and what the boot path reads its
 /// serving settings out of, so the two cannot disagree about what a setting is.
 pub async fn all_config(catalog: &Catalog) -> Result<Attrs> {
     let stored = stored_rows(catalog).await?;
+    let pinned = catalog.host_config();
     let mut out = Attrs::new();
     for field in crate::defs::config_spec() {
         let key = field.name();
+        if let Some(value) = pinned.get(key) {
+            out.insert(key.to_owned(), value.clone());
+            continue;
+        }
         let value = match stored.get(key) {
             Some(value) => {
                 check(&field, value)?;
@@ -132,6 +142,10 @@ pub async fn stray_config_keys(catalog: &Catalog) -> Result<Vec<String>> {
 /// returns a key to its default. Everything else is validated first: an unknown
 /// key, a value of the wrong type, or a value outside the declared options is an
 /// [`Error::invalid`] naming the key, and nothing is written.
+///
+/// A key this host pins ([`set_host_config`]) is refused unless the value is
+/// the pinned one, which writes nothing: the file wins, and storing a value
+/// that would never be read is a setting somebody believes they changed.
 pub async fn set_config(catalog: &Catalog, key: &str, value: Json) -> Result<()> {
     let field = require_definition(key)?;
     if value.is_null() {
@@ -139,6 +153,9 @@ pub async fn set_config(catalog: &Catalog, key: &str, value: Json) -> Result<()>
         return Ok(());
     }
     check(&field, &value)?;
+    if pinned_unchanged(&catalog.host_config(), key, &value)? {
+        return Ok(());
+    }
     write_value(catalog, key, &value).await
 }
 
@@ -150,14 +167,26 @@ pub async fn set_config(catalog: &Catalog, key: &str, value: Json) -> Result<()>
 /// concurrent save of the same keys — the database's row locks decide that, and
 /// two admins saving the same screen at once is the same race as two saving any
 /// other record.)
+///
+/// A key this host pins is treated as [`set_config`] treats it: the pinned
+/// value is skipped (a settings form sends back what it was shown), any other
+/// is refused before anything is written.
 pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
+    let pinned = catalog.host_config();
+    let mut skip = Vec::new();
     for (key, value) in values {
         let field = require_definition(key)?;
         if !value.is_null() {
             check(&field, value)?;
+            if pinned_unchanged(&pinned, key, value)? {
+                skip.push(key.as_str());
+            }
         }
     }
     for (key, value) in values {
+        if skip.contains(&key.as_str()) {
+            continue;
+        }
         if value.is_null() {
             delete_config(catalog, key).await?;
         } else {
@@ -165,6 +194,55 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Pin `values` over `_fd_config` for as long as this process runs — the TLS
+/// keys an `[environments.*]` section of `feldspar.toml` gives (§13.5).
+///
+/// A pinned key **wins**: [`all_config`] and [`config_value`] return it whatever
+/// is stored, the settings screen shows it read-only ([`host_config_keys`]), a
+/// save that would change it is refused, and a restore or Clear all — which
+/// work on the table — cannot reach it. Only the keys in
+/// [`crate::ssl::HOST_KEYS`] may be pinned, and each is checked against its
+/// declaration here, so a mistyped mode in the file stops the boot with the
+/// key's name rather than being found by a browser that cannot connect.
+pub fn set_host_config(catalog: &Catalog, values: Attrs) -> Result<()> {
+    for (key, value) in &values {
+        if !crate::ssl::HOST_KEYS.contains(&key.as_str()) {
+            return Err(Error::invalid(format!(
+                "configuration key `{key}` cannot be set by the host; the keys that can \
+                 are {}",
+                crate::ssl::HOST_KEYS.join(", ")
+            )));
+        }
+        check(&require_definition(key)?, value)?;
+    }
+    catalog.set_host_config(values);
+    Ok(())
+}
+
+/// The keys this host pins, in declaration order — what the settings screen
+/// shows read-only.
+pub fn host_config_keys(catalog: &Catalog) -> Vec<String> {
+    let pinned = catalog.host_config();
+    crate::defs::known_keys()
+        .into_iter()
+        .filter(|key| pinned.contains_key(*key))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether `key` is pinned to exactly `value` (nothing to write); an error when
+/// it is pinned to something else; `false` when it is not pinned.
+fn pinned_unchanged(pinned: &Attrs, key: &str, value: &Json) -> Result<bool> {
+    match pinned.get(key) {
+        None => Ok(false),
+        Some(held) if held == value => Ok(true),
+        Some(_) => Err(Error::invalid(format!(
+            "`{key}` is set in this host's feldspar.toml, so it cannot be changed here; \
+             change it in the file and restart the server"
+        ))),
+    }
 }
 
 /// Delete a stored value, returning whether there was one. The key returns to

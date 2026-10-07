@@ -191,3 +191,93 @@ async fn a_secret_setting_is_stored_verbatim() -> Result<()> {
     );
     Ok(())
 }
+
+/// A TLS key the host pins in `feldspar.toml` wins over the table: it is what
+/// every read returns, a save of the value it already has writes nothing, a
+/// save of any other is refused with nothing else in the batch written, and a
+/// key outside the TLS section cannot be pinned at all.
+#[tokio::test]
+async fn a_key_the_host_pins_wins_over_the_table_and_cannot_be_saved_over() -> Result<()> {
+    let (catalog, _db) = fixture().await?;
+    set_config(&catalog, SSL_MODE, json!(sc_config::MODE_OFF)).await?;
+
+    let pinned: Attrs = json!({
+        SSL_MODE: MODE_LETSENCRYPT,
+        ACME_CONTACT_EMAIL: "ops@example.com",
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    sc_config::set_host_config(&catalog, pinned)?;
+    assert_eq!(
+        sc_config::host_config_keys(&catalog),
+        [SSL_MODE, ACME_CONTACT_EMAIL]
+    );
+
+    // Every read says what the file says; the row is still what was stored.
+    assert_eq!(
+        config_value(&catalog, SSL_MODE).await?,
+        json!(MODE_LETSENCRYPT)
+    );
+    assert_eq!(
+        all_config(&catalog).await?[SSL_MODE],
+        json!(MODE_LETSENCRYPT)
+    );
+    assert_eq!(ssl_settings(&catalog).await?.mode, SslMode::LetsEncrypt);
+    assert_eq!(
+        stored_config(&catalog, SSL_MODE).await?,
+        Some(json!(sc_config::MODE_OFF))
+    );
+
+    // A settings form sends back what it showed: accepted, nothing written for
+    // the pinned key, the rest saved.
+    let form: Attrs = json!({ SSL_MODE: MODE_LETSENCRYPT, SMTP_PORT: 2525 })
+        .as_object()
+        .unwrap()
+        .clone();
+    set_config_many(&catalog, &form).await?;
+    assert_eq!(
+        stored_config(&catalog, SSL_MODE).await?,
+        Some(json!(sc_config::MODE_OFF))
+    );
+    assert_eq!(stored_config(&catalog, SMTP_PORT).await?, Some(json!(2525)));
+
+    // A change is refused, naming the file, and the batch writes nothing.
+    let change: Attrs = json!({ SSL_MODE: MODE_CUSTOM, SMTP_PORT: 2626 })
+        .as_object()
+        .unwrap()
+        .clone();
+    let err = set_config_many(&catalog, &change)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(SSL_MODE) && err.contains("feldspar.toml"),
+        "{err}"
+    );
+    assert_eq!(stored_config(&catalog, SMTP_PORT).await?, Some(json!(2525)));
+    let err = set_config(&catalog, ACME_CONTACT_EMAIL, json!("x@example.com"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(ACME_CONTACT_EMAIL), "{err}");
+
+    // Only the TLS keys can be pinned, and a pinned value is checked like a
+    // saved one.
+    let smtp: Attrs = json!({ SMTP_PORT: 25 }).as_object().unwrap().clone();
+    let err = sc_config::set_host_config(&catalog, smtp)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(SMTP_PORT), "{err}");
+    let typo: Attrs = json!({ SSL_MODE: "lets-encrypt" })
+        .as_object()
+        .unwrap()
+        .clone();
+    assert!(sc_config::set_host_config(&catalog, typo).is_err());
+    // A refused pin leaves the earlier one in force.
+    assert_eq!(
+        config_value(&catalog, SSL_MODE).await?,
+        json!(MODE_LETSENCRYPT)
+    );
+    Ok(())
+}

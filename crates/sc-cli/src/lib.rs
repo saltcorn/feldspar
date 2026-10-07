@@ -110,6 +110,18 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_config::bootstrap(&catalog)
         .await
         .context("ensuring the configuration tables exist")?;
+    // The TLS settings the selected environment pins (§13.5), before anything
+    // reads a setting: from here every read of them — the boot's, the settings
+    // screen's, `get-cfg`'s — sees the file's value, and a write is refused.
+    let pinned = db.serving().host_config();
+    if !pinned.is_empty() {
+        eprintln!(
+            "feldspar: {} set by the configuration file",
+            pinned.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+    sc_config::set_host_config(&catalog, pinned)
+        .context("reading the TLS settings in the configuration file")?;
     // The stored Localisation settings, on the same footing and here for the
     // same reason: what a `feldspar` command prints to an admin — and what a
     // server negotiates a request into — is a stored setting, so it has to be
