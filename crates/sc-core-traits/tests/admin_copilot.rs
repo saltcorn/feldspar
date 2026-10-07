@@ -749,3 +749,78 @@ async fn the_two_callers_of_one_tool_set_are_offered_identical_tools() -> Result
     assert_eq!(seen.len(), 4, "the configurations did not differ");
     Ok(())
 }
+
+/// A file field is `file_store: <store>` with no `type`, and comes out as a
+/// `File` field storing the path as text — not refused, which left an external
+/// agent keeping images in a `bytes` column. A store that does not exist, or
+/// `type: "file"`, is refused with a sentence saying what to write instead.
+#[tokio::test]
+async fn a_file_field_names_its_store_and_needs_no_type() -> Result<()> {
+    let env = Env::new().await?;
+    env.with_file_store("media", None).await?;
+    let result = edit(
+        &env,
+        &default_grants(),
+        json!({"operations": [{
+            "op": "create_table", "table": "slides",
+            "fields": [
+                {"name": "id", "type": "int", "primary_key": true},
+                {"name": "picture", "file_store": "media", "file_folder": "slides/",
+                 "file_mime": ["image/*"]},
+            ],
+        }]}),
+    )
+    .await?;
+    assert_eq!(result["applied"], json!(true), "{result}");
+    let slides = env.catalog.require("slides")?;
+    let picture = slides.field("picture").expect("the file field");
+    match &picture.kind {
+        sc_catalog::DataFieldKind::File {
+            store,
+            folder,
+            mime_allow,
+        } => {
+            assert_eq!(store.0, "media");
+            assert_eq!(folder.as_deref(), Some("slides"));
+            assert_eq!(mime_allow, &vec!["image/*".to_owned()]);
+        }
+        other => panic!("expected a file field, got {other:?}"),
+    }
+    assert_eq!(
+        picture.base.type_,
+        sc_types::TypeRef::Basic(sc_types::BasicType::Text)
+    );
+    // `describe_schema` reports it back with its store.
+    let described = describe(&env, &default_grants(), json!({"table": "slides"})).await?;
+    assert!(
+        described.to_string().contains("\"file_store\":\"media\""),
+        "{described}"
+    );
+
+    let missing = edit(
+        &env,
+        &default_grants(),
+        json!({"operations": [{
+            "op": "add_field", "table": "slides", "field": "thumb", "file_store": "nope",
+        }]}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(missing.contains("no file store `nope`"), "{missing}");
+    assert!(missing.contains("`media`"), "{missing}");
+
+    let as_type = edit(
+        &env,
+        &default_grants(),
+        json!({"operations": [{
+            "op": "add_field", "table": "slides", "field": "thumb", "type": "file",
+        }]}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(as_type.contains("`file` is not a type"), "{as_type}");
+    assert!(slides.field("thumb").is_none());
+    Ok(())
+}

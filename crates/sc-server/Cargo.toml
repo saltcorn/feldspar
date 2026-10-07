@@ -171,6 +171,9 @@ sc-agent = { workspace = true, features = ["testing"] }
 # And `sc-stream`'s, for the same reason: the trigger bridge and the observe
 # sockets are driven through a whole stream without a broker.
 sc-stream = { workspace = true, features = ["testing"] }
+# Decompresses a gzip response in the router test that checks responses are
+# compressed for a client that accepts it.
+flate2.workspace = true
 
 [lints]
 workspace = true

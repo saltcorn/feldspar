@@ -31,6 +31,10 @@ fn test_endpoints() -> EndpointSet {
             .auth(AuthRequirement::Public),
     );
     set.register(
+        Endpoint::new("bulk", Method::Get, PathSpec::root().lit("api/bulk"))
+            .auth(AuthRequirement::Public),
+    );
+    set.register(
         Endpoint::new("secret", Method::Get, PathSpec::root().lit("api/secret"))
             .auth(AuthRequirement::admin()),
     );
@@ -54,6 +58,12 @@ fn test_registry() -> HandlerRegistry {
         "echo",
         |ctx| async move { Ok(HandlerResponse::ok(ctx.body)) },
     );
+    reg.register("bulk", |_ctx| async {
+        let rows: Vec<Value> = (0..500)
+            .map(|i| json!({ "id": i, "title": "A slide of the presentation" }))
+            .collect();
+        Ok(HandlerResponse::ok(json!(rows)))
+    });
     reg.register("secret", |_ctx| async {
         Ok(HandlerResponse::ok(json!({ "ok": true })))
     });
@@ -270,6 +280,70 @@ async fn public_endpoint_reaches_its_handler() {
     );
     // The CSRF double-submit cookie is minted on first contact.
     assert!(cookie_value(&cookies, CSRF_COOKIE).is_some());
+}
+
+/// A client that says it accepts gzip or brotli gets a compressed body, and one
+/// that says nothing gets plain JSON — the content snapshot an application loads
+/// on its first visit is mostly repeated keys, which is what compression is for.
+#[tokio::test]
+async fn responses_are_compressed_for_a_client_that_accepts_it() {
+    use std::io::Read;
+
+    let (router, _) = test_router();
+    let plain = router
+        .clone()
+        .oneshot(Request::get("/api/bulk").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
+    let plain = axum::body::to_bytes(plain.into_body(), 1 << 20)
+        .await
+        .unwrap();
+
+    let gzipped = router
+        .clone()
+        .oneshot(
+            Request::get("/api/bulk")
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(gzipped.status(), StatusCode::OK);
+    assert_eq!(gzipped.headers()[header::CONTENT_ENCODING], "gzip");
+    assert!(
+        gzipped.headers()[header::VARY]
+            .to_str()
+            .unwrap()
+            .contains("accept-encoding")
+    );
+    let compressed = axum::body::to_bytes(gzipped.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(
+        compressed.len() * 10 < plain.len(),
+        "{} compressed vs {} plain",
+        compressed.len(),
+        plain.len()
+    );
+    let mut inflated = Vec::new();
+    flate2::read::GzDecoder::new(&compressed[..])
+        .read_to_end(&mut inflated)
+        .unwrap();
+    assert_eq!(inflated, plain);
+
+    let brotli = router
+        .clone()
+        .oneshot(
+            Request::get("/api/bulk")
+                .header(header::ACCEPT_ENCODING, "br, gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(brotli.headers()[header::CONTENT_ENCODING], "br");
 }
 
 #[tokio::test]

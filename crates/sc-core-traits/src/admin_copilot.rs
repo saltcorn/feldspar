@@ -98,7 +98,7 @@
 //!
 //! "Build me a to-do list" is a request this agent can carry to a working first
 //! draft without anybody opening a form, and [`BUILD_PLAYBOOK`] is the order it
-//! is told to do it in. `create_application` and `set_application_tables` are
+//! is told to do it in. `create_application` and `update_application` are
 //! shared tools ([`sc_app::mcp`]); what is this trait's own is what only an
 //! *agent* can do:
 //!
@@ -129,7 +129,7 @@ pub use sc_api::mcp::{
 };
 pub use sc_app::mcp::{
     TOOL_CREATE_APP, TOOL_CREATE_STORE, TOOL_DELETE_QUERY, TOOL_DESCRIBE_APPS, TOOL_SAVE_QUERY,
-    TOOL_SET_TABLES,
+    TOOL_UPDATE_APP,
 };
 
 /// Hands a task to a coding agent as a sub-agent.
@@ -165,7 +165,8 @@ name as `file_store`.\n\
 3. Create every table the application needs with **one** `edit_schema` batch: fields, \
 types, required flags, keys between tables. Tables come before code, because the \
 application's typed client is generated from them.\n\
-4. `set_application_tables` to connect those tables to the application.\n\
+4. `update_application` with `tables: { add: [...] }` to connect those tables to the \
+application.\n\
 5. `delegate_to_coding_agent` with the application's builder agent (the \
 `builder_agent` that `create_application` returned): give it the full specification — \
 what the app is for, every page and what it shows, the tables and fields it reads and \
@@ -208,7 +209,8 @@ pub const CFG_ALLOW_APPLICATIONS: &str = sc_api::mcp::Area::Applications.key();
 pub struct AdminCopilot;
 
 /// Every tool this trait can offer, under fixed names — the schema's two, the
-/// triggers' four and the applications' three.
+/// triggers' four, the code API's reference, the applications' six and its
+/// own two.
 ///
 /// *Can*, not *does*: the two area checkboxes decide whether the trigger and
 /// application halves are offered at all, so a configured instance offers a
@@ -227,7 +229,7 @@ pub fn tool_names() -> [&'static str; 15] {
         TOOL_DESCRIBE_APPS,
         TOOL_CREATE_STORE,
         TOOL_CREATE_APP,
-        TOOL_SET_TABLES,
+        TOOL_UPDATE_APP,
         TOOL_SAVE_QUERY,
         TOOL_DELETE_QUERY,
         TOOL_DELEGATE,
@@ -713,7 +715,7 @@ mod tests {
     #[test]
     fn the_playbook_builds_tables_before_code_and_defaults_to_react() {
         let tables = BUILD_PLAYBOOK.find("edit_schema").unwrap();
-        let connect = BUILD_PLAYBOOK.find("set_application_tables").unwrap();
+        let connect = BUILD_PLAYBOOK.find("update_application").unwrap();
         let code = BUILD_PLAYBOOK.find(TOOL_DELEGATE).unwrap();
         assert!(tables < connect && connect < code, "{BUILD_PLAYBOOK}");
         assert!(BUILD_PLAYBOOK.contains("React"), "{BUILD_PLAYBOOK}");

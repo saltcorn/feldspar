@@ -496,9 +496,10 @@ mod tests {
         // `admin_copilot`'s names are fixed rather than derived, and say the
         // same fifteen things every deployment's do — two over the schema, four
         // over the triggers, one reference for a code body, six over
-        // applications (reading, creating one and its store, connecting its
-        // tables, its custom SQL queries), and its own two: delegating code to a
-        // coding agent and publishing.
+        // applications (reading, creating one and its store, changing one —
+        // its tables, static directories and CSP — and its custom SQL
+        // queries), and its own two: delegating code to a coding agent and
+        // publishing.
         assert_eq!(
             tool_names::admin_copilot(),
             [
@@ -512,7 +513,7 @@ mod tests {
                 "describe_applications",
                 "create_file_store",
                 "create_application",
-                "set_application_tables",
+                "update_application",
                 "save_api_query",
                 "delete_api_query",
                 "delegate_to_coding_agent",

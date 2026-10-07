@@ -34,6 +34,8 @@ use sc_error::{Error, ErrorKind, Repr, Result};
 use sc_i18n::t;
 use serde_json::Value;
 use tower::ServiceExt;
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -371,6 +373,24 @@ pub fn build_router_with_apps(
             header::REFERRER_POLICY,
             HeaderValue::from_static("no-referrer"),
         ))
+        // Compression for every client that asks for it with `Accept-Encoding`:
+        // brotli or gzip. tower-http's default predicate already leaves alone
+        // Server-Sent Events (a compressor would hold events back until its
+        // buffer filled), images, gRPC and bodies under 32 bytes, and the layer
+        // skips any response that is already encoded or answers a range. Zip
+        // archives (backups, exports) are left alone too: they are compressed
+        // already, so a second pass costs CPU and saves nothing. The reason this
+        // is here at all is an application's first load: a JSON snapshot of
+        // its content, sent uncompressed over a slow mobile connection, took
+        // over a minute.
+        .layer(
+            CompressionLayer::new()
+                .no_deflate()
+                .no_zstd()
+                .compress_when(
+                    DefaultPredicate::new().and(NotForContentType::const_new("application/zip")),
+                ),
+        )
         // Request logging goes on **last**, which in axum is outermost: it
         // therefore sees every request — including the ones that never reach
         // `dispatch` (uploads, backups, the WebSocket upgrades, an application's

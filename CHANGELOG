@@ -2,6 +2,64 @@
 
 Changes in reverse chronological order.
 
+## MCP: File fields, static directories, the CSP, and compressed responses
+
+An external coding agent built two applications through the administration MCP server (TODO
+"Feedback from an external MCP build"). It had to work around four gaps and leave two settings
+for a person. Fixed:
+
+- **Responses are compressed** (`sc-server/src/router.rs`). A brotli or gzip
+  `CompressionLayer` sits just inside the request log, so every response is compressed for a
+  client that sends `Accept-Encoding`. tower-http's default predicate already skips SSE, images
+  and tiny bodies, and zip archives are skipped as well. The agent's presentation took about 75 s
+  to load its first JSON snapshot over a 3G-like connection. `tower-http` gains the
+  `compression-br` and `compression-gzip` features. `TECHNICAL_DESIGN.md` §16 has a paragraph
+  on it.
+- **`edit_schema` makes File fields** (`sc-api/src/mcp/schema.rs`). `file_store`, with optional
+  `file_folder` and `file_mime`, on an `add_field`, an `alter_field` or a `create_table` field
+  makes a `DataFieldKind::File`. The schema editor stores it as `text` when no type is given.
+  `type: "file"` is refused with a sentence saying to use `file_store`. A store that does not
+  exist is refused too, and the refusal lists the stores there are. The tool description says
+  not to keep file contents in a `bytes` column, which is what the agent did after
+  `type: "file"` was refused. The new properties are added to the parameter schema after the
+  `json!`, because one more level exceeded the macro's recursion limit.
+- **`update_application`** (new, `sc-app/src/mcp/update.rs`, applications area) replaces
+  `set_application_tables`. It is one tool with a section for each part of the application an
+  agent may change, rather than one tool per part, so the tool list does not grow:
+  - `tables` (`add`, `remove`, `set`): the connected tables, as `set_application_tables` did.
+  - `static_dirs` (`add` of `{ mount, file_store, path }`, `remove` of mounts): it connects any
+    store it names. It needs only `allow_edit` because a mount is not a grant.
+  - `csp` (directive → sources, or `null` to remove it): directives not named are kept. A
+    directive name or source that could break the header is refused.
+- Each section's grant is checked before anything changes: `tables` and `static_dirs` need
+  `allow_edit`, and `csp` needs `allow_access_changes`. A call with several sections is saved as
+  one, and a refused section changes nothing. The description says which sections this token's
+  grants rule out.
+- It saves through the server's own `listApplications` → `updateApplication`, using the
+  `AdminHost`, so validation, the client rewrite and **the mount refresh** are the admin form's.
+  The running app serves the change at once, including newly connected tables, which
+  `set_application_tables` only served after the next build. With no server the record is
+  saved, the client rewritten, and the answer says the change is served from the next start.
+- The build instructions (`BUILD_PLAYBOOK`, the MCP server's `initialize` text, `SKILL.md`,
+  `create_application`'s `next`) say `update_application` with `tables: { add: [...] }`.
+- **`describe_applications`** reports each application's `file_stores`, `static_dirs` and `csp`.
+- `admin_copilot` still names 15 tools. `SKILL.md` lists the new one by itself.
+  `TECHNICAL_DESIGN.md` §13.6 and `OPERATIONS.md` cover `update_application` and File fields.
+- Not changed, by design: `min_role` on queries and tables still needs `allow_access_changes`,
+  and dropping tables and triggers still needs `allow_drop`. The agent's token had neither.
+- Tests: `responses_are_compressed_for_a_client_that_accepts_it` (`sc-server/tests/router.rs`),
+  `a_file_field_is_named_by_its_store_and_file_is_not_a_type` (`sc-api`),
+  `a_file_field_names_its_store_and_needs_no_type` (`sc-core-traits/tests/admin_copilot.rs`),
+  `update_application_checks_each_section_s_grant_before_changing_anything`
+  (`sc-core-traits/tests/admin_copilot_apps.rs`), three unit tests in `update.rs`, and
+  `an_agent_serves_a_store_folder_and_widens_the_csp_of_a_running_app`
+  (`sc-server/tests/build_from_a_sentence.rs`). That last test creates a `none` app over MCP,
+  then checks that the running app serves the mounted file and sends the widened CSP header.
+  A final call with two sections removes the directory and a directive, after which the file
+  is a 404 and the header no longer has the directive. `an_external_agent_builds_an_application_from_a_sentence`
+  connects its table with `update_application`. `locale_negotiation`'s `vary()` helper
+  now ignores the `accept-encoding` that compression adds.
+
 ## Fix: Clear all removed the TLS settings, and `feldspar.toml` can now pin them
 
 After Clear all, `_fd_config` had no TLS settings. Nothing changed until the next restart; then

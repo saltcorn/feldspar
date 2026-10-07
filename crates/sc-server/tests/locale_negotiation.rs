@@ -58,8 +58,20 @@ impl Answer {
             .and_then(|v| v.to_str().ok())
     }
 
-    fn vary(&self) -> Option<&str> {
-        self.headers.get(header::VARY).and_then(|v| v.to_str().ok())
+    /// Every `Vary` header's names, joined — except `accept-encoding`, which
+    /// the compression layer adds to every compressible response and which is
+    /// not what these tests are about.
+    fn vary(&self) -> Option<String> {
+        let names: Vec<&str> = self
+            .headers
+            .get_all(header::VARY)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .map(str::trim)
+            .filter(|n| !n.eq_ignore_ascii_case("accept-encoding"))
+            .collect();
+        (!names.is_empty()).then(|| names.join(", "))
     }
 }
 
@@ -256,7 +268,7 @@ async fn a_request_is_served_in_the_language_it_negotiated() -> sc_error::Result
         )
         .await;
     assert_eq!(answer.content_language(), Some("fr"));
-    assert_eq!(answer.vary(), Some("Accept-Language, Cookie"));
+    assert_eq!(answer.vary().as_deref(), Some("Accept-Language, Cookie"));
     assert_eq!(
         answer.body["locales"],
         json!({ "default": "en", "current": "fr", "enabled": ["en", "fr", "de"] })

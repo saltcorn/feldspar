@@ -1,5 +1,7 @@
 //! The application half of the administrative surface (§13.6): three tools over
-//! an application's **custom SQL queries** (§13.4).
+//! an application's **custom SQL queries** (§13.4). Creating an application is
+//! in [`create`], and changing its connected tables, static directories and CSP
+//! in [`update`].
 //!
 //! The other six tools of that surface live in [`sc_api::mcp`], and this file
 //! would too but for the layering: these three read and write an
@@ -15,15 +17,18 @@
 //! ## Why *this* is the application tool, and not "edit the application"
 //!
 //! An application record carries a subdomain, a framework and its settings, a
-//! table subset, file stores, exposed triggers, static directories and a CSP. Two
-//! of those are the agent's to write and the rest are not: a framework's `store`
-//! and `source` are where somebody's code lives, a CSP is a security boundary,
-//! and a subdomain is a DNS record somebody else configured. The **custom SQL
-//! query** is the part of an application that is genuinely a piece of *building*
-//! — the escape hatch for the report the row layer cannot express — and it is the
-//! part an admin most wants to ask for in a sentence: "give the app an endpoint
-//! that returns each author with their book count". So that is what this half
-//! offers to write, and everything else about the application it only reads.
+//! table subset, file stores, exposed triggers, static directories and a CSP.
+//! Some of those are the agent's to write and the rest are not: a framework's
+//! `store` and `source` are where somebody's code lives, and a subdomain is a
+//! DNS record somebody else configured. The **custom SQL query** is the part of
+//! an application that is genuinely a piece of *building* — the escape hatch for
+//! the report the row layer cannot express — and it is the part an admin most
+//! wants to ask for in a sentence: "give the app an endpoint that returns each
+//! author with their book count". So that is what this file offers to write.
+//! The connected tables, the static directories and the CSP are changed by
+//! `update_application` beside it, because an external agent building an app
+//! needs them too; its CSP section is behind `allow_access_changes`, since a
+//! CSP is a security boundary.
 //!
 //! ## The same save path as everything else
 //!
@@ -75,8 +80,10 @@ use serde_json::{Map, Value as Json, json};
 use crate::{ApiConfig, Application};
 
 mod create;
+mod update;
 
-pub use create::{TOOL_CREATE_APP, TOOL_CREATE_STORE, TOOL_SET_TABLES};
+pub use create::{TOOL_CREATE_APP, TOOL_CREATE_STORE};
+pub use update::TOOL_UPDATE_APP;
 
 /// The whole administrative tool surface: the schema's two, the triggers' four
 /// and the applications' three, in that order.
@@ -95,6 +102,7 @@ pub fn tool_set(grants: Grants, areas: Areas) -> ToolSet {
 pub fn app_tools() -> Vec<Arc<dyn AdminTool>> {
     let mut tools: Vec<Arc<dyn AdminTool>> = vec![Arc::new(DescribeApps)];
     tools.extend(create::create_tools());
+    tools.extend(update::update_tools());
     tools.push(Arc::new(SaveQuery));
     tools.push(Arc::new(DeleteQuery));
     tools
@@ -227,8 +235,9 @@ fn describe_apps_description() -> String {
          their parameters, who may call them and the columns the database says \
          they return. Each also carries its `project_dir` — the absolute \
          directory its source is in on this machine, `null` when that is not on \
-         this disk — and its `builder_agent`, the coding agent created to build \
-         it.\n\n\
+         this disk — its `builder_agent`, the coding agent created to build \
+         it, the file stores it is connected to, the store folders it serves \
+         (`static_dirs`) and its Content-Security-Policy (`csp`).\n\n\
          Call this before `{TOOL_SAVE_QUERY}`: it tells you the application's \
          subdomain, which API a query goes on, and whether the name you have in \
          mind is already taken. For the tables a query's SQL can read, call \
@@ -296,6 +305,9 @@ fn application_json(app: &Application) -> Result<Json> {
         "tables": app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "triggers": app.triggers.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
+        "file_stores": app.file_stores.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
+        "static_dirs": update::static_dirs_json(&app.static_dirs),
+        "csp": update::csp_json(&app.csp),
         "apis": apis?,
     }))
 }

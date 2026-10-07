@@ -3886,7 +3886,9 @@ Four more decisions in that half:
 **An application's custom SQL queries, and where the line is drawn.** The third part is
 `describe_applications`, `save_api_query` and `delete_api_query` (§13.4). An application record
 carries a subdomain, a framework and its settings, a table subset, file stores, exposed triggers,
-static directories and a CSP; **one** of those is the agent's to write and the rest are not. A
+static directories and a CSP; **one** of those is the agent's to write and the rest are not
+(since amended: `update_application` changes the connected tables, the static directories and,
+behind `allow_access_changes`, the CSP — see the creating-an-application part below). A
 framework's `store` and `source` say where somebody's code lives, a CSP is a security boundary, a
 subdomain is a DNS record somebody else configured — none of them is *building*, and all of them
 are the kind of setting whose damage is invisible from the transcript. A custom SQL query is the
@@ -6718,7 +6720,7 @@ of those endpoints are the SPA's own plumbing.
 - **Tier 1 — composite tools.** The ones §11.3's `admin_copilot` already defines:
   `describe_schema`, `edit_schema`, `describe_triggers`, `describe_action`, `save_trigger`,
   `delete_trigger`, `describe_apps`, `create_file_store`, `create_application`,
-  `set_application_tables`, `save_query`, `delete_query`. These exist *because* a
+  `update_application`, `save_query`, `delete_query`. These exist *because* a
   one-endpoint-one-tool projection is the wrong shape — `edit_schema` takes an ordered operation
   list because a schema is a set of connected tables and a per-operation tool turns a
   twelve-table domain into forty round trips; `describe_action` is progressive disclosure
@@ -6862,11 +6864,44 @@ MCP — carry to a working first draft with nobody opening a form. Three shared 
 - **`create_file_store`** makes a local store, or a **git** one cloned from a URL. A private SSH
   repository is two calls: `generate_deploy_key: true` creates nothing and returns the public key
   for the person to add, and the second call passes the `key_path` back.
-- **`set_application_tables`** connects tables to an application (`add`, `remove`, or the whole
-  list), saving through `save_application` and regenerating the client — the step between
+- Connecting the tables is `update_application`'s `tables` section (below) — the step between
   `edit_schema` and code, because the client is typed only for connected tables.
 
 `describe_applications` now carries each application's `id`, `project_dir` and `builder_agent`.
+
+**Changing an application: `update_application`** (`sc_app::mcp::update`). One tool with a
+section for each part of the record an agent may change, rather than one tool per part. Every
+tool is something the model reads and chooses between on every turn, and these all have the same
+shape: name the application, say what changes, save. An external agent building an app had to
+leave its static directories and CSP for a person, so the line drawn above moved for them:
+
+- **`tables`** (`add`, `remove`, `set`): the connected tables. Needs `allow_edit`. Connecting a
+  table does not open its rows; its own roles still decide.
+- **`static_dirs`** (`add` of `{ mount, file_store, path }`, where a mount already in use is
+  replaced; `remove` of mounts). Needs `allow_edit`. A store the app was not connected to is
+  connected. It is only an edit because a mount is not a grant: every file is still served
+  through `sc_files::check_access` as the request's user.
+- **`csp`** (`{ "frame-ancestors": ["'self'", "https://other.example.com"], "img-src": null }`)
+  replaces or removes single directives and keeps the rest. A CSP is a security boundary, so it
+  needs `allow_access_changes`, the grant that guards roles. Names must be lower-case letters
+  and `-`. A source must be one printable word with no `;` or `,`, because the policy goes into
+  a header verbatim.
+
+As `edit_schema` checks a grant per operation, this checks one per section, all before anything
+changes. A call with several sections is saved as one, and a refused section changes nothing.
+
+It saves through the server's own `listApplications` → `updateApplication`, through the
+`AdminHost`, with the changed keys written into the stored JSON. A mounted app is served from
+the record it was mounted with, and that handler is the one that refreshes the mount, so the
+running app serves the change at once. With no server (a CLI command) the record is saved
+through `save_application` and the client rewritten, and the answer says the change is served
+from the next start. `describe_applications` reports `file_stores`, `static_dirs` and `csp`.
+
+**`edit_schema` makes File fields.** `file_store` (with optional `file_folder` and `file_mime`)
+on a field makes a `DataFieldKind::File` stored as `text`. `type: "file"` is refused with a
+sentence saying what to write instead, and so is a store that does not exist. Before this, an
+agent that read `listFieldTypes` (where `file` is a *kind*) tried `type: "file"`, was refused,
+and kept images in a `bytes` column.
 
 **The creates run the server's own handlers.** Creating an application is a sequence — store,
 record, scaffold, builder agent, first build — two of whose steps need the agent registry and
@@ -6880,7 +6915,7 @@ half-creating.
 
 **The order is instructions, not code.** Both callers are told to build without asking what can
 be decided — React and a local store when the request is vague about technology — and to do
-tables first: `create_application`, one `edit_schema` batch, `set_application_tables`, then the
+tables first: `create_application`, one `edit_schema` batch, `update_application`, then the
 code, then a build. The MCP server says so in its `initialize` instructions, and the external
 agent then works in `project_dir` with its own file tools; `SKILL.md` adds the connect step to
 "the order that works".
@@ -9258,6 +9293,14 @@ dependency — both detailed in §13.5.
 (no inline handlers) rather than a server markup model; framework-level XSS escaping in the
 React layer; structural SQL-injection safety in `sc-query`; per-CRUD authorization enforced
 at the query layer or via RLS; passwords argon2id; optional OAuth2 IdP; new-device detection.
+
+**Response compression.** Every response the client accepts it for is compressed with brotli or
+gzip (`tower-http`'s `CompressionLayer`, just inside the request log in `build_router`). The
+default predicate leaves out Server-Sent Events, images, gRPC and bodies under 32 bytes. Zip
+archives are left out too. Already-encoded and range responses are skipped, and
+`Vary: accept-encoding` is added. Quality is tower-http's default (brotli and gzip at 4), which
+suits dynamic JSON. About BREACH: the secrets a cross-site attacker wants, the CSRF token and
+the session, travel in cookies, and headers are not compressed.
 
 **Clear all** (Settings → Development, `sc-server`'s `clear_all.rs`) resets a running
 installation to the empty state, as Saltcorn 1's button of the same name did. Every table the

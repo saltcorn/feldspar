@@ -487,7 +487,7 @@ async fn the_trait_offers_fifteen_tools_and_the_trigger_ones_point_at_each_other
             "describe_applications",
             "create_file_store",
             "create_application",
-            "set_application_tables",
+            "update_application",
             "save_api_query",
             "delete_api_query",
             "delegate_to_coding_agent",

@@ -1,12 +1,12 @@
-//! Starting an application from nothing (§13.6): `create_file_store`,
-//! `create_application` and `set_application_tables`.
+//! Starting an application from nothing (§13.6): `create_file_store` and
+//! `create_application`.
 //!
-//! The rest of this surface edits what is there. These three are what let a
+//! The rest of this surface edits what is there. These two are what let a
 //! person who has nothing yet say "build me a to-do list" to the chat copilot or
 //! to an external coding agent and get a working first draft without opening a
-//! form: a place for the code, the application record with its scaffolded
-//! project and its builder agent, and — once the tables exist — the table subset
-//! the application's API serves.
+//! form: a place for the code, and the application record with its scaffolded
+//! project and its builder agent. Once the tables exist, `update_application`
+//! connects them ([`super::update`]).
 //!
 //! ## The same handlers as the admin's buttons
 //!
@@ -20,10 +20,6 @@
 //! creates is exactly what the Create button would have created, refused in the
 //! same words, and a context with no server (a CLI command) says so rather than
 //! creating half an application.
-//!
-//! `set_application_tables` is the exception, and it is a write of the record
-//! alone: [`crate::save_application`] and the generated client, as
-//! `save_api_query` does — no store, no agent, nothing to mount.
 //!
 //! ## What comes back is where to go next
 //!
@@ -39,12 +35,13 @@ use std::sync::Arc;
 use sc_api::mcp::{
     AdminTool, Area, ToolContext, arguments, optional_bool, optional_string, require_grant,
 };
-use sc_api::schema_edit::{GRANT_CREATE, GRANT_EDIT, Grants};
-use sc_catalog::{AdminCall, AdminHost, Catalog, NEW_LOCAL_FILE_STORE, TableId};
+use sc_api::schema_edit::{GRANT_CREATE, Grants};
+use sc_catalog::{AdminCall, AdminHost, Catalog, NEW_LOCAL_FILE_STORE};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
-use super::{TOOL_DESCRIBE_APPS, load_app, required_str};
+use super::update::TOOL_UPDATE_APP;
+use super::{TOOL_DESCRIBE_APPS, required_str};
 use crate::framework::CFG_STORE;
 use crate::location::{app_project_dir, store_dir};
 use crate::react::{CFG_PROJECT, REACT_FRAMEWORK};
@@ -53,16 +50,10 @@ use crate::react::{CFG_PROJECT, REACT_FRAMEWORK};
 pub const TOOL_CREATE_STORE: &str = "create_file_store";
 /// Creates an application: its store, its scaffolded project and its builder.
 pub const TOOL_CREATE_APP: &str = "create_application";
-/// Sets which tables an application's API serves.
-pub const TOOL_SET_TABLES: &str = "set_application_tables";
 
-/// The three tools, in the order a build uses them.
+/// The two tools, in the order a build uses them.
 pub fn create_tools() -> Vec<Arc<dyn AdminTool>> {
-    vec![
-        Arc::new(CreateStore),
-        Arc::new(CreateApp),
-        Arc::new(SetTables),
-    ]
+    vec![Arc::new(CreateStore), Arc::new(CreateApp)]
 }
 
 const ARG_NAME: &str = "name";
@@ -78,9 +69,6 @@ const ARG_FRAMEWORK_CONFIG: &str = "framework_config";
 const ARG_STORE: &str = "file_store";
 const ARG_PROJECT: &str = "project";
 const ARG_TABLES: &str = "tables";
-const ARG_APPLICATION: &str = "application";
-const ARG_ADD: &str = "add";
-const ARG_REMOVE: &str = "remove";
 
 /// The API every application created here gets: REST at `/api`, which is also
 /// what the React scaffold's sign-in calls.
@@ -329,8 +317,8 @@ impl AdminTool for CreateApp {
              list\"), use `react` with a new local store; do not ask.\n\n\
              Answers with the `subdomain`, the absolute `project_dir` the code is \
              in, and the builder agent's name. Then: create the tables with \
-             `edit_schema`, connect them with `{TOOL_SET_TABLES}` (the generated \
-             client is typed against the tables connected), and only then write \
+             `edit_schema`, connect them with `{TOOL_UPDATE_APP}`'s `tables` (the \
+             generated client is typed against the tables connected), and only then write \
              the pages."
         )
     }
@@ -385,7 +373,7 @@ impl AdminTool for CreateApp {
                     "description":
                         "Existing tables the application's API serves. Usually \
                          omitted: create the tables afterwards and connect them \
-                         with `set_application_tables`.",
+                         with `update_application`.",
                 },
             },
             "required": [ARG_NAME],
@@ -471,7 +459,7 @@ impl AdminTool for CreateApp {
         }
         out["next"] = json!(format!(
             "1. Create the tables the app needs with `edit_schema`, in one batch. \
-             2. Connect them with `{TOOL_SET_TABLES}` so the API serves them and \
+             2. Connect them with `{TOOL_UPDATE_APP}` so the API serves them and \
              the generated client in src/feldspar/ is typed for them. \
              3. Write the pages in the project directory{}. \
              4. Build it so it is served at the subdomain.",
@@ -554,110 +542,6 @@ async fn free_subdomain(catalog: &Catalog, wanted: &str) -> Result<String> {
         n += 1;
     }
     Ok(candidate)
-}
-
-// --- set_application_tables ---------------------------------------------------
-
-struct SetTables;
-
-#[async_trait::async_trait]
-impl AdminTool for SetTables {
-    fn name(&self) -> &'static str {
-        TOOL_SET_TABLES
-    }
-
-    fn area(&self) -> Option<Area> {
-        Some(Area::Applications)
-    }
-
-    fn description(&self, _catalog: &Catalog, _grants: &Grants) -> String {
-        format!(
-            "Change which tables an application's API serves — its **connected \
-             tables**. An application reaches only the tables connected to it, so \
-             a table created with `edit_schema` for an app must be connected here \
-             before the app's code can read or write it. Saving also regenerates \
-             the app's typed client (`src/feldspar/`), so call this **before** \
-             writing code that uses the tables.\n\n\
-             `{ARG_ADD}` and `{ARG_REMOVE}` change the list; `{ARG_TABLES}` \
-             replaces it whole. Connecting a table does not make its rows public: \
-             each table's own role rules still decide who may read and write. \
-             The running app serves the change after its next build."
-        )
-    }
-
-    fn parameters(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                ARG_APPLICATION: {
-                    "type": "string",
-                    "description": "The application, by subdomain.",
-                },
-                ARG_ADD: {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Tables to connect.",
-                },
-                ARG_REMOVE: {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Tables to disconnect.",
-                },
-                ARG_TABLES: {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "The whole list, replacing what is connected.",
-                },
-            },
-            "required": [ARG_APPLICATION],
-            "additionalProperties": false,
-        })
-    }
-
-    async fn call(&self, ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
-        let args = arguments(args, &[ARG_APPLICATION, ARG_ADD, ARG_REMOVE, ARG_TABLES])?;
-        require_grant(
-            grants.edit,
-            "change which tables an application serves",
-            GRANT_EDIT,
-        )?;
-        let mut app = load_app(ctx, &args).await?;
-        let before: Vec<String> = app.tables.iter().map(|t| t.0.clone()).collect();
-        let mut tables = match args.contains_key(ARG_TABLES) {
-            true => string_list(&args, ARG_TABLES)?,
-            false => before.clone(),
-        };
-        for add in string_list(&args, ARG_ADD)? {
-            if !tables.contains(&add) {
-                tables.push(add);
-            }
-        }
-        let remove = string_list(&args, ARG_REMOVE)?;
-        tables.retain(|t| !remove.contains(t));
-        for table in &tables {
-            if ctx.catalog.get(table)?.is_none() {
-                return Err(Error::invalid(format!(
-                    "there is no table `{table}`; create it with `edit_schema` first. \
-                     Nothing was changed."
-                )));
-            }
-        }
-        app.tables = tables.iter().map(|t| TableId(t.clone())).collect();
-        let saved = crate::save_application(ctx.catalog, &app).await?;
-        let mut notes = Vec::new();
-        if let Err(e) = crate::emit_app_client(ctx.catalog, &saved, ctx.triggers).await {
-            notes.push(format!(
-                "the tables are connected, but the generated client could not be \
-                 rewritten: {e}"
-            ));
-        }
-        Ok(json!({
-            "application": saved.subdomain,
-            "tables": tables,
-            "was": before,
-            "notes": notes,
-        }))
-    }
 }
 
 // --- shared -------------------------------------------------------------------

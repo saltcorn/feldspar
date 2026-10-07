@@ -847,3 +847,29 @@ The items carried past milestone 31 are listed in
 prediction for new rows from a posterior (A7.1), geometry types (A5.1) and adjacency from
 geometry (A8.3). LOO and the comparison view, and the formula front end generating Stan, are
 part of the unscheduled Bayesian workflow above. The rest remain carried.
+
+# Feedback from an external MCP build ("Optino")
+
+An external coding agent built two applications through the administration MCP server with
+the grants `allow_create`, `allow_edit`, `allow_triggers` and `allow_applications`. What it
+could not do, and what we agree is missing:
+
+- [x] F.1 Response compression: gzip and brotli on every HTTP response the client accepts it
+  for (tower-http `CompressionLayer`, its default predicate, which already skips SSE, images
+  and tiny bodies; also skip zip archives). Test that an `/api` JSON response is compressed.
+- [x] F.2 `edit_schema` can create **File** fields: `file_store` (and optional `file_folder`,
+  `file_mime`) on `add_field` / `create_table` fields make a `DataFieldKind::File`. Say in
+  the tool description that `file` is not a `type`. Tests.
+- [x] F.3 MCP tool `update_application` (Applications area), replacing
+  `set_application_tables`: one tool with `tables`, `static_dirs` and `csp` sections, so the tool
+  count does not grow. `tables` and `static_dirs` need `allow_edit`; `csp` needs
+  `allow_access_changes` because a CSP is a security boundary. Every section's grant is checked
+  before anything changes. A store a static directory names is connected to the application.
+  Saved through the admin's own `updateApplication`, so the running app serves the change at
+  once. Tests.
+- [x] F.4 (merged into F.3) Static directories and the CSP were first two tools of their own.
+- [x] F.5 Update the module docs, TECHNICAL_DESIGN §13.6, OPERATIONS.md and the admin
+  copilot's name list.
+
+Not changed, by design: `save_api_query`'s `min_role` and `edit_schema`'s `min_role_*` stay
+behind `allow_access_changes`, and deleting tables and triggers stays behind `allow_drop`.

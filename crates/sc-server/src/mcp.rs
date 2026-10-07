@@ -386,7 +386,8 @@ application's API in `src/feldspar/` and sign-in wired up. Work in that director
 on, and read its `AGENTS.md`. \
 (3) Create every table the application needs in one `edit_schema` batch — tables before \
 code, because the client is generated from them. \
-(4) `set_application_tables` to connect those tables to the application; this regenerates \
+(4) `update_application` with `tables: { add: [...] }` to connect those tables to the \
+application; this regenerates \
 `src/feldspar/` so the client has a typed method for each. \
 (5) Write the pages in the project directory, using only the generated client to reach the \
 data. \
@@ -395,7 +396,7 @@ subdomain; fix whatever the diagnostics report and build again until it succeeds
 (7) Tell the user the address and what the draft does.
 
 To change an existing application, `describe_applications` gives its `project_dir`: work \
-there, connect any new table with `set_application_tables`, and rebuild.";
+there, connect any new table with `update_application`, and rebuild.";
 
 async fn call_tool(
     state: &AppState,

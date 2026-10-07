@@ -1916,10 +1916,13 @@ impl Plan {
                     ..
                 } => (self.key_storage_type(target_table, target_field)?, None),
                 DataFieldKind::Calc { .. } => (TypeRef::Basic(BasicType::Text), None),
-                _ => {
+                // A file field stores the file's path within its store.
+                DataFieldKind::File { .. } => (TypeRef::Basic(BasicType::Text), None),
+                DataFieldKind::Plain => {
                     return Err(Error::invalid(format!(
                         "field `{name}` needs a type; it is only optional for a \
-                         reference, whose type comes from the table it points at"
+                         reference, whose type comes from the table it points at, \
+                         and for a file field, which stores a path"
                     )));
                 }
             }

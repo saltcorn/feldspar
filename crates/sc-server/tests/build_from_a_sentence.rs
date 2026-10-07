@@ -129,6 +129,14 @@ async fn call(router: &Router, token: &str, tool: &str, arguments: Value) -> Val
 /// A server with agents, a provider for the builder agent to name, MCP on, an
 /// admin signed in and a token minted.
 async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, String, TestDb)> {
+    setup_with(ServerConfig::default(), json!({})).await
+}
+
+/// [`setup`] with a server configuration and the token's grants.
+async fn setup_with(
+    config: ServerConfig,
+    grants: Value,
+) -> sc_error::Result<(Router, Arc<Catalog>, String, TestDb)> {
     data_dir();
     let db = TestDb::new().await?;
     db.client()
@@ -170,7 +178,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, String, TestDb)> {
         &sc_api::admin_endpoints(),
         admin_handlers(catalog.clone(), apps.clone()),
         Arc::new(SessionStore::default()),
-        &ServerConfig::default(),
+        &config,
         apps,
     )?;
     let mut client = Client {
@@ -191,7 +199,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, String, TestDb)> {
         .send(
             "POST",
             "/api/api-tokens",
-            Some(json!({ "label": "claude-code", "grants": {} })),
+            Some(json!({ "label": "claude-code", "grants": grants })),
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{minted}");
@@ -257,8 +265,8 @@ async fn an_external_agent_builds_an_application_from_a_sentence() -> sc_error::
     let connected = call(
         &router,
         &token,
-        "set_application_tables",
-        json!({ "application": "todo-list", "add": ["todos"] }),
+        "update_application",
+        json!({ "application": "todo-list", "tables": { "add": ["todos"] } }),
     )
     .await;
     assert_eq!(connected["tables"], json!(["todos"]), "{connected}");
@@ -272,8 +280,9 @@ async fn an_external_agent_builds_an_application_from_a_sentence() -> sc_error::
     // A table that does not exist is refused, and nothing changes.
     let body = json!({
         "jsonrpc": "2.0", "id": 9, "method": "tools/call",
-        "params": { "name": "set_application_tables",
-                    "arguments": { "application": "todo-list", "add": ["nope"] } },
+        "params": { "name": "update_application",
+                    "arguments": { "application": "todo-list",
+                                   "tables": { "add": ["nope"] } } },
     });
     let mut request = Request::builder()
         .method("POST")
@@ -345,5 +354,138 @@ async fn a_file_store_is_created_and_named_by_the_application() -> sc_error::Res
         "{created}"
     );
     assert!(dir.join("package.json").is_file());
+    Ok(())
+}
+
+/// What the external agent building a presentation had to leave for a person:
+/// serving a store's folder on a URL of the app, and widening the app's CSP so
+/// another app may frame it. Both are sections of `update_application` now, and
+/// both change what the **running** app serves at once — it goes through the
+/// admin's own update, which refreshes the mount, rather than writing a record
+/// nothing reads.
+#[tokio::test]
+async fn an_agent_serves_a_store_folder_and_widens_the_csp_of_a_running_app() -> sc_error::Result<()>
+{
+    let config = ServerConfig {
+        base_domain: Some("example.com".to_owned()),
+        ..ServerConfig::default()
+    };
+    let (router, catalog, token, _db) =
+        setup_with(config, json!({ "allow_access_changes": true })).await?;
+
+    let store = call(
+        &router,
+        &token,
+        "create_file_store",
+        json!({ "name": "media" }),
+    )
+    .await;
+    let dir = PathBuf::from(store["directory"].as_str().unwrap());
+    std::fs::create_dir_all(dir.join("slides")).unwrap();
+    std::fs::write(dir.join("slides/hero.png"), b"\x89PNG\r\n\x1a\nhero").unwrap();
+
+    let created = call(
+        &router,
+        &token,
+        "create_application",
+        json!({ "name": "Show", "framework": "none" }),
+    )
+    .await;
+    assert_eq!(created["created"], json!("show"), "{created}");
+
+    let get = |path: &str| {
+        let router = router.clone();
+        let request = Request::get(path)
+            .header(header::HOST, "show.example.com")
+            .body(Body::empty())
+            .unwrap();
+        async move { router.oneshot(request).await.unwrap() }
+    };
+    assert_eq!(get("/media/hero.png").await.status(), StatusCode::NOT_FOUND);
+
+    let served = call(
+        &router,
+        &token,
+        "update_application",
+        json!({
+            "application": "show",
+            "static_dirs": {
+                "add": [{ "mount": "media", "file_store": "media", "path": "/slides/" }],
+            },
+        }),
+    )
+    .await;
+    assert_eq!(
+        served["static_dirs"],
+        json!([{ "mount": "/media", "file_store": "media", "path": "slides" }]),
+        "{served}"
+    );
+    assert_eq!(
+        served["connected_file_stores"],
+        json!(["media"]),
+        "{served}"
+    );
+    assert!(served.get("mount_error").is_none(), "{served}");
+    let stored = sc_app::load_application_by_subdomain(&catalog, "show")
+        .await?
+        .unwrap();
+    assert!(stored.file_stores.iter().any(|s| s.0 == "media"));
+
+    // Served by the running app, with no restart.
+    let response = get("/media/hero.png").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    assert!(bytes.ends_with(b"hero"));
+
+    let widened = call(
+        &router,
+        &token,
+        "update_application",
+        json!({
+            "application": "show",
+            "csp": {
+                "frame-ancestors": ["'self'", "https://admin-app.example.com"],
+                "style-src": ["'self'", "'unsafe-inline'"],
+            },
+        }),
+    )
+    .await;
+    let header_value = widened["csp_header"].as_str().unwrap().to_owned();
+    assert!(
+        header_value.contains("frame-ancestors 'self' https://admin-app.example.com"),
+        "{widened}"
+    );
+    let response = get("/media/hero.png").await;
+    let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("https://admin-app.example.com"), "{csp}");
+    assert!(csp.contains("style-src 'self' 'unsafe-inline'"), "{csp}");
+    // The static directory survived the CSP's update: a section not named is
+    // left as it was.
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Two sections in one call, saved as one.
+    let removed = call(
+        &router,
+        &token,
+        "update_application",
+        json!({
+            "application": "show",
+            "static_dirs": { "remove": ["/media"] },
+            "csp": { "style-src": null },
+        }),
+    )
+    .await;
+    assert_eq!(removed["static_dirs"], json!([]), "{removed}");
+    assert!(removed["csp"].get("style-src").is_none(), "{removed}");
+    let response = get("/media/hero.png").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert!(!csp.contains("unsafe-inline"), "{csp}");
     Ok(())
 }

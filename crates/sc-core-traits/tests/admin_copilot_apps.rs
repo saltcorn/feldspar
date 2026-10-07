@@ -501,3 +501,118 @@ async fn a_non_admin_caller_is_refused_by_every_application_tool() -> Result<()>
     assert!(stored(&env).await?.is_empty());
     Ok(())
 }
+
+/// `update_application` checks a grant per section before it changes anything.
+/// The CSP is a security boundary, so its section needs the access-rules grant,
+/// and a call that names it without that grant is refused **whole** — the
+/// tables named beside it are not touched either. A static directory is not a
+/// grant, so the default configuration may add one; with no server to refresh
+/// the mount, the record is saved and the answer says the change is served from
+/// the next start rather than now.
+#[tokio::test]
+async fn update_application_checks_each_section_s_grant_before_changing_anything() -> Result<()> {
+    let env = Env::with_schema(SCHEMA).await?;
+    app_with_api(&env).await?;
+    env.with_file_store("media", None).await?;
+    let before = load_application_by_subdomain(&env.catalog, "blog")
+        .await?
+        .unwrap();
+
+    let both = json!({
+        "application": "blog",
+        "tables": { "remove": ["books"] },
+        "csp": { "frame-ancestors": ["https://admin.example.com"] },
+    });
+    let refused = call(&env, &default_grants(), "update_application", both.clone())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("allow_access_changes"), "{refused}");
+    let unchanged = load_application_by_subdomain(&env.catalog, "blog")
+        .await?
+        .unwrap();
+    assert_eq!(unchanged.csp, before.csp);
+    assert_eq!(unchanged.tables, before.tables);
+
+    let changed = call(&env, &all_grants(), "update_application", both).await?;
+    assert_eq!(
+        changed["csp"]["frame-ancestors"],
+        json!(["https://admin.example.com"]),
+        "{changed}"
+    );
+    assert_eq!(changed["tables"], json!([]), "{changed}");
+    assert_eq!(changed["was"]["tables"], json!(["books"]), "{changed}");
+
+    // Under the API's mount: refused by the same validation the admin's form
+    // runs, and nothing stored.
+    let under_api = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({ "application": "blog", "static_dirs": {
+                "add": [{ "mount": "/api/img", "file_store": "media" }] } }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(under_api.contains("under the `rest` API"), "{under_api}");
+
+    let served = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({
+            "application": "blog",
+            "tables": { "add": ["books"] },
+            "static_dirs": {
+                "add": [{ "mount": "/img", "file_store": "media", "path": "covers" }],
+            },
+        }),
+    )
+    .await?;
+    assert_eq!(
+        served["connected_file_stores"],
+        json!(["media"]),
+        "{served}"
+    );
+    assert_eq!(served["tables"], json!(["books"]), "{served}");
+    assert!(served.get("csp").is_none(), "{served}");
+    assert!(
+        served["notes"][0].as_str().unwrap().contains("next start"),
+        "{served}"
+    );
+    let stored = load_application_by_subdomain(&env.catalog, "blog")
+        .await?
+        .unwrap();
+    assert_eq!(stored.static_dirs.len(), 1);
+    assert_eq!(stored.static_dirs[0].mount, "/img");
+    assert_eq!(stored.static_dirs[0].path, "covers");
+    // The CSP set above is kept: a section not named is left as it was.
+    assert_eq!(
+        stored.csp.directives["frame-ancestors"],
+        vec!["https://admin.example.com".to_owned()]
+    );
+
+    let unknown = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({ "application": "blog", "static_dirs": { "remove": ["/nope"] } }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(unknown.contains("serves `/img`"), "{unknown}");
+
+    let nothing = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({ "application": "blog" }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(nothing.contains("at least one of"), "{nothing}");
+    Ok(())
+}

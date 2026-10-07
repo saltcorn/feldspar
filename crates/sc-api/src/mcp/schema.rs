@@ -18,7 +18,9 @@
 use crate::schema_edit::{
     self, ApplyOptions, FieldSettings, FieldSpec, Grants, Operation, TableSettings,
 };
-use sc_catalog::{ATTR_OWNERSHIP_FORMULA, Catalog, DataFieldKind, FieldId, Table, TableId};
+use sc_catalog::{
+    ATTR_OWNERSHIP_FORMULA, Catalog, DataFieldKind, FieldId, FileStoreId, Table, TableId,
+};
 use sc_error::{Error, Result};
 use sc_types::Attrs;
 use serde_json::{Map, Value as Json, json};
@@ -271,6 +273,12 @@ fn describe_field(field: &sc_catalog::DataField) -> Json {
 const ARG_OPERATIONS: &str = "operations";
 /// Validate the whole batch and apply none of it.
 const ARG_DRY_RUN: &str = "dry_run";
+/// Makes a field a file field: the file store its files live in.
+const ARG_FILE_STORE: &str = "file_store";
+/// A file field's folder within its store.
+const ARG_FILE_FOLDER: &str = "file_folder";
+/// A file field's allowed MIME types.
+const ARG_FILE_MIME: &str = "file_mime";
 
 fn edit_description(grants: &Grants, rls_available: bool) -> String {
     let mut allowed: Vec<&str> = Vec::new();
@@ -320,7 +328,10 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
          composite key. A table with no key at all is allowed, but cannot be \
          edited row by row or referenced by another table. A foreign key is \
          `references: <table name>` — its storage type comes from that table's \
-         primary key and must not be given.\n\n\
+         primary key and must not be given. A file field (an image, a document) is \
+         `{ARG_FILE_STORE}: <file store name>` with no `type`: the column holds the \
+         file's path in that store, and the app uploads and serves the file \
+         through the store, so do not keep file contents in a `bytes` column.\n\n\
          {permitted} {access}{rls}\n\n\
          The change takes effect with no restart, and the result lists any \
          `applications` it moved: a mounted application serving one of these \
@@ -339,7 +350,7 @@ fn edit_parameters() -> Json {
     // how well they handle `oneOf` in tool parameters, and Rust validation that
     // names the missing field for the operation at index *n* is a better error
     // than a schema the provider silently flattens.
-    json!({
+    let mut parameters = json!({
         "type": "object",
         "properties": {
             ARG_OPERATIONS: {
@@ -504,7 +515,49 @@ fn edit_parameters() -> Json {
         },
         "required": [ARG_OPERATIONS],
         "additionalProperties": false,
-    })
+    });
+    add_file_properties(&mut parameters);
+    parameters
+}
+
+/// The three properties that make a field a file field, on an operation and on
+/// a `create_table` field alike. Added after the fact only because one more
+/// level of `json!` exceeds the macro's recursion limit.
+fn add_file_properties(parameters: &mut Json) {
+    let file = [
+        (
+            ARG_FILE_STORE,
+            json!({
+                "type": "string",
+                "description":
+                    "Make this a file field whose files live in this file store \
+                     (`add_field`, `alter_field`, fields of `create_table`). Give \
+                     no `type`: the column holds the file's path in the store.",
+            }),
+        ),
+        (
+            ARG_FILE_FOLDER,
+            json!({
+                "type": "string",
+                "description": "A file field's folder within its store.",
+            }),
+        ),
+        (
+            ARG_FILE_MIME,
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "description":
+                    "A file field's allowed MIME types, such as `image/*`; none \
+                     means any.",
+            }),
+        ),
+    ];
+    let item = &mut parameters["properties"][ARG_OPERATIONS]["items"];
+    for (name, schema) in &file {
+        item["properties"][*name] = schema.clone();
+        item["properties"]["fields"]["items"]["properties"][*name] = schema.clone();
+    }
 }
 
 async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
@@ -538,6 +591,8 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
             parse_operation(item).map_err(|e| Error::invalid(format!("operation {index}: {e}")))?,
         );
     }
+
+    check_file_stores(catalog, &operations)?;
 
     let applied = schema_edit::apply(
         catalog,
@@ -684,6 +739,41 @@ fn parse_operation(item: &Json) -> Result<Operation> {
     }
 }
 
+/// Refuse a file field whose store does not exist, naming the ones that do.
+///
+/// Here rather than in the schema editor because the editor's projection is of
+/// tables: a file store is not part of the schema, and a store that is missing
+/// would otherwise be found only when the first upload fails.
+fn check_file_stores(catalog: &Catalog, operations: &[Operation]) -> Result<()> {
+    let kinds = operations.iter().flat_map(|op| match op {
+        Operation::CreateTable { fields, .. } => fields.iter().map(|f| &f.kind).collect(),
+        Operation::AddField { field, .. } => vec![&field.kind],
+        Operation::AlterField { settings, .. } => settings.kind.iter().collect(),
+        _ => Vec::new(),
+    });
+    for kind in kinds {
+        if let DataFieldKind::File { store, .. } = kind
+            && catalog.file_store(&store.0)?.is_none()
+        {
+            let names = catalog.file_store_names()?;
+            return Err(Error::invalid(format!(
+                "there is no file store `{}`; the file stores are {}. Create one with \
+                 `create_file_store` first. Nothing was changed.",
+                store.0,
+                match names.is_empty() {
+                    true => "none yet".to_owned(),
+                    false => names
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                }
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn require_field(obj: &Map<String, Json>, op: &str) -> Result<String> {
     obj.get("field")
         .and_then(Json::as_str)
@@ -742,11 +832,50 @@ fn parse_field_spec(item: &Json) -> Result<FieldSpec> {
 }
 
 /// A field's kind from the flat item: `references` makes it a foreign key,
-/// `expression` a calculated field, and both together are a contradiction worth
-/// naming rather than resolving by precedence.
+/// `expression` a calculated field and `file_store` a file field, and more than
+/// one of them is a contradiction worth naming rather than resolving by
+/// precedence.
 fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
     let references = optional_string(obj, "references")?.filter(|s| !s.trim().is_empty());
     let expression = optional_string(obj, "expression")?.filter(|s| !s.trim().is_empty());
+    let file_store = optional_string(obj, ARG_FILE_STORE)?.filter(|s| !s.trim().is_empty());
+    if obj.get("type").and_then(Json::as_str).map(str::trim) == Some("file") {
+        return Err(Error::invalid(format!(
+            "`file` is not a type; a file field is one with `{ARG_FILE_STORE}` naming \
+             the file store its files live in, and it needs no `type`"
+        )));
+    }
+    if let Some(store) = file_store {
+        if references.is_some() || expression.is_some() {
+            return Err(Error::invalid(
+                "a field is one of a reference, a calculated expression or a file, \
+                 not several",
+            ));
+        }
+        let mime_allow = match obj.get(ARG_FILE_MIME) {
+            None | Some(Json::Null) => Vec::new(),
+            Some(Json::Array(items)) => items
+                .iter()
+                .map(|m| {
+                    m.as_str().map(|m| m.trim().to_owned()).ok_or_else(|| {
+                        Error::invalid(format!("`{ARG_FILE_MIME}` should be a list of MIME types"))
+                    })
+                })
+                .collect::<Result<_>>()?,
+            Some(other) => {
+                return Err(Error::invalid(format!(
+                    "`{ARG_FILE_MIME}` should be a list of MIME types, got {other}"
+                )));
+            }
+        };
+        return Ok(Some(DataFieldKind::File {
+            store: FileStoreId(store.trim().to_owned()),
+            folder: optional_string(obj, ARG_FILE_FOLDER)?
+                .map(|f| f.trim().trim_matches('/').to_owned())
+                .filter(|f| !f.is_empty()),
+            mime_allow,
+        }));
+    }
     match (references, expression) {
         (Some(_), Some(_)) => Err(Error::invalid(
             "a field is either a reference or a calculated expression, not both",
@@ -771,6 +900,38 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_field_is_named_by_its_store_and_file_is_not_a_type() {
+        let item = json!({
+            "op": "add_field", "table": "slides", "field": "picture",
+            "file_store": " media ", "file_folder": "/slides/", "file_mime": ["image/png"],
+        });
+        let Operation::AddField { field, .. } = parse_operation(&item).unwrap() else {
+            panic!("an add_field");
+        };
+        assert!(field.type_name.is_empty());
+        assert_eq!(
+            field.kind,
+            DataFieldKind::File {
+                store: FileStoreId("media".to_owned()),
+                folder: Some("slides".to_owned()),
+                mime_allow: vec!["image/png".to_owned()],
+            }
+        );
+
+        let as_type = json!({
+            "op": "add_field", "table": "slides", "field": "picture", "type": "file",
+        });
+        let err = parse_operation(&as_type).unwrap_err().to_string();
+        assert!(err.contains("`file` is not a type"), "{err}");
+
+        let both = json!({
+            "op": "add_field", "table": "slides", "field": "picture",
+            "file_store": "media", "references": "clients",
+        });
+        assert!(parse_operation(&both).is_err());
+    }
 
     #[test]
     fn a_reference_needs_no_type_and_no_target_column() {
