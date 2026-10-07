@@ -131,7 +131,7 @@ export function BackupTab() {
       {taken && (
         <Alert variant="success" dismissible onClose={() => setTaken(false)}>
           <AlertBody>
-            <T text="The backup has been downloaded. What it includes has been saved, so the next one covers the same things." />
+            <T text="The backup has been downloaded." />
           </AlertBody>
         </Alert>
       )}
@@ -139,10 +139,7 @@ export function BackupTab() {
       <div className="card mb-4">
         <div className="card-header">
           <div>
-            <h3 className="card-title"><T text="Backup" /></h3>
-            <p className="card-subtitle text-secondary mb-0">
-              <T text="One zip file holding this installation: table definitions and their rows, applications, file stores and their contents, users, modules, database connections, streams, analytics, LLM providers, agents, triggers (with their workflows) and settings. Choose what goes in when you take it." />
-            </p>
+            <h3 className="card-title"><T text="Backup" /></h3>            
           </div>
         </div>
         <div className="card-body">
@@ -164,7 +161,7 @@ export function BackupTab() {
                   password hashes, a file store's credentials and the TLS private
                   key, so the file is exactly as sensitive as the database. */}
               <p className="form-hint mt-3 mb-0 text-secondary">
-                <T text="A backup contains everything needed to restore this installation, including password hashes, file-store credentials and the SSL private key. Keep it somewhere you would keep a database dump." />
+                <T text="A backup contains everything needed to restore this installation, including password hashes, file-store credentials and the SSL private key." />
               </p>
             </>
           )}
