@@ -70,7 +70,7 @@ A complete deployment, from a clean Debian 13 ("trixie") machine to a service th
 starts at boot: PostgreSQL, a Rust toolchain, a build from source, a
 `feldspar.toml`, and a systemd unit. Each step links to the section that explains
 it properly — read those when something does not fit your box. If you only want to
-*try* Saltcorn, skip this and follow §3–§8 instead.
+*try* Saltcorn, skip this and follow §3–§8 instead (on a Mac, §4.2 is the short version).
 
 Everything below assumes a `sudo`-capable login, and uses `example.com` as the
 domain applications will be served under.
@@ -744,6 +744,62 @@ dies. This binary therefore resolves names itself (`crates/sc-dns`): the linker 
 deployment: `/etc/nsswitch.conf` no longer affects how this process resolves anything,
 and a name it must reach has to be in DNS or in `/etc/hosts` — mDNS (`.local`),
 `myhostname`'s synthesis of the local hostname, and LDAP/sssd hosts do not apply to it.
+
+### 4.2 Development on macOS
+
+A development setup on a Mac (Apple silicon or Intel), from a clean machine to `feldspar
+serve`. It needs no `install.sh` and no `setup-host.sh`: those are for a Linux server.
+
+```bash
+# 1. Tools: Xcode's command line tools, then Homebrew's Postgres and Node, and Rust
+xcode-select --install
+brew install postgresql@16 node
+brew services start postgresql@16
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source ~/.cargo/env
+
+# 2. The database. Homebrew's Postgres makes your login a superuser, so no `sudo -u postgres`.
+psql -d postgres -c "CREATE ROLE feldspar WITH LOGIN PASSWORD 'change-me';"
+psql -d postgres -c "CREATE DATABASE feldspar OWNER feldspar;"
+
+# 3. Build: the binary and the web UIs, as on Linux (§6)
+cargo build -p sc-cli
+
+# 4. Put `feldspar` on the PATH: a link, so every later build is picked up as it is
+ln -s "$PWD/target/debug/feldspar" ~/.cargo/bin/feldspar
+```
+
+Then put the connection in the configuration file macOS looks in (§7), so the server
+needs no flags:
+
+```bash
+mkdir -p ~/Library/Application\ Support/feldspar
+cat > ~/Library/Application\ Support/feldspar/feldspar.toml <<'EOF'
+default_environment = "development"
+
+[environments.development]
+host = "localhost"
+user = "feldspar"
+password = "change-me"
+database = "feldspar"
+EOF
+chmod 600 ~/Library/Application\ Support/feldspar/feldspar.toml
+```
+
+```bash
+feldspar serve      # http://127.0.0.1:3032 — the first visit creates the admin user (§8)
+```
+
+After a change, `cargo build -p sc-cli` and restart the server. Differences from Linux:
+
+- **Hostnames resolve through macOS's own resolver.** The `getaddrinfo` wrapper of §4.1 is a
+  GNU linker feature and is linked on Linux only.
+- **Building iOS apps** (the React Native framework's iOS targets) needs Xcode itself, not
+  only its command line tools, and CocoaPods (`brew install cocoapods`). An app signed for
+  devices also needs its distribution certificate in the login keychain.
+- **Running the tests:** macOS's temporary directory is reached through a symlink, which the
+  module tests' read permissions do not resolve yet. Give them its real path:
+  `TMPDIR=$(cd "$TMPDIR" && pwd -P) cargo test --workspace`.
 
 ---
 

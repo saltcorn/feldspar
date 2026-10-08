@@ -133,6 +133,10 @@ pub fn recorded_plugins_dir(prefix: Option<&str>, plugins: &std::path::Path) -> 
 /// property of the shipped artifact; an integration test elsewhere in the
 /// workspace links dynamically and resolves through glibc exactly as before.
 fn wrap_getaddrinfo() {
+    // `--wrap` is a GNU ld option; Apple's linker has no equivalent.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return;
+    }
     for symbol in ["getaddrinfo", "freeaddrinfo"] {
         println!("cargo:rustc-link-arg-bins=-Wl,--wrap={symbol}");
     }

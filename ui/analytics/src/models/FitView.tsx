@@ -54,7 +54,7 @@ import {
   type SplitMetrics,
 } from "./models";
 import { includeParam, readOutputs, type ModelOutput } from "./outputs";
-import { OutputsPanel } from "./Outputs";
+import { OutputsPanel } from "./OutputsPanel";
 import { PosteriorInstance, Warnings } from "./PosteriorInstance";
 import { StatusBadge, fitTone } from "./StatusBadge";
 

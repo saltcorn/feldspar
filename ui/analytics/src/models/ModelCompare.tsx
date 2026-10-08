@@ -14,7 +14,7 @@ import { api, errorMessage } from "../api";
 import { T, useT } from "../i18n";
 import { navigate, routeHash } from "../router";
 import { instanceLabel, readModelDataset, type ModelItem } from "./models";
-import { OutputBody } from "./Outputs";
+import { OutputBody } from "./OutputsPanel";
 import { compareRows, readOutputs, readOutputsFit, type ModelOutput, type OutputsFit } from "./outputs";
 
 /** One model's column. */
