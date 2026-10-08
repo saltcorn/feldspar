@@ -328,13 +328,24 @@ export type SuggestPlotResponse = { spec?: unknown | null; assignment?: unknown 
 export type LayerDataRequest = { layer: unknown };
 export type LayerDataResponse = { delivery: string; error?: string | null; count?: number | null; vertices?: number | null; bounds?: Array<number> | null; geometry?: Array<string> | null; properties?: Array<unknown> | null; data?: unknown | null; tiles?: string | null; source_layer?: string | null; keyed?: boolean | null };
 export type LayerTileQuery = { layer: string };
-export type MapSettingsResponse = { style?: string | null; style_dark?: string | null };
+export type LayerRowsRequest = { layer: unknown; sort?: unknown | null; limit?: number | null };
+export type LayerRowsResponse = { error?: string | null; columns?: Array<unknown> | null; rows?: Array<unknown> | null; ids?: Array<unknown> | null; total?: number | null; keyed?: boolean | null; sorted?: boolean | null };
+export type SelectFeaturesRequest = { layer: unknown; by: unknown };
+export type SelectFeaturesResponse = { error?: string | null; ids?: Array<unknown> | null; count?: number | null; truncated?: boolean | null; condition?: string | null };
+export type SaveSelectionRequest = { layer: unknown; name: string; ids?: Array<unknown> | null; condition?: string | null };
+export type SaveSelectionResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
+export type MapSettingsResponse = { style?: string | null; style_dark?: string | null; hosts: Array<string> };
+export type AllowMapHostRequest = { url: string };
+export type AllowMapHostResponse = { style?: string | null; style_dark?: string | null; hosts: Array<string> };
+export type ListMapToolsResponse = Array<{ id: string; group: string; label: string; description: string; params: Array<unknown>; module?: string | null }>;
+export type RunMapToolRequest = { tool: string; params: unknown; name?: string | null };
+export type RunMapToolResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown }; layer: unknown };
 export type SuggestMapRequest = { dataset: string; assignment?: unknown | null; geometry?: unknown | null };
 export type SuggestMapResponse = { spec?: unknown | null; sources: Array<unknown>; error?: string | null };
 export type RenderMapRequest = { spec: unknown };
 export type RenderMapResponse = { layers: Array<unknown> };
 export type RenderPanelRequest = { panel: unknown };
-export type RenderPanelResponse = { kind: string; error?: string | null; plot?: unknown | null; table?: unknown | null; tests?: unknown | null; output?: unknown | null; categorical?: Array<string> | null };
+export type RenderPanelResponse = { kind: string; error?: string | null; plot?: unknown | null; table?: unknown | null; tests?: unknown | null; output?: unknown | null; map?: unknown | null; categorical?: Array<string> | null };
 export type GetModelOutputsQuery = { fit?: string; include?: string };
 export type GetModelOutputsResponse = { model: string; fit?: unknown | null; outputs: Array<unknown> };
 export type ListWorkspaceKindsResponse = Array<{ kind: string; label: string; available: boolean; arrives_in?: string | null }>;
@@ -561,7 +572,13 @@ export interface ApiClient {
   suggestPlot(body: SuggestPlotRequest): Promise<SuggestPlotResponse>;
   layerData(body: LayerDataRequest): Promise<LayerDataResponse>;
   layerTile(z: number, x: number, y: number, query: LayerTileQuery): Promise<Blob>;
+  layerRows(body: LayerRowsRequest): Promise<LayerRowsResponse>;
+  selectFeatures(body: SelectFeaturesRequest): Promise<SelectFeaturesResponse>;
+  saveSelection(body: SaveSelectionRequest): Promise<SaveSelectionResponse>;
   mapSettings(): Promise<MapSettingsResponse>;
+  allowMapHost(body: AllowMapHostRequest): Promise<AllowMapHostResponse>;
+  listMapTools(): Promise<ListMapToolsResponse>;
+  runMapTool(body: RunMapToolRequest): Promise<RunMapToolResponse>;
   suggestMap(body: SuggestMapRequest): Promise<SuggestMapResponse>;
   renderMap(body: RenderMapRequest): Promise<RenderMapResponse>;
   renderPanel(body: RenderPanelRequest): Promise<RenderPanelResponse>;
@@ -2438,6 +2455,33 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (!res.ok) throw await clientError("layerTile", res);
       return await res.blob();
     },
+    async layerRows(body) {
+      const res = await doFetch(`${baseUrl}/api/layers/rows`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("layerRows", res);
+      return (await res.json()) as LayerRowsResponse;
+    },
+    async selectFeatures(body) {
+      const res = await doFetch(`${baseUrl}/api/layers/select`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("selectFeatures", res);
+      return (await res.json()) as SelectFeaturesResponse;
+    },
+    async saveSelection(body) {
+      const res = await doFetch(`${baseUrl}/api/layers/selection`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("saveSelection", res);
+      return (await res.json()) as SaveSelectionResponse;
+    },
     async mapSettings() {
       const res = await doFetch(`${baseUrl}/api/maps/settings`, {
         method: "GET",
@@ -2445,6 +2489,32 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("mapSettings", res);
       return (await res.json()) as MapSettingsResponse;
+    },
+    async allowMapHost(body) {
+      const res = await doFetch(`${baseUrl}/api/maps/hosts`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("allowMapHost", res);
+      return (await res.json()) as AllowMapHostResponse;
+    },
+    async listMapTools() {
+      const res = await doFetch(`${baseUrl}/api/maps/tools`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listMapTools", res);
+      return (await res.json()) as ListMapToolsResponse;
+    },
+    async runMapTool(body) {
+      const res = await doFetch(`${baseUrl}/api/maps/tools/run`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("runMapTool", res);
+      return (await res.json()) as RunMapToolResponse;
     },
     async suggestMap(body) {
       const res = await doFetch(`${baseUrl}/api/maps/suggest`, {

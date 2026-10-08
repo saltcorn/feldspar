@@ -151,6 +151,22 @@ impl ModuleSet {
         Ok(ModuleSet { modules })
     }
 
+    /// Every map tool the modules declare, as `(module, declaration)`: what
+    /// the Map workspace's toolbox installs (analytics TODO A5.12).
+    pub fn map_tools(&self) -> Vec<(String, serde_json::Value)> {
+        self.modules
+            .iter()
+            .flat_map(|loaded| {
+                loaded.manifest.iter().flat_map(|manifest| {
+                    manifest
+                        .map_tools
+                        .iter()
+                        .map(|tool| (loaded.module.name.clone(), tool.clone()))
+                })
+            })
+            .collect()
+    }
+
     /// Every module's available view patterns, as the registry a view's save is
     /// checked against (TODO "Saltcorn UI" 11.1).
     pub fn view_patterns(&self) -> Vec<PatternInfo> {
@@ -428,6 +444,7 @@ mod tests {
             table_providers: Vec::new(),
             model_providers: Vec::new(),
             stream_providers: Vec::new(),
+            map_tools: Vec::new(),
             frameworks: Vec::new(),
             view_patterns: Vec::new(),
             headers: Vec::new(),

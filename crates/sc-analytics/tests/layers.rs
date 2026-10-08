@@ -148,12 +148,7 @@ pub(crate) async fn sites() -> Result<Option<(Catalog, TestDb, DatasetId, Datase
 }
 
 pub(crate) fn request(dataset: DatasetId, geometry: GeometrySource) -> LayerRequest {
-    LayerRequest {
-        dataset,
-        geometry,
-        properties: None,
-        filter: None,
-    }
+    LayerRequest::new(dataset, geometry)
 }
 
 fn at() -> GeometrySource {

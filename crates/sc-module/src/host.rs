@@ -439,6 +439,11 @@ pub struct ModuleManifest {
     /// Streams form offers beside the built-in MQTT one.
     #[serde(default)]
     pub stream_providers: Vec<StreamProviderManifest>,
+    /// The map tools it declares (analytics TODO A5.12) — data, each a
+    /// `sc_analytics::tools::ToolTemplate`, read and checked by the server
+    /// when it installs them.
+    #[serde(default)]
+    pub map_tools: Vec<Json>,
     /// The application frameworks it supplies (§13.3) — what the application
     /// form offers beside `react` and `code`.
     #[serde(default)]

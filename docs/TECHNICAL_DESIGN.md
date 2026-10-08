@@ -271,7 +271,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-action` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-dataset` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
-| `sc-analytics` | `sc-catalog` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
+| `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
@@ -8229,9 +8229,10 @@ at the fit's output data, each drawn by `render_plot` unless it is optional and 
 `cancelModelFit`, `listModelInstances`) and the fit's progress socket; and workspaces
 (`listWorkspaceKinds`, `listWorkspaces`, `getWorkspace`, `createWorkspace`, `updateWorkspace`,
 `saveWorkspaceState`, `deleteWorkspace`); panels (A4.2): `renderPanel`; map layers (A5.5,
-§14.6): `layerData`, `layerTile`; and maps (A5.6–A5.7, §14.6): `mapSettings`, `suggestMap`,
-`renderMap`. `saveWorkspaceState`
-checks a report's document (`check_state`) before it stores it.
+§14.6): `layerData`, `layerTile`; maps (A5.6–A5.7, §14.6): `mapSettings`, `suggestMap`,
+`renderMap`; and the Map workspace (A5.8–A5.13, §14.7): `layerRows`, `selectFeatures`,
+`saveSelection`, `allowMapHost`, `listMapTools`, `runMapTool`. `saveWorkspaceState` checks a
+report's document and a map's spec (`check_state`) before it stores it.
 
 **The bundle** (`ui/analytics`): React, TypeScript and react-bootstrap over the generated client,
 like the admin SPA, but a bundle of its own — so that A9 can mount it in an application without
@@ -8790,10 +8791,11 @@ from the first. A dataset with none is told so in a sentence.
 **The explorer's map** (A5.7) is a third view beside Plot and Summary table, reached by it or by
 the gallery's Map, which is no longer disabled. The drop zones stay as they are, so going back
 to the plot loses nothing. Color, Size, Shape and Label draw the map. X, Y and the facets are
-dimmed, and a drop on them does not ask the server again (`mapAssignment`). Bins are dropped,
-since a map does not classify yet (A5.9). A **Geometry** picker lists the sources, "Automatic"
-first. The tests and the layers panel are a plot's and are hidden on a map. The map cannot yet
-be dragged into a report: a whole map as a panel, rendered as an image, is A5.13.
+dimmed, and a drop on them does not ask the server again (`mapAssignment`). Bins are dropped:
+a map classifies by its style (§14.7), not by binning. A **Geometry** picker lists the sources,
+"Automatic" first. The tests and the layers panel are a plot's and are hidden on a map. The map
+is dragged into a report as a `map` panel, and **Open in map** makes a Map workspace of it
+(§14.7).
 
 **The base map** is a setting: Settings → Maps (`sc_config::maps`) holds a MapLibre style URL
 for a light page, one for a dark page, and further hosts. The default is OpenFreeMap's Positron
@@ -8821,6 +8823,145 @@ document has deck.gl draw "layers with too many features for MapLibre alone". A5
 layer as vector tiles made by PostGIS, which MapLibre draws natively at any size, so deck.gl
 would add about a megabyte with nothing to draw. It remains the option for what tiles do not
 cover, such as animating many points over time (A8.5).
+
+### 14.7 The Map workspace (analytics milestone A5, phase 4)
+
+The Map workspace is where multi-layer GIS work is done (goals document, "Map workspace"). It
+keeps the rule that "a layer is a dataset, a geometry source and a style, and the map never
+computes anything itself": every analysis it offers makes a dataset, and every selection is a
+condition the database evaluates.
+
+**The state is a map spec.** `MapSpec` (`sc_analytics::map`) gained what a workspace needs, and
+a Map workspace's state is that spec with the screen's own keys beside it:
+
+| part | what it is |
+|---|---|
+| `layers[]` | bottom first; each `MapLayer` has `id`, `name`, `dataset`, `geometry`, `filter`, `encoding`, `style`, `popup` (the columns its popup shows), `visible`, `opacity` (0–1) and `legend` — the last three left out at their defaults |
+| `reference[]` | `ReferenceLayer`s: `{ id, name, kind: tiles \| wms \| arcgis, url, layers?, opacity, visible, attribution? }` |
+| `view` | `{ center: [lon, lat], zoom }`, where the map was last looked at |
+| `selection`, `active`, `table` | the screen's: the selected features (`{ layer, ids, condition? }`), the layer whose settings and attribute table are open, and that table's order, kept per layer |
+
+`save_workspace_state` checks a map's state (`panel::check_state` → `MapSpec::check(true)`):
+every layer has an id of its own, an opacity in range, a style's classes from 2 to 7, a single
+symbol's colour as `#rrggbb`, a reference layer's URL an `http(s)` URL whose origin parses, a
+tile template with `{z}`, `{x}` and `{y}` (or `{quadkey}`, `{bbox-epsg-3857}`), a WMS with layer
+names. Each refusal names the layer. The usage index reads a map's layers, one use per layer, so
+deleting a dataset a map shows warns with the map. The `map` kind is no longer refused by
+`createWorkspace`.
+
+**Reading layers.** The workspace asks `renderMap` once per layer, with that layer alone, keyed
+by what changes its features or scales (`dataKey`: dataset, geometry, filter, encoding, style).
+A layer's name, visibility, opacity, legend and popup are drawn in the browser, so changing one
+reads nothing. `MapView` keeps a source while its data is the same object, so a selection or an
+opacity change re-adds the MapLibre layers but never re-sends a GeoJSON source to the worker;
+sources are named by the layer's id, so moving a layer keeps its source too. The view is passed
+once (`initialView`) and saved on every `moveend`, so panning does not recompile the map.
+
+**Styles** (A5.9) are a classification over the plot encodings:
+
+| style | server | browser |
+|---|---|---|
+| automatic | as the explorer (§14.6) | a ramp for a number on Color, slots for a category |
+| single symbol | Color is not read | one colour |
+| categories | Color's values, a number too | `match` per value, the plots' slots |
+| graduated colours | Color must be a number; its **breaks** (`classes`) | `step` over the breaks, `k` colours spread along the sequential ramp, a legend item per class |
+| proportional symbols | Size must be a number; features read at their centres (`points`) | circles by area, the small ones on top (`circle-sort-key`) |
+| heatmap | features at their centres; Size, if any, the weight's range | a `heatmap` layer, weight from 0 to 1 over Size's range, the sequential ramp from transparent |
+
+`LayerRequest.points` makes the geometry `Geo.centroid(…)` (a Calculated column the layer adds),
+so a polygon layer can be drawn as proportional circles or a heatmap. A style without the
+channel it needs is refused for that layer with a sentence; the others are drawn.
+
+**Classification** (`sc_analytics::classify`): quantiles (type 7, as R), equal intervals, and
+Jenks' natural breaks found exactly by Fisher's dynamic programme over sorted values. The values
+come from `layer_sketch`: one query numbers the column's values in order (`row_number()`) and
+keeps every value of a small layer, and of a large one every `n / 1000`th by rank, the first and
+the last — a sorted sample of at most about 2,000 values that is the same at every read, so the
+classes do not move between renders. The breaks are `k + 1` numbers: the smallest value, each
+class's lower bound, the largest. A class of the largest value alone is kept; a column with
+fewer distinct values than classes gets fewer classes, never an empty one.
+
+**The attribute table and selection** (A5.10, `sc_analytics::selection`). A feature's id is its
+row's key while rows are a table's, otherwise its place in the dataset's order (as `layer_data`
+numbers GeoJSON features). `layerRows` answers the first 5,000 rows of a layer — after its
+filter, geometry left out — with each row's id, so the table and the map share one selection.
+The server sorts a keyed layer (a Sort the read adds); any other is read in its order, since its
+ids are places in it, and the table sorts what it has. A click selects, Ctrl adds or removes,
+Shift takes a range; selected rows highlight their features, which are ringed in the text colour
+over every layer by a filter on `["id"]`.
+
+Every other selection is a formula, built on the server and evaluated by the database
+(`selectFeatures`):
+
+| selection | condition (`g` the layer's geometry formula) |
+|---|---|
+| by attribute | the formula typed |
+| lasso | `Geo.intersects(g, Geo.fromGeoJSON('…'))`, the lasso thinned to 200 vertices at most |
+| within a distance of a point | `Geo.distance(g, Geo.point(lon, lat)) <= d` |
+| within a distance of another layer's selection | `Geo.distance(g, Geo.fromGeoJSON('…')) <= d`, one per selected feature (200 at most), `\|\|`-ed |
+
+A keyed layer reads its ids through a Filter; another layer reads the condition as a column
+beside every row and keeps the places where it holds, since a Filter would renumber them.
+**Save selection as dataset** (`saveSelection`) makes a dataset whose base is the layer's
+dataset, followed by the layer's filter and a Filter. That Filter is the condition when the
+selection was made by one, so the saved dataset keeps its meaning as rows change, and for
+clicked features their identities: `id == 4 || id == 9` by the table's key, or the group keys of
+an aggregated dataset (`zone == 2`), as a balanced tree of `||` so a thousand ids nest ten deep.
+Rows that nothing tells apart (a join that repeats rows) are refused for a clicked selection,
+with a sentence pointing at a condition. Two `Geo` functions arrived for this:
+`Geo.fromGeoJSON(text)` (`ST_SetSRID(ST_GeomFromGeoJSON(…), 4326)`) and
+`Geo.intersection(a, b)`, which the toolbox's Intersection uses.
+
+**Reference layers** (A5.11) are raster sources under every data layer: a tile template as
+given, a WMS as a `GetMap` in EPSG:3857 with `{bbox-epsg-3857}`, an ArcGIS map service as
+`…/tile/{z}/{y}/{x}`. The browser may load images only from the hosts the policy names
+(§14.6), so a service on another host is shown with a warning and **Allow it**, which calls
+`allowMapHost`: the URL's origin, parsed by `origin_of`, is added to Settings → Maps' further
+hosts (`sc_config::allow_map_host`), and the page is reloaded for the new policy. The admin is
+the only one who can call it; A9 decides what a restricted user may do. `mapSettings` answers
+`hosts`, the origins allowed now.
+
+**The toolbox** (A5.12, `sc_analytics::tools`) is a list of `MapTool`s. Each declares a form
+(`ToolDescriptor`: fields asking for a layer of the map, a column of a picked layer, a number in
+a unit, a choice, text) and builds a dataset and the layer that shows it. `runMapTool` compiles
+the dataset first and refuses with the first invalid operation's sentence, so nothing is stored
+that would show an error; it names the dataset after what it is made of (made unique) unless the
+person names it, stores it, and answers it with its layer, which the workspace adds on top. A
+new dataset starts from the input layer's dataset with the layer's filter as a Filter and its
+geometry as a Calculated column when it is not a column. The other side of a spatial join must
+be a layer whose geometry is a column and that shows all its rows, or the tool says so.
+
+| group | tool | operations |
+|---|---|---|
+| Proximity | Buffer | Calculated `Geo.buffer(g, d)`; drawn by the buffer |
+| Proximity | Distance to nearest | Spatial join `nearest`, left, bringing only the distance; graduated by it |
+| Proximity | Within a distance | Spatial join `nearest` within `d`, inner (keeps the grain) |
+| Overlay | Spatial join | Spatial join intersects / within / contains, left or inner |
+| Overlay | Intersection | Spatial join intersects, inner, and Calculated `Geo.intersection(g, h)` |
+| Aggregate | Count per region, Sum per region | Spatial join to the regions bringing their key, Aggregate by it (named after the table: `districts` → `district`), Complete over every row of the table with 0; drawn along the key, graduated |
+| Aggregate | Dissolve | Aggregate by a column with the union of the geometries and a count |
+
+Count per region keeps its rows told apart: a Complete over exactly the group keys of a Group
+grain keeps the grain, so a region can be clicked and saved by its key. **Plugins** add tools in
+two ways. A Rust plugin implements `MapTool` and calls `register_map_tool`. A JavaScript module
+declares tools as data under a `maptools` export (an object of templates, or a function of the
+module's configuration returning one): a form, the base layer field, the operations with the
+answers written in as `{{name}}` (`{{geometry}}` the base layer's geometry column, `{{p.name}}`,
+`{{p.dataset}}` and `{{p.geometry}}` for a layer field `p`; a text that is only `{{x}}` becomes
+the answer itself, so numbers stay numbers), and the result layer. The module host passes them
+through the manifest (`ModuleManifest.map_tools`) as JSON, and the server installs them whole on
+every module change (`install_plugin_tools`), each id prefixed with its module; one that does not
+read is logged and the rest installed.
+
+**The map as a panel** (A5.13). A `map` panel is `{ spec }`, a `MapSpec`: the explorer's map, or
+a workspace's shown layers and reference layers with its view (`specOf(state, "visible")`), made
+when the drag starts (`DragHandle`, `mapPanel`). `renderPanel` answers its layers as `renderMap`
+does, tile templates included. In a report `MapView` is `still`: drawn with
+`preserveDrawingBuffer`, and once MapLibre is idle replaced by an `<img>` of its canvas, which a
+browser prints where it would not print WebGL; until then it carries `an-panel-loading`, which
+the report waits for before printing. **Open in map** in the explorer's map view creates a Map
+workspace whose first layer is the explorer's (`stateFromLayer`), beside the explorer when the
+view is split.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

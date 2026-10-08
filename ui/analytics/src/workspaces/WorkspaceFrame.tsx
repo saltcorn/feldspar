@@ -22,6 +22,9 @@ import { StateSaver, type SaveStatus } from "./saver";
 const DataExplorer = lazy(() => import("../explorer/DataExplorer").then((m) => ({ default: m.DataExplorer })));
 /** The Report, loaded when one opens: its panels draw with ECharts too. */
 const ReportWorkspace = lazy(() => import("../report/ReportWorkspace").then((m) => ({ default: m.ReportWorkspace })));
+/** The Map workspace, loaded when one opens; MapLibre comes later still, with
+ * its map. */
+const MapWorkspace = lazy(() => import("../map/MapWorkspace").then((m) => ({ default: m.MapWorkspace })));
 
 /** How long after the last change the state is saved. */
 const SAVE_DELAY_MS = 600;
@@ -134,9 +137,15 @@ export function WorkspaceFrame({ id }: { id: string }) {
 }
 
 /** The kind's screen, handed the state and its setter. Each kind's arrives with
- * its milestone: A2's Data explorer first, then A4's Report. */
+ * its milestone: A2's Data explorer first, then A4's Report, then A5's Map. */
+const SCREENS: Record<string, typeof DataExplorer> = {
+  data_explorer: DataExplorer,
+  report: ReportWorkspace,
+  map: MapWorkspace,
+};
+
 function KindScreen({ kind, ...props }: WorkspaceProps & { kind: string }) {
-  const Screen = kind === "data_explorer" ? DataExplorer : kind === "report" ? ReportWorkspace : null;
+  const Screen = SCREENS[kind] ?? null;
   if (Screen) {
     return (
       <Suspense fallback={<Spinner animation="border" size="sm" className="m-3" />}>

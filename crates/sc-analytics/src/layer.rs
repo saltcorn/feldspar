@@ -114,6 +114,32 @@ pub struct LayerRequest {
     /// A condition over the dataset's rows, for a layer showing some of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// Each feature drawn at its centre (`Geo.centroid`): what proportional
+    /// symbols and a heatmap draw a region or a line as (A5.9).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub points: bool,
+}
+
+impl LayerRequest {
+    /// A request for every column of `dataset`'s rows, by `geometry`.
+    pub fn new(dataset: DatasetId, geometry: GeometrySource) -> LayerRequest {
+        LayerRequest {
+            dataset,
+            geometry,
+            properties: None,
+            filter: None,
+            points: false,
+        }
+    }
+
+    /// The formula of each feature's geometry, as it is drawn.
+    pub fn geometry_formula(&self) -> String {
+        if self.points {
+            format!("Geo.centroid({})", self.geometry.formula())
+        } else {
+            self.geometry.formula()
+        }
+    }
 }
 
 /// Where GeoJSON stops and tiles begin.
@@ -197,14 +223,18 @@ fn kinds_between(low: Option<f64>, high: Option<f64>) -> GeometryKinds {
 }
 
 /// A layer's stage, ready to read.
-struct Prepared {
-    stage: Stage,
+pub(crate) struct Prepared {
+    pub(crate) stage: Stage,
     /// The geometry column of the stage.
-    geometry: String,
+    pub(crate) geometry: String,
     /// The columns each feature carries.
-    properties: Vec<StageColumn>,
+    pub(crate) properties: Vec<StageColumn>,
     /// Whether a feature's id is its row's key (an integer).
-    keyed: bool,
+    pub(crate) keyed: bool,
+    /// The dataset's own name, for sentences.
+    pub(crate) name: String,
+    /// The dataset's columns before the layer added any.
+    pub(crate) shape: sc_dataset::StageShape,
 }
 
 /// The id of the operations a layer adds to its dataset.
@@ -215,6 +245,21 @@ const GEOMETRY_OP: &str = "layer-geometry";
 async fn prepare(
     catalog: &Catalog,
     req: &LayerRequest,
+) -> Result<std::result::Result<Prepared, String>> {
+    prepare_with(catalog, req, Vec::new()).await
+}
+
+/// The id of the operations a read of a layer adds after its geometry: a
+/// selection's condition, the attribute table's order (A5.10).
+pub(crate) const EXTRA_OP: &str = "layer-extra";
+
+/// [`prepare`], with `extra` operations after the layer's filter and geometry
+/// — each with an id starting [`EXTRA_OP`], and its error said as `what`
+/// does not work.
+pub(crate) async fn prepare_with(
+    catalog: &Catalog,
+    req: &LayerRequest,
+    extra: Vec<(Operation, &str)>,
 ) -> Result<std::result::Result<Prepared, String>> {
     let schema = Schema::of_catalog(catalog)?;
     if let Err(reason) = &schema.spatial {
@@ -229,8 +274,8 @@ async fn prepare(
     };
     let mut library = sc_dataset::load_library(catalog).await?;
     let plain = compile(&schema, &library, &def, Options::default());
-    let names: Vec<String> = match plain.last() {
-        Ok(stage) => stage.shape().columns.into_iter().map(|c| c.name).collect(),
+    let plain_shape = match plain.last() {
+        Ok(stage) => stage.shape(),
         Err(e) => {
             return Ok(Err(format!(
                 "the dataset `{}` does not read: {e}",
@@ -238,6 +283,7 @@ async fn prepare(
             )));
         }
     };
+    let names: Vec<String> = plain_shape.columns.iter().map(|c| c.name.clone()).collect();
     // A geometry column is drawn as it is; any other source is one more
     // column, under a name the dataset does not use.
     let mut layered: DatasetDef = def.clone();
@@ -246,17 +292,22 @@ async fn prepare(
             .operations
             .push(Operation::new(FILTER_OP, Op::filter(filter)));
     }
-    let geometry = match &req.geometry {
-        GeometrySource::Column { column } => column.clone(),
-        source => {
+    let geometry = match (&req.geometry, req.points) {
+        (GeometrySource::Column { column }, false) => column.clone(),
+        _ => {
             let name = unique_name("geometry", &names);
             layered.operations.push(Operation::new(
                 GEOMETRY_OP,
-                Op::calculated(name.clone(), source.formula()),
+                Op::calculated(name.clone(), req.geometry_formula()),
             ));
             name
         }
     };
+    let mut said: Vec<(String, &str)> = Vec::new();
+    for (op, what) in extra {
+        said.push((op.id.clone(), what));
+        layered.operations.push(op);
+    }
     library.insert(layered.clone());
     let compiled = compile(&schema, &library, &layered, Options::default());
     for (op, report) in layered.operations.iter().zip(&compiled.operations) {
@@ -267,7 +318,10 @@ async fn prepare(
         return Ok(Err(match op.id.as_str() {
             FILTER_OP => format!("the layer's filter does not work: {error}"),
             GEOMETRY_OP => format!("the layer's geometry does not work: {error}"),
-            _ => format!("the dataset `{}` does not read: {error}", def.name),
+            id => match said.iter().find(|(i, _)| i == id) {
+                Some((_, what)) => format!("{what} does not work: {error}"),
+                None => format!("the dataset `{}` does not read: {error}", def.name),
+            },
         }));
     }
     let stage = match compiled.last() {
@@ -329,11 +383,13 @@ async fn prepare(
         geometry,
         properties,
         keyed,
+        name: def.name.clone(),
+        shape: plain_shape,
     }))
 }
 
 /// `name`, or `name_2`, `name_3`… — whichever `taken` does not have.
-fn unique_name(name: &str, taken: &[String]) -> String {
+pub(crate) fn unique_name(name: &str, taken: &[String]) -> String {
     if !taken.iter().any(|t| t == name) {
         return name.to_owned();
     }
@@ -369,7 +425,7 @@ fn lit_as(value: Value, type_name: &str) -> Expr {
 /// The alias a layer's features are read from.
 const FEATURES: &str = "_fd_l";
 
-async fn run(catalog: &Catalog, select: Select) -> Result<Vec<sc_db::Row>> {
+pub(crate) async fn run(catalog: &Catalog, select: Select) -> Result<Vec<sc_db::Row>> {
     catalog
         .primary()
         .query(&Statement::from(select))
@@ -378,7 +434,7 @@ async fn run(catalog: &Catalog, select: Select) -> Result<Vec<sc_db::Row>> {
         .await
 }
 
-fn number(v: Option<&Value>) -> Option<f64> {
+pub(crate) fn number(v: Option<&Value>) -> Option<f64> {
     match v? {
         Value::Int(n) => Some(*n as f64),
         Value::Float(f) => Some(*f),
@@ -555,6 +611,88 @@ pub async fn layer_domains(
         }
     }
     Ok(Ok(out))
+}
+
+/// How many ranks apart [`layer_sketch`] takes values from a large layer:
+/// at most about twice this many values are read.
+pub const SKETCH_VALUES: i64 = 1_000;
+
+/// The values of the number column `column` over the layer's features that
+/// have a geometry, sorted — every one of them up to [`SKETCH_VALUES`], and
+/// beyond that values evenly spaced in rank, with the smallest and the
+/// largest: a sorted sample, the same at every read, which a map's class
+/// breaks are computed over (A5.9).
+pub async fn layer_sketch(
+    catalog: &Catalog,
+    req: &LayerRequest,
+    column: &str,
+) -> Result<std::result::Result<Vec<f64>, String>> {
+    let layer = match prepare(catalog, req).await? {
+        Ok(layer) => layer,
+        Err(error) => return Ok(Err(error)),
+    };
+    if layer.stage.shape().column(column).is_none() {
+        return Ok(Err(format!(
+            "`{column}` is not a column of `{}`",
+            layer.name
+        )));
+    }
+    let features = layer.stage.features_query().map_err(Error::invalid)?;
+    let g = Expr::qcol(FEATURES, layer.geometry.clone());
+    let c = Expr::qcol(FEATURES, column.to_owned());
+    let as_number = Expr::Cast {
+        expr: Box::new(c.clone()),
+        type_name: "double precision".to_owned(),
+    };
+    const RANKED: &str = "_fd_k";
+    let mut inner = Select::from(Source::subquery(features, FEATURES)).columns(vec![
+        Projection::expr_as(as_number, "v"),
+        Projection::expr_as(
+            Expr::row_number(Vec::new(), vec![OrderBy::asc(c.clone())]),
+            "rn",
+        ),
+        Projection::expr_as(
+            // `count(1)`: a window's `count()` is not `count(*)`.
+            Expr::Window {
+                func: "count".to_owned(),
+                args: vec![lit_as(Value::Int(1), "integer")],
+                partition: Vec::new(),
+                order: Vec::new(),
+            },
+            "n",
+        ),
+    ]);
+    inner.filter = Some(Expr::unary(UnOp::IsNotNull, g).and(Expr::unary(UnOp::IsNotNull, c)));
+    let q = |name: &str| Expr::qcol(RANKED, name);
+    let one = || lit_as(Value::Int(1), "bigint");
+    let step = func(
+        "greatest",
+        vec![
+            one(),
+            Expr::binary(
+                sc_query::BinOp::Div,
+                q("n"),
+                lit_as(Value::Int(SKETCH_VALUES), "bigint"),
+            ),
+        ],
+    );
+    let mut outer = Select::from(Source::subquery(inner, RANKED))
+        .columns(vec![Projection::expr_as(q("v"), "v")])
+        .filter(
+            Expr::binary(
+                sc_query::BinOp::Mod,
+                Expr::binary(sc_query::BinOp::Sub, q("rn"), one()),
+                step,
+            )
+            .eq(lit_as(Value::Int(0), "bigint"))
+            .or(q("rn").eq(q("n"))),
+        );
+    outer.order = vec![OrderBy::asc(q("rn"))];
+    let rows = run(catalog, outer).await?;
+    Ok(Ok(rows
+        .iter()
+        .filter_map(|r| number(r.get_index(0)))
+        .collect()))
 }
 
 /// One Mapbox vector tile of a layer, at zoom `z`, column `x` and row `y` of

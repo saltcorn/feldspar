@@ -35,6 +35,8 @@ mod frameworks;
 mod host;
 #[path = "install.rs"]
 mod install;
+#[path = "map_tools.rs"]
+mod map_tools;
 #[path = "model_providers.rs"]
 mod model_providers;
 #[path = "module_actions.rs"]

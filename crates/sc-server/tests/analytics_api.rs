@@ -422,8 +422,8 @@ async fn datasets_are_created_read_edited_and_deleted_through_the_api() -> sc_er
 async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<()> {
     let (mut client, db) = setup().await?;
 
-    // Six kinds, of which A2's Data explorer and A4's Report are here; the
-    // Dataset editor and the model editor are not kinds of workspace.
+    // Six kinds, of which A2's Data explorer, A4's Report and A5's Map are
+    // here; the Dataset editor and the model editor are not kinds of workspace.
     let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
     let kinds = kinds.as_array().unwrap();
     assert_eq!(kinds.len(), 6);
@@ -431,9 +431,10 @@ async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<(
         .iter()
         .filter(|k| k["available"] == json!(true))
         .collect();
-    assert_eq!(here.len(), 2);
+    assert_eq!(here.len(), 3);
     assert_eq!(here[0]["kind"], json!("data_explorer"));
     assert_eq!(here[1]["kind"], json!("report"));
+    assert_eq!(here[2]["kind"], json!("map"));
     assert_eq!(here[0]["arrives_in"], Value::Null);
     assert!(!kinds.iter().any(|k| k["kind"] == "dataset_editor"));
     assert!(!kinds.iter().any(|k| k["kind"] == "model_fit"));
@@ -442,10 +443,10 @@ async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<(
         .refused(
             "POST",
             "/api/workspaces",
-            Some(json!({ "name": "Draft", "kind": "map" })),
+            Some(json!({ "name": "Draft", "kind": "dashboard" })),
         )
         .await;
-    assert!(err.contains("milestone A5"), "{err}");
+    assert!(err.contains("milestone A6"), "{err}");
     // Models open in the model editor, not in a workspace.
     let err = client
         .refused(

@@ -13,6 +13,7 @@
 // gives it an identity of its own. Nothing is ever taken from the source.
 
 import type { Translate } from "../datasets/ops";
+import type { MapSpec } from "../map/spec";
 import type { ModelOutput } from "../models/outputs";
 import type { PlotSpec, TableSpec } from "../plot/spec";
 import type { TestSpec } from "../explorer/tests";
@@ -27,6 +28,7 @@ export type PanelBody =
   | { kind: "test_result"; content: { tests: TestSpec; plot?: PlotSpec } }
   | { kind: "text"; content: { markdown: string } }
   | { kind: "fit_table"; content: { fit: string; output: string } }
+  | { kind: "map"; content: { spec: MapSpec } }
   | { kind: "custom"; content: { renderer: string; config?: unknown } };
 
 /** One panel. */
@@ -34,7 +36,7 @@ export type Panel = { id: string; title?: string } & PanelBody;
 
 export type PanelKind = PanelBody["kind"];
 
-export const PANEL_KINDS: PanelKind[] = ["plot", "summary_table", "test_result", "text", "fit_table", "custom"];
+export const PANEL_KINDS: PanelKind[] = ["plot", "summary_table", "test_result", "text", "fit_table", "map", "custom"];
 
 /** A new panel's id. */
 export function newPanelId(): string {
@@ -74,6 +76,8 @@ export function readPanel(raw: unknown): Panel | null {
         return typeof c.markdown === "string";
       case "fit_table":
         return typeof c.fit === "string" && typeof c.output === "string";
+      case "map":
+        return isObject(c.spec) && Array.isArray(c.spec.layers) && c.spec.layers.length > 0;
       case "custom":
         return typeof c.renderer === "string";
       default:
@@ -120,6 +124,13 @@ export function readPanelDrag(transfer: Pick<Transfer, "getData">): Panel | null
 }
 
 // --- the sources -----------------------------------------------------------------
+
+/** A map as a panel (A5.13): the explorer's map, or a whole Map workspace's
+ * shown layers; `null` with nothing to show. */
+export function mapPanel(spec: MapSpec | null, title?: string): Panel | null {
+  if (!spec || spec.layers.length === 0) return null;
+  return makePanel({ kind: "map", content: { spec: JSON.parse(JSON.stringify(spec)) as MapSpec } }, title);
+}
 
 /** What the explorer is showing, enough to make a panel of it. */
 export type ExplorerOutput = {

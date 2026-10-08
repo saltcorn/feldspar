@@ -8293,6 +8293,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "sc-catalog",
+ "sc-config",
  "sc-dataset",
  "sc-db",
  "sc-db-postgres",

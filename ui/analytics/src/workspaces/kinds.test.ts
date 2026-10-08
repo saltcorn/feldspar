@@ -7,17 +7,17 @@ const t = (text: string, args: Record<string, string | number> = {}) =>
 
 const kinds: KindItem[] = [
   { kind: "data_explorer", label: "Data explorer", available: true, arrives_in: null },
-  { kind: "map", label: "Map", available: false, arrives_in: "A5" },
+  { kind: "dashboard", label: "Dashboard", available: false, arrives_in: "A6" },
 ];
 
 describe("the workspace kinds", () => {
   it("lists every kind, the ones not here yet disabled with their milestone", () => {
     expect(kindOptions(kinds, t)).toEqual([
       { value: "data_explorer", label: "Data explorer", disabled: false },
-      { value: "map", label: "Map (arrives in A5)", disabled: true },
+      { value: "dashboard", label: "Dashboard (arrives in A6)", disabled: true },
     ]);
     expect(firstAvailable(kinds)).toBe("data_explorer");
-    expect(kindLabel(kinds, "map")).toBe("Map");
+    expect(kindLabel(kinds, "dashboard")).toBe("Dashboard");
     expect(kindLabel(kinds, "mystery")).toBe("mystery");
   });
 

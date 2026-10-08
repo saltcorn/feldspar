@@ -117,6 +117,18 @@ pub const GEO_FUNCTIONS: &[GeoFunction] = &[
         result: GeoResult::Geometry,
         doc: "the hexagonal grid cell, of edges in metres, that a geometry's point is in",
     },
+    GeoFunction {
+        name: "intersection",
+        params: &["a", "b"],
+        result: GeoResult::Geometry,
+        doc: "the part two geometries share",
+    },
+    GeoFunction {
+        name: "fromGeoJSON",
+        params: &["text"],
+        result: GeoResult::Geometry,
+        doc: "the geometry a GeoJSON text describes, in longitude and latitude",
+    },
 ];
 
 /// The function called `name`.
@@ -277,6 +289,19 @@ pub(crate) fn sql(f: &GeoFunction, args: Vec<QExpr>) -> Result<QExpr> {
             let (a, b) = (next()?, next()?);
             func(name, vec![a, b])
         }
+        "intersection" => {
+            let (a, b) = (next()?, next()?);
+            func("ST_Intersection", vec![a, b])
+        }
+        // A map's lasso and its selection by location (analytics TODO A5.10)
+        // name a shape drawn on the screen this way.
+        "fromGeoJSON" => func(
+            "ST_SetSRID",
+            vec![
+                func("ST_GeomFromGeoJSON", vec![cast(next()?, "text")]),
+                QExpr::Lit(Value::Int(4326)),
+            ],
+        ),
         "squareCell" | "hexCell" => {
             let name = if f.name == "squareCell" {
                 "_fd_square_cell"

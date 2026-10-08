@@ -442,6 +442,212 @@
   color: var(--tblr-secondary);
 }
 
+.an-map-legend-layer {
+  font-weight: 700;
+  margin-top: 0.2rem;
+}
+
+/* A report's map: the drawn canvas, shown as an image of itself (A5.13). */
+.an-map.an-map-drawn {
+  visibility: hidden;
+  position: absolute;
+  inset: 0;
+}
+
+.an-map-image {
+  display: block;
+  width: 100%;
+  flex: 1 1 auto;
+  object-fit: contain;
+}
+
+.an-panel-map {
+  height: 22rem;
+  display: flex;
+}
+
+.an-panel-map .an-map-frame,
+.an-panel-map .an-map {
+  min-height: 0;
+}
+
+/* The lasso: over the map while it is drawn. */
+.an-map-lasso {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.an-map-lasso polygon {
+  fill: rgba(42, 120, 214, 0.15);
+  stroke: var(--tblr-primary);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+/* The Map workspace (A5.8–A5.12): the layers beside the map, the attribute
+   table under it. */
+.an-mapws {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.an-mapws-side {
+  flex: 0 0 19rem;
+  width: 19rem;
+  overflow-y: auto;
+  padding: 0.75rem;
+  border-right: 1px solid var(--tblr-border-color);
+}
+
+.an-mapws-datasets {
+  max-height: 20rem;
+  overflow-y: auto;
+}
+
+.an-mapws-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem;
+}
+
+.an-mapws-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.an-mapws-map {
+  flex: 1 1 auto;
+  min-height: 18rem;
+  display: flex;
+}
+
+.an-mapws-map .an-map-frame,
+.an-mapws-map .an-map {
+  min-height: 18rem;
+}
+
+.an-mapws-table {
+  flex: 0 0 15rem;
+  height: 15rem;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--tblr-border-color);
+  margin-top: 0.5rem;
+}
+
+.an-layer-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+
+.an-layer-row {
+  padding: 0.25rem 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.an-layer-row.active {
+  border-color: var(--tblr-primary);
+  background: var(--tblr-bg-surface-secondary);
+}
+
+.an-layer-row.drop {
+  border-top: 2px solid var(--tblr-primary);
+}
+
+.an-layer-grip {
+  cursor: grab;
+  color: var(--tblr-secondary);
+}
+
+.an-layer-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  border: 0;
+  background: none;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+
+.an-layer-settings {
+  border-top: 1px solid var(--tblr-border-color);
+  padding-top: 0.5rem;
+}
+
+.an-layer-channels .form-label {
+  flex: 0 0 4rem;
+}
+
+.an-reference-row {
+  margin-bottom: 0.4rem;
+}
+
+.an-reference-form {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 4px;
+  padding: 0.5rem;
+}
+
+/* The attribute table. */
+.an-attributes {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.an-attributes-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  color: var(--tblr-secondary);
+}
+
+.an-attributes-head {
+  flex: 0 0 9rem;
+  width: 9rem;
+  text-align: left;
+  border: 0;
+  border-right: 1px solid var(--tblr-border-color-translucent);
+  background: none;
+  color: inherit;
+  padding: 0.25rem 0.5rem;
+  display: flex;
+}
+
+.an-attributes-row {
+  cursor: pointer;
+}
+
+.an-attributes-row .an-cell {
+  flex: 0 0 9rem;
+  width: 9rem;
+}
+
+.an-attributes-row:hover {
+  background: var(--tblr-bg-surface-secondary);
+}
+
+.an-attributes-row.selected {
+  background: rgba(42, 120, 214, 0.18);
+}
+
 .an-map-notes {
   margin: 0.4rem 0 0;
   padding-left: 1.2rem;

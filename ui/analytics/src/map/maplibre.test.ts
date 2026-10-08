@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import { chartPalette } from "../plot/palette";
 import {
   FILL_OPACITY,
+  HEATMAP_OPACITY,
+  PROPORTIONAL_OPACITY,
+  classColors,
   MAX_RADIUS,
   MIN_RADIUS,
   POINT_RADIUS,
@@ -268,6 +271,125 @@ describe("compileMap", () => {
     const out = compile(layerOn(), points, { ...opts, theme: "dark" });
     expect(paint(out, "fd-0-point")["circle-color"]).toBe(chartPalette("dark").categorical[0]);
     expect(paint(out, "fd-0-point")["circle-stroke-color"]).toBe(chartPalette("dark").surface);
+  });
+});
+
+describe("the Map workspace's styles", () => {
+  const counted = (extra: Partial<RenderedLayer> = {}): RenderedLayer => ({ ...points, ...extra });
+
+  it("names a workspace layer's source by its id, and says which layer each source draws", () => {
+    const spec: MapSpec = { layers: [{ ...layerOn(), id: "inc:1" }, { ...layerOn(), id: "b" }] };
+    const out = compileMap(spec, { layers: [points, points] }, opts);
+    expect(Object.keys(out.sources)).toEqual(["fd-inc_1", "fd-b"]);
+    expect(out.layerOf).toEqual({ "fd-inc_1": 0, "fd-b": 1 });
+    expect(out.layers.map((l) => l.id)).toEqual(["fd-inc_1-point", "fd-b-point"]);
+  });
+
+  it("draws one colour, whatever is on Color", () => {
+    const out = compile({ ...layerOn({ color: { field: "kind" } }), style: { kind: "single", color: "#aa3300" } }, counted({
+      domains: { color: { kind: "discrete", values: ["a", "b"] } },
+    }));
+    expect(paint(out, "fd-0-point")["circle-color"]).toBe("#aa3300");
+    expect(out.legend).toEqual([]);
+  });
+
+  it("colours graduated classes by steps over the server's breaks", () => {
+    const out = compile(
+      { ...layerOn({ color: { field: "count" } }), style: { kind: "graduated", method: "quantile", classes: 3 } },
+      counted({ classes: [2, 4, 6, 8] }),
+    );
+    const colors = classColors(light, 3);
+    expect(colors).toEqual([light.sequential[0], light.sequential[3], light.sequential[6]]);
+    expect(paint(out, "fd-0-point")["circle-color"]).toEqual([
+      "case",
+      ["!=", ["get", "count"], null],
+      ["step", ["to-number", ["get", "count"], 0], colors[0], 4, colors[1], 6, colors[2]],
+      light.muted,
+    ]);
+    expect(out.legend[0].items).toEqual([
+      { label: "2 – 4", color: colors[0] },
+      { label: "4 – 6", color: colors[1] },
+      { label: "6 – 8", color: colors[2] },
+    ]);
+    // A last class of the largest value alone is labelled with it.
+    const top = compile(
+      { ...layerOn({ color: { field: "count" } }), style: { kind: "graduated", method: "natural_breaks", classes: 3 } },
+      counted({ classes: [1, 2, 3, 3] }),
+    );
+    expect(top.legend[0].items?.map((i) => i.label)).toEqual(["1 – 2", "2 – 3", "3"]);
+  });
+
+  it("draws proportional circles, the small ones on top, and a heatmap weighted by Size", () => {
+    const proportional = compile(
+      { ...layerOn({ size: { field: "count" } }), style: { kind: "proportional" } },
+      counted({ domains: { size: { kind: "continuous", min: 2, max: 8 } } }),
+    );
+    expect(layout(proportional, "fd-0-point")["circle-sort-key"]).toEqual(["-", 0, ["to-number", ["get", "count"], 0]]);
+    expect(paint(proportional, "fd-0-point")["circle-opacity"]).toBeCloseTo(PROPORTIONAL_OPACITY);
+
+    const heat = compile(
+      { ...layerOn({ size: { field: "count" }, color: { field: "kind" } }), style: { kind: "heatmap", radius: 30 } },
+      counted({ domains: { size: { kind: "continuous", min: 2, max: 8 } } }),
+      { ...opts, words: { density: "Dichte", low: "wenig", high: "viel" } },
+    );
+    expect(heat.layers.map((l) => [l.id, l.type])).toEqual([["fd-0-heat", "heatmap"]]);
+    const p = paint(heat, "fd-0-heat");
+    expect(p["heatmap-weight"]).toEqual(["interpolate", ["linear"], ["to-number", ["get", "count"], 0], 2, 0, 8, 1]);
+    expect(p["heatmap-radius"]).toBe(30);
+    expect(p["heatmap-opacity"]).toBeCloseTo(HEATMAP_OPACITY);
+    // Nothing a pointer picks; the legend is the density.
+    expect(heat.interactive).toEqual([]);
+    expect(heat.legend).toEqual([
+      { layer: 0, channel: "color", field: "count", gradient: { colors: light.sequential, min: "wenig", max: "viel" } },
+    ]);
+  });
+
+  it("fades a layer by its opacity, hides it but keeps its source, and leaves it out of the legend", () => {
+    const faded = compile({ ...layerOn({ color: { field: "kind" } }), opacity: 0.5, name: "Incidents" }, counted({
+      domains: { color: { kind: "discrete", values: ["a"] } },
+    }));
+    expect(paint(faded, "fd-0-point")["circle-opacity"]).toBeCloseTo(0.45);
+    expect(paint(faded, "fd-0-point")["circle-stroke-opacity"]).toBe(0.5);
+    expect(faded.legend[0].title).toBe("Incidents");
+    const hidden = compile({ ...layerOn(), visible: false }, points);
+    expect(Object.keys(hidden.sources)).toEqual(["fd-0"]);
+    expect(hidden.layers).toEqual([]);
+    const quiet = compile({ ...layerOn({ color: { field: "kind" } }), legend: false }, counted({
+      domains: { color: { kind: "discrete", values: ["a"] } },
+    }));
+    expect(quiet.legend).toEqual([]);
+  });
+
+  it("rings the selected features over every layer, matched by id", () => {
+    const spec: MapSpec = { layers: [layerOn(), layerOn()] };
+    const out = compileMap(spec, { layers: [points, points] }, { ...opts, selection: { layer: 0, ids: [2, { no: 1 }] } });
+    expect(out.layers.map((l) => l.id)).toEqual(["fd-0-point", "fd-1-point", "fd-0-selected-point"]);
+    const ring = out.layers[2] as unknown as { filter: unknown; paint: Record<string, unknown> };
+    expect(ring.filter).toEqual(["all", ["match", ["geometry-type"], ["Point", "MultiPoint"], true, false], ["in", ["id"], ["literal", [2]]]]);
+    expect(ring.paint["circle-stroke-color"]).toBe(light.text);
+    // Nothing selected, no ring.
+    expect(compileMap(spec, { layers: [points, points] }, { ...opts, selection: { layer: 0, ids: [] } }).layers).toHaveLength(2);
+  });
+
+  it("draws reference layers under every data layer, as raster tiles", () => {
+    const spec: MapSpec = {
+      layers: [layerOn()],
+      reference: [
+        { id: "osm", name: "OSM", kind: "tiles", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", opacity: 0.4, attribution: "© OSM" },
+        { id: "off", name: "Off", kind: "arcgis", url: "https://g.example/MapServer", visible: false },
+      ],
+    };
+    const out = compileMap(spec, { layers: [points] }, opts);
+    expect(out.layers.map((l) => l.id)).toEqual(["fd-ref-osm-raster", "fd-0-point"]);
+    expect(out.sources["fd-ref-osm"]).toEqual({
+      type: "raster",
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tileSize: 256,
+      attribution: "© OSM",
+    });
+    expect(paint(out, "fd-ref-osm-raster")["raster-opacity"]).toBe(0.4);
+    // A hidden one keeps its source and draws nothing.
+    expect(out.sources["fd-ref-off"]).toBeDefined();
   });
 });
 

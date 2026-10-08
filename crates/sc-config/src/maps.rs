@@ -225,6 +225,30 @@ pub async fn map_settings(catalog: &Catalog) -> Result<MapSettings> {
     map_settings_from(&crate::store::all_config(catalog).await?)
 }
 
+/// The further hosts with `url`'s origin added, comma-separated — or `None`
+/// when a map may load from it already. A URL that is not one is refused by
+/// name.
+pub fn hosts_with(settings: &MapSettings, url: &str) -> Result<Option<String>> {
+    let origin = origin_of(url).map_err(|e| Error::invalid(format!("the map host {e}")))?;
+    if settings.hosts().contains(&origin) {
+        return Ok(None);
+    }
+    let mut hosts = settings.extra_hosts.clone();
+    hosts.push(origin);
+    Ok(Some(hosts.join(", ")))
+}
+
+/// Let a map load from `url`'s origin (analytics TODO A5.11): a reference
+/// layer's tile service, added to the further hosts so the Analytics UI's
+/// policy names it from the next page on. Answers the settings after.
+pub async fn allow_map_host(catalog: &Catalog, url: &str) -> Result<MapSettings> {
+    let settings = map_settings(catalog).await?;
+    if let Some(list) = hosts_with(&settings, url)? {
+        crate::store::set_config(catalog, MAP_HOSTS, Json::String(list)).await?;
+    }
+    map_settings(catalog).await
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -236,6 +260,24 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), v.clone()))
             .collect()
+    }
+
+    #[test]
+    fn a_host_is_added_once_as_its_origin() {
+        let settings = map_settings_from(&attrs(&[(MAP_HOSTS, json!("https://a.example.com"))]))
+            .unwrap();
+        assert_eq!(
+            hosts_with(&settings, "https://Tiles.Example.org:8443/{z}/{x}/{y}.png").unwrap(),
+            Some("https://a.example.com, https://tiles.example.org:8443".to_owned())
+        );
+        // Already allowed: a further host, or a base map's own.
+        assert_eq!(hosts_with(&settings, "https://a.example.com/wms").unwrap(), None);
+        assert_eq!(
+            hosts_with(&settings, "https://tiles.openfreemap.org/x/{z}/{x}/{y}").unwrap(),
+            None
+        );
+        let err = hosts_with(&settings, "javascript:alert(1)").unwrap_err();
+        assert!(err.to_string().contains("not an http or https URL"), "{err}");
     }
 
     #[test]

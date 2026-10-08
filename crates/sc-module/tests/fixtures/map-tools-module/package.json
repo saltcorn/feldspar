@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/map-tools",
+  "version": "0.1.0",
+  "description": "A module declaring map tools, for the Map workspace's toolbox seam: one tool, and one declaration that is not a tool.",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

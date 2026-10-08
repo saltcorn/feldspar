@@ -2,6 +2,138 @@
 
 Changes in reverse chronological order.
 
+## Analytics A5.8–A5.13: the Map workspace
+
+The fourth phase of milestone A5 (Maps): a workspace of layers over a base map, styled with
+classification, with an attribute table and selection linked to the map, reference layers, a
+toolbox of spatial tools that make ordinary datasets, and the whole map as a panel. Written up
+in `TECHNICAL_DESIGN.md` §14.7 and `OPERATIONS.md` §10.4.
+
+- **A5.8 The workspace and its layers.**
+  - The `map` workspace kind can be created. Its state is a map spec (`sc_analytics::map`) with
+    the screen's own keys beside it: the selection, the picked layer and its table's order.
+  - `MapLayer` gained `id`, `name`, `style`, `popup`, `visible`, `opacity` and `legend`.
+    `MapSpec` gained `reference` (reference layers) and `view` (centre and zoom).
+  - `save_workspace_state` checks a map's spec (`MapSpec::check`). Each refusal names the
+    layer: a missing or repeated id, an opacity out of range, a style's settings, a reference
+    layer's URL. The usage index counts a map's layers, so deleting a dataset warns with the map.
+  - **The layer list** (`MapWorkspace.tsx`) lists the top layer first. Each layer can be shown
+    or hidden, moved up or down or dragged, removed, or opened in the Dataset editor. The picked
+    layer's settings sit below the list (`LayerSettings.tsx`): name, geometry source (from
+    `suggestMap`), filter, style, the Color/Size/Shape/Label columns, opacity, legend and popup
+    fields.
+  - **Reading a layer.** Each layer is read by `renderMap` on its own, again only when its
+    dataset, geometry, filter, encoding or style changes. `MapView` keeps a source while its
+    data is the same object, so a click, an opacity change or a reorder never re-sends GeoJSON
+    to MapLibre's worker. The view is saved as the map moves.
+- **A5.9 Symbology.** Each layer has a `Style`:
+  - single symbol;
+  - categories;
+  - graduated colours, in 2–7 classes by quantiles, equal intervals or natural breaks;
+  - proportional symbols;
+  - heatmap.
+  - **Breaks are computed on the server** (`sc_analytics::classify`). Quantiles are R's type 7.
+    Natural breaks are Jenks's, found exactly by Fisher's dynamic programme. The values come
+    from `layer_sketch`: every value of a small layer, or values evenly spaced in rank through a
+    large one (about 2,000 at most). The sample is the same at every read, so classes do not
+    move between renders.
+  - `renderMap` answers `classes` for a graduated layer.
+  - Proportional symbols and heatmaps read features at their centres (`LayerRequest.points`,
+    `Geo.centroid`), so regions can be drawn as circles.
+  - A style without the channel it needs is refused for that layer with a sentence.
+  - The compiler draws classes as a `step`, a heatmap as a MapLibre `heatmap` layer, and
+    proportional circles small-on-top. Opacity, visibility and the legend apply per layer.
+- **A5.10 The attribute table and selection.**
+  - **Feature ids.** A feature's id is its row's key, or its place in the dataset's order for
+    rows that are not a table's. `layerRows` (`POST /api/layers/rows`) answers up to 5,000 rows
+    with their ids. The server sorts keyed layers; the table sorts the rest itself.
+  - **Linked both ways.** Selecting rows rings the features over every layer; clicking features
+    (Ctrl adds, Shift takes a range in the table) selects the rows.
+  - **Selection by condition.** `selectFeatures` (`POST /api/layers/select`) selects by:
+    - an attribute condition;
+    - a lasso: `Geo.intersects(g, Geo.fromGeoJSON('…'))`;
+    - within a distance of a clicked point;
+    - within a distance of another layer's selected features.
+  - **Save selection as dataset** (`saveSelection`) makes a dataset based on the layer's
+    dataset, adds it as a layer, and filters it by one of:
+    - the selection's condition, when it was made by one;
+    - for clicked features, their keys (`id == 4 || id == 9`) or an aggregate's group keys.
+  - Rows that nothing tells apart are refused with a sentence.
+  - New formula functions: `Geo.fromGeoJSON(text)` and `Geo.intersection(a, b)`.
+- **A5.11 Reference layers.**
+  - Tiles (`{z}/{x}/{y}`), WMS and ArcGIS map services, drawn as raster layers under the data,
+    with opacity, visibility and attribution.
+  - A service whose host Settings → Maps does not allow is said to be blocked, with **Allow
+    it**. That calls the new `allowMapHost`, which adds the URL's parsed origin to the further
+    hosts, and the page is reloaded for the new policy.
+  - `mapSettings` now answers `hosts`.
+- **A5.12 The toolbox** (`sc_analytics::tools`, `listMapTools`, `runMapTool`). Every tool
+  makes an ordinary dataset that opens in the Dataset editor, and adds it as a layer:
+  - Proximity: Buffer; Distance to nearest; Within a distance.
+  - Overlay: Spatial join; Intersection.
+  - Aggregate: Count per region; Sum per region; Dissolve.
+  - Count per region is a Spatial join, an Aggregate by the region's key, and a Complete over
+    every region with 0, drawn along the key in graduated colours.
+  - A tool's dataset is compiled first. An invalid one is refused with the operation's
+    sentence, and nothing is stored.
+  - **Plugins.** A Rust plugin implements `MapTool`. A JavaScript module declares tools as data
+    under a new `maptools` export: a form, and operations with the answers written in as
+    `{{name}}` (`TemplateTool`). The module host passes them through the manifest
+    (`ModuleManifest.map_tools`), and the server installs them on every module change, each id
+    prefixed with its module.
+- **A5.13 Open in map, and the map as a panel.**
+  - **Open in map** in the explorer's map view creates a Map workspace with that map as its
+    first layer, beside the explorer when the view is split.
+  - A new `map` panel kind (`{ spec }`) is dragged from the explorer's map and from the Map
+    workspace (its shown layers, reference layers and view). `renderPanel` draws it.
+  - In a report the map is drawn once and shown as an image of its canvas, so it prints. The
+    report waits for it before printing.
+- **Tests.**
+  - `sc-analytics`:
+    - unit tests for natural breaks, quantiles and equal intervals, edge cases included;
+    - the map spec's checks;
+    - the balanced `||`;
+    - the toolbox's descriptors and a declared tool's checks and installation;
+    - on PostGIS (`map_workspace.rs`): graduated classes by each method, proportional points,
+      each style refusal, the sketch of 2,500 values read twice, the attribute table's ids and
+      order, selection by condition, lasso and both distances, saving by key, by group key and
+      by condition, the refusal for rows nothing tells apart, and every tool with its rows and
+      layer.
+  - `sc-expr`: the two new `Geo` functions' SQL.
+  - `sc-config`: a host added once as its origin.
+  - `sc-module`: a fixture module's `maptools` reaching the manifest, and a declaration that is
+    not a tool reported.
+  - `sc-server` (`geometry.rs`), end to end:
+    - the map kind created;
+    - count per zone run through the API, with its rows and classes;
+    - a bad tool refused;
+    - the workspace state saved, and a duplicate layer id refused;
+    - the usage index;
+    - the attribute table;
+    - both kinds of selection by location;
+    - saving by condition and by click;
+    - a map panel rendered;
+    - a reference host allowed into the served policy.
+  - vitest: the workspace state, the attribute table's order, the toolbox forms, the lasso,
+    reference layers' templates and checks, the compiler's styles, opacity, visibility,
+    selection rings and reference layers, and map panels.
+  - **By hand** in Chromium against a PostGIS scratch database. The walk covered:
+    - adding layers;
+    - count per region in graduated natural breaks;
+    - the sorted table selecting a zone;
+    - near-a-point and lasso selection;
+    - saving a selection;
+    - a blocked reference layer;
+    - a map panel printed as an image in a report;
+    - Open in map from the explorer.
+  - The walk found two bugs, both fixed: the table's order was shared between layers, so it
+    asked to sort another layer by a column it lacks; and a URL with a user name gave a wrong
+    origin.
+- **Not done here.** The demo's `districts` and `incidents`, the tutorial part and the
+  definition-of-done test are A5.14–A5.15.
+- `TABLES_RENAME.sql` needs nothing: a map's state is JSON in `_fd_workspaces`, and the only
+  new setting value is the existing `map_hosts`.
+
 ## Analytics A5.6–A5.7: map rendering and the map panel
 
 The third phase of milestone A5 (Maps): maps drawn in the browser with MapLibre GL JS over a

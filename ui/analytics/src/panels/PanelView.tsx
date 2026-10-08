@@ -8,7 +8,7 @@
 // saying so, as does a plot that no longer draws; neither is a failure of the
 // screen that holds it.
 
-import { useEffect, useState, type DragEvent, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useState, type DragEvent, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Spinner from "react-bootstrap/Spinner";
 
@@ -25,7 +25,11 @@ import { isRefused, type PlotData, type PlotSpec, type TableData } from "../plot
 import { SummaryTable } from "../plot/SummaryTable";
 import { useDocumentTheme, type Theme } from "../theme";
 import { Markdown } from "./Markdown";
+import type { MapData, MapSpec } from "../map/spec";
 import { setPanelDrag, type Panel } from "./panel";
+
+/** MapLibre, fetched when a map panel is first drawn. */
+const MapView = lazy(() => import("../map/MapView").then((m) => ({ default: m.MapView })));
 
 /** How a panel is drawn where it is put: a report's are still, in vector
  * graphics, on white paper; elsewhere they follow the screen. */
@@ -95,9 +99,25 @@ export function PanelView({ panel, look = {} }: { panel: Panel; look?: PanelLook
       const table = (answer.output as { table?: OutputTable } | undefined)?.table;
       return table ? <OutputTableView table={table} /> : <Missing>{t("This fit has no such table.")}</Missing>;
     }
+    case "map":
+      return answer.map ? (
+        <MapAnswer spec={panel.content.spec} data={answer.map as unknown as MapData} look={look} />
+      ) : null;
     case "custom":
       return <Missing>{t("This panel's kind is not installed.")}</Missing>;
   }
+}
+
+/** A map panel (A5.13): in a report, drawn once and shown as an image. */
+function MapAnswer({ spec, data, look }: { spec: MapSpec; data: MapData; look: PanelLook }) {
+  const documentTheme = useDocumentTheme();
+  return (
+    <div className="an-panel-map">
+      <Suspense fallback={<Spinner animation="border" size="sm" className="m-3 an-panel-loading" />}>
+        <MapView spec={spec} data={data} theme={look.theme ?? documentTheme} still={look.still} />
+      </Suspense>
+    </div>
+  );
 }
 
 function PlotAnswer({

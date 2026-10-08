@@ -745,6 +745,7 @@ const supportedKeys = new Set([
   "table_providers",
   "modelproviders",
   "streamproviders",
+  "maptools",
   "frameworks",
   // Saltcorn UI (TODO "Saltcorn UI" §6): view patterns, and the scripts and
   // stylesheets a document rendering them wants.
@@ -1063,6 +1064,58 @@ async function evalStreamProviders(plugin, configuration) {
     });
   }
   return { providers, set, issues };
+}
+
+/** v1 has no `maptools`; this is **this** system's key (analytics TODO A5.12).
+ *
+ * ```js
+ * maptools: {
+ *   walk: {
+ *     group: "Proximity",
+ *     label: "Walking distance",
+ *     params: [{ name: "layer", label: "Layer", kind: "layer" },
+ *              { name: "minutes", label: "Minutes", kind: "number", default: 10 }],
+ *     base: "layer",
+ *     operations: [{ kind: "calculated",
+ *                    params: { name: "walk", formula: "Geo.buffer({{geometry}}, {{minutes}} * 80)" } }],
+ *     layer: { geometry: { kind: "column", column: "walk" } },
+ *   },
+ * }
+ * ```
+ *
+ * A map tool is **data**, not code: a form, and the dataset operations its
+ * answers fill in (`sc_analytics::tools::TemplateTool`), so the toolbox runs it
+ * on the server without calling back into this worker. What is declared is
+ * passed on as JSON; one that is not plain data is reported and skipped.
+ */
+async function evalMapTools(plugin, configuration) {
+  const exported = plugin.maptools;
+  let raw = {};
+  const issues = [];
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(configuration || {})) || {};
+    } catch (e) {
+      issues.push(`its map tools could not be built: ${e.message}`);
+      raw = {};
+    }
+  } else if (exported && typeof exported === "object") {
+    raw = exported;
+  }
+  const entries = Array.isArray(raw) ? raw.map((t) => [t && t.id, t]) : Object.entries(raw);
+  const tools = [];
+  for (const [id, value] of entries) {
+    if (!value || typeof value !== "object" || typeof id !== "string") {
+      issues.push(`the map tool "${id}" is not a tool`);
+      continue;
+    }
+    try {
+      tools.push(JSON.parse(JSON.stringify({ ...value, id })));
+    } catch (e) {
+      issues.push(`the map tool "${id}" is not plain data: ${e.message}`);
+    }
+  }
+  return { tools, issues };
 }
 
 /** The loaded stream provider, or a sentence naming what is missing. */
@@ -1783,6 +1836,9 @@ async function loadModule({ module: name, dir, configuration }) {
   } = await evalStreamProviders(plugin, configuration);
   issues.push(...streamProviderIssues);
 
+  const { tools: mapTools, issues: mapToolIssues } = await evalMapTools(plugin, configuration);
+  issues.push(...mapToolIssues);
+
   const {
     frameworks,
     set: frameworkSet,
@@ -1829,6 +1885,7 @@ async function loadModule({ module: name, dir, configuration }) {
     table_providers: providers,
     model_providers: modelProviders,
     stream_providers: streamProviders,
+    map_tools: mapTools,
     frameworks,
     view_patterns: viewPatterns,
     headers,

@@ -24,6 +24,9 @@ sc-dataset.workspace = true
 # stat compiler writes for a dataset.
 sc-model.workspace = true
 sc-db-sqlite.workspace = true
+# A map's reference layers are loaded from origins Settings → Maps must name
+# (A5.11): parsed by the settings' own `origin_of`.
+sc-config.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 serde.workspace = true

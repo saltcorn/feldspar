@@ -488,6 +488,8 @@ export const GEO_FUNCTIONS: Array<{ name: string; params: string; returns: strin
   { name: "within", params: "a, b", returns: "bool" },
   { name: "squareCell", params: "geometry, metres", returns: "geometry" },
   { name: "hexCell", params: "geometry, metres", returns: "geometry" },
+  { name: "intersection", params: "a, b", returns: "geometry" },
+  { name: "fromGeoJSON", params: "text", returns: "geometry" },
 ];
 
 /** Everything a formula over `shape` may name: its columns, one step along each

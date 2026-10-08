@@ -1580,6 +1580,12 @@ Content-Security-Policy allows the hosts these settings name and no others. So a
 tiles are on a second host draws an empty base map until that host is added under *Other map
 hosts*. A value that is not an `http` or `https` URL is refused when it is saved.
 
+**Reference layers.** A Map workspace can draw a tile or map service (satellite imagery, a
+cadastral map) under its layers. Its host must be allowed in the same way: the workspace says
+when it is not, and **Allow it** adds the host to *Other map hosts* — what an admin would type
+there — after which the page is reloaded so the browser applies the new policy. Remove the host
+from *Other map hosts* to stop it again.
+
 **Without internet access**, or to keep map views off a third party, leave both styles empty.
 The layers are then drawn on a plain background, and labels are left off, because the fonts
 come from the base map. Or serve a style and its tiles yourself (for example with

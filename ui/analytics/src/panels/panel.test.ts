@@ -9,6 +9,7 @@ import {
   explorerPanel,
   explorerTitle,
   makePanel,
+  mapPanel,
   outputPanel,
   readPanel,
   readPanelDrag,
@@ -124,5 +125,25 @@ describe("drag and drop (A4.3)", () => {
       content: { fit: "f1", output: "coefficients" },
     });
     expect(outputPanel({ ...coefficients, error: "this fit has no metrics" }, "f1", undefined, t)).toBeNull();
+  });
+});
+
+describe("a map as a panel", () => {
+  const spec = {
+    layers: [{ id: "a", dataset: "d1", geometry: { kind: "column" as const, column: "at" }, style: { kind: "categories" as const } }],
+    view: { center: [0, 51] as [number, number], zoom: 10 },
+  };
+
+  it("is its spec, copied, and reads back as a panel", () => {
+    const panel = mapPanel(spec, "Incidents");
+    expect(panel?.kind).toBe("map");
+    expect(panel?.title).toBe("Incidents");
+    const content = (panel as Extract<typeof panel, { kind: "map" }>).content;
+    expect(content.spec).toEqual(spec);
+    expect(content.spec).not.toBe(spec);
+    expect(readPanel(JSON.parse(JSON.stringify(panel)))).toEqual(panel);
+    expect(mapPanel({ layers: [] })).toBeNull();
+    expect(mapPanel(null)).toBeNull();
+    expect(readPanel({ id: "x", kind: "map", content: { spec: { layers: [] } } })).toBeNull();
   });
 });

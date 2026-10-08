@@ -1,4 +1,4 @@
-//! Workspaces (analytics TODO A1.12, A1.21, A3.0, A4.2): the six kinds of the goals
+//! Workspaces (analytics TODO A1.12, A1.21, A3.0, A4.2, A5.8): the six kinds of the goals
 //! document, and the `_fd_workspaces` table that keeps each one's state.
 //!
 //! A workspace is a name, a kind and a **state** — JSON owned by the kind's
@@ -103,12 +103,12 @@ impl WorkspaceKind {
     }
 
     /// The milestone that brings it, when it is not here yet (`None` when it
-    /// is): the Analytics UI plan's A5–A9. The notebook is not scheduled. The
-    /// report arrived with A4.3, as the first place panels are dropped.
+    /// is): the Analytics UI plan's A6–A9. The notebook is not scheduled. The
+    /// report arrived with A4.3, as the first place panels are dropped, and
+    /// the map with A5.8.
     pub fn arrives_in(self) -> Option<&'static str> {
         match self {
-            WorkspaceKind::DataExplorer | WorkspaceKind::Report => None,
-            WorkspaceKind::Map => Some("A5"),
+            WorkspaceKind::DataExplorer | WorkspaceKind::Report | WorkspaceKind::Map => None,
             WorkspaceKind::Dashboard => Some("A6"),
             WorkspaceKind::Simulation => Some("A7"),
             WorkspaceKind::Notebook => Some("a later milestone"),
@@ -416,7 +416,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_six_kinds_parse_and_the_data_explorer_and_the_report_are_here() {
+    fn all_six_kinds_parse_and_the_explorer_the_report_and_the_map_are_here() {
         for kind in WorkspaceKind::ALL {
             assert_eq!(WorkspaceKind::parse(kind.as_str()).expect("parses"), kind);
         }
@@ -426,13 +426,18 @@ mod tests {
             .collect();
         assert_eq!(
             here,
-            vec![WorkspaceKind::DataExplorer, WorkspaceKind::Report]
+            vec![
+                WorkspaceKind::DataExplorer,
+                WorkspaceKind::Report,
+                WorkspaceKind::Map
+            ]
         );
         WorkspaceKind::DataExplorer.check_available().expect("A2");
         WorkspaceKind::Report.check_available().expect("A4");
-        assert_eq!(WorkspaceKind::Map.arrives_in(), Some("A5"));
-        let err = WorkspaceKind::Map.check_available().expect_err("A5");
-        assert!(err.to_string().contains("milestone A5"), "{err}");
+        WorkspaceKind::Map.check_available().expect("A5");
+        assert_eq!(WorkspaceKind::Dashboard.arrives_in(), Some("A6"));
+        let err = WorkspaceKind::Dashboard.check_available().expect_err("A6");
+        assert!(err.to_string().contains("milestone A6"), "{err}");
         // The Dataset editor and the model editor are not kinds of workspace.
         assert!(WorkspaceKind::parse("dataset_editor").is_err());
         assert!(WorkspaceKind::parse("model_fit").is_err());

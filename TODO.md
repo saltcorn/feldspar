@@ -524,18 +524,18 @@ selection, reference layers and the tools that dataset operations can express (g
 
 ## Phase 4 — The Map workspace
 
-- [ ] A5.8 The Map workspace's state and layer list: dataset, geometry source, filter, popup
+- [x] A5.8 The Map workspace's state and layer list: dataset, geometry source, filter, popup
       fields, labels, visibility, opacity, order, legend. Tests.
-- [ ] A5.9 Symbology: single symbol, categories, graduated colours (quantile, equal interval,
+- [x] A5.9 Symbology: single symbol, categories, graduated colours (quantile, equal interval,
       natural breaks computed on the server), proportional symbols, heatmap style. Tests.
-- [ ] A5.10 The attribute table below the map with selection linked both ways; selection by
+- [x] A5.10 The attribute table below the map with selection linked both ways; selection by
       click, lasso, attribute condition and location; **Save selection as dataset**. Tests.
-- [ ] A5.11 Reference layers from tile or map service URLs. Tests.
-- [ ] A5.12 The toolbox, for what dataset operations can do: Proximity (buffer, distance to
+- [x] A5.11 Reference layers from tile or map service URLs. Tests.
+- [x] A5.12 The toolbox, for what dataset operations can do: Proximity (buffer, distance to
       nearest, within a distance), Overlay (spatial join, intersection), Aggregate (count and
       sum per region, dissolve). Each creates a global dataset and adds it as a layer, and
       the dataset opens in the Dataset editor. Plugins can register tools. Tests.
-- [ ] A5.13 **Open in map** from the explorer's map panel; a whole map as a draggable panel,
+- [x] A5.13 **Open in map** from the explorer's map panel; a whole map as a draggable panel,
       rendered as an image for reports. Tests.
 
 ## Phase 5 — Demo data, documentation, definition of done

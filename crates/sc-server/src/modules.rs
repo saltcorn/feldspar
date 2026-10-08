@@ -282,6 +282,13 @@ impl ModuleServices {
                 sc_error::format_chain(&e)
             );
         }
+        // And the **map tools** the modules declare (analytics TODO A5.12): data,
+        // installed whole in place of the last set, so an uninstalled module's
+        // tool leaves the toolbox at once. A declaration that does not read is
+        // reported and the rest installed.
+        for problem in sc_analytics::tools::install_plugin_tools(&set.map_tools()) {
+            eprintln!("feldspar: a map tool is not available: {problem}");
+        }
         // And the **model providers**, which is the third source the model
         // registry composes: the built-ins (and Stan), whatever the JavaScript
         // modules supply, and whatever the Python ones do. Rebuilt from the base

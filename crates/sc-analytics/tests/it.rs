@@ -22,3 +22,6 @@ mod layers;
 
 #[path = "maps.rs"]
 mod maps;
+
+#[path = "map_workspace.rs"]
+mod map_workspace;

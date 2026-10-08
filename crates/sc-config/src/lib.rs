@@ -64,7 +64,7 @@ pub use localisation::{
 };
 pub use maps::{
     DEFAULT_MAP_STYLE, DEFAULT_MAP_STYLE_DARK, MAP_HOSTS, MAP_STYLE, MAP_STYLE_DARK, MapSettings,
-    map_settings, map_settings_from, maps_section, origin_of,
+    allow_map_host, hosts_with, map_settings, map_settings_from, maps_section, origin_of,
 };
 pub use ssl::{
     ACME_CONTACT_EMAIL, ACME_DIRECTORY_URL, HOST_KEYS, LETSENCRYPT_PRODUCTION, LETSENCRYPT_STAGING,

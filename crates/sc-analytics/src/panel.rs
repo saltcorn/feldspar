@@ -18,6 +18,7 @@
 //! | `test_result` | `{ tests, plot? }` — a [`TestSpec`] and the plot beside it |
 //! | `text` | `{ markdown }` |
 //! | `fit_table` | `{ fit, output }` — a table output of a model fit (A3.2) |
+//! | `map` | `{ spec }` — a [`MapSpec`]: a map panel of the explorer, or a whole Map workspace (A5.13) |
 //! | `custom` | `{ renderer, config }` — a plugin's panel kind |
 //!
 //! `fit_table` is a sixth kind beside the plan's five: a coefficient table is
@@ -40,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
+use crate::map::{MapSpec, RenderedMap, render_map};
 use crate::model_outputs::{OutputView, render_one_output};
 use crate::plot::render::plot_rows;
 use crate::plot::{
@@ -93,6 +95,11 @@ pub enum PanelBody {
         /// The text.
         markdown: String,
     },
+    /// A map: its layers over a base map (A5.13).
+    Map {
+        /// The map.
+        spec: MapSpec,
+    },
     /// A table output of a model fit — a coefficient table, cluster sizes, a
     /// posterior summary.
     FitTable {
@@ -120,6 +127,7 @@ impl PanelBody {
             PanelBody::TestResult { .. } => "test_result",
             PanelBody::Text { .. } => "text",
             PanelBody::FitTable { .. } => "fit_table",
+            PanelBody::Map { .. } => "map",
             PanelBody::Custom { .. } => "custom",
         }
     }
@@ -132,9 +140,10 @@ impl PanelBody {
             PanelBody::TestResult { tests, plot } => std::iter::once(&tests.data)
                 .chain(plot.iter().map(|p| &p.data))
                 .collect(),
-            PanelBody::Text { .. } | PanelBody::FitTable { .. } | PanelBody::Custom { .. } => {
-                vec![]
-            }
+            PanelBody::Text { .. }
+            | PanelBody::FitTable { .. }
+            | PanelBody::Map { .. }
+            | PanelBody::Custom { .. } => vec![],
         }
     }
 }
@@ -167,16 +176,21 @@ impl Panel {
         }
     }
 
-    /// The datasets it reads.
+    /// The datasets it reads: a map's, each layer's.
     pub fn datasets(&self) -> BTreeSet<DatasetId> {
-        self.body
+        let mut out: BTreeSet<DatasetId> = self
+            .body
             .data()
             .into_iter()
             .filter_map(|d| match d {
                 DataRef::Dataset { dataset } => Some(*dataset),
                 DataRef::FitOutput { .. } => None,
             })
-            .collect()
+            .collect();
+        if let PanelBody::Map { spec } = &self.body {
+            out.extend(spec.layers.iter().map(|l| l.dataset));
+        }
+        out
     }
 
     /// The fits it reads: a fit's output data under a plot, or a fit's table.
@@ -208,6 +222,10 @@ impl Panel {
             PanelBody::Custom { renderer, .. } if renderer.trim().is_empty() => Err(
                 Error::invalid("a custom panel names the renderer that draws it"),
             ),
+            PanelBody::Map { spec } if spec.layers.is_empty() => {
+                Err(Error::invalid("a map panel has at least one layer"))
+            }
+            PanelBody::Map { spec } => spec.check(false),
             _ => Ok(()),
         }
     }
@@ -256,8 +274,10 @@ pub fn check_state(kind: WorkspaceKind, state: &Json) -> Result<()> {
         Panel::from_json(slot)
             .map_err(|e| Error::invalid(format!("panel {} of the workspace: {e}", i + 1)))?;
     }
-    if kind == WorkspaceKind::Report {
-        check_report(state)?;
+    match kind {
+        WorkspaceKind::Report => check_report(state)?,
+        WorkspaceKind::Map => crate::map::spec_of_state(state)?.check(true)?,
+        _ => {}
     }
     Ok(())
 }
@@ -336,15 +356,21 @@ fn check_report(state: &Json) -> Result<()> {
     Ok(())
 }
 
-/// The dataset a kind's state reads directly, outside any panel: the Data
-/// explorer's chosen dataset.
-fn state_dataset(kind: WorkspaceKind, state: &Json) -> Option<DatasetId> {
+/// The datasets a kind's state reads directly, outside any panel, each with
+/// how many of its parts read it: the Data explorer's chosen dataset (none),
+/// a map's layers.
+fn state_datasets(kind: WorkspaceKind, state: &Json) -> BTreeMap<DatasetId, usize> {
     match kind {
         WorkspaceKind::DataExplorer => state
             .get("dataset")
             .and_then(Json::as_str)
-            .and_then(|s| s.parse().ok()),
-        _ => None,
+            .and_then(|s| s.parse().ok())
+            .map(|d| BTreeMap::from([(d, 0)]))
+            .unwrap_or_default(),
+        WorkspaceKind::Map => crate::map::spec_of_state(state)
+            .map(|spec| spec.datasets())
+            .unwrap_or_default(),
+        _ => BTreeMap::new(),
     }
 }
 
@@ -359,8 +385,8 @@ pub struct WorkspaceUse {
     pub name: String,
     /// Its kind.
     pub kind: WorkspaceKind,
-    /// How many of its panels read the thing: none for an explorer that only
-    /// has it chosen.
+    /// How many of its panels read the thing — a map's layers — none for an
+    /// explorer that only has it chosen.
     pub panels: usize,
 }
 
@@ -387,8 +413,8 @@ impl UsageIndex {
             let panels = panels_in_state(ws.kind, &ws.state);
             let mut datasets: BTreeMap<DatasetId, usize> = BTreeMap::new();
             let mut fits: BTreeMap<Uuid, usize> = BTreeMap::new();
-            if let Some(d) = state_dataset(ws.kind, &ws.state) {
-                datasets.entry(d).or_default();
+            for (d, n) in state_datasets(ws.kind, &ws.state) {
+                *datasets.entry(d).or_default() += n;
             }
             for panel in &panels {
                 for d in panel.datasets() {
@@ -463,6 +489,9 @@ pub struct RenderedPanel {
     /// A fit's table.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputView>,
+    /// A map's layers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map: Option<RenderedMap>,
     /// The columns a plot reads that are categories though their values are
     /// numbers — foreign keys — so the browser draws their ids as the
     /// explorer does, as values rather than a scale.
@@ -548,6 +577,7 @@ pub async fn render_panel(catalog: &Catalog, panel: &Panel) -> Result<RenderedPa
                 }
             }
         }
+        PanelBody::Map { spec } => out.map = Some(render_map(catalog, spec).await?),
         PanelBody::Custom { renderer, .. } => {
             out.error = Some(format!(
                 "This panel is drawn by `{renderer}`, which is not installed."
@@ -600,6 +630,13 @@ mod tests {
             ("text", json!({ "markdown": "# Houses" })),
             ("fit_table", json!({ "fit": fit, "output": "coefficients" })),
             (
+                "map",
+                json!({ "spec": { "layers": [{ "dataset": d,
+                    "geometry": { "kind": "key", "column": "district", "geometry": "outline" },
+                    "style": { "kind": "graduated", "method": "quantile", "classes": 5 },
+                    "encoding": { "color": { "field": "count" } }, "opacity": 0.5 }] } }),
+            ),
+            (
                 "custom",
                 json!({ "renderer": "gauge", "config": { "max": 10 } }),
             ),
@@ -645,6 +682,25 @@ mod tests {
             output: "coefficients".into(),
         });
         assert_eq!(table.fits(), BTreeSet::from([fit]));
+
+        // A map reads each layer's dataset.
+        let (a, b) = (DatasetId::new(), DatasetId::new());
+        let map = Panel::from_json(&json!({
+            "id": Uuid::new_v4(), "kind": "map",
+            "content": { "spec": { "layers": [
+                { "dataset": a, "geometry": { "kind": "column", "column": "at" } },
+                { "dataset": b, "geometry": { "kind": "column", "column": "at" } } ] } }
+        }))
+        .expect("panel");
+        assert_eq!(map.datasets(), BTreeSet::from([a, b]));
+        // A map with nothing on it, or a layer half-transparent past 1, is refused.
+        assert!(Panel::from_json(&json!({ "id": Uuid::new_v4(), "kind": "map",
+            "content": { "spec": { "layers": [] } } })).is_err());
+        let err = Panel::from_json(&json!({ "id": Uuid::new_v4(), "kind": "map",
+            "content": { "spec": { "layers": [
+                { "dataset": a, "geometry": { "kind": "column", "column": "at" }, "opacity": 2 } ] } } }))
+        .expect_err("opacity");
+        assert!(err.to_string().contains("opacity"), "{err}");
     }
 
     #[test]
@@ -663,9 +719,17 @@ mod tests {
         ] });
         let mut explorer = Workspace::new("Explore", WorkspaceKind::DataExplorer, None);
         explorer.state = json!({ "dataset": houses.to_string(), "assignment": {} });
-        // A map's state is not read for panels until A5.
+        // A map reads the datasets of its layers; a report's blocks in a
+        // map's state are not its.
         let mut map = Workspace::new("Map", WorkspaceKind::Map, None);
-        map.state = json!({ "blocks": [{ "kind": "panel", "panel": dataset_plot(houses) }] });
+        map.state = json!({
+            "blocks": [{ "kind": "panel", "panel": dataset_plot(other) }],
+            "layers": [
+                { "id": "a", "dataset": houses, "geometry": { "kind": "column", "column": "at" } },
+                { "id": "b", "dataset": houses, "geometry": { "kind": "column", "column": "at" },
+                  "filter": "price > 3" },
+            ],
+        });
 
         let index = UsageIndex::of_workspaces(&[report.clone(), explorer.clone(), map]);
         let uses = index.dataset(houses);
@@ -673,7 +737,7 @@ mod tests {
             uses.iter()
                 .map(|u| (u.name.as_str(), u.panels))
                 .collect::<Vec<_>>(),
-            vec![("Explore", 0), ("Quarterly", 2)]
+            vec![("Explore", 0), ("Map", 2), ("Quarterly", 2)]
         );
         assert!(index.dataset(other).is_empty());
         let by_fit = index.fits([fit, Uuid::new_v4()]);

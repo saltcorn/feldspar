@@ -118,28 +118,23 @@ async fn a_map_is_drawn_with_its_domains_and_geometry_kinds() -> Result<()> {
     let Some((cat, _db, sites_id, regions_id)) = sites().await? else {
         return Ok(());
     };
-    let spec = MapSpec {
-        layers: vec![
+    let spec = MapSpec::of(vec![
             // The regions, coloured by name.
             MapLayer {
-                dataset: regions_id,
-                geometry: GeometrySource::Column {
-                    column: "outline".into(),
-                },
                 encoding: MapEncoding {
                     color: Some(FieldDef::of("name")),
                     ..MapEncoding::default()
                 },
-                filter: None,
+                ..MapLayer::new(
+                    regions_id,
+                    GeometrySource::Column {
+                        column: "outline".into(),
+                    },
+                )
             },
             // The sites over them, sized by latitude, a shape per region, and
             // a filter leaving two.
             MapLayer {
-                dataset: sites_id,
-                geometry: GeometrySource::LonLat {
-                    longitude: "lon".into(),
-                    latitude: "lat".into(),
-                },
                 encoding: MapEncoding {
                     color: Some(FieldDef::of("lon")),
                     size: Some(FieldDef::of("lat")),
@@ -147,9 +142,15 @@ async fn a_map_is_drawn_with_its_domains_and_geometry_kinds() -> Result<()> {
                     label: Some(FieldDef::of("name")),
                 },
                 filter: Some("name !== \"c\"".into()),
+                ..MapLayer::new(
+                    sites_id,
+                    GeometrySource::LonLat {
+                        longitude: "lon".into(),
+                        latitude: "lat".into(),
+                    },
+                )
             },
-        ],
-    };
+        ]);
     let drawn = render_map(&cat, &spec).await?;
     assert_eq!(drawn.layers.len(), 2);
 

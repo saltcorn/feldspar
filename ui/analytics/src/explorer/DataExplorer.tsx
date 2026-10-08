@@ -16,6 +16,8 @@
 // column, longitude and latitude columns, or a key to a table with geometry —
 // and takes Color, Size, Shape and Label from the drop zones; `renderMap`
 // answers its features and scales, and `MapView` draws them over the base map.
+// **Open in map** (A5.13) makes a Map workspace with that map as its first
+// layer, and the map can be dragged into a report as a panel.
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -45,7 +47,8 @@ import {
 } from "../plot/spec";
 import { SummaryTable } from "../plot/SummaryTable";
 import { sameSource, type MapData, type MapSpec, type SourceChoice } from "../map/spec";
-import { explorerPanel, explorerTitle } from "../panels/panel";
+import { stateFromLayer } from "../map/workspace";
+import { explorerPanel, explorerTitle, mapPanel } from "../panels/panel";
 import { DragHandle } from "../panels/PanelView";
 import { useAnnounce, useChanges, usePane } from "../panes";
 import { useDocumentTheme } from "../theme";
@@ -296,6 +299,27 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
       live = false;
     };
   }, [mapSpecKey, state.view, t, version]);
+
+  // Open in map (A5.13): a Map workspace whose first layer is this map's,
+  // beside the explorer when the view is split, in its place when not.
+  const [opening, setOpening] = useState(false);
+  const openInMap = async () => {
+    const layer = drawnMap?.spec.layers[0];
+    if (!layer || !dataset) return;
+    setOpening(true);
+    try {
+      const ws = await api.createWorkspace({ name: t("{dataset} map", { dataset: dataset.name }), kind: "map" });
+      await api.saveWorkspaceState(ws.id, {
+        state: stateFromLayer(layer, dataset.name) as unknown as Record<string, unknown>,
+      });
+      if (pane.split) pane.beside({ name: "workspace", id: ws.id });
+      else pane.go({ name: "workspace", id: ws.id });
+    } catch (err) {
+      setMapError(errorMessage(err, t("Could not open the map.")));
+    } finally {
+      setOpening(false);
+    }
+  };
 
   // --- the hypothesis tests --------------------------------------------------
   const testSpec = useMemo(() => (state.tests.show ? testSpecOf(state) : null), [state]);
@@ -564,6 +588,17 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
           <div className="ms-auto d-flex gap-2 align-items-center">
             {state.dataset && !message && state.view !== "map" && (state.view === "plot" ? drawn : table?.data) && (
               <DragHandle make={dragPanel} label={t("Drag this output into a report")} />
+            )}
+            {state.view === "map" && drawnMap && !message && (
+              <>
+                <DragHandle
+                  make={() => mapPanel(drawnMap.spec, dataset?.name)}
+                  label={t("Drag this map into a report")}
+                />
+                <Button size="sm" variant="outline-primary" disabled={opening} onClick={() => void openInMap()}>
+                  <T text="Open in map" />
+                </Button>
+              </>
             )}
             {state.view !== "map" && (
               <Button

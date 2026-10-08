@@ -1,5 +1,6 @@
-//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8, A3.3, A4.2, A5.5): datasets,
-//! plots, panels, map layers, a model's outputs and workspaces.
+//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8, A3.3, A4.2, A5.5–A5.12):
+//! datasets, plots, panels, map layers, the Map workspace's attribute table, selection and
+//! toolbox, a model's outputs and workspaces.
 //!
 //! Admin-only in this milestone, like everything else under `/api`: A9 is
 //! where a restricted application's users reach a subset of them under their
@@ -431,10 +432,100 @@ pub(crate) fn register(set: &mut EndpointSet) {
         .auth(AuthRequirement::admin()),
     );
 
-    // --- maps (A5.6, A5.7) ------------------------------------------------------
+    // A layer's rows for the Map workspace's attribute table (A5.10): the
+    // first `limit` (at most 5,000), the geometry left out, each with its
+    // feature's id in `ids` — the row's key while rows are a table's, else its
+    // place in the dataset's order — so a selection is shared by the table and
+    // the map. Sorted by `sort` (`{ formula, descending }`) while rows are a
+    // table's (`sorted`); otherwise in the dataset's order, for the table to
+    // sort. A layer that cannot be read answers `error`.
+    set.register(
+        Endpoint::new("layerRows", Method::Post, api().lit("layers").lit("rows"))
+            .input(TypeSchema::struct_of([
+                StructField::new("layer", TypeSchema::json()),
+                StructField::new("sort", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("limit", TypeSchema::optional(TypeSchema::int())),
+            ]))
+            .output(TypeSchema::struct_of([
+                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+                StructField::new(
+                    "columns",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+                ),
+                StructField::new(
+                    "rows",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+                ),
+                StructField::new(
+                    "ids",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+                ),
+                StructField::new("total", TypeSchema::optional(TypeSchema::int())),
+                StructField::new("keyed", TypeSchema::optional(TypeSchema::bool())),
+                StructField::new("sorted", TypeSchema::optional(TypeSchema::bool())),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    // The features of a layer a selection finds (A5.10), `by` one of
+    // `{ by: "condition", formula }`, `{ by: "shape", geometry }` (a GeoJSON
+    // polygon: a lasso), `{ by: "near_point", longitude, latitude, distance }`
+    // and `{ by: "near_features", layer, ids, distance }` (metres). Answers
+    // their ids, how many match, and the condition they were found by — what
+    // `saveSelection` filters by — or `error`, the sentence.
+    set.register(
+        Endpoint::new(
+            "selectFeatures",
+            Method::Post,
+            api().lit("layers").lit("select"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("layer", TypeSchema::json()),
+            StructField::new("by", TypeSchema::json()),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+            StructField::new(
+                "ids",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+            StructField::new("count", TypeSchema::optional(TypeSchema::int())),
+            StructField::new("truncated", TypeSchema::optional(TypeSchema::bool())),
+            StructField::new("condition", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
+    // **Save selection as dataset** (A5.10): a new dataset `name` whose base
+    // is the layer's dataset, followed by the layer's filter and a Filter —
+    // `condition` when the selection was made by one, else the clicked
+    // features `ids` by their rows' keys or group keys. Answers the dataset as
+    // `getDataset` does.
+    set.register(
+        Endpoint::new(
+            "saveSelection",
+            Method::Post,
+            api().lit("layers").lit("selection"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("layer", TypeSchema::json()),
+            StructField::new("name", TypeSchema::text()),
+            StructField::new(
+                "ids",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+            StructField::new("condition", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(dataset_detail_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    // --- maps (A5.6, A5.7, A5.11, A5.12) ------------------------------------------
 
     // The base maps a map is drawn over (Settings → Maps): the MapLibre style
-    // for a light page and for a dark one, each absent for no base map.
+    // for a light page and for a dark one, each absent for no base map; and
+    // `hosts`, every origin the Analytics UI's policy lets a map load from —
+    // what a reference layer's service must be on (A5.11).
     set.register(
         Endpoint::new(
             "mapSettings",
@@ -444,6 +535,66 @@ pub(crate) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("style", TypeSchema::optional(TypeSchema::text())),
             StructField::new("style_dark", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("hosts", TypeSchema::array(TypeSchema::text())),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
+    // Let a map load from one more origin (A5.11): adds it to Settings →
+    // Maps' further hosts, so the Analytics UI's policy names it from the
+    // next page load on. The origin of `url` is taken, and anything that is
+    // not one refused by name. Answers `mapSettings`' answer.
+    set.register(
+        Endpoint::new("allowMapHost", Method::Post, api().lit("maps").lit("hosts"))
+            .input(TypeSchema::struct_of([StructField::new(
+                "url",
+                TypeSchema::text(),
+            )]))
+            .output(TypeSchema::struct_of([
+                StructField::new("style", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("style_dark", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("hosts", TypeSchema::array(TypeSchema::text())),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    // The Map workspace's toolbox (A5.12): every tool, built in or a
+    // plugin's, with its group and the form it asks (`params`, each
+    // `{ name, label, kind: "layer" | "column" | "number" | "choice" | "text",
+    // … }`).
+    set.register(
+        Endpoint::new("listMapTools", Method::Get, api().lit("maps").lit("tools"))
+            .output(TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("id", TypeSchema::text()),
+                StructField::new("group", TypeSchema::text()),
+                StructField::new("label", TypeSchema::text()),
+                StructField::new("description", TypeSchema::text()),
+                StructField::new("params", TypeSchema::array(TypeSchema::json())),
+                StructField::new("module", TypeSchema::optional(TypeSchema::text())),
+            ])))
+            .auth(AuthRequirement::admin()),
+    );
+
+    // Run a tool (A5.12) on its form's answers (`params`, a layer's answer a
+    // map layer): its dataset is checked, named (`name`, or the tool's own
+    // name made unique), stored, and answered as `getDataset` does, with the
+    // layer that shows it. A tool whose answers make no dataset that reads is
+    // refused with the sentence, and nothing is stored.
+    set.register(
+        Endpoint::new(
+            "runMapTool",
+            Method::Post,
+            api().lit("maps").lit("tools").lit("run"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("tool", TypeSchema::text()),
+            StructField::new("params", TypeSchema::json()),
+            StructField::new("name", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("dataset", TypeSchema::json()),
+            StructField::new("report", dataset_report_schema()),
+            StructField::new("layer", TypeSchema::json()),
         ]))
         .auth(AuthRequirement::admin()),
     );
@@ -473,8 +624,9 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // A map spec drawn (A5.6): for each layer, its features as `layerData`
     // answers them (GeoJSON, or the URL template of its tiles, or `delivery:
     // "none"` and the sentence) in `data`, the request they were read by in
-    // `layer`, and what each encoded column spans in `domains` (by channel:
-    // `color`, `size`, `shape`), over every feature.
+    // `layer`, what each encoded column spans in `domains` (by channel:
+    // `color`, `size`, `shape`), over every feature, and graduated colours'
+    // breaks in `classes` (A5.9).
     set.register(
         Endpoint::new("renderMap", Method::Post, api().lit("maps").lit("render"))
             .input(TypeSchema::struct_of([StructField::new(
@@ -513,6 +665,8 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("table", TypeSchema::optional(TypeSchema::json())),
             StructField::new("tests", TypeSchema::optional(TypeSchema::json())),
             StructField::new("output", TypeSchema::optional(TypeSchema::json())),
+            // A map panel's layers, as `renderMap` answers them (A5.13).
+            StructField::new("map", TypeSchema::optional(TypeSchema::json())),
             // A plot's foreign key columns: categories, though numbers.
             StructField::new(
                 "categorical",

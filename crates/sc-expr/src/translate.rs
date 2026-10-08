@@ -2321,6 +2321,22 @@ mod tests {
                 .0
                 .starts_with("ST_Contains(")
         );
+        assert_eq!(
+            geo_sql("Geo.intersection(location, outline)", false).0,
+            "ST_Intersection(\"places\".\"location\", \"places\".\"outline\")"
+        );
+        // A shape drawn on a map arrives as GeoJSON text, bound as a value.
+        let polygon = r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}"#;
+        let (sql, binds) = geo_sql(
+            &format!("Geo.intersects(location, Geo.fromGeoJSON('{polygon}'))"),
+            true,
+        );
+        assert_eq!(
+            sql,
+            "ST_Intersects(\"places\".\"location\", \
+             ST_SetSRID(ST_GeomFromGeoJSON(CAST($1 AS text)), $2))"
+        );
+        assert_eq!(binds, vec![Value::Text(polygon.to_owned()), Value::Int(4326)]);
     }
 
     #[test]
