@@ -52,6 +52,8 @@ async fn run(args: &[String]) -> Result<()> {
         Some("set-cfg") => set_cfg_command(&args[1..]).await,
         Some("auth") => auth_command(&args[1..]).await,
         Some("mcp-token") => mcp_token_command(&args[1..]).await,
+        Some("add-user") => add_user_command(&args[1..]).await,
+        Some("modify-user") => modify_user_command(&args[1..]).await,
         Some("app") => app_command(&args[1..]).await,
         Some("agent") => agent_command(&args[1..]).await,
         Some("i18n") => i18n_command(&args[1..]).await,
@@ -1292,6 +1294,88 @@ async fn app_list_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `feldspar add-user EMAIL --role ROLE [--password [VALUE]]` — create an
+/// account from a terminal. With no password value, it is asked for.
+async fn add_user_command(args: &[String]) -> Result<()> {
+    let (db, rest) = DbConfig::extract(args)?;
+    let parsed = sc_cli::users::parse_add_user(&rest)?;
+
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    let catalog = connect_catalog(&db).await?;
+    // Before the prompt: a role or email that will be refused should not cost a
+    // password typed twice first.
+    let role = sc_cli::auth::resolve_role(&catalog, &parsed.role).await?;
+    if sc_auth::load_user_by_email(&catalog, parsed.email.trim())
+        .await?
+        .is_some()
+    {
+        return Err(sc_error::Error::invalid(format!(
+            "there is already a user with the email `{}`; use modify-user to change it",
+            parsed.email.trim()
+        )));
+    }
+    let password = sc_cli::users::password_from(parsed.password.as_ref())?;
+    let user = sc_auth::create_user(&catalog, &parsed.email, &password, role.role).await?;
+    eprintln!(
+        "feldspar: created {} with role {} ({}), id {}",
+        parsed.email.trim(),
+        role.name,
+        role.role,
+        user.id
+    );
+    Ok(())
+}
+
+/// `feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]]` — change an
+/// account's role or password from a terminal: the way back in for an admin who
+/// has forgotten their password on a server that cannot email a reset link.
+async fn modify_user_command(args: &[String]) -> Result<()> {
+    let (db, rest) = DbConfig::extract(args)?;
+    let parsed = sc_cli::users::parse_modify_user(&rest)?;
+
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    let catalog = connect_catalog(&db).await?;
+    let user = sc_auth::load_user_by_email(&catalog, parsed.email.trim())
+        .await?
+        .ok_or_else(|| {
+            sc_error::Error::not_found(format!("no user with the email `{}`", parsed.email.trim()))
+        })?;
+    let role = match &parsed.role {
+        Some(spec) => Some(sc_cli::auth::resolve_role(&catalog, spec).await?),
+        None => None,
+    };
+    let password = match &parsed.password {
+        Some(arg) => Some(sc_cli::users::password_from(Some(arg))?),
+        None => None,
+    };
+    sc_auth::update_user(
+        &catalog,
+        user.id,
+        sc_auth::UserUpdate {
+            role: role.as_ref().map(|r| r.role),
+            password: password.clone(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    if let Some(role) = &role {
+        eprintln!(
+            "feldspar: {} now has role {} ({})",
+            parsed.email.trim(),
+            role.name,
+            role.role
+        );
+    }
+    if password.is_some() {
+        eprintln!("feldspar: password changed for {}", parsed.email.trim());
+    }
+    Ok(())
+}
+
 /// `feldspar auth SUBCOMMAND …` — sessions for driving an application without a
 /// browser to sign in with.
 async fn auth_command(args: &[String]) -> Result<()> {
@@ -1777,6 +1861,8 @@ fn print_usage() {
     eprintln!("                      [--url ORIGIN] [--name NAME] [database flags]");
     eprintln!("  feldspar mcp-token list [--json] [database flags]");
     eprintln!("  feldspar mcp-token revoke ID [database flags]");
+    eprintln!("  feldspar add-user EMAIL --role ROLE [--password [VALUE]] [database flags]");
+    eprintln!("  feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]] [database flags]");
     eprintln!("  feldspar app list [--json] [database flags]");
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
@@ -1847,6 +1933,14 @@ fn print_usage() {
        applications on; drop and access changes off). The secret is printed
        once, alone on stdout; the id to revoke it by and the `claude mcp add`
        line go to stderr. Turn the server on with `set-cfg mcp_enabled true`.
+
+  add-user / modify-user: create an account, or change one's role or password,
+       straight in the database — the way back in for an admin who has forgotten
+       their password on a server with no SMTP to send a reset link. ROLE is a
+       role name (admin) or number (1). A password is never needed on the command
+       line: leave --password out of add-user, or give it no value, and it is
+       asked for without echo (or read as one line from stdin when that is not a
+       terminal). A password starting with -- is written --password=VALUE.
 
   app list: every application with its framework and the project directory
        its source is in on this machine; --json prints an array of

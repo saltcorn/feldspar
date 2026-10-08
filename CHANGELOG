@@ -185,6 +185,32 @@ The first phase of milestone A4 (Reports, and drag and drop).
   blocks. Walked in headless Chromium against the demo data: explorer → report and model outputs
   → report across a split, the divider, and both delete warnings; no console errors.
 
+## CLI: `feldspar add-user` and `feldspar modify-user`
+
+An admin who had forgotten their password on an instance with no SMTP configured had no way
+back in: the reset link had nowhere to go. Two new commands write the users table directly
+from a terminal, with the database credentials as the authority (the same as `auth token`).
+
+- `feldspar add-user EMAIL --role ROLE [--password [VALUE]]` creates an account through
+  `sc_auth::create_user`. ROLE is a role name (any case) or number (new
+  `sc_cli::auth::resolve_role`), and an unknown one lists the roles that exist. A duplicate
+  email and an unknown role are refused **before** the password prompt.
+- `feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]]` changes the role, the
+  password or both, through `sc_auth::update_user`. With neither flag it is refused rather
+  than reporting success.
+- `--password` takes an optional value. If there is no value (or add-user has no flag at
+  all), the password is asked for at the terminal twice, with echo off (libc termios, restored
+  on drop), and the two must match. When stdin is not a terminal, one line is read from it,
+  so a script can pipe it in. A value starting with `--` is written `--password=VALUE`. A
+  blank password is refused.
+- The code is in `crates/sc-cli/src/users.rs`, with the handlers in `main.rs`. The usage text
+  and `docs/OPERATIONS.md` §8.2 describe the commands.
+- Tests: argument parsing unit tests in `users.rs`, and `tests/users.rs`, which drives the real
+  binary against Postgres. It covers create with a flag and with a piped password, role by
+  name and by number, a duplicate email, an unknown role, a reset by prompt and by value
+  checked with `sc_auth::authenticate`, a blank password, and an unknown user. The
+  no-echo terminal path was checked by hand under a pty.
+
 ## MCP: translating an application from a coding agent
 
 A user driving Claude Code over MCP should be able to say "translate this app to German" or

@@ -1203,6 +1203,25 @@ setting takes effect is the setting's own business: the logging switches are
 immediate, the SMTP transport is read per message, and the TLS settings are read
 at boot.
 
+#### Users from a terminal
+
+A forgotten admin password on a server with no SMTP has no reset email to send.
+These two commands write the users table directly, through the same create and
+update code the admin UI uses, so the password is hashed and the role checked
+the same way:
+
+```bash
+feldspar modify-user admin@example.com --password          # asks, twice, without echo
+feldspar modify-user admin@example.com --role admin        # a role name or number
+feldspar add-user ops@example.com --role admin             # asks for the password
+feldspar add-user ops@example.com --role 1 --password VALUE
+echo "$PW" | feldspar modify-user admin@example.com --password   # not a terminal: one line of stdin
+```
+
+Leave the password off the command line when you can, because it ends up in the
+shell history and in `ps`. A password that starts with `--` is written
+`--password=VALUE`. Sessions the user already holds are not ended.
+
 ### 8.3 The bound on a model dataset
 
 A model's dataset is a `SELECT` an administrator wrote, and a fit holds the whole

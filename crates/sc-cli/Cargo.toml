@@ -96,6 +96,9 @@ async-trait.workspace = true
 # downloading and building one (TODO "Bayesian models with Stan" §20).
 sc-stan.workspace = true
 
+# `add-user` / `modify-user` turn terminal echo off while a password is typed.
+libc.workspace = true
+
 [dev-dependencies]
 # The scripted provider (`sc-agent`'s `testing` feature, decision 7): the eval
 # harness's self-test drives two whole runs, and §13 says no test may spend a

@@ -358,6 +358,27 @@ pub async fn resolve_user(catalog: &Catalog, selector: &UserSelector) -> Result<
     }
 }
 
+/// The role `spec` names — by number (`1`) or by name (`admin`, any case) — or an
+/// error listing the roles there are.
+pub async fn resolve_role(catalog: &Catalog, spec: &str) -> Result<Role> {
+    match spec.trim().parse::<u8>() {
+        Ok(number) => {
+            let roles = list_roles(catalog).await?;
+            roles
+                .iter()
+                .find(|r| r.role == number)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::not_found(format!(
+                        "no role {number}. The roles on this server are: {}",
+                        role_list(&roles)
+                    ))
+                })
+        }
+        Err(_) => role_by_name(catalog, spec).await,
+    }
+}
+
 /// The role with this name, or an error listing the roles there are.
 async fn role_by_name(catalog: &Catalog, name: &str) -> Result<Role> {
     let roles = list_roles(catalog).await?;
