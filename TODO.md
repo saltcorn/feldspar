@@ -460,9 +460,9 @@ Report workspace with PDF output.
 
 ## Phase 3 — Documentation, definition of done
 
-- [ ] A4.6 `TECHNICAL_DESIGN.md` (panels, drag and drop, reports); `tutorial-analytics.md`
+- [x] A4.6 `TECHNICAL_DESIGN.md` (panels, drag and drop, reports); `tutorial-analytics.md`
       part 4.
-- [ ] A4.7 Definition of done: an `sc-server` test that builds a report through the API with a
+- [x] A4.7 Definition of done: an `sc-server` test that builds a report through the API with a
       copied explorer panel and a model output panel, and checks that the usage index finds
       it. Walk the Try it by hand, including the PDF.
 

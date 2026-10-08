@@ -8202,7 +8202,7 @@ reads. Split view (A4) holds either editor or a workspace on each side.
 Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
 refuses one whose milestone has not arrived, naming it ("arrives with milestone A2"), and
 `listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — since
-A2, all but the Data explorer. `state` is JSON owned by the kind — an explorer's is its dataset and
+A4, all but the Data explorer and the Report. `state` is JSON owned by the kind — an explorer's is its dataset and
 drop zones — saved as it changes (`saveWorkspaceState`) and restored when the workspace is
 opened.
 
@@ -8218,7 +8218,8 @@ at the fit's output data, each drawn by `render_plot` unless it is optional and 
 `dataset_changed` — beside the model endpoints of §14.2 (`cloneModel`, `patchModelViewState`,
 `cancelModelFit`, `listModelInstances`) and the fit's progress socket; and workspaces
 (`listWorkspaceKinds`, `listWorkspaces`, `getWorkspace`, `createWorkspace`, `updateWorkspace`,
-`saveWorkspaceState`, `deleteWorkspace`).
+`saveWorkspaceState`, `deleteWorkspace`); and panels (A4.2): `renderPanel`. `saveWorkspaceState`
+checks a report's document (`check_state`) before it stores it.
 
 **The bundle** (`ui/analytics`): React, TypeScript and react-bootstrap over the generated client,
 like the admin SPA, but a bundle of its own — so that A9 can mount it in an application without
@@ -8433,18 +8434,125 @@ Beside the plot, the tests column scrolls on its own (`.an-tests`'s `max-height`
 has a section per group, and stretching the plot to its height made the plot thousands of
 pixels tall, its percentage margins blank bands.
 
-**Split view, panels and drag and drop** (A4.1–A4.3; `ui/analytics/src/panes.tsx`,
-`changes.ts`, `src/panels`, `sc_analytics::panel`). Split, the address is the main route with
-`side=<hash>` added; each side moves itself through `usePane()`, and a dataset or model saved on
-one side is announced so the other reads it again. A **panel** is `{ id, title?, kind, content }`
-— `plot` (a spec), `summary_table`, `test_result` (tests and their plot), `text`, `fit_table` (a
-fit and an output's name) or `custom` — stored as what makes it and drawn live by `renderPanel`;
-a panel whose dataset or fit is gone answers a sentence. A drag carries the panel's JSON as it
-was when the drag began and a drop is always a copy with a new id. Sources are the explorer's
-output and the model editor's output cards; the sink is the Report workspace, whose state is
-`{ blocks: [{ id, kind: "panel", panel }] }`. The **usage index** (`UsageIndex`) is built from
-the stored states when asked — `panels_in_state` knows where each kind keeps its panels — and
-answers `datasetUsage`'s and `modelUsage`'s `workspaces`. A4.6 describes the finished report.
+**Split view** (A4.1; `ui/analytics/src/panes.tsx`, `router.ts`, `changes.ts`). The header's
+**Split** opens a second screen beside the first. Each side is a workspace, the Dataset editor,
+the model editor or the front page, with its own bar (front page, close) and its own state, and a
+divider between them moved by pointer or arrow keys (its position is a per-viewer `localStorage`
+convenience, not part of anything stored). The address records both: the main route with
+`side=<the other side's whole hash>` added, so a reload or a bookmark reopens both and each side
+keeps its own `?fit=` or `?back=`. A screen never navigates the window. It moves its own side
+through `usePane()` (`href`, `go`, `replace`, `beside`, `close`), so the same screen works on
+either side, and the main side is mounted in the same place split or not, so splitting does not
+rebuild it. **Changes reach the other side**: saving, cloning or deleting a dataset, and saving
+or fitting a model, is announced in the page with the side it came from (`announce`, `useChanges`).
+The other side reads again whatever it shows of it: the Dataset editor, an explorer's columns and
+drawings, the model editor's dataset picker and its fits' "dataset changed", the front page's
+lists and a report's panels. Nothing is announced across browser tabs.
+
+**Panels** (A4.2; `sc_analytics::panel`, `ui/analytics/src/panels`). A panel is an elementary
+output, stored as what makes it rather than as what it drew:
+
+```rust
+pub struct Panel { id: Uuid, title: Option<String>, body: PanelBody }   // { id, title?, kind, content }
+pub enum PanelBody {
+    Plot { spec: PlotSpec },                              // "plot"
+    SummaryTable { spec: TableSpec },                     // "summary_table"
+    TestResult { tests: TestSpec, plot: Option<PlotSpec> }, // "test_result": the explorer's tests and the plot beside them
+    Text { markdown: String },                            // "text"
+    FitTable { fit: Uuid, output: String },               // "fit_table": a table a fit recorded
+    Custom { renderer: String, config: Json },            // "custom": a plugin's own kind
+}
+```
+
+`fit_table` is a sixth kind beside the plan's five. A coefficient table is not a summary of a
+dataset but a table a fit recorded, so it names the fit and the output rather than holding a
+spec. A plot of a fit's outputs is an ordinary `plot` whose spec's data is the fit's output data
+(§14.2). Because a panel holds a spec, it is a **live view**: `renderPanel` (`POST
+/api/panels/render`) draws it from the dataset as it is now, answering each kind's data (a plot's
+layers, a table's body, tests with their plot, a fit's output by `render_one_output`) and the
+foreign-key columns a plot should draw as categories. A panel whose dataset or fit has been
+deleted answers a sentence in `error` ("The dataset this panel shows has been deleted.") instead
+of failing the report around it. `custom` answers a sentence naming its renderer until plugins
+register renderers. `Panel::datasets()` and `Panel::fits()` say what a panel reads, through every
+data reference in its specs.
+
+**The usage index** (`UsageIndex`) answers "what uses this dataset" and "what uses this fit" for
+the delete warnings. It is built from the stored workspace states when asked, so it is never out
+of date. There are a handful of workspaces, not millions, and an index kept on every save would be
+a second copy to keep right. `panels_in_state(kind, state)` is the one place that knows where a
+kind keeps its panels (a report's `blocks[].panel`; A6's dashboards will add theirs), and an
+explorer's chosen dataset counts as a use with no panels. `datasetUsage` and `modelUsage` answer
+`workspaces: [{ id, name, kind, panels }]` beside the datasets, models, fields and triggers they
+already listed, and the front page's delete dialogs list them with links. Deleting is not refused:
+the panels that read the deleted thing then show their sentence.
+
+**Drag and drop** (A4.3). The drag payload is the panel's JSON, as it is when the drag begins,
+under `application/x-feldspar-panel`, with its title as `text/plain` for anything outside the
+Analytics UI. A drop is **always a copy**: `readPanelDrag` reads the JSON and gives the panel a
+new id, so nothing the source does afterwards reaches it and nothing is taken from the source.
+The sources are the explorer's **Drag** handle (the plot as drawn, with the layers panel's
+changes; the plot with its tests, as one `test_result`; or the summary table) and each output
+card's header in the model editor (a plot by its spec over the fit's output data, a table as
+`fit_table`), and a report's own blocks. The sink is the Report workspace. Dragging across a split
+view is the usual way, but the payload is plain data, so a drop works from another tab or window
+too.
+
+**The Report workspace** (A4.4–A4.5; `ui/analytics/src/report`). Its state is a document of
+blocks on a page:
+
+```json
+{ "page": { "size": "A4", "orientation": "landscape" },
+  "blocks": [
+    { "id": "…", "kind": "heading", "text": "House prices", "level": 1 },
+    { "id": "…", "kind": "text", "markdown": "Prices rise with **area**." },
+    { "id": "…", "kind": "panel", "panel": { "id": "…", "kind": "test_result", "content": { … } } },
+    { "id": "…", "kind": "page_break" } ] }
+```
+
+Headings, text and page breaks are added from the toolbar's **Add** menu or above a block from its
+own menu; panels arrive by dropping, before the block dropped on or at the end. A block is moved by
+dragging its grip or by Move up and Move down, and removed with ×. Blocks are drag sources too:
+the drag carries the block and the report it came from (`application/x-feldspar-report-block`),
+and a panel or a text block also travels as a panel. `dropInto` decides what a drop is: a block
+dropped in its own report moves, one dropped in another report is copied with new ids, and a panel
+from anywhere is added. `sc_analytics::panel::check_state` reads the same shape when the state is
+saved and refuses, naming the block, a block with no id or of an unknown kind, a heading without
+text or with a level other than 1–3, text without Markdown or over 100 kB, a panel that does not
+read, and a page whose size is not A4, A3, Letter or Legal or whose orientation is neither portrait
+nor landscape.
+
+*Markdown* (`panels/markdown.ts`, `Markdown.tsx`) is a small parser of its own, for headings,
+paragraphs, lists, quotes, code, rules, strong, emphasis, inline code and links. Its tree is drawn
+as React elements and never as HTML, so a report cannot carry script. Links go only to `http(s):`,
+`mailto:` or relative addresses, and `_` emphasises only at a word's edge, so `price_per_m2` reads
+as written. Text panels use it too. It adds no dependency.
+
+*Panels in a report are still* (`PanelView`'s `look`): `stillOption` turns off tooltips, hover
+highlighting, legend toggles, the colour scale's handles and animation. The plots are drawn by
+ECharts' **SVG renderer** in the light scheme, because a report is a document and its plots print
+as vectors. The page is white paper in the dark theme too.
+
+*The page and its pagination* (`report/pages.ts`). A4, A3, US Letter or US Legal, portrait or
+landscape, with 15 mm margins. The paper is drawn on the screen at its printed width in millimetres
+(96 CSS pixels to the inch on the screen and in print), so line breaks and plot sizes are the same on
+screen and on paper. An SVG plot is drawn at a fixed size, so a different printed width would cut it
+off or stretch it. `paginate` lays the blocks' measured heights out by the print stylesheet's own
+rules: a block that does not fit starts the next page; one taller than a page stays where it is
+and runs over, because moving it would not keep it whole; a heading goes with a following block
+that moves; a page break ends its page, and one at the very end makes no blank page. The screen
+shows dashed **Page n** markers where the pages will start, and the toolbar the page count.
+
+*Export PDF* (`report/print.ts`) is the browser's print dialog, whose "Save as PDF" makes the PDF:
+there is no PDF on the server (scheduled or emailed reports are out of scope). `printReport` waits
+until every panel has drawn (or 15 s), marks `<html>` with `an-printing` and the paper with
+`an-print-root` and `an-page-<size>-<orientation>`, sets the document title to the report's name so
+the browser offers it as the file name, opens the dialog and takes the marks off afterwards. The
+print stylesheet (`analytics.css`, "Printing a report") does the rest: it hides everything but the
+paper, using `:has()` to keep the paper's ancestors and stop them scrolling or clipping; removes the
+controls, markers and placeholders; keeps blocks whole (`break-inside: avoid`) and headings with
+what follows; and breaks at page breaks. The page size is one **named `@page`** per size and
+orientation (`@page a4-landscape { size: A4 landscape; margin: 15mm }`), chosen by the paper's
+class, rather than a `<style>` written at print time.
 
 **Demo data** (`sc_analytics::demo`, `feldspar demo analytics [--replace]`), deterministic and
 synthetic: `neighbourhoods`, `houses` and `viewings` (A1), shaped as the models tutorial has
@@ -8463,7 +8571,14 @@ one of those names that is there already is kept, and `--replace` never drops a 
 the API over the demo's rows. A2's checks the bins and box statistics against the rows read
 through the dataset, and every test statistic and p-value against R's answers for the same rows
 (`tests/r/demo_reference.R` reads the demo's tables exported as CSV and writes
-`demo_reference.json`).
+`demo_reference.json`). A3's fits a regression and the stub posterior provider and draws every
+declared output. A4's builds a report the way the UI does — an explorer's panel and a model's
+output panels copied in as a drop copies them, headings, text and a page break, reordered, on an
+A4 landscape page — and checks that the report's plot follows a new row of `houses` while the
+fit's residual plot does not, that a copy into a second report is its own, and that the usage
+index lists both reports for the delete warnings. The print dialog cannot be driven from a test;
+it was walked in headless Chromium, whose `page.pdf({ preferCSSPageSize: true })` gives the
+pages the screen counted.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

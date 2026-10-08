@@ -9,6 +9,8 @@ models, draw maps and write reports. Its design is in
 - **Part 2 — The data explorer:** plots, summary tables and hypothesis tests.
 - **Part 3 — Models:** the model editor, a fit's outputs, comparing models, and a model from a
   box plot.
+- **Part 4 — Reports:** split view, dragging plots and model outputs into a report, and printing
+  it to PDF.
 
 You need a server and an admin login. Nothing else: the data comes from a command.
 
@@ -52,7 +54,7 @@ which the demo made for part 2. **Models** are part 3's. **Workspaces** are plac
 each of one kind and remembering where you were: a Data explorer, a Report, a Map and so on.
 There are none yet.
 Look at the kinds under **New workspace**: all are listed, and all but the Data explorer
-(part 2) are disabled, each labelled with the milestone that brings it.
+(part 2) and the Report (part 4) are disabled, each labelled with the milestone that brings it.
 
 ### Step 3 — A dataset on a table
 
@@ -445,3 +447,110 @@ prices")`. Its fits go with it.
 - **A clone shares its dataset**; *Use a copy* gives it one of its own to change.
 - **Compare** puts models side by side; **Open as model** turns a box plot into one.
 
+---
+
+## Part 4 — Reports
+
+A **Report** workspace is a document: headings, text and **panels** — plots, summary tables,
+tests and model outputs — on a page that prints. You do not build its plots in it. You make them
+where they are made, in the Data explorer and the model editor, and drag them in. A panel in a
+report keeps what made the plot, not a picture of it, so it is redrawn from the data each time
+the report is opened.
+
+### Step 1 — Two screens side by side
+
+Open `Exploring houses`, the Data explorer workspace from part 2, and pick `Houses`. Press
+**Split** in the header: a second screen opens on the right, showing the front page. There, under
+**New workspace**, call it `House prices report`, choose *Report* and press **Create**. The report
+opens on the right, the explorer stays on the left, and the divider between them can be dragged
+(or moved with the arrow keys once it has the focus).
+
+The address now records both sides, so a reload or a bookmark brings both back. Each side has its
+own bar, with a way back to the front page and **×** to close it. Press **Split** again to close
+the right side.
+
+### Step 2 — Drag a plot in
+
+In the explorer, put `area` on X, `price` on Y and `neighbourhood` on Color: the scatter plot of
+part 2, with the tests beside it. The explorer's toolbar has a **⠿ Drag** handle. Drag it onto the
+report. The plot and its tests arrive as one panel, titled *price by area — Houses*.
+
+Now change the explorer: drop `bedrooms` on Y. The explorer's plot changes and the report's does
+not. A drop is always a **copy**, taken as the plot was when you started dragging, and nothing the
+explorer does afterwards reaches it. (Had **Summary table** been showing, the table would have
+been dragged instead.)
+
+The report draws its plots **still**: no tooltips, no highlighting on hover and no legend to
+click, because a report is for reading and printing. They are drawn as vector graphics on white
+paper, even in the dark theme.
+
+### Step 3 — Headings, text, and model outputs
+
+The report's toolbar has an **Add** menu: add a **Heading**, type `House prices`, press Enter.
+Add **Text** and write in Markdown:
+
+```markdown
+Prices rise with **area** in every neighbourhood. The model below puts a number on it:
+- about 2,100 a square metre,
+- and little difference between the neighbourhoods.
+```
+
+Ctrl+Enter (or a click outside) finishes. Click either block to edit it again. New blocks go at
+the end; each block's own menu (**⋯**, shown when you point at it) inserts one above it, moves it
+up or down, or sets a heading's level. Add a **Page break** too.
+
+On the left side, go to the front page and open the `House prices` model from part 3. Each output
+card has a **⠿ Drag** handle in its header. Drag the **Coefficients** table and the **Residuals
+against fitted values** plot into the report. The table is the fit's own table. The plot is drawn
+from the fit's scored rows, by the same code as the explorer's.
+
+Arrange the blocks: drag each by its grip (**⠿** at its left) to where it belongs. Put the heading
+first, then the text and the scatter plot, then the page break, and the model's outputs after it.
+**×** removes a block.
+
+### Step 4 — The report follows the data
+
+In the admin UI, add a row to `houses`: a sold house, with a price. Come back to the report and
+reload it. The scatter plot has the new house, because a panel is a **live view** of its dataset.
+The residual plot does not. It shows the rows the model was fitted on, and changes when the model
+is fitted again.
+
+A report never breaks because what it shows has gone. Delete a dataset or a fit that a panel
+reads, and the panel says so in a sentence where its plot was.
+
+### Step 5 — Print it
+
+Set **Page size** to *A4* and **Orientation** to *Landscape*. The paper on the screen widens to
+the width it will print at, so lines break and plots are sized as they will be on paper. Dashed
+**Page 2** markers show where the pages will break, and the toolbar shows how many pages there are.
+A block is never split across pages. A heading moves with the block after it. A page break starts
+a new page.
+
+Press **Export PDF**. The report waits until every panel has drawn, then opens the browser's print
+dialog showing the report and nothing else: no toolbar, no markers, no other side of the split.
+Choose **Save as PDF**. The file is named after the report, and its plots are vectors, sharp at any
+zoom. The PDF is made by your browser, not by the server.
+
+### Step 6 — From one report into another
+
+Make a second report, `Summary for the board`, on the right side (front page → New workspace), and
+open `House prices report` on the left. Drag the scatter plot's grip from the first report into the
+second. Dragged within a report, a block moves. Dragged into another report, it is copied, and the
+two copies are independent from then on.
+
+### Step 7 — What uses a dataset
+
+On the front page, press **Delete** on the `Houses` dataset, and read the warning without
+confirming. Under *These workspaces show it* it lists the explorer and both reports, each with the
+number of its panels that read `Houses`. The model's delete warning likewise lists `House prices
+report`, whose two panels show its fit. Press **Cancel**.
+
+### What to remember
+
+- **Make plots where they are made, and drag them in.** The explorer and the model editor are the
+  sources, a report is where they go, and a drop is always a copy.
+- **A panel is a live view.** It keeps what made the plot, so it shows the data as it is now. A fit's
+  outputs show the fit.
+- **What you see is what prints.** The page is drawn at its paper width, the page markers are where
+  the pages will break, and Export PDF is the browser's print dialog.
+- **Split view** puts any two screens side by side, and a change on one side reaches the other.

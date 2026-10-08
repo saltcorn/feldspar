@@ -183,9 +183,11 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
                   <li key={w.id}>
                     <a href={pane.href({ name: "workspace", id: w.id })}>{w.name}</a>{" "}
                     <span className="text-secondary small">
-                      {w.panels > 0
-                        ? t("{kind}, {count} panels", { kind: workspaceKindName(w.kind, t), count: w.panels })
-                        : workspaceKindName(w.kind, t)}
+                      {w.panels === 0
+                        ? workspaceKindName(w.kind, t)
+                        : w.panels === 1
+                          ? t("{kind}, 1 panel", { kind: workspaceKindName(w.kind, t) })
+                          : t("{kind}, {count} panels", { kind: workspaceKindName(w.kind, t), count: w.panels })}
                     </span>
                   </li>
                 ))}

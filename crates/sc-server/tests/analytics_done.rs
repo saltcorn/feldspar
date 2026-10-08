@@ -31,6 +31,16 @@
 //! drawn, **Open as model** as the explorer does it, and what uses a model
 //! listed for the delete warning. The real CmdStan half is
 //! `stan_models.rs`'s `radon_in_the_model_editor`, behind `#[ignore]`.
+//!
+//! **A4** (analytics TODO A4.7): the Report's Try it — an explorer and a
+//! report; the explorer's plot with its tests copied into the report as a
+//! drop copies it, and left alone when the explorer changes; a heading,
+//! Markdown, a page break and a model's coefficient table and residual plot
+//! as the model editor's cards make them, reordered; a row added to `houses`
+//! appearing in the report's plot but not in the fit's; the page set to A4
+//! landscape; a panel copied from one report into a second; and the usage
+//! index finding the reports for the delete warnings. The print dialog and
+//! the PDF are walked by hand; the pagination is `report/pages.test.ts`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -1393,4 +1403,345 @@ async fn view_state(client: &mut Client, model: &str) -> Value {
         .ok("GET", &format!("/api/models/{model}"), None)
         .await["view_state"]
         .clone()
+}
+
+// --- A4: reports, and drag and drop -----------------------------------------
+
+impl Client {
+    /// A new workspace of `kind`, answering its id.
+    async fn workspace(&mut self, name: &str, kind: &str) -> String {
+        let made = self
+            .ok(
+                "POST",
+                "/api/workspaces",
+                Some(json!({ "name": name, "kind": kind })),
+            )
+            .await;
+        made["id"].as_str().unwrap().to_owned()
+    }
+
+    /// Save a workspace's state.
+    async fn save_state(&mut self, id: &str, state: &Value) {
+        self.ok(
+            "PUT",
+            &format!("/api/workspaces/{id}/state"),
+            Some(json!({ "state": state })),
+        )
+        .await;
+    }
+
+    /// A workspace's stored state.
+    async fn state_of(&mut self, id: &str) -> Value {
+        self.ok("GET", &format!("/api/workspaces/{id}"), None)
+            .await["state"]
+            .clone()
+    }
+
+    /// A panel drawn as a report draws it; a sentence instead is a failure.
+    async fn render(&mut self, panel: &Value) -> Value {
+        let drawn = self
+            .ok("POST", "/api/panels/render", Some(json!({ "panel": panel })))
+            .await;
+        assert!(drawn.get("error").is_none(), "{drawn}");
+        drawn
+    }
+}
+
+/// What a drop does with a dragged panel (`readPanelDrag`): the JSON as it
+/// was when the drag began, with an identity of its own.
+fn dropped(dragged: &Value) -> Value {
+    let mut copy = dragged.clone();
+    copy["id"] = json!(uuid::Uuid::new_v4().to_string());
+    copy
+}
+
+/// A report block holding `panel`.
+fn panel_block(panel: &Value) -> Value {
+    json!({ "id": panel["id"], "kind": "panel", "panel": panel })
+}
+
+/// The kinds of a report's blocks, in order.
+fn block_kinds(state: &Value) -> Vec<String> {
+    state["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["kind"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The `(name, kind, panels)` of a usage answer's workspaces.
+fn users(usage: &Value) -> Vec<(String, String, i64)> {
+    usage["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| {
+            (
+                w["name"].as_str().unwrap().to_owned(),
+                w["kind"].as_str().unwrap().to_owned(),
+                w["panels"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_try_it_of_milestone_a4() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let client = &mut client;
+    let houses = client.dataset_named("Houses").await;
+    let houses_rows = client
+        .ok("GET", "/api/tables/houses/rows?limit=500", None)
+        .await
+        .as_array()
+        .unwrap()
+        .len();
+
+    // 1. The Data explorer of A2 beside a new Report: both kinds are here.
+    let kinds = client.ok("GET", "/api/workspace-kinds", None).await;
+    for kind in ["data_explorer", "report"] {
+        let k = kinds
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["kind"] == json!(kind))
+            .unwrap();
+        assert_eq!(k["available"], json!(true), "{k}");
+    }
+    let explorer = client.workspace("Exploring houses", "data_explorer").await;
+    let assignment = json!({
+        "x": { "field": "area" }, "y": [{ "field": "price" }],
+        "color": { "field": "neighbourhood" },
+    });
+    client
+        .save_state(
+            &explorer,
+            &json!({ "dataset": houses, "assignment": assignment, "view": "plot" }),
+        )
+        .await;
+    let report = client.workspace("House prices report", "report").await;
+    assert_eq!(client.state_of(&report).await, json!({}));
+
+    // 2. The explorer's plot, with its tests, dragged into the report: the
+    //    drag carries the panel as it is, the drop keeps a copy.
+    let scatter = client
+        .suggest(json!({ "dataset": houses, "assignment": assignment }))
+        .await["spec"]
+        .clone();
+    let data = json!({ "kind": "dataset", "dataset": houses });
+    let dragged = json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "title": "price by area — Houses",
+        "kind": "test_result",
+        "content": {
+            "tests": { "data": data, "y": [{ "field": "price" }], "x": { "field": "area" } },
+            "plot": scatter,
+        },
+    });
+    let explorer_panel = dropped(&dragged);
+    assert_ne!(explorer_panel["id"], dragged["id"]);
+    client
+        .save_state(
+            &report,
+            &json!({ "blocks": [panel_block(&explorer_panel)] }),
+        )
+        .await;
+    // The plot in the explorer changes — a box plot now — and the report's
+    // copy does not.
+    let boxed = json!({ "x": { "field": "neighbourhood" }, "y": [{ "field": "price" }] });
+    client
+        .save_state(
+            &explorer,
+            &json!({ "dataset": houses, "assignment": boxed, "view": "plot" }),
+        )
+        .await;
+    let kept = client.state_of(&report).await;
+    assert_eq!(kept["blocks"][0]["panel"], explorer_panel);
+    let drawn = client.render(&explorer_panel).await;
+    assert_eq!(drawn["kind"], json!("test_result"));
+    assert_eq!(drawn["plot"]["layers"][0]["total"], json!(houses_rows));
+    assert_eq!(drawn["tests"]["design"], json!("two_numbers"));
+
+    // 3. A heading and Markdown above it, a page break; then a coefficient
+    //    table and a residual plot dragged from the model editor's output
+    //    cards (the table names the fit, the plot is its spec over the fit's
+    //    output data).
+    let sold = client
+        .dataset(json!({
+            "name": "Sold houses",
+            "base": { "kind": "table", "table": "houses" },
+            "operations": [
+                op("sold", "filter", json!({ "formula": "sold === true" })),
+                op("keep", "select", json!({ "columns": [
+                    { "column": "price" }, { "column": "area" }, { "column": "bedrooms" },
+                ] })),
+            ],
+        }))
+        .await;
+    let model = client
+        .ok(
+            "POST",
+            "/api/models",
+            Some(json!({
+                "name": "House prices",
+                "provider": "linear_regression",
+                "dataset": { "dataset_id": sold },
+                "configuration": { "label": "price" },
+            })),
+        )
+        .await;
+    let model = model["id"].as_str().unwrap().to_owned();
+    let fit = client.fit(&model).await;
+    let fit_id = fit["id"].as_str().unwrap().to_owned();
+    let outputs = client.outputs(&model, "").await;
+    let coefficients = dropped(&json!({
+        "id": "card-coefficients", "title": "Coefficients — House prices",
+        "kind": "fit_table", "content": { "fit": fit_id, "output": "coefficients" },
+    }));
+    let residuals = dropped(&json!({
+        "id": "card-residuals", "title": "Residuals against fitted values — House prices",
+        "kind": "plot", "content": { "spec": output_of(&outputs, "residuals_fitted")["spec"] },
+    }));
+    let heading = json!({ "id": "h1", "kind": "heading", "text": "House prices", "level": 1 });
+    let text = json!({ "id": "t1", "kind": "text",
+                       "markdown": "Prices rise with **area**; see `price_per_m2`." });
+    let page_break = json!({ "id": "pb", "kind": "page_break" });
+    let blocks = json!([
+        heading,
+        text,
+        panel_block(&explorer_panel),
+        page_break,
+        panel_block(&residuals),
+        panel_block(&coefficients),
+    ]);
+    client
+        .save_state(&report, &json!({ "blocks": blocks }))
+        .await;
+    // Reordered: the coefficient table above the residual plot.
+    let mut reordered = blocks.as_array().unwrap().clone();
+    reordered.swap(4, 5);
+    client
+        .save_state(&report, &json!({ "blocks": reordered }))
+        .await;
+    let state = client.state_of(&report).await;
+    assert_eq!(
+        block_kinds(&state),
+        ["heading", "text", "panel", "page_break", "panel", "panel"]
+    );
+    assert_eq!(state["blocks"][4]["panel"]["kind"], json!("fit_table"));
+    let table = client.render(&coefficients).await;
+    let terms: Vec<&str> = table["output"]["table"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r[0].as_str().unwrap())
+        .collect();
+    assert!(terms.contains(&"area") && terms.contains(&"bedrooms"), "{table}");
+    let fitted = client.render(&residuals).await;
+    let scored = fitted["plot"]["layers"][0]["rows"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert!(scored > 0, "{fitted}");
+    // A report refuses a block it does not have, naming it.
+    let mut broken = reordered.clone();
+    broken.push(json!({ "id": "c", "kind": "chart" }));
+    let (status, err) = client
+        .send(
+            "PUT",
+            &format!("/api/workspaces/{report}/state"),
+            Some(json!({ "state": { "blocks": broken } })),
+        )
+        .await;
+    assert!(!status.is_success(), "{err}");
+    assert!(err.to_string().contains("not a kind of block"), "{err}");
+
+    // 4. A row added to `houses` in the admin is in the report's plot the
+    //    next time it is drawn: panels are live views of their datasets. The
+    //    residual plot is of the fit's scored rows, which a new row does not
+    //    change until the model is fitted again.
+    client
+        .ok(
+            "POST",
+            "/api/tables/houses/rows",
+            Some(json!({
+                "address": "1 New Street", "area": 95.0, "bedrooms": 3, "neighbourhood": 1,
+                "year_built": 2024, "sold": true, "price": 210000.0,
+            })),
+        )
+        .await;
+    let drawn = client.render(&explorer_panel).await;
+    assert_eq!(drawn["plot"]["layers"][0]["total"], json!(houses_rows + 1));
+    let fitted = client.render(&residuals).await;
+    assert_eq!(
+        fitted["plot"]["layers"][0]["rows"].as_array().unwrap().len(),
+        scored
+    );
+
+    // 5. A4 landscape. (The PDF is the browser's print dialog, walked by hand;
+    //    the pagination is `report/pages.test.ts`.)
+    let page = json!({ "size": "A4", "orientation": "landscape" });
+    client
+        .save_state(&report, &json!({ "blocks": reordered, "page": page }))
+        .await;
+    let state = client.state_of(&report).await;
+    assert_eq!(state["page"], page);
+    let (status, _) = client
+        .send(
+            "PUT",
+            &format!("/api/workspaces/{report}/state"),
+            Some(json!({ "state": { "blocks": reordered, "page": { "size": "B5", "orientation": "portrait" } } })),
+        )
+        .await;
+    assert!(!status.is_success(), "a B5 page is refused");
+
+    // 6. The explorer's panel dragged from this report into a second one: a
+    //    copy with an identity of its own.
+    let second = client.workspace("Summary for the board", "report").await;
+    let again = dropped(&state["blocks"][2]["panel"]);
+    assert_ne!(again["id"], explorer_panel["id"]);
+    assert_eq!(again["content"], explorer_panel["content"]);
+    client
+        .save_state(
+            &second,
+            &json!({ "blocks": [panel_block(&again)], "page": { "size": "Letter", "orientation": "portrait" } }),
+        )
+        .await;
+
+    // 7. The delete warning for `Houses` lists both reports and the explorer;
+    //    that of the model's dataset lists only its model (the report reads
+    //    the fit, not the dataset); the model's lists the first report, whose
+    //    two panels show its fit.
+    let usage = client
+        .ok("GET", &format!("/api/datasets/{houses}/usage"), None)
+        .await;
+    let mut found = users(&usage);
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            ("Exploring houses".to_owned(), "data_explorer".to_owned(), 0),
+            ("House prices report".to_owned(), "report".to_owned(), 1),
+            ("Summary for the board".to_owned(), "report".to_owned(), 1),
+        ],
+        "{usage}"
+    );
+    let usage = client
+        .ok("GET", &format!("/api/datasets/{sold}/usage"), None)
+        .await;
+    assert_eq!(usage["models"][0]["id"], json!(model), "{usage}");
+    assert_eq!(usage["workspaces"], json!([]), "{usage}");
+    let usage = client
+        .ok("GET", &format!("/api/models/{model}/usage"), None)
+        .await;
+    assert_eq!(
+        users(&usage),
+        vec![("House prices report".to_owned(), "report".to_owned(), 2)],
+        "{usage}"
+    );
+
+    // Reopened, the report is as it was left.
+    assert_eq!(client.state_of(&report).await, state);
+    Ok(())
 }

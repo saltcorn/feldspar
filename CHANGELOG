@@ -2,6 +2,66 @@
 
 Changes in reverse chronological order.
 
+## Analytics A4.6–A4.7: documentation, and the definition of done for reports
+
+The last phase of milestone A4 (Reports, and drag and drop). With it, A4 is done.
+
+- **`TECHNICAL_DESIGN.md` §14.5** now describes what A4 built, replacing the short paragraph
+  that said "A4.6 describes the finished report":
+  - Split view: the `side=` address, `usePane()`, and changes announced to the other side.
+  - The panel model: the `Panel`/`PanelBody` types, `fit_table` as the sixth kind, live
+    rendering through `renderPanel`, and the sentence a panel shows when what it reads is gone.
+  - The usage index: built from the stored states when asked, with `panels_in_state` as the
+    one place that knows where a kind keeps its panels.
+  - Drag and drop: the payload, always a copy, and the sources and the sink.
+  - The Report workspace: the document's JSON, how blocks are added, moved and copied,
+    `check_state`'s refusals, the Markdown subset, still panels drawn as SVG, the page and
+    `paginate`'s rules, and Export PDF with its named `@page` rules.
+  - The workspace kinds available (now the Data explorer and the Report), `renderPanel` in the
+    API list, and A3's and A4's definitions of done.
+- **`tutorial-analytics.md` part 4 — Reports**, following the Try it: two screens side by side,
+  dragging the explorer's plot in and seeing that the copy does not follow the explorer,
+  headings, Markdown and a page break, the model's coefficient table and residual plot, a new
+  house appearing in the report's plot but not in the fit's, A4 landscape and Export PDF, a
+  panel dragged into a second report, and the delete warning. Part 1 no longer says the Data
+  explorer is the only kind of workspace that can be created.
+- **Definition of done** (`sc-server`'s `analytics_done::the_try_it_of_milestone_a4`). Over the
+  demo's rows, through the API, the test does what the UI does:
+  - Creates an explorer and a report.
+  - Drops the explorer's plot-with-tests into the report as a copy with a new id. It then
+    changes the explorer to a box plot and checks the report's panel is unchanged.
+  - Adds a heading, Markdown and a page break, and a `fit_table` coefficient table and a
+    residual plot as the model editor's cards make them. It reorders them and reads the order
+    back. A block of an unknown kind is refused.
+  - Adds a row to `houses` through the admin API. The report's plot then draws 201 rows. The
+    residual plot still draws the fit's scored rows.
+  - Saves an A4 landscape page and checks that B5 is refused.
+  - Copies the panel into a second report.
+  - Checks the usage index. `Houses`' usage lists the explorer (no panels) and both reports (one
+    panel each). The model's dataset lists its model and no workspaces, because the report reads
+    the fit, not the dataset. The model's usage lists the first report with two panels.
+- **Fix: "Report, 1 panels".** The dataset's and the model's delete warnings now say "1 panel"
+  for a single panel (`DatasetList.tsx`, `ModelList.tsx`).
+- **Walked in headless Chromium** against `feldspar demo analytics`, through the UI, step by
+  step:
+  - The explorer was opened and **Split** pressed. The report was created from the right
+    side's front page, and its address then had both sides.
+  - The explorer's **Drag** handle was dropped onto the report, giving a `test_result` panel
+    titled "price by area — Houses". `bedrooms` was then dropped on Y, and the report's panel
+    stayed byte-for-byte the same.
+  - A heading, text and a page break were added from **Add**. With the model editor on the left,
+    its Coefficients and Residuals cards were dragged in. The heading and text were dragged by
+    their grips above the plot.
+  - After a new house was added, the report's plot drew 200 → 201 rows. Its two plots were
+    SVG, with no canvas.
+  - With A4 landscape, the toolbar said 2 pages, with a Page 2 marker. **Export PDF** marked
+    the page `an-print-root an-page-a4-landscape` and titled it after the report, and the
+    marks came off afterwards. `page.pdf({ preferCSSPageSize: true })` gave 2 pages of
+    842 × 595 pt with no raster images.
+  - A block dragged from one report into the other was copied with a new id, and the first
+    report kept its six blocks.
+  - **Delete** on `Houses` listed the explorer and both reports. No page errors.
+
 ## Analytics A4.4–A4.5: the Report workspace, and PDF output
 
 The second phase of milestone A4 (Reports, and drag and drop).
