@@ -8319,6 +8319,7 @@ dependencies = [
  "bytes",
  "chrono",
  "csv",
+ "rusqlite",
  "rust_decimal",
  "sc-action",
  "sc-auth",
@@ -8341,6 +8342,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+ "zip",
 ]
 
 [[package]]

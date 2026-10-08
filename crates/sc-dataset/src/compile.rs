@@ -566,7 +566,9 @@ impl Stage {
         }
         self.cols
             .iter()
-            .filter(|c| !c.hidden && !matches!(c.ty, ColType::Json | ColType::Bytes))
+            .filter(|c| {
+                !c.hidden && !matches!(c.ty, ColType::Json | ColType::Bytes | ColType::Geometry)
+            })
             .map(|c| sorted(c.expr.clone(), false))
             .collect()
     }
@@ -884,6 +886,11 @@ impl Compiler<'_> {
                     .to_owned(),
             );
         }
+        if let (Some(function), Err(reason)) = (analysis.geo_calls.first(), &self.schema.spatial) {
+            return Err(format!(
+                "`Geo.{function}` is computed by the database, and {reason}"
+            ));
+        }
         if !analysis.model_calls.is_empty() {
             return Err(
                 "a dataset formula cannot call `predict`: a model's predictions are added by \
@@ -961,7 +968,7 @@ impl Compiler<'_> {
         let mut keys = Vec::with_capacity(s.keys.len());
         for key in &s.keys {
             let t = self.translate(&mut stage, &key.formula, false, true)?;
-            if matches!(t.ty, ColType::Json | ColType::Bytes) {
+            if matches!(t.ty, ColType::Json | ColType::Bytes | ColType::Geometry) {
                 return Err(format!(
                     "`{}` is {}, which has no order to sort by",
                     key.formula,
@@ -1290,8 +1297,14 @@ impl Compiler<'_> {
                     _ => {}
                 }
             }
-            // Key expressions are re-read from the sealed stage below.
-            let key_names: Vec<String> = keys.iter().map(|(n, _)| n.clone()).collect();
+        }
+        // The keys are computed a level down and grouped by name when the
+        // helpers above need that level, and when a key holds a literal
+        // (`price > 100000`, `Geo.squareCell(location, 500)`): written once in
+        // the select list and once in the GROUP BY, each copy would get a
+        // placeholder of its own, and Postgres does not take `f($1)` and
+        // `f($7)` for one expression.
+        if helpers_needed || keys.iter().any(|(_, t)| walk::has_literal(&t.expr)) {
             for (name, t) in &keys {
                 stage
                     .cols
@@ -1303,7 +1316,6 @@ impl Compiler<'_> {
                     t.expr = c.expr.clone();
                 }
             }
-            let _ = key_names;
         }
         let mut cols = Vec::with_capacity(keys.len() * 2 + a.summaries.len());
         let mut order = Vec::with_capacity(keys.len());

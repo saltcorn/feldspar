@@ -41,6 +41,7 @@ mod prefetch;
 mod projection;
 mod provider;
 mod rls;
+mod spatial;
 mod table;
 mod table_meta;
 mod tx;
@@ -90,6 +91,7 @@ pub use rls::{
     Access, ROLE_GUC, clear_caller_context, disable_rls, disable_rls_sql, enable_rls,
     enable_rls_sql, run_in_context, run_in_context_read_only, set_caller_context,
 };
+pub use spatial::bootstrap_spatial;
 pub use table::{AccessRules, FieldMergeIssue, Table, TableSource};
 pub use table_meta::{
     ATTR_METADATA_TABLE, ATTR_OWNERSHIP_FORMULA, ATTR_PROVIDER_CONFIG, ATTR_PROVIDER_MODULE,

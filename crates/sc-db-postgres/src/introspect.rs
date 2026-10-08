@@ -22,12 +22,23 @@ use sc_error::{Error, Result};
 use tokio_postgres::{Client, Row};
 
 /// All user base tables, keyed later by `(schema, name)`.
+///
+/// A table an **extension** owns is not a user table, so it is left out:
+/// PostGIS's `spatial_ref_sys` sits in `public` beside the user's tables, and
+/// offering it as one would put four thousand coordinate systems in the admin's
+/// table list (analytics TODO A5.1).
 const TABLES_SQL: &str = "\
-    SELECT table_schema, table_name \
-    FROM information_schema.tables \
-    WHERE table_type = 'BASE TABLE' \
-      AND table_schema NOT IN ('pg_catalog', 'information_schema') \
-    ORDER BY table_schema, table_name";
+    SELECT t.table_schema, t.table_name \
+    FROM information_schema.tables t \
+    WHERE t.table_type = 'BASE TABLE' \
+      AND t.table_schema NOT IN ('pg_catalog', 'information_schema') \
+      AND NOT EXISTS ( \
+        SELECT 1 FROM pg_depend d \
+        JOIN pg_class c ON c.oid = d.objid \
+        JOIN pg_namespace n ON n.oid = c.relnamespace \
+        WHERE d.classid = 'pg_class'::regclass AND d.deptype = 'e' \
+          AND n.nspname = t.table_schema AND c.relname = t.table_name) \
+    ORDER BY t.table_schema, t.table_name";
 
 /// Every column of every user table, in declaration order. `udt_name` is the
 /// backend's own type name (`int8`, `text`, `timestamptz`, …), matching what
@@ -37,12 +48,24 @@ const TABLES_SQL: &str = "\
 /// default to report — the two are separate spellings of the one fact that the
 /// database fills the column in, and reading only the first would make every
 /// identity key look like a key somebody has to type.
+///
+/// A PostGIS column is the exception: `udt_name` says only `geometry`, and the
+/// kind and coordinate system are in its type modifier, so `format_type` spells
+/// it out (`geometry(Point,4326)`) — what `apply_schema` emits for one
+/// (analytics TODO A5.1).
 const COLUMNS_SQL: &str = "\
-    SELECT table_schema, table_name, column_name, udt_name, is_nullable, column_default, \
-           is_identity \
-    FROM information_schema.columns \
-    WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
-    ORDER BY table_schema, table_name, ordinal_position";
+    SELECT c.table_schema, c.table_name, c.column_name, \
+           CASE WHEN c.udt_name = 'geometry' THEN ( \
+             SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
+             JOIN pg_class t ON t.oid = a.attrelid \
+             JOIN pg_namespace n ON n.oid = t.relnamespace \
+             WHERE n.nspname = c.table_schema AND t.relname = c.table_name \
+               AND a.attname = c.column_name) \
+           ELSE c.udt_name::text END AS udt_name, \
+           c.is_nullable, c.column_default, c.is_identity \
+    FROM information_schema.columns c \
+    WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema') \
+    ORDER BY c.table_schema, c.table_name, c.ordinal_position";
 
 /// Primary-key columns, one row per key column, ordered within each key so a
 /// composite key is reassembled correctly.

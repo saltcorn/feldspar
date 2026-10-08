@@ -133,6 +133,17 @@ pub(crate) fn columns_of(e: &Expr, alias: &str) -> BTreeSet<String> {
     out
 }
 
+/// Whether `e` holds a literal (a bound placeholder) anywhere inside it.
+pub(crate) fn has_literal(e: &Expr) -> bool {
+    let mut found = false;
+    let mut copy = e.clone();
+    rewrite(&mut copy, &mut |node| {
+        found |= matches!(node, Expr::Lit(_) | Expr::Param(_));
+        None
+    });
+    found
+}
+
 /// `e` with every column of `alias` replaced by what `lookup` says it is.
 pub(crate) fn substitute(e: &mut Expr, alias: &str, lookup: &dyn Fn(&str) -> Option<Expr>) {
     rewrite(e, &mut |node| match node {

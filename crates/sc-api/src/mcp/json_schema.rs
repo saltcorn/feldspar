@@ -97,6 +97,12 @@ pub fn scalar_schema(ty: ValueType) -> Json {
         ValueType::Timestamp => json!({ "type": "string", "format": "date-time" }),
         // Anything, which is what `Value(Json)` means.
         ValueType::Json => json!({}),
+        ValueType::Geometry => json!({
+            "type": "object",
+            "description": "a GeoJSON geometry in WGS84 longitude and latitude, such as \
+                            {\"type\": \"Point\", \"coordinates\": [-0.12, 51.5]}",
+            "required": ["type"],
+        }),
     }
 }
 

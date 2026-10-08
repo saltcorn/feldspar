@@ -945,6 +945,7 @@ impl Plan {
         let mut pending_meta: Vec<FieldMeta> = Vec::new();
         for spec in fields {
             let resolved = self.resolve_field(name, spec)?;
+            check_spatial(catalog, &table.database, &resolved.field)?;
             if table.field(&resolved.field.base.name).is_some() {
                 return Err(Error::invalid(format!(
                     "table `{name}` is declared with two fields called `{}`",
@@ -1154,6 +1155,7 @@ impl Plan {
             .projection
             .get(table)
             .ok_or_else(|| Error::not_found(format!("table `{table}` is not in the catalog")))?;
+        check_spatial(catalog, &projected.database, &resolved.field)?;
         if projected.field(&name).is_some() {
             return Err(Error::invalid(format!(
                 "table `{table}` already has a field `{name}`"
@@ -2387,9 +2389,13 @@ pub fn basic_field_types() -> Vec<BasicType> {
     use BasicType::{
         Bool, Bytes, Date, Decimal, Float, Int, Json as JsonT, Text, Time, Timestamp, Uuid,
     };
-    vec![
+    let mut types = vec![
         Text, Int, Float, Decimal, Bool, Uuid, Date, Time, Timestamp, JsonT, Bytes,
-    ]
+    ];
+    // The geometry types (analytics TODO A5.1), offered on every database; one
+    // without PostGIS refuses them with a sentence when a field is saved.
+    types.extend(sc_types::GeometryKind::ALL.map(BasicType::Geometry));
+    types
 }
 
 /// Every type name a field may be created with: the basic types then the
@@ -2432,6 +2438,24 @@ pub fn resolve_field_type(name: &str) -> Result<(TypeRef, Option<String>)> {
 }
 
 // --- small shared checks ------------------------------------------------------
+
+/// A geometry field needs PostGIS in the database its table is in (analytics
+/// TODO A5.1); refused with the sentence saying why it is not there.
+fn check_spatial(catalog: &Catalog, database: &DbId, field: &DataField) -> Result<()> {
+    if !matches!(field.base.type_, TypeRef::Basic(BasicType::Geometry(_))) {
+        return Ok(());
+    }
+    catalog
+        .driver_named(database)?
+        .spatial()
+        .require()
+        .map_err(|reason| {
+            Error::invalid(format!(
+                "field `{}` cannot be a geometry: {reason}",
+                field.base.name
+            ))
+        })
+}
 
 /// A table or field name that can be a SQL identifier without quoting games.
 ///

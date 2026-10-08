@@ -270,6 +270,11 @@ impl Catalog {
             code_schema: RwLock::new(None),
             run_wakeups: crate::RunWakeups::new(),
         };
+        // Whether the database has PostGIS (analytics TODO A5.1). Asking is not
+        // installing it — `bootstrap_spatial` does that, on a server's boot —
+        // and a database that cannot say is one without geometry, not a
+        // catalog that cannot start.
+        let _ = catalog.primary.detect_spatial().await;
         catalog.reload().await?;
         Ok(catalog)
     }

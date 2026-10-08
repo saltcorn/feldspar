@@ -42,6 +42,8 @@ pub const DECIMAL: &str = "Decimal";
 pub const BYTES: &str = "Bytes";
 /// Arbitrary embedded JSON.
 pub const JSON: &str = "JSON";
+/// A geometry, as a GeoJSON geometry object (analytics TODO A5.1).
+pub const GEO_JSON: &str = "GeoJSON";
 /// A UUID in its canonical string form.
 pub const UUID: &str = "UUID";
 /// An ISO 8601 calendar date.
@@ -68,7 +70,8 @@ pub const ORDER_DIRECTION: &str = "OrderDirection";
 /// the custom scalars above. (`ID` is not among them — an application's primary
 /// key is a real type, and flattening it to an opaque `ID` string loses that.)
 pub const SCALAR_NAMES: &[&str] = &[
-    "Boolean", "Float", "String", BIG_INT, DECIMAL, BYTES, JSON, UUID, DATE, TIME, TIMESTAMP,
+    "Boolean", "Float", "String", BIG_INT, DECIMAL, BYTES, JSON, GEO_JSON, UUID, DATE, TIME,
+    TIMESTAMP,
 ];
 
 /// The comparison input for a scalar: `String` → `StringComparison`. One per
@@ -86,6 +89,7 @@ pub const RESERVED_TYPE_NAMES: &[&str] = &[
     DECIMAL,
     BYTES,
     JSON,
+    GEO_JSON,
     UUID,
     DATE,
     TIME,

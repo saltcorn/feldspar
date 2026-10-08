@@ -493,15 +493,15 @@ selection, reference layers and the tools that dataset operations can express (g
 
 ## Phase 1 — Geometry in core
 
-- [ ] A5.1 A geometry field type in `sc-types` (point, line, polygon and the multi variants, in
+- [x] A5.1 A geometry field type in `sc-types` (point, line, polygon and the multi variants, in
       WGS84), stored as PostGIS `geometry(…, 4326)`. Bootstrap enables the `postgis`
       extension where the role may; otherwise, and on SQLite, a geometry field is refused
       with a sentence. REST and GraphQL represent geometry as GeoJSON. Tests.
-- [ ] A5.2 Importing GeoJSON, zipped Shapefiles and GeoPackage files into a new table: the
+- [x] A5.2 Importing GeoJSON, zipped Shapefiles and GeoPackage files into a new table: the
       geometry is loaded with its source coordinate system and transformed to WGS84 by
       PostGIS, so no projection library is needed. The admin's table import offers it.
       Tests with small fixture files.
-- [ ] A5.3 Geometry formula functions in `sc-expr`, translated to PostGIS: a point from
+- [x] A5.3 Geometry formula functions in `sc-expr`, translated to PostGIS: a point from
       longitude and latitude, buffer, centroid, area, length, distance, intersects, contains,
       within, and the square and hexagonal cell of a point. Distances and areas are in
       metres (geography casts). Tests.

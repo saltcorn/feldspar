@@ -33,12 +33,14 @@ use async_graphql::dynamic::TypeRef;
 use sc_catalog::{DataField, DataFieldKind};
 
 use super::names::{
-    BIG_INT, BYTES, DATE, DECIMAL, FILE_VALUE, JSON, SchemaNames, TIME, TIMESTAMP, UUID,
+    BIG_INT, BYTES, DATE, DECIMAL, FILE_VALUE, GEO_JSON, JSON, SchemaNames, TIME, TIMESTAMP, UUID,
 };
 use crate::schema::ValueType;
 
 /// The custom scalars the schema defines, in SDL order.
-pub const CUSTOM_SCALARS: &[&str] = &[BIG_INT, BYTES, DATE, DECIMAL, JSON, TIME, TIMESTAMP, UUID];
+pub const CUSTOM_SCALARS: &[&str] = &[
+    BIG_INT, BYTES, DATE, DECIMAL, GEO_JSON, JSON, TIME, TIMESTAMP, UUID,
+];
 
 /// The GraphQL scalar name a wire [`ValueType`] is carried as.
 pub fn scalar_name(ty: ValueType) -> &'static str {
@@ -54,6 +56,7 @@ pub fn scalar_name(ty: ValueType) -> &'static str {
         ValueType::Date => DATE,
         ValueType::Time => TIME,
         ValueType::Timestamp => TIMESTAMP,
+        ValueType::Geometry => GEO_JSON,
     }
 }
 

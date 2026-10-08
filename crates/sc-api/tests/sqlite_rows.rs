@@ -168,3 +168,35 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
         .await?;
     Ok(())
 }
+
+/// A geometry field needs PostGIS (analytics TODO A5.1), so on SQLite it is
+/// refused with a sentence that says so — before anything is created.
+#[tokio::test]
+async fn a_geometry_field_is_refused_on_sqlite_with_a_sentence() -> sc_error::Result<()> {
+    let catalog = catalog_with_books().await?;
+    let err = sc_api::schema_edit::apply(
+        &catalog,
+        &[sc_api::schema_edit::Operation::CreateTable {
+            name: "places".into(),
+            database: String::new(),
+            settings: sc_api::schema_edit::TableSettings::default(),
+            fields: vec![sc_api::schema_edit::FieldSpec {
+                name: "location".into(),
+                type_name: "geometry_point".into(),
+                ..sc_api::schema_edit::FieldSpec::default()
+            }],
+        }],
+        &sc_api::schema_edit::ApplyOptions::default(),
+    )
+    .await
+    .expect_err("refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("field `location` cannot be a geometry")
+            && message.contains("PostGIS")
+            && message.contains("SQLite"),
+        "{message}"
+    );
+    assert!(catalog.get("places")?.is_none());
+    Ok(())
+}

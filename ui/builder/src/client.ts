@@ -15,6 +15,8 @@ export type CreateTableRequest = { name: string; database?: string | null };
 export type CreateTableResponse = { name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; configured: boolean; ownership_error?: string | null; rls_available: boolean; database: string; metadata: boolean; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null };
 export type CreateTableFromCsvRequest = { name: string; csv: string; database?: string | null };
 export type CreateTableFromCsvResponse = { table: { name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; configured: boolean; ownership_error?: string | null; rls_available: boolean; database: string; metadata: boolean; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null }; inserted: number };
+export type CreateTableFromGeoFileRequest = { name: string; file_name: string; content_base64: string; layer?: string | null; database?: string | null };
+export type CreateTableFromGeoFileResponse = { table: { name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; configured: boolean; ownership_error?: string | null; rls_available: boolean; database: string; metadata: boolean; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null }; inserted: number; warnings: Array<string> };
 export type UpdateTableRequest = { label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean };
 export type UpdateTableResponse = { name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; configured: boolean; ownership_error?: string | null; rls_available: boolean; database: string; metadata: boolean; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null };
 export type DropTableResponse = { dropped: string };
@@ -345,6 +347,7 @@ export interface ApiClient {
   listTables(): Promise<ListTablesResponse>;
   createTable(body: CreateTableRequest): Promise<CreateTableResponse>;
   createTableFromCsv(body: CreateTableFromCsvRequest): Promise<CreateTableFromCsvResponse>;
+  createTableFromGeoFile(body: CreateTableFromGeoFileRequest): Promise<CreateTableFromGeoFileResponse>;
   updateTable(table: string, body: UpdateTableRequest): Promise<UpdateTableResponse>;
   dropTable(table: string): Promise<DropTableResponse>;
   listMetadataTables(): Promise<ListMetadataTablesResponse>;
@@ -622,6 +625,15 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("createTableFromCsv", res);
       return (await res.json()) as CreateTableFromCsvResponse;
+    },
+    async createTableFromGeoFile(body) {
+      const res = await doFetch(`${baseUrl}/api/tables/geo`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createTableFromGeoFile", res);
+      return (await res.json()) as CreateTableFromGeoFileResponse;
     },
     async updateTable(table, body) {
       const res = await doFetch(`${baseUrl}/api/tables/${encodeURIComponent(table)}`, {

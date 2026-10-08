@@ -23,6 +23,7 @@ import {
   providerLabel,
   splitProviderKey,
   tableNameFromFile,
+  toBase64,
   type NewTableForm,
 } from "./newTable";
 
@@ -168,5 +169,21 @@ describe("the table-provider choice", () => {
 
   it("names the module beside the provider, because two modules may both supply a `Table`", () => {
     expect(providerLabel("@saltcorn/rss", "RSS feed")).toBe("RSS feed (@saltcorn/rss)");
+  });
+});
+
+describe("a table from a map file", () => {
+  it("wants the file before Create may be pressed", () => {
+    expect(newTableError(form({ name: "parks", source: "geo" }))).toMatch(/GeoJSON/);
+    expect(newTableError(form({ name: "parks", source: "geo", file: chosen }))).toBe(null);
+    expect(tableNameFromFile("London Parks.geojson")).toBe("london_parks");
+  });
+
+  it("sends the bytes as base64, however many there are", () => {
+    expect(toBase64(new Uint8Array([0x50, 0x4b, 0x03, 0x04]))).toBe("UEsDBA==");
+    // More than one slice of `String.fromCharCode` arguments.
+    const big = new Uint8Array(100_000).map((_, i) => i % 251);
+    const back = Uint8Array.from(atob(toBase64(big)), (c) => c.charCodeAt(0));
+    expect(back).toEqual(big);
   });
 });

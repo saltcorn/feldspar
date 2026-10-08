@@ -38,12 +38,14 @@ import {
   PRIMARY_DATABASE,
   creatableDatabases,
   databaseLabel,
+  GEO_FILE_ACCEPT,
   importedMessage,
   newTableError,
   providerKey,
   providerLabel,
   splitProviderKey,
   tableNameFromFile,
+  toBase64,
   type NewTableForm,
 } from "../newTable";
 import { roleLabel, useRoles } from "../roles";
@@ -155,6 +157,17 @@ export function Tables() {
         const csv = await creating.file.text();
         const { table, inserted } = await api.createTableFromCsv({ name, csv, database });
         setNotice(importedMessage(table.name, inserted));
+      } else if (creating.source === "geo" && creating.file) {
+        // Two of the three formats are binary, so the file goes as base64.
+        const bytes = new Uint8Array(await creating.file.arrayBuffer());
+        const { table, inserted, warnings } = await api.createTableFromGeoFile({
+          name,
+          file_name: creating.file.name,
+          content_base64: toBase64(bytes),
+          layer: creating.layer.trim() || null,
+          database,
+        });
+        setNotice([importedMessage(table.name, inserted), ...warnings].join(" "));
       } else {
         await api.createTable({ name, database });
       }
@@ -413,6 +426,7 @@ function NewTableModal({
               >
                 <option value="blank"><T text="New database table" /></option>
                 <option value="csv"><T text="Create from CSV" /></option>
+                <option value="geo"><T text="Create from a map file" /></option>
                 {/* Offered only when a module supplies one. A chooser whose one
                     entry is "there are none" is a question with no answer, and
                     an installation with no modules is most of them. */}
@@ -494,6 +508,37 @@ function NewTableModal({
                     })
                   }
                 />
+              </>
+            )}
+
+            {form.source === "geo" && (
+              <>
+                <Form.Group className="mb-3" controlId="new-table-geo">
+                  <Form.Label><T text="Map file" /></Form.Label>
+                  <Form.Control
+                    type="file"
+                    accept={GEO_FILE_ACCEPT}
+                    onChange={(e) => {
+                      const file = (e.target as HTMLInputElement).files?.[0] ?? null;
+                      onChange({
+                        ...form,
+                        file,
+                        name: form.name || (file ? tableNameFromFile(file.name) : ""),
+                      });
+                    }}
+                  />
+                  <Form.Text className="text-muted">
+                    <T text="GeoJSON, a zipped Shapefile (the .shp with its .dbf and .prj) or a GeoPackage. The attributes become fields, the shapes a geometry field, reprojected to longitude and latitude. Needs PostGIS." />
+                  </Form.Text>
+                </Form.Group>
+                <Form.Group controlId="new-table-geo-layer">
+                  <Form.Label><T text="Layer (optional)" /></Form.Label>
+                  <Form.Control
+                    placeholder={t("only when the file holds several")}
+                    value={form.layer}
+                    onChange={(e) => onChange({ ...form, layer: e.target.value })}
+                  />
+                </Form.Group>
               </>
             )}
 

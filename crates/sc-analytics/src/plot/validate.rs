@@ -761,6 +761,11 @@ pub(crate) fn field_check(
             article(ty)
         ));
     }
+    if ty == ColType::Geometry {
+        return Err(format!(
+            "`{name}` is a geometry, which is drawn on a map rather than plotted"
+        ));
+    }
     if let Some(bin) = &f.bin {
         if !ty.is_numeric() && ty != ColType::Unknown {
             return Err(format!(

@@ -72,6 +72,21 @@ const DEFAULT_URL: &str = "postgres://saltcorn:saltcorn@localhost:5432/saltcorn_
 /// cloned from. Overrides the configuration file's `test_template`.
 pub const TEMPLATE_VAR: &str = "SC_TEST_TEMPLATE";
 
+/// Environment variable naming the template a **PostGIS** test database is
+/// cloned from (see [`TestDb::with_postgis`]). Defaults to
+/// [`DEFAULT_POSTGIS_TEMPLATE`].
+pub const POSTGIS_TEMPLATE_VAR: &str = "SC_TEST_POSTGIS_TEMPLATE";
+
+/// The template a PostGIS test database is cloned from when
+/// [`POSTGIS_TEMPLATE_VAR`] is unset. Made once, by a superuser, because
+/// installing PostGIS needs one (`OPERATIONS.md` §10):
+///
+/// ```text
+/// sudo -u postgres createdb -O <test role> feldspar_postgis_template
+/// sudo -u postgres psql -d feldspar_postgis_template -c 'CREATE EXTENSION postgis'
+/// ```
+pub const DEFAULT_POSTGIS_TEMPLATE: &str = "feldspar_postgis_template";
+
 /// Environment variable naming which `feldspar.toml` section the harness reads.
 /// Rarely needed; it exists so a machine with two test databases can point one
 /// test run at each.
@@ -114,6 +129,55 @@ impl TestDb {
     /// Create a new, empty Postgres database and return a handle with a pool
     /// connected to it.
     pub async fn new() -> Result<TestDb> {
+        let section = test_section()?;
+        TestDb::create(template(env_var(TEMPLATE_VAR), section.as_ref())).await
+    }
+
+    /// A new database with **PostGIS** installed, or `None` — with a line on
+    /// stderr saying what to do — on a machine that has no PostGIS template.
+    ///
+    /// Installing PostGIS needs a superuser, which the test role is not
+    /// expected to be, so the database is cloned from a template that already
+    /// has it ([`DEFAULT_POSTGIS_TEMPLATE`], or [`POSTGIS_TEMPLATE_VAR`]). A test
+    /// that needs PostGIS returns early on `None`: it skips with the message
+    /// rather than failing on a machine without it (analytics TODO, "Both
+    /// databases").
+    pub async fn with_postgis() -> Result<Option<TestDb>> {
+        let template =
+            env_var(POSTGIS_TEMPLATE_VAR).unwrap_or_else(|| DEFAULT_POSTGIS_TEMPLATE.to_owned());
+        let base = base_config()?;
+        let admin = connect(&with_dbname(&base, MAINTENANCE_DB)).await?;
+        let found = admin
+            .query("SELECT 1 FROM pg_database WHERE datname = $1", &[&template])
+            .await
+            .map_err(|e| Error::database(format!("looking for {template}: {e}")))?;
+        if found.is_empty() {
+            eprintln!(
+                "skipped: this test needs PostGIS, and there is no `{template}` database to \
+                 clone one from (see OPERATIONS.md §10, \"Geometry with PostGIS\")"
+            );
+            return Ok(None);
+        }
+        let db = TestDb::create(Some(template.clone())).await?;
+        let has_postgis = db
+            .client()
+            .await?
+            .query("SELECT 1 FROM pg_extension WHERE extname = 'postgis'", &[])
+            .await
+            .map_err(|e| Error::database(format!("looking for PostGIS: {e}")))?;
+        if has_postgis.is_empty() {
+            eprintln!(
+                "skipped: this test needs PostGIS, and `{template}` does not have it; run \
+                 CREATE EXTENSION postgis in it as a superuser"
+            );
+            return Ok(None);
+        }
+        Ok(Some(db))
+    }
+
+    /// Create a database cloned from `template` (the server's default when
+    /// `None`).
+    async fn create(template: Option<String>) -> Result<TestDb> {
         let base = base_config()?;
 
         // Unique, identifier-safe name: `simple` renders 32 hex chars, so with
@@ -127,8 +191,7 @@ impl TestDb {
         // defensively all the same.
         //
         // The template database, if this machine names one — see `template`.
-        let section = test_section()?;
-        let create = match template(env_var(TEMPLATE_VAR), section.as_ref()) {
+        let create = match template {
             Some(t) => format!("CREATE DATABASE \"{name}\" TEMPLATE \"{t}\""),
             None => format!("CREATE DATABASE \"{name}\""),
         };

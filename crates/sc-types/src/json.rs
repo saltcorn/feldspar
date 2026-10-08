@@ -111,6 +111,20 @@ pub fn json_to_value(basic: &BasicType, json: &Json) -> Result<Value> {
                 .ok()
         }),
         BasicType::Json => Ok(Value::Json(json.clone())),
+        // A geometry is a GeoJSON object; a form or a CSV cell sends it as the
+        // object's text.
+        BasicType::Geometry(kind) => match json {
+            Json::String(s) => {
+                let parsed: Json = serde_json::from_str(s).map_err(|_| {
+                    Error::invalid(format!(
+                        "{s:?} is not {}: a geometry is written as GeoJSON",
+                        kind.describe()
+                    ))
+                })?;
+                crate::geometry::geometry_value(*kind, &parsed)
+            }
+            other => crate::geometry::geometry_value(*kind, other),
+        },
         BasicType::Bytes => match json {
             Json::Array(items) => {
                 let mut bytes = Vec::with_capacity(items.len());

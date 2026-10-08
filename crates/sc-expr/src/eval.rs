@@ -667,6 +667,14 @@ fn binding_for(call: &FormulaCall, ident: &str) -> Result<Option<serde_json::Val
     if crate::analyze::GLOBALS.contains(&ident) {
         return Ok(None);
     }
+    // The geometry functions exist only as SQL (analytics TODO A5.3).
+    if ident == crate::geo::GEO {
+        return Err(Error::msg(
+            "formula evaluation: the `Geo` functions are computed by the database (PostGIS), \
+             and this formula is being run in JavaScript; use them where the formula becomes \
+             SQL, such as a dataset's operations",
+        ));
+    }
     // A join or relation identifier the caller failed to prefetch is the
     // likeliest way here; name it precisely.
     let what = if crate::agg::is_relation_ident(ident) {

@@ -168,8 +168,8 @@ fn comparison_input(scalar: &str) -> InputObject {
     let mut input = InputObject::new(comparison_type_name(scalar))
         .field(InputValue::new("eq", TypeRef::named(scalar)))
         .field(InputValue::new("ne", TypeRef::named(scalar)));
-    // Ordered comparisons need an ordering; embedded JSON has none.
-    if scalar != names::JSON {
+    // Ordered comparisons need an ordering; embedded JSON and geometry have none.
+    if scalar != names::JSON && scalar != names::GEO_JSON {
         for op in ["gt", "gte", "lt", "lte"] {
             input = input.field(InputValue::new(op, TypeRef::named(scalar)));
         }
@@ -440,7 +440,7 @@ fn is_numeric(field: &DataField) -> bool {
 /// Whether `min`/`max` are meaningful over this column — everything with an
 /// ordering, which is everything but embedded JSON.
 fn is_comparable(field: &DataField) -> bool {
-    column_scalar(field) != names::JSON
+    !matches!(column_scalar(field), names::JSON | names::GEO_JSON)
 }
 
 /// The root fields for one table: the list, the single row, and — when the

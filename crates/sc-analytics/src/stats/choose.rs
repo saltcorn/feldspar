@@ -157,7 +157,7 @@ fn kind_of(channel: Channel, f: &FieldDef, shape: &StageShape) -> Result<(Kind, 
             f.field,
             crate::plot::validate::article(ty)
         )),
-        ColType::Json | ColType::Bytes => Err(format!(
+        ColType::Json | ColType::Bytes | ColType::Geometry => Err(format!(
             "`{}` is {}, which cannot be tested",
             f.field,
             crate::plot::validate::article(ty)
@@ -178,7 +178,7 @@ pub(crate) fn choose(spec: &TestSpec, shape: &StageShape) -> Result<Choice, Stri
         None => None,
         Some(f) => {
             let ty = field_check(Channel::Wrap, f, shape, true)?;
-            if matches!(ty, ColType::Json | ColType::Bytes) {
+            if matches!(ty, ColType::Json | ColType::Bytes | ColType::Geometry) {
                 return Err(format!("`{}` cannot be a Wrap group", f.field));
             }
             Some((f.clone(), ty))

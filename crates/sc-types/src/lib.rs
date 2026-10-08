@@ -38,6 +38,7 @@ mod attrs;
 mod basic;
 pub mod catchall;
 mod field;
+pub mod geometry;
 pub mod i18n;
 mod json;
 mod operation;
@@ -51,6 +52,7 @@ pub use field::{
     BaseField, FormField, OptionsSource, SECRET_SENTINEL, ShowIfCondition, merge_secrets,
     preserve_create_only, redact_attrs, validate_attrs,
 };
+pub use geometry::GeometryKind;
 pub use i18n::{translate_field, translate_spec};
 pub use json::{json_to_value, value_to_json};
 pub use operation::{Operation, OperationScope};
@@ -87,11 +89,51 @@ mod tests {
         // The SQL vocabulary still reads, so one function takes either.
         assert_eq!(BasicType::from_name("float8"), BasicType::Float);
         assert_eq!(BasicType::from_name(" INT8 "), BasicType::Int);
+        // A geometry's name is its kind's.
+        assert_eq!(
+            BasicType::from_name("geometry_point"),
+            BasicType::Geometry(GeometryKind::Point)
+        );
         // And an unknown name is carried, not rejected.
         assert_eq!(
-            BasicType::from_name("geometry"),
-            BasicType::Other("geometry".to_owned())
+            BasicType::from_name("ltree"),
+            BasicType::Other("ltree".to_owned())
         );
+    }
+
+    #[test]
+    fn a_geometry_type_is_postgis_in_wgs84_and_geojson_on_the_wire() {
+        use serde_json::json;
+        let point = BasicType::Geometry(GeometryKind::Point);
+        assert_eq!(point.sql_type(), "geometry(Point,4326)");
+        assert_eq!(point.name(), "geometry_point");
+        // `information_schema` says only `geometry`; `format_type` says the rest.
+        assert_eq!(
+            BasicType::from_sql_type("geometry"),
+            BasicType::Geometry(GeometryKind::Any)
+        );
+        assert_eq!(BasicType::from_sql_type("geometry(Point,4326)"), point);
+        // Postgres's own `point` stays what it is.
+        assert_eq!(
+            BasicType::from_sql_type("point"),
+            BasicType::Other("point".into())
+        );
+
+        let geojson = json!({"type": "Point", "coordinates": [-0.1276, 51.5072]});
+        let value = json_to_value(&point, &geojson).expect("a point");
+        assert_eq!(value, Value::Json(geojson.clone()));
+        assert!(point.validate(&value).is_ok());
+        assert_eq!(value_to_json(&value), geojson);
+        // A form sends the text of the object.
+        let typed = catchall::parse(&point, &geojson.to_string()).expect("parsed");
+        assert_eq!(typed, value);
+        assert!(point.accepts_json(&geojson));
+        // A polygon is not a point, and the refusal says so.
+        let square = json!({"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]});
+        let err = json_to_value(&point, &square).unwrap_err().to_string();
+        assert!(err.contains("holds a point"), "{err}");
+        assert!(!point.accepts(&Value::Json(square)));
+        assert!(!point.accepts(&Value::Text("POINT(0 0)".into())));
     }
 
     #[test]

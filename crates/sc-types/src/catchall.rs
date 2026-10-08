@@ -70,6 +70,9 @@ pub fn parse(ty: &BasicType, input: &str) -> Result<Value> {
         BasicType::Json => {
             Value::Json(serde_json::Value::from_str(trimmed).map_err(|e| bad(ty, input, e))?)
         }
+        BasicType::Geometry(_) => {
+            crate::json_to_value(ty, &serde_json::Value::String(trimmed.to_owned()))?
+        }
         BasicType::Uuid => Value::Uuid(Uuid::from_str(trimmed).map_err(|e| bad(ty, input, e))?),
         BasicType::Date => Value::Date(
             NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").map_err(|e| bad(ty, input, e))?,

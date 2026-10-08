@@ -136,6 +136,31 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // Create a table **from a geographic file** (analytics TODO A5.2): GeoJSON,
+    // a zipped Shapefile or a GeoPackage, its geometry reprojected to WGS84 by
+    // PostGIS. The file travels as base64 because two of the three are binary;
+    // `layer` picks one of several Shapefiles in a zip or tables in a package.
+    set.register(
+        Endpoint::new(
+            "createTableFromGeoFile",
+            Method::Post,
+            api().lit("tables").lit("geo"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("name", TypeSchema::text()),
+            StructField::new("file_name", TypeSchema::text()),
+            StructField::new("content_base64", TypeSchema::text()),
+            StructField::new("layer", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("database", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("table", table_schema()),
+            StructField::new("inserted", TypeSchema::int()),
+            StructField::new("warnings", TypeSchema::array(TypeSchema::text())),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // Set a table's configuration: the `_fd_tables` overlay fields, and only
     // those (§9). A `PUT` on the table's own path rather than a nested
     // `…/settings` resource, because from the admin's side there is one table

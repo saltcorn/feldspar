@@ -73,6 +73,9 @@ serde_json.workspace = true
 chrono.workspace = true
 rust_decimal.workspace = true
 uuid.workspace = true
+# Importing a zipped Shapefile and a GeoPackage (analytics TODO A5.2).
+zip.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 # The SQLite backend, for the tests that run the row layer against a database

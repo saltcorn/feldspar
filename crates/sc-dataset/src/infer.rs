@@ -112,6 +112,17 @@ fn call(callee: &Ast, args: &[Ast], schema: &Schema) -> (ColType, Option<Foreign
         if root == "Math" {
             return (ColType::Float, None);
         }
+        // A field called `Geo` would have been a column above, not a callee
+        // here, so a `Geo.…` call is the geometry function (A5.3).
+        if root == sc_expr::GEO
+            && let Some(f) = sc_expr::geo_function(method)
+        {
+            return match f.result {
+                sc_expr::GeoResult::Geometry => (ColType::Geometry, None),
+                sc_expr::GeoResult::Number => (ColType::Float, None),
+                sc_expr::GeoResult::Bool => (ColType::Bool, None),
+            };
+        }
         if let Some((child, _)) = root.split_once(sc_expr::INVERSE) {
             // The child field an aggregation's selector names, if it names one
             // by a string: `ordersↃcustomer.max("placed")`.
@@ -257,6 +268,9 @@ mod tests {
         assert_eq!(ty("`${rooms} rooms`").0, ColType::Text);
         assert_eq!(ty("Math.log(price)").0, ColType::Float);
         assert_eq!(ty("viewingsↃhouse.length").0, ColType::Int);
+        assert_eq!(ty("Geo.point(price, rooms)").0, ColType::Geometry);
+        assert_eq!(ty("Geo.distance(price, rooms)").0, ColType::Float);
+        assert_eq!(ty("Geo.within(price, rooms)").0, ColType::Bool);
     }
 
     #[test]

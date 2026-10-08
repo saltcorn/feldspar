@@ -497,6 +497,9 @@ pub async fn dial(catalog: &Catalog, def: &DbConnectionDef) -> Result<Arc<dyn Da
         .introspect()
         .await
         .map_err(|e| Error::database(format!("connecting to {}: {e}", def.target())))?;
+    // Whether it can hold geometry (analytics TODO A5.1): asked, never
+    // installed, since the database is someone else's.
+    let _ = driver.detect_spatial().await;
     Ok(driver)
 }
 

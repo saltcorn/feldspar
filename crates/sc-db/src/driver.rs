@@ -13,6 +13,7 @@ use sc_query::{SqlDialect, Statement};
 use crate::capabilities::DbCapabilities;
 use crate::row::RowStream;
 use crate::schema::{DescribedColumn, PhysicalTable, SchemaChange};
+use crate::spatial::SpatialSupport;
 
 /// A single connected database: introspect its schema, run queries, change its
 /// schema, and open transactions (technical design §5).
@@ -95,6 +96,27 @@ pub trait DatabaseDriver: Send + Sync {
     /// Postgres-dialect migration is translated to the driver's own dialect
     /// through this.
     fn dialect(&self) -> &dyn SqlDialect;
+
+    /// Whether this database can hold geometry, as last found out by
+    /// [`detect_spatial`](DatabaseDriver::detect_spatial) or
+    /// [`enable_spatial`](DatabaseDriver::enable_spatial) (analytics TODO A5.1).
+    ///
+    /// The default is the answer for every backend that is not PostgreSQL.
+    fn spatial(&self) -> SpatialSupport {
+        SpatialSupport::not_postgres("not PostgreSQL")
+    }
+
+    /// Ask the database whether PostGIS is installed, and remember the answer.
+    async fn detect_spatial(&self) -> Result<SpatialSupport> {
+        Ok(self.spatial())
+    }
+
+    /// Install PostGIS where the connection's role may, then answer as
+    /// [`detect_spatial`](DatabaseDriver::detect_spatial) does. A role that may
+    /// not is not an error: the answer is "unavailable", saying why.
+    async fn enable_spatial(&self) -> Result<SpatialSupport> {
+        self.detect_spatial().await
+    }
 }
 
 /// An in-progress transaction on a [`DatabaseDriver`].

@@ -44,6 +44,10 @@ pub enum ValueType {
     Time,
     /// Instant in time (RFC 3339) — TS `string`.
     Timestamp,
+    /// A geometry, carried as a GeoJSON geometry object (analytics TODO A5.1) —
+    /// TS an object with `type` and `coordinates`. Not in [`ALL`](ValueType::ALL): a custom query's
+    /// parameter is not declared as one.
+    Geometry,
 }
 
 impl ValueType {
@@ -66,6 +70,7 @@ impl ValueType {
             BasicType::Date => ValueType::Date,
             BasicType::Time => ValueType::Time,
             BasicType::Timestamp => ValueType::Timestamp,
+            BasicType::Geometry(_) => ValueType::Geometry,
             BasicType::Other(_) => ValueType::Text,
         }
     }
@@ -91,6 +96,7 @@ impl ValueType {
             ValueType::Date => BasicType::Date,
             ValueType::Time => BasicType::Time,
             ValueType::Timestamp => BasicType::Timestamp,
+            ValueType::Geometry => BasicType::Geometry(sc_types::GeometryKind::Any),
         }
     }
 
@@ -109,12 +115,15 @@ impl ValueType {
             ValueType::Date => "date",
             ValueType::Time => "time",
             ValueType::Timestamp => "timestamp",
+            ValueType::Geometry => "geometry",
         }
     }
 
-    /// Every type, in the order a chooser should offer them — so a command line
-    /// and a form can both name the whole set without either holding a list of
-    /// its own that a new variant would not reach.
+    /// Every type a custom query's parameter may be declared as, in the order a
+    /// chooser should offer them — so a command line and a form can both name
+    /// the whole set without either holding a list of its own that a new
+    /// variant would not reach. Everything but [`Geometry`](ValueType::Geometry),
+    /// which is a column's type and never a parameter's.
     pub const ALL: [ValueType; 11] = [
         ValueType::Text,
         ValueType::Int,
@@ -142,6 +151,11 @@ impl ValueType {
             ValueType::Bool => "boolean",
             ValueType::Int | ValueType::Float => "number",
             ValueType::Json => "unknown",
+            // A GeoJSON geometry object, spelled inline so a generated client
+            // needs no declaration of its own.
+            ValueType::Geometry => {
+                "{ type: string; coordinates?: unknown; geometries?: unknown[] }"
+            }
             // Everything else is carried as a JSON string.
             ValueType::Decimal
             | ValueType::Text

@@ -90,6 +90,8 @@ function typeBadge(c: StageColumn): string {
     case "timestamp":
     case "time":
       return "◷";
+    case "geometry":
+      return "⌖";
     default:
       return "?";
   }

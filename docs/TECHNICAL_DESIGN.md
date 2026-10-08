@@ -762,6 +762,15 @@ model keeps them apart. And **introspection never resolves a column back to a ri
 `_fd_fields` overlay says so (§9) — guessing "this `text` column is an Email" from the database
 is exactly the magic that makes a legacy database behave surprisingly.
 
+**Geometry is a basic type** (analytics TODO A5.1, §14.6): `BasicType::Geometry(GeometryKind)`,
+where the kind is any geometry, a point, a line, a polygon or one of the multi variants. Its
+column is PostGIS's `geometry(<Kind>,4326)`, and its value is a **GeoJSON geometry object in a
+`Value::Json`** — there is no geometry `Value` variant, because everything above the driver
+already moves JSON, and the Postgres driver converts at the wire. It is basic rather than rich
+because the kind is part of the column's SQL type, not an attribute of a field over one; the
+field types are named `geometry`, `geometry_point`, `geometry_polygon`, … (never `point` or
+`polygon`, which are Postgres's own non-geographic types and keep meaning those).
+
 ### 6.2 Fields — the `BaseField` / `DataField` / `FormField` split
 
 GOALS calls out that v1 conflated DB fields and form fields. v2 separates them explicitly:
@@ -8579,6 +8588,97 @@ fit's residual plot does not, that a copy into a second report is its own, and t
 index lists both reports for the delete warnings. The print dialog cannot be driven from a test;
 it was walked in headless Chromium, whose `page.pdf({ preferCSSPageSize: true })` gives the
 pages the screen counted.
+
+### 14.6 Geometry (analytics milestone A5, phase 1)
+
+Maps begin with geometry in core: a field type, files that make tables of it, and formula
+functions over it. All of it needs PostgreSQL with PostGIS (`OPERATIONS.md` §10); SQLite, and a
+Postgres database without the extension, refuse it with a sentence saying which.
+
+**Whether a database has PostGIS** is a fact about one database, not about a backend, so it is
+not a `DbCapabilities` flag but a driver answer: `DatabaseDriver::spatial()` returns
+`SpatialSupport::Available { version }` or `Unavailable { reason }`, remembered from the last
+`detect_spatial()` (a query of `pg_extension`) or `enable_spatial()` (which also tries
+`CREATE EXTENSION postgis`, where the role may). `Catalog::init` detects; `feldspar serve`'s boot
+calls `sc_catalog::bootstrap_spatial`, which enables, and logs the answer. A connected database
+is only ever asked. When PostGIS is there the driver (re)creates three SQL functions beside it:
+`_fd_utm_srid`, `_fd_square_cell` and `_fd_hex_cell` (`sc-db-postgres`'s `spatial.rs`).
+
+**The type** (§6.1) is `BasicType::Geometry(kind)`, a GeoJSON object in a `Value::Json`.
+`sc_types::geometry::check_geojson` is the validation, sentence by sentence: the right `type`
+for the column (a polygon is refused from a point field, saying both), positions of two or three
+numbers, longitude and latitude in range (a British National Grid easting typed into a point is
+refused naming WGS84, and pointing at importing instead), lines of two positions or more, rings
+closed. A height is accepted and not stored. Introspection reads a geometry column's type with
+`format_type`, because `information_schema` says only `geometry`; tables an extension owns
+(`spatial_ref_sys`) are not listed. A geometry field on a table whose database has no PostGIS is
+refused by `schema_edit` before any DDL (`field `location` cannot be a geometry: …`).
+
+**At the wire.** The Postgres driver reads `geometry` and `geography` columns as EWKB and writes
+GeoJSON parameters as 2D little-endian EWKB with SRID 4326 (`sc-db-postgres`'s `geometry.rs`;
+ISO WKB's thousands for Z and M are read too). So a geometry column needs no `ST_AsGeoJSON` in
+any query, and every reader — a REST list, a GraphQL query, a dataset stage, the admin grid —
+gets GeoJSON. REST carries it as the object; GraphQL as a `GeoJSON` scalar with an unordered
+comparison input (`eq`, `ne`, `in`, `nin`, `is_null`); a generated TypeScript client as
+`{ type: string; coordinates?: unknown; geometries?: unknown[] }`; an MCP tool's JSON Schema as
+an object with a `type`. A dataset's column type is `ColType::Geometry`: not sortable, not
+plottable (it is drawn on a map), but a group key (`Geo.hexCell(location, 500)`).
+
+**Importing** (`sc_api::geo_import`, `createTableFromGeoFile`, the admin's *New table → Create
+from a map file*): a GeoJSON file, a zipped Shapefile or a GeoPackage, told apart by their first
+bytes, becomes a new table as a CSV does — fields deduced, the table made through `schema_edit`,
+every feature written through the row layer in one transaction, and no table left behind when a
+feature will not go in. The readers are pure (bytes → `GeoFile { crs, features, warnings }`):
+
+| | geometry | attributes | coordinate system |
+|---|---|---|---|
+| GeoJSON | the Feature's `geometry` | `properties`, plus the Feature's `id` | WGS84, or a pre-RFC 7946 `crs` naming an EPSG code |
+| Shapefile | the `.shp`'s records (holes assigned to the outer ring that contains them) | the `.dbf` (text, numbers, logicals, dates; `.cpg` for the encoding) | the `.prj`'s WKT; WGS84 with a warning when there is none |
+| GeoPackage | the WKB inside each GeoPackage geometry blob | the table's other columns | the EPSG code `gpkg_spatial_ref_sys` names, else its WKT |
+
+A zip with several Shapefiles, or a package with several feature tables, is refused naming them
+until a `layer` is chosen. **PostGIS reprojects**: each chunk of geometries is one query,
+`ST_Force2D(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(…) | ST_GeomFromWKB(…), srid), 4326))`
+(or `ST_Transform(g, '<wkt>', 4326)` for a definition, which PROJ reads), and the result comes
+back through the driver as GeoJSON; a chunk that fails is retried feature by feature so the
+refusal names the feature. The geometry column's kind is the one every feature fits, with single
+geometries made multi (`ST_Multi`) when a file mixes polygons and multipolygons. Attribute types
+come from the JSON values (whole numbers, numbers, flags, ISO dates and timestamps, objects,
+else text). The file's `id` is the key when every feature has a different whole number for it;
+otherwise the table numbers its rows and keeps the file's as `source_id`. How exactly a datum
+shift is made depends on PROJ's grids (`OPERATIONS.md` §10.2).
+
+**The `Geo` functions** (`sc-expr`'s `geo.rs`) are methods of one global, as JavaScript's own are
+of `Math`, so they claim one identifier rather than eleven a table might have columns called — and
+a field called `Geo` wins, as one called `Math` does:
+
+| function | PostGIS | returns |
+|---|---|---|
+| `Geo.point(lon, lat)` | `ST_SetSRID(ST_MakePoint(…), 4326)` | geometry |
+| `Geo.buffer(g, metres)` | `ST_Buffer(g::geography, m)::geometry` | geometry |
+| `Geo.centroid(g)` | `ST_Centroid(g::geography)::geometry` | geometry |
+| `Geo.area(g)`, `Geo.length(g)` | `ST_Area` / `ST_Length` of `g::geography` | square metres, metres |
+| `Geo.distance(a, b)` | `ST_Distance(a::geography, b::geography)` | metres |
+| `Geo.intersects`, `Geo.contains`, `Geo.within` | `ST_Intersects` / `ST_Contains` / `ST_Within` | a condition |
+| `Geo.squareCell(g, metres)`, `Geo.hexCell(g, metres)` | `_fd_square_cell`, `_fd_hex_cell` | geometry |
+
+Distances and areas are on the WGS84 spheroid through `geography`, so nobody chooses a
+projection. A grid cell is laid out in the UTM zone of the geometry's point on surface — sides
+(a square) or edges (a hexagon) of the given metres on the ground, tiling within a zone — drawn
+by PostGIS's `ST_Square`/`ST_Hexagon` and returned in WGS84; a dataset that straddles two zones
+has two lattices that do not meet at the boundary. Validation checks each call's name and
+argument count and records `Analysis::geo_calls`; the symbolic translation turns each into SQL,
+a boolean one also in condition position. Only the database computes them: the JavaScript
+evaluator has no `Geo`, and says so by name if a formula that needs one reaches it, and a
+dataset whose database has no PostGIS refuses the operation with `Schema::spatial`'s sentence.
+The dataset compiler infers their types (geometry, number, boolean), and the Analytics UI's
+formula input offers them over a stage with a geometry column.
+
+Two compiler fixes came with them, both general: a negative number literal is one literal
+(`-0.12`, not `-$1`, which Postgres cannot type), and an Aggregate key holding a literal
+(`price > 100000`, `Geo.squareCell(location, 500)`) is computed a level down and grouped by
+name, since `f($1)` in the select list and `f($7)` in the `GROUP BY` are not one expression to
+Postgres.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

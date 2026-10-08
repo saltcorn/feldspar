@@ -1,0 +1,116 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "id": 1,
+   "properties": {
+    "name": "Regent's Park",
+    "area_ha": 166.0,
+    "opened": "1835-01-01",
+    "gates": 8
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -0.16,
+       51.52
+      ],
+      [
+       -0.15,
+       51.52
+      ],
+      [
+       -0.15,
+       51.53
+      ],
+      [
+       -0.16,
+       51.53
+      ],
+      [
+       -0.16,
+       51.52
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 2,
+   "properties": {
+    "name": "The Royal Parks",
+    "area_ha": 2.5,
+    "opened": null,
+    "gates": 3
+   },
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        -0.18,
+        51.5
+       ],
+       [
+        -0.175,
+        51.5
+       ],
+       [
+        -0.175,
+        51.505
+       ],
+       [
+        -0.18,
+        51.505
+       ],
+       [
+        -0.18,
+        51.5
+       ]
+      ]
+     ],
+     [
+      [
+       [
+        -0.15,
+        51.5
+       ],
+       [
+        -0.145,
+        51.5
+       ],
+       [
+        -0.145,
+        51.505
+       ],
+       [
+        -0.15,
+        51.505
+       ],
+       [
+        -0.15,
+        51.5
+       ]
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 3,
+   "properties": {
+    "name": "Unmapped garden",
+    "area_ha": 0.1,
+    "opened": "2001-05-04",
+    "gates": 1
+   },
+   "geometry": null
+  }
+ ]
+}

@@ -112,6 +112,20 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_config::bootstrap(&catalog)
         .await
         .context("ensuring the configuration tables exist")?;
+    // Geometry (analytics TODO A5.1): PostGIS where the role may install it,
+    // and a sentence where it may not, so the admin knows why a geometry field
+    // is refused before trying one.
+    match sc_catalog::bootstrap_spatial(&catalog)
+        .await
+        .context("looking for PostGIS")?
+    {
+        sc_db::SpatialSupport::Available { version } => {
+            eprintln!("feldspar: PostGIS {version}; geometry fields are available");
+        }
+        sc_db::SpatialSupport::Unavailable { reason } => {
+            eprintln!("feldspar: geometry fields are unavailable: {reason}");
+        }
+    }
     // The TLS settings the selected environment pins (§13.5), before anything
     // reads a setting: from here every read of them — the boot's, the settings
     // screen's, `get-cfg`'s — sees the file's value, and a write is refused.

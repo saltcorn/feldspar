@@ -42,6 +42,7 @@ mod ast;
 mod code;
 mod eval;
 mod formula;
+mod geo;
 #[cfg(feature = "eval")]
 mod normalise;
 mod shape;
@@ -71,6 +72,7 @@ pub use code::{
 pub use eval::DenoEvaluator;
 pub use eval::{FormulaCall, JsEvaluator, value_from_json, value_to_json};
 pub use formula::Formula;
+pub use geo::{GEO, GEO_FUNCTIONS, GeoFunction, GeoResult, geo_function};
 pub use shape::{FieldShape, KeyShape, RowsOf, SchemaShape, TableShape};
 pub use subquery::{AggFunc, AggregateSpec, aggregate_expr, correlated_aggregate, correlation};
 pub use template::{Escape, MAX_PASSES, RenderMode, Template, Token};

@@ -285,6 +285,16 @@ input FloatComparison {
 	is_null: Boolean
 }
 
+scalar GeoJSON
+
+input GeoJSONComparison {
+	eq: GeoJSON
+	ne: GeoJSON
+	in: [GeoJSON!]
+	nin: [GeoJSON!]
+	is_null: Boolean
+}
+
 scalar JSON
 
 input JSONComparison {

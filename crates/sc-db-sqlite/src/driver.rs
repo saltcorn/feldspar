@@ -231,4 +231,9 @@ impl DatabaseDriver for SqliteDriver {
     fn dialect(&self) -> &dyn SqlDialect {
         &self.dialect
     }
+
+    /// SpatiaLite is out of scope (analytics TODO, "Explicitly out of scope").
+    fn spatial(&self) -> sc_db::SpatialSupport {
+        sc_db::SpatialSupport::not_postgres("SQLite")
+    }
 }

@@ -63,6 +63,16 @@ impl PgParam<'_> {
                 Type::FLOAT4 => (*v as f32).to_sql_checked(ty, out),
                 _ => v.to_sql_checked(ty, out),
             },
+            // A geometry travels as GeoJSON and PostGIS takes EWKB (see
+            // `crate::geometry`); a form may send the object's text.
+            Value::Json(v) if crate::geometry::is_geometry_type(ty.name()) => {
+                encode_geometry(v, out)
+            }
+            Value::Text(v) if crate::geometry::is_geometry_type(ty.name()) => {
+                let json: serde_json::Value = serde_json::from_str(v)
+                    .map_err(|_| BoxError::from(format!("{v:?} is not a GeoJSON geometry")))?;
+                encode_geometry(&json, out)
+            }
             Value::Text(v) => v.to_sql_checked(ty, out),
             Value::Bytes(v) => v.to_sql_checked(ty, out),
             Value::Json(v) => v.to_sql_checked(ty, out),
@@ -72,6 +82,29 @@ impl PgParam<'_> {
             Value::Timestamp(v) => v.to_sql_checked(ty, out),
             Value::Decimal(v) => v.to_sql_checked(ty, out),
         }
+    }
+}
+
+/// A GeoJSON geometry as the EWKB a PostGIS parameter takes.
+fn encode_geometry(
+    json: &serde_json::Value,
+    out: &mut BytesMut,
+) -> std::result::Result<IsNull, BoxError> {
+    let bytes = crate::geometry::geojson_to_ewkb(json).map_err(BoxError::from)?;
+    out.extend_from_slice(&bytes);
+    Ok(IsNull::No)
+}
+
+/// A PostGIS value's raw binary form, for [`decode`] to convert.
+struct RawGeometry<'a>(&'a [u8]);
+
+impl<'a> FromSql<'a> for RawGeometry<'a> {
+    fn from_sql(_ty: &Type, raw: &'a [u8]) -> std::result::Result<Self, BoxError> {
+        Ok(RawGeometry(raw))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        crate::geometry::is_geometry_type(ty.name())
     }
 }
 
@@ -147,6 +180,14 @@ pub fn decode(row: &PgRow, idx: usize) -> Result<Value> {
         })
     } else if *ty == Type::NUMERIC {
         get::<Option<Decimal>>(row, idx)?.map_or(Value::Null, Value::Decimal)
+    } else if crate::geometry::is_geometry_type(ty.name()) {
+        match get::<Option<RawGeometry<'_>>>(row, idx)? {
+            None => Value::Null,
+            Some(RawGeometry(bytes)) => Value::Json(
+                crate::geometry::ewkb_to_geojson(bytes)
+                    .map_err(|e| Error::database(format!("column `{}`: {e}", column.name())))?,
+            ),
+        }
     } else {
         return Err(Error::database(format!(
             "unsupported column type `{ty}` for column `{}` (basic types only this milestone)",

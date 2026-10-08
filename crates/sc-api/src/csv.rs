@@ -617,7 +617,11 @@ async fn row_exists(
 /// no sequence behind it (a key that is not an identity column) is left alone
 /// rather than being an error, which is what `pg_get_serial_sequence` returning
 /// null means.
-async fn advance_identity_sequence(catalog: &Catalog, table: &Table, pk: &str) -> Result<()> {
+pub(crate) async fn advance_identity_sequence(
+    catalog: &Catalog,
+    table: &Table,
+    pk: &str,
+) -> Result<()> {
     // Only where there is a sequence to advance. A backend that numbers a key
     // from the table itself (SQLite's rowid) is already past the rows that were
     // just written, and this statement is Postgres's own dialect — sending it
@@ -880,7 +884,7 @@ fn detect_type(values: &[&str]) -> BasicType {
 /// Saltcorn 1's `Field.labelToName`, which is what makes `Item Name` and
 /// `Item_Name` the same column — an admin importing the same data twice from two
 /// spreadsheets must not get two tables' worth of fields out of it.
-fn label_to_name(label: &str) -> String {
+pub(crate) fn label_to_name(label: &str) -> String {
     let mut name = String::with_capacity(label.len());
     for c in label.trim().chars() {
         match c {
@@ -903,7 +907,7 @@ fn label_to_name(label: &str) -> String {
 /// The label a header cell keeps: itself, with underscores as spaces and the
 /// first letter capitalised. `Item_Name` and `item name` both read as
 /// `Item Name` on a form.
-fn header_label(header: &str) -> String {
+pub(crate) fn header_label(header: &str) -> String {
     let spaced = header.trim().replace('_', " ");
     let mut chars = spaced.chars();
     match chars.next() {

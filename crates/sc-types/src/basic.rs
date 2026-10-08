@@ -17,6 +17,8 @@
 use sc_error::{Error, Result};
 use sc_query::Value;
 
+use crate::geometry::{self, GeometryKind};
+
 /// A database type the MVP understands, as one of a fixed set of scalar families
 /// (each mirroring a [`Value`] variant) plus an [`Other`](BasicType::Other)
 /// catch-all for unrecognised backend types.
@@ -44,6 +46,10 @@ pub enum BasicType {
     Time,
     /// Instant in time (`timestamptz`/`timestamp`) — [`Value::Timestamp`].
     Timestamp,
+    /// A geometry in WGS84 (PostGIS `geometry(<kind>,4326)`), carried as a
+    /// GeoJSON geometry object in a [`Value::Json`] (analytics TODO A5.1, see
+    /// [`crate::geometry`]).
+    Geometry(GeometryKind),
     /// A backend type not mapped to any of the above. Still usable, but only
     /// through the catch-all display/edit path, where it is treated as text. The
     /// wrapped string is the backend's own type name so it survives round-trips.
@@ -57,6 +63,9 @@ impl BasicType {
     /// type not in the table becomes [`BasicType::Other`] carrying the original
     /// name — never an error, because every column must remain usable.
     pub fn from_sql_type(sql_type: &str) -> BasicType {
+        if let Some(kind) = GeometryKind::of_sql_type(sql_type) {
+            return BasicType::Geometry(kind);
+        }
         match sql_type.trim().to_ascii_lowercase().as_str() {
             "bool" | "boolean" => BasicType::Bool,
             "int2" | "int4" | "int8" | "smallint" | "integer" | "bigint" | "serial"
@@ -96,6 +105,7 @@ impl BasicType {
             BasicType::Date => "date",
             BasicType::Time => "time",
             BasicType::Timestamp => "timestamptz",
+            BasicType::Geometry(kind) => kind.sql_type(),
             BasicType::Other(name) => name,
         }
     }
@@ -116,6 +126,7 @@ impl BasicType {
             BasicType::Date => "date",
             BasicType::Time => "time",
             BasicType::Timestamp => "timestamp",
+            BasicType::Geometry(kind) => kind.type_name(),
             BasicType::Other(name) => name,
         }
     }
@@ -135,7 +146,11 @@ impl BasicType {
     /// because whoever asked is the one who knows whether an unknown type is a
     /// problem.
     pub fn from_name(name: &str) -> BasicType {
-        match name.trim().to_ascii_lowercase().as_str() {
+        let lower = name.trim().to_ascii_lowercase();
+        if let Some(kind) = GeometryKind::of_type_name(&lower) {
+            return BasicType::Geometry(kind);
+        }
+        match lower.as_str() {
             "int" => BasicType::Int,
             "float" => BasicType::Float,
             "bytes" => BasicType::Bytes,
@@ -159,6 +174,7 @@ impl BasicType {
             BasicType::Date => "date",
             BasicType::Time => "time",
             BasicType::Timestamp => "timestamp",
+            BasicType::Geometry(_) => "json",
             BasicType::Other(_) => return None,
         })
     }
@@ -190,6 +206,9 @@ impl BasicType {
         if value.is_null() {
             return true;
         }
+        if let (BasicType::Geometry(kind), Value::Json(json)) = (self, value) {
+            return geometry::check_geojson(*kind, json).is_ok();
+        }
         match self.value_kind() {
             Some(kind) => value.kind() == kind,
             // `Other` imposes no family constraint beyond "not a structured
@@ -218,6 +237,9 @@ impl BasicType {
         if matches!(self, BasicType::Json) {
             return true;
         }
+        if let BasicType::Geometry(kind) = self {
+            return json.is_null() || geometry::check_geojson(*kind, json).is_ok();
+        }
         match json {
             Json::Null => true,
             Json::Bool(_) => matches!(self, BasicType::Bool),
@@ -245,6 +267,10 @@ impl BasicType {
     /// descriptive [`Error::Invalid`] when it is not (principle 5: no silent
     /// coercion).
     pub fn validate(&self, value: &Value) -> Result<()> {
+        // A geometry says what is wrong with it, not only that it is wrong.
+        if let (BasicType::Geometry(kind), Value::Json(json)) = (self, value) {
+            return geometry::check_geojson(*kind, json);
+        }
         if self.accepts(value) {
             Ok(())
         } else {

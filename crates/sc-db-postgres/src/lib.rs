@@ -14,7 +14,9 @@ mod ddl;
 mod dialect;
 mod driver;
 mod exec;
+mod geometry;
 mod introspect;
+mod spatial;
 mod transaction;
 mod value;
 

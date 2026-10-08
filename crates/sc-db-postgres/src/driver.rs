@@ -11,9 +11,11 @@
 
 use async_trait::async_trait;
 use deadpool_postgres::{Manager, ManagerConfig, Object, Pool, RecyclingMethod};
+use std::sync::{Arc, RwLock};
+
 use sc_db::{
     DatabaseDriver, DbCapabilities, DescribedColumn, PhysicalTable, RowStream, SchemaChange,
-    Transaction,
+    SpatialSupport, Transaction,
 };
 use sc_error::{Error, Result};
 use sc_query::{SqlDialect, Statement};
@@ -43,6 +45,9 @@ pub struct PgDriver {
     /// [`introspect`](PgDriver::introspect), so nothing outside it is ever
     /// offered as a table.
     schema: Option<String>,
+    /// Whether the database has PostGIS, as last found out (see
+    /// [`sc_db::SpatialSupport`]). Shared, so a clone answers the same.
+    spatial: Arc<RwLock<SpatialSupport>>,
 }
 
 /// What an admin types to reach another Postgres database (§9's Connections
@@ -77,6 +82,9 @@ impl PgDriver {
             pool,
             dialect: PgDialect::new(),
             schema: None,
+            spatial: Arc::new(RwLock::new(SpatialSupport::Unavailable {
+                reason: "PostGIS has not been looked for in this database yet".to_owned(),
+            })),
         }
     }
 
@@ -240,6 +248,37 @@ impl PgDriver {
         Ok(Box::new(tx))
     }
 
+    /// Whether the database has PostGIS, as last found out.
+    pub fn spatial(&self) -> SpatialSupport {
+        self.spatial
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_else(|e| e.into_inner().clone())
+    }
+
+    /// Ask the database whether it has PostGIS, and remember the answer.
+    pub async fn detect_spatial(&self) -> Result<SpatialSupport> {
+        let client = self.client().await?;
+        let found = crate::spatial::detect(&client).await?;
+        self.remember_spatial(&found);
+        Ok(found)
+    }
+
+    /// Install PostGIS where the role may, and remember the answer.
+    pub async fn enable_spatial(&self) -> Result<SpatialSupport> {
+        let client = self.client().await?;
+        let found = crate::spatial::enable(&client).await?;
+        self.remember_spatial(&found);
+        Ok(found)
+    }
+
+    fn remember_spatial(&self, found: &SpatialSupport) {
+        match self.spatial.write() {
+            Ok(mut s) => *s = found.clone(),
+            Err(e) => *e.into_inner() = found.clone(),
+        }
+    }
+
     /// Check out a pooled connection.
     async fn client(&self) -> Result<Object> {
         self.pool
@@ -284,5 +323,17 @@ impl DatabaseDriver for PgDriver {
 
     fn dialect(&self) -> &dyn SqlDialect {
         &self.dialect
+    }
+
+    fn spatial(&self) -> SpatialSupport {
+        PgDriver::spatial(self)
+    }
+
+    async fn detect_spatial(&self) -> Result<SpatialSupport> {
+        PgDriver::detect_spatial(self).await
+    }
+
+    async fn enable_spatial(&self) -> Result<SpatialSupport> {
+        PgDriver::enable_spatial(self).await
     }
 }

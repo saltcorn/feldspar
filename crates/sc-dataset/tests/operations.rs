@@ -450,6 +450,30 @@ async fn an_aggregate_computes_every_summary() -> Result<()> {
 }
 
 #[tokio::test]
+async fn a_group_key_with_a_literal_in_it_groups() -> Result<()> {
+    // `price > 100000` would be written once in the select list and once in
+    // the GROUP BY, each with a placeholder of its own, which Postgres does
+    // not take for one expression; the key is computed a level down instead.
+    for fx in both().await? {
+        let def = DatasetDef::over_table("dear", "houses").then(Op::Aggregate(AggregateOp {
+            group_by: vec![GroupKey {
+                name: "dear".into(),
+                formula: "price > 100000".into(),
+            }],
+            summaries: vec![Summary::count("n")],
+        }));
+        let rows = rows_of(&fx, &def).await?;
+        let backend = fx.backend;
+        assert_rows(
+            backend,
+            &rows,
+            &[vec![json!(false), json!(1)], vec![json!(true), json!(4)]],
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn limits_take_the_first_a_sample_or_the_top_of_each_group() -> Result<()> {
     let mut samples = Vec::new();
     for fx in both().await? {

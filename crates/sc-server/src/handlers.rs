@@ -286,6 +286,40 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
         }
     });
 
+    reg.register("createTableFromGeoFile", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                use base64::Engine as _;
+                let obj = require_object(&ctx.body)?;
+                let name = non_empty_str_field(obj, "name")?.trim().to_owned();
+                let file_name = non_empty_str_field(obj, "file_name")?.to_owned();
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(str_field(obj, "content_base64")?.trim())
+                    .map_err(|e| Error::invalid(format!("`content_base64` is not base64 ({e})")))?;
+                let layer = optional_str(obj, "layer");
+                let (table, outcome) = sc_api::geo_import::create_table_from_geo_file(
+                    &catalog,
+                    &name,
+                    &optional_str(obj, "database"),
+                    &file_name,
+                    &bytes,
+                    Some(layer.trim()).filter(|l| !l.is_empty()),
+                    Some(&admin_caller(ctx.user.as_ref())),
+                )
+                .await?;
+                let rls = catalog.primary().capabilities().row_level_security;
+                Ok(HandlerResponse::ok(json!({
+                    "table": table_json(&catalog, &table, rls, &ctx.locale),
+                    "inserted": outcome.inserted,
+                    "warnings": outcome.warnings,
+                }))
+                .with_status(201))
+            }
+        }
+    });
+
     reg.register("dropTable", {
         let catalog = catalog.clone();
         move |ctx| {

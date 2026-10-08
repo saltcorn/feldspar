@@ -87,6 +87,10 @@ mod file_store_admin_api;
 mod fit_model_action;
 #[path = "generated_client_refresh.rs"]
 mod generated_client_refresh;
+#[path = "geo_import.rs"]
+mod geo_import;
+#[path = "geometry.rs"]
+mod geometry;
 #[path = "graphql_serving.rs"]
 mod graphql_serving;
 #[path = "ide_language_server.rs"]

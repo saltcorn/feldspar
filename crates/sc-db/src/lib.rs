@@ -23,6 +23,7 @@ mod capabilities;
 mod driver;
 mod row;
 mod schema;
+mod spatial;
 
 pub use capabilities::DbCapabilities;
 pub use driver::{DatabaseDriver, Transaction};
@@ -31,6 +32,7 @@ pub use schema::{
     Column, ColumnDef, ColumnGenerator, ColumnRef, CommentTarget, DescribedColumn, ForeignKey,
     IndexOn, PhysicalConstraint, PhysicalConstraintKind, PhysicalTable, SchemaChange,
 };
+pub use spatial::SpatialSupport;
 
 #[cfg(test)]
 mod tests {

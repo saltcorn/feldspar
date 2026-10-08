@@ -528,6 +528,16 @@ impl<'a> Translator<'a> {
                 untranslatable("a bare aggregate value as a condition (compare it, e.g. `… > 0`)")
             };
         }
+        if let Some((f, args)) = self.geo_call(ast) {
+            return if f.result == crate::geo::GeoResult::Bool {
+                self.geo(f, args)
+            } else {
+                untranslatable(format!(
+                    "`Geo.{}` as a condition (it is not true or false; compare it)",
+                    f.name
+                ))
+            };
+        }
         match ast {
             Ast::Bool(b) => Ok(QExpr::lit(*b)),
             Ast::Unary {
@@ -636,6 +646,9 @@ impl<'a> Translator<'a> {
             let chain = chain.map_err(TranslateError::Error)?;
             return self.aggregation(&chain);
         }
+        if let Some((f, args)) = self.geo_call(ast) {
+            return self.geo(f, args);
+        }
         match ast {
             Ast::Str(s) => Ok(QExpr::lit(s.as_str())),
             Ast::Num(n) => Ok(QExpr::Lit(num_value(*n))),
@@ -662,7 +675,12 @@ impl<'a> Translator<'a> {
                 None => untranslatable("property access on something other than an ambient object"),
             },
             Ast::Unary { op, expr } => match op {
-                UnaryOp::Neg => Ok(QExpr::unary(QUnOp::Neg, self.value(expr)?)),
+                // A negative number is one literal, not the negation of one:
+                // Postgres cannot type `-$1` on its own (`Geo.point(-0.12, 51.5)`).
+                UnaryOp::Neg => match &**expr {
+                    Ast::Num(n) => Ok(QExpr::Lit(num_value(-n))),
+                    _ => Ok(QExpr::unary(QUnOp::Neg, self.value(expr)?)),
+                },
                 UnaryOp::Not => Ok(not_pred(self.predicate(expr)?)),
                 UnaryOp::Pos => untranslatable("unary `+` (numeric coercion)"),
                 UnaryOp::TypeOf => untranslatable("`typeof`"),
@@ -703,6 +721,33 @@ impl<'a> Translator<'a> {
             }),
             other => untranslatable(describe(other)),
         }
+    }
+
+    /// The `Geo` function and arguments of `ast`, when it is a call of one and
+    /// no field called `Geo` shadows them (analytics TODO A5.3).
+    fn geo_call<'b>(&self, ast: &'b Ast) -> Option<(&'static crate::geo::GeoFunction, &'b [Ast])> {
+        let shadowed = self
+            .shape
+            .tables
+            .get(self.table)
+            .is_some_and(|t| t.fields.contains_key(crate::geo::GEO));
+        if shadowed {
+            return None;
+        }
+        crate::geo::as_geo_call(ast)
+    }
+
+    /// A `Geo` call as PostGIS SQL.
+    fn geo(
+        &mut self,
+        f: &'static crate::geo::GeoFunction,
+        args: &[Ast],
+    ) -> Result<QExpr, TranslateError> {
+        let mut translated = Vec::with_capacity(args.len());
+        for a in args {
+            translated.push(self.value(a)?);
+        }
+        crate::geo::sql(f, translated).map_err(TranslateError::Error)
     }
 
     /// An identifier in value position: a field, a Ⱶ-join path, or a refusal
@@ -2174,5 +2219,165 @@ mod tests {
         let e: Error = err.into();
         assert!(matches!(e.repr(), sc_error::Repr::Invalid(_)));
         assert!(e.to_string().contains("cannot be translated"), "got: {e}");
+    }
+
+    // ---- the `Geo` functions (analytics TODO A5.3) -------------------------
+
+    /// `books` with a point and a polygon, for the geometry functions.
+    fn geo_shape() -> SchemaShape {
+        SchemaShape::new().table(
+            "places",
+            TableShape::new()
+                .field("id")
+                .field("location")
+                .field("outline")
+                .field("lon")
+                .field("lat"),
+        )
+    }
+
+    fn geo_sql(src: &str, predicate: bool) -> (String, Vec<Value>) {
+        let formula = Formula::parse(src).unwrap();
+        formula.validate(&geo_shape(), "places").unwrap();
+        let anon = UserEnv::Inline(None);
+        let env = Env::new(&anon);
+        let expr = if predicate {
+            translate(&formula, Operation::Read, &env, &geo_shape(), "places").unwrap()
+        } else {
+            translate_value(&formula, &env, &geo_shape(), "places").unwrap()
+        };
+        let stmt: Statement = Select::from(Source::table("places")).filter(expr).into();
+        let (sql, binds) = Pg.render(&stmt).unwrap();
+        (
+            sql.strip_prefix("SELECT * FROM \"places\" WHERE ")
+                .unwrap()
+                .to_owned(),
+            binds,
+        )
+    }
+
+    #[test]
+    fn geo_functions_become_postgis_with_metres_through_geography() {
+        let (sql, binds) = geo_sql("Geo.point(lon, lat)", false);
+        assert_eq!(
+            sql,
+            "ST_SetSRID(ST_MakePoint(CAST(\"places\".\"lon\" AS double precision), \
+             CAST(\"places\".\"lat\" AS double precision)), $1)"
+        );
+        assert_eq!(binds, vec![Value::Int(4326)]);
+
+        let (sql, _) = geo_sql("Geo.distance(location, Geo.centroid(outline))", false);
+        assert_eq!(
+            sql,
+            "ST_Distance(CAST(\"places\".\"location\" AS geography), \
+             CAST(CAST(ST_Centroid(CAST(\"places\".\"outline\" AS geography)) AS geometry) \
+             AS geography))"
+        );
+        let (sql, binds) = geo_sql("Geo.buffer(location, 250)", false);
+        assert_eq!(
+            sql,
+            "CAST(ST_Buffer(CAST(\"places\".\"location\" AS geography), \
+             CAST($1 AS double precision)) AS geometry)"
+        );
+        assert_eq!(binds, vec![Value::Int(250)]);
+        assert!(
+            geo_sql("Geo.area(outline)", false)
+                .0
+                .starts_with("ST_Area(CAST(")
+        );
+        assert!(
+            geo_sql("Geo.length(outline)", false)
+                .0
+                .starts_with("ST_Length(CAST(")
+        );
+        assert!(
+            geo_sql("Geo.hexCell(location, 500)", false)
+                .0
+                .starts_with("_fd_hex_cell(\"places\".\"location\", ")
+        );
+        assert!(
+            geo_sql("Geo.squareCell(location, 500)", false)
+                .0
+                .starts_with("_fd_square_cell(")
+        );
+        // The predicates are conditions in their own right, and compose.
+        let (sql, binds) = geo_sql(
+            "Geo.within(location, outline) && Geo.distance(location, outline) < 1000",
+            true,
+        );
+        assert!(
+            sql.contains("ST_Within(\"places\".\"location\", \"places\".\"outline\")"),
+            "{sql}"
+        );
+        assert!(sql.contains("ST_Distance("), "{sql}");
+        assert_eq!(binds, vec![Value::Int(1000)]);
+        assert!(
+            geo_sql("Geo.intersects(location, outline)", true)
+                .0
+                .starts_with("ST_Intersects(")
+        );
+        assert!(
+            geo_sql("Geo.contains(outline, location)", true)
+                .0
+                .starts_with("ST_Contains(")
+        );
+    }
+
+    #[test]
+    fn a_geo_function_that_is_not_true_or_false_is_not_a_condition() {
+        let formula = Formula::parse("Geo.area(outline)").unwrap();
+        let anon = UserEnv::Inline(None);
+        let err = translate(
+            &formula,
+            Operation::Read,
+            &Env::new(&anon),
+            &geo_shape(),
+            "places",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, TranslateError::Untranslatable(w) if w.contains("Geo.area")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn geo_calls_are_checked_and_recorded() {
+        let analysis = Formula::parse("Geo.distance(location, Geo.point(lon, lat)) < 50")
+            .unwrap()
+            .validate(&geo_shape(), "places")
+            .unwrap();
+        assert_eq!(
+            analysis
+                .geo_calls
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["distance", "point"]
+        );
+        let refusal = |src: &str| {
+            Formula::parse(src)
+                .unwrap()
+                .validate(&geo_shape(), "places")
+                .unwrap_err()
+                .to_string()
+        };
+        let e = refusal("Geo.distanse(location, outline)");
+        assert!(
+            e.contains("not a geometry function") && e.contains("Geo.distance(a, b)"),
+            "{e}"
+        );
+        let e = refusal("Geo.buffer(location)");
+        assert!(e.contains("takes 2 arguments, and is given 1"), "{e}");
+        let e = refusal("Geo");
+        assert!(e.contains("only called"), "{e}");
+        // A field called `Geo` wins, as one called `Math` does.
+        let shadowing = SchemaShape::new().table("t", TableShape::new().field("Geo"));
+        let analysis = Formula::parse("Geo")
+            .unwrap()
+            .validate(&shadowing, "t")
+            .unwrap();
+        assert!(analysis.fields.contains("Geo"));
+        assert!(analysis.geo_calls.is_empty());
     }
 }

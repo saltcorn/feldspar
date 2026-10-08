@@ -19,15 +19,19 @@
 // The rules here are the ones a test can pin without a browser: when the Create
 // button may be pressed, and what a chosen file suggests the table be called.
 
-/** Which of the four things the dialog is making. */
-export type NewTableSource = "blank" | "csv" | "provider" | "metadata";
+/** Which of the things the dialog is making. `geo` is a table from a map file:
+ * GeoJSON, a zipped Shapefile or a GeoPackage (analytics TODO A5.2). */
+export type NewTableSource = "blank" | "csv" | "geo" | "provider" | "metadata";
 
 /** What the dialog holds while it is open. */
 export type NewTableForm = {
   name: string;
   source: NewTableSource;
-  /** The chosen CSV, for `source === "csv"`. */
+  /** The chosen file, for `source === "csv"` or `"geo"`. */
   file: File | null;
+  /** For `source === "geo"`: which Shapefile of a zip, or table of a
+   * GeoPackage, when the file holds several. Empty for the only one. */
+  layer: string;
   /** Which database to create the table in: `primary` for Saltcorn's own, else
    * the name of a connected database connection. */
   database: string;
@@ -53,6 +57,7 @@ export const EMPTY_NEW_TABLE_FORM: NewTableForm = {
   name: "",
   source: "blank",
   file: null,
+  layer: "",
   database: PRIMARY_DATABASE,
   provider: "",
   providerConfig: {},
@@ -117,6 +122,8 @@ export function newTableError(form: NewTableForm): string | null {
     return form.metadataTable ? null : "Choose the metadata table to add.";
   if (!form.name.trim()) return "The table needs a name.";
   if (form.source === "csv" && !form.file) return "Choose a CSV file to create the table from.";
+  if (form.source === "geo" && !form.file)
+    return "Choose a GeoJSON, zipped Shapefile or GeoPackage file to create the table from.";
   if (form.source === "provider" && !splitProviderKey(form.provider))
     return "Choose the table provider that will serve this table's rows.";
   // The database question does not apply to a provided table — its rows are not
@@ -157,4 +164,21 @@ export function tableNameFromFile(fileName: string): string {
  */
 export function importedMessage(table: string, inserted: number): string {
   return `${inserted} row${inserted === 1 ? "" : "s"} imported into ${table}.`;
+}
+
+/** The file types the map-file choice accepts, for the file input. */
+export const GEO_FILE_ACCEPT = ".geojson,.json,.zip,.gpkg,application/geo+json,application/zip";
+
+/**
+ * Bytes as base64, which is how a binary file crosses the JSON endpoint
+ * (`createTableFromGeoFile`). In slices, because `String.fromCharCode` takes its
+ * characters as arguments and a large file would overflow the call stack.
+ */
+export function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const slice = 0x8000;
+  for (let i = 0; i < bytes.length; i += slice) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + slice));
+  }
+  return btoa(binary);
 }

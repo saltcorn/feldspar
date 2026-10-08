@@ -415,6 +415,10 @@ pub struct Analysis {
     /// a module call. What the model is, and whether it predicts this table's
     /// rows, is the save check's to ask: models are rows, not schema.
     pub model_calls: BTreeSet<ModelCall>,
+    /// The `Geo` functions the formula calls (analytics TODO A5.3), by name.
+    /// Only the database computes them, so a caller whose database has no
+    /// PostGIS refuses a formula that calls any.
+    pub geo_calls: BTreeSet<String>,
 }
 
 /// What a formula reads from one ambient object.
@@ -535,6 +539,14 @@ impl Formula {
             &mut called,
             &mut analysis,
         )?;
+        // The geometry functions (analytics TODO A5.3): every `Geo` a call of
+        // one of them, with its arguments. A field called `Geo` wins, as a
+        // field called `Math` does.
+        let geo_shadowed = table_shape.fields.contains_key(crate::geo::GEO);
+        if !geo_shadowed {
+            crate::geo::walk_geo_calls(self.ast(), &mut Vec::new(), &mut analysis.geo_calls)
+                .map_err(|m| invalid(table, format_args!("{m}")))?;
+        }
         for ident in &free.idents {
             if let Some(flag) = OpFlag::from_ident(ident) {
                 analysis.flags.insert(flag);
@@ -552,6 +564,8 @@ impl Formula {
                 analysis
                     .join_paths
                     .insert(resolve_join_path(shape, table, ident)?);
+            } else if ident == crate::geo::GEO && !geo_shadowed {
+                // Every use checked by `walk_geo_calls` above.
             } else if GLOBALS.contains(&ident.as_str()) {
                 // Fine reified, untranslatable symbolically; nothing to record.
             } else if ident == PREDICT {

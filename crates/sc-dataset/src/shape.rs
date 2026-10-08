@@ -46,6 +46,8 @@ pub enum ColType {
     Uuid,
     /// Raw bytes.
     Bytes,
+    /// A geometry in WGS84, read as a GeoJSON object (analytics TODO A5.1).
+    Geometry,
     /// Not known until the data is read.
     Unknown,
 }
@@ -73,6 +75,7 @@ impl ColType {
             BasicType::Date => ColType::Date,
             BasicType::Time => ColType::Time,
             BasicType::Timestamp => ColType::Timestamp,
+            BasicType::Geometry(_) => ColType::Geometry,
             BasicType::Other(_) => ColType::Text,
         }
     }
@@ -124,6 +127,7 @@ impl ColType {
             ColType::Json => "JSON",
             ColType::Uuid => "UUID",
             ColType::Bytes => "bytes",
+            ColType::Geometry => "geometry",
             ColType::Unknown => "unknown",
         }
     }
@@ -166,6 +170,7 @@ impl ColType {
             ColType::Json => "jsonb",
             ColType::Uuid => "uuid",
             ColType::Bytes => "bytea",
+            ColType::Geometry => "geometry",
         }
     }
 }
@@ -285,6 +290,10 @@ pub struct Schema {
     /// (`DbCapabilities::native_temporal_types`); literals of those types are
     /// cast to text where it has not.
     pub native_temporal_types: bool,
+    /// Whether the database computes geometry (it has PostGIS), or the
+    /// sentence saying why not: a formula calling a `Geo` function is refused
+    /// with it (analytics TODO A5.3).
+    pub spatial: std::result::Result<(), String>,
 }
 
 impl Schema {
@@ -312,6 +321,7 @@ impl Schema {
             shape,
             tables,
             native_temporal_types: catalog.primary().capabilities().native_temporal_types,
+            spatial: catalog.primary().spatial().require(),
         })
     }
 
@@ -321,6 +331,7 @@ impl Schema {
             shape,
             tables: tables.into_iter().map(|t| (t.name.clone(), t)).collect(),
             native_temporal_types: true,
+            spatial: Ok(()),
         }
     }
 

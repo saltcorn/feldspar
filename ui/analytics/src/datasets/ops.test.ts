@@ -189,6 +189,31 @@ describe("what a formula may name", () => {
     );
   });
 
+  it("offers the geometry functions over a stage with geometry, and completes `Geo.` whole", () => {
+    const places: StageShape = {
+      columns: [
+        { name: "name", type: "text" },
+        { name: "location", type: "geometry" },
+      ],
+      grain: { kind: "derived" },
+    } as StageShape;
+    const all = formulaCompletions(places, report);
+    expect(all.map((c) => c.text)).toContain("Geo.distance(");
+    expect(all.find((c) => c.text === "Geo.area(")?.detail).toBe("(geometry) → float");
+    // None without geometry.
+    expect(formulaCompletions(houses, report).some((c) => c.kind === "function")).toBe(false);
+    // `Geo.dis` becomes the call, not `Geo.Geo.distance(`.
+    const text = "Geo.dis";
+    expect(matchCompletions(all, tokenAt(text, text.length).prefix).map((c) => c.text)).toEqual([
+      "Geo.distance(",
+    ]);
+    expect(applyCompletion(text, text.length, "Geo.distance(")).toEqual({
+      text: "Geo.distance(",
+      cursor: "Geo.distance(".length,
+    });
+    expect(applyCompletion("geo", 3, "Geo.point(").text).toBe("Geo.point(");
+  });
+
   it("completes the identifier at the cursor, join paths included", () => {
     const text = "price / neighbourhoodⱵna + 1";
     const cursor = "price / neighbourhoodⱵna".length;

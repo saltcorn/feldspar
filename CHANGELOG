@@ -2,6 +2,108 @@
 
 Changes in reverse chronological order.
 
+## Analytics A5.1–A5.3: geometry in core
+
+The first phase of milestone A5 (Maps): a geometry field type, tables made from GeoJSON,
+Shapefile and GeoPackage files, and geometry formula functions computed by PostGIS. Written up
+in `TECHNICAL_DESIGN.md` §6.1 and the new §14.6, and `OPERATIONS.md` §10 (installing PostGIS).
+
+- **A5.1 The geometry type.**
+  - `sc-types`: `BasicType::Geometry(GeometryKind)` (any, point, line, polygon and the multi
+    variants), stored as `geometry(<Kind>,4326)`. Its value is a GeoJSON geometry object in a
+    `Value::Json`; there is no new `Value` variant. `sc_types::geometry::check_geojson` refuses
+    with a sentence: the wrong kind for the field, a position outside WGS84 (pointing at
+    importing instead), a line of one position, an open ring, a Feature where a geometry belongs.
+    The field types are `geometry`, `geometry_point`, … `geometry_multipolygon` — not `point` or
+    `polygon`, which are Postgres's own types.
+  - `sc-db-postgres`: an EWKB ⇄ GeoJSON codec at the wire (`geometry.rs`). `geometry` and
+    `geography` columns are read as GeoJSON, and GeoJSON parameters are written as 2D EWKB with
+    SRID 4326, so no query needs `ST_AsGeoJSON`. Introspection reads a geometry column's full type
+    with `format_type`, and no longer lists tables an extension owns (PostGIS's
+    `spatial_ref_sys`).
+  - Whether a database has PostGIS is a driver answer, not a capability flag:
+    `DatabaseDriver::spatial()` / `detect_spatial()` / `enable_spatial()` and
+    `sc_db::SpatialSupport`. `Catalog::init` and a connection's dial detect it. `feldspar serve`
+    calls the new `sc_catalog::bootstrap_spatial`, which runs `CREATE EXTENSION postgis` where
+    the role may, and logs either "PostGIS 3.5.2; geometry fields are available" or why they are
+    not. With PostGIS present the driver also creates `_fd_utm_srid`, `_fd_square_cell` and
+    `_fd_hex_cell`.
+  - `schema_edit` refuses a geometry field on a database without PostGIS (on SQLite, or on
+    Postgres without the extension), with the sentence. `listFieldTypes` offers the seven
+    geometry types.
+  - REST carries geometry as the GeoJSON object. GraphQL carries it as a new `GeoJSON` scalar
+    with an unordered comparison input; the SDL snapshots gained these lines. A generated
+    TypeScript client types it as an object with `type` and `coordinates`, and an MCP tool's
+    schema as an object. `ValueType::Geometry` is not offered as a custom query's parameter type.
+  - `sc-dataset`: `ColType::Geometry`. It is not sortable, plottable or testable (each refusal
+    says so), but it can be a group key. The Data explorer's column list badges it `⌖`.
+- **A5.2 Importing.** `sc_api::geo_import` and the endpoint `createTableFromGeoFile`
+  (`POST /api/tables/geo`, the file as base64, an optional `layer`).
+  - The admin's New table dialog has **Create from a map file**, with a layer box.
+  - The three readers are pure:
+    - GeoJSON: a FeatureCollection, a Feature or a bare geometry. A pre-RFC 7946 `crs` naming an
+      EPSG code is honoured.
+    - A zipped Shapefile: `.shp` records, with holes assigned to the outer ring that contains
+      them; the `.dbf`'s text, numbers, logicals and dates; the `.cpg` encoding; the `.prj` WKT,
+      or WGS84 with a warning when there is no `.prj`.
+    - A GeoPackage, read with `rusqlite`: the WKB inside each geometry blob, and the EPSG code or
+      WKT of its SRS.
+  - PostGIS reprojects, so no projection library is added. Each chunk of 500 geometries is one
+    `ST_Force2D(ST_Transform(…, 4326))` query, and its results come back through the driver as
+    GeoJSON. A failing chunk is retried feature by feature, so the error names the feature.
+  - The table: attribute types come from the values. The file's `id` is the key when it can be
+    one; otherwise it is kept as `source_id`. The geometry column takes the kind every feature
+    fits, with polygons promoted to multipolygons (`ST_Multi`) when a file mixes the two.
+  - All or nothing, as a CSV import: a feature that will not go in drops the table. A zip with
+    several Shapefiles, or a package with several feature tables, is refused, naming them.
+  - Fixtures: `crates/sc-server/tests/fixtures/geo/`, written by `make_geo_fixtures.py`
+    (standard library only).
+  - `csv.rs`'s `label_to_name`, `header_label` and `advance_identity_sequence` are now
+    `pub(crate)` so the importer can share them.
+- **A5.3 The `Geo` functions** (`sc-expr`'s `geo.rs`): `Geo.point`, `buffer`, `centroid`, `area`,
+  `length`, `distance`, `intersects`, `contains`, `within`, `squareCell` and `hexCell`.
+  - They are methods of one global, as `Math`'s are, and a field called `Geo` shadows them.
+  - Validation checks the name and argument count, with sentences, and records
+    `Analysis::geo_calls`.
+  - The translator turns each call into PostGIS SQL. Distances and areas go through `geography`,
+    so they are in metres. The boolean ones also work in condition position.
+  - Grid cells are drawn in the UTM zone of the geometry's point on surface, by `ST_Square` and
+    `ST_Hexagon`, and come back in WGS84.
+  - The JavaScript evaluator refuses `Geo` by name.
+  - A dataset refuses a `Geo` call where the database has no PostGIS (`Schema::spatial`) and
+    infers the call's type.
+  - The Analytics UI's formula input offers the functions over a stage that has a geometry
+    column; `Geo.dis` completes as a whole.
+- **Two general compiler fixes** found on the way:
+  - A negative number literal translates as one literal. `-$1` could not be typed by Postgres,
+    so `Geo.point(-0.12, 51.5)` and `x * -2` used to fail.
+  - An Aggregate key holding a literal (`price > 100000`, `Geo.squareCell(location, 500)`) is
+    computed a level down and grouped by name. Postgres does not take `f($1)` and `f($7)` for
+    one expression, so this used to fail.
+- **Tests.**
+  - sc-types: the kinds and every refusal.
+  - sc-db-postgres: the codec, round trips and bytes PostGIS sends.
+  - sc-expr: the SQL of each function, and the refusals.
+  - sc-dataset: on PostGIS, distances against haversine, areas, cells, a Filter and a
+    cell-grouped Aggregate. The refusal is tested on SQLite and on plain Postgres, and the
+    literal group key on both backends.
+  - sc-api: SQLite refuses a geometry field.
+  - sc-server `geometry.rs`: a table with geometry through the admin API, REST and GraphQL, and
+    the refusals.
+  - sc-server `geo_import.rs`: all four fixtures (Caister Water Tower from British National
+    Grid), the two-layer refusal, the rollback, and the no-PostGIS refusal.
+  - vitest: the dialog's base64 and rules, and the completions.
+  - The PostGIS tests clone `feldspar_postgis_template` through the harness's new
+    `TestDb::with_postgis()`, and skip with a message where it is missing (`OPERATIONS.md`
+    §10.3, `SC_TEST_POSTGIS_TEMPLATE`).
+- **Known, not changed.** Without a datum grid, PROJ converts British National Grid with no
+  datum shift, which puts points about 130 m off; `OPERATIONS.md` §10.2 says how to install the
+  grids. Two failures predate this work and still fail:
+  - `sc-cli`'s `i18n::every_declared_domain_scans_without_an_unreadable_call_site` fails on
+    `ui/admin/src/screens/SourceControl.tsx`.
+  - `settings_admin_api::saving_the_development_settings_moves_the_logging_switches` failed once
+    in the full parallel run, and passed alone twice.
+
 ## Analytics A4.6–A4.7: documentation, and the definition of done for reports
 
 The last phase of milestone A4 (Reports, and drag and drop). With it, A4 is done.
