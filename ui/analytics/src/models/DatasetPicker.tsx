@@ -19,7 +19,7 @@ import Table from "react-bootstrap/Table";
 import { api, errorMessage } from "../api";
 import type { ListDatasetsResponse, PreviewDatasetResponse } from "../client";
 import { T, useT } from "../i18n";
-import { routeHash } from "../router";
+import { useAnnounce, usePane } from "../panes";
 
 /** One stored dataset, as the picker lists it. */
 export type DatasetItem = ListDatasetsResponse[number];
@@ -61,6 +61,8 @@ export function DatasetPicker({
   beforeEdit?: () => Promise<void>;
 }) {
   const { t } = useT();
+  const pane = usePane();
+  const changed = useAnnounce();
   const [rows, setRows] = useState<PreviewDatasetResponse | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -71,6 +73,7 @@ export function DatasetPicker({
     try {
       const made = await api.cloneDataset(value, {});
       const dataset = made.dataset as { id: string; name: string };
+      changed("dataset", dataset.id);
       const listed = (await api.listDatasets()).find((d) => d.id === dataset.id);
       if (listed && onCopied) await onCopied(listed);
     } catch (err) {
@@ -126,15 +129,12 @@ export function DatasetPicker({
           </Form.Select>
           {value !== "" && (
             <a
-              href={routeHash({ name: "dataset", id: value, back })}
+              href={pane.href({ name: "dataset", id: value, back })}
               onClick={(e) => {
                 if (!beforeEdit) return;
                 e.preventDefault();
-                const target = routeHash({ name: "dataset", id: value, back });
                 void beforeEdit()
-                  .then(() => {
-                    window.location.hash = target;
-                  })
+                  .then(() => pane.go({ name: "dataset", id: value, back }))
                   .catch(() => undefined);
               }}
             >
@@ -146,7 +146,7 @@ export function DatasetPicker({
               <T text="Use a copy" />
             </Button>
           )}
-          <a href={routeHash({ name: "newDataset", table: null })}>
+          <a href={pane.href({ name: "newDataset", table: null })}>
             <T text="New dataset" />
           </a>
         </div>

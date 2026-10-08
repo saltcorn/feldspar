@@ -3,7 +3,8 @@
 // and unfolded from its header, and the optional plots added from a "More
 // plots" drop-down and taken away from their own card. Which are folded and
 // which optional plots are on the screen is the model's view state, kept by
-// the editor; this draws what it is told.
+// the editor; this draws what it is told. Each output is also a panel, dragged
+// by its header into a report (A4.3).
 
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
@@ -12,6 +13,8 @@ import Dropdown from "react-bootstrap/Dropdown";
 import Table from "react-bootstrap/Table";
 
 import { T, useT } from "../i18n";
+import { outputPanel } from "../panels/panel";
+import { DragHandle } from "../panels/PanelView";
 import { PlotView } from "../plot/PlotView";
 import { useDocumentTheme } from "../theme";
 import { formatParameterCell, isPValueColumn, significanceStars } from "./models";
@@ -90,6 +93,8 @@ export function OutputsPanel({
   plots,
   onToggle,
   onPlots,
+  fit,
+  model,
 }: {
   outputs: ModelOutput[];
   /** The outputs folded, by name. */
@@ -98,6 +103,11 @@ export function OutputsPanel({
   plots: string[];
   onToggle: (name: string) => void;
   onPlots: (plots: string[]) => void;
+  /** The fit the outputs are of: given, each output is a panel that can be
+   * dragged into a report (A4.3). */
+  fit?: string;
+  /** The model's name, for a dragged panel's title. */
+  model?: string;
 }) {
   const { t } = useT();
   const more = moreOutputs(outputs, plots);
@@ -119,11 +129,19 @@ export function OutputsPanel({
                 </span>{" "}
                 {output.label}
               </Button>
+              {fit && !output.error && (
+                <span className="ms-auto">
+                  <DragHandle
+                    make={() => outputPanel(output, fit, model, t)}
+                    label={t("Drag {output} into a report", { output: output.label })}
+                  />
+                </span>
+              )}
               {output.optional && (
                 <Button
                   size="sm"
                   variant="outline-secondary"
-                  className="ms-auto"
+                  className={fit && !output.error ? undefined : "ms-auto"}
                   aria-label={t("Close {plot}", { plot: output.label })}
                   onClick={() => onPlots(plots.filter((p) => p !== output.name))}
                 >

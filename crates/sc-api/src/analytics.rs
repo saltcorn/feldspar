@@ -1,5 +1,5 @@
-//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8, A3.3): datasets,
-//! plots, a model's outputs and workspaces.
+//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8, A3.3, A4.2): datasets,
+//! plots, panels, a model's outputs and workspaces.
 //!
 //! Admin-only in this milestone, like everything else under `/api`: A9 is
 //! where a restricted application's users reach a subset of them under their
@@ -92,7 +92,9 @@ pub(crate) fn register(set: &mut EndpointSet) {
         .auth(AuthRequirement::admin()),
     );
 
-    // What reads a dataset: what the delete warning lists.
+    // What reads a dataset: what the delete warning lists. `workspaces` is
+    // the usage index's answer (A4.2): the workspaces whose panels read it,
+    // with how many, and the explorers that have it chosen (`panels` 0).
     set.register(
         Endpoint::new(
             "datasetUsage",
@@ -105,6 +107,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("datasets", TypeSchema::array(named_schema())),
             StructField::new("models", TypeSchema::array(named_schema())),
+            StructField::new("workspaces", TypeSchema::array(workspace_use_schema())),
         ]))
         .auth(AuthRequirement::admin()),
     );
@@ -365,6 +368,40 @@ pub(crate) fn register(set: &mut EndpointSet) {
         .auth(AuthRequirement::admin()),
     );
 
+    // --- panels (A4.2) ---------------------------------------------------------
+
+    // A panel drawn from what it is stored as, now: a plot's data, a summary
+    // table's, a test result's tests and plot, a fit's table. A panel whose
+    // dataset or fit has been deleted answers `error`, a sentence saying so,
+    // rather than failing; a plot that cannot be drawn answers its refusal in
+    // `plot`, as `renderPlot` does. A text panel answers nothing to draw: the
+    // browser renders its Markdown.
+    set.register(
+        Endpoint::new(
+            "renderPanel",
+            Method::Post,
+            api().lit("panels").lit("render"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "panel",
+            TypeSchema::json(),
+        )]))
+        .output(TypeSchema::struct_of([
+            StructField::new("kind", TypeSchema::text()),
+            StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("plot", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("table", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("tests", TypeSchema::optional(TypeSchema::json())),
+            StructField::new("output", TypeSchema::optional(TypeSchema::json())),
+            // A plot's foreign key columns: categories, though numbers.
+            StructField::new(
+                "categorical",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // --- the model editor -----------------------------------------------------
 
     // What a fit shows (A3.1–A3.3): its outputs as its provider declared them,
@@ -551,6 +588,17 @@ fn named_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("id", TypeSchema::uuid()),
         StructField::new("name", TypeSchema::text()),
+    ])
+}
+
+/// A workspace that uses a dataset or a model, as the usage index (A4.2)
+/// answers it.
+pub(crate) fn workspace_use_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("kind", TypeSchema::text()),
+        StructField::new("panels", TypeSchema::int()),
     ])
 }
 

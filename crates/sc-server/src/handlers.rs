@@ -3410,9 +3410,7 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                 let model = sc_model::load_model(&catalog, id)
                     .await?
                     .ok_or_else(|| Error::not_found(format!("no model with id {id}")))?;
-                Ok(HandlerResponse::ok(
-                    model_usage(&catalog, &model.name).await?,
-                ))
+                Ok(HandlerResponse::ok(model_usage(&catalog, &model).await?))
             }
         }
     });
@@ -9862,8 +9860,10 @@ pub(crate) async fn dataset_shape(
 /// still find. A trigger, or a step of a workflow's current version, **fits**
 /// it when it is a `fit_model` naming it, and otherwise **names** it when its
 /// configuration mentions `predict("name")` or `models.get("name")` — a stored
-/// calculation's `update_rows`, a code body.
-async fn model_usage(catalog: &Catalog, name: &str) -> Result<Json> {
+/// calculation's `update_rows`, a code body. A workspace **shows** it when one
+/// of its panels reads one of the model's fits (the usage index, A4.2).
+async fn model_usage(catalog: &Catalog, model: &sc_model::Model) -> Result<Json> {
+    let name = model.name.as_str();
     let quoted = serde_json::to_string(name).unwrap_or_default();
     let mentions = |text: &str| {
         [
@@ -9934,7 +9934,14 @@ async fn model_usage(catalog: &Catalog, name: &str) -> Result<Json> {
             triggers.push(json!({ "id": trigger.id.0, "name": trigger.name, "how": how }));
         }
     }
-    Ok(json!({ "fields": fields, "triggers": triggers }))
+    let fits = sc_model::list_model_instances(catalog, model.id)
+        .await?
+        .into_iter()
+        .map(|i| i.id.0);
+    let workspaces = sc_analytics::panel::UsageIndex::build(catalog)
+        .await?
+        .fits(fits);
+    Ok(json!({ "fields": fields, "triggers": triggers, "workspaces": workspaces }))
 }
 
 /// Whether any string inside `value` satisfies `test` — a code body, a

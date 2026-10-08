@@ -1,13 +1,15 @@
 //! The Analytics UI's server half (layer 6; analytics TODO A1.12).
 //!
-//! The Analytics UI is a set of **workspaces**, each of one of seven kinds,
+//! The Analytics UI is a set of **workspaces**, each of one of six kinds,
 //! each keeping its own state. This crate holds them, the plot spec and its
-//! stat compiler ([`plot`], A2), and the hypothesis tests and map layers as the
-//! later milestones bring them; and the demo data ([`demo`]). Datasets are not
+//! stat compiler ([`plot`], A2), the hypothesis tests ([`stats`]), the panels
+//! that are dragged between them and the usage index over them ([`panel`],
+//! A4), and the map layers as the later milestones bring them; and the demo data ([`demo`]). Datasets are not
 //! here: they are `sc-dataset`'s, because models read them too.
 
 pub mod demo;
 pub mod model_outputs;
+pub mod panel;
 pub mod plot;
 pub mod stats;
 mod workspace;

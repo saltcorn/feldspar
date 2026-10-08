@@ -6,11 +6,13 @@
 import { useState } from "react";
 
 import { useT } from "../i18n";
-import { navigate } from "../router";
+import { usePane } from "../panes";
+import { parseRoute } from "../router";
 import { DatasetEditor } from "./DatasetEditor";
 
 export function DatasetPage({ id, back }: { id: string; back?: string }) {
   const { t } = useT();
+  const pane = usePane();
   const [selected, setSelected] = useState<string | null>(null);
   const fromModel = back?.startsWith("#/models/") ?? false;
   return (
@@ -18,7 +20,7 @@ export function DatasetPage({ id, back }: { id: string; back?: string }) {
       id={id}
       selected={selected}
       onSelect={setSelected}
-      onBack={() => (back ? (window.location.hash = back) : navigate({ name: "home" }))}
+      onBack={() => pane.go(back ? parseRoute(back) : { name: "home" })}
       backLabel={fromModel ? t("Back to the model") : t("All datasets")}
     />
   );

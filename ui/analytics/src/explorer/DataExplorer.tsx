@@ -8,7 +8,8 @@
 // draws it. Beside it, the hypothesis tests the Y, X and Wrap drop zones make
 // (`runTests`, A2.12–A2.14), as one panel with the plot. Every choice is the
 // workspace's state, saved by the frame as it changes, so reopening the
-// workspace shows the same plot and tests.
+// workspace shows the same plot and tests. What is drawn can be dragged into
+// a report as a panel (A4.3), the plot and its tests as one.
 
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -37,7 +38,9 @@ import {
   type TableData,
 } from "../plot/spec";
 import { SummaryTable } from "../plot/SummaryTable";
-import { navigate } from "../router";
+import { explorerPanel, explorerTitle } from "../panels/panel";
+import { DragHandle } from "../panels/PanelView";
+import { useAnnounce, useChanges, usePane } from "../panes";
 import { useDocumentTheme } from "../theme";
 import type { WorkspaceProps, WorkspaceState } from "../workspaces/WorkspaceFrame";
 import { LayersPanel } from "./LayersPanel";
@@ -94,6 +97,8 @@ function typeBadge(c: StageColumn): string {
 
 export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
   const { t } = useT();
+  const pane = usePane();
+  const changed = useAnnounce();
   const theme = useDocumentTheme();
   const state = useMemo(() => readState(raw), [raw]);
   const update = useCallback(
@@ -106,6 +111,10 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [layersOpen, setLayersOpen] = useState(false);
+  // Bumped when a dataset is changed on the other side of a split view: the
+  // columns are read again and everything is drawn again (A4.1).
+  const [version, setVersion] = useState(0);
+  useChanges(["dataset"], () => setVersion((v) => v + 1));
 
   useEffect(() => {
     let live = true;
@@ -119,7 +128,7 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
     return () => {
       live = false;
     };
-  }, [t]);
+  }, [t, version]);
 
   const dataset = datasets?.find((d) => d.id === state.dataset);
   const shape: StageShape | null = useMemo(
@@ -160,7 +169,7 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
       window.clearTimeout(timer);
     };
     // The assignment is compared by value (`assignmentKey`).
-  }, [state.dataset, assignmentKey, state.mark, state.preset, state.view, t, update]);
+  }, [state.dataset, assignmentKey, state.mark, state.preset, state.view, t, update, version]);
 
   const spec = useMemo(
     () => (suggested?.spec && !suggested.error ? composeSpec(suggested.spec, state.extras) : null),
@@ -192,7 +201,7 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
     return () => {
       live = false;
     };
-  }, [specKey, state.view, t]);
+  }, [specKey, state.view, t, version]);
 
   // --- the summary table -----------------------------------------------------
   const tableSpec = useMemo(() => tableSpecOf(state, shape), [state, shape]);
@@ -211,7 +220,7 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
     return () => {
       live = false;
     };
-  }, [tableKey, state.view, t]);
+  }, [tableKey, state.view, t, version]);
 
   // --- the hypothesis tests --------------------------------------------------
   const testSpec = useMemo(() => (state.tests.show ? testSpecOf(state) : null), [state]);
@@ -241,8 +250,13 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
       );
       if (!plan) return;
       const made = await api.createDataset(planDataset(plan));
-      const model = await api.saveModel(planModel(plan, (made.dataset as { id: string }).id));
-      navigate({ name: "model", id: model.id });
+      const madeId = (made.dataset as { id: string }).id;
+      changed("dataset", madeId);
+      const model = await api.saveModel(planModel(plan, madeId));
+      changed("model", model.id);
+      // Beside the explorer when the view is split, in its place when not.
+      if (pane.split) pane.beside({ name: "model", id: model.id });
+      else pane.go({ name: "model", id: model.id });
     } catch (err) {
       setTestResults({ error: errorMessage(err, t("Could not make the model.")) });
     }
@@ -269,7 +283,7 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
       window.clearTimeout(timer);
     };
     // The spec is compared by value (`testKey`).
-  }, [testKey, t]);
+  }, [testKey, t, version]);
 
   // --- the gallery -----------------------------------------------------------
   const [presetError, setPresetError] = useState<string | null>(null);
@@ -317,6 +331,23 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
     );
   }
 
+  /** What is on the screen as a panel, made when a drag starts (A4.3). */
+  const dragPanel = () =>
+    explorerPanel(
+      {
+        view: state.view,
+        spec: drawn?.spec ?? null,
+        table: tableSpec,
+        tests: state.tests.show ? testSpec : null,
+      },
+      explorerTitle(
+        onZone(state.assignment, "y").map((f) => f.field),
+        onZone(state.assignment, "x")[0]?.field,
+        dataset?.name,
+        t,
+      ),
+    );
+
   const columns = shape?.columns ?? [];
   const categorical = columns.filter((c) => c.key || !["int", "float", "decimal"].includes(c.type)).map((c) => c.name);
   const notes = drawn && state.view === "plot" ? plotNotes(drawn.data, t) : [];
@@ -343,11 +374,11 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
         </Form.Select>
         <div className="small mb-2 d-flex gap-2">
           {dataset && (
-            <a href={`#/datasets/${encodeURIComponent(dataset.id)}`}>
+            <a href={pane.href({ name: "dataset", id: dataset.id })}>
               <T text="Edit dataset" />
             </a>
           )}
-          <a href="#/datasets/new">
+          <a href={pane.href({ name: "newDataset", table: null })}>
             <T text="New dataset" />
           </a>
         </div>
@@ -428,7 +459,10 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
               onChange={(table) => update((s) => ({ ...s, table }))}
             />
           )}
-          <div className="ms-auto d-flex gap-2">
+          <div className="ms-auto d-flex gap-2 align-items-center">
+            {state.dataset && !message && (state.view === "plot" ? drawn : table?.data) && (
+              <DragHandle make={dragPanel} label={t("Drag this output into a report")} />
+            )}
             <Button
               size="sm"
               variant={state.tests.show ? "secondary" : "outline-secondary"}

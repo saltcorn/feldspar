@@ -2,6 +2,57 @@
 
 Changes in reverse chronological order.
 
+## Analytics A4.1–A4.3: split view, panels, and drag and drop
+
+The first phase of milestone A4 (Reports, and drag and drop).
+
+- **Split view** (A4.1; `ui/analytics/src/panes.tsx`, `router.ts`). The header's **Split** opens
+  a second screen beside the first; each side is a workspace, the Dataset editor, the model
+  editor or the front page, with its own bar (front page, ×) and a divider moved by pointer or
+  arrow keys (its position is a per-viewer `localStorage` convenience). The address records both:
+  the main route with `side=<the other side's whole hash>` added, so a reload or bookmark reopens
+  both and each side keeps its own `?fit=`/`?back=`. Screens move their own side through
+  `usePane()` (`href`, `go`, `replace`, `beside`, `close`) instead of `navigate`/`routeHash`;
+  every call site in the bundle was converted. The main side is mounted in the same place split
+  or not, so splitting does not rebuild it.
+- **Changes reach the other side** (`changes.ts`). Saving, cloning or deleting a dataset, and
+  saving or fitting a model, is announced with the side it came from; the other side's Dataset
+  editor, explorer (columns and every drawing), model editor (dataset picker, fits' "dataset
+  changed", the model itself), fit view, front-page lists and report panels read it again.
+  In-page only.
+- **The panel model** (A4.2; `sc_analytics::panel`). `Panel { id, title?, kind, content }`, kinds
+  `plot`, `summary_table`, `test_result` (the explorer's tests and the plot beside them, one
+  panel), `text`, `custom`, and — a deviation from the plan's five — **`fit_table`** (`{ fit,
+  output }`): a coefficient table is a table a fit recorded, not a summary of a dataset, so it
+  names the fit and output rather than a spec. Panels are stored as what makes them and render
+  live: `POST /api/panels/render` (`renderPanel`) answers each kind's data, the foreign-key
+  columns a plot should draw as categories, or — when its dataset or fit has been deleted — a
+  sentence in `error` instead of failing. `render_one_output` in `model_outputs` draws one output
+  of a fit.
+- **The usage index** (`UsageIndex`, built from the stored workspace states when asked).
+  `panels_in_state` is the one place that knows where a kind keeps its panels (a report's
+  `blocks[].panel`); the explorer's chosen dataset counts too. `datasetUsage` gains `workspaces`
+  (each with how many panels read it) and `modelUsage` gains `workspaces` whose panels show one of
+  the model's fits; both delete warnings list them with links. `saveWorkspaceState` refuses a
+  report whose panels do not read, naming the panel.
+- **Drag and drop** (A4.3; `ui/analytics/src/panels`). The drag payload is the panel's JSON
+  (`application/x-feldspar-panel`) taken when the drag starts, and the drop is always a copy with
+  a new id (`readPanelDrag`). Sources: the explorer's **Drag** handle in its toolbar (the plot, the
+  plot with its tests, or the summary table) and each model output card's header (a plot by its
+  spec over the fit's output data, a table as `fit_table`). The sink is the **Report** workspace,
+  which is therefore available from A4.3 (`WorkspaceKind::Report.arrives_in()` is `None`): for now
+  a page of dropped panels, inserted before the block dropped on or at the end, each removable and
+  drawn live (`PanelView`). A4.4 makes it a document.
+- **Tests.** `sc-analytics`: panel round trip of every kind, what a panel reads, the usage index,
+  refusing a broken report state. `sc-server`
+  (`analytics_api::panels_render_live_and_the_usage_index_finds_what_they_read`): every kind
+  rendered through the API, a row added to `houses` appearing in a panel, both usage endpoints,
+  and the deleted-dataset and deleted-fit sentences; existing tests updated for the Report kind
+  and the new `workspaces` fields. Vitest: split-view addresses and panes, change routing, the
+  panel codec and copy-on-drop, the explorer's and the model editor's panels, the report's
+  blocks. Walked in headless Chromium against the demo data: explorer → report and model outputs
+  → report across a split, the divider, and both delete warnings; no console errors.
+
 ## MCP: translating an application from a coding agent
 
 A user driving Claude Code over MCP should be able to say "translate this app to German" or

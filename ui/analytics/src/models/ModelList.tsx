@@ -19,7 +19,8 @@ import Table from "react-bootstrap/Table";
 import { api, errorMessage } from "../api";
 import type { ModelUsageResponse } from "../client";
 import { T, useT } from "../i18n";
-import { navigate, routeHash } from "../router";
+import { workspaceKindName } from "../labels";
+import { useAnnounce, useChanges, usePane } from "../panes";
 import {
   formatTimestamp,
   headlineMetric,
@@ -71,6 +72,8 @@ export function inUse(usage: ModelUsageResponse): boolean {
 
 export function ModelList() {
   const { t } = useT();
+  const pane = usePane();
+  const changed = useAnnounce();
   const [models, setModels] = useState<ModelItem[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,11 +99,13 @@ export function ModelList() {
       .then((listed) => setNotice(listed.builtins_compiled_out ? (listed.notice ?? null) : null))
       .catch(() => setNotice(null));
   }, [load]);
+  // A model saved or fitted on the other side of a split view.
+  useChanges(["model", "dataset"], () => void load());
 
   const clone = async (model: ModelItem) => {
     try {
       const copy = await api.cloneModel(model.id, {});
-      navigate({ name: "model", id: copy.id });
+      pane.go({ name: "model", id: copy.id });
     } catch (err) {
       setError(errorMessage(err, t("Could not clone the model.")));
     }
@@ -123,7 +128,7 @@ export function ModelList() {
         <h2 className="h3 mb-0">
           <T text="Models" />
         </h2>
-        <Button size="sm" className="ms-auto" onClick={() => navigate({ name: "newModel", dataset: null })}>
+        <Button size="sm" className="ms-auto" onClick={() => pane.go({ name: "newModel", dataset: null })}>
           <T text="New model" />
         </Button>
         <Button
@@ -131,7 +136,7 @@ export function ModelList() {
           variant="outline-primary"
           disabled={ticked.length < 2}
           title={ticked.length < 2 ? t("Tick two or more models to compare them.") : undefined}
-          onClick={() => navigate({ name: "compareModels", ids: ticked })}
+          onClick={() => pane.go({ name: "compareModels", ids: ticked })}
         >
           <T text="Compare" />
           {ticked.length > 0 && ` (${ticked.length})`}
@@ -185,7 +190,7 @@ export function ModelList() {
                     />
                   </td>
                   <td>
-                    <a href={routeHash({ name: "model", id: model.id })}>{model.name}</a>
+                    <a href={pane.href({ name: "model", id: model.id })}>{model.name}</a>
                     {model.description && <div className="text-muted small">{model.description}</div>}
                     {model.error && (
                       <StatusBadge tone="red" title={model.error} className="mt-1">
@@ -195,7 +200,7 @@ export function ModelList() {
                   </td>
                   <td>
                     {dataset ? (
-                      <a href={routeHash({ name: "dataset", id: dataset.dataset_id })}>{dataset.name}</a>
+                      <a href={pane.href({ name: "dataset", id: dataset.dataset_id })}>{dataset.name}</a>
                     ) : (
                       "—"
                     )}
@@ -207,7 +212,7 @@ export function ModelList() {
                     <LastFit model={model} />
                   </td>
                   <td className="text-end text-nowrap">
-                    <Button size="sm" variant="outline-primary" href={routeHash({ name: "model", id: model.id })}>
+                    <Button size="sm" variant="outline-primary" href={pane.href({ name: "model", id: model.id })}>
                       <T text="Edit" />
                     </Button>{" "}
                     <Button size="sm" variant="outline-secondary" onClick={() => void clone(model)}>
@@ -256,6 +261,21 @@ export function ModelList() {
               </ul>
             </Alert>
           )}
+          {deleting && deleting.usage.workspaces.length > 0 && (
+            <Alert variant="warning">
+              <T text="These workspaces show its fits, and will say that the fit has been deleted where they did:" />
+              <ul className="mb-0">
+                {deleting.usage.workspaces.map((w) => (
+                  <li key={w.id}>
+                    <a href={pane.href({ name: "workspace", id: w.id })}>{w.name}</a>{" "}
+                    <span className="text-secondary small">
+                      {t("{kind}, {count} panels", { kind: workspaceKindName(w.kind, t), count: w.panels })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Alert>
+          )}
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={() => setDeleting(null)}>
@@ -267,6 +287,7 @@ export function ModelList() {
               if (!deleting) return;
               try {
                 await api.deleteModel(deleting.model.id);
+                changed("model", deleting.model.id);
                 setTicked((list) => list.filter((x) => x !== deleting.model.id));
               } catch (err) {
                 setError(errorMessage(err, t("Could not delete the model.")));

@@ -3175,7 +3175,8 @@ pub fn admin_endpoints() -> EndpointSet {
 
     // What refers to a model by name (analytics TODO A3.5): the calculated
     // fields whose formula calls `predict("…")` on it, and the triggers and
-    // workflows that fit it (`fit_model`) or name it in their configuration.
+    // workflows that fit it (`fit_model`) or name it in their configuration,
+    // and the workspaces whose panels show one of its fits (A4.2).
     // The model list's delete warning lists them; deleting is not refused,
     // since each of them reports the missing model by name when it next runs.
     set.register(
@@ -3203,6 +3204,11 @@ pub fn admin_endpoints() -> EndpointSet {
                     // `fits` (a `fit_model` step) or `names` (any other mention).
                     StructField::new("how", TypeSchema::text()),
                 ])),
+            ),
+            // The workspaces whose panels show one of its fits (A4.2).
+            StructField::new(
+                "workspaces",
+                TypeSchema::array(crate::analytics::workspace_use_schema()),
             ),
         ]))
         .auth(AuthRequirement::admin()),

@@ -1,13 +1,17 @@
-//! Workspaces (analytics TODO A1.12, A1.21, A3.0): the six kinds of the goals
+//! Workspaces (analytics TODO A1.12, A1.21, A3.0, A4.2): the six kinds of the goals
 //! document, and the `_fd_workspaces` table that keeps each one's state.
 //!
 //! A workspace is a name, a kind and a **state** — JSON owned by the kind's
-//! screen, restored when the workspace is opened again. This crate does not
-//! look inside the state: an explorer's (A2) is its drop zones, a map's (A5)
+//! screen, restored when the workspace is opened again. This crate does not,
+//! on the whole, look inside the state: an explorer's (A2) is its drop zones, a map's (A5)
 //! its layers, and neither is the other's business. The Dataset editor and
 //! the model editor are not workspaces: datasets and models are listed beside
 //! the workspaces and each opens in its editor on its own, since a workspace
 //! that only pointed at one would have no state of its own.
+//!
+//! The one thing this crate does read in a state is where a kind keeps its
+//! panels ([`crate::panel`]): a state whose panels do not read is refused, and
+//! the usage index finds what a workspace's panels read.
 //!
 //! The store keeps a workspace of any kind. Whether a kind can be created yet
 //! is [`WorkspaceKind::check_available`]'s question, which the API asks, so
@@ -99,11 +103,11 @@ impl WorkspaceKind {
     }
 
     /// The milestone that brings it, when it is not here yet (`None` when it
-    /// is): the Analytics UI plan's A4–A9. The notebook is not scheduled.
+    /// is): the Analytics UI plan's A5–A9. The notebook is not scheduled. The
+    /// report arrived with A4.3, as the first place panels are dropped.
     pub fn arrives_in(self) -> Option<&'static str> {
         match self {
-            WorkspaceKind::DataExplorer => None,
-            WorkspaceKind::Report => Some("A4"),
+            WorkspaceKind::DataExplorer | WorkspaceKind::Report => None,
             WorkspaceKind::Map => Some("A5"),
             WorkspaceKind::Dashboard => Some("A6"),
             WorkspaceKind::Simulation => Some("A7"),
@@ -269,7 +273,8 @@ pub async fn save_workspace_state(
     if !state.is_object() {
         return Err(Error::invalid("a workspace's state is a JSON object"));
     }
-    require_workspace(catalog, id).await?;
+    let workspace = require_workspace(catalog, id).await?;
+    crate::panel::check_state(workspace.kind, &state)?;
     update(
         catalog,
         id,
@@ -411,7 +416,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_six_kinds_parse_and_only_the_data_explorer_is_here() {
+    fn all_six_kinds_parse_and_the_data_explorer_and_the_report_are_here() {
         for kind in WorkspaceKind::ALL {
             assert_eq!(WorkspaceKind::parse(kind.as_str()).expect("parses"), kind);
         }
@@ -419,11 +424,15 @@ mod tests {
             .into_iter()
             .filter(|k| k.is_available())
             .collect();
-        assert_eq!(here, vec![WorkspaceKind::DataExplorer]);
+        assert_eq!(
+            here,
+            vec![WorkspaceKind::DataExplorer, WorkspaceKind::Report]
+        );
         WorkspaceKind::DataExplorer.check_available().expect("A2");
+        WorkspaceKind::Report.check_available().expect("A4");
         assert_eq!(WorkspaceKind::Map.arrives_in(), Some("A5"));
-        let err = WorkspaceKind::Report.check_available().expect_err("A4");
-        assert!(err.to_string().contains("milestone A4"), "{err}");
+        let err = WorkspaceKind::Map.check_available().expect_err("A5");
+        assert!(err.to_string().contains("milestone A5"), "{err}");
         // The Dataset editor and the model editor are not kinds of workspace.
         assert!(WorkspaceKind::parse("dataset_editor").is_err());
         assert!(WorkspaceKind::parse("model_fit").is_err());

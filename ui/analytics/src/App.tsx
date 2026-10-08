@@ -1,5 +1,6 @@
-// The Analytics UI's shell (analytics TODO A1.14): who is signed in, the
-// language and the colour scheme, a header, and the route.
+// The Analytics UI's shell (analytics TODO A1.14, A4.1): who is signed in, the
+// language and the colour scheme, a header, and the route — or two routes
+// side by side, when the view is split.
 //
 // The session is the admin UI's own: the server serves this bundle only to a
 // signed-in admin, so reaching this code signed out means the session expired
@@ -18,19 +19,20 @@ import { Home } from "./Home";
 import { I18nProvider, T, useT } from "./i18n";
 import { FitRedirect, ModelCompare } from "./models/ModelCompare";
 import { ModelEditor } from "./models/ModelEditor";
-import { parseRoute, type Route } from "./router";
+import { SplitView, usePane } from "./panes";
+import { layoutHash, parseLayout, type Layout, type Route } from "./router";
 import { useTheme } from "./theme";
 import { WorkspaceFrame } from "./workspaces/WorkspaceFrame";
 
-/** The route the hash names, kept current. */
-function useRoute(): Route {
-  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash));
+/** The layout the hash names, kept current. */
+function useLayout(): Layout {
+  const [layout, setLayout] = useState<Layout>(() => parseLayout(window.location.hash));
   useEffect(() => {
-    const onChange = () => setRoute(parseRoute(window.location.hash));
+    const onChange = () => setLayout(parseLayout(window.location.hash));
     window.addEventListener("hashchange", onChange);
     return () => window.removeEventListener("hashchange", onChange);
   }, []);
-  return route;
+  return layout;
 }
 
 export function App() {
@@ -81,7 +83,8 @@ function SignedOut() {
 function Shell({ email }: { email: string }) {
   const { t } = useT();
   const [theme, toggleTheme] = useTheme();
-  const route = useRoute();
+  const layout = useLayout();
+  const split = layout.side !== null;
   return (
     <div className="an-shell">
       <header className="an-header">
@@ -89,6 +92,14 @@ function Shell({ email }: { email: string }) {
           <T text="Analytics" />
         </a>
         <span className="text-secondary small ms-auto">{email}</span>
+        <a
+          className={split ? "btn btn-sm btn-secondary" : "btn btn-sm btn-outline-secondary"}
+          href={layoutHash(split ? { main: layout.main, side: null } : { main: layout.main, side: { name: "home" } })}
+          aria-pressed={split}
+          title={split ? t("Close the right side") : t("Open a second screen beside this one")}
+        >
+          <T text="Split" />
+        </a>
         <Button
           size="sm"
           variant="outline-secondary"
@@ -101,14 +112,15 @@ function Shell({ email }: { email: string }) {
           <T text="Admin" />
         </a>
       </header>
-      <main className="an-main">
-        <Page route={route} />
+      <main className={split ? "an-main split" : "an-main"}>
+        <SplitView layout={layout} render={(route) => <Page route={route} />} />
       </main>
     </div>
   );
 }
 
 function Page({ route }: { route: Route }) {
+  const pane = usePane();
   switch (route.name) {
     case "home":
       return <Home />;
@@ -133,7 +145,7 @@ function Page({ route }: { route: Route }) {
         <div className="an-page">
           <Alert variant="warning">
             <T text="There is nothing at {path}." args={{ path: route.path }} />{" "}
-            <a href="#/">
+            <a href={pane.href({ name: "home" })}>
               <T text="Back to the front page" />
             </a>
           </Alert>

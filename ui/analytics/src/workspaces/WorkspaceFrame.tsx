@@ -14,11 +14,14 @@ import Spinner from "react-bootstrap/Spinner";
 import { api, errorMessage } from "../api";
 import type { GetWorkspaceResponse } from "../client";
 import { T, useT } from "../i18n";
+import { usePane } from "../panes";
 import { StateSaver, type SaveStatus } from "./saver";
 
 /** The Data explorer, loaded when a workspace of its kind opens: it brings
  * ECharts, which the front page does not need. */
 const DataExplorer = lazy(() => import("../explorer/DataExplorer").then((m) => ({ default: m.DataExplorer })));
+/** The Report, loaded when one opens: its panels draw with ECharts too. */
+const ReportWorkspace = lazy(() => import("../report/ReportWorkspace").then((m) => ({ default: m.ReportWorkspace })));
 
 /** How long after the last change the state is saved. */
 const SAVE_DELAY_MS = 600;
@@ -34,6 +37,7 @@ export type WorkspaceProps = {
 
 export function WorkspaceFrame({ id }: { id: string }) {
   const { t } = useT();
+  const pane = usePane();
   const [workspace, setWorkspace] = useState<GetWorkspaceResponse | null>(null);
   const [state, setLocal] = useState<WorkspaceState>({});
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +97,7 @@ export function WorkspaceFrame({ id }: { id: string }) {
       <div className="an-page">
         <Alert variant="danger">
           {error}{" "}
-          <a href="#/">
+          <a href={pane.href({ name: "home" })}>
             <T text="Back to the workspaces" />
           </a>
         </Alert>
@@ -110,7 +114,7 @@ export function WorkspaceFrame({ id }: { id: string }) {
   return (
     <div className="d-flex flex-column h-100">
       <div className="d-flex align-items-center gap-3 px-3 py-2 border-bottom">
-        <a href="#/" className="text-secondary">
+        <a href={pane.href({ name: "home" })} className="text-secondary">
           ← <T text="Workspaces" />
         </a>
         <strong>{workspace.name}</strong>
@@ -128,12 +132,13 @@ export function WorkspaceFrame({ id }: { id: string }) {
 }
 
 /** The kind's screen, handed the state and its setter. Each kind's arrives with
- * its milestone: A2's Data explorer first. */
+ * its milestone: A2's Data explorer first, then A4's Report. */
 function KindScreen({ kind, ...props }: WorkspaceProps & { kind: string }) {
-  if (kind === "data_explorer") {
+  const Screen = kind === "data_explorer" ? DataExplorer : kind === "report" ? ReportWorkspace : null;
+  if (Screen) {
     return (
       <Suspense fallback={<Spinner animation="border" size="sm" className="m-3" />}>
-        <DataExplorer {...props} />
+        <Screen {...props} />
       </Suspense>
     );
   }

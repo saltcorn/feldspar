@@ -436,15 +436,15 @@ Report workspace with PDF output.
 
 ## Phase 1 — Panels and split view
 
-- [ ] A4.1 Split view: two things side by side with a movable divider, each a workspace, the
+- [x] A4.1 Split view: two things side by side with a movable divider, each a workspace, the
       Dataset editor or the model editor, each with its own state; the URL records both. A
       dataset or model edited on one side refreshes what the other side shows of it (a
       model beside its dataset, an explorer beside the model being built from it). Tests.
-- [ ] A4.2 The panel model in `sc-analytics`: `Panel { id, kind, content }` with kinds plot,
+- [x] A4.2 The panel model in `sc-analytics`: `Panel { id, kind, content }` with kinds plot,
       summary table, test result, text and custom; panels reference datasets by id and render
       live. A usage index answers "what uses this dataset" for the delete warning, and a
       panel whose dataset is gone shows a sentence instead of failing. Tests.
-- [ ] A4.3 Drag and drop: a panel's JSON as the drag payload; sources are the explorer's
+- [x] A4.3 Drag and drop: a panel's JSON as the drag payload; sources are the explorer's
       current output and the model editor's output panels; the report is a sink; always a copy.
       Tests.
 

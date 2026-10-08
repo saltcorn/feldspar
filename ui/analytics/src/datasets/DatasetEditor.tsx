@@ -19,6 +19,7 @@ import Spinner from "react-bootstrap/Spinner";
 
 import { api, errorMessage } from "../api";
 import { T, useT } from "../i18n";
+import { useAnnounce, useChanges } from "../panes";
 import type { DatasetItem } from "./DatasetList";
 import { opKindAbout, opKindName } from "../labels";
 import { OperationForm, type Others } from "./OperationForm";
@@ -60,6 +61,10 @@ export function DatasetEditor({
   backLabel: string;
 }) {
   const { t } = useT();
+  const changed = useAnnounce();
+  // Bumped when the dataset, or one it is based on, is changed on the other
+  // side of a split view, to read it again.
+  const [reloads, setReloads] = useState(0);
   const [def, setDef] = useState<DatasetDef | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +93,10 @@ export function DatasetEditor({
     return () => {
       live = false;
     };
-  }, [id, t]);
+  }, [id, t, reloads]);
+  useChanges(["dataset"], (change) => {
+    if (change.id === id || def?.base.kind === "dataset") setReloads((n) => n + 1);
+  });
 
   /** Save a new definition; the server's report comes back with it. */
   const commit = useCallback(
@@ -104,13 +112,14 @@ export function DatasetEditor({
           operations: next.operations,
         });
         setReport(answer.report as Report);
+        changed("dataset", next.id);
       } catch (err) {
         setError(errorMessage(err, t("Could not save the dataset.")));
       } finally {
         setSaving(false);
       }
     },
-    [t],
+    [t, changed],
   );
 
   const ops = def?.operations ?? [];

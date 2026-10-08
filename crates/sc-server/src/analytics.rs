@@ -1,10 +1,11 @@
-//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8, A2.14): datasets,
-//! plots, hypothesis tests and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
+//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8, A2.14, A4.2): datasets,
+//! plots, hypothesis tests, panels and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
 //! declared in `sc-api`'s `analytics.rs`, which says what each one is for.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use sc_analytics::panel::Panel;
 use sc_analytics::plot::{self, PlotSpec};
 use sc_analytics::stats;
 use sc_analytics::{Workspace, WorkspaceId, WorkspaceKind};
@@ -165,9 +166,12 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     .filter(|m| m.dataset.id == id || m.related.iter().any(|r| r.dataset.id == id))
                     .map(|m| json!({ "id": m.id.0, "name": m.name }))
                     .collect();
-                Ok(HandlerResponse::ok(
-                    json!({ "datasets": datasets, "models": models }),
-                ))
+                let workspaces = sc_analytics::panel::UsageIndex::build(&catalog).await?;
+                Ok(HandlerResponse::ok(json!({
+                    "datasets": datasets,
+                    "models": models,
+                    "workspaces": workspaces.dataset(id),
+                })))
             }
         }
     });
@@ -442,6 +446,28 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 };
                 Ok(HandlerResponse::ok(
                     answer.unwrap_or_else(|error| json!({ "error": error })),
+                ))
+            }
+        }
+    });
+
+    // --- panels ---------------------------------------------------------------
+
+    reg.register("renderPanel", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let panel = Panel::from_json(
+                    ctx.body
+                        .get("panel")
+                        .ok_or_else(|| Error::invalid("`panel` is required"))?,
+                )?;
+                let rendered = sc_analytics::panel::render_panel(&catalog, &panel).await?;
+                Ok(HandlerResponse::ok(
+                    serde_json::to_value(rendered).map_err(|e| {
+                        Error::serde(format!("a panel's data does not serialise: {e}"))
+                    })?,
                 ))
             }
         }

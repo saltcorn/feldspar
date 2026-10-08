@@ -8433,6 +8433,19 @@ Beside the plot, the tests column scrolls on its own (`.an-tests`'s `max-height`
 has a section per group, and stretching the plot to its height made the plot thousands of
 pixels tall, its percentage margins blank bands.
 
+**Split view, panels and drag and drop** (A4.1–A4.3; `ui/analytics/src/panes.tsx`,
+`changes.ts`, `src/panels`, `sc_analytics::panel`). Split, the address is the main route with
+`side=<hash>` added; each side moves itself through `usePane()`, and a dataset or model saved on
+one side is announced so the other reads it again. A **panel** is `{ id, title?, kind, content }`
+— `plot` (a spec), `summary_table`, `test_result` (tests and their plot), `text`, `fit_table` (a
+fit and an output's name) or `custom` — stored as what makes it and drawn live by `renderPanel`;
+a panel whose dataset or fit is gone answers a sentence. A drag carries the panel's JSON as it
+was when the drag began and a drop is always a copy with a new id. Sources are the explorer's
+output and the model editor's output cards; the sink is the Report workspace, whose state is
+`{ blocks: [{ id, kind: "panel", panel }] }`. The **usage index** (`UsageIndex`) is built from
+the stored states when asked — `panels_in_state` knows where each kind keeps its panels — and
+answers `datasetUsage`'s and `modelUsage`'s `workspaces`. A4.6 describes the finished report.
+
 **Demo data** (`sc_analytics::demo`, `feldspar demo analytics [--replace]`), deterministic and
 synthetic: `neighbourhoods`, `houses` and `viewings` (A1), shaped as the models tutorial has
 them; `patients` and `measurements` (A2: 90 patients, a third on each of placebo, a low and a high

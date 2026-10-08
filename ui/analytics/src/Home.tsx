@@ -5,13 +5,14 @@
 
 import { DatasetList } from "./datasets/DatasetList";
 import { ModelList } from "./models/ModelList";
-import { navigate } from "./router";
+import { usePane } from "./panes";
 import { WorkspaceList } from "./workspaces/WorkspaceList";
 
 export function Home() {
+  const pane = usePane();
   return (
     <div className="an-page">
-      <DatasetList onOpen={(id) => navigate({ name: "dataset", id })} />
+      <DatasetList onOpen={(id) => pane.go({ name: "dataset", id })} />
       <ModelList />
       <WorkspaceList />
     </div>

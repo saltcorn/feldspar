@@ -30,6 +30,7 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { T, useT } from "../i18n";
+import { useChanges } from "../panes";
 import {
   featureInputs,
   formatNumber,
@@ -94,6 +95,9 @@ export function FitView({
   useEffect(() => {
     void load();
   }, [load]);
+  // The dataset edited on the other side of a split view: whether it has
+  // changed since this fit is the fit's to say again.
+  useChanges(["dataset"], () => void load());
 
   // The outputs, again whenever the optional plots chosen change: each is
   // drawn on the server only when asked for.
@@ -190,7 +194,15 @@ export function FitView({
           <Spinner animation="border" size="sm" />
         </div>
       ) : (
-        <OutputsPanel outputs={outputs} collapsed={collapsed} plots={plots} onToggle={onToggle} onPlots={onPlots} />
+        <OutputsPanel
+          outputs={outputs}
+          collapsed={collapsed}
+          plots={plots}
+          onToggle={onToggle}
+          onPlots={onPlots}
+          fit={instanceId}
+          model={model.name}
+        />
       )}
       {!posterior && outputs && outputs.some((o) => o.name === "metrics") && (
         <p className="text-muted small">

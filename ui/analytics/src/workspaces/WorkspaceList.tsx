@@ -16,7 +16,7 @@ import Table from "react-bootstrap/Table";
 import { api, errorMessage } from "../api";
 import type { ListWorkspacesResponse } from "../client";
 import { T, useT } from "../i18n";
-import { navigate } from "../router";
+import { usePane } from "../panes";
 import { workspaceKindName } from "../labels";
 import { firstAvailable, kindOptions, type KindItem } from "./kinds";
 
@@ -24,6 +24,7 @@ type WorkspaceItem = ListWorkspacesResponse[number];
 
 export function WorkspaceList() {
   const { t } = useT();
+  const pane = usePane();
   const [kinds, setKinds] = useState<KindItem[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +53,7 @@ export function WorkspaceList() {
     setError(null);
     try {
       const made = await api.createWorkspace({ name: name.trim(), kind });
-      navigate({ name: "workspace", id: made.id });
+      pane.go({ name: "workspace", id: made.id });
     } catch (err) {
       setError(errorMessage(err, t("Could not create the workspace.")));
     }
@@ -133,7 +134,7 @@ export function WorkspaceList() {
             {workspaces.map((w) => (
               <tr key={w.id}>
                 <td>
-                  <a href={`#/w/${encodeURIComponent(w.id)}`}>{w.name}</a>
+                  <a href={pane.href({ name: "workspace", id: w.id })}>{w.name}</a>
                 </td>
                 <td>{workspaceKindName(w.kind, t)}</td>
                 <td className="text-secondary">{new Date(w.updated_at).toLocaleString()}</td>

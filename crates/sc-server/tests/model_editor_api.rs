@@ -515,7 +515,7 @@ async fn what_uses_a_model_is_listed_for_the_delete_warning() -> sc_error::Resul
     let usage = format!("/api/models/{model}/usage");
     assert_eq!(
         client.ok("GET", &usage, None).await,
-        json!({ "fields": [], "triggers": [] })
+        json!({ "fields": [], "triggers": [], "workspaces": [] })
     );
 
     // A field that predicts with it needs an active fit to be saved.
@@ -622,7 +622,7 @@ async fn what_uses_a_model_is_listed_for_the_delete_warning() -> sc_error::Resul
         client
             .ok("GET", &format!("/api/models/{other}/usage"), None)
             .await,
-        json!({ "fields": [], "triggers": [] })
+        json!({ "fields": [], "triggers": [], "workspaces": [] })
     );
     let missing = uuid_like();
     let (status, _) = client

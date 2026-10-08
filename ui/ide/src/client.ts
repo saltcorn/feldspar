@@ -249,7 +249,7 @@ export type SaveModelRequest = { id?: string | null; name: string; description?:
 export type SaveModelResponse = { id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null } | null; program_check?: unknown | null; view_state?: unknown | null };
 export type CloneModelRequest = { name?: string | null };
 export type CloneModelResponse = { id: string; name: string; description: string; provider: string; table_name: string; dataset: unknown; related: unknown; configuration: unknown; hyperparameters: unknown; split: unknown; attributes: unknown; error?: string | null; instances: number; last_fit?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null } | null; active_instance?: { id: string; model: string; name: string; description: string; status: string; created: string; active: boolean; error?: string | null; hyperparameters: unknown; outcome?: unknown | null; metrics: unknown; rows?: unknown | null; progress?: unknown | null; cancel_requested: boolean; warnings: Array<string>; dataset_changed?: boolean | null } | null; program_check?: unknown | null; view_state?: unknown | null };
-export type ModelUsageResponse = { fields: Array<{ table: string; field: string }>; triggers: Array<{ id: string; name: string; how: string }> };
+export type ModelUsageResponse = { fields: Array<{ table: string; field: string }>; triggers: Array<{ id: string; name: string; how: string }>; workspaces: Array<{ id: string; name: string; kind: string; panels: number }> };
 export type PatchModelViewStateRequest = { patch: unknown };
 export type PatchModelViewStateResponse = { view_state: unknown };
 export type DeleteModelResponse = { deleted: boolean };
@@ -304,7 +304,7 @@ export type UpdateDatasetRequest = { name: string; description?: string | null; 
 export type UpdateDatasetResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
 export type CloneDatasetRequest = { name?: string | null };
 export type CloneDatasetResponse = { dataset: unknown; report: { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown } };
-export type DatasetUsageResponse = { datasets: Array<{ id: string; name: string }>; models: Array<{ id: string; name: string }> };
+export type DatasetUsageResponse = { datasets: Array<{ id: string; name: string }>; models: Array<{ id: string; name: string }>; workspaces: Array<{ id: string; name: string; kind: string; panels: number }> };
 export type DatasetShapesRequest = { dataset: unknown };
 export type DatasetShapesResponse = { base: unknown; operations: Array<unknown>; tables: unknown; children: unknown };
 export type ValidateDatasetOperationRequest = { dataset: unknown; position: number; replace?: boolean | null; operation: unknown };
@@ -323,6 +323,8 @@ export type RunTestsRequest = { spec: unknown };
 export type RunTestsResponse = { error?: string | null; problems?: Array<string> | null; design?: string | null; y?: Array<string> | null; x?: string | null; by?: string | null; mu?: number | null; level?: number | null; sections?: Array<unknown> | null };
 export type SuggestPlotRequest = { dataset: string; assignment?: unknown | null; preset?: string | null; mark?: string | null };
 export type SuggestPlotResponse = { spec?: unknown | null; assignment?: unknown | null; error?: string | null };
+export type RenderPanelRequest = { panel: unknown };
+export type RenderPanelResponse = { kind: string; error?: string | null; plot?: unknown | null; table?: unknown | null; tests?: unknown | null; output?: unknown | null; categorical?: Array<string> | null };
 export type GetModelOutputsQuery = { fit?: string; include?: string };
 export type GetModelOutputsResponse = { model: string; fit?: unknown | null; outputs: Array<unknown> };
 export type ListWorkspaceKindsResponse = Array<{ kind: string; label: string; available: boolean; arrives_in?: string | null }>;
@@ -546,6 +548,7 @@ export interface ApiClient {
   plotGallery(): Promise<PlotGalleryResponse>;
   runTests(body: RunTestsRequest): Promise<RunTestsResponse>;
   suggestPlot(body: SuggestPlotRequest): Promise<SuggestPlotResponse>;
+  renderPanel(body: RenderPanelRequest): Promise<RenderPanelResponse>;
   getModelOutputs(id: string, query?: GetModelOutputsQuery): Promise<GetModelOutputsResponse>;
   listWorkspaceKinds(): Promise<ListWorkspaceKindsResponse>;
   listWorkspaces(): Promise<ListWorkspacesResponse>;
@@ -2389,6 +2392,15 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("suggestPlot", res);
       return (await res.json()) as SuggestPlotResponse;
+    },
+    async renderPanel(body) {
+      const res = await doFetch(`${baseUrl}/api/panels/render`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("renderPanel", res);
+      return (await res.json()) as RenderPanelResponse;
     },
     async getModelOutputs(id, query) {
       const search = new URLSearchParams();

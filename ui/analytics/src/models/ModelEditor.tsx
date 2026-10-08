@@ -35,7 +35,8 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { T, useT } from "../i18n";
-import { navigate, routeHash } from "../router";
+import { useAnnounce, useChanges, usePane } from "../panes";
+import { routeHash } from "../router";
 import { DatasetPicker, type DatasetItem } from "./DatasetPicker";
 import { FitRunning } from "./FitRunning";
 import { FitView } from "./FitView";
@@ -105,6 +106,11 @@ export function ModelEditor({
   dataset?: string | null;
 }) {
   const { t } = useT();
+  const pane = usePane();
+  const changed = useAnnounce();
+  // Bumped when the model is changed on the other side of a split view, to
+  // read it again.
+  const [reloads, setReloads] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -213,7 +219,7 @@ export function ModelEditor({
     return () => {
       cancelled = true;
     };
-  }, [modelId, routeFit, askedDataset, fill, t]);
+  }, [modelId, routeFit, askedDataset, fill, t, reloads]);
 
   // The providers, resolved against this dataset and this configuration where
   // they can be: `config_spec` then offers *these* columns and `outcome` says
@@ -261,6 +267,21 @@ export function ModelEditor({
     }
   }, []);
 
+  // Split view (A4.1): a dataset edited beside this model changes the
+  // picker's columns and each fit's "dataset changed"; this model saved or
+  // fitted on the other side is read again.
+  useChanges(["dataset", "model"], (change) => {
+    if (change.kind === "model") {
+      if (change.id === id) setReloads((n) => n + 1);
+      return;
+    }
+    void api
+      .listDatasets()
+      .then(setDatasets)
+      .catch(() => undefined);
+    if (id) void loadInstances(id);
+  });
+
   // --- the view state --------------------------------------------------------
 
   /** Record a change to what the editor shows, here and in the model's view
@@ -283,6 +304,7 @@ export function ModelEditor({
     const finished = running;
     setRunning(null);
     if (!id) return;
+    changed("model", id);
     void loadInstances(id);
     void api.getModel(id).then(setModel).catch(() => undefined);
     if (finished) select(finished);
@@ -336,10 +358,11 @@ export function ModelEditor({
     setModel(saved);
     setError(saved.error ?? null);
     setProgramCheck(programCheckText(saved.program_check));
+    changed("model", saved.id);
     // A new model now has an address of its own, so a reload comes back to it.
     // Replaced rather than navigated to, so the form is not built again under
     // the fit that is about to start.
-    if (!modelId && !id) window.history.replaceState(null, "", routeHash({ name: "model", id: saved.id }));
+    if (!modelId && !id) pane.replace({ name: "model", id: saved.id });
     return saved.id;
   };
 
@@ -424,7 +447,7 @@ export function ModelEditor({
   return (
     <div className="an-page an-model-editor">
       <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
-        <Button variant="outline-secondary" size="sm" onClick={() => navigate({ name: "home" })}>
+        <Button variant="outline-secondary" size="sm" onClick={() => pane.go({ name: "home" })}>
           ← <T text="All models" />
         </Button>
         <h2 className="h3 mb-0">{id ? name || t("Model") : t("New model")}</h2>

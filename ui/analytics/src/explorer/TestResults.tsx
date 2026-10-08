@@ -106,6 +106,19 @@ export function TestResults({
   );
 }
 
+/** The tests' results with nothing to change: what a test result panel
+ * shows in a report (A4.3). */
+export function AnalysisView({ analysis }: { analysis: Analysis }) {
+  const { locale } = useT();
+  return (
+    <section className="an-tests an-tests-static">
+      {analysis.sections.map((s, i) => (
+        <SectionView key={i} analysis={analysis} section={s} locale={locale} />
+      ))}
+    </section>
+  );
+}
+
 function SectionView({ analysis, section: s, locale }: { analysis: Analysis; section: Section; locale: string }) {
   const { t } = useT();
   const heading = sectionHeading(analysis, s, t, locale);

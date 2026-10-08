@@ -12,7 +12,7 @@ import Spinner from "react-bootstrap/Spinner";
 
 import { api, errorMessage } from "../api";
 import { T, useT } from "../i18n";
-import { navigate, routeHash } from "../router";
+import { usePane } from "../panes";
 import { instanceLabel, readModelDataset, type ModelItem } from "./models";
 import { OutputBody } from "./Outputs";
 import { compareRows, readOutputs, readOutputsFit, type ModelOutput, type OutputsFit } from "./outputs";
@@ -22,6 +22,7 @@ type Column = { model: ModelItem; fit: OutputsFit | null; outputs: ModelOutput[]
 
 export function ModelCompare({ ids }: { ids: string[] }) {
   const { t } = useT();
+  const pane = usePane();
   const [columns, setColumns] = useState<Column[] | null>(null);
 
   useEffect(() => {
@@ -48,7 +49,7 @@ export function ModelCompare({ ids }: { ids: string[] }) {
   return (
     <div className="an-page an-page-wide">
       <div className="d-flex align-items-center gap-2 mb-3">
-        <Button variant="outline-secondary" size="sm" onClick={() => navigate({ name: "home" })}>
+        <Button variant="outline-secondary" size="sm" onClick={() => pane.go({ name: "home" })}>
           ← <T text="All models" />
         </Button>
         <h2 className="h3 mb-0">
@@ -72,7 +73,7 @@ export function ModelCompare({ ids }: { ids: string[] }) {
                   <Card className="mb-3">
                     <Card.Body>
                       <h3 className="h4 mb-1">
-                        <a href={routeHash({ name: "model", id: c.model.id })}>{c.model.name}</a>
+                        <a href={pane.href({ name: "model", id: c.model.id })}>{c.model.name}</a>
                       </h3>
                       <div className="text-secondary small">
                         {c.model.provider} · {readModelDataset(c.model.dataset)?.name ?? "—"}
@@ -112,12 +113,13 @@ export function ModelCompare({ ids }: { ids: string[] }) {
  * links lead. The fit names its model; the model opens with the fit selected. */
 export function FitRedirect({ id }: { id: string }) {
   const { t } = useT();
+  const pane = usePane();
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api
       .getModelInstance(id)
-      .then((fit) => window.location.replace(routeHash({ name: "model", id: fit.model, fit: id })))
+      .then((fit) => window.location.replace(pane.href({ name: "model", id: fit.model, fit: id })))
       .catch((err: unknown) => setError(errorMessage(err, t("There is no such fit."))));
-  }, [id, t]);
+  }, [id, t, pane]);
   return <div className="an-page">{error ? <Alert variant="warning">{error}</Alert> : <Spinner animation="border" size="sm" />}</div>;
 }

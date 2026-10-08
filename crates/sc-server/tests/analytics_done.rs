@@ -211,7 +211,7 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|k| k["kind"] != "data_explorer")
+            .filter(|k| k["kind"] != "data_explorer" && k["kind"] != "report")
             .all(|k| k["available"] == json!(false) && k["arrives_in"].is_string()),
         "{kinds}"
     );
@@ -1332,7 +1332,7 @@ async fn the_try_it_of_milestone_a3() -> sc_error::Result<()> {
         client
             .ok("GET", &format!("/api/models/{model}/usage"), None)
             .await,
-        json!({ "fields": [], "triggers": [] })
+        json!({ "fields": [], "triggers": [], "workspaces": [] })
     );
     client
         .ok(
@@ -1374,6 +1374,7 @@ async fn the_try_it_of_milestone_a3() -> sc_error::Result<()> {
                 "id": client.ok("GET", "/api/triggers", None).await[0]["id"],
                 "name": "nightly refit", "how": "fits",
             }],
+            "workspaces": [],
         })
     );
     // The clone is used by nothing.
@@ -1381,7 +1382,7 @@ async fn the_try_it_of_milestone_a3() -> sc_error::Result<()> {
         client
             .ok("GET", &format!("/api/models/{clone_id}/usage"), None)
             .await,
-        json!({ "fields": [], "triggers": [] })
+        json!({ "fields": [], "triggers": [], "workspaces": [] })
     );
     Ok(())
 }

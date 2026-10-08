@@ -15,7 +15,8 @@ import Table from "react-bootstrap/Table";
 import { api, errorMessage } from "../api";
 import type { DatasetUsageResponse, ListDatasetsResponse, ListDatasetTablesResponse } from "../client";
 import { T, useT } from "../i18n";
-import { navigate } from "../router";
+import { useAnnounce, useChanges, usePane } from "../panes";
+import { workspaceKindName } from "../labels";
 import { describeGrain, type Base, type Grain } from "./ops";
 
 export type DatasetItem = ListDatasetsResponse[number];
@@ -32,6 +33,8 @@ export function describeBase(base: unknown, datasets: DatasetItem[]): string {
 
 export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
   const { t } = useT();
+  const pane = usePane();
+  const changed = useAnnounce();
   const [datasets, setDatasets] = useState<DatasetItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<{ item: DatasetItem; usage: DatasetUsageResponse } | null>(
@@ -49,11 +52,14 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
   useEffect(() => {
     void load();
   }, [load]);
+  // A dataset saved on the other side of a split view.
+  useChanges(["dataset"], () => void load());
 
   const clone = async (item: DatasetItem) => {
     try {
       const copy = await api.cloneDataset(item.id, {});
       const made = copy.dataset as { id: string };
+      changed("dataset", made.id);
       await load();
       onOpen(made.id);
     } catch (err) {
@@ -135,7 +141,7 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
                     size="sm"
                     variant="outline-secondary"
                     title={t("A new model on this dataset")}
-                    onClick={() => navigate({ name: "newModel", dataset: d.id })}
+                    onClick={() => pane.go({ name: "newModel", dataset: d.id })}
                   >
                     <T text="New model" />
                   </Button>{" "}
@@ -169,6 +175,23 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
               </ul>
             </Alert>
           )}
+          {deleting && deleting.usage.workspaces.length > 0 && (
+            <Alert variant="warning">
+              <T text="These workspaces show it, and will say that it has been deleted where they did:" />
+              <ul className="mb-0">
+                {deleting.usage.workspaces.map((w) => (
+                  <li key={w.id}>
+                    <a href={pane.href({ name: "workspace", id: w.id })}>{w.name}</a>{" "}
+                    <span className="text-secondary small">
+                      {w.panels > 0
+                        ? t("{kind}, {count} panels", { kind: workspaceKindName(w.kind, t), count: w.panels })
+                        : workspaceKindName(w.kind, t)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Alert>
+          )}
           {deleting && deleting.usage.datasets.length > 0 && (
             <Alert variant="danger">
               <T text="These datasets read it, so it cannot be deleted until they are changed or deleted:" />
@@ -191,6 +214,7 @@ export function DatasetList({ onOpen }: { onOpen: (id: string) => void }) {
               if (!deleting) return;
               try {
                 await api.deleteDataset(deleting.item.id);
+                changed("dataset", deleting.item.id);
               } catch (err) {
                 setError(errorMessage(err, t("Could not delete the dataset.")));
               }
@@ -299,6 +323,7 @@ export function NewDatasetForm({
 /** `#/datasets/new`: a new dataset on a page of its own — where the admin UI's
  * model form sends someone who has no dataset yet. */
 export function NewDatasetPage({ table }: { table: string | null }) {
+  const pane = usePane();
   const [datasets, setDatasets] = useState<DatasetItem[]>([]);
   useEffect(() => {
     api.listDatasets().then(setDatasets).catch(() => undefined);
@@ -311,7 +336,7 @@ export function NewDatasetPage({ table }: { table: string | null }) {
       <NewDatasetForm
         datasets={datasets}
         initialTable={table}
-        onCreated={(id) => navigate({ name: "dataset", id })}
+        onCreated={(id) => pane.go({ name: "dataset", id })}
       />
     </div>
   );

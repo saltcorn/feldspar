@@ -102,6 +102,26 @@ pub async fn render_outputs(
     Ok(out)
 }
 
+/// The output of `instance` called `name`, drawn whether it is optional or
+/// not; `None` when the fit recorded no such output. What a panel copied from
+/// the model editor (A4.3) shows.
+pub async fn render_one_output(
+    catalog: &Catalog,
+    instance: &ModelInstance,
+    name: &str,
+) -> Result<Option<OutputView>> {
+    let Some(decl) = sc_model::instance_outputs(instance)?
+        .into_iter()
+        .find(|d| d.name == name)
+    else {
+        return Ok(None);
+    };
+    let include = BTreeSet::from([decl.name.clone()]);
+    render_output(catalog, instance, &decl, &include)
+        .await
+        .map(Some)
+}
+
 async fn render_output(
     catalog: &Catalog,
     instance: &ModelInstance,
