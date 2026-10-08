@@ -659,21 +659,45 @@
   margin-bottom: 0;
 }
 
-/* --- The Report workspace (A4.3) --------------------------------------------- */
+/* --- The Report workspace (A4.3–A4.5) ---------------------------------------- */
 
 .an-report {
   min-height: 100%;
-  padding: 1.5rem 1rem;
+  display: flex;
+  flex-direction: column;
   background: var(--tblr-bg-surface-secondary, transparent);
 }
 
-.an-report-page {
-  max-width: 52rem;
-  margin: 0 auto;
-  padding: 1.5rem 2rem;
+.an-report-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--tblr-border-color);
   background: var(--tblr-bg-surface);
+}
+
+/* The desk the paper lies on: it scrolls sideways when the paper is wider
+   than the pane (a landscape page beside another screen). */
+.an-report-desk {
+  flex: 1 1 auto;
+  padding: 1.5rem 1rem;
+  overflow-x: auto;
+}
+
+/* The paper, at its own width in millimetres (set by the screen), always
+   white: it is what prints. */
+.an-report-page {
+  box-sizing: content-box;
+  margin: 0 auto;
+  background: #fff;
+  color: #1d273b;
   border: 1px solid var(--tblr-border-color);
-  min-height: 20rem;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 12%);
 }
 
 .an-report-empty {
@@ -683,16 +707,138 @@
   border-radius: 0.5rem;
 }
 
+/* A block's height on the screen is its height on paper: `paginate` reads it,
+   so its children's margins stay inside it and the controls float. */
 .an-report-block {
-  margin-bottom: 1.5rem;
+  position: relative;
+  display: flow-root;
+  margin-bottom: 24px;
   border-top: 3px solid transparent;
 }
 
-.an-report-block-head {
+.an-report-controls {
+  position: absolute;
+  top: -0.25rem;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0 0.25rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 0.25rem;
+  background: var(--tblr-bg-surface);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.an-report-block:hover > .an-report-controls,
+.an-report-controls:focus-within,
+.an-report-controls:has(.show) {
+  opacity: 1;
+}
+
+.an-block-grip {
+  cursor: grab;
+  user-select: none;
+  padding: 0 0.25rem;
+  color: var(--tblr-secondary);
+}
+
+.an-block-grip:active {
+  cursor: grabbing;
+}
+
+.an-block-menu {
+  text-decoration: none;
+  color: var(--tblr-secondary);
+}
+
+.an-block-menu::after {
+  display: none;
+}
+
+.an-block-heading-text {
+  margin: 0;
+  cursor: text;
+}
+
+.an-heading-1 {
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+.an-heading-2 {
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+
+.an-heading-3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.an-heading-edit {
+  font-weight: 600;
+}
+
+.an-block-text-body {
+  cursor: text;
+}
+
+.an-placeholder {
+  color: var(--tblr-secondary);
+  font-style: italic;
+  font-weight: normal;
+}
+
+.an-panel-title {
+  margin: 0 0 0.5rem;
+}
+
+.an-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.an-md-quote {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--tblr-border-color);
+  color: var(--tblr-secondary);
+}
+
+.an-md-code {
+  padding: 0.5rem 0.75rem;
+  background: var(--tblr-bg-surface-secondary, #f6f8fb);
+  border-radius: 0.25rem;
+}
+
+.an-page-break-line {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.5rem;
+  color: var(--tblr-secondary);
+  font-size: 0.75rem;
+}
+
+.an-page-break-line::before,
+.an-page-break-line::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 2px dashed var(--tblr-border-color);
+}
+
+/* Where the next page will start, as `paginate` reckons it. */
+.an-page-marker {
+  display: flex;
+  justify-content: flex-end;
+  margin: -12px 0 12px;
+  border-top: 1px dashed var(--tblr-primary);
+  font-size: 0.7rem;
+  color: var(--tblr-primary);
+}
+
+.an-page-marker > span {
+  padding: 0 0.25rem;
 }
 
 .an-report-end {
@@ -703,4 +849,86 @@
 /* Where a dropped panel would go. */
 .an-drop-before {
   border-top-color: var(--tblr-primary);
+}
+
+/* --- Printing a report (A4.5) ------------------------------------------------- */
+
+/* One named page for each size and orientation: the report being printed
+   names its own (`an-page-a4-landscape`), so nothing is written into a
+   <style> when the dialog opens. The margins are `MARGIN_MM`. */
+@page a4-portrait { size: A4 portrait; margin: 15mm; }
+@page a4-landscape { size: A4 landscape; margin: 15mm; }
+@page a3-portrait { size: A3 portrait; margin: 15mm; }
+@page a3-landscape { size: A3 landscape; margin: 15mm; }
+@page letter-portrait { size: letter portrait; margin: 15mm; }
+@page letter-landscape { size: letter landscape; margin: 15mm; }
+@page legal-portrait { size: legal portrait; margin: 15mm; }
+@page legal-landscape { size: legal landscape; margin: 15mm; }
+
+.an-page-a4-portrait { page: a4-portrait; }
+.an-page-a4-landscape { page: a4-landscape; }
+.an-page-a3-portrait { page: a3-portrait; }
+.an-page-a3-landscape { page: a3-landscape; }
+.an-page-letter-portrait { page: letter-portrait; }
+.an-page-letter-landscape { page: letter-landscape; }
+.an-page-legal-portrait { page: legal-portrait; }
+.an-page-legal-landscape { page: legal-landscape; }
+
+@media print {
+  /* Everything but the report and what holds it goes… */
+  html.an-printing body *:not(:has(.an-print-root)):not(.an-print-root):not(.an-print-root *) {
+    display: none !important;
+  }
+
+  /* …and what holds it stops being a screen: no fixed heights, no scrolling,
+     no split, no padding, so the report flows over as many pages as it has. */
+  html.an-printing,
+  html.an-printing body,
+  html.an-printing body :has(.an-print-root) {
+    display: block !important;
+    position: static !important;
+    height: auto !important;
+    min-height: 0 !important;
+    width: auto !important;
+    max-width: none !important;
+    overflow: visible !important;
+    flex: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: #fff !important;
+  }
+
+  /* The paper keeps its width, which is the page's inside its margins. */
+  .an-print-root {
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .an-print-root .an-report-controls,
+  .an-print-root .an-page-marker,
+  .an-print-root .an-report-end,
+  .an-print-root .an-report-empty,
+  .an-print-root .an-placeholder {
+    display: none !important;
+  }
+
+  .an-print-root .an-report-block {
+    break-inside: avoid;
+    border-top: 0;
+  }
+
+  .an-print-root .an-block-heading {
+    break-after: avoid;
+  }
+
+  .an-print-root .an-block-page-break {
+    break-after: page;
+    height: 0;
+    margin: 0;
+    overflow: hidden;
+  }
 }

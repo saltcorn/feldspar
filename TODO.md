@@ -450,11 +450,11 @@ Report workspace with PDF output.
 
 ## Phase 2 — The Report workspace
 
-- [ ] A4.4 The Report workspace: a document of blocks (panel, heading, Markdown text, page
+- [x] A4.4 The Report workspace: a document of blocks (panel, heading, Markdown text, page
       break), added by dropping or from a menu, reordered by dragging, removed; page size and
       orientation. Panels render without interaction (no tooltips or brushing). Report blocks
       are themselves drag sources. Tests.
-- [ ] A4.5 PDF output: a print stylesheet with `@page` sizes and page breaks, ECharts' SVG
+- [x] A4.5 PDF output: a print stylesheet with `@page` sizes and page breaks, ECharts' SVG
       renderer for printing, **Export PDF** opening the print dialog. Tests of the pagination
       logic (vitest).
 

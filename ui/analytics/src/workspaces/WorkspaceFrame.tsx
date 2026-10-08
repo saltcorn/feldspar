@@ -33,6 +33,8 @@ export type WorkspaceState = Record<string, unknown>;
 export type WorkspaceProps = {
   state: WorkspaceState;
   setState: (update: (state: WorkspaceState) => WorkspaceState) => void;
+  /** The workspace's name: a printed report's title. */
+  name?: string;
 };
 
 export function WorkspaceFrame({ id }: { id: string }) {
@@ -125,7 +127,7 @@ export function WorkspaceFrame({ id }: { id: string }) {
         </span>
       </div>
       <div className="flex-grow-1" style={{ minHeight: 0 }}>
-        <KindScreen kind={workspace.kind} state={state} setState={setState} />
+        <KindScreen kind={workspace.kind} name={workspace.name} state={state} setState={setState} />
       </div>
     </div>
   );

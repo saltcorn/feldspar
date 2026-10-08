@@ -992,6 +992,25 @@ function mosaicSeries(ctx: Ctx, l: LayerData, panel: Panel, rows: unknown[][], n
 
 /** Compile `spec`, drawn as `data`, to an ECharts option. */
 export function toOption(spec: PlotSpec, data: PlotData, options: CompileOptions): Option {
+  const option = compileOption(spec, data, options);
+  return options.still ? stillOption(option) : option;
+}
+
+/** An option that does not respond to the pointer (A4.4): a report's plots,
+ * which are pages, not tools. No tooltips, no highlighting on hover, no
+ * legend entries switched off by a click, no handles to drag on a colour
+ * scale, and nothing animated — a plot printed mid-animation is half drawn. */
+export function stillOption(option: Option): Option {
+  const each = (v: unknown, change: (o: Option) => Option) =>
+    Array.isArray(v) ? v.map((o: Option) => change(o)) : v && typeof v === "object" ? change(v as Option) : v;
+  const still: Option = { ...option, animation: false, tooltip: { show: false } };
+  if (option.series) still.series = each(option.series, (s) => ({ ...s, silent: true, animation: false }));
+  if (option.legend) still.legend = each(option.legend, (l) => ({ ...l, selectedMode: false }));
+  if (option.visualMap) still.visualMap = each(option.visualMap, (v) => ({ ...v, calculable: false, hoverLink: false }));
+  return still;
+}
+
+function compileOption(spec: PlotSpec, data: PlotData, options: CompileOptions): Option {
   const palette = chartPalette(options.theme);
   const missing = options.missing ?? "—";
   const countLabel = options.countLabel ?? "count";

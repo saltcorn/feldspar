@@ -2,6 +2,78 @@
 
 Changes in reverse chronological order.
 
+## Analytics A4.4–A4.5: the Report workspace, and PDF output
+
+The second phase of milestone A4 (Reports, and drag and drop).
+
+- **A report is a document** (A4.4; `ui/analytics/src/report`). Its state is `{ blocks, page }`;
+  a block is a panel, a heading (`text`, `level` 1–3), Markdown text, or a page break. The
+  toolbar's **Add** menu adds a heading, text or a page break at the end, and each block's own
+  menu (⋯, shown on hover) inserts one above it, moves it up or down, edits it, or sets a
+  heading's level; × removes it. A new heading or text block opens for writing; clicking one
+  edits it again, and Enter (a heading), Ctrl+Enter (text), Escape or a click outside finishes.
+  Panels still arrive by dropping.
+- **Blocks are dragged too.** A block's grip (⠿) drags it: dropped back into its own report it
+  moves (the reordering), dropped into another report it is copied with new ids. The drag
+  carries the block and the open report it came from (`application/x-feldspar-report-block`),
+  and a panel or a text block also travels as a panel, so any panel sink (a dashboard in A6)
+  takes it. `dropInto` decides move, copy or add.
+- **Markdown** (`panels/markdown.ts`, `Markdown.tsx`): headings, paragraphs, lists, quotes,
+  code, rules, strong, emphasis, inline code and links, parsed into a tree and drawn as React
+  elements, never as HTML. Links go only to `http(s):`, `mailto:` or relative addresses. `_`
+  emphasises only at a word's edge, so `price_per_m2` reads as written. Text panels (A4.2) use
+  it too. No dependency was added.
+- **Panels in a report are still** (`PanelView`'s new `look`): `stillOption` turns off
+  tooltips, hover highlighting, legend toggles, the colour scale's handles and animation, and the
+  plots are drawn by ECharts' **SVG renderer** in the light scheme. The page is white paper in
+  the dark theme too.
+- **The page** (A4.5; `report/pages.ts`): A4, A3, US Letter or US Legal, portrait or landscape,
+  with 15 mm margins. The paper is drawn on the screen at its printed width in millimetres, so
+  line breaks and plot sizes are the same on screen and on paper. An SVG plot is drawn at a
+  fixed size, so a different printed width would cut it off or stretch it. The desk scrolls
+  sideways when the paper is wider than the pane.
+- **Pagination** (`paginate`): the blocks' measured heights laid out by the print
+  stylesheet's rules. A block that does not fit starts the next page. One taller than a page
+  stays where it is and runs over, because moving it would not keep it whole. A heading goes
+  with a following block that moves. A page break ends its page, and one at the very end
+  makes no blank page. The screen shows dashed **Page n** markers where pages will start, and
+  the toolbar shows the page count.
+- **Export PDF** (`report/print.ts`) opens the browser's print dialog once every panel has
+  drawn (or after 15 s). The dialog's "Save as PDF" makes the PDF. While the dialog is open,
+  `<html>` has `an-printing` and the paper has `an-print-root`. The print stylesheet hides
+  everything else, using `:has()` to keep the paper's ancestors and to stop them scrolling or
+  clipping. It also removes the controls, markers and placeholders, keeps blocks whole
+  (`break-inside: avoid`), keeps headings with what follows, and breaks at page breaks.
+  - **Deviation:** the page size is not injected as a `<style>` at print time. Instead,
+    `analytics.css` has one **named `@page`** for each size and orientation (`a4-landscape`, …),
+    and the paper gets the matching `an-page-…` class.
+  - The document title is set to the report's name while the dialog is open, so the browser
+    offers it as the PDF's file name.
+- **The server checks the document** (`sc_analytics::panel::check_state`). Saving a report
+  whose block has no id, is of an unknown kind, is a heading without text or with a level
+  other than 1–3, or is text without its Markdown or over 100 kB is refused with a sentence
+  naming the block. So is a page whose size or orientation is not one of these.
+- **Tests.** `sc-analytics`:
+  `a_report_is_a_document_of_panels_headings_text_and_page_breaks_on_a_page` (and the
+  existing report-state test gained block ids). Vitest:
+  - `report/state.test.ts`: reading every block kind and the page; adding, editing and moving
+    blocks; a dragged block moved within its report and copied into another; a text block as
+    a panel.
+  - `report/pages.test.ts`: paper sizes, the print marks, and pagination (fitting, breaks,
+    blocks taller than a page, headings kept with what follows).
+  - `panels/markdown.test.ts`, and `echarts.test.ts` for still plots.
+- **Walked in headless Chromium** against the demo data:
+  - A report with headings, Markdown, a scatter plot, a box plot with its tests, a page break
+    and a summary table drew 3 pages with Page 2 and 3 markers. Its plots were SVG with no
+    tooltip on hover.
+  - Add → Heading opened the editor (a fix: the menu gave its toggle the focus back and ended
+    the editing at once). Dragging the new heading by its grip to the top moved it.
+  - Landscape widened the paper to 297 mm. Export PDF marked the page and titled it
+    "Quarterly report", and took the marks off after the dialog.
+  - `page.pdf({ preferCSSPageSize: true })` produced 3 pages in both orientations, the number
+    the screen showed, with vector plots and nothing of the app around the report.
+  - In the dark theme the paper stayed white. The server refused a B5 page.
+
 ## Analytics A4.1–A4.3: split view, panels, and drag and drop
 
 The first phase of milestone A4 (Reports, and drag and drop).

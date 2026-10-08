@@ -23,10 +23,21 @@ import { useChanges } from "../panes";
 import { PlotView } from "../plot/PlotView";
 import { isRefused, type PlotData, type PlotSpec, type TableData } from "../plot/spec";
 import { SummaryTable } from "../plot/SummaryTable";
-import { useDocumentTheme } from "../theme";
+import { useDocumentTheme, type Theme } from "../theme";
+import { Markdown } from "./Markdown";
 import { setPanelDrag, type Panel } from "./panel";
 
-export function PanelView({ panel }: { panel: Panel }) {
+/** How a panel is drawn where it is put: a report's are still, in vector
+ * graphics, on white paper; elsewhere they follow the screen. */
+export type PanelLook = {
+  /** No tooltips, highlighting or brushing (A4.4). */
+  still?: boolean;
+  renderer?: "canvas" | "svg";
+  /** The colour scheme, when it is not the document's. */
+  theme?: Theme;
+};
+
+export function PanelView({ panel, look = {} }: { panel: Panel; look?: PanelLook }) {
   const { t } = useT();
   const [answer, setAnswer] = useState<RenderPanelResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,12 +65,13 @@ export function PanelView({ panel }: { panel: Panel }) {
 
   if (panel.kind === "text") return <TextView markdown={panel.content.markdown} />;
   if (error) return <Alert variant="danger" className="m-2 small">{error}</Alert>;
-  if (!answer) return <Spinner animation="border" size="sm" className="m-3" />;
+  // `an-panel-loading`: a report waits for it to go before printing.
+  if (!answer) return <Spinner animation="border" size="sm" className="m-3 an-panel-loading" />;
   if (answer.error) return <Missing>{answer.error}</Missing>;
 
   switch (panel.kind) {
     case "plot":
-      return <PlotAnswer spec={panel.content.spec} plot={answer.plot} categorical={answer.categorical ?? undefined} />;
+      return <PlotAnswer spec={panel.content.spec} plot={answer.plot} categorical={answer.categorical ?? undefined} look={look} />;
     case "summary_table":
       return isRefused(answer.table) ? (
         <Missing>{answer.table.error}</Missing>
@@ -70,7 +82,7 @@ export function PanelView({ panel }: { panel: Panel }) {
       return (
         <div className="an-panel-tests">
           {panel.content.plot && (
-            <PlotAnswer spec={panel.content.plot} plot={answer.plot} categorical={answer.categorical ?? undefined} />
+            <PlotAnswer spec={panel.content.plot} plot={answer.plot} categorical={answer.categorical ?? undefined} look={look} />
           )}
           {isAnalysis(answer.tests) ? (
             <AnalysisView analysis={answer.tests} />
@@ -88,13 +100,30 @@ export function PanelView({ panel }: { panel: Panel }) {
   }
 }
 
-function PlotAnswer({ spec, plot, categorical }: { spec: PlotSpec; plot: unknown; categorical?: string[] }) {
-  const theme = useDocumentTheme();
+function PlotAnswer({
+  spec,
+  plot,
+  categorical,
+  look,
+}: {
+  spec: PlotSpec;
+  plot: unknown;
+  categorical?: string[];
+  look: PanelLook;
+}) {
+  const documentTheme = useDocumentTheme();
   if (isRefused(plot)) return <Missing>{plot.error}</Missing>;
   if (!plot) return null;
   return (
     <div className="an-panel-plot">
-      <PlotView spec={spec} data={plot as PlotData} theme={theme} categorical={categorical} />
+      <PlotView
+        spec={spec}
+        data={plot as PlotData}
+        theme={look.theme ?? documentTheme}
+        categorical={categorical}
+        renderer={look.renderer}
+        still={look.still}
+      />
     </div>
   );
 }
@@ -107,17 +136,9 @@ function Missing({ children }: { children: ReactNode }) {
   );
 }
 
-/** A text panel. Paragraphs, for now; the report's text blocks (A4.4) bring
- * Markdown. */
+/** A text panel, in Markdown. */
 function TextView({ markdown }: { markdown: string }) {
-  const paragraphs = markdown.split(/\n\s*\n/).filter((p) => p.trim() !== "");
-  return (
-    <div className="an-panel-text">
-      {paragraphs.map((p, i) => (
-        <p key={i}>{p}</p>
-      ))}
-    </div>
-  );
+  return <Markdown source={markdown} className="an-panel-text an-markdown" />;
 }
 
 /**

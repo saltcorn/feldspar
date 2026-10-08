@@ -470,3 +470,32 @@ describe("plotNotes", () => {
     ]);
   });
 });
+
+describe("still plots (A4.4)", () => {
+  it("draws a report's plot without tooltips, hover, legend toggles or animation", () => {
+    const spec: PlotSpec = {
+      data,
+      layers: [{ mark: "point", encoding: { x: { field: "area" }, y: { field: "price" }, color: { field: "kind" } } }],
+    };
+    const drawn = plot({
+      layers: [layer({ mark: "point", columns: ["x", "y", "color"], rows: [[50, 100, "a"], [70, 140, "b"]] })],
+      domains: {
+        x: { kind: "continuous", min: 50, max: 70 },
+        y: { kind: "continuous", min: 100, max: 140 },
+        color: { kind: "discrete", values: ["a", "b"] },
+      },
+    });
+    const live = toOption(spec, drawn, light);
+    expect((live.tooltip as Option).show).not.toBe(false);
+    expect(series(live).every((s) => s.silent !== true)).toBe(true);
+
+    const still = toOption(spec, drawn, { ...light, still: true });
+    expect(still.animation).toBe(false);
+    expect(still.tooltip).toEqual({ show: false });
+    expect(series(still).length).toBe(series(live).length);
+    expect(series(still).every((s) => s.silent === true && s.animation === false)).toBe(true);
+    expect((still.legend as Option).selectedMode).toBe(false);
+    // The same data, drawn the same way.
+    expect(series(still).map((s) => s.data)).toEqual(series(live).map((s) => s.data));
+  });
+});

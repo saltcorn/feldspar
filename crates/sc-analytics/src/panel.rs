@@ -249,11 +249,89 @@ fn panel_slots(kind: WorkspaceKind, state: &Json) -> Vec<&Json> {
     }
 }
 
-/// Refuse a state whose panels do not read, naming the first that does not.
+/// Refuse a state whose panels do not read, naming the first that does not,
+/// and a report whose other blocks or page are not ones it has.
 pub fn check_state(kind: WorkspaceKind, state: &Json) -> Result<()> {
     for (i, slot) in panel_slots(kind, state).into_iter().enumerate() {
         Panel::from_json(slot)
             .map_err(|e| Error::invalid(format!("panel {} of the workspace: {e}", i + 1)))?;
+    }
+    if kind == WorkspaceKind::Report {
+        check_report(state)?;
+    }
+    Ok(())
+}
+
+/// The longest a report heading may be, in bytes.
+pub const MAX_HEADING: usize = 1_000;
+
+/// The page sizes a report can be printed on (A4.4).
+pub const PAGE_SIZES: [&str; 4] = ["A4", "A3", "Letter", "Legal"];
+
+/// A report's blocks other than its panels (A4.4), and its page: a block is
+/// `{ id, kind }` with `kind` one of `panel`, `heading` (`text`, `level`
+/// 1–3), `text` (`markdown`) and `page_break`; the page is `{ size,
+/// orientation }`.
+fn check_report(state: &Json) -> Result<()> {
+    let blocks = match state.get("blocks") {
+        None => &[][..],
+        Some(Json::Array(blocks)) => &blocks[..],
+        Some(_) => return Err(Error::invalid("a report's blocks are a list")),
+    };
+    for (i, block) in blocks.iter().enumerate() {
+        let refuse = |why: &str| Error::invalid(format!("block {} of the report {why}", i + 1));
+        if block
+            .get("id")
+            .and_then(Json::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(refuse("has no id"));
+        }
+        let text = |field: &str| block.get(field).and_then(Json::as_str);
+        match block.get("kind").and_then(Json::as_str) {
+            Some("panel") | Some("page_break") => {}
+            Some("heading") => match text("text") {
+                None => return Err(refuse("is a heading without text")),
+                Some(t) if t.len() > MAX_HEADING => {
+                    return Err(refuse(&format!(
+                        "is a heading longer than {MAX_HEADING} bytes"
+                    )));
+                }
+                Some(_) => {
+                    if !matches!(block.get("level").and_then(Json::as_u64), Some(1..=3)) {
+                        return Err(refuse("is a heading whose level is not 1, 2 or 3"));
+                    }
+                }
+            },
+            Some("text") => match text("markdown") {
+                None => return Err(refuse("is a text block without its Markdown")),
+                Some(t) if t.len() > MAX_TEXT => {
+                    return Err(refuse(&format!("holds more than {MAX_TEXT} bytes of text")));
+                }
+                Some(_) => {}
+            },
+            Some(other) => {
+                return Err(refuse(&format!(
+                    "is a \"{other}\", which is not a kind of block: a report has panels, headings, text and page breaks"
+                )));
+            }
+            None => return Err(refuse("does not say what kind of block it is")),
+        }
+    }
+    if let Some(page) = state.get("page") {
+        let size = page.get("size").and_then(Json::as_str).unwrap_or_default();
+        if !PAGE_SIZES.contains(&size) {
+            return Err(Error::invalid(format!(
+                "a report's page size is one of {}, not \"{size}\"",
+                PAGE_SIZES.join(", ")
+            )));
+        }
+        let orientation = page.get("orientation").and_then(Json::as_str);
+        if !matches!(orientation, Some("portrait") | Some("landscape")) {
+            return Err(Error::invalid(
+                "a report's page is either portrait or landscape",
+            ));
+        }
     }
     Ok(())
 }
@@ -606,20 +684,62 @@ mod tests {
 
     #[test]
     fn a_report_state_with_a_broken_panel_is_refused_naming_it() {
-        let ok =
-            json!({ "blocks": [{ "kind": "panel", "panel": dataset_plot(DatasetId::new()) }] });
+        let ok = json!({ "blocks": [{ "id": "a", "kind": "panel", "panel": dataset_plot(DatasetId::new()) }] });
         check_state(WorkspaceKind::Report, &ok).expect("reads");
         let bad = json!({ "blocks": [
-            { "kind": "panel", "panel": dataset_plot(DatasetId::new()) },
-            { "kind": "panel", "panel": { "id": Uuid::new_v4(), "kind": "plot", "content": {} } },
+            { "id": "a", "kind": "panel", "panel": dataset_plot(DatasetId::new()) },
+            { "id": "b", "kind": "panel", "panel": { "id": Uuid::new_v4(), "kind": "plot", "content": {} } },
         ] });
         let err = check_state(WorkspaceKind::Report, &bad).expect_err("panel 2 is not a panel");
         assert!(err.to_string().contains("panel 2"), "{err}");
         // An explorer's state holds no panels, so nothing in it is checked.
         check_state(WorkspaceKind::DataExplorer, &bad).expect("not a report");
-        let long = json!({ "blocks": [{ "kind": "panel", "panel": {
+        let long = json!({ "blocks": [{ "id": "a", "kind": "panel", "panel": {
             "id": Uuid::new_v4(), "kind": "text",
             "content": { "markdown": "x".repeat(MAX_TEXT + 1) } } }] });
         assert!(check_state(WorkspaceKind::Report, &long).is_err());
+    }
+
+    #[test]
+    fn a_report_is_a_document_of_panels_headings_text_and_page_breaks_on_a_page() {
+        let document = json!({
+            "page": { "size": "A4", "orientation": "landscape" },
+            "blocks": [
+                { "id": "h", "kind": "heading", "text": "House prices", "level": 1 },
+                { "id": "t", "kind": "text", "markdown": "Prices *rose*." },
+                { "id": "p", "kind": "panel", "panel": dataset_plot(DatasetId::new()) },
+                { "id": "b", "kind": "page_break" },
+            ],
+        });
+        check_state(WorkspaceKind::Report, &document).expect("a document");
+        check_state(WorkspaceKind::Report, &json!({})).expect("an empty report");
+
+        let refused = |state: Json, says: &str| {
+            let err = check_state(WorkspaceKind::Report, &state).expect_err(says);
+            assert!(err.to_string().contains(says), "{err} should say {says}");
+        };
+        refused(
+            json!({ "blocks": [{ "id": "a", "kind": "page_break" }, { "id": "x", "kind": "chart" }] }),
+            "block 2 of the report is a \"chart\"",
+        );
+        refused(
+            json!({ "blocks": [{ "id": "a", "kind": "heading", "text": "H", "level": 4 }] }),
+            "level is not 1, 2 or 3",
+        );
+        refused(
+            json!({ "blocks": [{ "id": "a", "kind": "text" }] }),
+            "without its Markdown",
+        );
+        refused(json!({ "blocks": [{ "kind": "page_break" }] }), "has no id");
+        refused(
+            json!({ "page": { "size": "B5", "orientation": "portrait" } }),
+            "one of A4, A3, Letter, Legal",
+        );
+        refused(
+            json!({ "page": { "size": "A4", "orientation": "sideways" } }),
+            "portrait or landscape",
+        );
+        // The panels in it are still what the usage index reads.
+        assert_eq!(panels_in_state(WorkspaceKind::Report, &document).len(), 1);
     }
 }
