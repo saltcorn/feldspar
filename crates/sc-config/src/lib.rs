@@ -22,6 +22,9 @@
 //! - [`localisation`] is the fourth: which languages this installation serves
 //!   (§16.1). Two keys, and a server that has never opened the section runs
 //!   exactly as it did before there was one.
+//! - [`maps`] is the fifth: the base map the Analytics UI draws its map
+//!   layers over, and with it the hosts its Content-Security-Policy lets a map
+//!   load from (analytics A5.6).
 //! - [`development`] is the third: what this server prints while it runs — the
 //!   SQL echo and the log verbosity, both of which are switches on the
 //!   process-wide atomics in `sc-log` rather than values anybody reads from
@@ -36,6 +39,7 @@ pub mod defs;
 pub mod development;
 pub mod email;
 pub mod localisation;
+pub mod maps;
 pub mod ssl;
 pub mod store;
 
@@ -57,6 +61,10 @@ pub use email::{
 pub use localisation::{
     DEFAULT_LOCALE, ENABLED_LOCALES, apply_localisation_settings, localisation_section,
     localisation_settings, localisation_settings_from,
+};
+pub use maps::{
+    DEFAULT_MAP_STYLE, DEFAULT_MAP_STYLE_DARK, MAP_HOSTS, MAP_STYLE, MAP_STYLE_DARK, MapSettings,
+    map_settings, map_settings_from, maps_section, origin_of,
 };
 pub use ssl::{
     ACME_CONTACT_EMAIL, ACME_DIRECTORY_URL, HOST_KEYS, LETSENCRYPT_PRODUCTION, LETSENCRYPT_STAGING,

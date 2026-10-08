@@ -29,7 +29,7 @@ const SITES: &[(i64, &str, f64, f64, i64)] = &[
     (3, "c", 0.030, 51.520, 2),
 ];
 
-fn column(name: &str, ty: BasicType) -> DataField {
+pub(crate) fn column(name: &str, ty: BasicType) -> DataField {
     DataField::plain(name, TypeRef::Basic(ty))
 }
 
@@ -45,7 +45,7 @@ fn circle(lon: f64, lat: f64, radius: f64, n: usize) -> Json {
     json!({ "type": "Polygon", "coordinates": [ring] })
 }
 
-async fn insert(cat: &Catalog, table: &str, columns: &[&str], rows: Vec<Vec<Value>>) -> Result<()> {
+pub(crate) async fn insert(cat: &Catalog, table: &str, columns: &[&str], rows: Vec<Vec<Value>>) -> Result<()> {
     let insert = Insert {
         table: table.to_owned(),
         columns: columns.iter().map(|c| (*c).to_owned()).collect(),
@@ -65,7 +65,7 @@ async fn insert(cat: &Catalog, table: &str, columns: &[&str], rows: Vec<Vec<Valu
 
 /// Regions and sites in a database with PostGIS, and a dataset over each;
 /// `None` where there is no PostGIS.
-async fn sites() -> Result<Option<(Catalog, TestDb, DatasetId, DatasetId)>> {
+pub(crate) async fn sites() -> Result<Option<(Catalog, TestDb, DatasetId, DatasetId)>> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(None);
     };
@@ -147,7 +147,7 @@ async fn sites() -> Result<Option<(Catalog, TestDb, DatasetId, DatasetId)>> {
     Ok(Some((cat, db, sites.id, regions.id)))
 }
 
-fn request(dataset: DatasetId, geometry: GeometrySource) -> LayerRequest {
+pub(crate) fn request(dataset: DatasetId, geometry: GeometrySource) -> LayerRequest {
     LayerRequest {
         dataset,
         geometry,
@@ -173,6 +173,7 @@ async fn geojson(cat: &Catalog, req: &LayerRequest) -> (u64, Option<[f64; 4]>, V
             bounds,
             properties,
             data,
+            ..
         } => (
             count,
             bounds,
@@ -285,9 +286,12 @@ async fn a_large_layer_is_tiles_simplified_by_zoom() -> Result<()> {
             source_layer,
             keyed,
             properties,
+            geometry,
             ..
         } => {
             assert_eq!(count, 3);
+            // So a map draws them as points and adds no fill or line layer.
+            assert_eq!(geometry, ["point"]);
             assert_eq!(source_layer, SOURCE_LAYER);
             assert!(keyed);
             assert_eq!(properties.len(), 5);

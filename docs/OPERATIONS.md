@@ -1562,3 +1562,25 @@ sudo -u postgres psql -d feldspar_postgis_template -c 'CREATE EXTENSION postgis'
 
 Without it those tests print `skipped: this test needs PostGIS…` and pass.
 `SC_TEST_POSTGIS_TEMPLATE` names another template (§5.4).
+
+### 10.4 The base map
+
+The Analytics UI draws map layers over a base map: a [MapLibre style](https://maplibre.org/maplibre-style-spec/)
+fetched by the browser. **Settings → Maps** names it:
+
+| setting | default | |
+|---|---|---|
+| Base map style | `https://tiles.openfreemap.org/styles/positron` | for a light page |
+| Base map style (dark) | `https://tiles.openfreemap.org/styles/dark` | for a dark page; empty uses the light one |
+| Other map hosts | empty | comma-separated origins the style's tiles, fonts or icons come from, when not the style's own host |
+
+[OpenFreeMap](https://openfreemap.org) needs no account or key. The browser fetches the style,
+tiles, fonts and icons straight from the host, never through Feldspar. The Analytics UI's
+Content-Security-Policy allows the hosts these settings name and no others. So a style whose
+tiles are on a second host draws an empty base map until that host is added under *Other map
+hosts*. A value that is not an `http` or `https` URL is refused when it is saved.
+
+**Without internet access**, or to keep map views off a third party, leave both styles empty.
+The layers are then drawn on a plain background, and labels are left off, because the fonts
+come from the base map. Or serve a style and its tiles yourself (for example with
+[Martin](https://martin.maplibre.org) or a PMTiles file behind a web server) and name its URL.

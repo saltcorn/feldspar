@@ -2126,11 +2126,33 @@ async fn serve_analytics(
         )
     });
     set_cache_control(&mut response, rest);
-    response.headers_mut().insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(ANALYTICS_CONTENT_SECURITY_POLICY),
-    );
+    let policy = crate::security::analytics_content_security_policy(&map_hosts(state).await);
+    let policy = HeaderValue::from_str(&policy)
+        .unwrap_or_else(|_| HeaderValue::from_static(ANALYTICS_CONTENT_SECURITY_POLICY));
     response
+        .headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, policy);
+    response
+}
+
+/// The origins the Analytics UI's maps may load a base map from (analytics
+/// TODO A5.6): Settings → Maps, read per response as the MCP switches are, so a
+/// changed base map is served on the next page load rather than after a
+/// restart. A server without a catalog, or one whose settings do not read,
+/// uses the default base map's.
+async fn map_hosts(state: &AppState) -> Vec<String> {
+    let settings = match state.apps.catalog() {
+        Some(catalog) => sc_config::map_settings(catalog)
+            .await
+            .unwrap_or_else(|e| {
+                sc_log::log_warn!(
+                    "the map settings do not read, so the default base map is used: {e}"
+                );
+                sc_config::MapSettings::default()
+            }),
+        None => sc_config::MapSettings::default(),
+    };
+    settings.hosts()
 }
 
 /// Serve the builder (TODO "The builder" §2): its documents and assets under

@@ -19,3 +19,6 @@ mod fit_outputs;
 
 #[path = "layers.rs"]
 mod layers;
+
+#[path = "maps.rs"]
+mod maps;

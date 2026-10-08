@@ -29,6 +29,8 @@
 //! Needs PostGIS, as every spatial feature does; elsewhere it answers the
 //! sentence saying why.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json, json};
 
@@ -38,7 +40,9 @@ use sc_dataset::{
     StageColumn, compile, read_rows, value_json,
 };
 use sc_error::{Error, Result};
-use sc_query::{Expr, Projection, Select, Source, Statement, UnOp, Value};
+use sc_query::{Expr, OrderBy, Projection, Select, Source, Statement, UnOp, Value};
+
+use crate::plot::{DOMAIN_VALUES, Domain};
 
 /// The most features a layer sends as GeoJSON.
 pub const GEOJSON_FEATURES: u64 = 5_000;
@@ -140,6 +144,8 @@ pub enum LayerData {
         count: u64,
         /// `[west, south, east, north]` in degrees; none for no features.
         bounds: Option<[f64; 4]>,
+        /// The kinds of geometry among the features (see [`GeometryKinds`]).
+        geometry: GeometryKinds,
         /// The columns each feature carries, with their types.
         properties: Vec<StageColumn>,
         /// A GeoJSON FeatureCollection.
@@ -153,6 +159,8 @@ pub enum LayerData {
         vertices: u64,
         /// `[west, south, east, north]` in degrees.
         bounds: Option<[f64; 4]>,
+        /// The kinds of geometry among the features (see [`GeometryKinds`]).
+        geometry: GeometryKinds,
         /// The columns each feature carries, with their types.
         properties: Vec<StageColumn>,
         /// The layer inside each tile.
@@ -166,6 +174,26 @@ pub enum LayerData {
         /// The sentence.
         error: String,
     },
+}
+
+/// The kinds of geometry a layer's features are, so a map draws the ones it
+/// has: `point`, `line` and `polygon` (a multi-geometry is its kind). Taken
+/// from the smallest and largest `ST_Dimension`, so a layer of points and
+/// polygons is said to have lines too — a map layer with nothing to draw costs
+/// nothing.
+pub type GeometryKinds = Vec<&'static str>;
+
+/// The kinds between two dimensions.
+fn kinds_between(low: Option<f64>, high: Option<f64>) -> GeometryKinds {
+    let (Some(low), Some(high)) = (low, high) else {
+        return Vec::new();
+    };
+    ["point", "line", "polygon"]
+        .into_iter()
+        .enumerate()
+        .filter(|(dim, _)| (low..=high).contains(&(*dim as f64)))
+        .map(|(_, kind)| kind)
+        .collect()
 }
 
 /// A layer's stage, ready to read.
@@ -381,6 +409,8 @@ pub async fn layer_data(
             Projection::expr_as(func("ST_YMin", vec![extent()]), "s"),
             Projection::expr_as(func("ST_XMax", vec![extent()]), "e"),
             Projection::expr_as(func("ST_YMax", vec![extent()]), "nn"),
+            Projection::expr_as(agg("min", vec![func("ST_Dimension", vec![g.clone()])]), "dl"),
+            Projection::expr_as(agg("max", vec![func("ST_Dimension", vec![g.clone()])]), "dh"),
         ])
         .filter(Expr::unary(UnOp::IsNotNull, g));
     let rows = run(catalog, summary).await?;
@@ -392,11 +422,13 @@ pub async fn layer_data(
         (Some(w), Some(s), Some(e), Some(n)) => Some([w, s, e, n]),
         _ => None,
     };
+    let kinds = kinds_between(number(at(6)), number(at(7)));
     if count > limits.features || vertices > limits.vertices {
         return Ok(LayerData::Tiles {
             count,
             vertices,
             bounds,
+            geometry: kinds,
             properties: layer.properties,
             source_layer: SOURCE_LAYER.to_owned(),
             keyed: layer.keyed,
@@ -439,9 +471,90 @@ pub async fn layer_data(
     Ok(LayerData::Geojson {
         count,
         bounds,
+        geometry: kinds,
         properties: layer.properties,
         data: json!({ "type": "FeatureCollection", "features": out }),
     })
+}
+
+/// How a map scales an encoded column: by its range, or by its values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spread {
+    /// A number: its smallest and largest value.
+    Range,
+    /// A category: its values, in order, up to [`DOMAIN_VALUES`].
+    Values,
+}
+
+/// What each of `columns` spans over the layer's features that have a
+/// geometry — what a map's colour and size scales and its legend are drawn
+/// from (analytics TODO A5.6), the same [`Domain`] a plot's channels have.
+/// One query per column; a column with no values has no domain.
+pub async fn layer_domains(
+    catalog: &Catalog,
+    req: &LayerRequest,
+    columns: &[(String, Spread)],
+) -> Result<std::result::Result<BTreeMap<String, Domain>, String>> {
+    let layer = match prepare(catalog, req).await? {
+        Ok(layer) => layer,
+        Err(error) => return Ok(Err(error)),
+    };
+    let mut out = BTreeMap::new();
+    for (name, spread) in columns {
+        if out.contains_key(name) {
+            continue;
+        }
+        let features = layer.stage.features_query().map_err(Error::invalid)?;
+        let g = Expr::qcol(FEATURES, layer.geometry.clone());
+        let c = Expr::qcol(FEATURES, name.clone());
+        let present = Expr::unary(UnOp::IsNotNull, g).and(Expr::unary(UnOp::IsNotNull, c.clone()));
+        let from = Source::subquery(features, FEATURES);
+        let domain = match spread {
+            Spread::Range => {
+                let select = Select::from(from)
+                    .columns(vec![
+                        Projection::expr_as(agg("min", vec![c.clone()]), "lo"),
+                        Projection::expr_as(agg("max", vec![c]), "hi"),
+                    ])
+                    .filter(present);
+                let rows = run(catalog, select).await?;
+                let row = rows.first();
+                let at = |i: usize| number(row.and_then(|r| r.get_index(i)));
+                match (at(0), at(1)) {
+                    (Some(lo), Some(hi)) => Some(Domain {
+                        kind: "continuous",
+                        min: Some(json!(lo)),
+                        max: Some(json!(hi)),
+                        values: None,
+                    }),
+                    _ => None,
+                }
+            }
+            Spread::Values => {
+                let mut select = Select::from(from)
+                    .columns(vec![Projection::expr_as(c.clone(), "v")])
+                    .filter(present)
+                    .limit(DOMAIN_VALUES as u64);
+                select.group = vec![c.clone()];
+                select.order = vec![OrderBy::asc(c)];
+                let rows = run(catalog, select).await?;
+                let values: Vec<Json> = rows
+                    .iter()
+                    .filter_map(|r| r.get_index(0).map(value_json))
+                    .collect();
+                (!values.is_empty()).then(|| Domain {
+                    kind: "discrete",
+                    min: values.first().cloned(),
+                    max: values.last().cloned(),
+                    values: Some(values),
+                })
+            }
+        };
+        if let Some(domain) = domain {
+            out.insert(name.clone(), domain);
+        }
+    }
+    Ok(Ok(out))
 }
 
 /// One Mapbox vector tile of a layer, at zoom `z`, column `x` and row `y` of

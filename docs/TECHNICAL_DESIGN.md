@@ -8228,16 +8228,18 @@ at the fit's output data, each drawn by `render_plot` unless it is optional and 
 `dataset_changed` — beside the model endpoints of §14.2 (`cloneModel`, `patchModelViewState`,
 `cancelModelFit`, `listModelInstances`) and the fit's progress socket; and workspaces
 (`listWorkspaceKinds`, `listWorkspaces`, `getWorkspace`, `createWorkspace`, `updateWorkspace`,
-`saveWorkspaceState`, `deleteWorkspace`); panels (A4.2): `renderPanel`; and map layers (A5.5,
-§14.6): `layerData`, `layerTile`. `saveWorkspaceState`
+`saveWorkspaceState`, `deleteWorkspace`); panels (A4.2): `renderPanel`; map layers (A5.5,
+§14.6): `layerData`, `layerTile`; and maps (A5.6–A5.7, §14.6): `mapSettings`, `suggestMap`,
+`renderMap`. `saveWorkspaceState`
 checks a report's document (`check_state`) before it stores it.
 
 **The bundle** (`ui/analytics`): React, TypeScript and react-bootstrap over the generated client,
 like the admin SPA, but a bundle of its own — so that A9 can mount it in an application without
 the admin shell. It is served under `/analytics/` in the way the IDE is (§12.1): admin-only (a
 visitor is sent to sign in, a non-admin refused), under its own CSP
-(`ANALYTICS_CONTENT_SECURITY_POLICY`, strict for now, widened by later milestones' renderers
-without touching the admin UI's), built into the binary by `sc-cli`'s build script, and sharing
+(`analytics_content_security_policy`: the strict `ANALYTICS_CONTENT_SECURITY_POLICY` with the
+base map's hosts added since A5.6, §14.6 — widened for the renderers without touching the admin
+UI's), built into the binary by `sc-cli`'s build script, and sharing
 the admin UI's session cookie. It routes on the hash (`#/` the front page, `#/w/<id>`,
 `#/datasets/<id>` with `?back=` naming where its Back returns, `#/datasets/new`, and from A3
 `#/models/<id>` with `?fit=`, `#/models/new?dataset=`, `#/models/compare?ids=` and
@@ -8285,8 +8287,8 @@ regression of Y — a logistic one when Y is not a number — opened in the edit
 **The Data explorer** (A2.7–A2.14; `ui/analytics/src/explorer`, `src/plot`). Its state is what
 the person chose — the dataset, the columns on the nine drop zones (X, Y, Color, Size, Shape,
 Label, Facet rows, Facet columns, Wrap; several on Y compared as one variable), the mark
-palette's choice, a gallery preset that reshapes, plot or summary table, the layers panel's
-changes and the tests' settings — never the spec. The spec is the server's answer to the drop zones (`suggestPlot`: the
+palette's choice, a gallery preset that reshapes, plot, summary table or map (with the map's
+geometry source, A5.7), the layers panel's changes and the tests' settings — never the spec. The spec is the server's answer to the drop zones (`suggestPlot`: the
 "show me" rules, a gallery preset or the chosen mark), with the layers panel's `Extras` laid over
 it in the browser (`composeSpec`: the first layer's stat, added layers that take X, Y and Color
 from the first unless the stat makes its own, scales, reference lines, coordinates); `renderPlot`
@@ -8591,7 +8593,7 @@ index lists both reports for the delete warnings. The print dialog cannot be dri
 it was walked in headless Chromium, whose `page.pdf({ preferCSSPageSize: true })` gives the
 pages the screen counted.
 
-### 14.6 Geometry (analytics milestone A5, phases 1 and 2)
+### 14.6 Geometry and maps (analytics milestone A5, phases 1 to 3)
 
 Maps begin with geometry in core: a field type, files that make tables of it, and formula
 functions over it. All of it needs PostgreSQL with PostGIS (`OPERATIONS.md` §10); SQLite, and a
@@ -8740,6 +8742,85 @@ in the dataset's order. A layer that cannot be drawn answers `delivery: "none"` 
 a tile is refused with a 400 instead (outside the grid, deeper than zoom 24, or a layer that does
 not draw). The tile response is `application/vnd.mapbox-vector-tile`, a `Download` with no
 filename, which the router does not mark as an attachment.
+
+**Maps in the browser** (A5.6–A5.7; `sc-analytics`' `map.rs`, `ui/analytics/src/map`). A map
+is not a plot spec. A plot has one dataset and positions on axes; a map has layers, each a
+dataset of its own with a geometry source, over a base map. So it has a spec of its own, `MapSpec
+{ layers: [MapLayer { dataset, geometry, encoding?, filter? }] }`, whose `MapEncoding` holds a
+plot layer's channels without the positions: Color, Size, Shape and Label. The Map workspace
+(A5.8) will hold several layers; the explorer's map panel holds one. A map is drawn in two
+steps. `renderMap` answers each layer's `LayerData` (§ *Layer data* above, now with the kinds of
+geometry among its features) and the **domains** of its encoded columns. These are computed in
+SQL over every feature with a geometry (`layer_domains`): the smallest and largest value of a
+number on Color or Size, and the values, in order, of a category on Color or Shape. A tiled
+layer is then coloured by the same scale at every zoom, which a scale computed from the
+features in view would not be. The browser compiles spec and data to MapLibre sources and
+layers (`maplibre.ts`, pure and unit-tested like `echarts.ts`). A layer that cannot be drawn
+(its dataset gone, a column renamed, Size on text) answers `delivery: "none"` and its sentence,
+and the others are drawn.
+
+| geometry | MapLibre layers |
+|---|---|
+| polygons | `fill` coloured by Color at 0.6 opacity, and a `line` of outlines in the surface colour |
+| lines | `line` coloured by Color, as wide as Size (1–8 px) |
+| points | `circle` coloured by Color, as large as Size; with a column on Shape, a `symbol` of SDF shape images |
+| any | `symbol` with the Label column's text, in the base map's own font |
+
+The scales are MapLibre expressions over each feature's properties, in the plots' palette
+(`palette.ts`), so a category has the same colour on a map as in a bar chart. A category
+(`match` on `to-string` of the property) takes the slot of its place in the domain, and the
+ninth value onwards share the muted ink, with a note saying so. A number is interpolated across
+the sequential ramp. A missing value is grey. A point's Size is its **area** from zero
+(`r = 18·√(v / max)`, never under 2 px) when no value is negative, as a proportional symbol is,
+and linear across the range when some are. Size does not apply to polygons, and Shape applies
+to points only; each is noted. Shapes are signed-distance-field images made pixel by pixel in
+`shapes.ts` (circle, square, triangle, diamond, cross, star) and added with `sdf: true`, so
+`icon-color` and `icon-size` colour and size them as a circle would be. A tiled layer's source is
+`layerTile`'s template made absolute on the page's origin, with the layer's bounds. One that
+reported no geometry kinds is drawn as all three, which costs nothing where a kind is absent.
+
+**The geometry source** a dataset is mapped by is chosen on the server (`geometry_sources`),
+best first: its geometry columns; number columns paired as longitude and latitude by name
+(`lon`/`lng`/`long`/`longitude` with `lat`/`latitude`, alone or as a prefix or suffix with `_`:
+`pickup_longitude` with `pickup_latitude`, `lng_dropoff` with `lat_dropoff`); and each foreign
+key to a table with a geometry column, once for each such column (`district` → `districts.outline`).
+`suggestMap` answers them all and a spec drawn from the one the explorer's state names, else
+from the first. A dataset with none is told so in a sentence.
+
+**The explorer's map** (A5.7) is a third view beside Plot and Summary table, reached by it or by
+the gallery's Map, which is no longer disabled. The drop zones stay as they are, so going back
+to the plot loses nothing. Color, Size, Shape and Label draw the map. X, Y and the facets are
+dimmed, and a drop on them does not ask the server again (`mapAssignment`). Bins are dropped,
+since a map does not classify yet (A5.9). A **Geometry** picker lists the sources, "Automatic"
+first. The tests and the layers panel are a plot's and are hidden on a map. The map cannot yet
+be dragged into a report: a whole map as a panel, rendered as an image, is A5.13.
+
+**The base map** is a setting: Settings → Maps (`sc_config::maps`) holds a MapLibre style URL
+for a light page, one for a dark page, and further hosts. The default is OpenFreeMap's Positron
+and Dark, which need no key and serve style, tiles, glyphs and sprites from one host. An empty
+style means no base map: the layers are drawn on the page's background. `MapView` fetches the
+style itself rather than handing MapLibre the URL, for two reasons. A label layer needs the
+fonts the style's glyphs have (the first plain `text-font` among its layers). And a style that
+cannot be reached should leave the data on a plain background with a sentence, not a grey box.
+
+**The policy.** MapLibre fetches a style, its tiles, glyphs and sprites, so the Analytics UI's
+`connect-src` and `img-src` name the hosts of Settings → Maps (`MapSettings::hosts`). They are
+read per response, as the MCP switches are, so a changed base map is allowed on the next page
+load. Because a host goes into a header, it is parsed, not trusted. `origin_of` accepts an
+`http` or `https` origin of letters, digits, dots and hyphens (or a bracketed IPv6 address)
+with a numeric port. `updateSettings` refuses anything else by name, and
+`analytics_content_security_policy` leaves out any entry that is not exactly such an origin.
+The one other relaxation is `blob:` in `img-src`, where MapLibre decodes images through object
+URLs. **The worker** is not a `blob:`. MapLibre 6 builds one from its own module file unless
+told otherwise, so `runtime.ts` imports `maplibre-gl-worker.mjs?url` (Vite emits it beside the
+bundle) and calls `setWorkerUrl`, and the policy says `worker-src 'self'`. MapLibre and the map
+view are one lazily loaded chunk, so a page with no map does not fetch them.
+
+**deck.gl is not used** (a deviation from the plan's "MapLibre GL JS and deck.gl"). The goals
+document has deck.gl draw "layers with too many features for MapLibre alone". A5.5 sends such a
+layer as vector tiles made by PostGIS, which MapLibre draws natively at any size, so deck.gl
+would add about a megabyte with nothing to draw. It remains the option for what tiles do not
+cover, such as animating many points over time (A8.5).
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

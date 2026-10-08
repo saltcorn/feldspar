@@ -270,6 +270,11 @@
   background: var(--tblr-primary-lt);
 }
 
+/* A drop zone what is shown does not draw (X on a map): kept, and dimmed. */
+.an-zone.unused {
+  opacity: 0.45;
+}
+
 .an-zone-name {
   flex: 0 0 100%;
   display: flex;
@@ -342,6 +347,106 @@
 .an-plot-box.an-stale {
   opacity: 0.6;
   transition: opacity 0.2s;
+}
+
+/* --- maps (A5.6, A5.7) ------------------------------------------------------ */
+
+.an-map-box {
+  flex: 1 1 auto;
+  min-height: 24rem;
+  display: flex;
+}
+
+.an-map-box.an-stale {
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.an-map-frame {
+  flex: 1 1 auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 24rem;
+}
+
+.an-map {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 24rem;
+}
+
+.an-map-failure {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  color: var(--tblr-secondary);
+}
+
+.an-map-legend {
+  position: absolute;
+  left: 0.5rem;
+  bottom: 1.8rem;
+  max-height: calc(100% - 3rem);
+  overflow-y: auto;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  background: var(--tblr-bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  font-size: 0.75rem;
+}
+
+.an-map-legend-entry + .an-map-legend-entry {
+  margin-top: 0.4rem;
+}
+
+.an-map-legend-title {
+  font-weight: 600;
+}
+
+.an-map-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.an-map-legend-ramp {
+  display: inline-block;
+  width: 6rem;
+  height: 0.6rem;
+  border-radius: 2px;
+}
+
+.an-map-swatch {
+  flex: 0 0 auto;
+}
+
+.an-map-tooltip {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  max-width: 20rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: 4px;
+  background: var(--tblr-bg-surface);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  font-size: 0.75rem;
+}
+
+.an-map-tooltip th {
+  padding-right: 0.5rem;
+  font-weight: 500;
+  color: var(--tblr-secondary);
+}
+
+.an-map-notes {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+  font-size: 0.8rem;
+  color: var(--tblr-secondary);
 }
 
 .an-plot {

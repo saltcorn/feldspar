@@ -95,7 +95,8 @@ pub enum Preset {
     Correlation,
     /// Counts by two categories, as tiles in proportion.
     Mosaic,
-    /// Points or regions on a map (A5).
+    /// Points or regions on a map (A5.7): not a plot spec but a map spec,
+    /// which `suggest_map` makes.
     Map,
 }
 
@@ -161,12 +162,12 @@ impl Preset {
         }
     }
 
-    /// The milestone that brings it, when it is not here yet.
+    /// The milestone that brings it, when it is not here yet. Every item is
+    /// here since the map arrived (A5.7); an item a later milestone brings is
+    /// named here until it does.
     pub fn arrives_in(self) -> Option<&'static str> {
-        match self {
-            Preset::Map => Some("A5"),
-            _ => None,
-        }
+        let _ = self;
+        None
     }
 }
 
@@ -489,6 +490,12 @@ pub fn preset(
             "{} arrives with milestone {m}",
             preset.label().to_lowercase()
         ));
+    }
+    if preset == Preset::Map {
+        return Err(
+            "a map is drawn over a base map rather than as a plot; `suggestMap` makes it"
+                .to_owned(),
+        );
     }
     let mut a = current.clone();
     let pick = Picker::new(shape);
@@ -1009,7 +1016,7 @@ mod tests {
         for p in Preset::ALL {
             let made = preset(p, data(), &s, &Assignment::default());
             if p == Preset::Map {
-                assert_eq!(made.unwrap_err(), "map arrives with milestone A5");
+                assert!(made.unwrap_err().contains("suggestMap"));
                 continue;
             }
             let (spec, _) = made.unwrap_or_else(|e| panic!("{p:?}: {e}"));
@@ -1042,12 +1049,7 @@ mod tests {
         );
         let items = gallery();
         assert_eq!(items.len(), 12);
-        assert!(
-            !items
-                .iter()
-                .find(|i| i.preset == Preset::Map)
-                .unwrap()
-                .available
-        );
+        // Every item can be picked since the map arrived (A5.7).
+        assert!(items.iter().all(|i| i.available && i.arrives_in.is_none()));
     }
 }

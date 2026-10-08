@@ -10,8 +10,14 @@
 // workspace's state, saved by the frame as it changes, so reopening the
 // workspace shows the same plot and tests. What is drawn can be dragged into
 // a report as a panel (A4.3), the plot and its tests as one.
+//
+// The gallery's Map, or the Map view, draws the same dataset on a map
+// (A5.7): `suggestMap` chooses where the geometry comes from — a geometry
+// column, longitude and latitude columns, or a key to a table with geometry —
+// and takes Color, Size, Shape and Label from the drop zones; `renderMap`
+// answers its features and scales, and `MapView` draws them over the base map.
 
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import Alert from "react-bootstrap/Alert";
 import Badge from "react-bootstrap/Badge";
 import Button from "react-bootstrap/Button";
@@ -38,6 +44,7 @@ import {
   type TableData,
 } from "../plot/spec";
 import { SummaryTable } from "../plot/SummaryTable";
+import { sameSource, type MapData, type MapSpec, type SourceChoice } from "../map/spec";
 import { explorerPanel, explorerTitle } from "../panels/panel";
 import { DragHandle } from "../panels/PanelView";
 import { useAnnounce, useChanges, usePane } from "../panes";
@@ -48,22 +55,29 @@ import { modelPlan, planDataset, planModel } from "./openAsModel";
 import { TestResults } from "./TestResults";
 import { isAnalysis, testSpecOf, type Analysis } from "./tests";
 import {
+  MAP_ZONES,
   ZONES,
   clear,
   composeSpec,
   drop,
+  mapAssignment,
   onZone,
   pickDataset,
+  pickGeometry,
   pickMark,
   readState,
   remove,
   setTests,
+  showMap,
   tableSpecOf,
   toggleBin,
   type Assignment,
   type ExplorerState,
   type Zone,
 } from "./state";
+
+// MapLibre is a large library: it is fetched when a map is first drawn.
+const MapView = lazy(() => import("../map/MapView").then((m) => ({ default: m.MapView })));
 
 type DatasetItem = ListDatasetsResponse[number];
 type GalleryItem = PlotGalleryResponse[number];
@@ -224,6 +238,65 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
     };
   }, [tableKey, state.view, t, version]);
 
+  // --- the map (A5.7) ---------------------------------------------------------
+  const [suggestedMap, setSuggestedMap] = useState<{ spec?: MapSpec; sources: SourceChoice[]; error?: string } | null>(
+    null,
+  );
+  const mapKey = keyOf(mapAssignment(state.assignment));
+  const geometryKey = keyOf(state.map.geometry ?? null);
+  useEffect(() => {
+    if (!state.dataset || state.view !== "map") return;
+    let live = true;
+    const timer = window.setTimeout(() => {
+      api
+        .suggestMap({
+          dataset: state.dataset as string,
+          assignment: mapAssignment(state.assignment),
+          geometry: state.map.geometry ?? null,
+        })
+        .then((answer) => {
+          if (!live) return;
+          setSuggestedMap({
+            spec: answer.spec as MapSpec | undefined,
+            sources: answer.sources as SourceChoice[],
+            error: answer.error ?? undefined,
+          });
+        })
+        .catch(
+          (err: unknown) =>
+            live && setSuggestedMap({ sources: [], error: errorMessage(err, t("Could not make a map.")) }),
+        );
+    }, SETTLE_MS);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+    // The drop zones and the source are compared by value.
+  }, [state.dataset, mapKey, geometryKey, state.view, t, version]);
+
+  const mapSpec = suggestedMap?.error ? null : (suggestedMap?.spec ?? null);
+  const mapSpecKey = mapSpec ? JSON.stringify(mapSpec) : "";
+  const [drawnMap, setDrawnMap] = useState<{ spec: MapSpec; data: MapData } | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [mapping, setMapping] = useState(false);
+  useEffect(() => {
+    if (!mapSpec || state.view !== "map") return;
+    let live = true;
+    setMapping(true);
+    api
+      .renderMap({ spec: mapSpec })
+      .then((answer) => {
+        if (!live) return;
+        setMapError(null);
+        setDrawnMap({ spec: mapSpec, data: answer as unknown as MapData });
+      })
+      .catch((err: unknown) => live && setMapError(errorMessage(err, t("Could not draw the map."))))
+      .finally(() => live && setMapping(false));
+    return () => {
+      live = false;
+    };
+  }, [mapSpecKey, state.view, t, version]);
+
   // --- the hypothesis tests --------------------------------------------------
   const testSpec = useMemo(() => (state.tests.show ? testSpecOf(state) : null), [state]);
   const testKey = testSpec ? JSON.stringify(testSpec) : "";
@@ -292,6 +365,11 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
   const pickPreset = async (item: GalleryItem) => {
     if (!state.dataset) return;
     setPresetError(null);
+    // A map is not a plot spec: the map view asks `suggestMap` for it.
+    if (item.preset === "map") {
+      update(showMap);
+      return;
+    }
     try {
       const answer = await api.suggestPlot({
         dataset: state.dataset,
@@ -337,7 +415,7 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
   const dragPanel = () =>
     explorerPanel(
       {
-        view: state.view,
+        view: state.view === "table" ? "table" : "plot",
         spec: drawn?.spec ?? null,
         table: tableSpec,
         tests: state.tests.show ? testSpec : null,
@@ -353,7 +431,13 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
   const columns = shape?.columns ?? [];
   const categorical = columns.filter((c) => c.key || !["int", "float", "decimal"].includes(c.type)).map((c) => c.name);
   const notes = drawn && state.view === "plot" ? plotNotes(drawn.data, t) : [];
-  const message = state.view === "plot" ? (suggested?.error ?? drawError) : table?.error;
+  const message =
+    state.view === "plot"
+      ? (suggested?.error ?? drawError)
+      : state.view === "map"
+        ? (suggestedMap?.error ?? mapError)
+        : table?.error;
+  const mapSources = suggestedMap?.sources ?? [];
 
   return (
     <div className="an-explorer">
@@ -410,7 +494,9 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
             <Button
               key={g.preset}
               size="sm"
-              variant={state.preset === g.preset ? "primary" : "outline-secondary"}
+              variant={
+                state.preset === g.preset || (g.preset === "map" && state.view === "map") ? "primary" : "outline-secondary"
+              }
               disabled={!g.available || !state.dataset}
               title={g.available ? undefined : t("Arrives in {milestone}", { milestone: g.arrives_in ?? "" })}
               onClick={() => void pickPreset(g)}
@@ -426,6 +512,8 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
             <DropZone
               key={zone}
               zone={zone}
+              unused={state.view === "map" && !MAP_ZONES.includes(zone)}
+              binnable={state.view !== "map"}
               state={state}
               columns={columns}
               onChange={update}
@@ -447,8 +535,20 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
             >
               <T text="Summary table" />
             </Button>
+            <Button
+              variant={state.view === "map" ? "secondary" : "outline-secondary"}
+              onClick={() => update(showMap)}
+            >
+              <T text="Map" />
+            </Button>
           </ButtonGroup>
-          {state.view === "plot" ? (
+          {state.view === "map" ? (
+            <GeometryPicker
+              sources={mapSources}
+              chosen={state.map.geometry}
+              onPick={(source) => update((s) => pickGeometry(s, source))}
+            />
+          ) : state.view === "plot" ? (
             <MarkPalette
               chosen={state.mark}
               drawn={drawn?.spec.layers[0]?.mark}
@@ -462,17 +562,19 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
             />
           )}
           <div className="ms-auto d-flex gap-2 align-items-center">
-            {state.dataset && !message && (state.view === "plot" ? drawn : table?.data) && (
+            {state.dataset && !message && state.view !== "map" && (state.view === "plot" ? drawn : table?.data) && (
               <DragHandle make={dragPanel} label={t("Drag this output into a report")} />
             )}
-            <Button
-              size="sm"
-              variant={state.tests.show ? "secondary" : "outline-secondary"}
-              aria-pressed={state.tests.show}
-              onClick={() => update((s) => setTests(s, { show: !s.tests.show }))}
-            >
-              <T text="Tests" />
-            </Button>
+            {state.view !== "map" && (
+              <Button
+                size="sm"
+                variant={state.tests.show ? "secondary" : "outline-secondary"}
+                aria-pressed={state.tests.show}
+                onClick={() => update((s) => setTests(s, { show: !s.tests.show }))}
+              >
+                <T text="Tests" />
+              </Button>
+            )}
             {state.view === "plot" && (
               <Button size="sm" variant={layersOpen ? "secondary" : "outline-secondary"} onClick={() => setLayersOpen((o) => !o)}>
                 <T text="Layers" />
@@ -505,6 +607,16 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
               <Alert variant="info" className="m-2">
                 {message}
               </Alert>
+            ) : state.view === "map" ? (
+              drawnMap ? (
+                <div className={mapping ? "an-map-box an-stale" : "an-map-box"}>
+                  <Suspense fallback={<Spinner animation="border" size="sm" className="m-3" />}>
+                    <MapView spec={drawnMap.spec} data={drawnMap.data} theme={theme} />
+                  </Suspense>
+                </div>
+              ) : (
+                <Spinner animation="border" size="sm" className="m-3" />
+              )
             ) : state.view === "plot" ? (
               drawn ? (
                 <div className={drawing ? "an-plot-box an-stale" : "an-plot-box"}>
@@ -519,7 +631,7 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
               <Spinner animation="border" size="sm" className="m-3" />
             )}
           </div>
-          {state.tests.show && state.dataset && (
+          {state.tests.show && state.dataset && state.view !== "map" && (
             <TestResults
               analysis={tests?.analysis ?? null}
               error={tests?.error ?? null}
@@ -557,11 +669,17 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
  * whoever would rather not drag. */
 function DropZone({
   zone,
+  unused = false,
+  binnable = true,
   state,
   columns,
   onChange,
 }: {
   zone: Zone;
+  /** Not drawn by what is shown (X on a map): kept, and dimmed. */
+  unused?: boolean;
+  /** Whether a number can be binned here: not on a map, which does not bin. */
+  binnable?: boolean;
   state: ExplorerState;
   columns: StageColumn[];
   onChange: (change: (s: ExplorerState) => ExplorerState) => void;
@@ -593,7 +711,8 @@ function DropZone({
   };
   return (
     <div
-      className={over ? "an-zone over" : "an-zone"}
+      className={["an-zone", over ? "over" : "", unused ? "unused" : ""].filter(Boolean).join(" ")}
+      title={unused ? t("Not drawn on a map") : undefined}
       onDragOver={accept}
       onDragEnter={accept}
       onDragLeave={() => setOver(false)}
@@ -630,7 +749,7 @@ function DropZone({
           onDragStart={(e) => e.dataTransfer.setData(DRAG_TYPE, JSON.stringify({ field: f.field, from: zone }))}
         >
           {f.field}
-          {numeric(f.field) && (
+          {binnable && numeric(f.field) && (
             <button
               type="button"
               className={f.bin ? "an-chip-bin on" : "an-chip-bin"}
@@ -652,6 +771,45 @@ function DropZone({
         </span>
       ))}
     </div>
+  );
+}
+
+/** Where a map's geometry comes from: the dataset's sources, the first
+ * drawn until another is picked. */
+function GeometryPicker({
+  sources,
+  chosen,
+  onPick,
+}: {
+  sources: SourceChoice[];
+  chosen: SourceChoice["source"] | undefined;
+  onPick: (source: SourceChoice["source"] | undefined) => void;
+}) {
+  const { t } = useT();
+  if (sources.length === 0) return null;
+  const picked = chosen ? sources.findIndex((c) => sameSource(c.source, chosen)) : -1;
+  return (
+    <Form.Group className="d-flex align-items-center gap-2">
+      <Form.Label className="small mb-0 text-nowrap" htmlFor="explorer-geometry">
+        <T text="Geometry" />
+      </Form.Label>
+      <Form.Select
+        id="explorer-geometry"
+        size="sm"
+        style={{ width: "auto" }}
+        value={picked === -1 ? "" : String(picked)}
+        onChange={(e) => onPick(e.target.value === "" ? undefined : sources[Number(e.target.value)]?.source)}
+      >
+        <option value="">
+          {t("Automatic ({source})", { source: sources[0].label })}
+        </option>
+        {sources.map((c, i) => (
+          <option key={c.label} value={String(i)}>
+            {c.label}
+          </option>
+        ))}
+      </Form.Select>
+    </Form.Group>
   );
 }
 

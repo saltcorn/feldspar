@@ -2,6 +2,100 @@
 
 Changes in reverse chronological order.
 
+## Analytics A5.6–A5.7: map rendering and the map panel
+
+The third phase of milestone A5 (Maps): maps drawn in the browser with MapLibre GL JS over a
+base map set in Settings → Maps, and a map panel in the Data explorer that finds the geometry
+by itself. Written up in `TECHNICAL_DESIGN.md` §14.6 (*Maps in the browser*) and
+`OPERATIONS.md` §10.4.
+
+- **A5.6 MapLibre, the base map and the compiler.**
+  - `ui/analytics` depends on `maplibre-gl` 6. It is loaded only with the map's own chunk, so a
+    page with no map does not fetch it. Its worker is the package's module file, emitted by
+    Vite's `?url` and set with `setWorkerUrl`, so it is never a `blob:`.
+  - **The map spec** (`sc_analytics::map`): `MapSpec { layers: [MapLayer { dataset, geometry,
+    encoding?, filter? }] }`. A layer's encoding is a plot layer's without the positions: Color,
+    Size, Shape and Label. Each channel is checked with a sentence: Size needs a number, Shape a
+    category, and geometry, JSON and binned columns are refused.
+  - **`renderMap`** answers each layer's features, as `layerData` does, and the **domains** of
+    its encoded columns. These are computed in SQL over every feature (`layer_domains`): a
+    number's range, a category's values. A tiled layer is therefore coloured the same at every
+    zoom. A layer that cannot be drawn says why, and the others are still drawn.
+  - `LayerData` now carries the kinds of geometry among the features (`geometry: ["point", …]`,
+    from the smallest and largest `ST_Dimension`).
+  - **The compiler** (`ui/analytics/src/map/maplibre.ts`, pure) turns spec and data into MapLibre
+    sources and layers:
+    - polygons: a fill, and outlines;
+    - lines: a line, as wide as Size;
+    - points: a circle, or a symbol when there is a column on Shape;
+    - labels: a symbol in the base map's own font.
+  - The compiler's scales use the plots' palette:
+    - categories by their place in the domain, with the ninth onwards in the muted ink;
+    - numbers along the sequential ramp;
+    - missing values in grey;
+    - a point's Size by area from zero.
+  - **Shapes** are SDF images made pixel by pixel (`shapes.ts`), so `icon-color` and `icon-size`
+    colour and size them. A tiled source is the tile template made absolute on the page's
+    origin, with the layer's bounds.
+  - **`MapView`** draws the map over the base map. It fits the map to the data and adds a legend
+    for each channel. A tooltip shows the row under the pointer, and notes say what was not
+    drawn and why.
+  - **Settings → Maps** (`sc_config::maps`) has three settings:
+    - the base map's MapLibre style for a light page (OpenFreeMap Positron by default);
+    - the style for a dark page (OpenFreeMap Dark);
+    - further hosts.
+  - An empty style draws the layers on a plain background, without labels. A style that cannot
+    be reached does the same, and says so. `mapSettings` answers the two styles.
+  - **The Analytics UI's CSP** now names the base map's hosts in `connect-src` and `img-src`. It
+    is built per response (`analytics_content_security_policy`), and it adds `blob:` to
+    `img-src` and `worker-src 'self'`.
+  - Each host is parsed as an origin (`sc_config::origin_of`). `updateSettings` refuses anything
+    else by name, and the policy leaves out any entry that is not exactly an origin, so a setting
+    cannot inject a directive.
+- **A5.7 The map panel in the Data explorer.**
+  - The gallery's **Map** is no longer disabled, and a **Map** view sits beside Plot and Summary
+    table. The drop zones are kept, so going back to the plot loses nothing.
+  - Color, Size, Shape and Label draw the map. X, Y and the facets are dimmed, and a drop on
+    them does not ask the server again. Bins are dropped, and their toggle is hidden.
+  - **`suggestMap`** chooses where the geometry comes from (`geometry_sources`, best first):
+    - a geometry column;
+    - number columns paired as longitude and latitude by name (`lon`/`lng`/`long`/`longitude`
+      with `lat`/`latitude`, alone or as a `_` prefix or suffix);
+    - a foreign key to a table with a geometry column.
+  - It answers every source, and the spec from the one the state names, else from the first. A
+    **Geometry** picker lists the sources, with "Automatic" first. A dataset with nothing to map
+    is told so.
+  - The tests and the layers panel are a plot's, and are hidden on a map.
+  - `ExplorerState` gains `view: "map"` and `map.geometry`.
+  - `Preset::arrives_in` is now `None` for every item. `suggestPlot` with the map preset answers
+    a sentence pointing at `suggestMap`.
+- **Deviation: no deck.gl.** The plan named "MapLibre GL JS and deck.gl". The goals document
+  wants deck.gl for layers too large for MapLibre alone, but A5.5 already sends those as vector
+  tiles from PostGIS, which MapLibre draws natively. deck.gl would add about a megabyte with
+  nothing to draw. It stays the option for what tiles do not cover (animating many points over
+  time, A8.5).
+- **Tests.**
+  - `sc-config`: defaults, empty styles, origins deduplicated, and every way a value could reach
+    the header refused.
+  - `sc-analytics`, unit tests: the source order and the coordinate-name pairing, each channel's
+    sentence, the spec's JSON.
+  - `sc-analytics`, PostGIS tests (`maps.rs`): `suggest_map` (sources, the chosen one, an
+    unknown one, a refused channel, a dataset with nothing to map); `render_map` (the domains of
+    two layers, with a filter and geometry kinds, and a refused layer beside a drawn one);
+    `layer_domains` along a key.
+  - `sc-server` `geometry.rs`: suggest, render as GeoJSON and as tiles (with the domains over
+    every feature), `mapSettings` before and after a save, the served policy naming the new
+    hosts, and an injection refused.
+  - `sc-server` `analytics_route.rs`: the policy function.
+  - vitest: the compiler (`maplibre.test.ts`: each geometry kind, each scale, shapes, tiles,
+    labels and fonts, refusals, dark), the SDF shapes, and the explorer state's map view.
+  - By hand in Chromium against a PostGIS scratch database, with no console errors or CSP
+    violations: points by colour and size, shapes with labels, polygons, geometry along a key,
+    the tooltip, 8,000 points as tiles on the dark base map, and no base map.
+- **Not done here.** A map cannot be dragged into a report yet (A5.13). The Map workspace with
+  several layers is A5.8.
+- `TABLES_RENAME.sql` needs nothing: the settings are new `_fd_config` keys with defaults.
+
 ## Analytics A5.4–A5.5: spatial operations and layer delivery
 
 The second phase of milestone A5 (Maps): the Spatial join operation, geometry union as an

@@ -4326,6 +4326,10 @@ pub fn admin_handlers(catalog: Arc<Catalog>, apps: Arc<AppMounts>) -> HandlerReg
                 // tag that is not a language tag is refused here, where the
                 // admin can see which box they typed it into (§16.1).
                 let localisation = sc_config::localisation_settings_from(&merged)?;
+                // The Maps section's, on the same footing: a base map URL is a
+                // host the Analytics UI's policy will name, so one that is not
+                // an http or https origin is refused here (analytics A5.6).
+                sc_config::map_settings_from(&merged)?;
 
                 sc_config::set_config_many(&catalog, &values).await?;
                 // The two switches this process runs under move **now**, not at

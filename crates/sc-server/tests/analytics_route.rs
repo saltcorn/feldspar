@@ -10,7 +10,8 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
 use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, User};
 use sc_server::{
-    ANALYTICS_CONTENT_SECURITY_POLICY, HandlerRegistry, SESSION_COOKIE, ServerConfig, build_router,
+    ANALYTICS_CONTENT_SECURITY_POLICY, HandlerRegistry, SESSION_COOKIE, ServerConfig,
+    analytics_content_security_policy, build_router,
 };
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -93,7 +94,8 @@ async fn an_admin_gets_the_bundle_under_its_own_policy() {
                 .headers()
                 .get(header::CONTENT_SECURITY_POLICY)
                 .unwrap(),
-            ANALYTICS_CONTENT_SECURITY_POLICY
+            // No catalog, so no stored settings: the default base map's host.
+            analytics_content_security_policy(&sc_config::MapSettings::default().hosts()).as_str()
         );
         let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
@@ -169,4 +171,33 @@ async fn without_a_bundle_the_prefix_says_how_to_build_one() {
         .await
         .unwrap();
     assert!(String::from_utf8_lossy(&body).contains("ui/analytics"));
+}
+
+/// The policy names the base map's hosts (analytics TODO A5.6) in
+/// `connect-src` and `img-src`, MapLibre's worker is a same-origin module, and
+/// nothing that is not an origin reaches the header.
+#[test]
+fn the_policy_names_the_map_hosts_and_nothing_else() {
+    assert_eq!(
+        analytics_content_security_policy(&[]),
+        ANALYTICS_CONTENT_SECURITY_POLICY
+    );
+    assert!(ANALYTICS_CONTENT_SECURITY_POLICY.contains("worker-src 'self';"));
+    assert!(!ANALYTICS_CONTENT_SECURITY_POLICY.contains("worker-src 'self' blob:"));
+    assert!(ANALYTICS_CONTENT_SECURITY_POLICY.contains("script-src 'self';"));
+    let policy = analytics_content_security_policy(&[
+        "https://tiles.openfreemap.org".to_owned(),
+        "https://evil.example; script-src *".to_owned(),
+        "http://10.0.0.5:8080".to_owned(),
+    ]);
+    assert!(
+        policy.contains("connect-src 'self' https://tiles.openfreemap.org http://10.0.0.5:8080;"),
+        "{policy}"
+    );
+    assert!(
+        policy.contains("img-src 'self' data: blob: https://tiles.openfreemap.org http://10.0.0.5:8080;"),
+        "{policy}"
+    );
+    assert!(!policy.contains("evil"), "{policy}");
+    assert!(policy.contains("script-src 'self';"), "{policy}");
 }

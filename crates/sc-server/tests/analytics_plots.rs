@@ -172,9 +172,10 @@ async fn plots_are_suggested_drawn_and_refused_through_the_api() -> sc_error::Re
         reshaping,
         vec!["splom", "parallel", "correlation", "mosaic"]
     );
+    // The map is here since A5.7, drawn by `suggestMap` rather than as a plot.
     let map = items.iter().find(|i| i["preset"] == "map").unwrap();
-    assert_eq!(map["available"], json!(false));
-    assert_eq!(map["arrives_in"], json!("A5"));
+    assert_eq!(map["available"], json!(true));
+    assert_eq!(map["arrives_in"], Value::Null);
 
     // `price` on Y and `neighbourhood` on X: a box plot, without asking.
     let houses = client.dataset("Houses", "houses").await;
@@ -211,7 +212,8 @@ async fn plots_are_suggested_drawn_and_refused_through_the_api() -> sc_error::Re
     assert_eq!(drawn["layers"][0]["rows"].as_array().unwrap().len(), 60);
     assert_eq!(drawn["layers"][0]["sampled"], json!(false));
 
-    // Nothing to draw yet, and a map before A5: sentences, not errors.
+    // Nothing to draw yet, and a map asked of the plot rules: sentences, not
+    // errors.
     let empty = client
         .ok(
             "POST",
@@ -230,7 +232,7 @@ async fn plots_are_suggested_drawn_and_refused_through_the_api() -> sc_error::Re
             Some(json!({ "dataset": houses, "preset": "map" })),
         )
         .await;
-    assert_eq!(map["error"], json!("map arrives with milestone A5"));
+    assert!(map["error"].as_str().unwrap().contains("suggestMap"), "{map}");
 
     // A spec that cannot be drawn answers why, with every reason.
     let refused = client

@@ -395,6 +395,10 @@ pub(crate) fn register(set: &mut EndpointSet) {
                     TypeSchema::optional(TypeSchema::array(TypeSchema::Value(ValueType::Float))),
                 ),
                 StructField::new(
+                    "geometry",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+                ),
+                StructField::new(
                     "properties",
                     TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
                 ),
@@ -425,6 +429,63 @@ pub(crate) fn register(set: &mut EndpointSet) {
         .query([QueryParam::new("layer", ValueType::Text).required()])
         .binary_output()
         .auth(AuthRequirement::admin()),
+    );
+
+    // --- maps (A5.6, A5.7) ------------------------------------------------------
+
+    // The base maps a map is drawn over (Settings → Maps): the MapLibre style
+    // for a light page and for a dark one, each absent for no base map.
+    set.register(
+        Endpoint::new(
+            "mapSettings",
+            Method::Get,
+            api().lit("maps").lit("settings"),
+        )
+        .output(TypeSchema::struct_of([
+            StructField::new("style", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("style_dark", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
+    // The map the explorer draws for a dataset (A5.7): its rows over a base
+    // map, the geometry from `geometry` when it is one of the dataset's
+    // sources and from the first when not, and Color, Size, Shape and Label
+    // from the drop zones in `assignment`. Answers the map spec, every way the
+    // dataset's rows can be put on a map (`sources`, each `{ source, label }`:
+    // a geometry column, longitude and latitude columns, a key to a table
+    // with a geometry column), or `error` when nothing can be drawn.
+    set.register(
+        Endpoint::new("suggestMap", Method::Post, api().lit("maps").lit("suggest"))
+            .input(TypeSchema::struct_of([
+                StructField::new("dataset", TypeSchema::uuid()),
+                StructField::new("assignment", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("geometry", TypeSchema::optional(TypeSchema::json())),
+            ]))
+            .output(TypeSchema::struct_of([
+                StructField::new("spec", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("sources", TypeSchema::array(TypeSchema::json())),
+                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    // A map spec drawn (A5.6): for each layer, its features as `layerData`
+    // answers them (GeoJSON, or the URL template of its tiles, or `delivery:
+    // "none"` and the sentence) in `data`, the request they were read by in
+    // `layer`, and what each encoded column spans in `domains` (by channel:
+    // `color`, `size`, `shape`), over every feature.
+    set.register(
+        Endpoint::new("renderMap", Method::Post, api().lit("maps").lit("render"))
+            .input(TypeSchema::struct_of([StructField::new(
+                "spec",
+                TypeSchema::json(),
+            )]))
+            .output(TypeSchema::struct_of([StructField::new(
+                "layers",
+                TypeSchema::array(TypeSchema::json()),
+            )]))
+            .auth(AuthRequirement::admin()),
     );
 
     // --- panels (A4.2) ---------------------------------------------------------

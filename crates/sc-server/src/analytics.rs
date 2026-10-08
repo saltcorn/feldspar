@@ -1,4 +1,4 @@
-//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8, A2.14, A4.2, A5.5): datasets,
+//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8, A2.14, A4.2, A5.5–A5.7): datasets,
 //! plots, hypothesis tests, panels, map layers and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
 //! declared in `sc-api`'s `analytics.rs`, which says what each one is for.
 
@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_analytics::layer;
+use sc_analytics::map;
 use sc_analytics::panel::Panel;
 use sc_analytics::plot::{self, PlotSpec};
 use sc_analytics::stats;
@@ -506,6 +507,95 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     // Fetched by the map, not saved by a person.
                     filename: String::new(),
                 }))
+            }
+        }
+    });
+
+    // --- maps (A5.6, A5.7) ------------------------------------------------------
+
+    reg.register("mapSettings", {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let settings = sc_config::map_settings(&catalog).await?;
+                Ok(HandlerResponse::ok(json!({
+                    "style": settings.style,
+                    "style_dark": settings.dark_style(),
+                })))
+            }
+        }
+    });
+
+    reg.register("suggestMap", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id: DatasetId = ctx
+                    .body
+                    .get("dataset")
+                    .and_then(Json::as_str)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| Error::invalid("`dataset` is required, as a dataset's id"))?;
+                let assignment: plot::Assignment = match ctx.body.get("assignment") {
+                    None | Some(Json::Null) => plot::Assignment::default(),
+                    Some(a) => serde_json::from_value(a.clone()).map_err(|e| {
+                        Error::invalid(format!("`assignment` is not a set of drop zones: {e}"))
+                    })?,
+                };
+                let geometry: Option<layer::GeometrySource> = ctx
+                    .body
+                    .get("geometry")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|e| {
+                        Error::invalid(format!("`geometry` is not a geometry source: {e}"))
+                    })?;
+                let answer =
+                    map::suggest_map(&catalog, id, &assignment, geometry.as_ref()).await?;
+                Ok(HandlerResponse::ok(serde_json::to_value(answer).map_err(
+                    |e| Error::serde(format!("a suggested map does not serialise: {e}")),
+                )?))
+            }
+        }
+    });
+
+    reg.register("renderMap", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let spec: map::MapSpec = serde_json::from_value(
+                    ctx.body
+                        .get("spec")
+                        .cloned()
+                        .ok_or_else(|| Error::invalid("`spec` is required"))?,
+                )
+                .map_err(|e| Error::invalid(format!("`spec` is not a map: {e}")))?;
+                if spec.layers.is_empty() {
+                    return Err(Error::invalid("a map needs at least one layer"));
+                }
+                let rendered = map::render_map(&catalog, &spec).await?;
+                let mut layers = Vec::with_capacity(rendered.layers.len());
+                for one in &rendered.layers {
+                    let mut data = serde_json::to_value(&one.data).map_err(|e| {
+                        Error::serde(format!("a layer's data does not serialise: {e}"))
+                    })?;
+                    if matches!(one.data, layer::LayerData::Tiles { .. })
+                        && let Some(fields) = data.as_object_mut()
+                    {
+                        fields.insert("tiles".into(), Json::String(tile_template(&one.layer)?));
+                    }
+                    layers.push(json!({
+                        "layer": one.layer,
+                        "data": data,
+                        "domains": one.domains,
+                    }));
+                }
+                Ok(HandlerResponse::ok(json!({ "layers": layers })))
             }
         }
     });

@@ -326,8 +326,13 @@ export type RunTestsResponse = { error?: string | null; problems?: Array<string>
 export type SuggestPlotRequest = { dataset: string; assignment?: unknown | null; preset?: string | null; mark?: string | null };
 export type SuggestPlotResponse = { spec?: unknown | null; assignment?: unknown | null; error?: string | null };
 export type LayerDataRequest = { layer: unknown };
-export type LayerDataResponse = { delivery: string; error?: string | null; count?: number | null; vertices?: number | null; bounds?: Array<number> | null; properties?: Array<unknown> | null; data?: unknown | null; tiles?: string | null; source_layer?: string | null; keyed?: boolean | null };
+export type LayerDataResponse = { delivery: string; error?: string | null; count?: number | null; vertices?: number | null; bounds?: Array<number> | null; geometry?: Array<string> | null; properties?: Array<unknown> | null; data?: unknown | null; tiles?: string | null; source_layer?: string | null; keyed?: boolean | null };
 export type LayerTileQuery = { layer: string };
+export type MapSettingsResponse = { style?: string | null; style_dark?: string | null };
+export type SuggestMapRequest = { dataset: string; assignment?: unknown | null; geometry?: unknown | null };
+export type SuggestMapResponse = { spec?: unknown | null; sources: Array<unknown>; error?: string | null };
+export type RenderMapRequest = { spec: unknown };
+export type RenderMapResponse = { layers: Array<unknown> };
 export type RenderPanelRequest = { panel: unknown };
 export type RenderPanelResponse = { kind: string; error?: string | null; plot?: unknown | null; table?: unknown | null; tests?: unknown | null; output?: unknown | null; categorical?: Array<string> | null };
 export type GetModelOutputsQuery = { fit?: string; include?: string };
@@ -556,6 +561,9 @@ export interface ApiClient {
   suggestPlot(body: SuggestPlotRequest): Promise<SuggestPlotResponse>;
   layerData(body: LayerDataRequest): Promise<LayerDataResponse>;
   layerTile(z: number, x: number, y: number, query: LayerTileQuery): Promise<Blob>;
+  mapSettings(): Promise<MapSettingsResponse>;
+  suggestMap(body: SuggestMapRequest): Promise<SuggestMapResponse>;
+  renderMap(body: RenderMapRequest): Promise<RenderMapResponse>;
   renderPanel(body: RenderPanelRequest): Promise<RenderPanelResponse>;
   getModelOutputs(id: string, query?: GetModelOutputsQuery): Promise<GetModelOutputsResponse>;
   listWorkspaceKinds(): Promise<ListWorkspaceKindsResponse>;
@@ -2429,6 +2437,32 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("layerTile", res);
       return await res.blob();
+    },
+    async mapSettings() {
+      const res = await doFetch(`${baseUrl}/api/maps/settings`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("mapSettings", res);
+      return (await res.json()) as MapSettingsResponse;
+    },
+    async suggestMap(body) {
+      const res = await doFetch(`${baseUrl}/api/maps/suggest`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("suggestMap", res);
+      return (await res.json()) as SuggestMapResponse;
+    },
+    async renderMap(body) {
+      const res = await doFetch(`${baseUrl}/api/maps/render`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("renderMap", res);
+      return (await res.json()) as RenderMapResponse;
     },
     async renderPanel(body) {
       const res = await doFetch(`${baseUrl}/api/panels/render`, {

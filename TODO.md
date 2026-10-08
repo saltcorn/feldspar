@@ -515,10 +515,10 @@ selection, reference layers and the tools that dataset operations can express (g
 
 ## Phase 3 — Map rendering and the map panel
 
-- [ ] A5.6 MapLibre GL JS and deck.gl in `ui/analytics`; the base map style URL as a setting
+- [x] A5.6 MapLibre GL JS and deck.gl in `ui/analytics`; the base map style URL as a setting
       (with a default), and the CSP entries its hosts need. The compiler from a map layer
       spec to MapLibre layers. Tests.
-- [ ] A5.7 The map panel in the Data explorer: the geometry source chosen automatically
+- [x] A5.7 The map panel in the Data explorer: the geometry source chosen automatically
       (geometry column, latitude and longitude columns, or a foreign key to a table with
       geometry), encodings colour, size, shape and label. Tests.
 

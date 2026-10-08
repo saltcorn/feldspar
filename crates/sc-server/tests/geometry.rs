@@ -568,3 +568,196 @@ async fn a_dataset_is_a_map_layer_as_geojson_or_as_tiles() -> sc_error::Result<(
     );
     Ok(())
 }
+
+/// Map panels (analytics TODO A5.6–A5.7) through the API: the explorer's
+/// suggestion and its geometry sources, a map drawn with the domains of its
+/// encoded columns, as GeoJSON and as tiles, and the base map setting — what
+/// `mapSettings` answers and the hosts the Analytics UI's policy names.
+#[tokio::test]
+async fn a_map_panel_is_suggested_drawn_and_its_base_map_allowed() -> sc_error::Result<()> {
+    let Some(db) = TestDb::with_postgis().await? else {
+        return Ok(());
+    };
+    let mut h = setup(db, "maps").await?;
+    sc_dataset::bootstrap_datasets(&h.catalog).await?;
+    sc_config::bootstrap(&h.catalog).await?;
+    let (status, body) = h
+        .admin
+        .send("POST", "/api/tables", Some(json!({ "name": "sightings" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for field in [
+        json!({ "name": "id", "type": "int", "primary_key": true }),
+        json!({ "name": "species", "type": "text" }),
+        json!({ "name": "count", "type": "int" }),
+        json!({ "name": "lng", "type": "float" }),
+        json!({ "name": "lat", "type": "float" }),
+    ] {
+        let (status, body) = h
+            .admin
+            .send("POST", "/api/tables/sightings/fields", Some(field))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    for (id, species, count, lng) in [(1, "heron", 2, -0.12), (2, "egret", 5, -0.11), (3, "heron", 9, -0.10)] {
+        let (status, body) = h
+            .admin
+            .send(
+                "POST",
+                "/api/tables/sightings/rows",
+                Some(json!({ "id": id, "species": species, "count": count, "lng": lng, "lat": 51.5 })),
+            )
+            .await;
+        assert!(status.is_success(), "{body}");
+    }
+    let (status, dataset) = h
+        .admin
+        .send(
+            "POST",
+            "/api/datasets",
+            Some(json!({ "name": "Sightings", "base": { "kind": "table", "table": "sightings" } })),
+        )
+        .await;
+    assert!(status.is_success(), "{dataset}");
+    let id = dataset["dataset"]["id"].clone();
+
+    // No geometry column: the points are made from `lng` and `lat`.
+    let (status, suggested) = h
+        .admin
+        .send(
+            "POST",
+            "/api/maps/suggest",
+            Some(json!({
+                "dataset": id,
+                "assignment": { "color": { "field": "species" }, "size": { "field": "count" } },
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{suggested}");
+    assert_eq!(
+        suggested["sources"],
+        json!([{ "source": { "kind": "lon_lat", "longitude": "lng", "latitude": "lat" },
+                 "label": "`lng` and `lat`" }])
+    );
+    let spec = suggested["spec"].clone();
+    assert_eq!(spec["layers"][0]["geometry"]["kind"], "lon_lat", "{spec}");
+
+    let (status, drawn) = h
+        .admin
+        .send("POST", "/api/maps/render", Some(json!({ "spec": spec })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{drawn}");
+    let layer = &drawn["layers"][0];
+    assert_eq!(layer["data"]["delivery"], "geojson", "{layer}");
+    assert_eq!(layer["data"]["geometry"], json!(["point"]));
+    assert_eq!(layer["domains"]["color"]["values"], json!(["egret", "heron"]));
+    assert_eq!(layer["domains"]["size"]["min"], json!(2.0));
+    assert_eq!(layer["domains"]["size"]["max"], json!(9.0));
+
+    // Five thousand more: tiles, with the same domains over every feature.
+    let client = h._db.client().await?;
+    client
+        .execute(
+            "INSERT INTO sightings (id, species, count, lng, lat) SELECT g, 'gull', 20, \
+             -0.2 + g * 0.00002, 51.45 FROM generate_series(10, 5010) AS g",
+            &[],
+        )
+        .await
+        .unwrap();
+    let (_, drawn) = h
+        .admin
+        .send("POST", "/api/maps/render", Some(json!({ "spec": spec })))
+        .await;
+    let layer = &drawn["layers"][0];
+    assert_eq!(layer["data"]["delivery"], "tiles", "{layer}");
+    let template = layer["data"]["tiles"].as_str().expect("a template");
+    let (status, _, _) = h
+        .admin
+        .raw("GET", &template.replace("{z}/{x}/{y}", "0/0/0"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        layer["domains"]["color"]["values"],
+        json!(["egret", "gull", "heron"])
+    );
+    assert_eq!(layer["domains"]["size"]["max"], json!(20.0));
+
+    // The base map: OpenFreeMap until it is set, and its host in the policy.
+    let policy = |h: &mut Harness| {
+        let router = h.router.clone();
+        let cookies = h.admin.cookies.clone();
+        async move {
+            let jar = cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let request = Request::get("/analytics/")
+                .header(header::HOST, BASE_DOMAIN)
+                .header(header::COOKIE, jar)
+                .body(Body::empty())
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            response
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .expect("a policy")
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let (_, settings) = h.admin.send("GET", "/api/maps/settings", None).await;
+    assert_eq!(
+        settings,
+        json!({ "style": sc_config::DEFAULT_MAP_STYLE, "style_dark": sc_config::DEFAULT_MAP_STYLE_DARK })
+    );
+    assert!(
+        policy(&mut h)
+            .await
+            .contains("connect-src 'self' https://tiles.openfreemap.org;")
+    );
+    let (status, body) = h
+        .admin
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": {
+                "map_style": "https://maps.example.org/light.json",
+                "map_style_dark": "",
+                "map_hosts": "https://glyphs.example.net",
+            } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, settings) = h.admin.send("GET", "/api/maps/settings", None).await;
+    assert_eq!(
+        settings,
+        json!({ "style": "https://maps.example.org/light.json",
+                "style_dark": "https://maps.example.org/light.json" })
+    );
+    let served = policy(&mut h).await;
+    assert!(
+        served.contains("connect-src 'self' https://maps.example.org https://glyphs.example.net;"),
+        "{served}"
+    );
+    assert!(
+        served.contains("img-src 'self' data: blob: https://maps.example.org https://glyphs.example.net;"),
+        "{served}"
+    );
+    assert!(!served.contains("openfreemap"), "{served}");
+    // A host that is not one is refused where it was typed, and nothing of it
+    // reaches the policy.
+    let (status, body) = h
+        .admin
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": { "map_hosts": "https://ok.org; script-src *" } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("map host"), "{body}");
+    assert!(!policy(&mut h).await.contains("script-src *"));
+    Ok(())
+}

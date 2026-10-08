@@ -160,7 +160,9 @@ pub use sc_expr::CodeAdapter;
 /// Where the bundled modules are in the checkout, re-exported: `sc-cli` needs to
 /// name the fallback and `sc-module` is not otherwise its dependency.
 pub use sc_module::BUNDLED_IN_CHECKOUT;
-pub use security::{ANALYTICS_CONTENT_SECURITY_POLICY, IDE_CONTENT_SECURITY_POLICY};
+pub use security::{
+    ANALYTICS_CONTENT_SECURITY_POLICY, IDE_CONTENT_SECURITY_POLICY, analytics_content_security_policy,
+};
 pub use security::{BUILDER_CONTENT_SECURITY_POLICY, builder_content_security_policy};
 pub use security::{
     CONTENT_SECURITY_POLICY, CSRF_COOKIE, CSRF_HEADER, PREVIEW_COOKIE, SESSION_COOKIE,

@@ -1,5 +1,5 @@
 // The Data explorer's state, and what is made of it (analytics TODO A2.9,
-// A2.10, A2.14).
+// A2.10, A2.14, A5.7).
 //
 // What the workspace stores is what the person chose — the dataset, the
 // columns on each drop zone, the mark palette's choice, the gallery preset
@@ -13,6 +13,7 @@
 // Every function here is pure: the screen calls them, and the tests do too.
 
 import type { StageColumn, StageShape } from "../datasets/ops";
+import type { GeometrySource } from "../map/spec";
 import type {
   AggregateFn,
   Cell,
@@ -61,6 +62,16 @@ export type Extras = {
  * single number's mean is tested against. */
 export type TestsState = { show: boolean; paired: boolean; mu: number };
 
+/** What is drawn of the drop zones: a plot, a summary table or a map. */
+export type View = "plot" | "table" | "map";
+
+/** The map of the drop zones (A5.7): where its geometry comes from, the
+ * first of the dataset's sources when none was picked. */
+export type MapState = { geometry?: GeometrySource };
+
+/** The drop zones a map draws: the rest are a plot's. */
+export const MAP_ZONES: Zone[] = ["color", "size", "shape", "label"];
+
 /** The explorer's whole state, as its workspace stores it. */
 export type ExplorerState = {
   dataset?: string;
@@ -69,7 +80,8 @@ export type ExplorerState = {
   mark?: Mark;
   /** A gallery preset that reshapes the data, read again on every drop. */
   preset?: string;
-  view: "plot" | "table";
+  view: View;
+  map: MapState;
   table: { function: AggregateFn; totals: boolean };
   extras: Extras;
   tests: TestsState;
@@ -107,12 +119,14 @@ export function readState(raw: unknown): ExplorerState {
   const table = isObject(s.table) ? s.table : {};
   const extras = isObject(s.extras) ? s.extras : {};
   const tests = isObject(s.tests) ? s.tests : {};
+  const map = isObject(s.map) ? s.map : {};
   return {
     dataset: typeof s.dataset === "string" ? s.dataset : undefined,
     assignment,
     mark: typeof s.mark === "string" ? (s.mark as Mark) : undefined,
     preset: typeof s.preset === "string" ? s.preset : undefined,
-    view: s.view === "table" ? "table" : "plot",
+    view: s.view === "table" || s.view === "map" ? s.view : "plot",
+    map: isGeometrySource(map.geometry) ? { geometry: map.geometry } : {},
     table: {
       function: typeof table.function === "string" ? (table.function as AggregateFn) : "mean",
       totals: table.totals !== false,
@@ -130,6 +144,21 @@ export function readState(raw: unknown): ExplorerState {
       mu: typeof tests.mu === "number" && Number.isFinite(tests.mu) ? tests.mu : 0,
     },
   };
+}
+
+function isGeometrySource(v: unknown): v is GeometrySource {
+  if (!isObject(v)) return false;
+  const text = (k: string) => typeof v[k] === "string";
+  switch (v.kind) {
+    case "column":
+      return text("column");
+    case "lon_lat":
+      return text("longitude") && text("latitude");
+    case "key":
+      return text("column") && text("geometry");
+    default:
+      return false;
+  }
 }
 
 /** The columns on a zone. */
@@ -192,10 +221,33 @@ export function setTests(state: ExplorerState, change: Partial<TestsState>): Exp
   return { ...state, tests: { ...state.tests, ...change } };
 }
 
-/** Explore another dataset: its columns are not this one's. */
+/** Explore another dataset: its columns are not this one's, nor its
+ * geometry. */
 export function pickDataset(state: ExplorerState, dataset: string): ExplorerState {
   if (state.dataset === dataset) return state;
-  return { ...clear(state), dataset };
+  return { ...clear(state), dataset, map: {} };
+}
+
+/** Draw the drop zones as a map (A5.7): a gallery preset that reshapes gives
+ * way to it, and the zones stay as they are for the plot to come back to. */
+export function showMap(state: ExplorerState): ExplorerState {
+  return { ...state, view: "map", preset: undefined };
+}
+
+/** Put the map's geometry from `source` (`undefined`: the dataset's first). */
+export function pickGeometry(state: ExplorerState, source: GeometrySource | undefined): ExplorerState {
+  return { ...state, map: source ? { geometry: source } : {} };
+}
+
+/** The drop zones a map is suggested from: Color, Size, Shape and Label —
+ * so dropping a column on X does not draw the map again. */
+export function mapAssignment(a: Assignment): Assignment {
+  const out: Assignment = {};
+  for (const zone of MAP_ZONES) {
+    const f = a[zone as Exclude<Zone, "y">];
+    if (f) out[zone as Exclude<Zone, "y">] = f;
+  }
+  return out;
 }
 
 /** Choose a mark from the palette (`undefined`: let the explorer choose). A

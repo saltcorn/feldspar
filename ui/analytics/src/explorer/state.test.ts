@@ -8,13 +8,16 @@ import {
   clear,
   composeSpec,
   drop,
+  mapAssignment,
   noExtras,
   pickDataset,
+  pickGeometry,
   pickMark,
   readState,
   remove,
   removeLayer,
   setScale,
+  showMap,
   tableSpecOf,
   toggleBin,
   updateLayer,
@@ -88,6 +91,7 @@ describe("readState", () => {
       mark: undefined,
       preset: undefined,
       view: "plot",
+      map: {},
       table: { function: "mean", totals: true },
       extras: noExtras(),
       tests: { show: true, paired: false, mu: 0 },
@@ -189,5 +193,36 @@ describe("the layers panel", () => {
     expect(setScale(e, "y", undefined).scales).toEqual({});
     // Nothing set: the explorer's spec as it was.
     expect(composeSpec(scatter, noExtras())).toEqual(scatter);
+  });
+});
+
+describe("the map view (A5.7)", () => {
+  it("is read back with its geometry source, a malformed one dropped", () => {
+    const s = readState({ dataset: "d1", view: "map", map: { geometry: { kind: "lon_lat", longitude: "lon", latitude: "lat" } } });
+    expect(s.view).toBe("map");
+    expect(s.map.geometry).toEqual({ kind: "lon_lat", longitude: "lon", latitude: "lat" });
+    expect(readState({ view: "map", map: { geometry: { kind: "lon_lat", longitude: "lon" } } }).map).toEqual({});
+    expect(readState({ view: "atlas" }).view).toBe("plot");
+  });
+
+  it("keeps the drop zones, and a reshaping preset gives way", () => {
+    const before = { ...drop(drop(empty(), "x", "area"), "color", "kind"), preset: "splom" };
+    const s = showMap(before);
+    expect(s.view).toBe("map");
+    expect(s.preset).toBeUndefined();
+    expect(s.assignment).toEqual(before.assignment);
+  });
+
+  it("is suggested from Color, Size, Shape and Label only", () => {
+    const s = drop(drop(drop(drop(empty(), "x", "area"), "y", "price"), "color", "kind"), "label", "name");
+    expect(mapAssignment(s.assignment)).toEqual({ color: { field: "kind" }, label: { field: "name" } });
+  });
+
+  it("forgets the geometry with the dataset, and can go back to automatic", () => {
+    const source = { kind: "column" as const, column: "location" };
+    const s = pickGeometry(empty(), source);
+    expect(s.map).toEqual({ geometry: source });
+    expect(pickGeometry(s, undefined).map).toEqual({});
+    expect(pickDataset(s, "d2").map).toEqual({});
   });
 });
