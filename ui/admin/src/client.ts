@@ -325,6 +325,9 @@ export type RunTestsRequest = { spec: unknown };
 export type RunTestsResponse = { error?: string | null; problems?: Array<string> | null; design?: string | null; y?: Array<string> | null; x?: string | null; by?: string | null; mu?: number | null; level?: number | null; sections?: Array<unknown> | null };
 export type SuggestPlotRequest = { dataset: string; assignment?: unknown | null; preset?: string | null; mark?: string | null };
 export type SuggestPlotResponse = { spec?: unknown | null; assignment?: unknown | null; error?: string | null };
+export type LayerDataRequest = { layer: unknown };
+export type LayerDataResponse = { delivery: string; error?: string | null; count?: number | null; vertices?: number | null; bounds?: Array<number> | null; properties?: Array<unknown> | null; data?: unknown | null; tiles?: string | null; source_layer?: string | null; keyed?: boolean | null };
+export type LayerTileQuery = { layer: string };
 export type RenderPanelRequest = { panel: unknown };
 export type RenderPanelResponse = { kind: string; error?: string | null; plot?: unknown | null; table?: unknown | null; tests?: unknown | null; output?: unknown | null; categorical?: Array<string> | null };
 export type GetModelOutputsQuery = { fit?: string; include?: string };
@@ -551,6 +554,8 @@ export interface ApiClient {
   plotGallery(): Promise<PlotGalleryResponse>;
   runTests(body: RunTestsRequest): Promise<RunTestsResponse>;
   suggestPlot(body: SuggestPlotRequest): Promise<SuggestPlotResponse>;
+  layerData(body: LayerDataRequest): Promise<LayerDataResponse>;
+  layerTile(z: number, x: number, y: number, query: LayerTileQuery): Promise<Blob>;
   renderPanel(body: RenderPanelRequest): Promise<RenderPanelResponse>;
   getModelOutputs(id: string, query?: GetModelOutputsQuery): Promise<GetModelOutputsResponse>;
   listWorkspaceKinds(): Promise<ListWorkspaceKindsResponse>;
@@ -2404,6 +2409,26 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("suggestPlot", res);
       return (await res.json()) as SuggestPlotResponse;
+    },
+    async layerData(body) {
+      const res = await doFetch(`${baseUrl}/api/layers`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("layerData", res);
+      return (await res.json()) as LayerDataResponse;
+    },
+    async layerTile(z, x, y, query) {
+      const search = new URLSearchParams();
+      search.append("layer", String(query.layer));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/layers/tiles/${encodeURIComponent(z)}/${encodeURIComponent(x)}/${encodeURIComponent(y)}${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("layerTile", res);
+      return await res.blob();
     },
     async renderPanel(body) {
       const res = await doFetch(`${baseUrl}/api/panels/render`, {

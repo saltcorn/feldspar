@@ -105,7 +105,7 @@ pub(crate) fn rewrite_select(s: &mut Select, f: &mut dyn FnMut(&Expr) -> Option<
 
 fn rewrite_source(src: &mut Source, f: &mut dyn FnMut(&Expr) -> Option<Expr>) {
     match src {
-        Source::Subquery { query, .. } => rewrite_select(query, f),
+        Source::Subquery { query, .. } | Source::Lateral { query, .. } => rewrite_select(query, f),
         Source::UnionAll { parts, .. } => {
             for p in parts {
                 rewrite_select(p, f);

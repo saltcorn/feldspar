@@ -8129,15 +8129,16 @@ store; models (`sc-model`), the Analytics UI's workspaces and, from A2, panels r
 pub struct DatasetDef { id, name, description, base: Base, operations: Vec<Operation> }
 pub enum Base { Table { table }, Dataset { dataset: DatasetId } }
 pub struct Operation { id: String, enabled: bool, #[serde(flatten)] op: Op }  // { id, enabled, kind, params }
-pub enum Op { Calculated, Filter, Select, Sort, Window, Aggregate, Limit, Stack, Split, Complete, Join, Union }
+pub enum Op { Calculated, Filter, Select, Sort, Window, Aggregate, Limit, Stack, Split, Complete, Join, Union, SpatialJoin }
 ```
 
-The operations of milestone A1 are the goals document's, less the three that need later
-machinery (Neighbourhood column in A8, Model predictions in A7, Spatial join in A5):
+The operations are the goals document's, less the two that need later machinery
+(Neighbourhood column in A8, Model predictions in A7). Milestone A1 built the first twelve; the
+Spatial join and the geometry union came with A5 (§14.6):
 
 | keep the grain | change the grain | combine |
 |---|---|---|
-| Calculated column, Filter, Select columns, Sort, Window column (lag, lead, difference, running total and mean, rank, row number, group summaries, share, last value that was not missing) | Aggregate (count, distinct count, sum, mean, median, min, max, standard deviation, first, last; `distinct` with no summaries), Limit (first N, seeded sample, top N per group), Stack, Split (columns fixed when defined, pre-filled from the data), Complete (from the data, a number or date range, or every row of a key's table) | Join (inner, left, full; equality keys; "nearest earlier" on a date), Union (by column name, an optional source column) |
+| Calculated column, Filter, Select columns, Sort, Window column (lag, lead, difference, running total and mean, rank, row number, group summaries, share, last value that was not missing) | Aggregate (count, distinct count, sum, mean, median, min, max, standard deviation, first, last, union of geometries; `distinct` with no summaries), Limit (first N, seeded sample, top N per group), Stack, Split (columns fixed when defined, pre-filled from the data), Complete (from the data, a number or date range, or every row of a key's table) | Join (inner, left, full; equality keys; "nearest earlier" on a date), Union (by column name, an optional source column), Spatial join (intersects, contains, within, within a distance, nearest) |
 
 **Compiling: stages, merged or nested.** `compile(schema, library, def, options)` turns the
 definition into one `Compilation`: a report for the base and every operation (its status —
@@ -8227,7 +8228,8 @@ at the fit's output data, each drawn by `render_plot` unless it is optional and 
 `dataset_changed` — beside the model endpoints of §14.2 (`cloneModel`, `patchModelViewState`,
 `cancelModelFit`, `listModelInstances`) and the fit's progress socket; and workspaces
 (`listWorkspaceKinds`, `listWorkspaces`, `getWorkspace`, `createWorkspace`, `updateWorkspace`,
-`saveWorkspaceState`, `deleteWorkspace`); and panels (A4.2): `renderPanel`. `saveWorkspaceState`
+`saveWorkspaceState`, `deleteWorkspace`); panels (A4.2): `renderPanel`; and map layers (A5.5,
+§14.6): `layerData`, `layerTile`. `saveWorkspaceState`
 checks a report's document (`check_state`) before it stores it.
 
 **The bundle** (`ui/analytics`): React, TypeScript and react-bootstrap over the generated client,
@@ -8589,7 +8591,7 @@ index lists both reports for the delete warnings. The print dialog cannot be dri
 it was walked in headless Chromium, whose `page.pdf({ preferCSSPageSize: true })` gives the
 pages the screen counted.
 
-### 14.6 Geometry (analytics milestone A5, phase 1)
+### 14.6 Geometry (analytics milestone A5, phases 1 and 2)
 
 Maps begin with geometry in core: a field type, files that make tables of it, and formula
 functions over it. All of it needs PostgreSQL with PostGIS (`OPERATIONS.md` §10); SQLite, and a
@@ -8679,6 +8681,65 @@ Two compiler fixes came with them, both general: a negative number literal is on
 (`price > 100000`, `Geo.squareCell(location, 500)`) is computed a level down and grouped by
 name, since `f($1)` in the select list and `f($7)` in the `GROUP BY` are not one expression to
 Postgres.
+
+**The Spatial join** (A5.4; `Op::SpatialJoin`, kind `spatial_join`) is the one operation
+geometry needs: what involves another dataset's rows. Its parameters are what is joined (a table
+or a dataset, as a Join's), `inner` or `left` (never `full`: a spatial join keeps these rows, and
+the other's that match nothing mean nothing here), the **relation**, a geometry column on each
+side, a `distance` in metres, an optional `distance_column`, the other's `columns` to bring and a
+`suffix` for a name already taken:
+
+| relation | matches when | SQL |
+|---|---|---|
+| `intersects` | the two share a point | `ST_Intersects(l, r)` in the `ON` |
+| `contains` | this row's geometry contains the other's (a region and its points) | `ST_Contains(l, r)` |
+| `within` | this row's geometry is inside the other's (a point and its region) | `ST_Within(l, r)` |
+| `within_distance` | they are at most `distance` metres apart | `ST_DWithin(l::geography, r::geography, d)` |
+| `nearest` | the other's one row nearest to this one, within `distance` if given | `LEFT`/`INNER JOIN LATERAL (… ORDER BY ST_Distance(l::geography, r::geography) LIMIT 1) ON true` |
+
+Both sides are sealed and the other's columns brought across, as a Join does. The distance
+column is `ST_Distance` over `geography`, in metres, like `Geo.distance`. `nearest` is the one
+relation that matches each row at most once, so it **keeps the grain** (and the row key, so a
+model can still `predict` over it); the others may match a point to two overlapping regions,
+so their grain is `Derived`. **The other's primary key comes across as a foreign key to its
+table**, whatever it is called (`id_right` by default): so `id_rightⱵname` follows it, an
+Aggregate grouped by it is one row per region (`Grain::Group` on a key, whose `Ↄ` and Complete
+from the table then work), and a map finds the region's polygon by it. "Count per region" is
+therefore a Spatial join `within` and an Aggregate by the region's key, and the toolbox (A5.12)
+will write exactly that. The lateral subquery is `sc-query`'s new `Source::Lateral` (Postgres
+only; nothing reaches it without PostGIS). The nearest match is exact on the spheroid and
+ordered by `ST_Distance`, not by the planar `<->`, so it does not use a GiST index; that is the
+place to start if nearest-neighbour joins over large tables are slow. A geometry union is the
+Aggregate summary `union` (`ST_Union`): a column of geometry dissolved into one per group, so
+regions merge and the shared edges go. Without PostGIS both are refused with the sentence.
+
+**Layer data for the browser** (A5.5; `sc-analytics`' `layer.rs`, the endpoints `layerData` and
+`layerTile`). A layer is a stored dataset, a **geometry source** and the columns each feature
+carries (`LayerRequest { dataset, geometry, properties?, filter? }`). The source is a geometry
+column, longitude and latitude columns, or a foreign key to a table with a geometry column. The
+last two become one more Calculated column (`Geo.point(lon, lat)`, `districtⱵoutline`) added to
+the dataset for the read, under a name it does not use, as does the optional filter. So the
+compiler and the formula rules do the work, and an error in either is reported as "the layer's
+geometry/filter does not work: …". A feature carries every column that is not geometry, JSON or
+bytes, unless `properties` names them.
+
+`layerData` first counts the features and their vertices (`count`, `sum(ST_NPoints)`) and takes
+the extent in one aggregate query. Within both limits (5,000 features, 250,000 vertices) it
+answers `delivery: "geojson"` with the whole FeatureCollection. Over either, it answers
+`delivery: "tiles"`, the `source_layer` (`features`) and the URL template
+`/api/layers/tiles/{z}/{x}/{y}?layer=<the request, JSON, encoded>`. The map fills in the tile
+numbers; it needs the page's origin in front, since MapLibre wants absolute tile URLs. A tile is
+one `ST_AsMVT` query over the dataset's rows that meet the tile's envelope (with a 64-unit margin,
+by `ST_Intersects`, which an index answers). Each geometry is transformed to Web Mercator,
+**simplified by zoom** (`ST_Simplify` at one unit of the tile's 4096 grid, keeping tiny polygons
+from vanishing), then clipped and quantised by `ST_AsMVTGeom`. Numbers, flags and text are kept
+as they are and anything else is sent as text. A feature's **id is its row's key** while rows
+are a table's and keyed by an integer, in GeoJSON and in tiles alike, which is what the attribute
+table and the map will be linked by (A5.10). Otherwise a GeoJSON feature is numbered by its place
+in the dataset's order. A layer that cannot be drawn answers `delivery: "none"` and the sentence;
+a tile is refused with a 400 instead (outside the grid, deeper than zoom 24, or a layer that does
+not draw). The tile response is `application/vnd.mapbox-vector-tile`, a `Download` with no
+filename, which the router does not mark as an attachment.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

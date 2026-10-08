@@ -123,7 +123,8 @@ pub struct Download {
     pub bytes: bytes::Bytes,
     /// The `Content-Type` to serve them under.
     pub content_type: String,
-    /// The name the browser should save it as, carried in `Content-Disposition`.
+    /// The name the browser should save it as, carried in `Content-Disposition`;
+    /// empty for bytes a page fetches rather than a person saves.
     pub filename: String,
 }
 

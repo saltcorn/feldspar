@@ -38,8 +38,9 @@ pub use compile::{
 pub use def::{
     AggregateOp, Base, CalculatedOp, CompleteColumn, CompleteOp, CompleteValues, DatasetDef,
     DatasetId, FillValue, FilterOp, GroupKey, JoinKey, JoinKind, JoinOp, LimitMode, LimitOp, Op,
-    Operation, OrderKey, Other, SelectColumn, SelectOp, SortKey, SortOp, SplitOp, SplitSummary,
-    StackOp, Summary, SummaryFunction, UnionOp, WindowFunction, WindowOp,
+    Operation, OrderKey, Other, SelectColumn, SelectOp, SortKey, SortOp, SpatialJoinOp,
+    SpatialRelation, SplitOp, SplitSummary, StackOp, Summary, SummaryFunction, UnionOp,
+    WindowFunction, WindowOp,
 };
 pub use read::{
     MAX_PAGE, Page, Rows, StagePage, column_values, count, last_stage, read_page, read_rows,

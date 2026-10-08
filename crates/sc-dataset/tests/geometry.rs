@@ -33,18 +33,18 @@ const STATIONS: &[(i64, &str, f64, f64)] = &[
 /// Trafalgar Square.
 const CENTRE: (f64, f64) = (-0.1276, 51.5072);
 
-fn point(lon: f64, lat: f64) -> Value {
+pub(crate) fn point(lon: f64, lat: f64) -> Value {
     Value::Json(json!({"type": "Point", "coordinates": [lon, lat]}))
 }
 
-fn square(lon: f64, lat: f64) -> Value {
+pub(crate) fn square(lon: f64, lat: f64) -> Value {
     Value::Json(json!({"type": "Polygon", "coordinates": [[
         [lon, lat], [lon + 0.01, lat], [lon + 0.01, lat + 0.01], [lon, lat + 0.01], [lon, lat]
     ]]}))
 }
 
 /// Great-circle distance in metres on a sphere of the mean Earth radius.
-fn haversine((lon1, lat1): (f64, f64), (lon2, lat2): (f64, f64)) -> f64 {
+pub(crate) fn haversine((lon1, lat1): (f64, f64), (lon2, lat2): (f64, f64)) -> f64 {
     let r = 6_371_008.8;
     let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
     let dp = p2 - p1;
@@ -53,7 +53,12 @@ fn haversine((lon1, lat1): (f64, f64), (lon2, lat2): (f64, f64)) -> f64 {
     2.0 * r * a.sqrt().asin()
 }
 
-async fn insert(cat: &Catalog, table: &str, columns: &[&str], rows: Vec<Vec<Value>>) -> Result<()> {
+pub(crate) async fn insert(
+    cat: &Catalog,
+    table: &str,
+    columns: &[&str],
+    rows: Vec<Vec<Value>>,
+) -> Result<()> {
     let insert = Insert {
         table: table.to_owned(),
         columns: columns.iter().map(|c| (*c).to_owned()).collect(),
@@ -126,7 +131,7 @@ async fn london() -> Result<Option<(Catalog, TestDb)>> {
     Ok(Some((cat, db)))
 }
 
-async fn rows(cat: &Catalog, def: &DatasetDef) -> Result<(Vec<String>, Vec<Vec<Json>>)> {
+pub(crate) async fn rows(cat: &Catalog, def: &DatasetDef) -> Result<(Vec<String>, Vec<Vec<Json>>)> {
     let page = sc_dataset::read_stage(cat, def, None, sc_dataset::Page::first(1000)).await?;
     Ok((
         page.columns.iter().map(|c| c.name.clone()).collect(),

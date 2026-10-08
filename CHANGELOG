@@ -2,6 +2,74 @@
 
 Changes in reverse chronological order.
 
+## Analytics A5.4–A5.5: spatial operations and layer delivery
+
+The second phase of milestone A5 (Maps): the Spatial join operation, geometry union as an
+Aggregate summary, and a dataset's rows as map features for the browser, as GeoJSON or as
+vector tiles. Written up in `TECHNICAL_DESIGN.md` §14.4 and §14.6.
+
+- **A5.4 The Spatial join** (`sc-dataset`: `Op::SpatialJoin`, kind `spatial_join`).
+  - It joins a table or a dataset by a relation between a geometry column on each side:
+    `intersects`, `contains`, `within`, `within_distance` (metres, by `ST_DWithin` over
+    `geography`) or `nearest`.
+  - `nearest` is a lateral subquery ordered by the distance on the spheroid and limited to one,
+    optionally within a distance. It is the one relation that keeps the grain and the row key.
+    The others may match a row twice, so their grain is `Derived`.
+  - `inner` or `left`; `full` is refused with a sentence. An optional `distance_column` holds
+    the metres between the two matched geometries.
+  - **The other side's primary key comes across as a foreign key to its table.** So
+    `id_rightⱵname` works, an Aggregate by it is one row per region (with `Ↄ` and Complete from
+    the table), and "count per region" is a Spatial join and an Aggregate.
+  - Refused with a sentence: a column that is not geometry, a missing distance, a distance that
+    is not positive, a distance column whose name is taken, and, without PostGIS, the whole
+    operation.
+  - `sc-query`: `Source::Lateral`, rendered `LATERAL (…) AS alias` (Postgres only).
+  - The **geometry union** is the Aggregate summary `union` (`ST_Union`). It is refused for a
+    column that is not geometry and without PostGIS.
+  - The Dataset editor: Spatial join in the Add menu, with its own form (what is joined,
+    left or inner, the two geometry columns and the relation between them, the distance where
+    the relation takes one, the distance column, the suffix). The other side's geometry column
+    is filled in when there is only one. "Union of geometries" is among the Aggregate's
+    summaries, and the side panel describes the operation ("at within zones.outline").
+- **A5.5 Layer data** (`sc-analytics`' new `layer` module; endpoints `layerData`,
+  `POST /api/layers`, and `layerTile`, `GET /api/layers/tiles/{z}/{x}/{y}?layer=…`).
+  - A layer is a stored dataset, a geometry source (a geometry column, longitude and latitude
+    columns, or a foreign key to a table's geometry), the columns each feature carries, and an
+    optional filter. The source and the filter are added to the dataset as operations for the
+    read, so their errors are sentences naming them.
+  - One aggregate query counts the features and vertices and takes the extent. Up to 5,000
+    features and 250,000 vertices, `layerData` answers the GeoJSON FeatureCollection. Over that,
+    it answers the URL template of the layer's tiles.
+  - A tile is one `ST_AsMVT` query: geometries in Web Mercator, simplified by zoom (one unit of
+    the 4096 grid), clipped with a 64-unit margin.
+  - A feature's id is its row's key, while rows are a table's and keyed by an integer.
+  - A tile is served as `application/vnd.mapbox-vector-tile`. A `Download` with an empty
+    filename is no longer sent as an attachment.
+  - `sc-dataset`: `Stage::features_query` (the visible columns and the row key, unordered) and
+    `Stage::row_key_type`.
+  - The four generated `client.ts` copies are regenerated.
+- **Tests.**
+  - `sc-dataset` `spatial.rs`, on PostGIS: every relation over two zones and four spots, with
+    counts worked out by hand. They cover the count-per-region pair with the zone's name a `Ⱶ`
+    away, distances against haversine, nearest with and without a limit (left and inner), the
+    grain each relation leaves, the union of two adjacent squares into one polygon of their
+    combined area, and each refusal, on PostGIS and without it.
+  - `sc-query`: the lateral join's SQL. `sc-dataset`: the operation's JSON.
+  - `sc-analytics` `layers.rs`, on PostGIS: GeoJSON from each geometry source, with the filter
+    and the properties chosen, ids and bounds. Tiles are read back with a small protobuf reader
+    in the test: the layer's name, keys, extent, feature ids, an empty tile far from the data,
+    and simplification (a 400-vertex outline is 111 commands at zoom 12 and 15 at zoom 5). The
+    refusals are covered too.
+  - `sc-server` `geometry.rs`: a table made through the admin API as a layer, as GeoJSON and,
+    with 5,000 more rows, as tiles fetched from the URL `layerData` gives. It also checks the
+    refusal of a tile outside the grid.
+  - vitest: the Spatial join's defaults and its line in the side panel.
+- **Not done here.** The map that draws these layers is A5.6. Nothing in the UI fetches
+  `layerData` yet.
+- **Known, not changed.** `settings_admin_api::saving_the_development_settings_moves_the_logging_switches`
+  failed again in the full parallel `sc-server` run (472 passed, 1 failed) and passed alone, as
+  noted under A5.1–A5.3.
+
 ## Analytics A5.1–A5.3: geometry in core
 
 The first phase of milestone A5 (Maps): a geometry field type, tables made from GeoJSON,

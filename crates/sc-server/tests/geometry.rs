@@ -423,3 +423,148 @@ async fn a_geometry_field_is_refused_where_there_is_no_postgis() -> sc_error::Re
     );
     Ok(())
 }
+
+/// A dataset drawn as a map layer (analytics TODO A5.5): small, its features
+/// come back as GeoJSON from `layerData`; large, `layerData` answers the URL
+/// template of its vector tiles, and the URL it gives serves them.
+#[tokio::test]
+async fn a_dataset_is_a_map_layer_as_geojson_or_as_tiles() -> sc_error::Result<()> {
+    let Some(db) = TestDb::with_postgis().await? else {
+        return Ok(());
+    };
+    let mut h = setup(db, "layers").await?;
+    sc_dataset::bootstrap_datasets(&h.catalog).await?;
+    let (status, body) = h
+        .admin
+        .send("POST", "/api/tables", Some(json!({ "name": "places" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for field in [
+        json!({ "name": "id", "type": "int", "primary_key": true }),
+        json!({ "name": "name", "type": "text" }),
+        json!({ "name": "location", "type": "geometry_point" }),
+    ] {
+        let (status, body) = h
+            .admin
+            .send("POST", "/api/tables/places/fields", Some(field))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    for (id, name, lon) in [(1, "a", -0.12), (2, "b", -0.11), (3, "c", -0.10)] {
+        let (status, body) = h
+            .admin
+            .send(
+                "POST",
+                "/api/tables/places/rows",
+                Some(json!({
+                    "id": id, "name": name,
+                    "location": { "type": "Point", "coordinates": [lon, 51.5] },
+                })),
+            )
+            .await;
+        assert!(status.is_success(), "{body}");
+    }
+    let (status, dataset) = h
+        .admin
+        .send(
+            "POST",
+            "/api/datasets",
+            Some(json!({ "name": "Places", "base": { "kind": "table", "table": "places" } })),
+        )
+        .await;
+    assert!(status.is_success(), "{dataset}");
+    let layer = json!({
+        "dataset": dataset["dataset"]["id"],
+        "geometry": { "kind": "column", "column": "location" },
+    });
+
+    // Three places: GeoJSON, each feature keyed by its row.
+    let (status, small) = h
+        .admin
+        .send("POST", "/api/layers", Some(json!({ "layer": layer })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{small}");
+    assert_eq!(small["delivery"], "geojson", "{small}");
+    assert_eq!(small["count"], 3);
+    let features = small["data"]["features"].as_array().expect("features");
+    assert_eq!(
+        features.iter().map(|f| f["id"].clone()).collect::<Vec<_>>(),
+        [json!(1), json!(2), json!(3)]
+    );
+    assert_eq!(features[0]["properties"], json!({ "id": 1, "name": "a" }));
+    assert!(small.get("tiles").is_none_or(Value::is_null), "{small}");
+
+    // Five thousand more: tiles, from a URL the map fills in.
+    let client = h._db.client().await?;
+    client
+        .execute(
+            "INSERT INTO places (id, name, location) SELECT g, 'p' || g, \
+             ST_SetSRID(ST_MakePoint(-0.2 + g * 0.00002, 51.45 + (g % 100) * 0.001), 4326) \
+             FROM generate_series(10, 5010) AS g",
+            &[],
+        )
+        .await
+        .unwrap();
+    let (status, large) = h
+        .admin
+        .send("POST", "/api/layers", Some(json!({ "layer": layer })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{large}");
+    assert_eq!(large["delivery"], "tiles", "{large}");
+    assert_eq!(large["count"], 5004);
+    assert_eq!(large["source_layer"], "features");
+    assert!(large.get("data").is_none_or(Value::is_null));
+    let template = large["tiles"].as_str().expect("a template");
+    assert!(
+        template.starts_with("/api/layers/tiles/{z}/{x}/{y}?layer="),
+        "{template}"
+    );
+    let url = template
+        .replace("{z}", "0")
+        .replace("{x}", "0")
+        .replace("{y}", "0");
+    let (status, content_type, bytes) = h.admin.raw("GET", &url, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(content_type, "application/vnd.mapbox-vector-tile");
+    assert!(
+        bytes.windows(b"features".len()).any(|w| w == b"features"),
+        "the tile names its layer"
+    );
+    // A tile outside the grid is refused with the sentence.
+    let (status, refused) = h
+        .admin
+        .send("GET", &template.replace("{z}/{x}/{y}", "1/2/0"), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused.to_string().contains("no tile 2/0 at zoom 1"),
+        "{refused}"
+    );
+
+    // A layer whose geometry is not one says so, as an answer.
+    let (status, refused) = h
+        .admin
+        .send(
+            "POST",
+            "/api/layers",
+            Some(json!({ "layer": {
+                "dataset": dataset["dataset"]["id"],
+                "geometry": { "kind": "column", "column": "name" },
+            } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(refused["delivery"], "none");
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("`name` is text, not a geometry")),
+        "{refused}"
+    );
+    Ok(())
+}

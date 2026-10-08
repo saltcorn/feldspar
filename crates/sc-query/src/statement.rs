@@ -160,6 +160,20 @@ pub enum Source {
     /// [`UnionAll`](Source::UnionAll)), since SQLite's `VALUES` cannot name its
     /// columns. Refused in a `JOIN`.
     Nothing,
+    /// A derived table that may read the columns of the sources before it in
+    /// the same `FROM`: `LATERAL (query) AS alias` (analytics TODO A5.4). What
+    /// "the nearest of the other's rows to each of these" is: the subquery is
+    /// ordered by distance to the outer row and limited to one.
+    ///
+    /// Postgres only. SQLite has no `LATERAL`, and the one caller, the Spatial
+    /// join, is refused on a database without PostGIS before it gets here.
+    /// Only a `JOIN`'s source; as a whole `FROM` it is a plain subquery.
+    Lateral {
+        /// The nested query, which may name the outer sources' aliases.
+        query: Box<Select>,
+        /// The alias the subquery is exposed under.
+        alias: String,
+    },
 }
 
 impl Source {
@@ -182,6 +196,15 @@ impl Source {
     /// A derived table: `(query) AS alias`.
     pub fn subquery(query: Select, alias: impl Into<String>) -> Self {
         Source::Subquery {
+            query: Box::new(query),
+            alias: alias.into(),
+        }
+    }
+
+    /// A derived table that reads the sources before it:
+    /// `LATERAL (query) AS alias`.
+    pub fn lateral(query: Select, alias: impl Into<String>) -> Self {
+        Source::Lateral {
             query: Box::new(query),
             alias: alias.into(),
         }

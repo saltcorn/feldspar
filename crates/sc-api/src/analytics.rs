@@ -1,5 +1,5 @@
-//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8, A3.3, A4.2): datasets,
-//! plots, panels, a model's outputs and workspaces.
+//! The Analytics UI's endpoints (analytics TODO A1.13, A2.6, A2.8, A3.3, A4.2, A5.5): datasets,
+//! plots, panels, map layers, a model's outputs and workspaces.
 //!
 //! Admin-only in this milestone, like everything else under `/api`: A9 is
 //! where a restricted application's users reach a subset of them under their
@@ -365,6 +365,65 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("assignment", TypeSchema::optional(TypeSchema::json())),
             StructField::new("error", TypeSchema::optional(TypeSchema::text())),
         ]))
+        .auth(AuthRequirement::admin()),
+    );
+
+    // --- map layers (A5.5) -----------------------------------------------------
+
+    // A map layer's data: a stored dataset's rows as features, with their
+    // geometry from a column, from longitude and latitude columns or along a
+    // foreign key (`layer` is `{ dataset, geometry, properties?, filter? }`).
+    // A small layer answers `delivery: "geojson"` and the FeatureCollection in
+    // `data`; a large one `delivery: "tiles"` and the URL template of its
+    // vector tiles in `tiles` (MapLibre fills in `{z}`, `{x}` and `{y}`), with
+    // the layer inside each tile in `source_layer`. Both say how many features
+    // there are and their `bounds` (`[west, south, east, north]`). A layer that
+    // cannot be drawn answers `delivery: "none"` and the sentence in `error`.
+    set.register(
+        Endpoint::new("layerData", Method::Post, api().lit("layers"))
+            .input(TypeSchema::struct_of([StructField::new(
+                "layer",
+                TypeSchema::json(),
+            )]))
+            .output(TypeSchema::struct_of([
+                StructField::new("delivery", TypeSchema::text()),
+                StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("count", TypeSchema::optional(TypeSchema::int())),
+                StructField::new("vertices", TypeSchema::optional(TypeSchema::int())),
+                StructField::new(
+                    "bounds",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::Value(ValueType::Float))),
+                ),
+                StructField::new(
+                    "properties",
+                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+                ),
+                StructField::new("data", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("tiles", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("source_layer", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("keyed", TypeSchema::optional(TypeSchema::bool())),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    // One Mapbox vector tile of a layer (`application/vnd.mapbox-vector-tile`),
+    // the layer given as `layerData`'s `layer`, JSON in the query string — the
+    // URL `layerData`'s `tiles` is the template of. Empty where the layer has
+    // nothing; a layer that cannot be drawn, or a tile outside the grid, is
+    // refused with the sentence.
+    set.register(
+        Endpoint::new(
+            "layerTile",
+            Method::Get,
+            api()
+                .lit("layers")
+                .lit("tiles")
+                .param("z", ValueType::Int)
+                .param("x", ValueType::Int)
+                .param("y", ValueType::Int),
+        )
+        .query([QueryParam::new("layer", ValueType::Text).required()])
+        .binary_output()
         .auth(AuthRequirement::admin()),
     );
 

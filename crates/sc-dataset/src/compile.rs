@@ -54,8 +54,9 @@ use serde_json::Value as Json;
 
 use crate::def::{
     AggregateOp, Base, CalculatedOp, CompleteOp, CompleteValues, DatasetDef, DatasetId, FilterOp,
-    JoinKind, JoinOp, LimitMode, LimitOp, Op, OrderKey, Other, SelectOp, SortOp, SplitOp,
-    SplitSummary, StackOp, SummaryFunction, UnionOp, WindowFunction, WindowOp,
+    JoinKind, JoinOp, LimitMode, LimitOp, Op, OrderKey, Other, SelectOp, SortOp, SpatialJoinOp,
+    SpatialRelation, SplitOp, SplitSummary, StackOp, SummaryFunction, UnionOp, WindowFunction,
+    WindowOp,
 };
 use crate::infer::{Known, infer};
 use crate::shape::{ColType, ForeignKey, Grain, Schema, StageColumn, StageShape};
@@ -386,6 +387,38 @@ impl Stage {
             return Err("the dataset has no columns at this stage".to_owned());
         }
         Ok(self.finish(Select::from(sealed.from).columns(columns)))
+    }
+
+    /// The query reading this stage's visible columns — and [`ROW_KEY`] too,
+    /// while rows are a table's — in no particular order: what a map layer's
+    /// features are drawn from (analytics TODO A5.5), a feature identified by
+    /// its row's key.
+    pub fn features_query(&self) -> Result<Select, String> {
+        let (sealed, alias) = self.sealed_for_read();
+        let mut columns: Vec<Projection> = self
+            .cols
+            .iter()
+            .filter(|c| !c.hidden)
+            .map(|c| Projection::expr_as(Expr::qcol(alias.clone(), c.name.clone()), c.name.clone()))
+            .collect();
+        if columns.is_empty() {
+            return Err("the dataset has no columns at this stage".to_owned());
+        }
+        if self.has_row_key() {
+            columns.push(Projection::expr_as(
+                Expr::qcol(alias.clone(), ROW_KEY),
+                ROW_KEY,
+            ));
+        }
+        Ok(self.finish(Select::from(sealed.from).columns(columns)))
+    }
+
+    /// The type of [`ROW_KEY`], while rows are a table's and carry it.
+    pub fn row_key_type(&self) -> Option<ColType> {
+        if !self.has_row_key() {
+            return None;
+        }
+        self.col(ROW_KEY).map(|c| c.ty)
     }
 
     /// The query counting this stage's rows, restricted.
@@ -842,6 +875,7 @@ impl Compiler<'_> {
             Op::Complete(c) => self.complete(stage, c),
             Op::Join(j) => self.join(stage, j, stack),
             Op::Union(u) => self.union(stage, u, stack),
+            Op::SpatialJoin(j) => self.spatial_join(stage, j, stack),
         }
     }
 
@@ -1207,6 +1241,14 @@ impl Compiler<'_> {
             if let Some(c) = column {
                 check_summary(s.function, c)?;
             }
+            if s.function == SummaryFunction::Union
+                && let Err(reason) = &self.schema.spatial
+            {
+                return Err(format!(
+                    "the union of `{}` is computed by the database, and {reason}",
+                    s.column.as_deref().unwrap_or_default()
+                ));
+            }
             if let Some(order) = &s.order {
                 stage.require(&order.column, "the order column")?;
             }
@@ -1366,6 +1408,12 @@ impl Compiler<'_> {
                 SummaryFunction::Sd => (
                     agg("stddev_samp", value.into_iter().collect()),
                     ColType::Float,
+                    None,
+                ),
+                // Regions dissolved into one geometry (A5.4).
+                SummaryFunction::Union => (
+                    agg("ST_Union", value.into_iter().collect()),
+                    ColType::Geometry,
                     None,
                 ),
                 SummaryFunction::Min | SummaryFunction::Max => (
@@ -2345,6 +2393,248 @@ impl Compiler<'_> {
             text_casts: stage.text_casts,
         })
     }
+    // --- the spatial join (A5.4) ---------------------------------------------
+
+    /// Join where the geometries meet, or to the nearest. Like a Join, both
+    /// sides are sealed and the other's columns brought across; the condition
+    /// is a PostGIS predicate rather than equal keys. `nearest` is a lateral
+    /// subquery — for each of these rows, the other's rows ordered by distance
+    /// and limited to one — so each row matches at most one and the grain is
+    /// kept. Distances are in metres, through `geography`, as the `Geo`
+    /// functions' are.
+    fn spatial_join(
+        &self,
+        mut stage: Stage,
+        j: &SpatialJoinOp,
+        stack: &[DatasetId],
+    ) -> Result<Stage, String> {
+        if let Err(reason) = &self.schema.spatial {
+            return Err(format!(
+                "a spatial join is computed by the database, and {reason}"
+            ));
+        }
+        if j.kind == JoinKind::Full {
+            return Err(
+                "a spatial join keeps the rows of these that match (inner) or all of them \
+                 (left), never the other's rows that match nothing; choose inner or left"
+                    .to_owned(),
+            );
+        }
+        let mut right = self.other_stage(&j.with, stack)?;
+        let geometry = |c: &Col, whose: &str| -> Result<(), String> {
+            if matches!(c.ty, ColType::Geometry | ColType::Unknown) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "`{}` is {}, and a spatial join matches {whose} geometry column",
+                    c.name,
+                    c.ty.name()
+                ))
+            }
+        };
+        geometry(stage.require(&j.left, "the geometry column")?, "a")?;
+        let r = right.visible(&j.right).ok_or_else(|| {
+            format!(
+                "`{}` is not a column of what is joined (its columns are {})",
+                j.right,
+                right.column_list()
+            )
+        })?;
+        geometry(r, "the other's")?;
+        let distance = match (j.relation, j.distance) {
+            (SpatialRelation::WithinDistance, None) => {
+                return Err("\"within a distance\" needs the distance, in metres".to_owned());
+            }
+            (SpatialRelation::WithinDistance | SpatialRelation::Nearest, Some(d))
+                if !(d.is_finite() && d > 0.0) =>
+            {
+                return Err(format!(
+                    "{d} metres is not a distance to look within; give a positive number"
+                ));
+            }
+            (SpatialRelation::WithinDistance | SpatialRelation::Nearest, d) => d,
+            // A distance left in the form from another relation means nothing
+            // to this one.
+            _ => None,
+        };
+        let distance_column = match j.distance_column.as_deref() {
+            Some(name) if !name.trim().is_empty() => {
+                Some(column_name(name, "the distance column")?)
+            }
+            _ => None,
+        };
+        let wanted: Option<BTreeSet<&str>> = j
+            .columns
+            .as_ref()
+            .map(|cs| cs.iter().map(String::as_str).collect());
+        if let Some(wanted) = &wanted {
+            for w in wanted {
+                if right.visible(w).is_none() {
+                    return Err(format!("`{w}` is not a column of what is joined"));
+                }
+            }
+        }
+        let nearest = j.relation == SpatialRelation::Nearest;
+        self.seal(&mut stage);
+        let left_alias = match &stage.from {
+            Source::Subquery { alias, .. } => alias.clone(),
+            _ => unreachable!("a sealed stage reads a subquery"),
+        };
+        self.seal(&mut right);
+        let right_alias = self.fresh("_fd_r");
+        let lgeom = Expr::qcol(left_alias.clone(), j.left.clone());
+        let metres = |d: f64| typed(Value::Float(d), ColType::Float);
+        let rcol = |name: &str| Expr::qcol(right_alias.clone(), name);
+        let (source, on, measured) = if nearest {
+            // For each of these rows, the other's rows nearest first, one of
+            // them. Ties go to the other's own order, so the match is stable.
+            let rgeom = right
+                .col(&j.right)
+                .map(|c| c.expr.clone())
+                .unwrap_or(Expr::lit(Value::Null));
+            let dist = st_distance(lgeom.clone(), rgeom.clone());
+            let dist_name = self.fresh("_fd_d");
+            let mut projections: Vec<Projection> = right
+                .cols
+                .iter()
+                .filter(|c| !c.hidden)
+                .map(|c| Projection::expr_as(c.expr.clone(), c.name.clone()))
+                .collect();
+            projections.push(Projection::expr_as(dist.clone(), dist_name.clone()));
+            let mut nearest = Select::from(right.from.clone()).columns(projections);
+            let mut cond = Expr::unary(UnOp::IsNotNull, rgeom.clone());
+            if let Some(d) = distance {
+                cond = cond.and(st_dwithin(lgeom.clone(), rgeom, metres(d)));
+            }
+            nearest.filter = Some(cond);
+            let mut order = vec![sorted(dist, false)];
+            order.extend(right.order_exprs());
+            order.extend(right.tie_break());
+            nearest.order = order;
+            nearest.limit = Some(1);
+            (
+                Source::lateral(nearest, right_alias.clone()),
+                typed(Value::Bool(true), ColType::Bool),
+                rcol(&dist_name),
+            )
+        } else {
+            let rgeom = rcol(&j.right);
+            let on = match j.relation {
+                SpatialRelation::Intersects => {
+                    st("ST_Intersects", vec![lgeom.clone(), rgeom.clone()])
+                }
+                SpatialRelation::Contains => st("ST_Contains", vec![lgeom.clone(), rgeom.clone()]),
+                SpatialRelation::Within => st("ST_Within", vec![lgeom.clone(), rgeom.clone()]),
+                _ => st_dwithin(
+                    lgeom.clone(),
+                    rgeom.clone(),
+                    metres(distance.unwrap_or_default()),
+                ),
+            };
+            (
+                Source::subquery(right.to_select(), right_alias.clone()),
+                on,
+                st_distance(lgeom, rgeom),
+            )
+        };
+        // The columns: these rows', then the other's, then the distance.
+        let mut cols: Vec<Col> = Vec::new();
+        for c in &stage.cols {
+            let mut col = c.clone();
+            col.expr = Expr::qcol(left_alias.clone(), c.name.clone());
+            if !nearest {
+                col.row_key = false;
+            }
+            cols.push(col);
+        }
+        let taken: BTreeSet<String> = cols.iter().map(|c| c.name.clone()).collect();
+        let at = cols.iter().position(|c| c.hidden).unwrap_or(cols.len());
+        // The other's primary key, brought across, is a reference to its row:
+        // so `districtⱵname` follows it, an Aggregate by it is one row per
+        // district, and a map finds the district's geometry by it.
+        let referenced = match &right.grain {
+            Grain::Table { table, key } => Some(ForeignKey {
+                table: table.clone(),
+                field: key.clone(),
+            }),
+            _ => None,
+        };
+        let mut added: Vec<Col> = Vec::new();
+        for c in right.cols.iter().filter(|c| !c.hidden) {
+            if let Some(wanted) = &wanted
+                && !wanted.contains(c.name.as_str())
+            {
+                continue;
+            }
+            let mut name = c.name.clone();
+            if taken.contains(&name) || added.iter().any(|a| a.name == name) {
+                name = format!("{}{}", c.name, j.suffix);
+                if taken.contains(&name) || name.starts_with("_fd_") {
+                    return Err(format!(
+                        "the joined column `{}` is already a column here, and so is `{name}`; \
+                         choose another suffix",
+                        c.name
+                    ));
+                }
+            }
+            let key = match (&c.key, &referenced) {
+                (None, Some(fk)) if c.row_key => Some(fk.clone()),
+                (key, _) => key.clone(),
+            };
+            added.push(Col {
+                name,
+                expr: rcol(&c.name),
+                ty: c.ty,
+                key,
+                hidden: false,
+                row_key: false,
+            });
+        }
+        if let Some(name) = distance_column {
+            if taken.contains(&name) || added.iter().any(|a| a.name == name) {
+                return Err(format!(
+                    "`{name}` is already a column; name the distance column something else"
+                ));
+            }
+            added.push(Col {
+                name,
+                expr: measured,
+                ty: ColType::Float,
+                key: None,
+                hidden: false,
+                row_key: false,
+            });
+        }
+        cols.splice(at..at, added);
+        let grain = if nearest {
+            stage.grain.clone()
+        } else {
+            Grain::Derived
+        };
+        if matches!(grain, Grain::Derived) {
+            cols.retain(|c| c.name != ROW_KEY);
+        }
+        Ok(Stage {
+            from: stage.from,
+            joins: vec![Join {
+                kind: match j.kind {
+                    JoinKind::Inner => SqlJoinKind::Inner,
+                    _ => SqlJoinKind::Left,
+                },
+                source,
+                on: Some(on),
+            }],
+            filter: None,
+            group: Vec::new(),
+            limit: None,
+            limit_order: Vec::new(),
+            cols,
+            text_casts: stage.text_casts,
+            order: stage.order,
+            grain,
+            closed: false,
+        })
+    }
 }
 
 /// Keep, drop, rename and reorder: the one operation with no formula in it.
@@ -2429,6 +2719,7 @@ fn check_summary(function: SummaryFunction, column: &Col) -> Result<(), String> 
         {
             refuse("which cannot be compared")
         }
+        SummaryFunction::Union if ty != ColType::Geometry => refuse("and a union joins geometries"),
         _ => Ok(()),
     }
 }
@@ -2449,6 +2740,32 @@ fn column_name(name: &str, what: &str) -> Result<String, String> {
         ));
     }
     Ok(name.to_owned())
+}
+
+/// A PostGIS function call.
+fn st(name: &str, args: Vec<Expr>) -> Expr {
+    Expr::Func {
+        name: name.to_owned(),
+        args,
+    }
+}
+
+/// `e` as `geography`, so distances are metres on the spheroid.
+fn geography(e: Expr) -> Expr {
+    Expr::Cast {
+        expr: Box::new(e),
+        type_name: "geography".to_owned(),
+    }
+}
+
+/// The distance in metres between two geometries.
+fn st_distance(a: Expr, b: Expr) -> Expr {
+    st("ST_Distance", vec![geography(a), geography(b)])
+}
+
+/// Whether two geometries are within `metres` of each other.
+fn st_dwithin(a: Expr, b: Expr, metres: Expr) -> Expr {
+    st("ST_DWithin", vec![geography(a), geography(b), metres])
 }
 
 /// A hidden column.

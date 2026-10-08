@@ -18,9 +18,10 @@ import { api, errorMessage } from "../api";
 import type { ListDatasetTablesResponse } from "../client";
 import { T, useT } from "../i18n";
 import type { DatasetItem } from "./DatasetList";
-import { opKindName, summaryName, windowFunctionName } from "../labels";
+import { opKindName, spatialRelationName, summaryName, windowFunctionName } from "../labels";
 import { FormulaInput } from "./FormulaInput";
 import {
+  SPATIAL_RELATIONS,
   SUMMARY_FUNCTIONS,
   WINDOW_FUNCTIONS,
   type Completion,
@@ -169,6 +170,8 @@ export function OperationForm({
         return <JoinFields params={params} set={set} names={names} others={others} />;
       case "union":
         return <UnionFields params={params} set={set} others={others} />;
+      case "spatial_join":
+        return <SpatialJoinFields params={params} set={set} columns={columns} others={others} />;
     }
   })();
 
@@ -807,14 +810,19 @@ function parseOther(value: string): Params {
   return kind === "dataset" ? { kind: "dataset", dataset: rest } : { kind: "table", table: rest };
 }
 
-/** The columns of what a Join or Union reads. */
-function otherColumns(other: unknown, others: Others): string[] {
+/** The columns of what a Join or Union reads, with their types. */
+function otherTypedColumns(other: unknown, others: Others): StageColumn[] {
   const o = obj(other);
   const raw =
     o.kind === "dataset"
       ? others.datasets.find((d) => d.id === o.dataset)?.columns
       : others.tables.find((tb) => tb.name === o.table)?.columns;
-  return (raw ?? []).map((c) => (c as { name: string }).name);
+  return (raw ?? []) as StageColumn[];
+}
+
+/** The columns of what a Join or Union reads. */
+function otherColumns(other: unknown, others: Others): string[] {
+  return otherTypedColumns(other, others).map((c) => c.name);
 }
 
 function OtherPicker({ value, onChange, others }: { value: unknown; onChange: (v: Params) => void; others: Others }) {
@@ -922,4 +930,101 @@ function UnionFields({ params, set, others }: { params: Params; set: Setter; oth
       </Field>
     </>
   );
+}
+
+/** A Spatial join (analytics TODO A5.4): what is joined, how the geometries
+ * must be placed, the two geometry columns, and the distance where the
+ * relation takes one. */
+function SpatialJoinFields({
+  params,
+  set,
+  columns,
+  others,
+}: {
+  params: Params;
+  set: Setter;
+  columns: StageColumn[];
+  others: Others;
+}) {
+  const { t } = useT();
+  const geometry = (cs: StageColumn[]) => cs.filter((c) => c.type === "geometry").map((c) => c.name);
+  const right = otherTypedColumns(params.with, others);
+  const relation = SPATIAL_RELATIONS.find((r) => r.value === s(params.relation)) ?? SPATIAL_RELATIONS[0];
+  const distance = typeof params.distance === "number" ? String(params.distance) : "";
+  return (
+    <>
+      <Row>
+        <Col md={8}>
+          <Field label={t("Join")} id="op-with">
+            <OtherPicker
+              value={params.with}
+              onChange={(v) => {
+                // The other's geometry column, when it has just one.
+                const shapes = geometry(otherTypedColumns(v, others));
+                setMany(set, { with: v, right: shapes.length === 1 ? shapes[0] : "" });
+              }}
+              others={others}
+            />
+          </Field>
+        </Col>
+        <Col md={4}>
+          <Field label={t("Keeping")} id="op-kind">
+            <Form.Select id="op-kind" value={s(params.kind) || "left"} onChange={(e) => set("kind", e.target.value)}>
+              <option value="left">{t("every row here (left)")}</option>
+              <option value="inner">{t("matched rows only (inner)")}</option>
+            </Form.Select>
+          </Field>
+        </Col>
+      </Row>
+      <h4 className="h5">
+        <T text="Matching" />
+      </h4>
+      <div className="d-flex gap-2 mb-3 align-items-center flex-wrap">
+        <ColumnSelect id="op-left" value={s(params.left)} names={geometry(columns)} onChange={(v) => set("left", v)} />
+        <Form.Select
+          id="op-relation"
+          aria-label={t("Relation")}
+          style={{ maxWidth: "14rem" }}
+          value={relation.value}
+          onChange={(e) => set("relation", e.target.value)}
+        >
+          {SPATIAL_RELATIONS.map((r) => (
+            <option key={r.value} value={r.value}>
+              {spatialRelationName(r.value, t)}
+            </option>
+          ))}
+        </Form.Select>
+        <ColumnSelect id="op-right" value={s(params.right)} names={geometry(right)} empty={t("(choose)")} onChange={(v) => set("right", v)} />
+      </div>
+      {relation.distance !== "none" && (
+        <Field
+          label={relation.distance === "required" ? t("Distance in metres") : t("Look no further than, in metres (optional)")}
+          id="op-distance"
+        >
+          <Form.Control
+            id="op-distance"
+            type="number"
+            min={0}
+            value={distance}
+            onChange={(e) => set("distance", e.target.value === "" ? undefined : Number(e.target.value))}
+          />
+        </Field>
+      )}
+      <Field label={t("A column with the distance in metres (optional)")} id="op-distance-column">
+        <Form.Control
+          id="op-distance-column"
+          value={s(params.distance_column)}
+          onChange={(e) => set("distance_column", e.target.value || undefined)}
+        />
+      </Field>
+      <Field label={t("Suffix for a column name already taken")} id="op-suffix">
+        <Form.Control id="op-suffix" value={s(params.suffix)} onChange={(e) => set("suffix", e.target.value)} />
+      </Field>
+    </>
+  );
+}
+
+/** Set several parameters at once. */
+function setMany(set: Setter, values: Params) {
+  for (const [key, value] of Object.entries(values)) set(key, value);
 }

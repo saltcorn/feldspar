@@ -10,7 +10,7 @@
 /** Where a dataset's rows start. */
 export type Base = { kind: "table"; table: string } | { kind: "dataset"; dataset: string };
 
-/** The operation kinds A1 implements. */
+/** The operation kinds: A1's, and A5's Spatial join. */
 export type OpKind =
   | "calculated"
   | "filter"
@@ -23,7 +23,8 @@ export type OpKind =
   | "split"
   | "complete"
   | "join"
-  | "union";
+  | "union"
+  | "spatial_join";
 
 /** One operation of a dataset. */
 export type Operation = {
@@ -90,7 +91,7 @@ export type OpGroup = "keep" | "change" | "combine";
 /** One kind, as the Add menu offers it. */
 export type KindInfo = { kind: OpKind; label: string; group: OpGroup; about: string };
 
-/** The operations A1 implements, in the Add menu's order. */
+/** The operations, in the Add menu's order. */
 export const OP_KINDS: KindInfo[] = [
   { kind: "calculated", label: "Calculated column", group: "keep", about: "Add or replace a column computed by a formula." },
   { kind: "filter", label: "Filter", group: "keep", about: "Keep the rows a condition holds for." },
@@ -104,6 +105,22 @@ export const OP_KINDS: KindInfo[] = [
   { kind: "complete", label: "Complete", group: "change", about: "Add rows for missing combinations of values." },
   { kind: "join", label: "Join", group: "combine", about: "Join another table or dataset on key columns." },
   { kind: "union", label: "Union", group: "combine", about: "Append the rows of another table or dataset." },
+  {
+    kind: "spatial_join",
+    label: "Spatial join",
+    group: "combine",
+    about: "Join another table or dataset where the geometries meet, or to the nearest.",
+  },
+];
+
+/** How two geometries must be placed for a Spatial join to match them, and
+ * whether the relation takes a distance (required, or an optional limit). */
+export const SPATIAL_RELATIONS: { value: string; label: string; distance: "none" | "required" | "optional" }[] = [
+  { value: "within", label: "is within", distance: "none" },
+  { value: "contains", label: "contains", distance: "none" },
+  { value: "intersects", label: "intersects", distance: "none" },
+  { value: "within_distance", label: "is within a distance of", distance: "required" },
+  { value: "nearest", label: "is nearest to", distance: "optional" },
 ];
 
 /** The kind's label. */
@@ -141,6 +158,7 @@ export const SUMMARY_FUNCTIONS: { value: string; label: string }[] = [
   { value: "sd", label: "Standard deviation" },
   { value: "first", label: "First" },
   { value: "last", label: "Last" },
+  { value: "union", label: "Union of geometries" },
 ];
 
 /** A cell's text: a fractional number to at most four decimals (the value
@@ -200,6 +218,15 @@ export function defaultParams(kind: OpKind, columns: StageColumn[]): Record<stri
       };
     case "union":
       return { with: { kind: "table", table: "" } };
+    case "spatial_join":
+      return {
+        with: { kind: "table", table: "" },
+        kind: "left",
+        relation: "within",
+        left: columns.find((c) => c.type === "geometry")?.name ?? "",
+        right: "",
+        suffix: "_right",
+      };
   }
 }
 
@@ -395,6 +422,26 @@ export function describeOperation(
     }
     case "union":
       return t("with {other}", { other: otherName(p.with, datasetName) });
+    case "spatial_join": {
+      const other = otherName(p.with, datasetName);
+      const left = str(p.left);
+      const right = str(p.right);
+      const distance = typeof p.distance === "number" ? p.distance : null;
+      switch (p.relation) {
+        case "contains":
+          return t("{left} contains {other}.{right}", { left, other, right });
+        case "intersects":
+          return t("{left} intersects {other}.{right}", { left, other, right });
+        case "within_distance":
+          return t("{left} within {metres} m of {other}.{right}", { left, other, right, metres: distance ?? 0 });
+        case "nearest":
+          return distance === null
+            ? t("nearest {other}.{right} to {left}", { left, other, right })
+            : t("nearest {other}.{right} to {left}, within {metres} m", { left, other, right, metres: distance });
+        default:
+          return t("{left} within {other}.{right}", { left, other, right });
+      }
+    }
   }
 }
 

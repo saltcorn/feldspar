@@ -367,6 +367,13 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                 self.ident(alias);
                 Ok(())
             }
+            Source::Lateral { query, alias } => {
+                self.push("LATERAL (");
+                self.select(query)?;
+                self.push(") AS ");
+                self.ident(alias);
+                Ok(())
+            }
             Source::UnionAll { parts, alias } => {
                 if parts.is_empty() {
                     return Err(sc_error::Error::query("UNION ALL has no parts"));
@@ -769,6 +776,35 @@ mod tests {
              SELECT * FROM (SELECT \"y\" AS \"v\" FROM \"b\" LIMIT $1) AS \"_fd_u2\") AS \"u\""
         );
         assert_eq!(binds, vec![Value::Int(2)]);
+    }
+
+    #[test]
+    fn a_lateral_join_reads_the_row_before_it() {
+        let nearest = Select::from(Source::table_as("stations", "s"))
+            .columns(vec![Projection::expr(Expr::qcol("s", "name"))])
+            .limit(1);
+        let nearest = Select {
+            order: vec![OrderBy::asc(Expr::Func {
+                name: "ST_Distance".into(),
+                args: vec![Expr::qcol("h", "at"), Expr::qcol("s", "at")],
+            })],
+            ..nearest
+        };
+        let stmt = Select::from(Source::table_as("homes", "h"))
+            .columns(vec![Projection::expr(Expr::qcol("n", "name"))])
+            .join(Join {
+                kind: JoinKind::Cross,
+                source: Source::lateral(nearest, "n"),
+                on: None,
+            });
+        let (sql, binds) = render(stmt);
+        assert_eq!(
+            sql,
+            "SELECT \"n\".\"name\" FROM \"homes\" AS \"h\" CROSS JOIN LATERAL \
+             (SELECT \"s\".\"name\" FROM \"stations\" AS \"s\" \
+             ORDER BY ST_Distance(\"h\".\"at\", \"s\".\"at\") ASC LIMIT $1) AS \"n\""
+        );
+        assert_eq!(binds, vec![Value::Int(1)]);
     }
 
     #[test]

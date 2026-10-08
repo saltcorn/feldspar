@@ -1,10 +1,11 @@
-//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8, A2.14, A4.2): datasets,
-//! plots, hypothesis tests, panels and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
+//! The Analytics UI's handlers (analytics TODO A1.13, A2.6, A2.8, A2.14, A4.2, A5.5): datasets,
+//! plots, hypothesis tests, panels, map layers and workspaces, over `sc-dataset` and `sc-analytics`. The endpoints are
 //! declared in `sc-api`'s `analytics.rs`, which says what each one is for.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use sc_analytics::layer;
 use sc_analytics::panel::Panel;
 use sc_analytics::plot::{self, PlotSpec};
 use sc_analytics::stats;
@@ -453,6 +454,62 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // --- panels ---------------------------------------------------------------
 
+    // --- map layers (A5.5) -----------------------------------------------------
+
+    reg.register("layerData", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let raw = ctx
+                    .body
+                    .get("layer")
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("`layer` is required"))?;
+                let layer = parse_layer(raw)?;
+                let data = layer::layer_data(&catalog, &layer, layer::Limits::default()).await?;
+                let mut out = serde_json::to_value(&data)
+                    .map_err(|e| Error::serde(format!("a layer's data does not serialise: {e}")))?;
+                if matches!(data, layer::LayerData::Tiles { .. })
+                    && let Some(fields) = out.as_object_mut()
+                {
+                    fields.insert("tiles".into(), Json::String(tile_template(&layer)?));
+                }
+                Ok(HandlerResponse::ok(out))
+            }
+        }
+    });
+
+    reg.register("layerTile", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let coordinate = |name: &str| -> Result<u32> {
+                    let raw = ctx.path_param(name)?;
+                    raw.parse::<u32>().map_err(|_| {
+                        Error::invalid(format!("the tile's `{name}` is {raw}, not a tile number"))
+                    })
+                };
+                let (z, x, y) = (coordinate("z")?, coordinate("x")?, coordinate("y")?);
+                let raw = ctx
+                    .query_get("layer")
+                    .ok_or_else(|| Error::invalid("`layer` is required"))?;
+                let layer = parse_layer(
+                    serde_json::from_str(raw)
+                        .map_err(|e| Error::invalid(format!("`layer` is not JSON: {e}")))?,
+                )?;
+                let bytes = layer::layer_tile(&catalog, &layer, z, x, y).await?;
+                Ok(HandlerResponse::download(crate::handler::Download {
+                    bytes: bytes.into(),
+                    content_type: "application/vnd.mapbox-vector-tile".to_owned(),
+                    // Fetched by the map, not saved by a person.
+                    filename: String::new(),
+                }))
+            }
+        }
+    });
+
     reg.register("renderPanel", {
         let catalog = catalog.clone();
         move |ctx| {
@@ -775,4 +832,21 @@ pub(crate) fn workspace_json(ws: &Workspace) -> Json {
         "created_by": ws.created_by,
         "updated_at": ws.updated_at,
     })
+}
+
+/// A layer as `layerData` and `layerTile` are given it.
+fn parse_layer(raw: Json) -> Result<layer::LayerRequest> {
+    serde_json::from_value(raw).map_err(|e| Error::invalid(format!("`layer` is not a layer: {e}")))
+}
+
+/// The URL template of a layer's vector tiles: `layerTile`'s path with
+/// MapLibre's `{z}`, `{x}` and `{y}` in it, and the layer in the query string.
+fn tile_template(layer: &layer::LayerRequest) -> Result<String> {
+    let json = serde_json::to_string(layer)
+        .map_err(|e| Error::serde(format!("a layer does not serialise: {e}")))?;
+    Ok(format!(
+        "/{}/layers/tiles/{{z}}/{{x}}/{{y}}?layer={}",
+        sc_api::ADMIN_API_PREFIX,
+        crate::builder::encode_component(&json)
+    ))
 }

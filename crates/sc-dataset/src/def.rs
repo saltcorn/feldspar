@@ -234,10 +234,10 @@ impl Operation {
     }
 }
 
-/// The operations of the goals document, those that A1 implements: the ones
-/// that keep the grain, the ones that change it, and the ones that combine
-/// with another table or dataset. (Neighbourhood column, Model predictions and
-/// Spatial join arrive with the milestones that bring their machinery.)
+/// The operations of the goals document: the ones that keep the grain, the
+/// ones that change it, and the ones that combine with another table or
+/// dataset — A1's, and the Spatial join of A5. (Neighbourhood column and Model
+/// predictions arrive with the milestones that bring their machinery.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "params", rename_all = "snake_case")]
 pub enum Op {
@@ -269,6 +269,9 @@ pub enum Op {
     Join(JoinOp),
     /// Append the rows of another table or dataset (`bind_rows`).
     Union(UnionOp),
+    /// Join another table or dataset where the geometries meet, or to the
+    /// nearest (`st_join`; analytics TODO A5.4).
+    SpatialJoin(SpatialJoinOp),
 }
 
 impl Op {
@@ -302,6 +305,7 @@ impl Op {
             Op::Complete(_) => "complete",
             Op::Join(_) => "join",
             Op::Union(_) => "union",
+            Op::SpatialJoin(_) => "spatial_join",
         }
     }
 
@@ -310,6 +314,7 @@ impl Op {
         match self {
             Op::Join(j) => Some(&j.with),
             Op::Union(u) => Some(&u.with),
+            Op::SpatialJoin(j) => Some(&j.with),
             _ => None,
         }
     }
@@ -581,6 +586,9 @@ pub enum SummaryFunction {
     First,
     /// The value in the last row by an order.
     Last,
+    /// The union of the geometries: regions dissolved into one (analytics
+    /// TODO A5.4). Computed by PostGIS.
+    Union,
 }
 
 /// Keep some of the rows.
@@ -803,6 +811,71 @@ pub struct UnionOp {
     pub source_labels: Vec<String>,
 }
 
+/// Join another table or dataset by where the geometries are (analytics TODO
+/// A5.4): the goals document's Spatial join.
+///
+/// Aggregating points to regions is this followed by an Aggregate by the
+/// region, and "distance to the nearest" is a `nearest` join with a
+/// `distance_column`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpatialJoinOp {
+    /// What is joined.
+    pub with: Other,
+    /// Which rows survive: `inner` or `left` (a spatial join keeps the rows of
+    /// these, so it is never `full`).
+    pub kind: JoinKind,
+    /// How the geometries must be placed for two rows to match.
+    pub relation: SpatialRelation,
+    /// The geometry column of the rows so far.
+    pub left: String,
+    /// The geometry column of the other table or dataset.
+    pub right: String,
+    /// In metres: how near `within_distance` means, and, for `nearest`, how
+    /// far to look at most (no limit when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f64>,
+    /// A new column holding the distance in metres between the two matched
+    /// geometries, when named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance_column: Option<String>,
+    /// The other's columns brought across; all of them when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<String>>,
+    /// Appended to one of the other's column names that is already taken.
+    #[serde(default = "default_suffix")]
+    pub suffix: String,
+}
+
+/// How two geometries must be placed for a Spatial join to match them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpatialRelation {
+    /// They share at least one point.
+    Intersects,
+    /// This row's geometry contains the other's (a region and its points).
+    Contains,
+    /// This row's geometry is inside the other's (a point and its region).
+    Within,
+    /// They are no further apart than `distance` metres.
+    WithinDistance,
+    /// The other's one row whose geometry is nearest to this row's — so each
+    /// row matches at most one, and the grain is kept.
+    Nearest,
+}
+
+impl SpatialRelation {
+    /// The word the editor and a refusal use for it.
+    pub fn describe(self) -> &'static str {
+        match self {
+            SpatialRelation::Intersects => "intersects",
+            SpatialRelation::Contains => "contains",
+            SpatialRelation::Within => "is within",
+            SpatialRelation::WithinDistance => "is within a distance of",
+            SpatialRelation::Nearest => "is nearest to",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,6 +919,47 @@ mod tests {
             ["calculated", "calculated", "filter", "sort", "select"]
         );
         assert_eq!(def.base, Base::table("houses"));
+    }
+
+    #[test]
+    fn a_spatial_join_is_its_relation_two_geometry_columns_and_a_distance() {
+        let op = Op::SpatialJoin(SpatialJoinOp {
+            with: Other::Table {
+                table: "districts".into(),
+            },
+            kind: JoinKind::Left,
+            relation: SpatialRelation::WithinDistance,
+            left: "location".into(),
+            right: "outline".into(),
+            distance: Some(250.0),
+            distance_column: None,
+            columns: None,
+            suffix: default_suffix(),
+        });
+        let json = serde_json::to_value(Operation::new("s", op.clone())).expect("json");
+        assert_eq!(json["kind"], "spatial_join");
+        assert_eq!(json["params"]["relation"], "within_distance");
+        assert_eq!(json["params"]["distance"], 250.0);
+        let back: Operation = serde_json::from_value(json!({
+            "id": "s", "kind": "spatial_join",
+            "params": {
+                "with": { "kind": "table", "table": "districts" }, "kind": "left",
+                "relation": "within_distance", "left": "location", "right": "outline",
+                "distance": 250.0
+            }
+        }))
+        .expect("back");
+        assert_eq!(back.op, op);
+        // A dataset it joins is a dependency, as a Join's is.
+        let other = DatasetId::new();
+        let def = DatasetDef::over_table("d", "t").then(Op::SpatialJoin(SpatialJoinOp {
+            with: Other::Dataset { dataset: other },
+            ..match op {
+                Op::SpatialJoin(j) => j,
+                _ => unreachable!(),
+            }
+        }));
+        assert_eq!(def.dependencies(), vec![other]);
     }
 
     #[test]

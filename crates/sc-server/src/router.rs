@@ -1918,8 +1918,11 @@ async fn apply_response(
         // it needs no escaping beyond the quotes — but it is still checked rather
         // than trusted, because a header value that will not parse must not take
         // the download with it.
-        if let Ok(value) =
-            HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file.filename))
+        // A download with no name is not for saving (a map's vector tile), so
+        // it is not marked as an attachment.
+        if !file.filename.is_empty()
+            && let Ok(value) =
+                HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file.filename))
         {
             out.headers_mut().insert(header::CONTENT_DISPOSITION, value);
         }

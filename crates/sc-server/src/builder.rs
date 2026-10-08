@@ -702,8 +702,9 @@ fn escape(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// `encodeURIComponent`, which is how the admin UI's hash routes spell a name.
-fn encode_component(text: &str) -> String {
+/// `encodeURIComponent`, which is how the admin UI's hash routes spell a name
+/// (and how a map layer's tile URL carries the layer).
+pub(crate) fn encode_component(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {

@@ -11,5 +11,8 @@ mod geometry;
 #[path = "operations.rs"]
 mod operations;
 
+#[path = "spatial.rs"]
+mod spatial;
+
 #[path = "store.rs"]
 mod store;

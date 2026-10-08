@@ -161,6 +161,41 @@ describe("what an operation says in the side panel", () => {
   });
 });
 
+describe("a spatial join", () => {
+  const spots: StageShape = {
+    columns: [
+      { name: "id", type: "int" },
+      { name: "at", type: "geometry" },
+    ],
+    grain: { kind: "table", table: "spots", key: "id" },
+  };
+
+  it("starts from the stage's geometry column, matching points within regions", () => {
+    expect(defaultParams("spatial_join", spots.columns)).toEqual({
+      with: { kind: "table", table: "" },
+      kind: "left",
+      relation: "within",
+      left: "at",
+      right: "",
+      suffix: "_right",
+    });
+    expect(defaultParams("spatial_join", houses.columns).left).toBe("");
+  });
+
+  it("says how the geometries meet, with the distance where there is one", () => {
+    const join = (params: Record<string, unknown>) =>
+      describeOperation(
+        op("s", "spatial_join", { with: { kind: "table", table: "zones" }, left: "at", right: "outline", ...params }),
+        t,
+      );
+    expect(join({ relation: "within" })).toBe("at within zones.outline");
+    expect(join({ relation: "contains" })).toBe("at contains zones.outline");
+    expect(join({ relation: "within_distance", distance: 250 })).toBe("at within 250 m of zones.outline");
+    expect(join({ relation: "nearest" })).toBe("nearest zones.outline to at");
+    expect(join({ relation: "nearest", distance: 1000 })).toBe("nearest zones.outline to at, within 1000 m");
+  });
+});
+
 describe("what a formula may name", () => {
   it("offers the columns, one step along each key, and the child tables' counts", () => {
     const all = formulaCompletions(houses, report).map((c) => c.text);

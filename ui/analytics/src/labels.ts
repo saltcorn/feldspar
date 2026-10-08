@@ -36,6 +36,8 @@ export function opKindName(kind: string, t: Translate): string {
       return t("Join");
     case "union":
       return t("Union");
+    case "spatial_join":
+      return t("Spatial join");
     default:
       return kind;
   }
@@ -68,6 +70,8 @@ export function opKindAbout(kind: string, t: Translate): string {
       return t("Join another table or dataset on key columns.");
     case "union":
       return t("Append the rows of another table or dataset.");
+    case "spatial_join":
+      return t("Join another table or dataset where the geometries meet, or to the nearest.");
     default:
       return "";
   }
@@ -132,8 +136,28 @@ export function summaryName(fn: string, t: Translate): string {
       return t("First");
     case "last":
       return t("Last");
+    case "union":
+      return t("Union of geometries");
     default:
       return fn;
+  }
+}
+
+/** A Spatial join relation's name, as it reads between the two geometries. */
+export function spatialRelationName(relation: string, t: Translate): string {
+  switch (relation) {
+    case "within":
+      return t("is within");
+    case "contains":
+      return t("contains");
+    case "intersects":
+      return t("intersects");
+    case "within_distance":
+      return t("is within a distance of");
+    case "nearest":
+      return t("is nearest to");
+    default:
+      return relation;
   }
 }
 

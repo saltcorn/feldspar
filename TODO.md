@@ -508,9 +508,9 @@ selection, reference layers and the tools that dataset operations can express (g
 
 ## Phase 2 — Spatial operations and delivery
 
-- [ ] A5.4 The Spatial join operation (intersects, contains, within, within a distance,
+- [x] A5.4 The Spatial join operation (intersects, contains, within, within a distance,
       nearest by a lateral join), and geometry union as an Aggregate summary. Tests.
-- [ ] A5.5 Layer data for the browser: GeoJSON for small layers, and Mapbox vector tiles
+- [x] A5.5 Layer data for the browser: GeoJSON for small layers, and Mapbox vector tiles
       (`ST_AsMVT`) for large ones, with simplification by zoom level. Tests.
 
 ## Phase 3 — Map rendering and the map panel

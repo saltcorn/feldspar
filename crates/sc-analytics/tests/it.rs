@@ -16,3 +16,6 @@ mod hypothesis;
 
 #[path = "fit_outputs.rs"]
 mod fit_outputs;
+
+#[path = "layers.rs"]
+mod layers;
