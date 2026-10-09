@@ -8362,7 +8362,7 @@ at the fit's output data, each drawn by `render_plot` unless it is optional and 
 `dataset_changed` — beside the model endpoints of §14.2 (`cloneModel`, `patchModelViewState`,
 `cancelModelFit`, `listModelInstances`) and the fit's progress socket; and workspaces
 (`listWorkspaceKinds`, `listWorkspaces`, `getWorkspace`, `createWorkspace`, `updateWorkspace`,
-`saveWorkspaceState`, `deleteWorkspace`); panels (A4.2): `renderPanel`; map layers (A5.5,
+`saveWorkspaceState`, `deleteWorkspace`); panels (A4.2): `renderPanel`, with a dashboard's conditions as `filters` (A6.4, §14.8); map layers (A5.5,
 §14.6): `layerData`, `layerTile`; maps (A5.6–A5.7, §14.6): `mapSettings`, `suggestMap`,
 `renderMap`; and the Map workspace (A5.8–A5.13, §14.7): `layerRows`, `selectFeatures`,
 `saveSelection`, `allowMapHost`, `listMapTools`, `runMapTool`. `saveWorkspaceState` checks a
@@ -8463,8 +8463,8 @@ quantiles, box plot (`coef` 1.5), summary (a mean with its confidence interval),
 (Gaussian, `bw.nrd0` unless a bandwidth is given), smooth (linear or loess, with a band) or
 correlation. Scales are linear, log or square root, from zero or fitted (or a fixed domain), reversed, with a
 colour scheme; coordinates are Cartesian, flipped or polar; facets are rows, columns or wrap (fixed or
-free scales); references are lines at a value of X or Y; selections are declared and validated
-now, and dashboards (A6) turn them into filters.
+free scales); references are lines at a value of X or Y; selections declare what a click and a brush
+pick, and a dashboard turns them into filters (§14.8).
 
 `validate` checks a spec against the dataset's shape and answers **every** refusal at once, each
 a sentence naming the channel and the column ("X: `colour` is not a column of the dataset"): the
@@ -9207,6 +9207,106 @@ functions, which Postgres and SQLite do not share: the bounds are worked out in 
 calendar months, quarters and years), one `CASE` numbers each row's period, and one grouped
 query answers every period at once; a median goes through the plot renderer's percentiles, which
 work on both databases. A count of an empty period is 0; any other function's is missing.
+
+**Cross-filtering** (A6.3–A6.6) is three things that make **conditions**, and one place that
+applies them. A condition is `{ id, dataset, column?, values? | range? }`
+(`sc_analytics::crossfilter::Condition`): some values of one column of one dataset (a click), or
+a range of them (a brush or a histogram's bin, either end open, `max_exclusive` for a bin's end).
+No `column` means the rows themselves, by their key: a feature clicked on a map of a table's
+rows. The browser makes conditions, because only it knows what was under the pointer; the server
+decides where they reach and what they do, because only it knows the stage shapes.
+
+| what makes it | where it lives | whom it filters |
+|---|---|---|
+| a **selection**: a click or a brush on a tile | the screen, not saved | every tile but its own |
+| a **drill-down**: a value picked on the way down a tile's drill path | the screen, not saved | its own tile only |
+| a **dashboard filter**, made in the filter bar | the state's `filters` (at most 20) | every tile |
+
+`conditionsFor(tile, …)` (`dashboard/filters.ts`) gathers a tile's conditions, and the tile is
+drawn by `renderPanel` with them as `filters`. Nothing about a condition is per panel kind: the
+browser does not know or care whether the tile is a plot, a card or a map.
+
+**Selections** (A6.3; `ui/analytics/src/plot/select.ts`). A plot spec's `selections` (§14.5)
+declare what a click (`point`) and a brush (`interval`) pick, and on which channels; a plot that
+declares none gets the defaults — a click picks the category or bin under the pointer on X or Y
+and its colour group, a brush picks a range along a continuous X. A selection picks only a
+**column of the dataset**: a value a stat computed (a count on Y) or a column a fold makes picks
+nothing, and a mosaic, a polar or parallel plot, or a fit's output data offer no selection at
+all. What was clicked is read back from what ECharts says about the item and from
+`selectionInfo`, which the option compiler returns beside the option: what each axis's
+categories stand for (a value, or a bin's range), and the colour groups. So a category's label
+maps back to its value (a foreign key's `"2"` to `2`, "(missing)" to `null`), a histogram's bar
+to its edges, a flipped plot the right way round. A brush on a time axis gives milliseconds,
+which the server writes as the column's type. On a map, a feature picks the key its geometry is
+found by (a layer drawn through `districtⱵoutline` picks the district) or, on a layer of a
+table's rows, the row by its key — `featurePicks`, from the layer data's `keyed`.
+
+A tile holds one selection at a time: a new click replaces it, Shift or Ctrl-click adds or
+removes a value, clicking the one selected value again or clearing the brush lets it go
+(`select`). The tile it was made on keeps showing everything, so that something else can be
+picked there.
+
+**Propagation** (A6.4; `crossfilter::scope`). For each dataset a panel reads
+(`Panel::datasets`), each condition is worked out against the last stage shapes of its own
+dataset and of the panel's:
+
+1. **The same dataset**: the condition's column, which must still be there.
+2. **Another dataset**: only through a table both refer to. The condition's column identifies
+   rows of a table — it is a foreign key, or it is the key of a dataset whose grain is that
+   table's rows (`identifies`) — and the other dataset either *is* that table's rows (filtered by
+   its key) or has a foreign key to it. A foreign key column stays one through every operation
+   (§14.4, the stage shapes), and a Spatial join brings the joined table's key across as one,
+   so "the incidents with their district" is reached by a district clicked anywhere.
+3. Two columns of the other dataset that refer to the table are a choice not made for the
+   person, unless one has the condition's column's name.
+
+Anything else is skipped with a sentence ("`Incidents` has no column that refers to
+`districts`"). Columns with the same *name* in two datasets are deliberately not matched: a
+`category` in a dataset derived from the incidents is not known to mean the same thing, and a
+filter that silently applied to the wrong column would be worse than one that says it did not
+apply. `renderPanel` answers, beside what it drew, `filters`: for each condition and each of the
+panel's datasets, the column it filtered or why not, which the tile's badge shows ("by
+category"; "not filtered", with each reason in its tooltip).
+
+**Execution.** The conditions that reach a dataset are one formula — values `||`-ed, the two ends
+of a range `&&`-ed, the conditions `&&`-ed — appended as one Filter operation with the id
+`_fd_dashboard_filter` after the dataset's own operations (`Scope::extend`). It is compiled,
+validated and translated like any Filter (§14.4), so the cross-filtered panel is the dataset
+with one more operation, not a second code path: `render_plot_in`, `render_table_in`,
+`run_tests_in`, `render_card_in` and `render_map_in` are the renderers with a `Scope`, and
+`render_plot` and the rest are those with `Scope::none()`. Values are written as formula
+literals of the column's type (`literal`): a number for an integer or float, a date as
+`"2025-03-01"` from a date, an instant or milliseconds, an instant as RFC 3339 in UTC, a time,
+a UUID, `true` or `false`. A value that is not one of the column's type is skipped with a
+sentence rather than compared and matching nothing; a geometry, JSON or bytes column is not
+compared at all. For the string literals to compare with dates, times, timestamps and UUIDs
+on Postgres as they do on SQLite, a formula's string literal compared with such a column binds
+as that type (`sc-db-postgres`'s `value.rs`). When the Filter is the operation that fails, the
+panel says "the dashboard's filters do not work on `…`" (`filter_failure`), not that its dataset
+is broken. A map layer takes the conditions into its own `filter`
+(`Scope::and_filter`), so its vector tiles, fetched by URL, carry them too; a stat card's
+`unfiltered` comparison leaves them out with its own filter, so "34 % of all" is of every row.
+
+**Drill paths** (A6.5; `dashboard/drill.ts`). A plot tile may have `drill: { channel, path }`:
+X, Y or Color, and 2 to 8 different columns, outermost first, the first being the plot's own.
+At the top the plot is as it was made. A click that picks one value of the level's column goes
+down a level: `drilledPanel` puts the next column on the channel (unbinned, without the first
+column's fixed domain), and `drillConditions` filters the tile to the values picked so far, as
+conditions with ids `drill:<tile>:<level>`. These are ordinary conditions on the tile's own
+dataset, so a drill-down is a Filter on the server like everything else; they are only kept out
+of the other tiles. A breadcrumb goes back up; at the last level a click selects. The path is
+saved on the tile and travels with it into another dashboard; where someone is on it is not
+saved.
+
+**The filter bar** (A6.6; `FilterBar.tsx`) shows a chip per condition — the dashboard's filters
+filled, selections outlined — each removable, and *Clear all*. **+ Filter** makes a dashboard
+filter on a column of any dataset (the dashboard's own first): ticked values for a text,
+true-or-false or key column (offered most frequent first, by `datasetColumnValues`), a from–to
+range for a number, date or timestamp. **Refresh** redraws every tile every 30 s to an hour
+(the state's `refresh`, in seconds; 10 to 86,400 accepted), so a dashboard left on a screen
+follows its data. `check_state` checks a dashboard's `drill`s, `filters` (each a condition,
+different ids) and `refresh` before they are stored.
+
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

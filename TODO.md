@@ -590,8 +590,8 @@ drill-down.
 
 ## Phase 3 — Documentation, definition of done
 
-- [ ] A6.7 `TECHNICAL_DESIGN.md` (selections and propagation); `tutorial-analytics.md` part 6.
-- [ ] A6.8 Definition of done: an `sc-server` test rendering a dashboard's panels with a
+- [x] A6.7 `TECHNICAL_DESIGN.md` (selections and propagation); `tutorial-analytics.md` part 6.
+- [x] A6.8 Definition of done: an `sc-server` test rendering a dashboard's panels with a
       selection applied and checking the filtered results across two datasets. Walk the
       Try it by hand.
 

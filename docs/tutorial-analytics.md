@@ -14,6 +14,8 @@ models, draw maps and write reports. Its design is in
 - **Part 5 — Maps:** importing a map file, a map in the explorer, the Map workspace with its
   layers, styles, attribute table, selections, reference layers and toolbox, and a map in a
   report.
+- **Part 6 — Dashboards:** tiles from any source, stat cards, and filtering every tile by a
+  click, a brush or a district on a map, with drill paths and a filter bar.
 
 You need a server and an admin login. Nothing else: the data comes from a command.
 
@@ -696,3 +698,146 @@ that show it) and the report. Press **Cancel**.
   database, and the attribute table and the map share one selection.
 - **Maps need PostGIS.** Everything else in the Analytics UI works without it.
 
+
+---
+
+## Part 6 — Dashboards
+
+A **Dashboard** workspace is a page of **tiles**: plots, maps, summary tables and stat cards
+side by side. Like a report, it is made of panels dragged in from where they were made. Unlike a
+report, it is for using rather than reading. Its tiles keep their tooltips and legends, and they
+work together: a click on a bar, a brush along a time axis or a district picked on a map
+**filters every other tile**. This part uses the map tables of part 5, so it needs PostGIS.
+
+### Step 1 — A dashboard, and what goes in it
+
+On the front page, under **New workspace**, call it `Incidents dashboard`, choose *Dashboard*
+and press **Create**. It opens empty. Press **Split**, and on the left open `Exploring
+incidents`, the explorer of part 5.
+
+In the explorer, pick `Incidents`, clear the drop zones and drop `category` on **X**: a bar chart
+of the incidents in each category. Drag its **⠿ Drag** handle onto the dashboard. The tile
+appears where you drop it. Now drop `reported_on` on **X** instead of `category`: a line of the
+incidents reported each day. Drag it into the `House prices report` of part 4 (or any report),
+then open the report on the left and drag the line from there into the dashboard. A tile can come
+from anywhere that has a drag handle: the explorer, the model editor, a map, a report or another
+dashboard. A tile dragged from a report is a copy, as a report's is.
+
+Then open the `Incidents map` of part 5 on the left and drag its **⠿ Drag** handle in. The whole
+map comes, with its layers and styles. On a dashboard it stays a real map: zoom, pan, popups.
+
+### Step 2 — Two more datasets
+
+The tiles so far all read `Incidents`. Two more datasets will show how a filter crosses from one
+dataset to another. Both are made by the map's toolbox, so stay in `Incidents map`:
+
+- **Toolbox → Aggregate → Count per region**, with the incidents as *Features* and the districts
+  as *Regions*, as in part 5. If that layer is still on the map from part 5, you can skip this.
+- **Toolbox → Overlay → Spatial join**, with the incidents as *Layer* and the districts as
+  *With*. It makes `Incidents with Districts`: each incident with the columns of the district it
+  is in. The district's key comes across as `id_right`, a **foreign key** to `districts`.
+
+Open `Incidents with Districts` in the Dataset editor from its layer's **⌄** menu. Add a
+**Select columns** operation that keeps `id`, `category`, `reported_on` and `location`, and
+renames `id_right` to `district`. A renamed foreign key is still a foreign key.
+
+In the explorer, pick `Incidents with Districts`, drop `district` on **X**, and drag the bar chart
+of incidents per district into the dashboard.
+
+### Step 3 — A stat card
+
+Press **+ Add → Stat card**. Choose the dataset `Incidents` and the value *Count*. Under
+**Period**, choose *Month*, from *The latest*: the card shows the latest month that has any
+incidents, so a year-old demo still has a "this month". Compare with *The previous period* and
+tick **Sparkline**, 12 periods. **Preview** shows it as it will be. Press **Add**.
+
+The card shows 189, the incidents in December 2025, with the change since November and a line
+of the last twelve months. If a rise were good news you would leave **Higher is
+better** ticked. For incidents, untick it, so a rise is shown in red.
+
+Add a second card on `Incidents per Districts`, the *Sum* of `count`, with no period. It shows
+2,400: every incident is counted in one district.
+
+### Step 4 — Arrange the tiles
+
+Drag a tile by its grip (**⠿** in its header) to move it. The cell it will land on is outlined,
+and the tiles in the way move down to make room. Drag the corner handle at its bottom right to
+resize it, in whole cells. The grid is twelve columns wide. Put the two cards on the left, the
+bar chart and the line beside them, and the map and the per-district bars below. Each tile's
+**⋯** menu also moves and resizes it one cell at a time, and renames it.
+
+On a narrow screen, such as a phone, the tiles are stacked one per row, and moving and resizing
+wait for a wider screen.
+
+### Step 5 — Click, brush, and the filter bar
+
+Click the **burglary** bar (726 incidents). The other tiles are drawn again with only the burglaries: the map's
+incidents layer, the line and the stat card, which now counts this month's burglaries against
+last month's. The bar chart itself keeps showing every category, so you can pick another. A
+click on another bar replaces the selection. Shift-click or Ctrl-click adds a bar to it, and a
+click on the selected bar again lets it go.
+
+Each tile's header says what filtered it: *by category* on the line and the card. The map's
+header says *by category* too, because its incidents layer was filtered. Point at the badge to
+see the rest: the districts and the counts per district are not incidents, so the burglary did
+not reach them. The per-district bars and the second card say *not filtered*. Their datasets
+do have a `category` column, or are made from the incidents, but a filter only crosses to
+another dataset through a **key to a table both refer to**. A column with the same name is not
+assumed to mean the same thing.
+
+Now drag across the line chart, from March to the end of May. The brushed range is selected, and
+every other tile filters to it too, the burglaries and the spring at once. The card now shows May
+against April, the latest month left.
+
+Above the tiles, the **filter bar** shows each selection as an outlined chip, *category:
+burglary* and *reported_on: 2025-03-01 – 2025-05-31*. Press **×** on one to remove it, or
+**Clear all**. Selections are not saved: they are where you are looking, not what the dashboard
+is.
+
+A filter that should stay is made with **+ Filter**. Choose `Incidents`, the column `category`,
+tick *burglary* and press **Add filter**. A filled chip appears, and this filter is saved with the
+dashboard and filters every tile, the bar chart too. Remove it again with its **×**.
+
+Next to **+ Add**, **Refresh** draws every tile again every 30 seconds to every hour, for a
+dashboard left on a screen while its data changes. **↻** draws them now.
+
+### Step 6 — A district on the map
+
+On the map tile, click a district of the per-district layer, say Kingsmead, the busiest. The
+per-district bars now show only that district, and the second card shows its count, 574. Both datasets have a
+foreign key to `districts`: `district` in `Incidents with Districts`, and `district` in
+`Incidents per Districts`. Clicking the same district on the plain districts layer does the same.
+There, the district is picked by the row itself, and a row of `districts` is what those keys
+refer to.
+
+The first stat card is not filtered, and its badge says why: `Incidents` has no column that
+refers to `districts`. To make it follow the map, base it on `Incidents with Districts` instead
+(**⋯ → Edit**).
+
+### Step 7 — A drill path
+
+On the per-district bar chart, choose **⋯ → Add a drill path…**. Drill down along **X**. The
+first level is `district`, what the plot shows. Add `category` as the next level, and press
+**Save**. Above the plot it now says *district · click a value to drill down to category*.
+
+Click the busiest district's bar, 11 (Kingsmead). The tile shows that district's categories,
+with a breadcrumb above it: *district › 11 · category*. Only this tile is filtered, and the other
+tiles are left as they were. Click **district** in the breadcrumb to go back up. At the last level a
+click selects, as on any tile. A path can have up to eight levels, along X, Y or Color.
+
+Close the split, and reopen the dashboard from the front page: the tiles, their places, the
+drill path, the refresh and any filters of its own are as they were. On the front page, the
+delete warning for `Incidents` now lists the dashboard too.
+
+### What to remember
+
+- **A dashboard is for using.** Tiles come from anywhere with a drag handle and stay
+  interactive, and the grid keeps itself tidy as you move them.
+- **A click is a filter.** Clicking or brushing a tile filters every other tile. The filter bar
+  shows what is filtering. Selections are not saved, and filters made in the filter bar are.
+- **Filters cross datasets through keys.** A filter reaches its own dataset through its column,
+  and another dataset only through a foreign key to the same table. A tile's badge says what
+  filtered it, and why something did not.
+- **On the server, a filter is a Filter.** The dashboard's conditions become one more Filter
+  operation at the end of each dataset, so a plot, a card, a table, a test and a map are filtered
+  the same way.

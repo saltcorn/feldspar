@@ -2,6 +2,61 @@
 
 Changes in reverse chronological order.
 
+## Analytics A6.7–A6.8: dashboards documented, and their definition of done
+
+The last phase of milestone A6 (Dashboards). No product code changed.
+
+- **`TECHNICAL_DESIGN.md` §14.8** (A6.7) now covers cross-filtering:
+  - **Conditions.** What makes them (selections, drill-downs, the dashboard's own filters),
+    where each lives and whom it filters.
+  - **Selections.** How a click or a brush is read back from ECharts and a map's features.
+  - **Propagation.** The same dataset through its column. Another dataset only through a key
+    to a table both refer to. Why columns are never matched by name.
+  - **Execution.** One Filter, `_fd_dashboard_filter`, after the dataset's operations, with
+    literals of the column's type. How map tiles and a card's unfiltered comparison take it.
+  - **Drill paths and the filter bar.**
+  - §14.5's plot spec and endpoint list point to it.
+- **`tutorial-analytics.md` part 6** (A6.7), the Try it as seven steps:
+  - a dashboard of tiles dragged from the explorer, a report and the map;
+  - two datasets from the map's toolbox, so that a filter can cross datasets. One is
+    *Incidents with Districts*, a Spatial join whose `id_right` is renamed `district` by a
+    Select columns;
+  - a stat card, and arranging the tiles;
+  - a click, a brush and the filter bar;
+  - a district on the map;
+  - a drill path.
+
+  The numbers it quotes (189 incidents in December, 726 burglaries, Kingsmead's 574) are
+  the demo's, as the test computes them.
+- **Definition of done** (A6.8): `analytics_done::the_try_it_of_milestone_a6`, skipped without
+  PostGIS like A5's.
+  - **Expected numbers.** Every count is made by the test itself: each incident's district by
+    testing its point against the districts' outlines, its category and date from the dataset.
+    The expected numbers do not come from the database.
+  - **Setup.** The test builds the dashboard through the API:
+    - a bar chart by category;
+    - the A5 map (districts, incidents and the counts per district);
+    - a line per day copied out of a report;
+    - a stat card with the previous month and a twelve-month sparkline;
+    - a card summing the per-district counts;
+    - per-district bars over the Spatial join's dataset.
+
+    It arranges and resizes the tiles, and an overlap is refused.
+  - **Conditions.** Each tile is drawn with the conditions the browser would send:
+    - **A burglary bar clicked.** The map's incidents layer, the line and the card follow it.
+      The districts layer says why it did not.
+    - **March to May brushed in milliseconds.** The card moves to May against April.
+    - **A dashboard filter.** It is saved, then cleared.
+    - **A district clicked**, on the per-district layer and on the districts layer. It filters
+      two other datasets: the incidents with their district, through their renamed foreign
+      key, and the counts per district. The card on `Incidents` says it has no column that
+      refers to `districts`.
+    - **A drill-down from district to category.** A one-level path is refused.
+  - **Reopened.** The dashboard is as it was left, and the usage index lists it for
+    `Incidents`.
+  - **Also checked.** A foreign key renamed by Select columns stays a foreign key.
+- **Not done here:** walking the Try it by hand in a browser.
+
 ## Analytics A6.3–A6.6: cross-filtering, drill-down and the filter bar
 
 The second phase of milestone A6 (Dashboards). Clicking a bar or a map's feature, or brushing a
