@@ -695,18 +695,28 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // table's, a test result's tests and plot, a fit's table. A panel whose
     // dataset or fit has been deleted answers `error`, a sentence saying so,
     // rather than failing; a plot that cannot be drawn answers its refusal in
-    // `plot`, as `renderPlot` does, and a stat card its own in `card`. A text panel answers nothing to draw: the
-    // browser renders its Markdown.
+    // `plot`, as `renderPlot` does, and a stat card its own in `card`. A text
+    // panel answers nothing to draw: the browser renders its Markdown.
+    //
+    // On a dashboard (A6.3–A6.6) it is drawn with `filters`: conditions
+    // `{ id, dataset, column?, values? | range?: { min?, max?, max_exclusive? } }`
+    // made by selections, drill-downs and the dashboard's own filters. Each
+    // applies to the panel's datasets through the column, or through a column
+    // that refers to the same table; `filters` in the answer says, for each
+    // condition and dataset, the column it filtered or why it filtered none.
     set.register(
         Endpoint::new(
             "renderPanel",
             Method::Post,
             api().lit("panels").lit("render"),
         )
-        .input(TypeSchema::struct_of([StructField::new(
-            "panel",
-            TypeSchema::json(),
-        )]))
+        .input(TypeSchema::struct_of([
+            StructField::new("panel", TypeSchema::json()),
+            StructField::new(
+                "filters",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+        ]))
         .output(TypeSchema::struct_of([
             StructField::new("kind", TypeSchema::text()),
             StructField::new("error", TypeSchema::optional(TypeSchema::text())),
@@ -722,6 +732,11 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new(
                 "categorical",
                 TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+            ),
+            // What each of `filters` did to each of the panel's datasets.
+            StructField::new(
+                "filters",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
             ),
         ]))
         .auth(AuthRequirement::admin()),

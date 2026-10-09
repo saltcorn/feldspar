@@ -8,7 +8,7 @@
 // saying so, as does a plot that no longer draws; neither is a failure of the
 // screen that holds it.
 
-import { Suspense, lazy, useEffect, useState, type DragEvent, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Spinner from "react-bootstrap/Spinner";
 
@@ -20,7 +20,9 @@ import { T, useT } from "../i18n";
 import { OutputTableView } from "../models/Outputs";
 import type { OutputTable } from "../models/outputs";
 import { useChanges } from "../panes";
-import { PlotView } from "../plot/PlotView";
+import { featurePicks, type Condition } from "../dashboard/filters";
+import { PlotView, type PickHow } from "../plot/PlotView";
+import type { Picked } from "../plot/select";
 import { isRefused, type PlotData, type PlotSpec, type TableData } from "../plot/spec";
 import { SummaryTable } from "../plot/SummaryTable";
 import { useDocumentTheme, type Theme } from "../theme";
@@ -43,7 +45,28 @@ export type PanelLook = {
   theme?: Theme;
 };
 
-export function PanelView({ panel, look = {} }: { panel: Panel; look?: PanelLook }) {
+/** What a click or a brush on a panel picked, and of which dataset (A6.3). */
+export type PanelPick = { dataset: string; picks: Picked[] };
+
+export function PanelView({
+  panel,
+  look = {},
+  filters,
+  tick = 0,
+  onSelect,
+  onFiltered,
+}: {
+  panel: Panel;
+  look?: PanelLook;
+  /** A dashboard's conditions to draw it with (A6.3–A6.6). */
+  filters?: Condition[];
+  /** Changed to draw it again: a dashboard's refresh. */
+  tick?: number;
+  /** A dashboard's tile: what a click or a brush on it picked. */
+  onSelect?: (pick: PanelPick, how: PickHow) => void;
+  /** What each of `filters` did to it, once drawn. */
+  onFiltered?: (applied: Applied[]) => void;
+}) {
   const { t } = useT();
   const [answer, setAnswer] = useState<RenderPanelResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,33 +74,89 @@ export function PanelView({ panel, look = {} }: { panel: Panel; look?: PanelLook
   const [version, setVersion] = useState(0);
   useChanges(["dataset", "model"], () => setVersion((v) => v + 1));
 
+  const reported = useRef(onFiltered);
+  reported.current = onFiltered;
   const key = JSON.stringify(panel);
+  const filtersKey = JSON.stringify(filters ?? []);
   useEffect(() => {
     if (panel.kind === "text") return;
     let live = true;
+    const conditions = JSON.parse(filtersKey) as Condition[];
     api
-      .renderPanel({ panel })
+      .renderPanel(conditions.length > 0 ? { panel, filters: conditions } : { panel })
       .then((a) => {
         if (!live) return;
         setAnswer(a);
         setError(null);
+        reported.current?.((a.filters ?? []) as Applied[]);
       })
       .catch((err: unknown) => live && setError(errorMessage(err, t("Could not draw this panel."))));
     return () => {
       live = false;
     };
-    // The panel is compared by value (`key`).
-  }, [key, version, t]);
+    // The panel and its filters are compared by value (`key`, `filtersKey`).
+  }, [key, filtersKey, version, tick, t]);
 
   if (panel.kind === "text") return <TextView markdown={panel.content.markdown} />;
   if (error) return <Alert variant="danger" className="m-2 small">{error}</Alert>;
   // `an-panel-loading`: a report waits for it to go before printing.
   if (!answer) return <Spinner animation="border" size="sm" className="m-3 an-panel-loading" />;
   if (answer.error) return <Missing>{answer.error}</Missing>;
+  return <Drawn panel={panel} answer={answer} look={look} onSelect={onSelect} />;
+}
 
+/** What a dashboard's condition did to one dataset of a panel: the column it
+ * filtered, or why it filtered none. */
+export type Applied = { id: string; dataset: string; column?: string; skipped?: string };
+
+/** Which columns a dashboard's filters narrowed a panel by, and (on hover)
+ * which filters did not reach it and why. Nothing while none apply. */
+export function FilteredBadge({ applied }: { applied: Applied[] }) {
+  const { t } = useT();
+  const columns = [...new Set(applied.flatMap((a) => (a.column ? [a.column] : [])))];
+  const skipped = applied.filter((a) => a.skipped);
+  if (columns.length === 0 && skipped.length === 0) return null;
+  const why = [...new Set(skipped.map((a) => `• ${a.skipped}`))].join("\n");
+  const title =
+    columns.length > 0
+      ? t("Filtered by {columns}", { columns: columns.join(", ") }) + (why ? `\n${t("Not filtered:")}\n${why}` : "")
+      : `${t("No filter reaches this panel:")}\n${why}`;
+  return (
+    <span className={columns.length > 0 ? "an-panel-filtered" : "an-panel-filtered an-unfiltered"} title={title}>
+      {columns.length > 0 ? t("by {columns}", { columns: columns.join(", ") }) : t("not filtered")}
+    </span>
+  );
+}
+
+function Drawn({
+  panel,
+  answer,
+  look,
+  onSelect,
+}: {
+  panel: Panel;
+  answer: RenderPanelResponse;
+  look: PanelLook;
+  onSelect?: (pick: PanelPick, how: PickHow) => void;
+}) {
+  const { t } = useT();
+  const pickOn = (spec: PlotSpec) =>
+    onSelect && spec.data.kind === "dataset"
+      ? (picks: Picked[], how: PickHow) => onSelect({ dataset: (spec.data as { dataset: string }).dataset, picks }, how)
+      : undefined;
   switch (panel.kind) {
+    case "text":
+      return <TextView markdown={panel.content.markdown} />;
     case "plot":
-      return <PlotAnswer spec={panel.content.spec} plot={answer.plot} categorical={answer.categorical ?? undefined} look={look} />;
+      return (
+        <PlotAnswer
+          spec={panel.content.spec}
+          plot={answer.plot}
+          categorical={answer.categorical ?? undefined}
+          look={look}
+          onPick={pickOn(panel.content.spec)}
+        />
+      );
     case "summary_table":
       return isRefused(answer.table) ? (
         <Missing>{answer.table.error}</Missing>
@@ -88,7 +167,13 @@ export function PanelView({ panel, look = {} }: { panel: Panel; look?: PanelLook
       return (
         <div className="an-panel-tests">
           {panel.content.plot && (
-            <PlotAnswer spec={panel.content.plot} plot={answer.plot} categorical={answer.categorical ?? undefined} look={look} />
+            <PlotAnswer
+              spec={panel.content.plot}
+              plot={answer.plot}
+              categorical={answer.categorical ?? undefined}
+              look={look}
+              onPick={pickOn(panel.content.plot)}
+            />
           )}
           {isAnalysis(answer.tests) ? (
             <AnalysisView analysis={answer.tests} />
@@ -103,7 +188,12 @@ export function PanelView({ panel, look = {} }: { panel: Panel; look?: PanelLook
     }
     case "map":
       return answer.map ? (
-        <MapAnswer spec={panel.content.spec} data={answer.map as unknown as MapData} look={look} />
+        <MapAnswer
+          spec={panel.content.spec}
+          data={answer.map as unknown as MapData}
+          look={look}
+          onPick={onSelect ? (pick) => onSelect(pick, { by: "click", add: false }) : undefined}
+        />
       ) : null;
     case "stat_card":
       return isRefused(answer.card) ? (
@@ -116,13 +206,33 @@ export function PanelView({ panel, look = {} }: { panel: Panel; look?: PanelLook
   }
 }
 
-/** A map panel (A5.13): in a report, drawn once and shown as an image. */
-function MapAnswer({ spec, data, look }: { spec: MapSpec; data: MapData; look: PanelLook }) {
+/** A map panel (A5.13): in a report, drawn once and shown as an image. On a
+ * dashboard, a feature clicked picks its key or its row (A6.3). */
+function MapAnswer({
+  spec,
+  data,
+  look,
+  onPick,
+}: {
+  spec: MapSpec;
+  data: MapData;
+  look: PanelLook;
+  onPick?: (pick: PanelPick) => void;
+}) {
   const documentTheme = useDocumentTheme();
+  const click = onPick
+    ? (hit: { layer: number; id: unknown; properties: Record<string, unknown> } | null) => {
+        const layer = hit ? spec.layers[hit.layer] : undefined;
+        const drawn = hit ? data.layers[hit.layer]?.data : undefined;
+        if (!hit || !layer || !drawn || drawn.delivery === "none") return;
+        const picks = featurePicks(layer, drawn.keyed, hit);
+        if (picks.length > 0) onPick({ dataset: layer.dataset, picks });
+      }
+    : undefined;
   return (
     <div className="an-panel-map">
       <Suspense fallback={<Spinner animation="border" size="sm" className="m-3 an-panel-loading" />}>
-        <MapView spec={spec} data={data} theme={look.theme ?? documentTheme} still={look.still} />
+        <MapView spec={spec} data={data} theme={look.theme ?? documentTheme} still={look.still} onFeatureClick={click} />
       </Suspense>
     </div>
   );
@@ -133,11 +243,13 @@ function PlotAnswer({
   plot,
   categorical,
   look,
+  onPick,
 }: {
   spec: PlotSpec;
   plot: unknown;
   categorical?: string[];
   look: PanelLook;
+  onPick?: (picks: Picked[], how: PickHow) => void;
 }) {
   const documentTheme = useDocumentTheme();
   if (isRefused(plot)) return <Missing>{plot.error}</Missing>;
@@ -151,6 +263,7 @@ function PlotAnswer({
         categorical={categorical}
         renderer={look.renderer}
         still={look.still}
+        onPick={onPick}
       />
     </div>
   );

@@ -203,7 +203,7 @@ pub struct Selected {
 
 /// A formula's text literal: JSON's string syntax, which the formula
 /// language reads.
-fn text_literal(s: &str) -> String {
+pub(crate) fn text_literal(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_owned())
 }
 
@@ -220,7 +220,7 @@ fn metres(d: f64) -> std::result::Result<String, String> {
 
 /// `terms` joined by `||`, bracketed as a balanced tree so a long list does
 /// not nest a thousand deep.
-fn any_of(terms: &[String]) -> String {
+pub(crate) fn any_of(terms: &[String]) -> String {
     match terms {
         [] => "false".to_owned(),
         [one] => one.clone(),

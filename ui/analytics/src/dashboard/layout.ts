@@ -17,6 +17,8 @@
 // panel always is; its panel goes too, so a report takes it (`setTileDrag`).
 
 import { copyPanel, newPanelId, readPanel, setPanelDrag, type Panel, type PanelKind, type Transfer } from "../panels/panel";
+import { readDrill, type Drill } from "./drill";
+import { readFilters, readRefresh, type Condition } from "./filters";
 
 /** The grid's columns. */
 export const COLUMNS = 12;
@@ -29,11 +31,12 @@ export const MAX_ROWS = 40;
 /** Below this width, in pixels, the tiles stack in one column. */
 export const NARROW_PX = 640;
 
-/** One tile. */
-export type Tile = { id: string; panel: Panel; x: number; y: number; w: number; h: number };
+/** One tile; a plot's may have a drill path (A6.5). */
+export type Tile = { id: string; panel: Panel; x: number; y: number; w: number; h: number; drill?: Drill };
 
-/** A dashboard's state. */
-export type DashboardState = { tiles: Tile[] };
+/** A dashboard's state: its tiles, its own filters (A6.6) and how often it
+ * refreshes, in seconds (0, or absent, for never). */
+export type DashboardState = { tiles: Tile[]; filters?: Condition[]; refresh?: number };
 
 /** Where a tile is, without its panel. */
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -81,14 +84,21 @@ export function readTile(raw: unknown): Tile | null {
   const panel = readPanel(raw.panel);
   if (!panel) return null;
   const size = defaultSize(panel.kind);
-  return { id: raw.id, panel, ...clamp({ x: whole(raw.x, 0), y: whole(raw.y, 0), w: whole(raw.w, size.w), h: whole(raw.h, size.h) }) };
+  const tile: Tile = { id: raw.id, panel, ...clamp({ x: whole(raw.x, 0), y: whole(raw.y, 0), w: whole(raw.w, size.w), h: whole(raw.h, size.h) }) };
+  const drill = panel.kind === "plot" ? readDrill(raw.drill) : null;
+  if (drill) tile.drill = drill;
+  return tile;
 }
 
 /** The state a workspace stored, read leniently and settled: what is not a
  * tile is dropped, and tiles that overlap are moved apart. */
 export function readDashboard(raw: Record<string, unknown>): DashboardState {
   const tiles = Array.isArray(raw.tiles) ? raw.tiles : [];
+  const filters = readFilters(raw.filters);
+  const refresh = readRefresh(raw.refresh);
   return {
+    ...(filters.length > 0 ? { filters } : {}),
+    ...(refresh > 0 ? { refresh } : {}),
     tiles: compact(
       separate(
         tiles.flatMap((t) => {
@@ -194,6 +204,20 @@ export function addTile(
   return { ...state, tiles: settle([...state.tiles, tile], tile.id) };
 }
 
+/** The dashboard with the tile `id` given a drill path, or (`null`) none. */
+export function setDrill(state: DashboardState, id: string, drill: Drill | null): DashboardState {
+  return {
+    ...state,
+    tiles: state.tiles.map((t) => {
+      if (t.id !== id) return t;
+      const out: Tile = { ...t };
+      if (drill) out.drill = drill;
+      else delete out.drill;
+      return out;
+    }),
+  };
+}
+
 /** The dashboard with the tile `id`'s panel replaced (its place stays). */
 export function editTile(state: DashboardState, id: string, panel: Panel): DashboardState {
   return { ...state, tiles: state.tiles.map((t) => (t.id === id ? { ...t, panel: { ...panel, id: t.panel.id } } : t)) };
@@ -294,7 +318,9 @@ export function dropInto(
   if (dropped.tile) {
     const { source, tile } = dropped.tile;
     if (source === self && state.tiles.some((t) => t.id === tile.id)) return at ? moveTile(state, tile.id, at) : state;
-    return addTile(state, copyPanel(tile.panel), at, { w: tile.w, h: tile.h });
+    const copy = copyPanel(tile.panel);
+    const added = addTile(state, copy, at, { w: tile.w, h: tile.h });
+    return tile.drill ? setDrill(added, copy.id, tile.drill) : added;
   }
   return dropped.panel ? addTile(state, dropped.panel, at) : null;
 }

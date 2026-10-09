@@ -58,6 +58,7 @@ use super::spec::{
     Stat, TableSpec,
 };
 use super::validate::{Dim, LayerPlan, folded_shape, plan, validate, validate_table};
+use crate::crossfilter::{Scope, filter_failure};
 
 /// The rows a layer that draws rows shows before it samples.
 pub const DEFAULT_SAMPLE: u64 = 10_000;
@@ -201,7 +202,12 @@ pub(crate) type Step<T> = std::result::Result<T, Halt>;
 /// why it cannot be drawn. Reads as the admin (A9 is where a restricted
 /// user's reads go through their permissions).
 pub async fn render_plot(catalog: &Catalog, spec: &PlotSpec) -> Result<Rendered> {
-    let rows = match plot_rows(catalog, &spec.data).await? {
+    render_plot_in(catalog, spec, &Scope::none()).await
+}
+
+/// [`render_plot`] over the rows a dashboard's conditions keep (A6.4).
+pub async fn render_plot_in(catalog: &Catalog, spec: &PlotSpec, scope: &Scope) -> Result<Rendered> {
+    let rows = match plot_rows_in(catalog, &spec.data, scope).await? {
         Ok(rows) => rows,
         Err(sentence) => return Ok(Rendered::refuse(sentence)),
     };
@@ -244,6 +250,16 @@ pub(crate) async fn plot_rows(
     catalog: &Catalog,
     data: &DataRef,
 ) -> Result<std::result::Result<PlotRows, String>> {
+    plot_rows_in(catalog, data, &Scope::none()).await
+}
+
+/// [`plot_rows`], a dataset's with the conditions on it appended as a Filter
+/// (A6.4). A fit's output data is not a dataset, and no condition reaches it.
+pub(crate) async fn plot_rows_in(
+    catalog: &Catalog,
+    data: &DataRef,
+    scope: &Scope,
+) -> Result<std::result::Result<PlotRows, String>> {
     match data {
         DataRef::Dataset { dataset } => {
             let Some(def) = sc_dataset::load_dataset(catalog, *dataset).await? else {
@@ -251,15 +267,15 @@ pub(crate) async fn plot_rows(
                     "the dataset this plot reads is gone; pick another".to_owned()
                 ));
             };
+            let def = scope.extend(&def);
             let schema = Schema::of_catalog(catalog)?;
             let library = sc_dataset::load_library(catalog).await?;
             let compiled = compile(&schema, &library, &def, Options::default());
             let stage = match compiled.last() {
                 Ok(stage) => stage,
                 Err(e) => {
-                    return Ok(Err(format!(
-                        "the dataset `{}` does not read: {e}",
-                        def.name
+                    return Ok(Err(filter_failure(&schema, &library, &def).unwrap_or_else(
+                        || format!("the dataset `{}` does not read: {e}", def.name),
                     )));
                 }
             };
@@ -436,11 +452,20 @@ pub struct TableData {
 /// Make the summary table `spec` describes: its body and totals, or the
 /// sentence saying why it cannot. Reads as the admin, as `render_plot` does.
 pub async fn render_table(catalog: &Catalog, spec: &TableSpec) -> Result<RenderedTable> {
+    render_table_in(catalog, spec, &Scope::none()).await
+}
+
+/// [`render_table`] over the rows a dashboard's conditions keep (A6.4).
+pub async fn render_table_in(
+    catalog: &Catalog,
+    spec: &TableSpec,
+    scope: &Scope,
+) -> Result<RenderedTable> {
     let refuse = |error: String| RenderedTable::Refused {
         problems: vec![error.clone()],
         error,
     };
-    let rows = match plot_rows(catalog, &spec.data).await? {
+    let rows = match plot_rows_in(catalog, &spec.data, scope).await? {
         Ok(rows) => rows,
         Err(sentence) => return Ok(refuse(sentence)),
     };

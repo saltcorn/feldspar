@@ -2,6 +2,153 @@
 
 Changes in reverse chronological order.
 
+## Analytics A6.3–A6.6: cross-filtering, drill-down and the filter bar
+
+The second phase of milestone A6 (Dashboards). Clicking a bar or a map's feature, or brushing a
+range along a plot's axis, filters the dashboard's other tiles. Tiles on other datasets are
+filtered too, through a foreign key to the same table. A plot can drill down a path of columns
+with a breadcrumb back. A filter bar shows what is filtering and removes it, and adds filters of
+the dashboard's own. The dashboard can refresh itself.
+
+- **Selections** (A6.3; `ui/analytics/src/plot/select.ts`).
+  - **What a plot offers.** The spec's declared `selections` (A2.1) are now read. A plot that
+    declares none gets defaults:
+    - a click on what groups its rows: the category or bin under the pointer on X or Y, and its
+      colour group;
+    - a brush along a continuous X: a value axis, a time axis or a histogram's.
+    - A mosaic, a polar or parallel plot, a fit's output data and the columns a fold makes
+      select nothing.
+  - **Reading the click back.** `echarts.ts` exports `selectionInfo`: what each axis's
+    categories stand for (a value, or a bin's range) and the colour groups. A click is read
+    from what ECharts says about the item:
+    - a category's label maps back to its value (a foreign key's `"2"` to `2`, "(missing)"
+      to `null`);
+    - a histogram bar's edges become a range with an open end;
+    - a box is read by its place;
+    - a colour group is read by its series' name;
+    - a flipped plot is read the right way round.
+  - **Brushing.** It uses ECharts' brush component (now registered), held ready on the plot.
+    A time axis brushes milliseconds, which are written as days or instants. A brush across
+    categories picks the ones it covers.
+  - **Maps.** A feature clicked picks the key its geometry is found by (`districtⱵoutline`:
+    the district). On a layer of a table's rows it picks the row itself, by key. GeoJSON layer
+    data now says whether it is `keyed`, as tiled data did.
+  - **On a dashboard** (`dashboard/filters.ts`):
+    - A tile has one selection at a time. A new click replaces it, and Shift or Ctrl-click adds
+      or removes a value. Clicking the one selected value again lets it go, as does clearing
+      the brush.
+    - A selection filters every tile but its own, which keeps showing everything.
+    - Selections are not saved.
+- **Propagation** (A6.4; `sc_analytics::crossfilter`, new).
+  - **Conditions.** A condition is `{ id, dataset, column?, values? | range? }`. A range may
+    leave out its maximum (a bin's end). No `column` means the rows themselves, by key.
+  - **Where one applies.** A condition reaches a dataset:
+    - **the same dataset**, through its column;
+    - **another dataset**, through a column that refers to the same table. The condition's
+      column is a foreign key, or the key of a table's rows, and the other dataset has a
+      foreign key to that table, or is that table's rows (filtered by its key).
+    - Two such columns are not a choice made for the person, unless one has the condition's
+      column's name.
+    - Anything else is skipped with a sentence.
+  - **Execution.** The conditions on a dataset are one formula, appended as a Filter
+    (`_fd_dashboard_filter`) after the dataset's operations. They are compiled and checked
+    like any Filter.
+    - The values are written as literals of the column's type. A date is `"2025-03-01"`, from
+      a date, an instant or the milliseconds a time axis brushes.
+    - A value that is not one of the column's is skipped with a sentence ("\"abc\" is not a
+      value of `district`, an integer column").
+  - **Everything takes them.** `render_plot_in`, `render_table_in`, `run_tests_in`,
+    `render_card_in` and `render_map_in` are the existing renderers with a `Scope`.
+    - A map layer carries them in its filter, so its vector tiles, fetched by URL, are
+      filtered too.
+    - A stat card's **unfiltered** comparison leaves the selections out as well as its own
+      filter, so "34% of all" is a share of every row.
+  - **API.** `renderPanel` takes `filters`. Its answer's `filters` says, for each condition and
+    each of the panel's datasets, the column it filtered or why it filtered none. The client
+    was regenerated in all four UIs.
+  - **Postgres.** A formula's string literal compared with a date, timestamp, time or UUID
+    column now binds as that type (`sc-db-postgres` `value.rs`). Before, `sold_on >=
+    "2024-02-01"` failed on Postgres and worked on SQLite.
+- **Drill paths** (A6.5; `dashboard/drill.ts`, `DrillForm.tsx`).
+  - The tile menu's *Add a drill path…* picks a channel (X, Y or Color) and the columns it
+    shows at each level, starting from the plot's own column. It is saved on the tile as
+    `drill: { channel, path }`, and goes with a copy into another dashboard.
+  - A click on a value of the level's column shows the next level for that value: the same
+    plot with the next column, unbinned and without the first column's fixed order. The
+    values picked filter only that tile.
+  - A breadcrumb ("All district › 2 · category") goes back up. At the last level a click
+    selects, as on any tile. Where someone is on the path is not saved.
+- **The filter bar** (A6.6; `FilterBar.tsx`).
+  - Below the toolbar, a chip for each filter: the dashboard's own filled, selections
+    outlined. Each chip has a ×, and *Clear all* removes them all.
+  - **+ Filter** makes a dashboard-wide filter on a column of any dataset, the dashboard's own
+    datasets first.
+    - A text, true-or-false or key column is filtered by ticking its values, most frequent
+      first (`datasetColumnValues`).
+    - A number, date or timestamp column takes a from–to range.
+    - Saved in the state's `filters`.
+  - **Refresh** never, or every 30 s, 1, 5 or 15 minutes, or hourly (the state's `refresh`, in
+    seconds), and ↻ now.
+  - **Badge.** A tile's header says which columns the filters narrowed it by ("by
+    category"), or "not filtered" when none reached it. Its tooltip gives each filter's
+    reason ("`Incidents` has no column that refers to `districts`").
+- **The server checks the new state** (`panel::check_state`):
+  - a tile's `drill`: 2 to 8 different columns, along X, Y or Color;
+  - the `filters`: each a condition, with different ids, at most 20;
+  - `refresh`: 0, or 10 to 86,400 seconds.
+- **Tests.**
+  - `sc-analytics` unit tests: conditions read and refused; literals per column type
+    (milliseconds to days, instants, an integer that is not one); clicks and brushes as
+    formulas; propagation through foreign keys, to a table's own rows, and the refusals (no
+    column refers to the table, two do, a column gone, a dataset gone, rows without a key); a
+    scope joined with a layer's filter; the dashboard's drill paths, filters and refresh.
+  - `sc-analytics/tests/crossfilter.rs` on **both** Postgres and SQLite, against rows counted
+    by hand:
+    - a district clicked on a map of `districts` filters a dataset of `patrols` that only
+      shares the `district` key (14 → 8 hours), the incidents (3) and the districts (1);
+    - a bar of an aggregated dataset does the same;
+    - two conditions together; a category that does not reach the patrols, and says why; a
+      missing value; a value of the wrong type;
+    - date ranges with and without their end, and a timestamp range from milliseconds;
+    - a bar chart and a summary table filtered;
+    - a card's unfiltered comparison;
+    - a map layer's request carrying both filters.
+  - `sc-db-postgres`: text into date, timestamp, time and UUID placeholders.
+  - `sc-server`: `analytics_api::a_dashboards_panels_are_drawn_with_its_selections_and_filters`
+    (a neighbourhood clicked filters the houses through their foreign key, a brushed range on
+    top, a malformed filter refused, a dashboard saved with filters, a drill path and a
+    refresh, and a bad refresh refused).
+  - vitest:
+    - `plot/select.test.ts`: bars, foreign keys and missing values, flipped plots, colour
+      groups, histogram bins, scatter brushes, dates along a time axis, declared selections, a
+      box, and what picks nothing;
+    - `dashboard/filters.test.ts`: selections replaced, toggled, added and let go; the
+      conditions a tile is drawn with; reading stored filters; labels; map features; ranges
+      typed in the form;
+    - `dashboard/drill.test.ts`: paths read, drilled specs, drill conditions, going down, and
+      the path kept with the tile and its copies.
+- **Walked in headless Chromium** against `feldspar demo analytics` on a PostGIS scratch
+  database. The Map toolbox made "Incidents per Districts" (*Count per region*) and "Incidents
+  with Districts" (*Spatial join*). The dashboard had seven tiles: bars of incidents by
+  category, two incident cards, incidents per day, the districts map, district bars with a
+  drill path *name → category*, and the per-district counts.
+  - Clicking *burglary* filtered both cards (726, "30% of all 2,400"; December 65, "▲ +23%")
+    and the line chart. The district tiles said "not filtered", with the reason.
+  - Brushing May to August on the line chart added a `reported_on` range (184 left).
+  - Clicking district 6 (Fairview) on the map filtered "Incidents with Districts" through
+    `id_right` and the per-district counts through `district`. The incident tiles said
+    `Incidents` has no column that refers to `districts`.
+  - Clicking Ashford drilled to its categories. The breadcrumb went back up.
+  - *+ Filter* on `category` ticked *burglary*. The filter and a 30 s refresh were saved in
+    the state, with the drill path.
+  - No page errors.
+  - Two fixes came out of the walk. The filter badge moved from the tile's body, where it
+    covered a card's sparkline and its funnel glyph had no font, to the header in words. The
+    breadcrumb's "All name" became "name · click a value to drill down to category".
+- **Not done here**: A6.7 (`TECHNICAL_DESIGN.md` and the tutorial's part 6) and A6.8 (the
+  definition-of-done test). A selected bar is not yet drawn differently from the others on
+  the tile it was clicked on: the filter bar shows what is selected.
+
 ## Analytics A6.1–A6.2: the Dashboard workspace, and stat cards
 
 The first phase of milestone A6 (Dashboards). A *Dashboard* workspace can now be created: tiles

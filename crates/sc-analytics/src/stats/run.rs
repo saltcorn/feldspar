@@ -31,9 +31,10 @@ use super::hypothesis::{
     one_sample_t, paired_signed_rank, paired_t, pearson, shapiro, signed_rank, spearman, tukey_hsd,
     welch_t,
 };
+use crate::crossfilter::Scope;
 use crate::plot::render::{
     Halt, INNER, Key, POINTS, Renderer, SEED, Step, agg, cast, f64_of, group_exprs, group_order,
-    group_projections, key_values, plot_rows, v,
+    group_projections, key_values, plot_rows_in, v,
 };
 use crate::plot::validate::Dim;
 use crate::plot::{Channel, FieldDef, Layer, LinearSums, Mark, PlotSpec, Stat};
@@ -251,7 +252,16 @@ impl Section {
 /// group's results, or the sentence saying why there is no test. Reads as
 /// the admin, as `render_plot` does.
 pub async fn run_tests(catalog: &Catalog, spec: &TestSpec) -> Result<TestsAnswer> {
-    let rows = match plot_rows(catalog, &spec.data).await? {
+    run_tests_in(catalog, spec, &Scope::none()).await
+}
+
+/// [`run_tests`] over the rows a dashboard's conditions keep (A6.4).
+pub async fn run_tests_in(
+    catalog: &Catalog,
+    spec: &TestSpec,
+    scope: &Scope,
+) -> Result<TestsAnswer> {
+    let rows = match plot_rows_in(catalog, &spec.data, scope).await? {
         Ok(rows) => rows,
         Err(sentence) => return Ok(TestsAnswer::refuse(sentence)),
     };

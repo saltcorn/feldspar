@@ -1321,6 +1321,122 @@
   pointer-events: none;
 }
 
+/* The filter bar (A6.6): what filters the tiles, each removable. */
+.an-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid var(--tblr-border-color);
+  background: var(--tblr-bg-surface);
+}
+
+.an-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 24rem;
+  border-radius: 999px;
+  padding: 0.05rem 0.2rem 0.05rem 0.6rem;
+  font-size: 0.8rem;
+  background: var(--tblr-primary, #206bc4);
+  color: #fff;
+}
+
+/* A selection made on a tile: outlined, since it is not saved. */
+.an-filter-chip.an-selection {
+  background: transparent;
+  color: var(--tblr-primary, #206bc4);
+  border: 1px solid var(--tblr-primary, #206bc4);
+}
+
+.an-filter-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.an-filter-chip-remove {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0 0.3rem;
+  line-height: 1;
+  font-size: 1rem;
+  opacity: 0.8;
+}
+
+.an-filter-chip-remove:hover {
+  opacity: 1;
+}
+
+.an-filter-values {
+  max-height: 16rem;
+  overflow: auto;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+}
+
+.an-refresh {
+  width: auto;
+}
+
+/* Which columns the dashboard's filters narrowed a tile by, in its header. */
+.an-panel-filtered {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  color: var(--tblr-primary, #206bc4);
+  border: 1px solid currentColor;
+  cursor: help;
+}
+
+.an-panel-filtered.an-unfiltered {
+  color: var(--tblr-secondary, #667382);
+  border-style: dashed;
+}
+
+/* A drilled tile's way back up (A6.5). */
+.an-drill-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem;
+  padding: 0 0.5rem 0.25rem;
+  font-size: 0.8rem;
+}
+
+.an-drill-crumbs .btn-link {
+  font-size: inherit;
+  vertical-align: baseline;
+}
+
+.an-drill-sep {
+  margin: 0 0.3rem;
+  color: var(--tblr-secondary, #667382);
+}
+
+.an-drill-path {
+  padding-left: 1.25rem;
+}
+
+.an-drill-path li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
+}
+
+.an-drill-level {
+  font-family: var(--tblr-font-monospace, monospace);
+}
+
 .an-card {
   display: flex;
   flex-direction: column;

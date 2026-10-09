@@ -29,5 +29,5 @@ pub use hypothesis::{
 };
 pub use run::{
     Analysis, Comparison, Entry, Level, MAX_GROUPS, MAX_PAIRWISE_GROUPS, MAX_SECTIONS, Section,
-    TEST_SAMPLE, TestsAnswer, run_tests,
+    TEST_SAMPLE, TestsAnswer, run_tests, run_tests_in,
 };

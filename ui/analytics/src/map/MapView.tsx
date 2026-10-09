@@ -88,9 +88,10 @@ export function MapView({
   /** The selected features of one layer, by its place in the spec. */
   selection?: { layer: number; ids: unknown[] } | null;
   tool?: MapTool;
-  /** A feature clicked: its layer's place in the spec, its id, and whether a
-   * modifier key adds to the selection. A click on nothing is `null`. */
-  onFeatureClick?: (hit: { layer: number; id: unknown } | null, add: boolean) => void;
+  /** A feature clicked: its layer's place in the spec, its id and the
+   * columns it carries, and whether a modifier key adds to the selection. A
+   * click on nothing is `null`. */
+  onFeatureClick?: (hit: { layer: number; id: unknown; properties: Record<string, unknown> } | null, add: boolean) => void;
   /** A point picked with the point tool, in degrees. */
   onMapClick?: (lngLat: { lng: number; lat: number }) => void;
   /** A lasso drawn, as a GeoJSON polygon in degrees. */
@@ -261,7 +262,10 @@ export function MapView({
       const found = hit(e.point);
       const add = e.originalEvent.shiftKey || e.originalEvent.ctrlKey || e.originalEvent.metaKey;
       const id = found?.feature.id;
-      handlers.current.onFeatureClick?.(found && id !== undefined ? { layer: found.index, id } : null, add);
+      handlers.current.onFeatureClick?.(
+        found && id !== undefined ? { layer: found.index, id, properties: found.feature.properties ?? {} } : null,
+        add,
+      );
     };
     m.on("mousemove", move);
     m.on("mouseout", leave);

@@ -48,6 +48,7 @@ use sc_dataset::{ColType, DatasetId, Options, Schema, StageColumn, StageShape, c
 use sc_error::{Error, Result};
 
 use crate::classify::{Classification, MAX_CLASSES, MIN_CLASSES, breaks};
+use crate::crossfilter::Scope;
 use crate::layer::{
     GeometrySource, LayerData, LayerRequest, Limits, Spread, layer_data, layer_domains,
     layer_sketch,
@@ -813,11 +814,23 @@ pub struct RenderedMap {
 
 /// Each layer's features and the domains of its encoded columns.
 pub async fn render_map(catalog: &Catalog, spec: &MapSpec) -> Result<RenderedMap> {
+    render_map_in(catalog, spec, &Scope::none()).await
+}
+
+/// [`render_map`] on a dashboard (A6.4): each layer shows the rows its own
+/// filter and the conditions on its dataset keep. Both are the layer's
+/// filter, so its tiles, fetched by URL, are filtered too.
+pub async fn render_map_in(
+    catalog: &Catalog,
+    spec: &MapSpec,
+    scope: &Scope,
+) -> Result<RenderedMap> {
     let schema = Schema::of_catalog(catalog)?;
     let library = sc_dataset::load_library(catalog).await?;
     let mut layers = Vec::with_capacity(spec.layers.len());
     for layer in &spec.layers {
-        let request = layer.request();
+        let mut request = layer.request();
+        request.filter = scope.and_filter(layer.dataset, request.filter.as_deref());
         let refuse = |error: String| RenderedLayer {
             layer: request.clone(),
             data: LayerData::Refused { error },

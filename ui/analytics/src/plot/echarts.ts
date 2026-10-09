@@ -59,6 +59,57 @@ export type CompileOptions = {
   categorical?: string[];
 };
 
+/** What a category of an axis stands for: a value, or a bin's range. */
+export type AxisPick = { value: unknown } | { range: [number, number] };
+
+/** What a click or a brush on a drawn plot can be read back as (A6.3): how
+ * each position channel is drawn and what its categories stand for, and the
+ * colour groups. */
+export type SelectionInfo = {
+  /** Whether X is drawn vertically. */
+  flipped: boolean;
+  /** Plots drawn on shares (mosaics), around a centre (polar) or along
+   * parallel axes: what is under the pointer is not a column's value. */
+  drawnApart: boolean;
+  axes: Record<"x" | "y", { kind: AxisKind; categories: string[]; picks: AxisPick[]; dateOnly: boolean }>;
+  /** The channel drawn as histogram bars, by their bins' edges. */
+  binnedOn: "x" | "y" | null;
+  /** The colour groups' names and values, when Color groups the rows. */
+  colors: { labels: string[]; values: unknown[] } | null;
+};
+
+/** What a click or a brush on the plot `toOption` draws for `spec` and
+ * `data` reads back as (A6.3). */
+export function selectionInfo(spec: PlotSpec, data: PlotData, options: CompileOptions): SelectionInfo {
+  const missing = options.missing ?? "—";
+  const countLabel = options.countLabel ?? "count";
+  const categorical = options.categorical ?? [];
+  const drawnApart =
+    spec.coord === "parallel" || spec.coord === "polar" || spec.layers.some((l) => l.mark === "mosaic");
+  const axis = (c: "x" | "y") => {
+    const info = axisInfo(spec, data, c, missing, countLabel, categorical);
+    // A time axis of dates, not instants: a brush along it picks days.
+    const values = data.domains[c]?.values ?? [];
+    const dateOnly = values.length > 0 && values.every((v) => typeof v === "string" && v.length === 10);
+    return { kind: info.kind, categories: info.categories, picks: info.picks, dateOnly };
+  };
+  const axes = { x: axis("x"), y: axis("y") };
+  const binnedOn =
+    (["x", "y"] as const).find(
+      (c) => axes[c].kind !== "category" && data.layers.some((l, i) => spec.layers[i]?.mark === "bar" && idx(l, `${c}_end`) !== -1),
+    ) ?? null;
+  const grouped =
+    !continuousColor(spec, data, categorical) && spec.layers.some((l) => l.encoding.color !== undefined) && data.domains.color;
+  const colorValues = grouped ? orderedValues({ spec }, fieldOn(spec, "color"), data.domains.color?.values ?? []) : [];
+  return {
+    flipped: spec.coord === "flipped",
+    drawnApart,
+    axes,
+    binnedOn,
+    colors: grouped ? { values: colorValues, labels: colorValues.map((v) => labelOf(v, missing)) } : null,
+  };
+}
+
 /** A small multiple: which facet values it shows, and where it is drawn. */
 export type Panel = {
   index: number;
@@ -96,6 +147,8 @@ type AxisInfo = {
   kind: AxisKind;
   /** The category labels, in order, for a category axis. */
   categories: string[];
+  /** What each category is: its value, or a bin's range (A6.3). */
+  picks: AxisPick[];
   /** A row's value as its category label. */
   category: (layer: LayerData, row: unknown[]) => string;
   name: string;
@@ -303,6 +356,7 @@ function axisInfo(
 
   // Category labels: a binned channel's bins, else the domain's values.
   let categories: string[] = [];
+  let picks: AxisPick[] = [];
   let category: AxisInfo["category"] = (_l, _r) => "";
   if (kind === "category") {
     if (binned) {
@@ -318,6 +372,7 @@ function axisInfo(
       }
       const sorted = [...edges.entries()].sort((a, b) => a[0] - b[0]);
       categories = sorted.map(([lo, hi]) => `${formatNumber(lo)}–${formatNumber(hi)}`);
+      picks = sorted.map(([lo, hi]) => ({ range: [lo, hi] }));
       category = (l, r) => {
         const lo = num(r[idx(l, channel)]);
         const hi = num(r[idx(l, `${channel}_end`)]);
@@ -344,6 +399,7 @@ function axisInfo(
           ]
         : sorted;
       categories = values.map((v) => labelOf(v, missing));
+      picks = values.map((v) => ({ value: v }));
       category = (l, r) => labelOf(r[idx(l, channel)], missing);
     }
   }
@@ -355,6 +411,7 @@ function axisInfo(
   return {
     kind,
     categories,
+    picks,
     category,
     name: computed && !field ? countName(spec, channel, countLabel) : axisTitle(spec, field),
     scale,
@@ -1042,8 +1099,8 @@ function compileOption(spec: PlotSpec, data: PlotData, options: CompileOptions):
   const mosaic = spec.layers.some((l) => l.mark === "mosaic");
   if (mosaic) {
     // Tiles are drawn on shares, 0 to 1 each way.
-    ctx.axes.x = { ...ctx.axes.x, kind: "value", categories: [], zero: true };
-    ctx.axes.y = { ...ctx.axes.y, kind: "value", categories: [], zero: true };
+    ctx.axes.x = { ...ctx.axes.x, kind: "value", categories: [], picks: [], zero: true };
+    ctx.axes.y = { ...ctx.axes.y, kind: "value", categories: [], picks: [], zero: true };
   }
   // A legend whenever a column (or a mosaic's Y) is told apart by colour.
   const legendShown =

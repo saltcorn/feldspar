@@ -8,8 +8,8 @@
 //! - a **comparison**, either with the **previous period** (the card's time
 //!   column, bucketed by a day, week, month, quarter or year: the value is the
 //!   current period's and the comparison the one before), or with the value
-//!   **unfiltered** (the same aggregate without the card's filter — and, from
-//!   A6.4, without the dashboard's selections — so a card can say "23% of all");
+//!   **unfiltered** (the same aggregate without the card's filter or the
+//!   dashboard's selections, so a card can say "23% of all");
 //! - a **sparkline**: the value in each of the last N periods.
 //!
 //! The current period is the one holding the latest date in the (filtered)
@@ -18,12 +18,12 @@
 //!
 //! **Execution.** Formulas are the dataset's own: the card's filter is a
 //! Filter operation appended to the dataset's operations, compiled with them,
-//! so it is checked and translated as any Filter is (A6.4 appends the
-//! dashboard's selections the same way). Periods are bucketed without date
-//! functions — neither database has one the other shares — by comparing the
-//! time column with the periods' bounds, worked out here: one `CASE` gives
-//! each row its period's number, and one grouped query (or, for a median, the
-//! plot renderer's percentiles) answers every period at once.
+//! so it is checked and translated as any Filter is; a dashboard's selections
+//! are appended the same way (A6.4, [`render_card_in`]). Periods are bucketed
+//! without date functions — neither database has one the other shares — by
+//! comparing the time column with the periods' bounds, worked out here: one
+//! `CASE` gives each row its period's number, and one grouped query (or, for
+//! a median, the plot renderer's percentiles) answers every period at once.
 
 use std::sync::Arc;
 
@@ -36,6 +36,7 @@ use sc_error::{Error, Result};
 use sc_query::{BinOp, CaseArm, Expr, Projection, Select, Source, Value};
 use serde::{Deserialize, Serialize};
 
+use crate::crossfilter::{Scope, filter_failure};
 use crate::plot::render::{DATA, POINTS, PlotRows, Renderer, agg, cast, f64_of, g, v};
 use crate::plot::{DataRef, Layer, Mark, PlotSpec, Stat};
 
@@ -466,18 +467,30 @@ pub struct SparkPoint {
 /// Work out `card` from its dataset as it is now. Reads as the admin, as
 /// `render_plot` does.
 pub async fn render_card(catalog: &Catalog, card: &StatCard) -> Result<RenderedCard> {
+    render_card_in(catalog, card, &Scope::none()).await
+}
+
+/// [`render_card`] on a dashboard whose conditions apply (A6.4): they narrow
+/// the rows as the card's own filter does, and a comparison with the value
+/// **unfiltered** leaves both out — "34% of all" is a share of every row.
+pub async fn render_card_in(
+    catalog: &Catalog,
+    card: &StatCard,
+    scope: &Scope,
+) -> Result<RenderedCard> {
     card.check()?;
     let Some(def) = sc_dataset::load_dataset(catalog, card.dataset).await? else {
         return Ok(RenderedCard::refuse(
             "the dataset this card reads is gone; pick another",
         ));
     };
-    let filters: Vec<Operation> = card
+    let mut filters: Vec<Operation> = card
         .filter
         .iter()
         .filter(|f| !f.trim().is_empty())
         .map(|f| Operation::new("_fd_card_filter", Op::filter(f.clone())))
         .collect();
+    filters.extend(scope.operations(card.dataset));
     let all = match card_rows(catalog, &def, &[]).await? {
         Ok(rows) => rows,
         Err(sentence) => return Ok(RenderedCard::refuse(sentence)),
@@ -495,9 +508,14 @@ pub async fn render_card(catalog: &Catalog, card: &StatCard) -> Result<RenderedC
         match card_rows(catalog, &def, &filters).await? {
             Ok(rows) => Some(rows),
             Err(sentence) => {
-                return Ok(RenderedCard::refuse(format!(
-                    "the card's filter does not read: {sentence}"
-                )));
+                let mut def = def.clone();
+                def.operations.extend(filters);
+                let schema = Schema::of_catalog(catalog)?;
+                let library = sc_dataset::load_library(catalog).await?;
+                return Ok(RenderedCard::refuse(
+                    filter_failure(&schema, &library, &def)
+                        .unwrap_or_else(|| format!("the card's filter does not read: {sentence}")),
+                ));
             }
         }
     };

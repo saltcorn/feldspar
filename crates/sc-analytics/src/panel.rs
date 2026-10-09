@@ -42,14 +42,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
-use crate::card::{RenderedCard, StatCard, render_card};
-use crate::map::{MapSpec, RenderedMap, render_map};
+use crate::card::{RenderedCard, StatCard, render_card_in};
+use crate::crossfilter::{self, Applied, Condition};
+use crate::map::{MapSpec, RenderedMap, render_map_in};
 use crate::model_outputs::{OutputView, render_one_output};
 use crate::plot::render::plot_rows;
 use crate::plot::{
-    DataRef, PlotSpec, Rendered, RenderedTable, TableSpec, render_plot, render_table,
+    Channel, DataRef, PlotSpec, Rendered, RenderedTable, TableSpec, render_plot_in, render_table_in,
 };
-use crate::stats::{TestSpec, TestsAnswer, run_tests};
+use crate::stats::{TestSpec, TestsAnswer, run_tests_in};
 use crate::workspace::{Workspace, WorkspaceId, WorkspaceKind, list_workspaces};
 
 /// The longest a text panel may be, in bytes.
@@ -381,10 +382,12 @@ pub const MAX_TILE_ROWS: u64 = 40;
 /// The most tiles a dashboard holds.
 pub const MAX_TILES: usize = 100;
 
-/// A dashboard's tiles (A6.1): each `{ id, panel, x, y, w, h }`, placed on a
-/// grid [`DASHBOARD_COLUMNS`] wide — `x` and `w` in columns, `y` and `h` in
-/// rows — without overlapping. The browser lays a narrow screen out in one
-/// column from the same tiles; what is stored is the wide layout.
+/// A dashboard's tiles (A6.1): each `{ id, panel, x, y, w, h, drill? }`,
+/// placed on a grid [`DASHBOARD_COLUMNS`] wide — `x` and `w` in columns, `y`
+/// and `h` in rows — without overlapping. The browser lays a narrow screen
+/// out in one column from the same tiles; what is stored is the wide layout.
+/// Beside the tiles, its own `filters` (conditions, A6.6) and how often it
+/// `refresh`es, in seconds.
 fn check_dashboard(state: &Json) -> Result<()> {
     let tiles = match state.get("tiles") {
         None => &[][..],
@@ -425,6 +428,9 @@ fn check_dashboard(state: &Json) -> Result<()> {
                 "is 1 to {MAX_TILE_ROWS} rows high, not {h}"
             )));
         }
+        if let Some(drill) = tile.get("drill") {
+            check_drill(drill).map_err(|why| refuse(&why))?;
+        }
         let rect = [x, y, w, h];
         if let Some((j, _)) = placed.iter().find(|(_, o)| overlap(o, &rect)) {
             return Err(Error::invalid(format!(
@@ -434,6 +440,69 @@ fn check_dashboard(state: &Json) -> Result<()> {
             )));
         }
         placed.push((i, rect));
+    }
+    if let Some(filters) = state.get("filters") {
+        let filters = Condition::list_of(filters)
+            .map_err(|e| Error::invalid(format!("the dashboard's filters: {e}")))?;
+        if filters.len() > MAX_DASHBOARD_FILTERS {
+            return Err(Error::invalid(format!(
+                "a dashboard has at most {MAX_DASHBOARD_FILTERS} filters of its own"
+            )));
+        }
+    }
+    match state.get("refresh") {
+        None | Some(Json::Null) => {}
+        Some(r) => match r.as_u64() {
+            Some(0) => {}
+            Some(s) if REFRESH_SECONDS.contains(&s) => {}
+            _ => {
+                return Err(Error::invalid(format!(
+                    "a dashboard refreshes every {} to {} seconds, or not at all",
+                    REFRESH_SECONDS.start(),
+                    REFRESH_SECONDS.end()
+                )));
+            }
+        },
+    }
+    Ok(())
+}
+
+/// The most filters a dashboard keeps of its own (A6.6); a panel is drawn
+/// with those and the selections, at most [`crossfilter::MAX_CONDITIONS`].
+pub const MAX_DASHBOARD_FILTERS: usize = 20;
+/// How often a dashboard may refresh its panels, in seconds (A6.6).
+pub const REFRESH_SECONDS: std::ops::RangeInclusive<u64> = 10..=86_400;
+/// The most levels a drill path has (A6.5).
+pub const MAX_DRILL_LEVELS: usize = 8;
+
+/// A tile's drill path (A6.5): `{ channel, path }`, the columns the channel
+/// shows at each level, outermost first — `district`, then `category`. A click
+/// on a value at one level shows the next, for that value.
+fn check_drill(drill: &Json) -> std::result::Result<(), String> {
+    let channel = drill
+        .get("channel")
+        .cloned()
+        .map(serde_json::from_value::<Channel>)
+        .and_then(std::result::Result::ok);
+    if !matches!(channel, Some(Channel::X | Channel::Y | Channel::Color)) {
+        return Err("drills down along X, Y or Color".to_owned());
+    }
+    let Some(path) = drill.get("path").and_then(Json::as_array) else {
+        return Err("has a drill path without its columns".to_owned());
+    };
+    let names: Vec<&str> = path.iter().filter_map(Json::as_str).collect();
+    if names.len() != path.len() || names.iter().any(|n| n.trim().is_empty()) {
+        return Err("has a drill path whose levels are not all columns".to_owned());
+    }
+    if !(2..=MAX_DRILL_LEVELS).contains(&names.len()) {
+        return Err(format!(
+            "has a drill path of {} levels, and one has 2 to {MAX_DRILL_LEVELS}",
+            names.len()
+        ));
+    }
+    let distinct: BTreeSet<&str> = names.iter().copied().collect();
+    if distinct.len() != names.len() {
+        return Err("has a drill path that names a column twice".to_owned());
     }
     Ok(())
 }
@@ -587,6 +656,10 @@ pub struct RenderedPanel {
     /// explorer does, as values rather than a scale.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categorical: Vec<String>,
+    /// What each of a dashboard's conditions did to each dataset the panel
+    /// reads: the column it filtered, or why it filtered none (A6.4).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<Applied>,
 }
 
 /// The foreign key columns of the rows `data` names.
@@ -628,6 +701,18 @@ pub async fn missing_reference(catalog: &Catalog, panel: &Panel) -> Result<Optio
 /// Draw `panel` from its datasets and fits as they are now. A panel whose
 /// dataset or fit is gone answers the sentence saying so in `error`.
 pub async fn render_panel(catalog: &Catalog, panel: &Panel) -> Result<RenderedPanel> {
+    render_panel_in(catalog, panel, &[]).await
+}
+
+/// [`render_panel`] on a dashboard (A6.3–A6.4): over the rows `conditions`
+/// keep, each applied to the panel's datasets it reaches
+/// ([`crossfilter::scope`]). What became of each is in the answer's
+/// `filters`.
+pub async fn render_panel_in(
+    catalog: &Catalog,
+    panel: &Panel,
+    conditions: &[Condition],
+) -> Result<RenderedPanel> {
     panel.check()?;
     let mut out = RenderedPanel {
         kind: panel.body.kind(),
@@ -637,16 +722,20 @@ pub async fn render_panel(catalog: &Catalog, panel: &Panel) -> Result<RenderedPa
         out.error = Some(sentence);
         return Ok(out);
     }
+    let scope = crossfilter::scope(catalog, conditions, &panel.datasets()).await?;
+    out.filters = scope.applied.clone();
     match &panel.body {
         PanelBody::Plot { spec } => {
-            out.plot = Some(render_plot(catalog, spec).await?);
+            out.plot = Some(render_plot_in(catalog, spec, &scope).await?);
             out.categorical = categorical(catalog, &spec.data).await?;
         }
-        PanelBody::SummaryTable { spec } => out.table = Some(render_table(catalog, spec).await?),
+        PanelBody::SummaryTable { spec } => {
+            out.table = Some(render_table_in(catalog, spec, &scope).await?);
+        }
         PanelBody::TestResult { tests, plot } => {
-            out.tests = Some(run_tests(catalog, tests).await?);
+            out.tests = Some(run_tests_in(catalog, tests, &scope).await?);
             if let Some(spec) = plot {
-                out.plot = Some(render_plot(catalog, spec).await?);
+                out.plot = Some(render_plot_in(catalog, spec, &scope).await?);
                 out.categorical = categorical(catalog, &spec.data).await?;
             }
         }
@@ -667,8 +756,10 @@ pub async fn render_panel(catalog: &Catalog, panel: &Panel) -> Result<RenderedPa
                 }
             }
         }
-        PanelBody::Map { spec } => out.map = Some(render_map(catalog, spec).await?),
-        PanelBody::StatCard(card) => out.card = Some(render_card(catalog, card).await?),
+        PanelBody::Map { spec } => out.map = Some(render_map_in(catalog, spec, &scope).await?),
+        PanelBody::StatCard(card) => {
+            out.card = Some(render_card_in(catalog, card, &scope).await?);
+        }
         PanelBody::Custom { renderer, .. } => {
             out.error = Some(format!(
                 "This panel is drawn by `{renderer}`, which is not installed."
@@ -904,6 +995,60 @@ mod tests {
             vec![tile("a", bad, [0, 0, 4, 2])],
             "panel 1 of the workspace",
         );
+    }
+
+    #[test]
+    fn a_dashboard_keeps_drill_paths_filters_and_a_refresh_interval() {
+        let incidents = DatasetId::new();
+        let mut bar = tile("a", dataset_plot(incidents), [0, 0, 6, 4]);
+        bar["drill"] = json!({ "channel": "x", "path": ["district", "category"] });
+        let state = json!({
+            "tiles": [bar.clone()],
+            "filters": [{ "id": "f1", "dataset": incidents, "column": "category",
+                          "values": ["burglary"] },
+                        { "id": "f2", "dataset": incidents, "column": "occurred_on",
+                          "range": { "min": "2025-01-01" } }],
+            "refresh": 300,
+        });
+        check_state(WorkspaceKind::Dashboard, &state).expect("a dashboard");
+        check_state(
+            WorkspaceKind::Dashboard,
+            &json!({ "tiles": [], "refresh": 0 }),
+        )
+        .expect("no refresh");
+
+        let refused = |change: &dyn Fn(&mut Json), says: &str| {
+            let mut s = state.clone();
+            change(&mut s);
+            let err = check_state(WorkspaceKind::Dashboard, &s).expect_err(says);
+            assert!(err.to_string().contains(says), "{err} should say {says}");
+        };
+        refused(
+            &|s| s["tiles"][0]["drill"]["path"] = json!(["district"]),
+            "tile 1 of the dashboard has a drill path of 1 levels",
+        );
+        refused(
+            &|s| s["tiles"][0]["drill"]["path"] = json!(["district", "district"]),
+            "names a column twice",
+        );
+        refused(
+            &|s| s["tiles"][0]["drill"]["channel"] = json!("size"),
+            "drills down along X, Y or Color",
+        );
+        refused(
+            &|s| s["tiles"][0]["drill"]["path"] = json!(["district", 3]),
+            "not all columns",
+        );
+        refused(
+            &|s| s["filters"][1]["id"] = json!("f1"),
+            "two filters have the id `f1`",
+        );
+        refused(
+            &|s| s["filters"][0]["values"] = json!([]),
+            "the dashboard's filters: filter 1: a filter keeps at least one value",
+        );
+        refused(&|s| s["refresh"] = json!(5), "every 10 to 86400 seconds");
+        refused(&|s| s["refresh"] = json!("often"), "every 10 to 86400");
     }
 
     #[test]

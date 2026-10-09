@@ -73,6 +73,27 @@ impl PgParam<'_> {
                     .map_err(|_| BoxError::from(format!("{v:?} is not a GeoJSON geometry")))?;
                 encode_geometry(&json, out)
             }
+            // A formula's string literal compared with a date, a time, an
+            // instant or a UUID (`sold_on >= "2024-02-01"`, a dashboard's
+            // date range): Postgres infers the placeholder from the column,
+            // and SQLite compares the same text with what it stores.
+            Value::Text(v) if *ty == Type::DATE => {
+                parse_text(v, ty, parse_date)?.to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::TIMESTAMPTZ => {
+                parse_text(v, ty, parse_instant)?.to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::TIMESTAMP => {
+                parse_text(v, ty, |s| parse_instant(s).map(|t| t.naive_utc()))?
+                    .to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::TIME => {
+                parse_text(v, ty, |s| NaiveTime::parse_from_str(s, "%H:%M:%S%.f").ok())?
+                    .to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::UUID => {
+                parse_text(v, ty, |s| Uuid::parse_str(s).ok())?.to_sql_checked(ty, out)
+            }
             Value::Text(v) => v.to_sql_checked(ty, out),
             Value::Bytes(v) => v.to_sql_checked(ty, out),
             Value::Json(v) => v.to_sql_checked(ty, out),
@@ -83,6 +104,40 @@ impl PgParam<'_> {
             Value::Decimal(v) => v.to_sql_checked(ty, out),
         }
     }
+}
+
+/// Text read as the value a placeholder of type `ty` takes, or the error
+/// naming both.
+fn parse_text<T>(
+    text: &str,
+    ty: &Type,
+    parse: impl Fn(&str) -> Option<T>,
+) -> std::result::Result<T, BoxError> {
+    parse(text.trim()).ok_or_else(|| BoxError::from(format!("{text:?} is not a {}", ty.name())))
+}
+
+/// A date, or the date of an instant written in full.
+fn parse_date(text: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .ok()
+        .or_else(|| parse_instant(text).map(|t| t.date_naive()))
+}
+
+/// An instant: RFC 3339, a date and time without a zone (read as UTC), or a
+/// date alone (its midnight, UTC).
+fn parse_instant(text: &str) -> Option<DateTime<Utc>> {
+    if let Ok(t) = DateTime::parse_from_rfc3339(text) {
+        return Some(t.with_timezone(&Utc));
+    }
+    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(text, format) {
+            return Some(naive.and_utc());
+        }
+    }
+    NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|naive| naive.and_utc())
 }
 
 /// A GeoJSON geometry as the EWKB a PostGIS parameter takes.
@@ -290,6 +345,37 @@ mod tests {
             PgParam(&Value::Float(1.5))
                 .to_sql_checked(&Type::FLOAT4, &mut out)
                 .is_ok()
+        );
+    }
+
+    /// A formula's string literal compared with a date, an instant, a time
+    /// or a UUID column: `sold_on >= "2024-02-01"` (a dashboard's date range,
+    /// analytics TODO A6.3).
+    #[test]
+    fn text_encodes_into_temporal_and_uuid_placeholders() {
+        let mut out = BytesMut::new();
+        let text = |s: &str| Value::Text(s.to_owned());
+        for (value, ty) in [
+            (text("2024-02-01"), Type::DATE),
+            (text("2024-02-01T12:00:00.000Z"), Type::DATE),
+            (text("2024-02-01T12:00:00.000Z"), Type::TIMESTAMPTZ),
+            (text("2024-02-01"), Type::TIMESTAMPTZ),
+            (text("2024-02-01 12:00:00"), Type::TIMESTAMP),
+            (text("12:30:00"), Type::TIME),
+            (text("67e55044-10b1-426f-9247-bb680e5fe0c8"), Type::UUID),
+        ] {
+            assert!(
+                PgParam(&value).to_sql_checked(&ty, &mut out).is_ok(),
+                "{value:?} into {ty}"
+            );
+        }
+        let Err(err) = PgParam(&text("soon")).to_sql_checked(&Type::DATE, &mut out) else {
+            panic!("\"soon\" is not a date");
+        };
+        assert!(err.to_string().contains("\"soon\" is not a date"), "{err}");
+        assert_eq!(
+            parse_instant("2024-02-01").map(|t| t.to_rfc3339()),
+            Some("2024-02-01T00:00:00+00:00".to_owned())
         );
     }
 }

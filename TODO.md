@@ -577,15 +577,15 @@ drill-down.
 
 ## Phase 2 — Cross-filtering and drill-down
 
-- [ ] A6.3 Selections: clicks and brushes on ECharts and MapLibre panels become the spec's
+- [x] A6.3 Selections: clicks and brushes on ECharts and MapLibre panels become the spec's
       declared selections, and those become filter conditions on the encoded columns. Tests.
-- [ ] A6.4 Propagation: a condition applies to panels on the same dataset through the column,
+- [x] A6.4 Propagation: a condition applies to panels on the same dataset through the column,
       and to panels on other datasets through a column with a foreign key to the same table
       (from the stage shapes). On the server, it is an extra Filter at the end of the
       dataset's operations. Tests: selecting a district filters a panel on a dataset that
       only has a `district` foreign key.
-- [ ] A6.5 Drill paths on a panel, with a breadcrumb. Tests.
-- [ ] A6.6 The filter bar: the active filters, removing one or all, and dashboard-wide filters
+- [x] A6.5 Drill paths on a panel, with a breadcrumb. Tests.
+- [x] A6.6 The filter bar: the active filters, removing one or all, and dashboard-wide filters
       on a column; an optional refresh interval. Tests.
 
 ## Phase 3 — Documentation, definition of done

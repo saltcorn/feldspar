@@ -174,6 +174,9 @@ pub enum LayerData {
         geometry: GeometryKinds,
         /// The columns each feature carries, with their types.
         properties: Vec<StageColumn>,
+        /// Whether a feature's id is its row's key (else its place in the
+        /// dataset's order, from 1).
+        keyed: bool,
         /// A GeoJSON FeatureCollection.
         data: Json,
     },
@@ -529,6 +532,7 @@ pub async fn layer_data(
         bounds,
         geometry: kinds,
         properties: layer.properties,
+        keyed: layer.keyed,
         data: json!({ "type": "FeatureCollection", "features": out }),
     })
 }

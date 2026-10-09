@@ -23,7 +23,8 @@ pub use math::{BinParams, CurvePoint, LinearFit, LinearSums};
 pub use render::{
     DEFAULT_SAMPLE, DOMAIN_VALUES, Domain, EXACT_DENSITY, LOESS_SAMPLE, LayerData, MAX_BOXES,
     MAX_CURVES, MAX_FACETS, MAX_GROUP_ROWS, MAX_OUTLIERS, MAX_SAMPLE, MAX_TABLE_ROWS, PlotData,
-    Rendered, RenderedTable, Table, TableData, render_plot, render_table,
+    Rendered, RenderedTable, Table, TableData, render_plot, render_plot_in, render_table,
+    render_table_in,
 };
 pub use show_me::{Assignment, GalleryItem, Preset, gallery, preset, show_me};
 pub use spec::{

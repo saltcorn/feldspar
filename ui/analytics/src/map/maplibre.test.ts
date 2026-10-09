@@ -37,6 +37,7 @@ const points: RenderedLayer = {
       { name: "kind", type: "text" },
       { name: "count", type: "int" },
     ],
+    keyed: true,
     data: {
       type: "FeatureCollection",
       features: [

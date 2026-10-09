@@ -126,8 +126,12 @@ export type PlotSpec = {
   coord?: Coord;
   facet?: Facet;
   references?: Reference[];
-  selections?: unknown[];
+  selections?: Selection[];
 };
+
+/** What a click (`point`) or a brush (`interval`) on a plot selects, and the
+ * channels whose columns it filters on (A6.3). */
+export type Selection = { name: string; kind: "point" | "interval"; channels: Channel[] };
 
 /** The stat a layer has, the identity when it has none. */
 export function statOf(layer: Layer): Stat {

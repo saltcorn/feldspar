@@ -712,7 +712,12 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                         .get("panel")
                         .ok_or_else(|| Error::invalid("`panel` is required"))?,
                 )?;
-                let rendered = sc_analytics::panel::render_panel(&catalog, &panel).await?;
+                let filters = match ctx.body.get("filters") {
+                    None | Some(Json::Null) => Vec::new(),
+                    Some(raw) => sc_analytics::crossfilter::Condition::read_list(raw)?,
+                };
+                let rendered =
+                    sc_analytics::panel::render_panel_in(&catalog, &panel, &filters).await?;
                 let mut answer = serde_json::to_value(&rendered).map_err(|e| {
                     Error::serde(format!("a panel's data does not serialise: {e}"))
                 })?;

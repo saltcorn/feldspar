@@ -7,12 +7,14 @@
 //! A4), the map layers' data for the browser ([`layer`], A5.5), the map spec
 //! and the geometry source a map panel chooses ([`map`], A5.6–A5.7), the Map
 //! workspace's classification ([`classify`], A5.9), attribute table and
-//! selection ([`selection`], A5.10) and toolbox ([`tools`], A5.12); and the
-//! demo data ([`demo`]). Datasets are not here: they are `sc-dataset`'s, because models
+//! selection ([`selection`], A5.10) and toolbox ([`tools`], A5.12); a
+//! dashboard's stat cards ([`card`], A6.2) and cross-filtering
+//! ([`crossfilter`], A6.3–A6.6); and the demo data ([`demo`]). Datasets are not here: they are `sc-dataset`'s, because models
 //! read them too.
 
 pub mod card;
 pub mod classify;
+pub mod crossfilter;
 pub mod demo;
 pub mod layer;
 pub mod map;

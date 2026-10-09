@@ -116,6 +116,8 @@ export type LayerData =
       bounds: [number, number, number, number] | null;
       geometry: GeometryKind[];
       properties: StageColumn[];
+      /** Whether a feature's id is its row's key (else its place, from 1). */
+      keyed: boolean;
       data: GeoJSON.FeatureCollection;
     }
   | {

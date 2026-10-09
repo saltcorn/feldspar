@@ -792,6 +792,109 @@ async fn dashboards_hold_tiles_of_panels_and_stat_cards() -> sc_error::Result<()
 }
 
 #[tokio::test]
+async fn a_dashboards_panels_are_drawn_with_its_selections_and_filters() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let made = |name: &str, table: &str| {
+        json!({ "name": name, "base": { "kind": "table", "table": table }, "operations": [] })
+    };
+    let areas = client
+        .ok("POST", "/api/datasets", Some(made("Areas", "neighbourhoods")))
+        .await;
+    let areas = areas["dataset"]["id"].as_str().unwrap().to_owned();
+    let houses = client
+        .ok("POST", "/api/datasets", Some(made("Houses", "houses")))
+        .await;
+    let houses = houses["dataset"]["id"].as_str().unwrap().to_owned();
+    let count = panel(
+        "stat_card",
+        json!({ "dataset": houses, "value": { "function": "count" } }),
+    );
+    let draw = |filters: Value| json!({ "panel": count, "filters": filters });
+
+    // North clicked on a map of the neighbourhoods (its rows, by their key)
+    // filters the houses through their foreign key: the even ones.
+    let north = json!({ "id": "map", "dataset": areas, "values": [1] });
+    let drawn = client
+        .ok("POST", "/api/panels/render", Some(draw(json!([north]))))
+        .await;
+    assert_eq!(drawn["card"]["value"], json!(30.0), "{drawn}");
+    assert_eq!(
+        drawn["filters"],
+        json!([{ "id": "map", "dataset": houses, "column": "neighbourhood" }])
+    );
+    // A brushed range of areas as well: houses 10 to 19, the even ones.
+    let brushed = json!({ "id": "brush", "dataset": houses, "column": "area",
+                          "range": { "min": 60, "max": 69 } });
+    let drawn = client
+        .ok(
+            "POST",
+            "/api/panels/render",
+            Some(draw(json!([north, brushed]))),
+        )
+        .await;
+    assert_eq!(drawn["card"]["value"], json!(5.0), "{drawn}");
+    // Without filters, every house; a filter that is not one is refused.
+    let drawn = client
+        .ok("POST", "/api/panels/render", Some(json!({ "panel": count })))
+        .await;
+    assert_eq!(drawn["card"]["value"], json!(60.0));
+    assert!(drawn.get("filters").is_none_or(Value::is_null), "{drawn}");
+    let err = client
+        .refused(
+            "POST",
+            "/api/panels/render",
+            Some(draw(json!([{ "id": "x", "dataset": houses, "column": "area" }]))),
+        )
+        .await;
+    assert!(
+        err.contains("filter 1: a filter keeps some values or a range"),
+        "{err}"
+    );
+
+    // The dashboard keeps its own filters, a drill path and a refresh.
+    let dashboard = client
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Houses board", "kind": "dashboard" })),
+        )
+        .await;
+    let id = dashboard["id"].as_str().unwrap().to_owned();
+    let bars = panel(
+        "plot",
+        json!({ "spec": { "data": { "kind": "dataset", "dataset": houses },
+            "layers": [{ "mark": "bar", "stat": { "kind": "count" },
+                         "encoding": { "x": { "field": "neighbourhood" } } }] } }),
+    );
+    let state = json!({
+        "tiles": [{ "id": "a", "panel": bars, "x": 0, "y": 0, "w": 6, "h": 5,
+                    "drill": { "channel": "x", "path": ["neighbourhood", "bedrooms"] } }],
+        "filters": [brushed],
+        "refresh": 60,
+    });
+    let saved = client
+        .ok(
+            "PUT",
+            &format!("/api/workspaces/{id}/state"),
+            Some(json!({ "state": state })),
+        )
+        .await;
+    assert_eq!(saved["state"]["refresh"], json!(60));
+    assert_eq!(saved["state"]["filters"][0]["id"], json!("brush"));
+    let mut wrong = state.clone();
+    wrong["refresh"] = json!(1);
+    let err = client
+        .refused(
+            "PUT",
+            &format!("/api/workspaces/{id}/state"),
+            Some(json!({ "state": wrong })),
+        )
+        .await;
+    assert!(err.contains("refreshes every 10 to 86400 seconds"), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn panels_render_live_and_the_usage_index_finds_what_they_read() -> sc_error::Result<()> {
     let (mut client, db) = setup().await?;
     let dataset = client

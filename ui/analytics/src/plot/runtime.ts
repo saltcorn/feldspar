@@ -5,6 +5,7 @@
 
 import { BarChart, BoxplotChart, CustomChart, HeatmapChart, LineChart, ParallelChart, ScatterChart } from "echarts/charts";
 import {
+  BrushComponent,
   GridComponent,
   LegendComponent,
   MarkLineComponent,
@@ -25,6 +26,8 @@ echarts.use([
   LineChart,
   ParallelChart,
   ScatterChart,
+  // A dashboard's plots are brushed to filter the others (A6.3).
+  BrushComponent,
   GridComponent,
   LegendComponent,
   MarkLineComponent,
