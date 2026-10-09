@@ -244,9 +244,8 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .filter(
-                |k| !["data_explorer", "report", "map"].contains(&k["kind"].as_str().unwrap_or(""))
-            )
+            .filter(|k| !["data_explorer", "report", "map", "dashboard"]
+                .contains(&k["kind"].as_str().unwrap_or("")))
             .all(|k| k["available"] == json!(false) && k["arrives_in"].is_string()),
         "{kinds}"
     );

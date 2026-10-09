@@ -695,7 +695,7 @@ pub(crate) fn register(set: &mut EndpointSet) {
     // table's, a test result's tests and plot, a fit's table. A panel whose
     // dataset or fit has been deleted answers `error`, a sentence saying so,
     // rather than failing; a plot that cannot be drawn answers its refusal in
-    // `plot`, as `renderPlot` does. A text panel answers nothing to draw: the
+    // `plot`, as `renderPlot` does, and a stat card its own in `card`. A text panel answers nothing to draw: the
     // browser renders its Markdown.
     set.register(
         Endpoint::new(
@@ -716,6 +716,8 @@ pub(crate) fn register(set: &mut EndpointSet) {
             StructField::new("output", TypeSchema::optional(TypeSchema::json())),
             // A map panel's layers, as `renderMap` answers them (A5.13).
             StructField::new("map", TypeSchema::optional(TypeSchema::json())),
+            // A stat card's numbers, or its refusal (A6.2).
+            StructField::new("card", TypeSchema::optional(TypeSchema::json())),
             // A plot's foreign key columns: categories, though numbers.
             StructField::new(
                 "categorical",

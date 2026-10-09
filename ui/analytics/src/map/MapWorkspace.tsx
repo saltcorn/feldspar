@@ -595,7 +595,7 @@ export function MapWorkspace({ state: raw, setState, name }: WorkspaceProps) {
               <T text="Table" />
             </Button>
             {state.layers.length > 0 && (
-              <DragHandle make={() => mapPanel(specOf(state, "visible"), name)} label={t("Drag this map into a report")} />
+              <DragHandle make={() => mapPanel(specOf(state, "visible"), name)} label={t("Drag this map into a report or a dashboard")} />
             )}
           </div>
         </div>

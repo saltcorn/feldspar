@@ -1735,7 +1735,7 @@ impl<'a> Renderer<'a> {
     /// `_v0` the value): how many values, the smallest, largest, mean and
     /// standard deviation, and the quantiles at `probabilities` — at most
     /// `limit` groups, in key order.
-    async fn percentiles(
+    pub(crate) async fn percentiles(
         &self,
         points: Select,
         groups: usize,
@@ -1977,13 +1977,13 @@ impl<'a> Renderer<'a> {
 }
 
 /// What the percentile query says about one group.
-struct GroupStats {
-    keys: Vec<Value>,
+pub(crate) struct GroupStats {
+    pub(crate) keys: Vec<Value>,
     n: u64,
     min: f64,
     max: f64,
     sd: Option<f64>,
-    q: Vec<f64>,
+    pub(crate) q: Vec<f64>,
 }
 
 impl LayerData {

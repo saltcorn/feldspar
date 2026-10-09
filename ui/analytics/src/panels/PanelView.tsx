@@ -26,7 +26,9 @@ import { SummaryTable } from "../plot/SummaryTable";
 import { useDocumentTheme, type Theme } from "../theme";
 import { Markdown } from "./Markdown";
 import type { MapData, MapSpec } from "../map/spec";
+import { isCardData } from "./card";
 import { setPanelDrag, type Panel } from "./panel";
+import { StatCardView } from "./StatCardView";
 
 /** MapLibre, fetched when a map panel is first drawn. */
 const MapView = lazy(() => import("../map/MapView").then((m) => ({ default: m.MapView })));
@@ -102,6 +104,12 @@ export function PanelView({ panel, look = {} }: { panel: Panel; look?: PanelLook
     case "map":
       return answer.map ? (
         <MapAnswer spec={panel.content.spec} data={answer.map as unknown as MapData} look={look} />
+      ) : null;
+    case "stat_card":
+      return isRefused(answer.card) ? (
+        <Missing>{answer.card.error}</Missing>
+      ) : isCardData(answer.card) ? (
+        <StatCardView card={panel.content} data={answer.card} />
       ) : null;
     case "custom":
       return <Missing>{t("This panel's kind is not installed.")}</Missing>;
@@ -183,8 +191,8 @@ export function DragHandle({ make, label }: { make: () => Panel | null; label?: 
       role="button"
       tabIndex={-1}
       onDragStart={onDragStart}
-      title={label ?? t("Drag into a report")}
-      aria-label={label ?? t("Drag into a report")}
+      title={label ?? t("Drag into a report or a dashboard")}
+      aria-label={label ?? t("Drag into a report or a dashboard")}
     >
       <span aria-hidden>⠿</span> <T text="Drag" />
     </span>

@@ -8346,7 +8346,7 @@ reads. Split view (A4) holds either editor or a workspace on each side.
 Dashboard, Simulation, Notebook). The store keeps any kind; `createWorkspace`
 refuses one whose milestone has not arrived, naming it ("arrives with milestone A2"), and
 `listWorkspaceKinds` says which are here so the create dialog lists the rest disabled — since
-A4, all but the Data explorer and the Report. `state` is JSON owned by the kind — an explorer's is its dataset and
+A6.1, the Simulation and the Notebook. `state` is JSON owned by the kind — an explorer's is its dataset and
 drop zones — saved as it changes (`saveWorkspaceState`) and restored when the workspace is
 opened.
 
@@ -8628,7 +8628,7 @@ data reference in its specs.
 the delete warnings. It is built from the stored workspace states when asked, so it is never out
 of date. There are a handful of workspaces, not millions, and an index kept on every save would be
 a second copy to keep right. `panels_in_state(kind, state)` is the one place that knows where a
-kind keeps its panels (a report's `blocks[].panel`; A6's dashboards will add theirs), and an
+kind keeps its panels (a report's `blocks[].panel`, a dashboard's `tiles[].panel`), and an
 explorer's chosen dataset counts as a use with no panels. `datasetUsage` and `modelUsage` answer
 `workspaces: [{ id, name, kind, panels }]` beside the datasets, models, fields and triggers they
 already listed, and the front page's delete dialogs list them with links. Deleting is not refused:
@@ -9148,6 +9148,65 @@ it through the API:
 The pages were walked in headless Chromium with SwiftShader's WebGL
 (`--use-angle=swiftshader --enable-unsafe-swiftshader`). Without it MapLibre has no context and
 the map says so.
+
+### 14.8 Dashboards (analytics milestone A6)
+
+A dashboard is a tiled workspace of panels from any source, interactive where a report is still
+(goals document, "Workspaces"). It has no dataset of its own: each tile's panel names its own.
+
+**The state is tiles on a grid** (A6.1). `{ tiles: [{ id, panel, x, y, w, h }] }`, on a grid
+`DASHBOARD_COLUMNS` (12) wide: `x` and `w` count columns, `y` and `h` rows of 64 px.
+`panel::check_state` refuses a tile with no id or panel, one that does not fit the twelve columns,
+one more than `MAX_TILE_ROWS` (40) high, more than `MAX_TILES` (100) tiles, and two tiles that
+share a cell. `panels_in_state` reads `tiles[].panel`, so the usage index and the delete warnings
+find dashboards as they find reports.
+
+**The layout settles** (`ui/analytics/src/dashboard/layout.ts`). A tile moved or resized keeps
+where it was put; the tiles it lands on are pushed down below it, in reading order, and then every
+tile rises as far as it can (vertical compaction), so the grid never has holes or overlaps. A new
+tile goes where it is dropped, or from the Add menu into the first place it fits; its size is its
+kind's (a stat card 3×2, a plot 6×5, a map 6×6). Below 640 px the same tiles are shown stacked
+in reading order, full width, and moving and resizing wait for a wider screen: what is stored is
+always the wide layout. No grid library: the grid is CSS grid, and the layout is pure functions
+tested on their own.
+
+**Moving, resizing, dropping.** A tile's grip is an HTML5 drag carrying the tile and the open
+dashboard it came from (`application/x-feldspar-dashboard-tile`) and its panel
+(`application/x-feldspar-panel`). Over the grid, the cell under the dragged tile's corner is
+outlined; dropped into its own dashboard the tile moves there, into another it is copied (new ids,
+same size), and anything else that carries a panel — the explorer's output, a map, a model
+output, a report's block — is added there as a copy. Because the tile also travels as a panel, a
+report takes it. The corner handle resizes with pointer events, snapping to the cells and showing
+the settled layout as it goes. Each tile's menu moves and resizes by one cell at a time, for the
+keyboard.
+
+**Stat cards** (A6.2; `sc_analytics::card`). A `stat_card` panel's content is a `StatCard`:
+
+| field | what it is |
+|---|---|
+| `dataset` | the dataset the number comes from |
+| `value` | `{ function, column? }`: `count` (rows, or a column's values), `count_distinct`, `sum`, `mean`, `median`, `min`, `max` |
+| `filter` | a formula over the dataset's columns |
+| `time` | `{ column, period: day \| week \| month \| quarter \| year, anchor: latest \| today }`: the date or timestamp column periods come from |
+| `comparison` | `none`, `previous_period` (needs `time`), or `unfiltered` |
+| `sparkline`, `periods` | the value in each of the last `periods` (2–120, default 12) periods (needs `time`) |
+| `format` | `{ style: number \| percent \| currency, decimals?, currency?, compact?, suffix? }`, written by the browser with `Intl.NumberFormat` |
+| `higher_is_better` | `false` when a rise is bad news, so the arrow is red |
+
+`render_card` answers `{ value, label, period?, comparison?: { kind, value, period?, change,
+ratio }, sparkline? }`, or a refusal with a sentence, in `renderPanel`'s `card`. With `time`,
+the value is the **current period's**: the period holding the latest date in the filtered rows
+(`anchor: latest`, so last year's data still has a "this month"), or today's. The previous
+period is the one before it; `unfiltered` is the same aggregate, over the same period, without
+the card's filter.
+
+The card's filter is a Filter operation appended to the dataset's operations and compiled with
+them, so it is checked and translated as any Filter is (A6.4 appends the dashboard's selections
+the same way, and `unfiltered` leaves those out too). Periods are bucketed without date
+functions, which Postgres and SQLite do not share: the bounds are worked out in Rust (ISO weeks,
+calendar months, quarters and years), one `CASE` numbers each row's period, and one grouped
+query answers every period at once; a median goes through the plot renderer's percentiles, which
+work on both databases. A count of an empty period is 0; any other function's is missing.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

@@ -25,6 +25,10 @@ const ReportWorkspace = lazy(() => import("../report/ReportWorkspace").then((m) 
 /** The Map workspace, loaded when one opens; MapLibre comes later still, with
  * its map. */
 const MapWorkspace = lazy(() => import("../map/MapWorkspace").then((m) => ({ default: m.MapWorkspace })));
+/** The Dashboard, loaded when one opens. */
+const DashboardWorkspace = lazy(() =>
+  import("../dashboard/DashboardWorkspace").then((m) => ({ default: m.DashboardWorkspace })),
+);
 
 /** How long after the last change the state is saved. */
 const SAVE_DELAY_MS = 600;
@@ -137,11 +141,13 @@ export function WorkspaceFrame({ id }: { id: string }) {
 }
 
 /** The kind's screen, handed the state and its setter. Each kind's arrives with
- * its milestone: A2's Data explorer first, then A4's Report, then A5's Map. */
+ * its milestone: A2's Data explorer first, then A4's Report, A5's Map and A6's
+ * Dashboard. */
 const SCREENS: Record<string, typeof DataExplorer> = {
   data_explorer: DataExplorer,
   report: ReportWorkspace,
   map: MapWorkspace,
+  dashboard: DashboardWorkspace,
 };
 
 function KindScreen({ kind, ...props }: WorkspaceProps & { kind: string }) {

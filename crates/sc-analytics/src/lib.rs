@@ -11,6 +11,7 @@
 //! demo data ([`demo`]). Datasets are not here: they are `sc-dataset`'s, because models
 //! read them too.
 
+pub mod card;
 pub mod classify;
 pub mod demo;
 pub mod layer;

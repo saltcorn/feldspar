@@ -133,7 +133,7 @@ export function OutputsPanel({
                 <span className="ms-auto">
                   <DragHandle
                     make={() => outputPanel(output, fit, model, t)}
-                    label={t("Drag {output} into a report", { output: output.label })}
+                    label={t("Drag {output} into a report or a dashboard", { output: output.label })}
                   />
                 </span>
               )}

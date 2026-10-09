@@ -570,9 +570,9 @@ drill-down.
 
 ## Phase 1 — Layout and cards
 
-- [ ] A6.1 The Dashboard workspace: a grid of tiles, dragged and resized, responsive to width;
+- [x] A6.1 The Dashboard workspace: a grid of tiles, dragged and resized, responsive to width;
       panels dropped in from any source. Tests.
-- [ ] A6.2 The stat card panel kind: an aggregate of a column, number formatting, a comparison
+- [x] A6.2 The stat card panel kind: an aggregate of a column, number formatting, a comparison
       (with the previous period, or unfiltered) and an optional sparkline. Tests.
 
 ## Phase 2 — Cross-filtering and drill-down

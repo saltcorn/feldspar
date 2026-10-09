@@ -431,10 +431,11 @@ async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<(
         .iter()
         .filter(|k| k["available"] == json!(true))
         .collect();
-    assert_eq!(here.len(), 3);
+    assert_eq!(here.len(), 4);
     assert_eq!(here[0]["kind"], json!("data_explorer"));
     assert_eq!(here[1]["kind"], json!("report"));
     assert_eq!(here[2]["kind"], json!("map"));
+    assert_eq!(here[3]["kind"], json!("dashboard"));
     assert_eq!(here[0]["arrives_in"], Value::Null);
     assert!(!kinds.iter().any(|k| k["kind"] == "dataset_editor"));
     assert!(!kinds.iter().any(|k| k["kind"] == "model_fit"));
@@ -443,10 +444,10 @@ async fn workspaces_are_listed_renamed_saved_and_deleted() -> sc_error::Result<(
         .refused(
             "POST",
             "/api/workspaces",
-            Some(json!({ "name": "Draft", "kind": "dashboard" })),
+            Some(json!({ "name": "Draft", "kind": "simulation" })),
         )
         .await;
-    assert!(err.contains("milestone A6"), "{err}");
+    assert!(err.contains("milestone A7"), "{err}");
     // Models open in the model editor, not in a workspace.
     let err = client
         .refused(
@@ -678,6 +679,116 @@ fn report_of(panels: &[Value]) -> Value {
         .iter()
         .map(|p| json!({ "id": p["id"], "kind": "panel", "panel": p }))
         .collect::<Vec<_>>() })
+}
+
+#[tokio::test]
+async fn dashboards_hold_tiles_of_panels_and_stat_cards() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let dataset = client
+        .ok("POST", "/api/datasets", Some(prices("prices")))
+        .await;
+    let dataset_id = dataset["dataset"]["id"].as_str().unwrap().to_owned();
+
+    // A stat card: the mean price of one-bedroom houses, against every house.
+    let card = panel(
+        "stat_card",
+        json!({ "dataset": dataset_id, "value": { "function": "mean", "column": "price" },
+                "filter": "bedrooms == 1", "comparison": "unfiltered",
+                "format": { "style": "currency", "currency": "EUR", "compact": true } }),
+    );
+    let drawn = client
+        .ok("POST", "/api/panels/render", Some(json!({ "panel": card })))
+        .await;
+    assert_eq!(drawn["kind"], json!("stat_card"));
+    assert_eq!(drawn["card"]["value"], json!(102_500.0), "{drawn}");
+    assert_eq!(drawn["card"]["label"], json!("mean of price"));
+    assert_eq!(drawn["card"]["comparison"]["kind"], json!("unfiltered"));
+    assert_eq!(
+        drawn["card"]["comparison"]["value"],
+        json!(140_500.0),
+        "{drawn}"
+    );
+    // One that cannot be made says why in `card`; one that is not a card is refused.
+    let wrong = panel(
+        "stat_card",
+        json!({ "dataset": dataset_id, "value": { "function": "sum", "column": "nope" } }),
+    );
+    let drawn = client
+        .ok(
+            "POST",
+            "/api/panels/render",
+            Some(json!({ "panel": wrong })),
+        )
+        .await;
+    assert!(
+        drawn["card"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("no column `nope`"),
+        "{drawn}"
+    );
+    let err = client
+        .refused(
+            "POST",
+            "/api/panels/render",
+            Some(
+                json!({ "panel": panel("stat_card", json!({ "dataset": dataset_id,
+                "value": { "function": "count" }, "sparkline": true })) }),
+            ),
+        )
+        .await;
+    assert!(err.contains("sparkline needs a date column"), "{err}");
+
+    // The dashboard: a plot and the card side by side.
+    let dashboard = client
+        .ok(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Overview", "kind": "dashboard" })),
+        )
+        .await;
+    let id = dashboard["id"].as_str().unwrap().to_owned();
+    let plot = panel(
+        "plot",
+        json!({ "spec": { "data": { "kind": "dataset", "dataset": dataset_id },
+            "layers": [{ "mark": "point", "encoding": {
+                "x": { "field": "area" }, "y": { "field": "price" } } }] } }),
+    );
+    let tiles = json!({ "tiles": [
+        { "id": "a", "panel": plot, "x": 0, "y": 0, "w": 8, "h": 5 },
+        { "id": "b", "panel": card, "x": 8, "y": 0, "w": 4, "h": 2 },
+    ] });
+    let saved = client
+        .ok(
+            "PUT",
+            &format!("/api/workspaces/{id}/state"),
+            Some(json!({ "state": tiles })),
+        )
+        .await;
+    assert_eq!(saved["state"]["tiles"][1]["w"], json!(4));
+    let err = client
+        .refused(
+            "PUT",
+            &format!("/api/workspaces/{id}/state"),
+            Some(json!({ "state": { "tiles": [
+                { "id": "a", "panel": plot, "x": 0, "y": 0, "w": 8, "h": 5 },
+                { "id": "b", "panel": card, "x": 6, "y": 4, "w": 4, "h": 2 },
+            ] } })),
+        )
+        .await;
+    assert!(err.contains("overlap"), "{err}");
+
+    // The usage index finds both of its panels.
+    let usage = client
+        .ok("GET", &format!("/api/datasets/{dataset_id}/usage"), None)
+        .await;
+    assert_eq!(
+        usage["workspaces"][0]["kind"],
+        json!("dashboard"),
+        "{usage}"
+    );
+    assert_eq!(usage["workspaces"][0]["panels"], json!(2));
+    Ok(())
 }
 
 #[tokio::test]

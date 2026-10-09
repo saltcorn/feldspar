@@ -587,13 +587,13 @@ export function DataExplorer({ state: raw, setState }: WorkspaceProps) {
           )}
           <div className="ms-auto d-flex gap-2 align-items-center">
             {state.dataset && !message && state.view !== "map" && (state.view === "plot" ? drawn : table?.data) && (
-              <DragHandle make={dragPanel} label={t("Drag this output into a report")} />
+              <DragHandle make={dragPanel} label={t("Drag this output into a report or a dashboard")} />
             )}
             {state.view === "map" && drawnMap && !message && (
               <>
                 <DragHandle
                   make={() => mapPanel(drawnMap.spec, dataset?.name)}
-                  label={t("Drag this map into a report")}
+                  label={t("Drag this map into a report or a dashboard")}
                 />
                 <Button size="sm" variant="outline-primary" disabled={opening} onClick={() => void openInMap()}>
                   <T text="Open in map" />

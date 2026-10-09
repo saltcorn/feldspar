@@ -1185,6 +1185,200 @@
 .an-page-legal-portrait { page: legal-portrait; }
 .an-page-legal-landscape { page: legal-landscape; }
 
+/* --- The Dashboard workspace (A6.1) and stat cards (A6.2) --------------------- */
+
+.an-dashboard {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--tblr-bg-surface-secondary, transparent);
+}
+
+.an-dashboard-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--tblr-border-color);
+  background: var(--tblr-bg-surface);
+}
+
+.an-dashboard-desk {
+  flex: 1 1 auto;
+  padding: 1rem;
+  position: relative;
+}
+
+.an-dashboard-empty {
+  position: absolute;
+  top: 2.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(32rem, 90%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.an-dashboard-grid {
+  display: grid;
+  position: relative;
+  border-radius: 6px;
+}
+
+.an-dashboard-grid.an-dragging {
+  outline: 1px dashed var(--tblr-border-color);
+  outline-offset: 4px;
+}
+
+.an-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--tblr-bg-surface);
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.an-tile.an-resizing {
+  outline: 2px solid var(--tblr-primary);
+  z-index: 2;
+}
+
+.an-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.25rem 0.25rem 0.4rem;
+  min-height: 2rem;
+}
+
+.an-tile-head .form-control {
+  flex: 1 1 auto;
+}
+
+.an-tile-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.an-tile-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 0.5rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.an-tile-body > .an-panel-plot,
+.an-tile-body > .an-panel-map {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+
+.an-tile-body > .an-panel-tests > .an-panel-plot {
+  height: 16rem;
+}
+
+/* A stat card's tile: the number fills it, without a scroll bar. */
+.an-tile-stat-card .an-tile-body {
+  overflow: hidden;
+  justify-content: center;
+}
+
+.an-tile-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 50%, var(--tblr-secondary) 50%, var(--tblr-secondary) 60%, transparent 60%, transparent 75%, var(--tblr-secondary) 75%, var(--tblr-secondary) 85%, transparent 85%);
+  opacity: 0.5;
+}
+
+.an-tile:hover .an-tile-resize {
+  opacity: 1;
+}
+
+.an-tile-target {
+  border: 2px dashed var(--tblr-primary);
+  border-radius: 6px;
+  background: rgba(42, 120, 214, 0.08);
+  pointer-events: none;
+}
+
+.an-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.an-card-value {
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.an-card-label {
+  font-size: 0.8rem;
+}
+
+.an-card-change {
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.an-card-change.an-good {
+  color: var(--tblr-success, #2fb344);
+}
+
+.an-card-change.an-bad {
+  color: var(--tblr-danger, #d63939);
+}
+
+.an-card-change .text-secondary {
+  font-weight: normal;
+}
+
+.an-card-spark {
+  width: 100%;
+  height: 28px;
+  margin-top: 0.25rem;
+}
+
+.an-card-spark path {
+  stroke: var(--tblr-primary, #206bc4);
+  stroke-width: 1.5px;
+}
+
+.an-card-preview {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 6px;
+  padding: 0.75rem;
+  min-height: 7rem;
+}
+
 @media print {
   /* Everything but the report and what holds it goes… */
   html.an-printing body *:not(:has(.an-print-root)):not(.an-print-root):not(.an-print-root *) {

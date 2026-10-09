@@ -2,6 +2,98 @@
 
 Changes in reverse chronological order.
 
+## Analytics A6.1–A6.2: the Dashboard workspace, and stat cards
+
+The first phase of milestone A6 (Dashboards). A *Dashboard* workspace can now be created: tiles
+of panels from any source on a grid, arranged by dragging and resized by their corners, with
+stat cards. Cross-filtering and drill-down are phase 2.
+
+- **The Dashboard workspace** (A6.1; `ui/analytics/src/dashboard`).
+  `WorkspaceKind::Dashboard.arrives_in()` is now `None`; the create dialog lists only the
+  Simulation (A7) and the Notebook as still to come.
+  - Its state is `{ tiles: [{ id, panel, x, y, w, h }] }` on a 12-column grid of 64 px rows.
+  - **The layout settles** (`layout.ts`, pure functions). A tile moved or resized stays where
+    it was put. The tiles it lands on are pushed down below it, then every tile rises as far as
+    it can, so there are never holes or overlaps. A stored state that overlaps is settled when
+    it is read.
+  - **Moving.** The tile's grip is an HTML5 drag carrying the tile and its panel. The cell its
+    corner would take is outlined. Dropped into its own dashboard it moves; into another
+    dashboard it is copied (new ids, same size).
+  - **Dropping in.** Anything that drags a panel is added where it is dropped, at its kind's
+    size: the explorer's output, a whole map, a model output card, a report's block.
+  - **Dragging out.** A tile also travels as a panel, so a report takes it.
+  - **Resizing** uses the bottom-right corner (pointer events, snapping to cells, showing the
+    settled layout as it goes).
+  - **The tile menu** moves and resizes one cell at a time, for the keyboard. It also renames
+    the tile (as does double-clicking the title) and edits a card or text.
+  - **Panels are interactive**: tooltips, legend toggles, a map that pans. They follow the
+    screen's colour scheme.
+  - **Below 640 px** the tiles stack full width in reading order, and moving and resizing wait
+    for a wider screen. What is stored is always the wide layout.
+  - **The Add menu** adds a stat card or a text tile (Markdown, in a dialog) in the first place
+    it fits.
+  - No grid library was added: the grid is CSS grid.
+- **The server checks the grid** (`panel::check_state`). It refuses a tile without an id or a
+  panel, one off the 12 columns, one more than 40 rows high, more than 100 tiles, and two tiles
+  that overlap, naming them. `panels_in_state` reads `tiles[].panel`, so the usage index and the
+  dataset delete warning list dashboards.
+- **Stat cards** (A6.2; `sc_analytics::card`, a new `stat_card` panel kind).
+  - **The value**: `count` (of rows, or of a column's values), `count_distinct`, `sum`, `mean`,
+    `median`, `min` or `max` over a dataset, with an optional filter formula.
+  - **Periods**: an optional date or timestamp column with a day, week, month, quarter or year
+    period. The value is then the current period's. The current period is the one holding the
+    latest date in the filtered rows, or today's.
+  - **Comparison**: with the previous period, or with the value **unfiltered** (shown as a
+    share: "34% of all 189").
+  - **Sparkline** of the last N periods (default 12, at most 120).
+  - **Number format**: number, percentage or currency, decimals, compact, and a unit.
+  - **`higher_is_better: false`** draws a rise red, for incidents and the like.
+  - **How it is computed.** `render_card` appends the card's filter to the dataset as a Filter
+    operation, so it is compiled and checked like any other. A6.4 will append the dashboard's
+    selections the same way.
+  - **Periods without date functions.** Postgres and SQLite share none, so the period bounds
+    are computed in Rust. One `CASE` numbers each row's period, and one grouped query answers
+    all of them. A median uses the plot renderer's percentiles (now `pub(crate)`).
+  - `renderPanel` answers the numbers, or a sentence, in a new `card` field. The client was
+    regenerated in all four UIs.
+  - The browser formats with `Intl.NumberFormat` (`panels/card.ts`) and draws the card in
+    plain markup and an SVG sparkline (`StatCardView.tsx`), so it prints in a report too.
+  - **The form** (`StatCardForm.tsx`) shows a live preview of the card. Its filter input
+    offers the dataset's columns.
+- **Drag handle labels** now say "into a report or a dashboard".
+- **Docs**: TECHNICAL_DESIGN §14.8 "Dashboards" (the grid, settling, dragging, stat cards and
+  how they are computed); §14.5's lists of available kinds and of where panels live.
+- **Tests.**
+  - `sc-analytics` unit tests: periods' first days and shifts; a card's round trip, defaults
+    and refusals; comparisons; a dashboard's tiles (the usage index, overlaps, off-grid tiles,
+    a broken card).
+  - `sc-analytics/tests/cards.rs` on **both** Postgres and SQLite, against numbers counted by
+    hand from eight sales. Every function over all rows, filtered and unfiltered; months with
+    the previous period and a five-month sparkline (an empty month counts 0); per-month
+    medians; a mean of an empty month is missing; north's quarter; the unfiltered share;
+    ISO weeks of a timestamp column; today's anchor; and the sentences for a wrong column
+    type, a non-date period column, a filter that does not read, and a deleted dataset.
+  - `sc-server`: `analytics_api::dashboards_hold_tiles_of_panels_and_stat_cards` (a card
+    rendered through the API, its refusals, a dashboard saved, an overlap refused, the usage
+    index). The workspace-kind tests now expect the dashboard to be available and the
+    simulation to be refused with A7.
+  - vitest: `dashboard/layout.test.ts` (reading, adding, moving, resizing, removing, stacking,
+    cells and spans, and dropping tiles and panels) and `panels/card.test.ts` (formats, period
+    names, comparisons, the sparkline's path, tidying, and the panel codec).
+- **Walked in headless Chromium** against `feldspar demo analytics` on a PostGIS scratch
+  database:
+  - A dashboard with an incidents stat card and a bar chart. The card showed 189 for December
+    2025, "▼ −7.8% vs November 2025" in green (fewer incidents is good), and a 12-month
+    sparkline.
+  - A "Burglaries" card made through the form, with its live preview (65, "34% of all 189").
+  - The bar chart dragged by its grip below the cards: the card under it was pushed down.
+  - The first card resized from 3×2 to 5×3 by its corner.
+  - A split view with the explorer: its plot dropped into the dashboard as a new tile.
+  - A 500 px window stacked the tiles.
+  - The incidents dataset's usage listed the dashboard with its panel count. No page errors.
+  - Two fixes came out of the walk: the form was widened (its selects were cut off), and the
+    unfiltered comparison's wording changed from "34% of all all: 189" to "34% of all 189".
+
 ## Public datasets: "Get datasets" in the Analytics UI
 
 The Datasets card on the Analytics front page has a **Get datasets** button beside *Create*. It
