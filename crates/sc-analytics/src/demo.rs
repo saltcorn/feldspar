@@ -34,6 +34,16 @@
 //! something; about one house in seven is unsold, with no price, for a model
 //! to predict.
 //!
+//! `districts` and `incidents` (A5): twelve districts of an invented city —
+//! the Voronoi cells of twelve seeded points, clipped to the city's extent
+//! ([`DEMO_EXTENT`]) — and a few thousand incidents, points with a category
+//! and a date, gathered around four hot spots over a scattering everywhere,
+//! so that a count per district has something to tell. They need PostGIS:
+//! where the database has none (SQLite, or Postgres without the extension)
+//! the rest of the demo is made and the report says why these two were not
+//! ([`DemoReport::skipped`]). Two more datasets, `Districts` and `Incidents`,
+//! come with them.
+//!
 //! **Nothing is touched without `--replace`.** A database that already has one
 //! of the demo's tables is refused, naming it: they are ordinary tables, and
 //! one of them may be the admin's own. With `--replace`, they are dropped and
@@ -45,7 +55,8 @@ use sc_dataset::{DatasetDef, Op, Operation};
 use sc_db::ColumnGenerator;
 use sc_error::{Context, Error, Result};
 use sc_query::{Expr, Insert, Statement, Value};
-use sc_types::{BasicType, TypeRef};
+use sc_types::{BasicType, GeometryKind, TypeRef};
+use serde_json::json;
 
 /// The tables the demo makes, in the order they are made (a key's target
 /// first).
@@ -60,6 +71,24 @@ pub const DEMO_TABLES: [&str; 6] = [
 
 /// The datasets the demo makes, each on the table of the same name.
 pub const DEMO_DATASETS: [&str; 3] = ["Houses", "Measurements", "Events"];
+
+/// The map demo's tables (A5), made only where the database has PostGIS.
+pub const DEMO_MAP_TABLES: [&str; 2] = ["districts", "incidents"];
+
+/// The map demo's datasets, each on the table of the same name.
+pub const DEMO_MAP_DATASETS: [&str; 2] = ["Districts", "Incidents"];
+
+/// How many districts the demo makes: a jittered grid of four columns and
+/// three rows of seed points.
+pub const DEMO_DISTRICTS: usize = 12;
+
+/// How many incidents the demo makes.
+pub const DEMO_INCIDENTS: usize = 2_400;
+
+/// The invented city's extent in WGS84 — west, south, east, north — about
+/// 11 km each way. It is laid over Lyon so that a base map has streets under
+/// it; the districts and incidents are not Lyon's.
+pub const DEMO_EXTENT: [f64; 4] = [4.78, 45.70, 4.92, 45.80];
 
 /// How many houses the demo makes.
 pub const DEMO_HOUSES: usize = 200;
@@ -82,6 +111,9 @@ pub struct DemoReport {
     pub datasets: Vec<String>,
     /// The datasets that were there already and were left as they are.
     pub kept: Vec<String>,
+    /// Why the map demo's tables were not made, when they were not: the
+    /// database has no PostGIS.
+    pub skipped: Option<String>,
 }
 
 /// A fixed-seed generator: the same sequence on every run and every machine.
@@ -159,6 +191,7 @@ fn key(name: &str, table: &str) -> DataField {
 pub async fn demo_analytics(catalog: &Catalog, replace: bool) -> Result<DemoReport> {
     let present: Vec<String> = DEMO_TABLES
         .iter()
+        .chain(DEMO_MAP_TABLES.iter())
         .filter(|t| catalog.get(t).ok().flatten().is_some())
         .map(|t| (*t).to_owned())
         .collect();
@@ -174,7 +207,7 @@ pub async fn demo_analytics(catalog: &Catalog, replace: bool) -> Result<DemoRepo
         )));
     }
     // Keys point the other way, so the tables go in reverse.
-    for table in DEMO_TABLES.iter().rev() {
+    for table in DEMO_MAP_TABLES.iter().rev().chain(DEMO_TABLES.iter().rev()) {
         if present.iter().any(|p| p == table) {
             catalog
                 .drop_table(table)
@@ -335,21 +368,35 @@ pub async fn demo_analytics(catalog: &Catalog, replace: bool) -> Result<DemoRepo
     .await?;
     patients(catalog).await?;
     events(catalog).await?;
+    let mut tables = vec![
+        ("neighbourhoods".to_owned(), NEIGHBOURHOODS.len()),
+        ("houses".to_owned(), DEMO_HOUSES),
+        ("viewings".to_owned(), viewing_count),
+        ("patients".to_owned(), DEMO_PATIENTS),
+        ("measurements".to_owned(), DEMO_PATIENTS),
+        ("events".to_owned(), DEMO_EVENTS),
+    ];
+    // As `feldspar serve` boots: PostGIS installed where the role may.
+    let skipped = match sc_catalog::bootstrap_spatial(catalog).await?.require() {
+        Ok(()) => {
+            districts_and_incidents(catalog).await?;
+            tables.push(("districts".to_owned(), DEMO_DISTRICTS));
+            tables.push(("incidents".to_owned(), DEMO_INCIDENTS));
+            None
+        }
+        Err(reason) => Some(format!(
+            "the map demo's tables (`districts`, `incidents`) were not made: {reason}"
+        )),
+    };
     catalog.reload().await?;
-    let (datasets, kept) = datasets(catalog).await?;
+    let (datasets, kept) = datasets(catalog, skipped.is_none()).await?;
 
     Ok(DemoReport {
-        tables: vec![
-            ("neighbourhoods".to_owned(), NEIGHBOURHOODS.len()),
-            ("houses".to_owned(), DEMO_HOUSES),
-            ("viewings".to_owned(), viewing_count),
-            ("patients".to_owned(), DEMO_PATIENTS),
-            ("measurements".to_owned(), DEMO_PATIENTS),
-            ("events".to_owned(), DEMO_EVENTS),
-        ],
+        tables,
         replaced: present,
         datasets,
         kept,
+        skipped,
     })
 }
 
@@ -456,8 +503,252 @@ async fn events(catalog: &Catalog) -> Result<()> {
     Ok(())
 }
 
-/// The demo's datasets, each made unless one of its name is there.
-async fn datasets(catalog: &Catalog) -> Result<(Vec<String>, Vec<String>)> {
+/// The districts' names, west to east along each row, south row first.
+const DISTRICTS: [&str; DEMO_DISTRICTS] = [
+    "Ashford",
+    "Brookside",
+    "Castlegate",
+    "Dunmore",
+    "Eastfield",
+    "Fairview",
+    "Glenwood",
+    "Highbury",
+    "Ironbridge",
+    "Juniper Hill",
+    "Kingsmead",
+    "Larkspur",
+];
+
+/// The incidents' categories and how often each is reported, in percent.
+const CATEGORIES: [(&str, u32); 5] = [
+    ("theft", 32),
+    ("burglary", 22),
+    ("vehicle crime", 18),
+    ("vandalism", 16),
+    ("antisocial behaviour", 12),
+];
+
+/// Kilometres per degree of latitude, and of longitude at the city's middle:
+/// a local plane in which the Voronoi cells are drawn, so that they are the
+/// cells a person measuring on the ground would draw.
+fn km_per_degree() -> (f64, f64) {
+    let middle = (DEMO_EXTENT[1] + DEMO_EXTENT[3]) / 2.0;
+    (111.32 * middle.to_radians().cos(), 110.574)
+}
+
+/// The city's width and height in kilometres.
+fn extent_km() -> (f64, f64) {
+    let (kx, ky) = km_per_degree();
+    (
+        (DEMO_EXTENT[2] - DEMO_EXTENT[0]) * kx,
+        (DEMO_EXTENT[3] - DEMO_EXTENT[1]) * ky,
+    )
+}
+
+/// A point of the local plane as a WGS84 position, to six decimals (about
+/// 10 cm), so that the text of a row is the same on every machine.
+fn to_lon_lat((x, y): (f64, f64)) -> [f64; 2] {
+    let (kx, ky) = km_per_degree();
+    let round = |v: f64| (v * 1e6).round() / 1e6;
+    [
+        round(DEMO_EXTENT[0] + x / kx),
+        round(DEMO_EXTENT[1] + y / ky),
+    ]
+}
+
+/// The district seeds: a grid of four columns and three rows, each point
+/// moved at random within the middle half of its grid cell.
+fn district_seeds(rng: &mut Rng) -> Vec<(f64, f64)> {
+    let (w, h) = extent_km();
+    let (cols, rows) = (4, 3);
+    let (cw, ch) = (w / cols as f64, h / rows as f64);
+    let mut seeds = Vec::with_capacity(DEMO_DISTRICTS);
+    for row in 0..rows {
+        for col in 0..cols {
+            seeds.push((
+                (col as f64 + 0.25 + 0.5 * rng.next()) * cw,
+                (row as f64 + 0.25 + 0.5 * rng.next()) * ch,
+            ));
+        }
+    }
+    seeds
+}
+
+/// Each seed's Voronoi cell within the rectangle `(0, 0)–(w, h)`: the
+/// rectangle cut by the half-plane nearer the seed than each other seed
+/// (Sutherland–Hodgman, one half-plane at a time). Every cell is convex and
+/// anticlockwise, as the rectangle is, and the cells tile the rectangle.
+fn voronoi(seeds: &[(f64, f64)], (w, h): (f64, f64)) -> Vec<Vec<(f64, f64)>> {
+    seeds
+        .iter()
+        .enumerate()
+        .map(|(i, &(sx, sy))| {
+            let mut cell = vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)];
+            for (j, &(tx, ty)) in seeds.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                // Nearer to s than to t: a·p <= b.
+                let (ax, ay) = (tx - sx, ty - sy);
+                let b = (tx * tx + ty * ty - sx * sx - sy * sy) / 2.0;
+                let inside = |p: (f64, f64)| ax * p.0 + ay * p.1 <= b;
+                let mut clipped = Vec::with_capacity(cell.len() + 1);
+                for k in 0..cell.len() {
+                    let p = cell[k];
+                    let q = cell[(k + 1) % cell.len()];
+                    if inside(p) {
+                        clipped.push(p);
+                    }
+                    if inside(p) != inside(q) {
+                        let t = (b - ax * p.0 - ay * p.1) / (ax * (q.0 - p.0) + ay * (q.1 - p.1));
+                        clipped.push((p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)));
+                    }
+                }
+                cell = clipped;
+            }
+            cell
+        })
+        .collect()
+}
+
+/// A cell as a GeoJSON polygon: its ring in WGS84, closed, with a vertex that
+/// rounding made the same as the one before it left out.
+fn polygon(cell: &[(f64, f64)]) -> serde_json::Value {
+    let mut ring: Vec<[f64; 2]> = Vec::with_capacity(cell.len() + 1);
+    for &p in cell {
+        let position = to_lon_lat(p);
+        if ring.last() != Some(&position) {
+            ring.push(position);
+        }
+    }
+    if ring.len() > 1 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    if let Some(&first) = ring.first() {
+        ring.push(first);
+    }
+    json!({ "type": "Polygon", "coordinates": [ring] })
+}
+
+/// The districts and the incidents (A5), on a database with PostGIS.
+///
+/// Incidents: 55% gather around four hot spots (a normal spread of 400 to
+/// 900 m about each), the rest are scattered evenly; a point that falls
+/// outside the city is drawn again. Burglary is commoner at the hot spots,
+/// so a category's map differs from the whole's. Each has a date in 2025.
+async fn districts_and_incidents(catalog: &Catalog) -> Result<()> {
+    let geometry = |name: &str, kind: GeometryKind| {
+        DataField::plain(name, TypeRef::Basic(BasicType::Geometry(kind)))
+    };
+    catalog
+        .create_table(
+            "districts",
+            &[
+                id(),
+                DataField::plain("name", text()).required(),
+                DataField::plain("population", TypeRef::Basic(BasicType::Int)),
+                geometry("outline", GeometryKind::Polygon),
+            ],
+        )
+        .await?;
+    catalog
+        .create_table(
+            "incidents",
+            &[
+                id(),
+                DataField::plain("category", text()).required(),
+                DataField::plain("reported_on", TypeRef::Basic(BasicType::Date)),
+                geometry("location", GeometryKind::Point),
+            ],
+        )
+        .await?;
+
+    // A generator of its own, so the tables before are the rows they were.
+    let mut rng = Rng(20_261_008);
+    let (w, h) = extent_km();
+    let seeds = district_seeds(&mut rng);
+    let districts = voronoi(&seeds, (w, h))
+        .iter()
+        .zip(DISTRICTS)
+        .map(|(cell, name)| {
+            vec![
+                Value::Text(name.to_owned()),
+                Value::Int(rng.int(80, 400) * 100),
+                Value::Json(polygon(cell)),
+            ]
+        })
+        .collect();
+    insert(
+        catalog,
+        "districts",
+        &["name", "population", "outline"],
+        districts,
+    )
+    .await?;
+
+    let hot_spots: Vec<(f64, f64, f64)> = (0..4)
+        .map(|_| {
+            (
+                (0.15 + 0.7 * rng.next()) * w,
+                (0.15 + 0.7 * rng.next()) * h,
+                0.4 + 0.5 * rng.next(),
+            )
+        })
+        .collect();
+    let start = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or_default();
+    let mut incidents = Vec::with_capacity(DEMO_INCIDENTS);
+    for _ in 0..DEMO_INCIDENTS {
+        let hot = rng.next() < 0.55;
+        let point = loop {
+            let (x, y) = if hot {
+                let (cx, cy, spread) = hot_spots[rng.int(0, hot_spots.len() as i64 - 1) as usize];
+                (cx + spread * rng.normal(), cy + spread * rng.normal())
+            } else {
+                (rng.next() * w, rng.next() * h)
+            };
+            if (0.0..w).contains(&x) && (0.0..h).contains(&y) {
+                break (x, y);
+            }
+        };
+        // Burglary is twice as likely at a hot spot.
+        let weight = |(name, share): (&'static str, u32)| {
+            (
+                name,
+                if hot && name == "burglary" {
+                    2 * share
+                } else {
+                    share
+                },
+            )
+        };
+        let total: u32 = CATEGORIES.into_iter().map(|c| weight(c).1).sum();
+        let mut pick = rng.next() * f64::from(total);
+        let mut category = CATEGORIES[0].0;
+        for (name, share) in CATEGORIES.map(weight) {
+            if pick < f64::from(share) {
+                category = name;
+                break;
+            }
+            pick -= f64::from(share);
+        }
+        incidents.push(vec![
+            Value::Text(category.to_owned()),
+            Value::Date(start + Duration::days(rng.int(0, 364))),
+            Value::Json(json!({ "type": "Point", "coordinates": to_lon_lat(point) })),
+        ]);
+    }
+    insert(
+        catalog,
+        "incidents",
+        &["category", "reported_on", "location"],
+        incidents,
+    )
+    .await
+}
+
+/// The demo's datasets, each made unless one of its name is there; the map
+/// demo's only when its tables were made (`map`).
+async fn datasets(catalog: &Catalog, map: bool) -> Result<(Vec<String>, Vec<String>)> {
     sc_dataset::bootstrap_datasets(catalog).await?;
     let mut measurements = DatasetDef::over_table("Measurements", "measurements");
     measurements.description =
@@ -474,8 +765,19 @@ async fn datasets(catalog: &Catalog) -> Result<(Vec<String>, Vec<String>)> {
     let mut events = DatasetDef::over_table("Events", "events");
     events.description = "A million requests to a web site.".to_owned();
 
+    let mut defs = vec![houses, measurements, events];
+    if map {
+        let mut districts = DatasetDef::over_table("Districts", "districts");
+        districts.description = "The twelve districts of the demo's invented city.".to_owned();
+        let mut incidents = DatasetDef::over_table("Incidents", "incidents");
+        incidents.description =
+            "Incidents reported in the demo's city in 2025, each a point with a category."
+                .to_owned();
+        defs.push(districts);
+        defs.push(incidents);
+    }
     let (mut made, mut kept) = (Vec::new(), Vec::new());
-    for def in [houses, measurements, events] {
+    for def in defs {
         if sc_dataset::load_dataset_by_name(catalog, &def.name)
             .await?
             .is_some()
@@ -531,5 +833,50 @@ mod tests {
         let ys: Vec<f64> = (0..5).map(|_| b.next()).collect();
         assert_eq!(xs, ys);
         assert!(xs.iter().all(|x| (0.0..1.0).contains(x)));
+    }
+
+    /// Twice the signed area of a ring (anticlockwise is positive).
+    fn area2(ring: &[(f64, f64)]) -> f64 {
+        (0..ring.len())
+            .map(|k| {
+                let (p, q) = (ring[k], ring[(k + 1) % ring.len()]);
+                p.0 * q.1 - q.0 * p.1
+            })
+            .sum()
+    }
+
+    #[test]
+    fn the_districts_tile_the_city_each_around_its_seed() {
+        let mut rng = Rng(20_261_008);
+        let seeds = district_seeds(&mut rng);
+        assert_eq!(seeds.len(), DEMO_DISTRICTS);
+        let (w, h) = extent_km();
+        assert!(
+            (10.0..12.0).contains(&w) && (10.0..12.0).contains(&h),
+            "{w} × {h}"
+        );
+        let cells = voronoi(&seeds, (w, h));
+        // Every cell anticlockwise, and together exactly the city.
+        let total: f64 = cells.iter().map(|c| area2(c) / 2.0).sum();
+        assert!(cells.iter().all(|c| area2(c) > 0.0));
+        assert!((total - w * h).abs() < 1e-9, "{total} against {}", w * h);
+        // Each seed inside its own cell: on the left of every edge.
+        for (seed, cell) in seeds.iter().zip(&cells) {
+            for k in 0..cell.len() {
+                let (p, q) = (cell[k], cell[(k + 1) % cell.len()]);
+                let cross = (q.0 - p.0) * (seed.1 - p.1) - (q.1 - p.1) * (seed.0 - p.0);
+                assert!(cross > 0.0, "{seed:?} is outside {cell:?}");
+            }
+        }
+        // As GeoJSON: a closed ring inside the extent.
+        let outline = polygon(&cells[0]);
+        let ring = outline["coordinates"][0].as_array().unwrap();
+        assert!(ring.len() >= 4);
+        assert_eq!(ring.first(), ring.last());
+        for position in ring {
+            let (lon, lat) = (position[0].as_f64().unwrap(), position[1].as_f64().unwrap());
+            assert!((DEMO_EXTENT[0]..=DEMO_EXTENT[2]).contains(&lon), "{lon}");
+            assert!((DEMO_EXTENT[1]..=DEMO_EXTENT[3]).contains(&lat), "{lat}");
+        }
     }
 }

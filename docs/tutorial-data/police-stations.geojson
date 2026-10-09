@@ -1,0 +1,30 @@
+{
+  "type": "FeatureCollection",
+  "name": "police_stations",
+  "features": [
+    {
+      "type": "Feature",
+      "id": 1,
+      "properties": { "name": "Central", "officers": 64, "open_all_hours": true },
+      "geometry": { "type": "Point", "coordinates": [4.8512, 45.7486] }
+    },
+    {
+      "type": "Feature",
+      "id": 2,
+      "properties": { "name": "North", "officers": 38, "open_all_hours": true },
+      "geometry": { "type": "Point", "coordinates": [4.8735, 45.7841] }
+    },
+    {
+      "type": "Feature",
+      "id": 3,
+      "properties": { "name": "West", "officers": 21, "open_all_hours": false },
+      "geometry": { "type": "Point", "coordinates": [4.7966, 45.7392] }
+    },
+    {
+      "type": "Feature",
+      "id": 4,
+      "properties": { "name": "South-east", "officers": 17, "open_all_hours": false },
+      "geometry": { "type": "Point", "coordinates": [4.9038, 45.7124] }
+    }
+  ]
+}

@@ -66,7 +66,13 @@ struct Client {
 }
 
 impl Client {
-    async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+    /// A request, answering the status, the content type and the body.
+    async fn raw(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, String, Vec<u8>) {
         let mut builder = Request::builder().method(method).uri(path);
         if !self.cookies.is_empty() {
             let jar = self
@@ -91,6 +97,12 @@ impl Client {
         };
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
         for raw in response.headers().get_all(header::SET_COOKIE) {
             if let Ok(text) = raw.to_str()
                 && let Some((name, value)) = text.split(';').next().unwrap_or("").split_once('=')
@@ -101,6 +113,11 @@ impl Client {
         let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
             .await
             .unwrap();
+        (status, content_type, bytes.to_vec())
+    }
+
+    async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let (status, _, bytes) = self.raw(method, path, body).await;
         let value = if bytes.is_empty() {
             Value::Null
         } else {
@@ -148,7 +165,12 @@ impl Client {
 }
 
 async fn setup() -> sc_error::Result<(Client, TestDb)> {
-    let db = TestDb::new().await?;
+    setup_on(TestDb::new().await?).await
+}
+
+/// A server over `db`, after `feldspar demo analytics`, with the admin
+/// logged in. On a database with PostGIS the demo makes its map tables too.
+async fn setup_on(db: TestDb) -> sc_error::Result<(Client, TestDb)> {
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     sc_auth::bootstrap(&catalog).await?;
@@ -222,7 +244,9 @@ async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|k| !["data_explorer", "report", "map"].contains(&k["kind"].as_str().unwrap_or("")))
+            .filter(
+                |k| !["data_explorer", "report", "map"].contains(&k["kind"].as_str().unwrap_or(""))
+            )
             .all(|k| k["available"] == json!(false) && k["arrives_in"].is_string()),
         "{kinds}"
     );
@@ -1433,15 +1457,17 @@ impl Client {
 
     /// A workspace's stored state.
     async fn state_of(&mut self, id: &str) -> Value {
-        self.ok("GET", &format!("/api/workspaces/{id}"), None)
-            .await["state"]
-            .clone()
+        self.ok("GET", &format!("/api/workspaces/{id}"), None).await["state"].clone()
     }
 
     /// A panel drawn as a report draws it; a sentence instead is a failure.
     async fn render(&mut self, panel: &Value) -> Value {
         let drawn = self
-            .ok("POST", "/api/panels/render", Some(json!({ "panel": panel })))
+            .ok(
+                "POST",
+                "/api/panels/render",
+                Some(json!({ "panel": panel })),
+            )
             .await;
         assert!(drawn.get("error").is_none(), "{drawn}");
         drawn
@@ -1638,7 +1664,10 @@ async fn the_try_it_of_milestone_a4() -> sc_error::Result<()> {
         .iter()
         .map(|r| r[0].as_str().unwrap())
         .collect();
-    assert!(terms.contains(&"area") && terms.contains(&"bedrooms"), "{table}");
+    assert!(
+        terms.contains(&"area") && terms.contains(&"bedrooms"),
+        "{table}"
+    );
     let fitted = client.render(&residuals).await;
     let scored = fitted["plot"]["layers"][0]["rows"]
         .as_array()
@@ -1676,7 +1705,10 @@ async fn the_try_it_of_milestone_a4() -> sc_error::Result<()> {
     assert_eq!(drawn["plot"]["layers"][0]["total"], json!(houses_rows + 1));
     let fitted = client.render(&residuals).await;
     assert_eq!(
-        fitted["plot"]["layers"][0]["rows"].as_array().unwrap().len(),
+        fitted["plot"]["layers"][0]["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
         scored
     );
 
@@ -1744,5 +1776,491 @@ async fn the_try_it_of_milestone_a4() -> sc_error::Result<()> {
 
     // Reopened, the report is as it was left.
     assert_eq!(client.state_of(&report).await, state);
+    Ok(())
+}
+
+// --- A5: maps ----------------------------------------------------------------
+
+/// The tutorial's file (part 5, step 1): four police stations in the demo's
+/// city.
+const POLICE_STATIONS: &[u8] =
+    include_bytes!("../../../docs/tutorial-data/police-stations.geojson");
+
+/// A GeoJSON point's longitude and latitude.
+fn lon_lat(point: &Value) -> (f64, f64) {
+    assert_eq!(point["type"], "Point", "{point}");
+    let c = &point["coordinates"];
+    (c[0].as_f64().unwrap(), c[1].as_f64().unwrap())
+}
+
+/// A polygon's outer ring.
+fn ring(polygon: &Value) -> Vec<(f64, f64)> {
+    assert_eq!(polygon["type"], "Polygon", "{polygon}");
+    polygon["coordinates"][0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p[0].as_f64().unwrap(), p[1].as_f64().unwrap()))
+        .collect()
+}
+
+/// Whether `(x, y)` is inside a closed ring, by the even–odd rule — in the
+/// plane of longitude and latitude, as `ST_Within` over a geometry decides.
+fn inside(ring: &[(f64, f64)], (x, y): (f64, f64)) -> bool {
+    let mut odd = false;
+    for k in 1..ring.len() {
+        let ((x1, y1), (x2, y2)) = (ring[k - 1], ring[k]);
+        if (y1 > y) != (y2 > y) && x < x1 + (y - y1) * (x2 - x1) / (y2 - y1) {
+            odd = !odd;
+        }
+    }
+    odd
+}
+
+/// The great-circle distance in metres on the mean Earth sphere: within half
+/// a per cent of the spheroid's that `Geo.distance` measures.
+fn haversine((lon1, lat1): (f64, f64), (lon2, lat2): (f64, f64)) -> f64 {
+    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
+    let a = ((p2 - p1) / 2.0).sin().powi(2)
+        + p1.cos() * p2.cos() * ((lon2 - lon1).to_radians() / 2.0).sin().powi(2);
+    2.0 * 6_371_008.8 * a.sqrt().asin()
+}
+
+/// The features of a GeoJSON layer as `(id, properties, geometry)`.
+fn features(drawn_layer: &Value) -> Vec<(i64, Value, Value)> {
+    assert_eq!(drawn_layer["data"]["delivery"], "geojson", "{drawn_layer}");
+    drawn_layer["data"]["data"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["id"].as_i64().unwrap(),
+                f["properties"].clone(),
+                f["geometry"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// A query-string component, every byte but a letter or digit escaped.
+fn encode_component(text: &str) -> String {
+    text.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// The `(x, y)` of the Web Mercator tile at `zoom` holding `(lon, lat)`.
+fn tile_of((lon, lat): (f64, f64), zoom: u32) -> (u32, u32) {
+    let n = f64::from(1u32 << zoom);
+    let lat = lat.to_radians();
+    let x = ((lon + 180.0) / 360.0 * n).floor();
+    let y = ((1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0 * n).floor();
+    (x as u32, y as u32)
+}
+
+impl Client {
+    /// A map spec drawn; a layer refused is a failure here.
+    async fn draw_map(&mut self, spec: &Value) -> Value {
+        let drawn = self
+            .ok("POST", "/api/maps/render", Some(json!({ "spec": spec })))
+            .await;
+        for layer in drawn["layers"].as_array().unwrap() {
+            assert_ne!(layer["data"]["delivery"], "none", "{layer}");
+        }
+        drawn
+    }
+}
+
+#[tokio::test]
+async fn the_try_it_of_milestone_a5() -> sc_error::Result<()> {
+    let Some(db) = TestDb::with_postgis().await? else {
+        return Ok(());
+    };
+    let (mut client, _db) = setup_on(db).await?;
+    let client = &mut client;
+    let [west, south, east, north] = sc_analytics::demo::DEMO_EXTENT;
+    let in_city =
+        |(lon, lat): (f64, f64)| (west..=east).contains(&lon) && (south..=north).contains(&lat);
+
+    // 1. A GeoJSON file imported as a new table; its rows are a map layer.
+    use base64::Engine as _;
+    let (status, imported) = client
+        .send(
+            "POST",
+            "/api/tables/geo",
+            Some(json!({
+                "name": "police_stations", "file_name": "police-stations.geojson",
+                "content_base64": base64::engine::general_purpose::STANDARD.encode(POLICE_STATIONS),
+            })),
+        )
+        .await;
+    assert!(status.is_success(), "{status} {imported}");
+    let stations = client
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(json!({ "name": "Police stations",
+                         "base": { "kind": "table", "table": "police_stations" } })),
+        )
+        .await["dataset"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let suggested = client
+        .ok(
+            "POST",
+            "/api/maps/suggest",
+            Some(json!({ "dataset": stations, "assignment": { "label": { "field": "name" } } })),
+        )
+        .await;
+    let drawn = client.draw_map(&suggested["spec"]).await;
+    let stations_drawn = features(&drawn["layers"][0]);
+    assert_eq!(stations_drawn.len(), 4);
+    assert_eq!(drawn["layers"][0]["data"]["geometry"], json!(["point"]));
+    let (_, central, at) = &stations_drawn[0];
+    assert_eq!(central["name"], "Central", "{central}");
+    assert_eq!(central["officers"], 64);
+    assert_eq!(lon_lat(at), (4.8512, 45.7486));
+
+    // 2. The incidents in the explorer's map, coloured by category.
+    let incidents = client.dataset_named("Incidents").await;
+    let districts = client.dataset_named("Districts").await;
+    let explorer = client
+        .workspace("Exploring incidents", "data_explorer")
+        .await;
+    let assignment = json!({ "color": { "field": "category" } });
+    client
+        .save_state(
+            &explorer,
+            &json!({ "dataset": incidents, "assignment": assignment, "view": "map" }),
+        )
+        .await;
+    let suggested = client
+        .ok(
+            "POST",
+            "/api/maps/suggest",
+            Some(json!({ "dataset": incidents, "assignment": assignment })),
+        )
+        .await;
+    assert_eq!(
+        suggested["sources"][0]["source"],
+        json!({ "kind": "column", "column": "location" })
+    );
+    let drawn = client.draw_map(&suggested["spec"]).await;
+    let layer = &drawn["layers"][0];
+    assert_eq!(layer["data"]["count"], 2400, "{}", layer["data"]["count"]);
+    assert_eq!(
+        layer["domains"]["color"]["values"],
+        json!([
+            "antisocial behaviour",
+            "burglary",
+            "theft",
+            "vandalism",
+            "vehicle crime"
+        ])
+    );
+    let points: Vec<(i64, (f64, f64))> = features(layer)
+        .iter()
+        .map(|(id, _, g)| (*id, lon_lat(g)))
+        .collect();
+    assert!(points.iter().all(|(_, p)| in_city(*p)));
+
+    // 3. Open in map: a Map workspace whose first layer is the explorer's.
+    let map = client.workspace("Incidents map", "map").await;
+    let mut incidents_layer = suggested["spec"]["layers"][0].clone();
+    incidents_layer["id"] = json!("incidents");
+    incidents_layer["name"] = json!("Incidents");
+    client
+        .save_state(
+            &map,
+            &json!({ "layers": [incidents_layer], "reference": [] }),
+        )
+        .await;
+
+    // 4. Aggregate → Count per region with the districts: a dataset of a
+    //    Spatial join and an Aggregate, every district with its count.
+    let districts_layer = json!({ "id": "districts", "name": "Districts", "dataset": districts,
+                                  "geometry": { "kind": "column", "column": "outline" } });
+    let outlines: Vec<(i64, Vec<(f64, f64)>)> = features(
+        &client
+            .draw_map(&json!({ "layers": [districts_layer] }))
+            .await["layers"][0],
+    )
+    .iter()
+    .map(|(id, _, g)| (*id, ring(g)))
+    .collect();
+    assert_eq!(outlines.len(), sc_analytics::demo::DEMO_DISTRICTS);
+    let mut expected: BTreeMap<i64, i64> = outlines.iter().map(|(id, _)| (*id, 0)).collect();
+    for (_, p) in &points {
+        let homes: Vec<i64> = outlines
+            .iter()
+            .filter(|(_, r)| inside(r, *p))
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(homes.len(), 1, "{p:?} is in {homes:?}");
+        *expected.get_mut(&homes[0]).unwrap() += 1;
+    }
+    let (status, run) = client
+        .send(
+            "POST",
+            "/api/maps/tools/run",
+            Some(json!({ "tool": "count_per_region",
+                         "params": { "layer": incidents_layer, "regions": districts_layer } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{run}");
+    assert_eq!(run["dataset"]["name"], "Incidents per Districts");
+    let kinds: Vec<&str> = run["dataset"]["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["spatial_join", "aggregate", "complete"]);
+    let (names, rows, total) = client.stage(&run["dataset"], kinds.len()).await;
+    assert_eq!(total, 12);
+    let counted: BTreeMap<i64, i64> = rows
+        .iter()
+        .map(|r| (r[0].as_i64().unwrap(), r[1].as_i64().unwrap()))
+        .collect();
+    assert_eq!(counted, expected, "{names:?}");
+    // The new dataset is a global one, and opens in the Dataset editor.
+    let listed = client.ok("GET", "/api/datasets", None).await;
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["name"] == "Incidents per Districts"),
+        "{listed}"
+    );
+    // Graduated colours in five natural-breaks classes: Jenks over the counts.
+    let mut per_district = run["layer"].clone();
+    per_district["id"] = json!("per-district");
+    per_district["style"] =
+        json!({ "kind": "graduated", "method": "natural_breaks", "classes": 5 });
+    let layers = json!([districts_layer, incidents_layer, per_district]);
+    let drawn = client.draw_map(&json!({ "layers": layers })).await;
+    let classes: Vec<f64> = drawn["layers"][2]["classes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no classes: {}", drawn["layers"][2]))
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let mut counts: Vec<f64> = expected.values().map(|c| *c as f64).collect();
+    counts.sort_by(f64::total_cmp);
+    assert_eq!(
+        classes,
+        sc_analytics::classify::breaks(
+            &counts,
+            5,
+            sc_analytics::classify::Classification::NaturalBreaks
+        )
+    );
+    assert_eq!(classes.len(), 6);
+    assert_eq!((classes[0], classes[5]), (counts[0], counts[11]));
+
+    // 5. The attribute table sorted by count: the top three districts first,
+    //    selected — the selection is the workspace's. An aggregate's rows
+    //    have no key, so the server answers them in the dataset's order and
+    //    the table sorts them (`sortRows`); each row's id is its place.
+    let table = client
+        .ok(
+            "POST",
+            "/api/layers/rows",
+            Some(json!({ "layer": per_district,
+                         "sort": { "formula": names[1], "descending": true } })),
+        )
+        .await;
+    assert_eq!(
+        (table["keyed"].clone(), table["sorted"].clone()),
+        (json!(false), json!(false))
+    );
+    let mut sorted: Vec<(i64, i64, i64)> = table["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(table["ids"].as_array().unwrap())
+        .map(|(r, id)| {
+            (
+                id.as_i64().unwrap(),
+                r[0].as_i64().unwrap(),
+                r[1].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.2));
+    let top3: Vec<i64> = sorted.iter().take(3).map(|(id, _, _)| *id).collect();
+    let mut busiest: Vec<(i64, i64)> = expected.iter().map(|(d, c)| (*d, *c)).collect();
+    busiest.sort_by_key(|r| std::cmp::Reverse(r.1));
+    let top_districts: Vec<i64> = sorted.iter().take(3).map(|(_, d, _)| *d).collect();
+    assert_eq!(
+        top_districts,
+        busiest.iter().take(3).map(|(d, _)| *d).collect::<Vec<_>>()
+    );
+    client
+        .save_state(
+            &map,
+            &json!({ "layers": layers, "reference": [],
+                     "selection": { "layer": "per-district", "ids": top3 },
+                     "active": "per-district" }),
+        )
+        .await;
+
+    // 6. The incidents within 1 km of a point in the busiest district, saved
+    //    as a dataset.
+    let ring_of = &outlines
+        .iter()
+        .find(|(id, _)| *id == top_districts[0])
+        .unwrap()
+        .1;
+    let corners = &ring_of[..ring_of.len() - 1];
+    let centre = (
+        corners.iter().map(|p| p.0).sum::<f64>() / corners.len() as f64,
+        corners.iter().map(|p| p.1).sum::<f64>() / corners.len() as f64,
+    );
+    let found = client
+        .ok(
+            "POST",
+            "/api/layers/select",
+            Some(json!({ "layer": incidents_layer,
+                         "by": { "by": "near_point", "longitude": centre.0,
+                                 "latitude": centre.1, "distance": 1000 } })),
+        )
+        .await;
+    let near: Vec<i64> = found["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert!(near.len() > 20, "{} incidents near {centre:?}", near.len());
+    for (id, p) in &points {
+        let d = haversine(centre, *p);
+        if near.contains(id) {
+            assert!(d < 1005.0, "incident {id} is {d} m away and selected");
+        } else {
+            assert!(d > 995.0, "incident {id} is {d} m away and not selected");
+        }
+    }
+    let (status, saved) = client
+        .send(
+            "POST",
+            "/api/layers/selection",
+            Some(
+                json!({ "layer": incidents_layer, "name": "Incidents near the busiest district",
+                         "condition": found["condition"] }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{saved}");
+    assert_eq!(
+        saved["dataset"]["base"],
+        json!({ "kind": "dataset", "dataset": incidents })
+    );
+    let upto = saved["dataset"]["operations"].as_array().unwrap().len();
+    let (_, _, total) = client.stage(&saved["dataset"], upto).await;
+    assert_eq!(total, near.len() as i64);
+
+    // 7. A reference layer from a tile service, and the layers' opacity.
+    let mut layers = layers.clone();
+    layers[0]["opacity"] = json!(0.5);
+    let reference = json!([{ "id": "osm", "name": "OpenStreetMap", "kind": "tiles",
+                             "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                             "opacity": 0.6 }]);
+    let view = json!({ "center": [4.85, 45.75], "zoom": 12 });
+    let state = json!({ "layers": layers, "reference": reference, "view": view,
+                        "selection": { "layer": "per-district", "ids": top3 } });
+    client.save_state(&map, &state).await;
+    let kept = client.state_of(&map).await;
+    assert_eq!(kept["reference"][0]["opacity"], json!(0.6));
+    assert_eq!(kept["layers"][0]["opacity"], json!(0.5));
+    let (status, refused) = client
+        .send(
+            "PUT",
+            &format!("/api/workspaces/{map}/state"),
+            Some(json!({ "state": { "layers": layers, "reference": [{
+                "id": "bad", "name": "Bad", "kind": "tiles", "url": "https://example.com/tiles.png",
+                "opacity": 1 }] } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+
+    // 8. The whole map dragged into a report, drawn as the report draws it.
+    let report = client.workspace("Incidents report", "report").await;
+    let panel = json!({
+        "id": uuid::Uuid::new_v4().to_string(), "kind": "map", "title": "Incidents map",
+        "content": { "spec": { "layers": layers, "reference": reference, "view": view } },
+    });
+    client
+        .save_state(&report, &json!({ "blocks": [panel_block(&panel)] }))
+        .await;
+    let rendered = client.render(&panel).await;
+    assert_eq!(rendered["kind"], "map");
+    assert_eq!(rendered["map"]["layers"].as_array().unwrap().len(), 3);
+    assert_eq!(rendered["map"]["layers"][2]["classes"], json!(classes));
+    let usage = client
+        .ok("GET", &format!("/api/datasets/{incidents}/usage"), None)
+        .await;
+    let mut using = users(&usage);
+    using.sort();
+    assert_eq!(
+        using,
+        [
+            (
+                "Exploring incidents".to_owned(),
+                "data_explorer".to_owned(),
+                0
+            ),
+            ("Incidents map".to_owned(), "map".to_owned(), 1),
+            ("Incidents report".to_owned(), "report".to_owned(), 1),
+        ]
+    );
+
+    // A vector tile of the incidents: the city's tile at zoom 12 has them,
+    // a tile of the open ocean has none.
+    let tile_layer = json!({ "dataset": incidents,
+                             "geometry": { "kind": "column", "column": "location" },
+                             "properties": ["category"] });
+    let query = encode_component(&tile_layer.to_string());
+    let (x, y) = tile_of(centre, 12);
+    let (status, content_type, bytes) = client
+        .raw(
+            "GET",
+            &format!("/api/layers/tiles/12/{x}/{y}?layer={query}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(content_type, "application/vnd.mapbox-vector-tile");
+    assert!(
+        bytes.windows(8).any(|w| w == b"features"),
+        "the tile names its layer"
+    );
+    assert!(
+        bytes.windows(8).any(|w| w == b"burglary"),
+        "the tile has incidents"
+    );
+    let (status, _, empty) = client
+        .raw(
+            "GET",
+            &format!("/api/layers/tiles/12/0/2048?layer={query}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!empty.windows(8).any(|w| w == b"burglary"));
     Ok(())
 }

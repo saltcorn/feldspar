@@ -2,6 +2,63 @@
 
 Changes in reverse chronological order.
 
+## Analytics A5.14–A5.15: map demo data, documentation, definition of done
+
+The last phase of milestone A5 (Maps). The milestone is done: the Try it can be walked through
+the API (a test) and in the browser.
+
+- **A5.14 Demo data.** `feldspar demo analytics` makes two more tables where the database has
+  PostGIS (`sc_analytics::demo`):
+  - `districts`: 12 polygons with a `name` and a `population`. They are the Voronoi cells of a
+    jittered 4 × 3 grid of seeded points over an invented city of about 11 km square
+    (`DEMO_EXTENT`, laid over Lyon so that the base map has streets under it).
+    - The cells are computed in Rust (the rectangle clipped by half-planes), not by
+      `ST_VoronoiPolygons`, so they do not depend on the GEOS version.
+    - They tile the extent exactly, so every incident is in one district.
+  - `incidents`: 2,400 points with a `category` and a `reported_on` date in 2025.
+    - 55% are around four hot spots, where burglary is twice as likely; the rest are scattered.
+    - The busiest district has about eight times the quietest's count.
+  - The datasets `Districts` and `Incidents` come with them.
+  - **Without PostGIS** (SQLite, or Postgres without the extension) the rest is made, and
+    `DemoReport::skipped` gives the reason, which the command prints with a pointer to
+    `OPERATIONS.md` §10. The demo calls `bootstrap_spatial` first, as `feldspar serve` does.
+  - `--replace` drops and remakes the two tables with the others.
+- **Documentation.**
+  - `docs/tutorial-analytics.md` part 5 (Maps): the Try it as nine steps.
+  - `docs/tutorial-data/police-stations.geojson`: the file the tutorial imports, which the
+    definition of done imports too.
+  - `TECHNICAL_DESIGN.md`: a summary of the milestone at the head of §14.6; the demo data and
+    the definition of done at the end of §14.7.
+  - `OPERATIONS.md`: §8.6 (the map demo, and what it prints without PostGIS) and §10.3.
+- **A5.15 Definition of done** (`sc-server`'s `analytics_done.rs`,
+  `the_try_it_of_milestone_a5`). It runs on a clone of the PostGIS template and skips with a
+  message without one. It:
+  - imports the GeoJSON file and draws it;
+  - maps the incidents by category;
+  - runs Count per region against the districts and checks every count against a
+    point-in-polygon count made in the test;
+  - checks the natural-breaks classes against Jenks's over those counts;
+  - sorts the attribute table and selects the top three;
+  - selects within 1 km of a point and checks each incident against a haversine distance, then
+    saves the selection as a dataset;
+  - keeps a reference layer and opacities;
+  - draws the map as a report panel and finds it in the usage index;
+  - fetches a vector tile that holds incidents, and one that does not.
+  - `Client::raw` in that file now answers the status, content type and bytes.
+- **Tests.**
+  - `sc-analytics`: the districts tile the extent, anticlockwise, each cell around its seed.
+  - `sc-cli`: the demo without PostGIS says why; with it, the districts tile the extent with no
+    overlaps, every incident is in exactly one district, the datasets read, and `--replace`
+    makes the same rows.
+- **Walked by hand** in headless Chromium against a scratch database, with SwiftShader's WebGL:
+  - the explorer's map of incidents by category;
+  - the Map workspace with the count per district in natural breaks, the top three selected,
+    and the attribute table open;
+  - a report holding the map, drawn as an image.
+- **Noticed, not changed.**
+  - The attribute table of a count per region shows the district's key, not its name.
+  - The map toolbar's condition box suggests `price > 100000` whatever the layer.
+
 ## Analytics A5.8–A5.13: the Map workspace
 
 The fourth phase of milestone A5 (Maps): a workspace of layers over a base map, styled with

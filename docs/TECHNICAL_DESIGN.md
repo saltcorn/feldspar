@@ -8580,6 +8580,9 @@ an expression that doubles at every step (18 s rather than 3 on Postgres). Both 
 same rows. The demo also makes the datasets `Houses`, `Measurements` (with `treatment =
 patientⱵtreatment` and `change = after - before`) and `Events`, since the explorer reads datasets;
 one of those names that is there already is kept, and `--replace` never drops a dataset.
+Where the database has PostGIS the demo also makes `districts` and `incidents` with the datasets
+`Districts` and `Incidents` (A5, §14.7); where it has none they are left out and
+`DemoReport::skipped` says why, which the command prints.
 
 **Definitions of done** (`sc-server`'s `tests/analytics_done.rs`): each milestone's Try it through
 the API over the demo's rows. A2's checks the bins and box statistics against the rows read
@@ -8592,9 +8595,15 @@ A4 landscape page — and checks that the report's plot follows a new row of `ho
 fit's residual plot does not, that a copy into a second report is its own, and that the usage
 index lists both reports for the delete warnings. The print dialog cannot be driven from a test;
 it was walked in headless Chromium, whose `page.pdf({ preferCSSPageSize: true })` gives the
-pages the screen counted.
+pages the screen counted. A5's is described in §14.7.
 
 ### 14.6 Geometry and maps (analytics milestone A5, phases 1 to 3)
+
+The milestone as a whole, briefly: geometry is a field type stored by PostGIS and carried as
+GeoJSON (below); a **Spatial join** operation and the `Geo` formula functions do the spatial
+work, in SQL; a dataset is drawn as a **layer**, delivered as GeoJSON or as vector tiles; the
+explorer draws a map of one layer, and the **Map workspace** (§14.7) stacks layers, styles them,
+selects features and runs tools that make datasets.
 
 Maps begin with geometry in core: a field type, files that make tables of it, and formula
 functions over it. All of it needs PostgreSQL with PostGIS (`OPERATIONS.md` §10); SQLite, and a
@@ -8824,7 +8833,7 @@ layer as vector tiles made by PostGIS, which MapLibre draws natively at any size
 would add about a megabyte with nothing to draw. It remains the option for what tiles do not
 cover, such as animating many points over time (A8.5).
 
-### 14.7 The Map workspace (analytics milestone A5, phase 4)
+### 14.7 The Map workspace (analytics milestone A5, phases 4 and 5)
 
 The Map workspace is where multi-layer GIS work is done (goals document, "Map workspace"). It
 keeps the rule that "a layer is a dataset, a geometry source and a style, and the map never
@@ -8962,6 +8971,49 @@ browser prints where it would not print WebGL; until then it carries `an-panel-l
 the report waits for before printing. **Open in map** in the explorer's map view creates a Map
 workspace whose first layer is the explorer's (`stateFromLayer`), beside the explorer when the
 view is split.
+
+**Demo data** (A5.14, `sc_analytics::demo`). On a database with PostGIS, `feldspar demo
+analytics` makes `districts` (twelve polygons with a name and a population) and `incidents`
+(2,400 points with a category and a date in 2025) over an invented city of about 11 km square
+(`DEMO_EXTENT`, laid over Lyon so that a base map has streets under it). The districts are the
+Voronoi cells of a jittered 4 × 3 grid of seeded points. They are computed in Rust, not by
+`ST_VoronoiPolygons`, so that they do not depend on the GEOS version: each cell is the extent's
+rectangle clipped, Sutherland–Hodgman fashion, by the half-plane nearer its seed than each other
+seed, in a local kilometre plane (longitude scaled by the cosine of the middle latitude), and
+its vertices are rounded to six decimals. The cells therefore tile the extent, with no gaps or
+overlaps, and every incident is within exactly one district. Of the incidents, 55% are drawn
+around four hot spots (normal, σ 400–900 m) and the rest evenly. Burglary is twice as likely at
+a hot spot, so a category's map differs from the whole's. A point outside the extent is drawn
+again. The busiest district then has about eight times the quietest's count, which gives
+graduated colours, and A8's hot-spot statistics, something to find. Geometry is written as
+GeoJSON values through the ordinary `Insert`, like any other value (§14.6, *At the wire*).
+Without PostGIS (SQLite, or Postgres without the extension) the two tables and their datasets
+are left out, with the sentence `bootstrap_spatial` gives, and the rest of the demo is made.
+The demo calls `bootstrap_spatial` itself, as `feldspar serve`'s boot does, so a role that may
+install the extension gets it.
+
+**The definition of done** (A5.15, `analytics_done.rs`'s `the_try_it_of_milestone_a5`, on a
+database cloned from the PostGIS template, skipped with a message without it). It walks the Try
+it through the API:
+
+- imports the tutorial's GeoJSON file (`docs/tutorial-data/police-stations.geojson`) and draws it;
+- maps the demo's incidents, checking the explorer's automatic geometry and the category domain;
+- runs Count per region against the districts, and checks every district's count against a
+  point-in-polygon count made in the test from the features `renderMap` sent;
+- styles the result in natural breaks and checks the classes are Jenks's over those counts;
+- sorts the attribute table and selects the top three;
+- selects the incidents within 1 km of a point, checks each against a haversine distance (within
+  half a per cent of the spheroid's), and saves the selection as a dataset of that many rows;
+- keeps a reference layer and opacities in the workspace, and refuses a tile URL without
+  `{z}/{x}/{y}`;
+- renders the whole map as a report panel, and checks that the usage index finds the explorer,
+  the map and the report;
+- fetches the city's vector tile at zoom 12, which holds the incidents, and one over the ocean,
+  which does not.
+
+The pages were walked in headless Chromium with SwiftShader's WebGL
+(`--use-angle=swiftshader --enable-unsafe-swiftshader`). Without it MapLibre has no context and
+the map says so.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

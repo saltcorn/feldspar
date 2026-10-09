@@ -1509,7 +1509,7 @@ async fn i18n_command(args: &[String]) -> Result<()> {
 }
 
 /// `feldspar demo analytics [--replace] [database flags]`: the Analytics UI's
-/// demo tables and datasets (analytics TODO A1.18, A2.15).
+/// demo tables and datasets (analytics TODO A1.18, A2.15, A5.14).
 async fn demo_command(args: &[String]) -> Result<()> {
     let (db, rest) = DbConfig::extract(args)?;
     let parsed = sc_cli::demo::DemoArgs::parse(&rest)?;
@@ -1529,6 +1529,9 @@ async fn demo_command(args: &[String]) -> Result<()> {
     }
     for name in &report.kept {
         println!("kept the dataset {name}, which was already there");
+    }
+    if let Some(reason) = &report.skipped {
+        println!("{reason} (docs/OPERATIONS.md §10 says how to install PostGIS)");
     }
     println!(
         "Now run `feldspar serve`, sign in, and open Analytics in the admin sidebar \

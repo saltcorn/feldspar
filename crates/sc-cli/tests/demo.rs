@@ -1,10 +1,14 @@
-//! `feldspar demo analytics` (analytics TODO A1.18, A2.15): the demo's tables
-//! and datasets, the same rows on every run and on both backends, and nothing
-//! touched without `--replace`.
+//! `feldspar demo analytics` (analytics TODO A1.18, A2.15, A5.14): the demo's
+//! tables and datasets, the same rows on every run and on both backends, and
+//! nothing touched without `--replace`; the map demo's districts and incidents
+//! where the database has PostGIS, and a sentence where it has not.
 
 use std::sync::Arc;
 
-use sc_analytics::demo::{DEMO_DATASETS, DEMO_EVENTS, DEMO_HOUSES, DEMO_PATIENTS, demo_analytics};
+use sc_analytics::demo::{
+    DEMO_DATASETS, DEMO_DISTRICTS, DEMO_EVENTS, DEMO_EXTENT, DEMO_HOUSES, DEMO_INCIDENTS,
+    DEMO_MAP_DATASETS, DEMO_PATIENTS, demo_analytics,
+};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -107,6 +111,14 @@ async fn the_demo(cat: &Catalog, backend: &str) -> Result<(Vec<String>, Vec<Stri
     let report = demo_analytics(cat, false).await?;
     eprintln!("{backend}: the demo took {:?}", started.elapsed());
     assert!(report.replaced.is_empty());
+    // No PostGIS here (`TestDb::new` has none, SQLite cannot): the map demo
+    // is left out with the reason, and the rest made.
+    let skipped = report.skipped.clone().expect("no PostGIS, no districts");
+    assert!(
+        skipped.contains("`districts`, `incidents`") && skipped.contains("PostGIS"),
+        "{backend}: {skipped}"
+    );
+    assert!(cat.get("districts")?.is_none());
     assert_eq!(report.tables[1], ("houses".to_owned(), DEMO_HOUSES));
     assert_eq!(count(cat, "neighbourhoods").await?, 5);
     assert_eq!(count(cat, "houses").await?, DEMO_HOUSES as i64);
@@ -204,5 +216,104 @@ async fn the_demo_is_deterministic_and_leaves_existing_tables_alone() -> Result<
     assert_eq!(on_postgres.len(), on_sqlite.len());
     // One statement, so one set of events: the same counts and sums.
     assert_eq!(pg_events, sqlite_events);
+    Ok(())
+}
+
+/// Where the database has PostGIS, the map demo (A5.14): twelve districts
+/// that tile the city, and the incidents inside it, each in one district; two
+/// datasets over them; and the same rows again on `--replace`.
+#[tokio::test]
+async fn the_map_demo_makes_districts_and_incidents_where_there_is_postgis() -> Result<()> {
+    let Some(db) = TestDb::with_postgis().await? else {
+        return Ok(());
+    };
+    let cat =
+        Catalog::init(Arc::new(PgDriver::from_pool(db.pool().clone())) as Arc<dyn DatabaseDriver>)
+            .await?;
+    let report = demo_analytics(&cat, false).await?;
+    assert_eq!(report.skipped, None);
+    assert_eq!(
+        &report.tables[6..],
+        [
+            ("districts".to_owned(), DEMO_DISTRICTS),
+            ("incidents".to_owned(), DEMO_INCIDENTS)
+        ]
+    );
+    assert_eq!(count(&cat, "districts").await?, DEMO_DISTRICTS as i64);
+    assert_eq!(count(&cat, "incidents").await?, DEMO_INCIDENTS as i64);
+    let mut expected: Vec<String> = DEMO_DATASETS.map(str::to_owned).to_vec();
+    expected.extend(DEMO_MAP_DATASETS.map(str::to_owned));
+    assert_eq!(report.datasets, expected);
+
+    let client = db.client().await?;
+    let facts = |sql: &'static str| {
+        let client = &client;
+        async move { client.query_one(sql, &[]).await.expect(sql) }
+    };
+    // The districts tile the extent: their union is its rectangle, and no two
+    // overlap.
+    let [w, s, e, n] = DEMO_EXTENT;
+    let row = facts(
+        "SELECT ST_XMin(u), ST_YMin(u), ST_XMax(u), ST_YMax(u), ST_Area(u), \
+         (SELECT count(*) FROM districts a JOIN districts b ON a.id < b.id \
+          AND ST_Area(ST_Intersection(a.outline, b.outline)) > 1e-12) \
+         FROM (SELECT ST_Union(outline) AS u FROM districts) AS t",
+    )
+    .await;
+    let bounds: [f64; 5] = std::array::from_fn(|i| row.get(i));
+    assert!(
+        (bounds[0] - w).abs() < 1e-6 && (bounds[1] - s).abs() < 1e-6,
+        "{bounds:?}"
+    );
+    assert!(
+        (bounds[2] - e).abs() < 1e-6 && (bounds[3] - n).abs() < 1e-6,
+        "{bounds:?}"
+    );
+    assert!((bounds[4] - (e - w) * (n - s)).abs() < 1e-9, "{bounds:?}");
+    assert_eq!(row.get::<_, i64>(5), 0, "districts overlap");
+    // Every incident is in exactly one district, and they are not spread
+    // evenly: the busiest district has several times the quietest's.
+    let row = facts(
+        "SELECT count(*), min(c), max(c) FROM (SELECT d.id, count(i.id) AS c FROM districts d \
+         LEFT JOIN incidents i ON ST_Within(i.location, d.outline) GROUP BY d.id) AS t",
+    )
+    .await;
+    assert_eq!(row.get::<_, i64>(0), DEMO_DISTRICTS as i64);
+    let (fewest, most): (i64, i64) = (row.get(1), row.get(2));
+    let within = facts(
+        "SELECT count(*) FROM incidents i JOIN districts d ON ST_Within(i.location, d.outline)",
+    )
+    .await;
+    assert_eq!(within.get::<_, i64>(0), DEMO_INCIDENTS as i64);
+    assert!(most > 3 * fewest.max(1), "{fewest} to {most}");
+    let categories = facts("SELECT count(DISTINCT category) FROM incidents").await;
+    assert_eq!(categories.get::<_, i64>(0), 5);
+
+    // The datasets read, each with its geometry column.
+    let library = sc_dataset::load_library(&cat).await?;
+    let schema = sc_dataset::Schema::of_catalog(&cat)?;
+    for (name, column) in [("Districts", "outline"), ("Incidents", "location")] {
+        let def = sc_dataset::load_dataset_by_name(&cat, name)
+            .await?
+            .expect("the demo's dataset");
+        let compiled = sc_dataset::compile(&schema, &library, &def, Default::default());
+        let stage = compiled
+            .last()
+            .unwrap_or_else(|e| panic!("`{name}` does not read: {e}"));
+        assert!(
+            stage.shape().columns.iter().any(|c| c.name == column),
+            "{name}"
+        );
+    }
+
+    // The same rows on every run.
+    let text = "SELECT string_agg(category || reported_on || ST_AsText(location), ';' ORDER BY id) \
+                FROM incidents";
+    let before: String = facts(text).await.get(0);
+    let again = demo_analytics(&cat, true).await?;
+    assert_eq!(again.replaced.len(), 8);
+    assert_eq!(again.kept.len(), 5);
+    let after: String = facts(text).await.get(0);
+    assert_eq!(before, after);
     Ok(())
 }

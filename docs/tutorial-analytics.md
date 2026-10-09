@@ -11,6 +11,9 @@ models, draw maps and write reports. Its design is in
   box plot.
 - **Part 4 — Reports:** split view, dragging plots and model outputs into a report, and printing
   it to PDF.
+- **Part 5 — Maps:** importing a map file, a map in the explorer, the Map workspace with its
+  layers, styles, attribute table, selections, reference layers and toolbox, and a map in a
+  report.
 
 You need a server and an admin login. Nothing else: the data comes from a command.
 
@@ -554,3 +557,142 @@ report`, whose two panels show its fit. Press **Cancel**.
 - **What you see is what prints.** The page is drawn at its paper width, the page markers are where
   the pages will break, and Export PDF is the browser's print dialog.
 - **Split view** puts any two screens side by side, and a change on one side reaches the other.
+
+---
+
+## Part 5 — Maps
+
+A map in the Analytics UI is a stack of **layers**, and a layer is a dataset, the place its rows
+are on the ground, and a style. The map never computes anything itself. Counting incidents per
+district, finding what is near a point and saving a selection all make ordinary datasets, which
+you can open in the Dataset editor, plot in the explorer and use in a model.
+
+Maps need **PostgreSQL with PostGIS** in Feldspar's database ([OPERATIONS.md](OPERATIONS.md)
+§10 says how to install it). On SQLite, or on Postgres without the extension, the demo skips its
+map tables and says why, and the rest of this part is not available.
+
+### Step 1 — The demo's map tables
+
+Run the demo again with `--replace`:
+
+```sh
+feldspar demo analytics --replace
+```
+
+On a database with PostGIS it now also makes two tables:
+
+- `districts`: twelve districts of an invented city, each with a `name`, a `population` and an
+  `outline` (a polygon). They are the Voronoi cells of twelve seeded points, so every place in
+  the city is in exactly one district.
+- `incidents`: 2,400 incidents reported in 2025, each with a `category` (theft, burglary,
+  vehicle crime, vandalism, antisocial behaviour), a `reported_on` date and a `location` (a
+  point). Most gather around a few hot spots in the north and east of the city, where burglary
+  is commoner. The rest are scattered everywhere.
+
+It also makes the datasets `Districts` and `Incidents`. The city is laid over Lyon so that the
+base map has streets under it, but the districts and incidents are made up. As before, the rows
+are the same on every run.
+
+### Step 2 — Import a map file
+
+In the admin UI, go to **Tables → + New table → Create from a map file** and choose
+[`docs/tutorial-data/police-stations.geojson`](tutorial-data/police-stations.geojson) from the
+Feldspar source tree. Call the table `police_stations`. The import finds a point geometry, a
+`name`, a number of `officers` and a flag `open_all_hours`, and the file's ids become the key.
+A Shapefile (zipped) or a GeoPackage is imported the same way. If it is in another coordinate
+system, PostGIS converts it to longitude and latitude.
+
+In the Analytics UI, make a dataset `Police stations` on the new table, then a Data explorer
+workspace on it, and press **Map** in the gallery: four points over the city.
+
+### Step 3 — Incidents on a map
+
+Make a Data explorer workspace `Exploring incidents`, pick `Incidents` and press **Map** in the
+gallery. The explorer finds the geometry by itself: the **Geometry** picker says *Automatic
+(`location`)*. It would also find longitude and latitude columns, or a foreign key to a table
+with geometry. Drop `category` on **Color**. Each category gets the colour it has in a bar
+chart, and the legend lists them.
+
+The hot spots stand out at once. Zoom in and out. A layer this size is sent to the browser
+whole. One with more than 5,000 features, or very detailed outlines, is sent as vector tiles,
+so only what is in view is loaded.
+
+### Step 4 — Open in map
+
+Press **Open in map**. A Map workspace opens with the incidents as its first layer, named after
+the dataset. Its left side lists the layers, with the top layer first. Each layer can be shown
+or hidden with its check box, moved with the arrows or by dragging, and opened in the Dataset
+editor or removed from its **⌄** menu. Click a layer's name to open its settings below the
+list: the name, geometry, a filter, the style, the Color/Size/Shape/Label columns, the opacity,
+whether it is in the legend, and the fields its popup shows when you click a feature.
+
+Add the districts too: **Add layer → Districts**. Set its style to *Single symbol*.
+
+### Step 5 — Count per district
+
+Open **Toolbox → Aggregate → Count per region**. For *Features* pick the incidents layer, for
+*Regions* the districts, and press **Run**. The tool makes a dataset, `Incidents per
+Districts`, and adds it to the map as a new layer on top. It is an ordinary dataset with three
+operations: a **Spatial join** (which district each incident is within), an **Aggregate** by
+district with a count, and a **Complete** that gives every district a row, with 0 if it has no
+incidents. Open it in the Dataset editor from the layer's menu to see them.
+
+The new layer is drawn by each district's outline, found through its `district` key. Set its
+style to **Graduated colours**, **Natural breaks**, **5 classes**. The server works out the
+classes from the counts, and the legend shows them: from 73–107 for the quiet south and west,
+to 574 for the busiest district on its own.
+
+### Step 6 — The attribute table
+
+Press **Table**. The rows of the picked layer appear below the map: each district's key and its
+count. Click the `count` header twice to sort by it, descending. Click the first row, then
+Shift-click the third: the three busiest districts (Kingsmead, Larkspur and Highbury) are
+selected and outlined on the map. Selection works the other way too. Click a district on the map
+and its row is selected, and Ctrl-click adds another. **Selected only** shows just the selected
+rows.
+
+### Step 7 — What is near a point
+
+Pick the incidents layer, set the distance next to **Near a point** to `1000` m, press **Near a
+point** and click the middle of Kingsmead. Every incident within 1 km is selected. The database
+measures the distances on the Earth's surface, in metres.
+
+Now press **Save selection as dataset**. The new dataset is based on `Incidents`, with a Filter
+that keeps the incidents within 1 km of that point. Because it keeps the condition, not the
+ids, it stays right when incidents are added. It is added as a layer, and you can open it in
+the explorer like any other dataset. A selection made by clicking is saved by its keys instead.
+**Lasso** draws a shape to select by, and the box next to it selects by a condition such as
+`category == "burglary"`.
+
+### Step 8 — A reference layer
+
+Under **Reference layers**, press **Add reference layer**. Choose *Tiles*, call it
+`OpenStreetMap` and give the address `https://tile.openstreetmap.org/{z}/{x}/{y}.png`, with the
+attribution `© OpenStreetMap contributors`. A browser may only load images from hosts the
+server allows. So the layer first says its host is blocked, and **Allow it** adds the host to
+Settings → Maps and reloads the page. A Web Map Service and an ArcGIS map service work the same
+way. Reference layers are drawn under your data. Lower their opacity with their slider, and the
+incidents' opacity with theirs, until both can be read.
+
+### Step 9 — A map in a report
+
+Press **Split**, and open the `House prices report` of part 4 on the right, or make a new report.
+Drag the map's **⠿ Drag** handle into the report. The whole map, with its layers, styles,
+reference layers and view, becomes a panel. Like a plot, it is a live view, redrawn from the
+datasets when the report is opened. In a report a map is still: it is drawn once and turned into
+an image, which is what a browser can print. Press **Export PDF**.
+
+Finally, on the front page, press **Delete** on the `Incidents` dataset and read the warning
+without confirming. Among what uses it are the explorer, the map (with the number of its layers
+that show it) and the report. Press **Cancel**.
+
+### What to remember
+
+- **A layer is a dataset.** Its geometry is a column, longitude and latitude, or a key to a
+  table that has one. Its style decides how it looks, and the map computes nothing else.
+- **Tools make datasets.** Count per region is a Spatial join, an Aggregate and a Complete,
+  which you can open, change and reuse. Saving a selection makes a dataset too.
+- **Selections are conditions.** Near a point, a lasso or a condition is evaluated by the
+  database, and the attribute table and the map share one selection.
+- **Maps need PostGIS.** Everything else in the Analytics UI works without it.
+

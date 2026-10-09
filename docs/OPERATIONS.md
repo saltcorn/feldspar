@@ -1298,6 +1298,19 @@ rows, on Postgres or SQLite. It also makes three datasets for the Data explorer 
 `Measurements` and `Events` — unless a dataset of that name is already there. It takes the same
 database flags as `feldspar serve` and writes where the server would read.
 
+Where the database has PostGIS (§10), it also makes the map demo's `districts` (12 polygons of an
+invented city laid over Lyon) and `incidents` (2,400 points with a category and a date), with the
+datasets `Districts` and `Incidents`. Like `feldspar serve`, it first tries to install the
+extension where its role may. Where PostGIS is not there it makes everything else and says
+why:
+
+```
+the map demo's tables (`districts`, `incidents`) were not made: geometry needs the PostGIS
+extension, … (docs/OPERATIONS.md §10 says how to install PostGIS)
+```
+
+Install PostGIS as §10.1 says, then run the demo again with `--replace`.
+
 It refuses to touch a table that is already there, naming it. `--replace` drops and remakes
 the demo's six tables — and only those, so anything else in the database, including datasets
 and models that read them, is left alone (a dataset over a dropped table reports its error until
@@ -1560,7 +1573,8 @@ sudo -u postgres createdb -O <test role> feldspar_postgis_template
 sudo -u postgres psql -d feldspar_postgis_template -c 'CREATE EXTENSION postgis'
 ```
 
-Without it those tests print `skipped: this test needs PostGIS…` and pass.
+Without it those tests print `skipped: this test needs PostGIS…` and pass. Among them are
+the map demo's test in `sc-cli` and milestone A5's definition of done in `sc-server`.
 `SC_TEST_POSTGIS_TEMPLATE` names another template (§5.4).
 
 ### 10.4 The base map

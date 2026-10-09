@@ -540,11 +540,11 @@ selection, reference layers and the tools that dataset operations can express (g
 
 ## Phase 5 — Demo data, documentation, definition of done
 
-- [ ] A5.14 Demo data: synthetic `districts` (polygons generated from seeded points) and
+- [x] A5.14 Demo data: synthetic `districts` (polygons generated from seeded points) and
       `incidents`. `OPERATIONS.md`: installing PostGIS. `TECHNICAL_DESIGN.md` (geometry type,
       spatial functions and operations, layer delivery, the Map workspace);
       `tutorial-analytics.md` part 5.
-- [ ] A5.15 Definition of done: an `sc-server` test (skipped with a message without PostGIS)
+- [x] A5.15 Definition of done: an `sc-server` test (skipped with a message without PostGIS)
       that imports a GeoJSON fixture, runs the count-per-region tool through the API and
       checks the counts, and fetches a vector tile. Walk the Try it by hand.
 
