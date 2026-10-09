@@ -58,8 +58,12 @@ pub use agents::{AgentServices, install_agents, install_agents_on};
 pub use apps::{AppMounts, MountedApp, build_and_mount, mount_all, subdomain_in, subdomain_of};
 pub use backup::{
     Available as BackupContents, BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE, BackupPreferences,
-    RestoreReport, Selection as BackupSelection,
+    BackupScheduler, RestoreReport, Selection as BackupSelection, available as backup_available,
+    inspect as inspect_backup, restore_backup, start_backup_scheduler, write_backup,
 };
+// The S3 request signer, for the fake S3 server the automated-backup tests
+// check every request's signature against.
+pub use backup::s3::{Signing as S3Signing, authorization as s3_authorization};
 pub use browser::{BROWSER_NAMES, ChromiumDriver, DriverConfig, detect_browser};
 pub use chat::AGENT_CHAT_ROUTE;
 pub use sc_agent::{ProviderConnector, StoredProviders};

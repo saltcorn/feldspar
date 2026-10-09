@@ -147,7 +147,13 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
             0
         },
         agents: i64::try_from(sc_agent::list_agents(catalog).await?.len()).unwrap_or(i64::MAX),
-        triggers: i64::try_from(sc_action::list_triggers(catalog).await?.len()).unwrap_or(i64::MAX),
+        // Bootstrapped by `serve` rather than at connect, so a database no server
+        // has run on yet — one a `feldspar backup` can be pointed at — has none.
+        triggers: if has_table(catalog, sc_action::TRIGGERS_TABLE)? {
+            count(sc_action::list_triggers(catalog).await?.len())
+        } else {
+            0
+        },
         views: i64::try_from(views).unwrap_or(i64::MAX),
         pages: i64::try_from(pages).unwrap_or(i64::MAX),
         // There is always an SSL section to include, even when every value in it

@@ -2906,3 +2906,213 @@ async fn node_modules_is_neither_backed_up_nor_restored() -> sc_error::Result<()
     assert!(!target.files.join("web/node_modules").exists());
     Ok(())
 }
+
+/// What the automated backup in the test below includes: the books table's
+/// definition but not its rows, the file store, the triggers — and no users.
+fn schedule_include() -> Value {
+    json!({
+        "tables": ["books"],
+        "table_data": [],
+        "applications": [],
+        "file_stores": ["assets"],
+        "users": false,
+        "triggers": true,
+        "ssl": true,
+    })
+}
+
+/// `body` with [`schedule_include`] as its `include`.
+fn with_include(mut body: Value) -> Value {
+    body["include"] = schedule_include();
+    body
+}
+
+/// A destination in a directory on the server.
+fn local(dir: impl AsRef<std::path::Path>) -> Value {
+    json!({ "kind": "local", "directory": dir.as_ref().to_string_lossy() })
+}
+
+/// Automated backups, end to end: a schedule is created through the API the card
+/// uses, with a selection of its own; the backup task's tick writes a real backup
+/// into its directory holding exactly that selection, prunes what is past its
+/// retention, and records what it did where the list reads it. Editing and
+/// deleting go through the same API, and the checks the dialog relies on refuse
+/// what they should.
+#[tokio::test]
+async fn an_automated_backup_writes_and_prunes_its_directory() -> sc_error::Result<()> {
+    let mut server = setup().await?;
+    furnish(&mut server).await?;
+    let dest = temp_dir().join("nightly");
+
+    // Refused: a relative path, an unknown frequency, a zero retention, and no
+    // word on what to include.
+    for bad in [
+        with_include(
+            json!({ "destination": local("backups"), "frequency": "daily", "retention_days": 7 }),
+        ),
+        with_include(
+            json!({ "destination": local(&dest), "frequency": "hourly", "retention_days": 7 }),
+        ),
+        with_include(
+            json!({ "destination": local(&dest), "frequency": "daily", "retention_days": 0 }),
+        ),
+        json!({ "destination": local(&dest), "frequency": "daily", "retention_days": 7 }),
+    ] {
+        let (status, body) = server
+            .client
+            .send("POST", "/api/backup/schedules", Some(bad))
+            .await;
+        assert!(status.is_client_error(), "{status} {body}");
+    }
+
+    // Created; the directory did not exist and is made on save.
+    let created = ok(
+        &mut server,
+        "POST",
+        "/api/backup/schedules",
+        Some(with_include(json!({
+            "destination": local(format!("{}/", dest.to_string_lossy())),
+            "frequency": "daily",
+            "retention_days": 7,
+        }))),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_owned();
+    assert_eq!(created["destination"], local(&dest));
+    assert_eq!(created["location"], json!(dest.to_string_lossy()));
+    // Read back as the selection it means now, the shape the dialog's pickers take.
+    assert_eq!(created["include"]["tables"], json!(["books"]));
+    assert_eq!(created["include"]["table_data"], json!([]));
+    assert_eq!(created["include"]["users"], json!(false));
+    assert_eq!(created["last_success_at"], Value::Null);
+    assert!(dest.is_dir());
+
+    // A second schedule into the same directory would prune the first's files.
+    let (status, body) = server
+        .client
+        .send(
+            "POST",
+            "/api/backup/schedules",
+            Some(with_include(
+                json!({ "destination": local(&dest), "frequency": "weekly", "retention_days": 30 }),
+            )),
+        )
+        .await;
+    assert!(status.is_client_error(), "{status} {body}");
+
+    // An old backup past its retention, a recent one, and a file that is not a
+    // backup at all.
+    let old = "feldspar-backup-2000-01-01-020000.zip";
+    let now = chrono::Utc::now();
+    let recent = format!(
+        "feldspar-backup-{}.zip",
+        (now - chrono::Duration::days(2)).format("%Y-%m-%d-%H%M%S")
+    );
+    for name in [old, recent.as_str(), "README.txt"] {
+        std::fs::write(dest.join(name), b"x").unwrap();
+    }
+
+    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let ran = scheduler.tick(now).await;
+    assert_eq!(ran.len(), 1);
+    // Not due again a minute later.
+    assert!(
+        scheduler
+            .tick(now + chrono::Duration::minutes(1))
+            .await
+            .is_empty()
+    );
+
+    let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;
+    let entry = &list.as_array().unwrap()[0];
+    assert_eq!(entry["last_error"], Value::Null, "{entry}");
+    assert!(entry["last_success_at"].is_string());
+    let written = std::path::PathBuf::from(entry["last_file"].as_str().unwrap());
+    assert_eq!(written.parent(), Some(dest.as_path()));
+    // The schedule's own selection, not the Backup card's (which still has
+    // everything ticked).
+    let archive = std::fs::read(&written).unwrap();
+    assert!(has_entry(&archive, "tables/books/table.json"));
+    assert!(!has_entry(&archive, "tables/books/rows.json"));
+    assert!(!has_entry(&archive, "users.json"));
+    assert!(has_entry(&archive, "triggers.json"));
+    let (_, options) = server.client.send("GET", "/api/backup", None).await;
+    assert_eq!(options["include"]["users"], json!(true));
+    assert_eq!(options["include"]["table_data"], json!(["books"]));
+
+    // Stored as what was left out: a table created later is in the schedule,
+    // rows and all, while the books' rows stay out.
+    server
+        .catalog
+        .create_table(
+            "reviews",
+            &[DataField::plain("id", TypeRef::Basic(BasicType::Int))
+                .required()
+                .primary_key()],
+        )
+        .await?;
+    let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;
+    assert_eq!(list[0]["include"]["tables"], json!(["books", "reviews"]));
+    assert_eq!(list[0]["include"]["table_data"], json!(["reviews"]));
+
+    assert!(!dest.join(old).exists(), "the old backup should be pruned");
+    assert!(dest.join(&recent).exists());
+    assert!(dest.join("README.txt").exists());
+    // No temporary file left behind.
+    assert!(std::fs::read_dir(&dest).unwrap().all(|e| {
+        !e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".partial")
+    }));
+
+    // Edited: weekly, longer retention, and the users ticked. What it last did
+    // is kept.
+    let mut include = list[0]["include"].clone();
+    include["users"] = json!(true);
+    let updated = ok(
+        &mut server,
+        "PUT",
+        &format!("/api/backup/schedules/{id}"),
+        Some(json!({
+            "destination": local(&dest),
+            "frequency": "weekly",
+            "retention_days": 30,
+            "include": include,
+        })),
+    )
+    .await;
+    assert_eq!(updated["frequency"], json!("weekly"));
+    assert_eq!(updated["retention_days"], json!(30));
+    assert_eq!(updated["include"]["users"], json!(true));
+    assert_eq!(updated["include"]["table_data"], json!(["reviews"]));
+    assert!(updated["last_success_at"].is_string());
+
+    // Deleted: gone from the list, and the backups it wrote stay.
+    let deleted = ok(
+        &mut server,
+        "DELETE",
+        &format!("/api/backup/schedules/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(deleted["deleted"], json!(true));
+    let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;
+    assert_eq!(list, json!([]));
+    assert!(written.exists());
+
+    // Admin-only, like the rest of the Backup tab.
+    let (status, _) = server.client.send("POST", "/api/logout", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = server
+        .client
+        .send("GET", "/api/backup/schedules", None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+/// Automated backups sent to an S3-compatible bucket and to an SFTP server,
+/// each played by a server in this process.
+#[path = "backup_remote.rs"]
+mod remote;

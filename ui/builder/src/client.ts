@@ -295,6 +295,12 @@ export type GetPythonStatusResponse = { state: string; version?: string | null; 
 export type GetBackupOptionsResponse = { available: { tables: Array<{ name: string; label: string; count?: number | null }>; applications: Array<{ name: string; label: string; count?: number | null }>; file_stores: Array<{ name: string; label: string; count?: number | null }>; users: number; modules: number; db_connections: number; streams: number; datasets: number; models: number; workspaces: number; fits: number; llm_providers: number; agents: number; triggers: number; views: number; pages: number; ssl: boolean; settings: boolean }; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean } };
 export type RestoreBackupRequest = { id: string; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean } };
 export type RestoreBackupResponse = { restored: Array<string>; warnings: Array<string> };
+export type ListBackupSchedulesResponse = Array<{ id: string; destination: { kind: string; directory?: string | null; host?: string | null; port?: number | null; username?: string | null; password?: string | null; host_key?: string | null; endpoint?: string | null; bucket?: string | null; region?: string | null; access_key?: string | null; secret_key?: string | null }; frequency: string; retention_days: number; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean }; location: string; last_attempt_at?: string | null; last_success_at?: string | null; last_error?: string | null; last_file?: string | null }>;
+export type CreateBackupScheduleRequest = { destination: { kind: string; directory?: string | null; host?: string | null; port?: number | null; username?: string | null; password?: string | null; host_key?: string | null; endpoint?: string | null; bucket?: string | null; region?: string | null; access_key?: string | null; secret_key?: string | null }; frequency: string; retention_days: number; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean } };
+export type CreateBackupScheduleResponse = { id: string; destination: { kind: string; directory?: string | null; host?: string | null; port?: number | null; username?: string | null; password?: string | null; host_key?: string | null; endpoint?: string | null; bucket?: string | null; region?: string | null; access_key?: string | null; secret_key?: string | null }; frequency: string; retention_days: number; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean }; location: string; last_attempt_at?: string | null; last_success_at?: string | null; last_error?: string | null; last_file?: string | null };
+export type UpdateBackupScheduleRequest = { destination: { kind: string; directory?: string | null; host?: string | null; port?: number | null; username?: string | null; password?: string | null; host_key?: string | null; endpoint?: string | null; bucket?: string | null; region?: string | null; access_key?: string | null; secret_key?: string | null }; frequency: string; retention_days: number; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean } };
+export type UpdateBackupScheduleResponse = { id: string; destination: { kind: string; directory?: string | null; host?: string | null; port?: number | null; username?: string | null; password?: string | null; host_key?: string | null; endpoint?: string | null; bucket?: string | null; region?: string | null; access_key?: string | null; secret_key?: string | null }; frequency: string; retention_days: number; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean }; location: string; last_attempt_at?: string | null; last_success_at?: string | null; last_error?: string | null; last_file?: string | null };
+export type DeleteBackupScheduleResponse = { deleted: boolean };
 export type GetClearAllPreviewResponse = { file_stores: Array<{ name: string; backend: string; directory?: string | null }> };
 export type ClearAllRequest = { delete_from_disk: Array<string> };
 export type ClearAllResponse = { cleared: Array<string>; warnings: Array<string> };
@@ -551,6 +557,10 @@ export interface ApiClient {
   getPythonStatus(): Promise<GetPythonStatusResponse>;
   getBackupOptions(): Promise<GetBackupOptionsResponse>;
   restoreBackup(body: RestoreBackupRequest): Promise<RestoreBackupResponse>;
+  listBackupSchedules(): Promise<ListBackupSchedulesResponse>;
+  createBackupSchedule(body: CreateBackupScheduleRequest): Promise<CreateBackupScheduleResponse>;
+  updateBackupSchedule(id: string, body: UpdateBackupScheduleRequest): Promise<UpdateBackupScheduleResponse>;
+  deleteBackupSchedule(id: string): Promise<DeleteBackupScheduleResponse>;
   getClearAllPreview(): Promise<GetClearAllPreviewResponse>;
   clearAll(body: ClearAllRequest): Promise<ClearAllResponse>;
   listDatasets(): Promise<ListDatasetsResponse>;
@@ -2270,6 +2280,40 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("restoreBackup", res);
       return (await res.json()) as RestoreBackupResponse;
+    },
+    async listBackupSchedules() {
+      const res = await doFetch(`${baseUrl}/api/backup/schedules`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listBackupSchedules", res);
+      return (await res.json()) as ListBackupSchedulesResponse;
+    },
+    async createBackupSchedule(body) {
+      const res = await doFetch(`${baseUrl}/api/backup/schedules`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createBackupSchedule", res);
+      return (await res.json()) as CreateBackupScheduleResponse;
+    },
+    async updateBackupSchedule(id, body) {
+      const res = await doFetch(`${baseUrl}/api/backup/schedules/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateBackupSchedule", res);
+      return (await res.json()) as UpdateBackupScheduleResponse;
+    },
+    async deleteBackupSchedule(id) {
+      const res = await doFetch(`${baseUrl}/api/backup/schedules/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteBackupSchedule", res);
+      return (await res.json()) as DeleteBackupScheduleResponse;
     },
     async getClearAllPreview() {
       const res = await doFetch(`${baseUrl}/api/clear-all`, {

@@ -12,6 +12,8 @@
 // the operations named in `SCM_OPERATIONS`. The git backend is the one that
 // does today; the file-store form still contains no `backend === "git"`.
 
+import { format, type Translator } from "./i18n";
+
 /** One changed path, as `git status --porcelain` reports it. */
 export interface ScmChange {
   /** The two-character `XY` code — index column, then working-tree column. */
@@ -110,8 +112,8 @@ export interface ChangeRow {
  * again is **two** rows — one in each group — because a commit takes one and
  * not the other.
  */
-export function changeRows(status: ScmStatus): ChangeRow[] {
-  return status.changes.flatMap(rowsFor);
+export function changeRows(status: ScmStatus, t: Translator["t"] = format): ChangeRow[] {
+  return status.changes.flatMap((change) => rowsFor(change, t));
 }
 
 /** Only the rows of one group. */
@@ -119,7 +121,7 @@ export function rowsIn(rows: readonly ChangeRow[], group: ChangeGroup): ChangeRo
   return rows.filter((row) => row.group === group);
 }
 
-function rowsFor(change: ScmChange): ChangeRow[] {
+function rowsFor(change: ScmChange, t: Translator["t"]): ChangeRow[] {
   const code = `${change.status}  `.slice(0, 2);
   const index = code[0] ?? " ";
   const worktree = code[1] ?? " ";
@@ -132,13 +134,13 @@ function rowsFor(change: ScmChange): ChangeRow[] {
     untracked: code === "??",
   });
 
-  if (code === "??") return [row("unstaged", "U", "Untracked")];
-  if (CONFLICTS.includes(code)) return [row("merge", "!", "Conflict")];
+  if (code === "??") return [row("unstaged", "U", t("Untracked"))];
+  if (CONFLICTS.includes(code)) return [row("merge", "!", t("Conflict"))];
 
   const rows: ChangeRow[] = [];
-  if (index !== " ") rows.push(row("staged", letterFor(index), nameFor(index)));
-  if (worktree !== " ") rows.push(row("unstaged", letterFor(worktree), nameFor(worktree)));
-  return rows.length > 0 ? rows : [row("unstaged", "M", "Modified")];
+  if (index !== " ") rows.push(row("staged", letterFor(index), nameFor(index, t)));
+  if (worktree !== " ") rows.push(row("unstaged", letterFor(worktree), nameFor(worktree, t)));
+  return rows.length > 0 ? rows : [row("unstaged", "M", t("Modified"))];
 }
 
 /** The `XY` codes git uses for an unresolved merge. */
@@ -148,20 +150,20 @@ function letterFor(column: string): string {
   return "MADRCT".includes(column) ? column : "M";
 }
 
-function nameFor(column: string): string {
+function nameFor(column: string, t: Translator["t"]): string {
   switch (column) {
     case "A":
-      return "Added";
+      return t("Added");
     case "D":
-      return "Deleted";
+      return t("Deleted");
     case "R":
-      return "Renamed";
+      return t("Renamed");
     case "C":
-      return "Copied";
+      return t("Copied");
     case "T":
-      return "Type changed";
+      return t("Type changed");
     default:
-      return "Modified";
+      return t("Modified");
   }
 }
 
@@ -193,11 +195,15 @@ export interface PrimaryAction {
  *   the push that sets the upstream.
  * - Otherwise: Commit, with nothing to commit.
  */
-export function primaryAction(status: ScmStatus, message: string): PrimaryAction {
+export function primaryAction(
+  status: ScmStatus,
+  message: string,
+  t: Translator["t"] = format,
+): PrimaryAction {
   if (status.changes.length > 0) {
     return {
       kind: "commit",
-      blocked: message.trim() === "" ? "Type a commit message first." : null,
+      blocked: message.trim() === "" ? t("Type a commit message first.") : null,
     };
   }
   if (status.upstream && status.behind > 0) {
@@ -209,7 +215,7 @@ export function primaryAction(status: ScmStatus, message: string): PrimaryAction
   if (!status.upstream && status.branch !== "" && status.lastCommit !== "") {
     return { kind: "publish", blocked: null };
   }
-  return { kind: "commit", blocked: "There are no changes to commit." };
+  return { kind: "commit", blocked: t("There are no changes to commit.") };
 }
 
 /**
@@ -246,19 +252,23 @@ export const NEW_BRANCH = "\u0000new-branch";
  * narrowed to the ones someone can trip over in a text box. Everything else git
  * refuses for itself with its own message.
  */
-export function branchNameProblem(name: string, existing: readonly string[]): string | null {
+export function branchNameProblem(
+  name: string,
+  existing: readonly string[],
+  t: Translator["t"] = format,
+): string | null {
   const trimmed = name.trim();
-  if (trimmed === "") return "A branch needs a name.";
+  if (trimmed === "") return t("A branch needs a name.");
   if (/[\s~^:?*[\\]/.test(trimmed)) {
-    return "A branch name cannot contain spaces or any of ~^:?*[\\";
+    return t("A branch name cannot contain spaces or any of ~^:?*[\\");
   }
   if (trimmed.startsWith("-") || trimmed.startsWith("/") || trimmed.endsWith("/")) {
-    return "A branch name cannot start with - or /, or end with /.";
+    return t("A branch name cannot start with - or /, or end with /.");
   }
   if (trimmed.includes("..") || trimmed.endsWith(".lock")) {
-    return "A branch name cannot contain .. or end with .lock.";
+    return t("A branch name cannot contain .. or end with .lock.");
   }
-  if (existing.includes(trimmed)) return `${trimmed} already exists.`;
+  if (existing.includes(trimmed)) return t("{name} already exists.", { name: trimmed });
   return null;
 }
 

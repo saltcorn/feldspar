@@ -619,3 +619,44 @@ ALTER TABLE IF EXISTS "users" ADD COLUMN IF NOT EXISTS "language" text;
 --
 --   ALTER TABLE "users" ADD COLUMN "disabled" boolean;
 --   ALTER TABLE "users" ADD COLUMN "language" text;
+
+-- ---------------------------------------------------------------------------
+-- 13. Postgres and SQLite: an automated backup's destination is an object
+--    (2026-10-08).
+-- ---------------------------------------------------------------------------
+--
+-- Automated backups can now go to SFTP or S3 as well as a local directory, so
+-- each schedule's `destination` in the `backup_schedules` config value is
+-- `{"kind": "local", "directory": "/srv/backups"}` (or an `sftp`/`s3` object)
+-- rather than the bare path string. A schedule still holding a string no
+-- longer parses and is skipped, so it would silently stop running. This turns
+-- each string into the `local` object. Re-running it is a no-op.
+
+UPDATE "_fd_config"
+SET "value" = (
+  SELECT jsonb_agg(
+           CASE WHEN jsonb_typeof(s -> 'destination') = 'string'
+                THEN jsonb_set(s, '{destination}',
+                               jsonb_build_object('kind', 'local', 'directory', s -> 'destination'))
+                ELSE s END
+           ORDER BY ord)
+  FROM jsonb_array_elements("value") WITH ORDINALITY AS t(s, ord))
+WHERE "key" = 'backup_schedules'
+  AND jsonb_typeof("value") = 'array'
+  AND EXISTS (SELECT 1 FROM jsonb_array_elements("value") s
+              WHERE jsonb_typeof(s -> 'destination') = 'string');
+
+-- SQLite (JSON1 functions):
+--
+--   UPDATE "_fd_config"
+--   SET "value" = (
+--     SELECT json_group_array(
+--              CASE WHEN json_type(s.value, '$.destination') = 'text'
+--                   THEN json_set(s.value, '$.destination',
+--                                 json_object('kind', 'local',
+--                                             'directory', json_extract(s.value, '$.destination')))
+--                   ELSE json(s.value) END)
+--     FROM (SELECT value FROM json_each("_fd_config"."value") ORDER BY key) AS s)
+--   WHERE "key" = 'backup_schedules'
+--     AND EXISTS (SELECT 1 FROM json_each("_fd_config"."value") AS s
+--                 WHERE json_type(s.value, '$.destination') = 'text');

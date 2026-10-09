@@ -67,6 +67,22 @@ pub struct ConfigSection {
 /// it.
 pub const BACKUP_INCLUDE: &str = "backup_include";
 
+/// The automated backups: a list of `{ id, destination, frequency,
+/// retention_days }`, written by the Backup tab's Automated backups card.
+///
+/// Internal for the reason [`BACKUP_INCLUDE`] is — a list of records is not a
+/// form control.
+pub const BACKUP_SCHEDULES: &str = "backup_schedules";
+
+/// What each automated backup last did: `{ <schedule id>: { last_attempt_at,
+/// last_success_at, last_error, last_file } }`.
+///
+/// A key of its own rather than fields on [`BACKUP_SCHEDULES`], because the two
+/// have different writers: the admin edits the schedules and only the backup
+/// scheduler writes this, so neither can overwrite the other's change with a
+/// stale copy (the arrangement a trigger's `last_run_at` has).
+pub const BACKUP_SCHEDULE_STATUS: &str = "backup_schedule_status";
+
 /// Every section, in screen order.
 pub fn config_sections() -> &'static [ConfigSection] {
     static SECTIONS: OnceLock<Vec<ConfigSection>> = OnceLock::new();
@@ -94,12 +110,22 @@ pub fn config_sections() -> &'static [ConfigSection] {
 pub fn internal_defs() -> &'static [ConfigDef] {
     static DEFS: OnceLock<Vec<ConfigDef>> = OnceLock::new();
     DEFS.get_or_init(|| {
-        vec![ConfigDef::new(
-            // `Json`, because the value is a record of lists and flags rather
-            // than a scalar — the one shape a `FormField` accepts wholesale.
-            FormField::new(BACKUP_INCLUDE, sc_types::BasicType::Json)
-                .label("What a backup includes"),
-        )]
+        vec![
+            ConfigDef::new(
+                // `Json`, because the value is a record of lists and flags rather
+                // than a scalar — the one shape a `FormField` accepts wholesale.
+                FormField::new(BACKUP_INCLUDE, sc_types::BasicType::Json)
+                    .label("What a backup includes"),
+            ),
+            ConfigDef::new(
+                FormField::new(BACKUP_SCHEDULES, sc_types::BasicType::Json)
+                    .label("Automated backups"),
+            ),
+            ConfigDef::new(
+                FormField::new(BACKUP_SCHEDULE_STATUS, sc_types::BasicType::Json)
+                    .label("What each automated backup last did"),
+            ),
+        ]
     })
 }
 
@@ -163,6 +189,10 @@ mod tests {
         assert!(definition(BACKUP_INCLUDE).is_some());
         assert!(known_keys().contains(&BACKUP_INCLUDE));
         assert!(!config_spec().iter().any(|f| f.name() == BACKUP_INCLUDE));
+        for key in [BACKUP_SCHEDULES, BACKUP_SCHEDULE_STATUS] {
+            assert!(known_keys().contains(&key));
+            assert!(!config_spec().iter().any(|f| f.name() == key));
+        }
     }
 
     #[test]

@@ -60,7 +60,11 @@
 //! restorer sees it, so the upload, the dialog, the selection and the report are
 //! the same ones a Feldspar backup goes through.
 
+pub mod destination;
 mod restore;
+pub(crate) mod s3;
+pub mod schedule;
+mod sftp;
 mod v1;
 mod write;
 
@@ -73,6 +77,21 @@ use serde_json::{Map, Value as Json};
 use uuid::Uuid;
 
 pub use restore::{RestoreReport, inspect, restore_backup};
+pub use schedule::BackupScheduler;
+
+/// Start the automated backups' task (see [`schedule`]).
+///
+/// Started **only by `serve`**, for the reason the trigger scheduler is: a
+/// `build-app` or an admin script must not start writing backups because it
+/// happened to open the same database. The returned handle is the caller's to
+/// abort; dropping it leaves the task running for the life of the process.
+pub fn start_backup_scheduler(
+    catalog: &Arc<sc_catalog::Catalog>,
+) -> (Arc<BackupScheduler>, tokio::task::JoinHandle<()>) {
+    let scheduler = Arc::new(BackupScheduler::new(Arc::clone(catalog)));
+    let handle = scheduler.start();
+    (scheduler, handle)
+}
 pub use write::{available, write_backup};
 
 /// Where a browser posts a selection and gets a zip back.

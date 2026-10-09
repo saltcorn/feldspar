@@ -514,6 +514,21 @@ rumqttc = { version = "0.25", default-features = false, features = [
 # copy of it in the tree.
 rustls-native-certs = "0.8"
 
+# --- SFTP ----------------------------------------------------------------------
+#
+# An automated backup may be sent to an SFTP server. **russh** is a pure-Rust
+# SSH client; `default-features = false` drops `flate2` compression (a zip does
+# not compress again) and keeps `aws-lc-rs` as the crypto provider, the one
+# rustls already uses here, so there is no second crypto stack and no OpenSSL
+# (as `ssh2`/libssh2 would bring). `rsa` stays on because many servers still
+# offer an RSA host key. `russh-sftp` is the SFTP subsystem over any russh
+# channel; it does not depend on russh itself.
+russh = { version = "0.64", default-features = false, features = [
+    "aws-lc-rs",
+    "rsa",
+] }
+russh-sftp = "3"
+
 # --- GraphQL -----------------------------------------------------------------
 #
 # GraphQL library decision (TODO "GraphQL API" decision 1): **async-graphql**

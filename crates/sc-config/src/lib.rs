@@ -45,8 +45,8 @@ pub mod store;
 
 pub use acme::{ACME_CACHE_TABLE, AcmeCache, bootstrap_acme_cache};
 pub use defs::{
-    BACKUP_INCLUDE, ConfigDef, ConfigSection, config_sections, config_spec, definition,
-    internal_defs, known_keys,
+    BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef, ConfigSection,
+    config_sections, config_spec, definition, internal_defs, known_keys,
 };
 pub use development::{
     DevelopmentSettings, LOG_SQL, LOG_VERBOSITY, MCP_ENABLED, MCP_LOOPBACK_ONLY, McpSettings,

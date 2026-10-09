@@ -455,6 +455,257 @@ in `TECHNICAL_DESIGN.md` §6.1 and the new §14.6, and `OPERATIONS.md` §10 (ins
   - `settings_admin_api::saving_the_development_settings_moves_the_logging_switches` failed once
     in the full parallel run, and passed alone twice.
 
+## Monthly automated backups
+
+An automated backup schedule can now run **monthly** as well as daily or weekly.
+
+- A month is a **calendar month**, not thirty days: a backup taken at 02:00 on the 3rd is next
+  due at 02:00 on the 3rd of the next month. From a day the next month lacks it is that month's
+  last day, so a schedule that ran on 31 January next runs on 28 (or 29) February, and from then
+  on on the 28th/29th (`Frequency::next_after`, which replaces the fixed `period()`).
+- As before, "after" means after the tick that last *succeeded*; a failure is still retried an
+  hour later.
+- The admin dialog's frequency choice and the schedule list offer and show **Monthly**; the API
+  takes `"frequency": "monthly"`. An unknown frequency's error now lists all three.
+- Tests: `a_month_is_a_calendar_month` and the monthly case in
+  `a_success_makes_the_next_run_one_period_later` (`sc-server`), and a monthly case in
+  `backupSchedules.test.ts`.
+
+## Automated backups to SFTP or S3
+
+An automated backup can now be sent to an SFTP server or an S3-compatible bucket, as well as
+to a directory on the server.
+
+- **The dialog** now opens with a **Destination** choice: Local files, SFTP or S3. Each kind
+  has its own fields:
+  - **Local files**: the directory, as before.
+  - **SFTP**: host, port (22 by default), user name, password and directory. A relative
+    directory is relative to the login's directory.
+  - **S3**: endpoint (any S3-compatible service; empty for Amazon S3), bucket, region (empty
+    for `us-east-1`), access key and secret key.
+
+  Frequency, retention and what each backup includes are unchanged and apply to every kind.
+  Switching the kind keeps what was typed in the other kind's fields, but only the chosen
+  kind's fields are checked and sent. The list shows each schedule's kind, its location (a
+  path, an `sftp://` address or the bucket's URL) and, for SFTP, the recorded host key.
+- **Secrets** (the SFTP password and the S3 secret key) are sent to the browser as the
+  `••••••••` mask. Saving with the mask unchanged keeps the stored secret
+  (`Destination::keep_secrets`); the box clears on focus, as in the other secret fields. A mask
+  with nothing stored behind it is refused.
+- **Saving tests the destination** by doing what a run does: it logs in, creates the directory
+  if needed, writes a probe file, lists, and deletes the probe. A wrong password, a refused
+  signature or an unreachable host is reported in the dialog, in the transport's own words.
+- **SFTP host keys are trusted on first use.** Saving records the server's `SHA256:`
+  fingerprint with the schedule, and every run refuses a server presenting a different key, so
+  the password is not handed to whatever answers on that address. Saving the schedule again
+  accepts the server's current key.
+- **Two schedules may not share a place**: the same local directory, the same SFTP host, port
+  and directory (whoever logs in), or the same endpoint and bucket. Each one's pruning would
+  delete the other's backups.
+- **Code** (`crates/sc-server/src/backup/`):
+  - `destination.rs`: the `Destination` enum (parsing, the stored and masked shapes, location,
+    uniqueness, `check`, `open`). It also holds a `Connection` with `put`, `list` and `delete`
+    for each kind. A local or SFTP put writes `.NAME.partial` and renames it into place, and
+    an SFTP put first removes any file with the target name, because OpenSSH will not rename
+    over one. An S3 put is atomic already.
+  - `s3.rs`: the S3 client. It sends PutObject, ListObjectsV2 (following continuation tokens)
+    and DeleteObject to path-style URLs, signs them with AWS Signature Version 4, and
+    computes HMAC-SHA256 over `sha2` directly. There is no AWS SDK, because it would bring a
+    second HTTP stack for three requests.
+  - `sftp.rs`: the SFTP client, on **russh** (pure Rust, using the aws-lc-rs crypto provider
+    rustls already uses here, with no OpenSSL) and **russh-sftp**. Both are new workspace
+    dependencies. They add part of the RustCrypto suite to `Cargo.lock`.
+  - `schedule.rs`: runs and pruning go through the `Connection`. The pruning rule is now the
+    pure `expired(names, retention, now)`, the same for every kind. `last_file` is the path,
+    `sftp://` address or URL of what was written.
+  - `reqwest` moved from `sc-server`'s dev-dependencies to its dependencies.
+- **API**: `destination` in the four schedule endpoints is now an object: `kind` (`local`,
+  `sftp` or `s3`) and that kind's fields. `host_key` is read-only. Each schedule read back also
+  has `location`. All four `client.ts` copies are regenerated.
+- **Migration**: `TABLES_RENAME.sql` §13 turns a stored string destination into
+  `{"kind": "local", "directory": …}`, for Postgres and (commented) SQLite. Without it, such a
+  schedule no longer parses and is skipped. Both variants were run on scratch data, and a
+  second run is a no-op.
+- **Docs**: `docs/OPERATIONS.md` §8.2 has a new part, "Automated backups off the server".
+- **Tests**:
+  - Unit tests for each kind's parsing and checks, masking and keeping secrets, locations and
+    places, round-tripping a stored destination, and a bucket counting as a place.
+  - The S3 signer reproduces AWS's two published examples ("GET Object" and "GET Bucket
+    (List Objects)"), and the HMAC reproduces RFC 4231 cases 2 and 6.
+  - `backup_api::remote::an_automated_backup_goes_to_an_s3_bucket` runs a fake S3 in the test
+    process. It recomputes every request's signature from what arrived on the wire and pages
+    listings two keys at a time. The test checks that:
+    - a wrong secret is refused at save with `SignatureDoesNotMatch`, and so is a mask with
+      nothing stored;
+    - the probe is cleaned up;
+    - a tick puts a backup holding the schedule's selection and prunes three old backups
+      across pages, keeping a recent backup and an unrelated object;
+    - the secret never appears in the listing, and an edit that hands back the mask keeps the
+      stored secret.
+  - `backup_api::remote::an_automated_backup_goes_to_an_sftp_server` runs russh's own server
+    half over a temporary directory, with OpenSSH's no-rename-over rule. The test checks that:
+    - a wrong password is refused at save, and the host key is recorded;
+    - the nested directory is created and the probe removed;
+    - a tick uploads, prunes and leaves no `.partial` file;
+    - an edit with the mask keeps the password;
+    - a server restarted on the same port with a different key makes the next run fail with
+      the new fingerprint in the error.
+  - The existing local test now sends the object form.
+  - `backupSchedules.test.ts` covers the form for each kind: opening on a stored schedule,
+    checking only the chosen kind, the bodies sent, the mask sent back unchanged, and that
+    `host_key` is never sent.
+  - Checked by hand, not in CI:
+    - An `#[ignore]`d `s3::tests::a_real_service_accepts_put_list_and_delete`
+      (`FELDSPAR_TEST_S3=…`) passed against **versitygw** 1.8.0, a real S3-compatible server;
+      it also checks that a wrong secret gets a 403.
+    - A headless Chromium walk of the dialog against a running `feldspar serve`: the three
+      kinds' fields, the field errors, and editing an S3 schedule and saving with the stored
+      secret.
+    - The server's own scheduler then put a backup into versitygw on its next minute.
+  - No real OpenSSH server was available on this machine, so SFTP has been tested only
+    against russh's server.
+
+## i18n: the backup schedules and source control strings are extractable again
+
+`i18n::every_declared_domain_scans_without_an_unreadable_call_site` failed on eight `t()` calls
+in `BackupTab.tsx` and `SourceControl.tsx`. Each was given a string computed in a model module,
+such as `t(errors.destination)`, `t(row.label)` or `t(primary.blocked)`. The extractor needs
+the English at the call site, so none of those messages could reach a catalogue.
+
+- The model functions that produce text now take the screen's `t` as an optional last argument,
+  defaulting to the untranslated `format`. The English is written there as `t("…")` literals,
+  where the extractor finds it, and the unit tests still get English without passing anything.
+  - `backupSchedules.ts`: `scheduleFormErrors` and `frequencyLabel`. The retention message
+    is now `t("Enter a whole number of days from 1 to {max}.", …)` rather than a template string.
+    `FREQUENCIES` is now just the values, and the labels come from `frequencyLabel`.
+  - `sourceControl.ts`: `changeRows` (the row tooltips), `primaryAction` (why the button is
+    disabled) and `branchNameProblem`. The duplicate-branch message is `t("{name} already
+    exists.", …)`.
+- The two screens pass their `t` and show the result as it is.
+- Tests: the i18n test above passes again, and the admin SPA's vitest suite (655 tests,
+  including `backupSchedules.test.ts` and `sourceControl.test.ts`) passes unchanged.
+
+## CLI: `feldspar backup FILE` and `feldspar restore FILE`
+
+The backup zip that Settings → Backup produces can now be written and restored from a terminal,
+with the database credentials as the authority, like `add-user`.
+
+- `feldspar backup FILE [database flags]` writes everything the Backup dialog offers, with
+  every box ticked **except SSL / TLS**. It uses `Selection::everything` with `ssl: false`. The
+  file stores are connected first so their files are included. The zip is written to
+  `.FILE.partial` and renamed into place, as the automated backups do. The dialog's stored
+  selection (`backup_include`) is not changed.
+- `feldspar restore FILE [database flags] [server flags]` restores everything in the file: a
+  Feldspar backup, or a Saltcorn 1 one. It uses `Selection::everything` over the file's manifest
+  and the same `restore_backup` as the `restoreBackup` endpoint. The file is inspected before
+  the database is connected, so a file that is not a backup is refused without touching
+  anything. Restored lines go to stdout and warnings to stderr. The command succeeds when the
+  only problems are warnings, as the dialog does.
+- Restore needs the services the server has: modules to reinstall packages, the trigger, agent
+  and stream registries, and the mount registry to build applications. So the agents, models,
+  triggers, modules and streams setup in `serve_command` moved into a shared
+  `install_services` in `main.rs`, which both commands call. `serve` behaves the same as
+  before. One side effect: as in the server, stored streams are started while the restore
+  runs, until the process exits.
+- Fix: a backup of a database no server had run on failed with `relation "_fd_triggers" does
+  not exist`. `_fd_triggers` is created when `serve` installs the triggers, not at connect.
+  `backup::available` now counts triggers only when the table exists, as it already did for
+  modules, streams and the analytics tables.
+- `sc-server` now re-exports `backup_available`, `write_backup`, `inspect_backup` and
+  `restore_backup`. `sc-cli` depends on `sc-action` for the dispatcher type, and the design
+  doc's §2 dependency table now lists it.
+- The usage text and `docs/OPERATIONS.md` §8.2 describe the commands.
+- Test: `crates/sc-cli/tests/backup.rs` runs the real binary against two Postgres databases.
+  It backs up a table with rows, an SMTP setting and an ACME contact email, and checks the
+  manifest: the TLS settings are out, the other settings are in, and the table has both rows.
+  It then restores into an empty database and checks the rows and the SMTP setting arrived and
+  the TLS setting did not. It also checks that a junk file is refused and that a missing FILE
+  argument is an error.
+
+## Automated backups: each schedule chooses what it includes
+
+Each automated backup now has its own choice of what goes in, with the same options as the backup
+dialog: table definitions, table data, applications, file stores, users, modules, database
+connections, streams, analytics, model fits, LLM providers, agents, triggers, views, pages, SSL
+and other settings. Before this, every schedule used the Backup card's "Currently included"
+selection.
+
+- **The modal** has a "What each backup includes" section under destination, frequency and
+  retention. It uses the backup dialog's own pickers and checkboxes, which are now a shared
+  `IncludeFields` component in `BackupTab.tsx`. The backup and restore dialog uses the same
+  component, with control ids prefixed so the two sets cannot clash.
+  - A new schedule starts from the Backup card's current selection.
+  - Saving with nothing ticked is refused beside the fields.
+  - Each line in the list shows an "Includes: …" summary under the destination.
+- **Stored as what was left out**: each schedule keeps a `BackupPreferences` under `include`,
+  as the Backup card's `backup_include` does. A table created later goes into the schedule's
+  next backup, rows and all, unless someone unticks it.
+  - On edit, the previous exclusions are an input (`BackupPreferences::of`). An exclusion
+    naming a table that is missing that day survives the edit.
+  - Read back, `include` is resolved against what there is now, in the shape the dialog's
+    pickers take.
+- **API**: `createBackupSchedule` and `updateBackupSchedule` take a required `include`. It is
+  the same selection schema `restoreBackup` and the backup download take.
+  `listBackupSchedules` returns each schedule's `include`. All four `client.ts` copies are
+  regenerated.
+- **The runner** writes `schedule.include.selection(available)` for each schedule. It no
+  longer reads `backup_include`.
+- **Tests**:
+  - A new unit test checks that a stored schedule round-trips its exclusions.
+  - `backup_api::an_automated_backup_writes_and_prunes_its_directory` now creates the schedule
+    with its own selection: the books table without its rows, no users, triggers included.
+    - It checks that the written zip matches that selection while the Backup card's
+      selection is unchanged.
+    - It checks that a table created afterwards appears in the schedule's `include` with its
+      rows, while the books' rows stay out.
+    - It checks that an edit ticking users keeps the other exclusions, and that a body
+      without `include` is refused.
+  - `backupSchedules.test.ts` covers the form's `include`: opening on it, refusing an empty
+    one, and sending it.
+
+## Automated backups
+
+Any number of recurring backups, each written to a directory on the server (Settings → Backup).
+
+- **The Backup tab's layout**: the Backup and Restore cards now sit side by side (six columns
+  each, stacked on a narrow screen), with a new **Automated backups** card beneath them. The card
+  lists the schedules, one line each (destination, frequency, retention, and what it last did),
+  with Edit and Delete per line and an Add button. A schedule is edited in a modal with three
+  fields: **destination** (an absolute path on the server), **frequency** (daily or weekly) and
+  **retention** (days before old backups in that directory are deleted). The form's checks are in
+  `ui/admin/src/backupSchedules.ts`, tested in `backupSchedules.test.ts`.
+- **What an automated backup includes** was the Backup card's "Currently included" selection.
+  Superseded by the entry above: each schedule now has its own.
+- **Storage**: two new internal `_fd_config` keys, so there is no new table and no migration.
+  `backup_schedules` holds the list and is written by the admin. `backup_schedule_status` holds
+  each schedule's last attempt, last success, last error and last file, and only the backup task
+  writes it. The two keys have different writers so neither can overwrite the other's change
+  (the same arrangement as a trigger's `last_run_at`).
+- **API**: `listBackupSchedules`, `createBackupSchedule`, `updateBackupSchedule` and
+  `deleteBackupSchedule` under `/api/backup/schedules`. They are admin-only and not projected as
+  MCP tools (the write endpoints are added to the tier-3 test). Saving checks the destination: it
+  must be absolute with no `..`, and it is created if missing and probed for writability, so a
+  typo or a permission problem shows up in the dialog. Two schedules may not share a directory,
+  because each one's pruning would delete the other's backups. Deleting a schedule leaves the
+  backups it wrote.
+- **The runner** (`sc-server`'s `backup::schedule::BackupScheduler`, started by `feldspar serve`
+  beside the trigger scheduler) wakes on the minute and runs the due schedules one after another:
+  - A new schedule runs on the next minute, so the admin finds out straight away whether the
+    directory works.
+  - After a success, the next run is due one period after the tick that ran it, so a daily
+    backup does not drift later each day.
+  - A failure is retried an hour later, not every minute.
+  - The zip is written under a dot-prefixed `.partial` name and then renamed into place.
+  - Pruning deletes only files named `feldspar-backup-YYYY-MM-DD-HHMMSS.zip`, judged by the time
+    in the name rather than the mtime. A manual download uses the same name, via the shared
+    `backup_file_name`.
+- **Tests**: eight unit tests in `backup::schedule` (the due rule, the retry, path
+  normalisation, body checks, the shared-directory refusal, file-name parsing, pruning), and
+  `backup_api::an_automated_backup_writes_and_prunes_its_directory`. Through the router, that test
+  creates a schedule, has a scheduler tick write a real backup that honours the remembered
+  selection, checks the old backup was pruned and unrelated files kept, and then edits and
+  deletes the schedule.
+
 ## Analytics A4.6–A4.7: documentation, and the definition of done for reports
 
 The last phase of milestone A4 (Reports, and drag and drop). With it, A4 is done.

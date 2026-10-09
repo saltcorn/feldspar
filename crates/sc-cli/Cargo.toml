@@ -41,6 +41,9 @@ sc-files.workspace = true
 sc-llm.workspace = true
 # `_fd_agents` and `_fd_runs`, bootstrapped beside the other metadata tables.
 sc-agent.workspace = true
+# The trigger dispatcher `serve` starts its schedulers with, named in the
+# service set `serve` and `restore` share.
+sc-action.workspace = true
 # The Analytics UI's tables and the demo data (analytics TODO A1).
 sc-dataset.workspace = true
 sc-analytics.workspace = true

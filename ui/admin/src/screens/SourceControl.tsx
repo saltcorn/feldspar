@@ -87,8 +87,8 @@ export function SourceControl({
     return ok;
   };
 
-  const rows = changeRows(status);
-  const primary = primaryAction(status, message);
+  const rows = changeRows(status, t);
+  const primary = primaryAction(status, message, t);
   const disabled = busy !== null;
 
   const pressPrimary = async () => {
@@ -154,7 +154,7 @@ export function SourceControl({
                 className="scm-primary text-nowrap"
                 onClick={() => void pressPrimary()}
                 disabled={disabled || primary.blocked !== null}
-                title={primary.blocked ? t(primary.blocked) : undefined}
+                title={primary.blocked ?? undefined}
               >
                 {busy === "commit" || busy === "push" || busy === "pull" ? (
                   <Spinner animation="border" size="sm" className="me-2" />
@@ -327,7 +327,7 @@ function ChangeGroupList({
         {rows.map((row) => {
           const { name, dir } = splitPath(row.path);
           return (
-            <li key={`${row.group}:${row.path}`} className="scm-row" title={`${row.path} • ${t(row.label)}`}>
+            <li key={`${row.group}:${row.path}`} className="scm-row" title={`${row.path} • ${row.label}`}>
               <span className={`scm-name ${row.deleted ? "text-decoration-line-through" : ""}`}>
                 {name}
                 {dir && <span className="text-secondary small ms-2">{dir}</span>}
@@ -391,7 +391,7 @@ function BranchSelector({
     status.branch && !status.branches.includes(status.branch)
       ? [status.branch, ...status.branches]
       : status.branches;
-  const problem = branchNameProblem(name, branches);
+  const problem = branchNameProblem(name, branches, t);
 
   const create = async () => {
     if (problem) return;
@@ -420,7 +420,7 @@ function BranchSelector({
               }}
               disabled={disabled}
             />
-            <Form.Control.Feedback type="invalid">{problem && t(problem)}</Form.Control.Feedback>
+            <Form.Control.Feedback type="invalid">{problem}</Form.Control.Feedback>
             <Form.Text>
               <T text="Created from {branch}." args={{ branch: status.branch || "HEAD" }} />
             </Form.Text>

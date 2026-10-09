@@ -54,6 +54,8 @@ async fn run(args: &[String]) -> Result<()> {
         Some("mcp-token") => mcp_token_command(&args[1..]).await,
         Some("add-user") => add_user_command(&args[1..]).await,
         Some("modify-user") => modify_user_command(&args[1..]).await,
+        Some("backup") => backup_command(&args[1..]).await,
+        Some("restore") => restore_command(&args[1..]).await,
         Some("app") => app_command(&args[1..]).await,
         Some("agent") => agent_command(&args[1..]).await,
         Some("i18n") => i18n_command(&args[1..]).await,
@@ -204,159 +206,19 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // must not silently shadow a configured store of the same name.
     connect_file_stores(&catalog, &file_store_specs)?;
 
+    let Services {
+        apps,
+        triggers,
+        view_services,
+    } = install_services(&catalog, &config, &service).await?;
+
     // Bring the applications up. `--base-domain` is what makes them addressable
     // (an app is served at `<subdomain>.<base-domain>`), so mounting is gated on
     // it: without a base domain no request could ever reach an app, and mounting
     // one would make the router refuse to build. With one, every stored app is
     // built and mounted now — a build that fails is logged and skipped, never
     // fatal (§13.2), and can be fixed and rebuilt without a restart.
-    // The JS engine ownership formulas evaluate on (§7.3): one isolate for the
-    // whole server, shared by every mounted app's providers — and by the trigger
-    // dispatcher, whose `only_if` formulas and action configuration are the same
-    // language evaluated the same way. It also carries the **code** pool a
-    // `run_js_code` body runs on, which is what `--code-workers` and
-    // `--code-max-inflight` size (§10.1) — built on first use, so a deployment
-    // with no code bodies pays for neither.
-    let evaluator = sc_server::js_evaluator(&config);
-
-    // Agents: the built-in trait set and the two tables an agent and its runs
-    // live in (§11.2). A stored agent that does not validate is reported and
-    // dropped from the live set, exactly as a trigger that does not is — the
-    // rest of the server works and the admin can repair it in the UI. It comes
-    // before the triggers because `run_agent` is one of the actions a trigger
-    // may name (§11.5), and it needs the assembled trait set.
-    // The headless browser `view_app` drives (TODO §7b), found once: on a host
-    // without one the grant is refused, so say which it is before the agents
-    // are validated against it.
-    let browser = sc_server::detect_browser(config.browser.as_deref());
-    match &browser {
-        Ok(path) => eprintln!(
-            "feldspar: view_app will use the browser at {}",
-            path.display()
-        ),
-        Err(reason) => eprintln!("feldspar: view_app is unavailable: {reason}"),
-    }
-    let agents =
-        sc_server::install_agents_on(&catalog, sc_agent::HostCapabilities { browser }).await?;
-
-    // Models: the two tables a model and its fits live in, and the reap of any
-    // fit that was running when this process last stopped (§8). A fit's registry
-    // is its row, so nothing survives a restart and an instance still saying
-    // `fitting` at boot is one nothing will finish — it is failed by name here,
-    // before anything can read it.
-    // It is also what carries the provider registry and the fits into the
-    // action set below: `fit_model` needs both, so the models come up before
-    // the triggers do.
-    let models =
-        sc_server::install_models_with(&catalog, config.model_max_rows, &config.stan).await?;
-    // Which CmdStan Stan models will use, and how many chains may run at once
-    // — or why there is none — said once, as the browser is (Stan TODO §20).
-    let stan = models.stan();
-    match stan.cmdstan() {
-        Some(cmdstan) => eprintln!(
-            "feldspar: Stan models will use CmdStan {} at {} ({}), up to {} chain \
-             process(es) at once, compiling into {}",
-            cmdstan.version,
-            cmdstan.dir.display(),
-            cmdstan.source,
-            stan.budget().processes(),
-            stan.compile_cache().dir().display()
-        ),
-        None => eprintln!(
-            "feldspar: Stan models are unavailable: {}",
-            stan.unavailable().unwrap_or("CmdStan was not found")
-        ),
-    }
-
-    // Triggers: the built-in actions plus `run_agent`, the stored trigger set,
-    // and the dispatcher installed into the catalog — after which a row write
-    // raises an event. Before it, nothing observes writes, which is what keeps
-    // `build-app` and every other command from firing anything. It comes before
-    // the mounts because the mount registry carries the dispatcher: an app's
-    // login and its errors raise events through the same router the admin API's
-    // do.
-    // The Python adapter goes on with them (§15): built here because the bounds
-    // are this process's flags, registered whether or not this binary has an
-    // interpreter linked in, and starting nothing — the interpreter is the first
-    // Python body's cost, exactly as the code isolate pool is the first
-    // `run_js_code` body's.
-    // Built once and held: the dispatcher takes it as an adapter, and the mount
-    // registry takes the runtime itself, because the diagnostics screen asks it
-    // questions the adapter trait does not carry (phase 4.2).
-    let python = sc_server::python_adapter(&config);
-    let triggers = sc_server::install_triggers_with_adapters(
-        &catalog,
-        evaluator.clone(),
-        &agents,
-        &models,
-        [python.clone() as Arc<dyn sc_server::CodeAdapter>],
-    )
-    .await?;
-
-    // Modules: every installed v1 plugin loaded onto the module worker pool, its actions
-    // added to the registry the dispatcher just took, and the trigger set
-    // reloaded against the result — which is what lets a trigger name
-    // `mqtt_publish`. After the triggers because it *changes* what they were
-    // validated against; a module that will not load is reported and skipped,
-    // never a reason not to boot.
-    service.notify_status("loading modules");
-    let modules = sc_server::ModuleServices::install(
-        &catalog,
-        &triggers,
-        &agents,
-        &models,
-        config.modules_dir.clone(),
-        config.plugins_dir.clone(),
-        config.module_workers,
-        // The same runtime the dispatcher took as a code adapter: one
-        // interpreter per process, so a Python module and a Python body share
-        // it, and one environment, which is what pip installs into.
-        python.clone(),
-        // Saltcorn UI's view runtime runs on the same pool, as a built-in.
-        config.saltcorn_ui_dir.clone(),
-    )
-    .await?;
-
-    // Streams: the `_fd_streams` table, the provider registry, and the
-    // supervisor that subscribes to every enabled stream (TODO "Streams").
-    // **After the triggers**, because the sink it installs fires the dispatcher
-    // — an element that arrived before the triggers were up would have nothing
-    // to fire — and after the modules, so a stream over a module-supplied
-    // provider finds it. Started only by `serve`, for the reason the scheduler
-    // is: a `build-app` that opened the same database must not connect to
-    // somebody's broker.
-    service.notify_status("starting streams");
-    // Over the provider registry the modules just built: the built-ins plus
-    // whatever a module supplies as a poll (TODO "Streams" §12). And the
-    // modules are told where the streams are, so the next module change can
-    // rebuild that registry and reload the supervisor against it — which is
-    // what makes installing a stream provider a thing that takes effect without
-    // a restart.
-    let streams = sc_server::install_streams_with(
-        &catalog,
-        &triggers,
-        modules.stream_registry(),
-        config.streams,
-    )
-    .await?;
-    modules.set_streams(streams.clone());
-
     service.notify_status("mounting applications");
-    // Held past `with_agents`, for installing the previewer below.
-    let view_services = agents.registry().view_services().clone();
-    let apps = Arc::new(
-        AppMounts::new(catalog.clone())
-            .with_base_domain(config.base_domain.clone())
-            .with_preview_idle(config.preview_idle)
-            .with_evaluator(evaluator)
-            .with_triggers(triggers.clone())
-            .with_agents(agents)
-            .with_models(models)
-            .with_streams(streams)
-            .with_modules(modules)
-            .with_python(python)
-            .with_saltcorn_ui_dir(config.saltcorn_ui_dir.clone()),
-    );
     if config.base_domain.is_some() {
         mount_all(&apps).await;
         // A coding run's `check` mounts its green builds as previews beside the
@@ -401,6 +263,10 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // here and nowhere else, for the reason the scheduler is.
     let (_workflows, _workflow_task) = sc_server::start_workflow_engine(&catalog, &triggers);
 
+    // And the automated backups' (Settings → Backup): each schedule writes a
+    // backup to its directory when it is due, and prunes the old ones.
+    let (_backups, _backup_task) = sc_server::start_backup_scheduler(&catalog);
+
     // Sessions are rows, not process memory (§7.2), which is what lets a second
     // application server exist: put two of these behind a load balancer and a
     // session minted by either is a session both honour. Each keeps its own
@@ -417,6 +283,182 @@ async fn serve_command(args: &[String]) -> Result<()> {
     }
     let handlers = admin_handlers(catalog, apps.clone());
     serve(config, admin_endpoints(), handlers, sessions, apps).await
+}
+
+/// What [`install_services`] assembles: the mount registry with every service
+/// an application, a trigger or a restore reaches through it, and the two
+/// pieces `serve` goes on to start things with.
+struct Services {
+    apps: Arc<AppMounts>,
+    triggers: Arc<sc_action::TriggerDispatcher>,
+    view_services: Arc<sc_agent::ViewServices>,
+}
+
+/// The agents, models, triggers, modules and streams over `catalog`, and the
+/// mount registry that carries them — everything `serve` brings up between
+/// connecting the database and mounting the applications.
+///
+/// One function rather than a copy in each caller, because `restore` needs the
+/// same set: a backup reinstalls modules, saves agents and triggers through
+/// their registries and builds the applications it restores, and a restore from
+/// a terminal that assembled less than the server does would skip what the
+/// restore dialog does not.
+async fn install_services(
+    catalog: &Arc<sc_catalog::Catalog>,
+    config: &ServerConfig,
+    service: &ServiceManager,
+) -> Result<Services> {
+    // The JS engine ownership formulas evaluate on (§7.3): one isolate for the
+    // whole server, shared by every mounted app's providers — and by the trigger
+    // dispatcher, whose `only_if` formulas and action configuration are the same
+    // language evaluated the same way. It also carries the **code** pool a
+    // `run_js_code` body runs on, which is what `--code-workers` and
+    // `--code-max-inflight` size (§10.1) — built on first use, so a deployment
+    // with no code bodies pays for neither.
+    let evaluator = sc_server::js_evaluator(config);
+
+    // Agents: the built-in trait set and the two tables an agent and its runs
+    // live in (§11.2). A stored agent that does not validate is reported and
+    // dropped from the live set, exactly as a trigger that does not is — the
+    // rest of the server works and the admin can repair it in the UI. It comes
+    // before the triggers because `run_agent` is one of the actions a trigger
+    // may name (§11.5), and it needs the assembled trait set.
+    // The headless browser `view_app` drives (TODO §7b), found once: on a host
+    // without one the grant is refused, so say which it is before the agents
+    // are validated against it.
+    let browser = sc_server::detect_browser(config.browser.as_deref());
+    match &browser {
+        Ok(path) => eprintln!(
+            "feldspar: view_app will use the browser at {}",
+            path.display()
+        ),
+        Err(reason) => eprintln!("feldspar: view_app is unavailable: {reason}"),
+    }
+    let agents =
+        sc_server::install_agents_on(catalog, sc_agent::HostCapabilities { browser }).await?;
+
+    // Models: the two tables a model and its fits live in, and the reap of any
+    // fit that was running when this process last stopped (§8). A fit's registry
+    // is its row, so nothing survives a restart and an instance still saying
+    // `fitting` at boot is one nothing will finish — it is failed by name here,
+    // before anything can read it.
+    // It is also what carries the provider registry and the fits into the
+    // action set below: `fit_model` needs both, so the models come up before
+    // the triggers do.
+    let models =
+        sc_server::install_models_with(catalog, config.model_max_rows, &config.stan).await?;
+    // Which CmdStan Stan models will use, and how many chains may run at once
+    // — or why there is none — said once, as the browser is (Stan TODO §20).
+    let stan = models.stan();
+    match stan.cmdstan() {
+        Some(cmdstan) => eprintln!(
+            "feldspar: Stan models will use CmdStan {} at {} ({}), up to {} chain \
+             process(es) at once, compiling into {}",
+            cmdstan.version,
+            cmdstan.dir.display(),
+            cmdstan.source,
+            stan.budget().processes(),
+            stan.compile_cache().dir().display()
+        ),
+        None => eprintln!(
+            "feldspar: Stan models are unavailable: {}",
+            stan.unavailable().unwrap_or("CmdStan was not found")
+        ),
+    }
+
+    // Triggers: the built-in actions plus `run_agent`, the stored trigger set,
+    // and the dispatcher installed into the catalog — after which a row write
+    // raises an event. Before it, nothing observes writes, which is what keeps
+    // `build-app` and every other command from firing anything. It comes before
+    // the mounts because the mount registry carries the dispatcher: an app's
+    // login and its errors raise events through the same router the admin API's
+    // do.
+    // The Python adapter goes on with them (§15): built here because the bounds
+    // are this process's flags, registered whether or not this binary has an
+    // interpreter linked in, and starting nothing — the interpreter is the first
+    // Python body's cost, exactly as the code isolate pool is the first
+    // `run_js_code` body's.
+    // Built once and held: the dispatcher takes it as an adapter, and the mount
+    // registry takes the runtime itself, because the diagnostics screen asks it
+    // questions the adapter trait does not carry (phase 4.2).
+    let python = sc_server::python_adapter(config);
+    let triggers = sc_server::install_triggers_with_adapters(
+        catalog,
+        evaluator.clone(),
+        &agents,
+        &models,
+        [python.clone() as Arc<dyn sc_server::CodeAdapter>],
+    )
+    .await?;
+
+    // Modules: every installed v1 plugin loaded onto the module worker pool, its actions
+    // added to the registry the dispatcher just took, and the trigger set
+    // reloaded against the result — which is what lets a trigger name
+    // `mqtt_publish`. After the triggers because it *changes* what they were
+    // validated against; a module that will not load is reported and skipped,
+    // never a reason not to boot.
+    service.notify_status("loading modules");
+    let modules = sc_server::ModuleServices::install(
+        catalog,
+        &triggers,
+        &agents,
+        &models,
+        config.modules_dir.clone(),
+        config.plugins_dir.clone(),
+        config.module_workers,
+        // The same runtime the dispatcher took as a code adapter: one
+        // interpreter per process, so a Python module and a Python body share
+        // it, and one environment, which is what pip installs into.
+        python.clone(),
+        // Saltcorn UI's view runtime runs on the same pool, as a built-in.
+        config.saltcorn_ui_dir.clone(),
+    )
+    .await?;
+
+    // Streams: the `_fd_streams` table, the provider registry, and the
+    // supervisor that subscribes to every enabled stream (TODO "Streams").
+    // **After the triggers**, because the sink it installs fires the dispatcher
+    // — an element that arrived before the triggers were up would have nothing
+    // to fire — and after the modules, so a stream over a module-supplied
+    // provider finds it. Started only by `serve`, for the reason the scheduler
+    // is: a `build-app` that opened the same database must not connect to
+    // somebody's broker.
+    service.notify_status("starting streams");
+    // Over the provider registry the modules just built: the built-ins plus
+    // whatever a module supplies as a poll (TODO "Streams" §12). And the
+    // modules are told where the streams are, so the next module change can
+    // rebuild that registry and reload the supervisor against it — which is
+    // what makes installing a stream provider a thing that takes effect without
+    // a restart.
+    let streams = sc_server::install_streams_with(
+        catalog,
+        &triggers,
+        modules.stream_registry(),
+        config.streams,
+    )
+    .await?;
+    modules.set_streams(streams.clone());
+
+    // Held past `with_agents`, for the caller's previewer.
+    let view_services = agents.registry().view_services().clone();
+    let apps = Arc::new(
+        AppMounts::new(catalog.clone())
+            .with_base_domain(config.base_domain.clone())
+            .with_preview_idle(config.preview_idle)
+            .with_evaluator(evaluator)
+            .with_triggers(triggers.clone())
+            .with_agents(agents)
+            .with_models(models)
+            .with_streams(streams)
+            .with_modules(modules)
+            .with_python(python)
+            .with_saltcorn_ui_dir(config.saltcorn_ui_dir.clone()),
+    );
+    Ok(Services {
+        apps,
+        triggers,
+        view_services,
+    })
 }
 
 /// Take `flag`'s value out of `args`, returning it and what remains.
@@ -1376,6 +1418,147 @@ async fn modify_user_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The FILE a `backup` or `restore` names, which comes first, and the
+/// arguments after it.
+fn file_argument(command: &str, args: &[String]) -> Result<(std::path::PathBuf, Vec<String>)> {
+    match args.split_first() {
+        Some((first, rest)) if !first.starts_with('-') => {
+            Ok((std::path::PathBuf::from(first), rest.to_vec()))
+        }
+        _ => Err(sc_error::Error::config(format!(
+            "{command} requires the backup file: feldspar {command} FILE [database flags]"
+        ))),
+    }
+}
+
+/// `feldspar backup FILE [database flags]` — the zip Settings → Backup
+/// downloads, with everything ticked except the TLS settings, written to FILE.
+///
+/// The TLS settings are left out because they belong to the machine rather than
+/// to the installation: a certificate, its private key and the names it covers
+/// are wrong on the staging copy or the new host a backup from a terminal is
+/// usually taken for. The Backup dialog still offers them for the admin who
+/// does mean to move them.
+///
+/// Nothing is remembered: the dialog's stored selection is the dialog's, and a
+/// script's backup is not the admin saying what the next one should include.
+async fn backup_command(args: &[String]) -> Result<()> {
+    let (file, rest) = file_argument("backup", args)?;
+    let (db, leftover) = DbConfig::extract(rest)?;
+    if let Some(unknown) = leftover.first() {
+        return Err(sc_error::Error::config(format!(
+            "unknown backup argument `{unknown}`"
+        )));
+    }
+
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    let catalog = connect_catalog(&db).await?;
+    sc_log::set_log_sql(false);
+    // A file store's bytes are read through its connection, so a store that is
+    // not connected comes out as its definition with no files.
+    connect_stored_file_stores(&catalog).await?;
+
+    let available = sc_server::backup_available(&catalog).await?;
+    let selection = sc_server::BackupSelection {
+        ssl: false,
+        ..sc_server::BackupSelection::everything(&available)
+    };
+    let bytes = sc_server::write_backup(&catalog, &selection).await?;
+    write_whole(&file, &bytes)?;
+    eprintln!(
+        "feldspar: wrote {} ({} tables, {} applications, {} file stores, {} bytes)",
+        file.display(),
+        selection.tables.len(),
+        selection.applications.len(),
+        selection.file_stores.len(),
+        bytes.len()
+    );
+    Ok(())
+}
+
+/// Write `bytes` to `path` by way of a sibling file and a rename, so an
+/// interrupted backup leaves the previous file at `path` rather than half of a
+/// new one — the automated backups' arrangement.
+fn write_whole(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| sc_error::Error::config(format!("`{}` is not a file name", path.display())))?
+        .to_string_lossy();
+    let partial = path.with_file_name(format!(".{name}.partial"));
+    std::fs::write(&partial, bytes)
+        .map_err(|e| sc_error::Error::file(format!("writing `{}`: {e}", partial.display())))?;
+    std::fs::rename(&partial, path).map_err(|e| {
+        let _ = std::fs::remove_file(&partial);
+        sc_error::Error::file(format!("writing `{}`: {e}", path.display()))
+    })
+}
+
+/// `feldspar restore FILE [database flags] [server flags]` — everything FILE
+/// holds, restored as the Restore dialog restores it with nothing unticked.
+///
+/// The restore runs over the services `serve` assembles, because it is the
+/// dialog's restore: modules are reinstalled into `--modules-dir`, applications
+/// are built, triggers and agents are validated against the registries a server
+/// would hold. Which is why it takes the server flags — the same ones, from the
+/// same environment, the server on this database is started with.
+///
+/// A server already running on the database does not see the result until it
+/// is restarted: its catalog, mounts and trigger set were loaded at its boot.
+async fn restore_command(args: &[String]) -> Result<()> {
+    let (file, rest) = file_argument("restore", args)?;
+    let (db, rest) = DbConfig::extract(rest)?;
+    let config = ServerConfig::from_args(serving_defaults(&db).iter().chain(&rest))?;
+
+    // The file before the database: one that is not a backup is refused before
+    // anything has been connected to, let alone written.
+    let archive = std::fs::read(&file)
+        .map_err(|e| sc_error::Error::file(format!("reading `{}`: {e}", file.display())))?;
+    let (contents, manifest) = sc_server::inspect_backup(&archive)?;
+
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    // A module reinstalled from a registry resolves its host's name, so the
+    // resolver `serve` starts is started here too.
+    sc_dns::init()?;
+    let catalog = connect_catalog(&db).await?;
+    sc_log::set_log_sql(false);
+    connect_stored_file_stores(&catalog).await?;
+    connect_stored_databases(&catalog).await?;
+    let Services { apps, .. } =
+        install_services(&catalog, &config, &ServiceManager::default()).await?;
+
+    eprintln!(
+        "feldspar: restoring {} ({}, written {})",
+        file.display(),
+        manifest
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("a backup"),
+        manifest
+            .get("created_at")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("at an unrecorded time"),
+    );
+    let selection = sc_server::BackupSelection::everything(&contents);
+    let report = sc_server::restore_backup(&catalog, &apps, &archive, &selection).await?;
+    for line in &report.restored {
+        println!("restored {line}");
+    }
+    for line in &report.warnings {
+        eprintln!("warning: {line}");
+    }
+    eprintln!(
+        "feldspar: restored {} item(s) with {} warning(s); restart any server running on \
+         this database to load them",
+        report.restored.len(),
+        report.warnings.len()
+    );
+    Ok(())
+}
+
 /// `feldspar auth SUBCOMMAND …` — sessions for driving an application without a
 /// browser to sign in with.
 async fn auth_command(args: &[String]) -> Result<()> {
@@ -1867,6 +2050,8 @@ fn print_usage() {
     eprintln!("  feldspar add-user EMAIL --role ROLE [--password [VALUE]] [database flags]");
     eprintln!("  feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]] [database flags]");
     eprintln!("  feldspar app list [--json] [database flags]");
+    eprintln!("  feldspar backup FILE [database flags]");
+    eprintln!("  feldspar restore FILE [database flags] [server flags]");
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
     eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
@@ -1944,6 +2129,22 @@ fn print_usage() {
        line: leave --password out of add-user, or give it no value, and it is
        asked for without echo (or read as one line from stdin when that is not a
        terminal). A password starting with -- is written --password=VALUE.
+
+  backup: writes everything this installation has to FILE, as the zip
+       Settings → Backup downloads with every box ticked but SSL / TLS: the
+       certificate, its key and the names it covers belong to this machine.
+       The file's directory must exist; a FILE already there is replaced only
+       once the new one is complete.
+
+  restore: restores everything in FILE — a backup from `feldspar backup`, from
+       Settings → Backup, or from Saltcorn 1 — exactly as the Restore dialog
+       does with nothing unticked. A restore adds and does not destroy: it
+       drops no table, deletes no row and replaces no account, and each thing
+       it left alone or could not restore is printed with why. It assembles what
+       `serve` does to do it (modules are reinstalled, applications built), so
+       give it the server flags the server is started with, or the same
+       --environment. A server already running on the database loads the
+       result when it is restarted.
 
   app list: every application with its framework and the project directory
        its source is in on this machine; --json prints an array of
