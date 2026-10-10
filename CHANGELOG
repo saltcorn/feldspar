@@ -2,6 +2,31 @@
 
 Changes in reverse chronological order.
 
+## Live updates: design and plan (TODO.md)
+
+A new `TODO.md` (the analytics plan moved to `TODO-analytics.md`) for real-time updates
+in applications: toasts and progress from workflows, live kanban boards, collaborative
+documents with cursors, row-change notifications and external streams in the browser.
+Design only, no code.
+
+- **Everything is a stream with topics.** Streams gain a `TopicSpec`
+  (`Single | User | Row | PerElementRow`), with access decided per topic or per element
+  on top of the stream's `min_role`. Three new in-process providers: `internal`
+  (published by the `publish` action, `live.publish` in code bodies, or opt-in clients),
+  `table_changes` (committed row writes, checked per subscriber against the table's read
+  rule, with `enter`/`leave` for rows that cross a filter or an access boundary) and
+  `document` (Yjs documents in a `collab_doc` field, served with `yrs`).
+- **One multiplexed socket per page**, `{mount}/live`, replacing the per-stream app
+  socket. It checks `Origin` (needed now that a shared session cookie reaches sibling
+  subdomains) and re-checks access while open.
+- **Writes nobody watches stay free.** Live answers `TableEvents::observes` true only
+  while a connection is subscribed, and `emit` does no access work (fan-out runs off the
+  write path). The `TableEvents` slot holds one listener today (`set_table_events`
+  replaces it), so L3.2 makes it a list. Otherwise installing live would switch off
+  every table trigger.
+- Six milestones, L1–L6, ending with a Postgres LISTEN/NOTIFY bus for more than one
+  process.
+
 ## Share sign-in between applications (Settings → Development)
 
 A checkbox on the Development tab, **Share sign-in between applications**
