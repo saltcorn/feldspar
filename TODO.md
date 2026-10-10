@@ -376,49 +376,49 @@ Moves the existing app-side stream observing onto `{mount}/live`, with the Origi
 re-checking. No new providers yet. Everything later builds on this.
 
 ### Phase 1: the crate and the protocol
-- [ ] **L1.1** Create `sc-live`: the protocol frame types (serde, tagged on `type`), the
+- [x] **L1.1** Create `sc-live`: the protocol frame types (serde, tagged on `type`), the
   `Subscription` state machine, the topic index and the limits as configuration. Decide where it
   sits in the layers and record it in TECHNICAL_DESIGN §2. Unit-test the frame round-trips,
   including that an unknown client frame type is an `invalid` error and not a dropped
   connection.
-- [ ] **L1.2** Origin check for browser upgrades: one function used by `{mount}/live`, the
+- [x] **L1.2** Origin check for browser upgrades: one function used by `{mount}/live`, the
   existing `{mount}/streams/{name}/observe` (until L1.7 removes it) and the admin sockets
   (`/api/streams/{id}/observe`, chat, LSP). Test: with a shared session cookie, a sibling
   subdomain's Origin is refused with 403, the app's own Origin and its preview host are
   accepted, and a request with no Origin is refused when it carries a cookie.
-- [ ] **L1.3** `TopicSpec` on `StreamProvider` (default `Single`), and `topic` as an optional
+- [x] **L1.3** `TopicSpec` on `StreamProvider` (default `Single`), and `topic` as an optional
   field of the envelope. The envelope is a wire contract, so the change goes in the CHANGELOG
   and the docs. `mqtt` and `PollingProvider` stay `Single`.
 
 ### Phase 2: the socket
-- [ ] **L1.4** Mount `GET {mount}/live`. Authenticate with the same function the app's REST API
+- [x] **L1.4** Mount `GET {mount}/live`. Authenticate with the same function the app's REST API
   uses (cookie or native header). Anonymous is allowed and holds the public role, and each
   subscription decides. Pre-upgrade refusals are statuses; everything after is a frame.
-- [ ] **L1.5** Subscribe and unsubscribe for `Single` streams: exposure (`exposes_stream`), the
+- [x] **L1.5** Subscribe and unsubscribe for `Single` streams: exposure (`exposes_stream`), the
   stream's `min_role`, and the one `unavailable` code for unknown, unexposed and forbidden
   streams. `ready` + ring replay + `element` + `lagged` + `status`, reusing `observe.rs`'s
   sending code rather than copying it. Tests: two subscriptions on one socket both receive; a
   role below the floor gets `unavailable`, the same frame as a misspelt name.
-- [ ] **L1.6** Re-checking: each connection re-reads its session and user every
+- [x] **L1.6** Re-checking: each connection re-reads its session and user every
   `CACHE_TTL_SECONDS`. A gone session closes the socket with a reason. A lowered role sends
   `revoked` for every subscription that no longer passes. Logout on this node closes that
   session's sockets immediately (a hook on `SessionStore::logout`). The clock is a parameter, so
   the test runs in milliseconds.
-- [ ] **L1.7** Remove the per-stream app route `{mount}/streams/{name}/observe` and
+- [x] **L1.7** Remove the per-stream app route `{mount}/streams/{name}/observe` and
   `observeStream_x()`. Keep the admin observe socket. Update tutorial-streams step 6.
-- [ ] **L1.8** Limits: subscriptions per connection, connections per user per app, frame size,
+- [x] **L1.8** Limits: subscriptions per connection, connections per user per app, frame size,
   ping/pong and idle close. Each limit has a test that crosses it and checks the error frame.
 
 ### Phase 3: the client
-- [ ] **L1.9** Generated client: one shared `LiveConnection` (lazy open, reconnect with capped
+- [x] **L1.9** Generated client: one shared `LiveConnection` (lazy open, reconnect with capped
   exponential backoff and jitter, resubscribe everything, `resync` to every handler after a
   reconnect), and `live.<stream>.subscribe(handlers)` typed from the element type. Update
   `typescript_typecheck.rs`.
-- [ ] **L1.10** React hooks file `src/feldspar/live-react.ts`, emitted for React apps only:
+- [x] **L1.10** React hooks file `src/feldspar/live-react.ts`, emitted for React apps only:
   `useStream(accessor, onElement)` with cleanup on unmount and a `status` value
   (`connecting | open | reconnecting`). Add it to the React scaffold's `AGENTS.md` contract
   (§13.3) so the coding agent knows about it.
-- [ ] **L1.11** Admin: the Streams list shows live subscriber counts per stream (from the hub),
+- [x] **L1.11** Admin: the Streams list shows live subscriber counts per stream (from the hub),
   beside the existing counters.
 
 ### Try it
@@ -430,7 +430,7 @@ re-checking. No new providers yet. Everything later builds on this.
 4. Sign out in another tab: within a minute the socket closes. Sign in as a user below Member:
    the subscription gets `unavailable`.
 
-- [ ] **L1.12** Tutorial part 1 (`docs/tutorial-live.md`: the live socket, observing an external
+- [x] **L1.12** Tutorial part 1 (`docs/tutorial-live.md`: the live socket, observing an external
   stream from React) and its definition-of-done test. TECHNICAL_DESIGN §14.10 started; §13.2's
   observe-socket paragraph rewritten.
 

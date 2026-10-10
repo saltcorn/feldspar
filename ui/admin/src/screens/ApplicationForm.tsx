@@ -789,14 +789,10 @@ export function ApplicationForm({
                   ))}
                 <Form.Text muted>
                   <T
-                    text="Each ticked stream can be observed at {route} over a WebSocket, guarded by the stream’s own minimum role, and appears in this app’s generated client as {call}."
+                    text="A page subscribes to each ticked stream over the application’s one live socket at {route}, guarded by the stream’s own minimum role, and it appears in this app’s generated client as {call}."
                     values={{
-                      route: (
-                        <code>
-                          {"{api mount}"}/streams/{"{name}"}/observe
-                        </code>
-                      ),
-                      call: <code>observeStream_{"{name}"}()</code>,
+                      route: <code>{"{api mount}"}/live</code>,
+                      call: <code>client.live.{"{name}"}.subscribe()</code>,
                     }}
                   />
                 </Form.Text>

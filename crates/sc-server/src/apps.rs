@@ -219,6 +219,13 @@ pub struct AppMounts {
     /// from. `None` is a process with no streams installed, where the Streams
     /// tab says so rather than pretending.
     streams: Option<crate::streams::StreamServices>,
+    /// The live hub (TODO.md "Live updates"): every application's live
+    /// connections and the fan-outs feeding them. Always present — a server
+    /// with no streams still answers `{mount}/live`, with `unavailable` for
+    /// every subscription — and here for the reason the stream services are:
+    /// the router serves the socket from this handle, and the admin's Streams
+    /// list reads the subscriber counts through it.
+    live: crate::live::LiveServices,
     /// The Python runtime this process built from its own flags (§15), for the
     /// **one** thing that needs the runtime rather than the adapter: the
     /// diagnostics on Settings → Development, which report which of §7's states
@@ -312,6 +319,7 @@ impl AppMounts {
             modules: None,
             models: None,
             streams: None,
+            live: crate::live::LiveServices::default(),
             python: None,
             saltcorn_ui_dir: None,
             analytics_dir: None,
@@ -614,6 +622,18 @@ impl AppMounts {
     /// The stream services, if this server has them.
     pub fn streams(&self) -> Option<&crate::streams::StreamServices> {
         self.streams.as_ref()
+    }
+
+    /// Enforce `limits` on every live connection, replacing the defaults — a
+    /// test turns the clocks down to milliseconds with this.
+    pub fn with_live_limits(mut self, limits: sc_live::LiveLimits) -> AppMounts {
+        self.live = crate::live::LiveServices::new(limits);
+        self
+    }
+
+    /// The live hub.
+    pub fn live(&self) -> &crate::live::LiveServices {
+        &self.live
     }
 
     /// Attach the Python runtime, so the diagnostics screen can say which of

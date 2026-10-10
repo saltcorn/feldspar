@@ -202,7 +202,7 @@
   "A declared parameter is checked and converted to its type before the body runs.": "يُتحقَّق من المعامل المُعلَن ويُحوَّل إلى نوعه قبل تشغيل الجسم.",
   "Returns whatever its body returns.": "يُرجع ما يُرجعه جسمه.",
   "Each store's definition, every file in it, and each file's access rules.": "تعريف كل مخزن، وكل ملف فيه، وقواعد الوصول الخاصة بكل ملف.",
-  "Each ticked stream can be observed at {route} over a WebSocket, guarded by the stream’s own minimum role, and appears in this app’s generated client as {call}.": "يمكن مراقبة كل تدفق محدد في {route} عبر WebSocket، مع حمايته بالحد الأدنى لدور التدفق نفسه، ويظهر في عميل هذا التطبيق المُنشأ باسم {call}.",
+  "A page subscribes to each ticked stream over the application’s one live socket at {route}, guarded by the stream’s own minimum role, and it appears in this app’s generated client as {call}.": "تشترك الصفحة في كل تدفق محدد عبر المقبس المباشر الوحيد للتطبيق في {route}، مع حمايته بالحد الأدنى لدور التدفق نفسه، ويظهر في عميل هذا التطبيق المُنشأ باسم {call}.",
   "Each ticked trigger is exposed as {route} on this app, guarded by the trigger’s own minimum role.": "يُتاح كل مشغّل محدد على هذا التطبيق في {route}، مع حمايته بالحد الأدنى لدور المشغّل نفسه.",
   "Edit": "تحرير",
   "Edit code": "تحرير التعليمات البرمجية",
@@ -976,5 +976,7 @@
     "many": "{count} مثيلًا لنماذج ملاءمة، مع جداول مخرجاتها وسحوباتها اللاحقة. قد تكون كبيرة؛ ومن دونها يجب ملاءمة النموذج المستعاد من جديد.",
     "other": "{count} من مثيلات النماذج الملاءمة، مع جداول مخرجاتها وسحوباتها اللاحقة. قد تكون كبيرة؛ ومن دونها يجب ملاءمة النموذج المستعاد من جديد."
   },
-  "Email, localisation and development settings, including the SMTP password.": "إعدادات البريد الإلكتروني والترجمة والتطوير، بما في ذلك كلمة مرور SMTP."
+  "Email, localisation and development settings, including the SMTP password.": "إعدادات البريد الإلكتروني والترجمة والتطوير، بما في ذلك كلمة مرور SMTP.",
+  "Subscribers": "المشتركون",
+  "Live subscriptions from applications' pages on this server, right now": "الاشتراكات المباشرة من صفحات التطبيقات على هذا الخادم الآن"
 }

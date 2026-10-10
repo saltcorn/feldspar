@@ -164,21 +164,31 @@ export async function exercise(): Promise<void> {
 "#;
 
 /// A usage module for an application that exposes three streams — one of each
-/// [`ElementType`](sc_stream::ElementType) shape (TODO "Streams" §10, task 8.3).
+/// [`ElementType`](sc_stream::ElementType) shape (TODO "Streams" §10; TODO.md
+/// "Live updates" L1.9).
 ///
 /// What it asserts is the whole point of typing a subscription from the element
 /// type: a declared key arrives as the type it was declared with, a text stream
 /// is a `string`, a binary one is base64 in a `string`, and a key nobody
 /// declared is a compile error rather than an `undefined` at three in the
-/// morning.
+/// morning. And that every stream shares one `LiveConnection`, whose status a
+/// page can show.
 const STREAM_USAGE_TS: &str = r#"
-import { createClient, type BoilerEnvelope, type StreamSubscription } from "./client";
+import {
+  createClient,
+  LiveConnection,
+  type BoilerEnvelope,
+  type LiveError,
+  type LiveStatus,
+  type LiveStream,
+  type LiveSubscription,
+} from "./client";
 
 export function exercise(): void {
-  const api = createClient({ baseUrl: "https://blog.example.com" });
+  const api = createClient({ baseUrl: "https://blog.example.com", live: { minDelay: 100 } });
 
   // A `json` element: the declared keys, each typed, `value` an object.
-  const boiler: StreamSubscription = api.observeStream_boiler({
+  const boiler: LiveSubscription = api.live.boiler.subscribe({
     ready(info) {
       const replayed: number = info.replayed;
       void replayed;
@@ -187,23 +197,40 @@ export function exercise(): void {
       const temperature: number = envelope.value.temperature;
       const label: string | null = envelope.value.label;
       const seen: string = envelope.received_at;
-      void temperature; void label; void seen;
+      const topic: string | undefined = envelope.topic;
+      void temperature; void label; void seen; void topic;
     },
     // §7 reaching the client: a consumer that cannot keep up is told.
     lagged(dropped: number) {
       void dropped;
     },
+    // A reconnect: what was built from earlier elements may be stale.
+    resync() {},
+    error(error: LiveError) {
+      const code: string = error.code;
+      void code;
+    },
   });
   boiler.close();
 
   // A `text` element is a string, and a `binary` one is base64 in a string.
-  api.observeStream_syslog({ element: (e) => { const line: string = e.value; void line; } });
-  api.observeStream_frames({ element: (e) => { const b64: string = e.value; void b64; } });
+  api.live.syslog.subscribe({ element: (e) => { const line: string = e.value; void line; } });
+  api.live.frames.subscribe({ element: (e) => { const b64: string = e.value; void b64; } });
+
+  // Every accessor is over the one connection, and it says where it is.
+  const accessor: LiveStream<BoilerEnvelope> = api.live.boiler;
+  const connection: LiveConnection = accessor.connection;
+  const status: LiveStatus = connection.status;
+  const stop = connection.onStatus((next: LiveStatus) => void next);
+  stop();
+  void status;
 
   // @ts-expect-error `pressure` is not a declared key of this element type
-  api.observeStream_boiler({ element: (e) => void e.value.pressure });
+  api.live.boiler.subscribe({ element: (e) => void e.value.pressure });
   // @ts-expect-error a text element's value is a string, not an object
-  api.observeStream_syslog({ element: (e) => void e.value.line });
+  api.live.syslog.subscribe({ element: (e) => void e.value.line });
+  // @ts-expect-error a stream the application does not expose has no accessor
+  void api.live.meter;
 }
 "#;
 
@@ -214,7 +241,7 @@ fn generated_stream_client_type_checks() -> std::io::Result<()> {
     let streams = vec![
         StreamExport {
             name: "boiler".to_owned(),
-            path: "/api/streams/boiler/observe".to_owned(),
+            path: "/api/live".to_owned(),
             value: TypeSchema::struct_of([
                 // Required: the key is always there, so it is not nullable.
                 StructField::new("temperature", TypeSchema::value(ValueType::Float)),
@@ -227,12 +254,12 @@ fn generated_stream_client_type_checks() -> std::io::Result<()> {
         },
         StreamExport {
             name: "syslog".to_owned(),
-            path: "/api/streams/syslog/observe".to_owned(),
+            path: "/api/live".to_owned(),
             value: TypeSchema::text(),
         },
         StreamExport {
             name: "frames".to_owned(),
-            path: "/api/streams/frames/observe".to_owned(),
+            path: "/api/live".to_owned(),
             // Bytes travel as base64, which is a string on the wire.
             value: TypeSchema::value(ValueType::Bytes),
         },

@@ -1,0 +1,42 @@
+[package]
+name = "sc-live"
+description = "Live updates: the multiplexed socket's protocol, subscriptions, the topic index and the hub (layer 7)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary per crate rather than one per file, as everywhere
+# in this workspace.
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+# The role numbers a subscription is decided against (`ROLE_ADMIN`, and the
+# public role an anonymous caller holds).
+sc-auth.workspace = true
+# What a subscription is *to*: a running stream, its envelope and its topics.
+# The hub holds one receiver per running stream and fans its elements out.
+sc-stream.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+uuid.workspace = true
+# The fan-out is a task per running stream, and each connection has a bounded
+# queue it is handed elements on: `mpsc`, `watch` and `Notify`, never a lock
+# held across an await.
+tokio = { workspace = true }
+
+[dev-dependencies]
+# The hub's own tests subscribe to a stream the scripted provider publishes on,
+# through the real supervisor, exactly as `sc-server`'s socket tests do.
+# Starting a stream needs no database: `StreamSupervisor::start` takes the row.
+sc-stream = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

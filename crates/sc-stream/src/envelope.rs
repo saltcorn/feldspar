@@ -10,6 +10,7 @@
 //!
 //! ```json
 //! { "stream": "boiler", "value": { "temperature": 31.2 },
+//!   "topic": "7",                                   // only on a stream with topics
 //!   "received_at": "2026-09-17T09:00:00.000Z",
 //!   "source": { "topic": "house/boiler/temp", "qos": 0, "retain": false } }
 //! ```
@@ -22,8 +23,16 @@
 //! stamps it into an [`Envelope`]. That split is what stops a provider from
 //! being able to lie about either of the two fields a consumer trusts.
 //!
-//! ## The three fields, and what each is *not*
+//! ## The fields, and what each is *not*
 //!
+//! - **`topic`** is the sub-channel of the stream the element was published
+//!   on (TODO.md "Live updates" §2), present only for a stream whose provider
+//!   declares topics ([`TopicSpec`](crate::TopicSpec) other than `Single`). It
+//!   is what the live socket routes on and what decides who may receive the
+//!   element. Absent — not null — for every stream there was before topics,
+//!   so an envelope a trigger or a generated client already reads is
+//!   unchanged. It is **not** MQTT's topic, which stays in `source`: a broker's
+//!   routing key is that provider's metadata, and a live topic is Saltcorn's.
 //! - **`value`** is the element itself, shaped by the stream's
 //!   [`ElementType`] — an object for `Json`, a string for
 //!   `Text`, base64 for `Binary`.
@@ -51,6 +60,9 @@ pub struct Element {
     pub value: Json,
     /// The provider's own metadata, or `None` when it has none.
     pub source: Option<Json>,
+    /// The topic it was published on, for a stream whose provider declares
+    /// topics; `None` on a `Single` stream (see the module docs).
+    pub topic: Option<String>,
 }
 
 impl Element {
@@ -59,7 +71,15 @@ impl Element {
         Element {
             value: value.into(),
             source: None,
+            topic: None,
         }
+    }
+
+    /// Publish it on `topic` — for a provider whose [`TopicSpec`](crate::TopicSpec)
+    /// is not `Single`.
+    pub fn topic(mut self, topic: impl Into<String>) -> Element {
+        self.topic = Some(topic.into());
+        self
     }
 
     /// Attach the provider's metadata — MQTT's `{topic, qos, retain}`.
@@ -85,6 +105,7 @@ impl Element {
     pub fn into_envelope(self, stream: impl Into<String>, received_at: DateTime<Utc>) -> Envelope {
         Envelope {
             stream: stream.into(),
+            topic: self.topic,
             value: self.value,
             received_at,
             source: self.source,
@@ -100,6 +121,11 @@ impl Element {
 pub struct Envelope {
     /// The stream's name — what a trigger's channel and a socket path name.
     pub stream: String,
+    /// The topic it was published on. Absent — not null — on a stream with no
+    /// topics, which is every stream there was before topics existed, so their
+    /// envelopes are byte-for-byte what they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
     /// The element itself, shaped by the stream's
     /// [`ElementType`].
     pub value: Json,
@@ -125,8 +151,13 @@ impl Envelope {
             "value": self.value,
             "received_at": self.received_at.to_rfc3339_opts(SecondsFormat::Millis, true),
         });
-        if let (Some(source), Some(object)) = (&self.source, out.as_object_mut()) {
-            object.insert("source".to_owned(), source.clone());
+        if let Some(object) = out.as_object_mut() {
+            if let Some(topic) = &self.topic {
+                object.insert("topic".to_owned(), Json::String(topic.clone()));
+            }
+            if let Some(source) = &self.source {
+                object.insert("source".to_owned(), source.clone());
+            }
         }
         out
     }
@@ -245,6 +276,23 @@ mod tests {
             "absent, not null: {wire}"
         );
         assert_eq!(serde_json::to_value(&envelope).unwrap(), wire);
+    }
+
+    #[test]
+    fn a_topic_is_carried_when_there_is_one_and_absent_when_there_is_not() {
+        let envelope = Element::new(json!({ "progress": 0.5 }))
+            .topic("7")
+            .into_envelope("job_status", at("2026-09-17T09:00:00Z"));
+        let wire = envelope.to_json();
+        assert_eq!(wire["topic"], json!("7"));
+        assert_eq!(wire.as_object().unwrap().len(), 4, "{wire}");
+        assert_eq!(serde_json::to_value(&envelope).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Envelope>(wire).unwrap(), envelope);
+
+        // A `Single` stream's envelope has no `topic` key at all — the wire
+        // contract every consumer written before topics reads.
+        let single = Element::new(json!(1)).into_envelope("boiler", at("2026-09-17T09:00:00Z"));
+        assert!(!single.to_json().as_object().unwrap().contains_key("topic"));
     }
 
     #[test]

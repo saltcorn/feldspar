@@ -23,6 +23,13 @@
 //!   store (see `expose_csrf_token`).
 //! - **Cookies.** `SameSite=Strict` on both cookies; the session cookie is
 //!   `HttpOnly`; `Secure` is set behind TLS (see `ServerConfig::secure_cookies`).
+//! - **WebSocket upgrades check `Origin`** ([`upgrade_origin_allowed`]). A
+//!   handshake is a `GET`, so CSRF does not cover it, and neither does CORS.
+//!   `SameSite=Strict` does not help between sibling subdomains either:
+//!   `appb.example.com` is *same-site* with `appa.example.com`, and with
+//!   *Share sign-in between applications* on, the session cookie is scoped to
+//!   the base domain and sent to both. So a page on app B could otherwise open
+//!   app A's socket as the signed-in user (TODO.md "Live updates" §3 rule 2).
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Method, StatusCode};
@@ -322,6 +329,99 @@ pub(crate) fn is_native_client(headers: &axum::http::HeaderMap) -> bool {
         .is_some_and(|v| v.eq_ignore_ascii_case(NATIVE_CLIENT))
 }
 
+/// Whether a WebSocket upgrade may go ahead, judged by where it comes from
+/// (TODO.md "Live updates" §3 rule 2). Every socket this server accepts asks
+/// this before upgrading: an application's live socket and the admin's
+/// Observe, chat, language-server and fit-progress sockets.
+///
+/// - **With an `Origin`** — which a browser always sends on a handshake — it
+///   must be the request's own origin: the host and port the request was made
+///   to. A page on an application's subdomain, or on that application's
+///   preview host, connects to its own host and passes; a page on a sibling
+///   subdomain, or anywhere else, does not, whatever cookie its browser sends
+///   along. The scheme is not compared: a TLS-terminating proxy makes the
+///   server see `http` behind an `https` page, and the session cookie is
+///   `Secure` behind TLS anyway.
+/// - **Without one**, the caller is not a browser (a browser cannot leave it
+///   out), so there is no other page to be confused for. Such a request is
+///   still refused if it carries a **session cookie** and does not say it is a
+///   native app ([`is_native_client`]): a cookie is the credential a browser
+///   attaches by itself, and accepting one with no origin to vouch for it is
+///   the hole this closes. A request with no cookie is anonymous, and is
+///   refused nothing here.
+pub(crate) fn upgrade_origin_allowed(headers: &axum::http::HeaderMap) -> bool {
+    match headers.get(axum::http::header::ORIGIN) {
+        Some(origin) => {
+            let host = headers
+                .get(axum::http::header::HOST)
+                .and_then(|value| value.to_str().ok());
+            match (origin.to_str().ok().and_then(origin_authority), host) {
+                (Some(origin), Some(host)) => origin == authority(host, None),
+                _ => false,
+            }
+        }
+        None => {
+            let carries_session = CookieJar::from_headers(headers)
+                .get(SESSION_COOKIE)
+                .is_some();
+            !carries_session || is_native_client(headers)
+        }
+    }
+}
+
+/// The refusal [`upgrade_origin_allowed`] answers with: a status, because a
+/// browser cannot read a failed handshake's body.
+pub(crate) fn upgrade_origin_refused() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({
+            "error": "this socket accepts connections only from pages on its own origin",
+        })),
+    )
+        .into_response()
+}
+
+/// `host[:port]` of an `Origin` header, lower-cased, with the scheme's default
+/// port left out — or `None` for an origin that is not `scheme://host`, such as
+/// the `null` a sandboxed frame sends.
+fn origin_authority(origin: &str) -> Option<String> {
+    let (scheme, rest) = origin.split_once("://")?;
+    let rest = rest.trim_end_matches('/');
+    if rest.is_empty() || rest.contains('/') {
+        return None;
+    }
+    Some(authority(rest, Some(scheme)))
+}
+
+/// `host[:port]`, lower-cased, without a port that is only the default one —
+/// `:443` for `https`, `:80` for `http`, and either when the scheme is not
+/// known (a `Host` header carries none).
+fn authority(host_and_port: &str, scheme: Option<&str>) -> String {
+    let lower = host_and_port.to_ascii_lowercase();
+    let default = |port: &str| match scheme {
+        Some(scheme)
+            if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("wss") =>
+        {
+            port == "443"
+        }
+        Some(_) => port == "80",
+        None => port == "443" || port == "80",
+    };
+    match lower.rsplit_once(':') {
+        // An IPv6 literal's last colon is inside its brackets unless a port
+        // follows the closing one.
+        Some((host, port))
+            if !port.is_empty()
+                && port.bytes().all(|b| b.is_ascii_digit())
+                && (!host.starts_with('[') || host.ends_with(']'))
+                && default(port) =>
+        {
+            host.to_owned()
+        }
+        _ => lower,
+    }
+}
+
 /// Whether a method may change server state (and so needs CSRF protection).
 fn is_mutating(method: &Method) -> bool {
     !matches!(
@@ -550,6 +650,128 @@ fn form_field(body: &[u8], name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{CLIENT_KIND_HEADER, NATIVE_CLIENT, SESSION_COOKIE, upgrade_origin_allowed};
+
+    fn upgrade(host: &str, origin: Option<&str>, cookie: bool, native: bool) -> bool {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::HOST, host.parse().unwrap());
+        if let Some(origin) = origin {
+            headers.insert(axum::http::header::ORIGIN, origin.parse().unwrap());
+        }
+        if cookie {
+            headers.insert(
+                axum::http::header::COOKIE,
+                format!("{SESSION_COOKIE}=abc").parse().unwrap(),
+            );
+        }
+        if native {
+            headers.insert(CLIENT_KIND_HEADER, NATIVE_CLIENT.parse().unwrap());
+        }
+        upgrade_origin_allowed(&headers)
+    }
+
+    #[test]
+    fn an_upgrade_is_accepted_only_from_its_own_origin() {
+        // (host, origin, cookie, native, allowed)
+        let cases = [
+            (
+                "blog.example.com",
+                Some("https://blog.example.com"),
+                true,
+                false,
+                true,
+            ),
+            (
+                "blog.example.com",
+                Some("http://blog.example.com"),
+                true,
+                false,
+                true,
+            ),
+            (
+                "blog.example.com:8443",
+                Some("https://blog.example.com:8443"),
+                true,
+                false,
+                true,
+            ),
+            (
+                "Blog.Example.com",
+                Some("https://blog.example.com"),
+                true,
+                false,
+                true,
+            ),
+            (
+                "blog.example.com",
+                Some("https://blog.example.com:443"),
+                true,
+                false,
+                true,
+            ),
+            // A preview is served on its own host, and its page connects there.
+            (
+                "k3j9--blog.example.com",
+                Some("https://k3j9--blog.example.com"),
+                true,
+                false,
+                true,
+            ),
+            // A sibling subdomain is same-site, and refused all the same.
+            (
+                "blog.example.com",
+                Some("https://shop.example.com"),
+                true,
+                false,
+                false,
+            ),
+            (
+                "blog.example.com",
+                Some("https://example.com"),
+                true,
+                false,
+                false,
+            ),
+            (
+                "blog.example.com",
+                Some("https://blog.example.com.evil.net"),
+                true,
+                false,
+                false,
+            ),
+            (
+                "blog.example.com:8443",
+                Some("https://blog.example.com:9443"),
+                true,
+                false,
+                false,
+            ),
+            ("blog.example.com", Some("null"), true, false, false),
+            ("blog.example.com", Some("null"), false, false, false),
+            // Even a native client's word does not override an origin that
+            // names somewhere else.
+            (
+                "blog.example.com",
+                Some("https://shop.example.com"),
+                true,
+                true,
+                false,
+            ),
+            // No origin: not a browser. A cookie needs the native header…
+            ("blog.example.com", None, true, false, false),
+            ("blog.example.com", None, true, true, true),
+            // …and without a cookie there is nobody to impersonate.
+            ("blog.example.com", None, false, false, true),
+        ];
+        for (host, origin, cookie, native, allowed) in cases {
+            assert_eq!(
+                upgrade(host, origin, cookie, native),
+                allowed,
+                "host {host}, origin {origin:?}, cookie {cookie}, native {native}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -4186,7 +4186,7 @@ pub fn admin_handlers_with(
                 resolve_element_types(&streams, &stored).await;
                 let out: Vec<Json> = stored
                     .iter()
-                    .map(|stream| stream_json(&streams, stream))
+                    .map(|stream| stream_json(&streams, &apps, stream))
                     .collect();
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
@@ -4203,7 +4203,7 @@ pub fn admin_handlers_with(
                 let streams = streams_of(&apps)?;
                 let stream = require_stream_by_id(&catalog, ctx.path_param("id")?).await?;
                 resolve_element_types(&streams, std::slice::from_ref(&stream)).await;
-                Ok(HandlerResponse::ok(stream_json(&streams, &stream)))
+                Ok(HandlerResponse::ok(stream_json(&streams, &apps, &stream)))
             }
         }
     });
@@ -4243,7 +4243,7 @@ pub fn admin_handlers_with(
                         sc_error::format_causes(&e)
                     );
                 }
-                let response = HandlerResponse::ok(stream_json(&streams, &stream));
+                let response = HandlerResponse::ok(stream_json(&streams, &apps, &stream));
                 Ok(if created {
                     response.with_status(201)
                 } else {
@@ -4315,6 +4315,7 @@ pub fn admin_handlers_with(
                         .and_then(|r| r.element_type())
                         .and_then(|ty| serde_json::to_value(ty).ok()),
                     "listeners": running.as_ref().map_or(0, |r| r.listeners()),
+                    "subscribers": apps.live().hub().subscribers(stream.id),
                 })))
             }
         }
@@ -10059,7 +10060,11 @@ async fn resolve_element_types(streams: &crate::StreamServices, stored: &[sc_str
 /// for status and counters. A stream whose provider was uninstalled has no
 /// element type and carries the reason in `error`, and it is still listed and
 /// still editable — because editing it is the repair.
-fn stream_json(streams: &crate::StreamServices, stream: &sc_stream::Stream) -> Json {
+fn stream_json(
+    streams: &crate::StreamServices,
+    apps: &AppMounts,
+    stream: &sc_stream::Stream,
+) -> Json {
     let registry = streams.registry();
     let redacted = sc_stream::redacted_stream(&registry, stream);
     // Computed, never stored (§5): a copy in the row would be a second answer
@@ -10081,6 +10086,12 @@ fn stream_json(streams: &crate::StreamServices, stream: &sc_stream::Stream) -> J
         ),
     };
     let running = streams.supervisor().get(stream.id);
+    // How its elements are split into topics (TODO.md "Live updates" §2): the
+    // provider's answer for this configuration, `null` when it has none.
+    let topics = registry
+        .get(stream.provider.trim())
+        .and_then(|provider| provider.topic_spec(&stream.configuration).ok())
+        .and_then(|spec| serde_json::to_value(spec).ok());
     json!({
         "id": stream.id.0,
         "name": stream.name,
@@ -10096,6 +10107,10 @@ fn stream_json(streams: &crate::StreamServices, stream: &sc_stream::Stream) -> J
             .as_ref()
             .and_then(|r| serde_json::to_value(r.status()).ok()),
         "counters": running.as_ref().map(|r| r.counters().to_json()),
+        "topics": topics,
+        // Live subscriptions to it from applications' pages right now, on
+        // this server (L1.11): beside the counters, and as in-memory as they.
+        "subscribers": apps.live().hub().subscribers(stream.id),
     })
 }
 

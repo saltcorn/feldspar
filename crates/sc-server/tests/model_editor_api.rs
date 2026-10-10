@@ -126,6 +126,12 @@ impl Server {
         let mut request = format!("ws://{}/api/model-instances/{id}/progress", self.addr)
             .into_client_request()
             .unwrap();
+        // A browser sends its page's origin on every handshake, and the server
+        // accepts an upgrade only from its own (TODO.md "Live updates" §3).
+        request.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_str(&format!("http://{}", self.addr)).unwrap(),
+        );
         if as_admin && let Some(token) = self.client.cookies.get(sc_server::SESSION_COOKIE) {
             request.headers_mut().insert(
                 header::COOKIE,

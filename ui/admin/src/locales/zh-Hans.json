@@ -202,7 +202,7 @@
   "A declared parameter is checked and converted to its type before the body runs.": "声明的参数会在函数体运行前进行检查并转换为其类型。",
   "Returns whatever its body returns.": "返回其函数体返回的内容。",
   "Each store's definition, every file in it, and each file's access rules.": "每个存储区的定义、其中的每个文件，以及每个文件的访问规则。",
-  "Each ticked stream can be observed at {route} over a WebSocket, guarded by the stream’s own minimum role, and appears in this app’s generated client as {call}.": "每个勾选的流都可以通过 WebSocket 在 {route} 处进行观察，并受该流自身的最低角色保护；它会在此应用的生成客户端中显示为 {call}。",
+  "A page subscribes to each ticked stream over the application’s one live socket at {route}, guarded by the stream’s own minimum role, and it appears in this app’s generated client as {call}.": "页面通过应用唯一的实时套接字 {route} 订阅每个勾选的流，并受该流自身的最低角色保护；它会在此应用的生成客户端中显示为 {call}。",
   "Each ticked trigger is exposed as {route} on this app, guarded by the trigger’s own minimum role.": "每个勾选的触发器都会在此应用中以 {route} 的形式公开，并受该触发器自身的最低角色保护。",
   "Edit": "编辑",
   "Edit code": "编辑代码",
@@ -903,5 +903,7 @@
   "{count} fitted model instances, with their output frames and posterior draws. These can be large; without them a restored model has to be fitted again.": {
     "other": "{count} 个已拟合的模型实例，包括其输出表和后验抽样。这些内容可能很大；没有它们，恢复的模型需要重新拟合。"
   },
-  "Email, localisation and development settings, including the SMTP password.": "电子邮件、本地化和开发设置，包括 SMTP 密码。"
+  "Email, localisation and development settings, including the SMTP password.": "电子邮件、本地化和开发设置，包括 SMTP 密码。",
+  "Subscribers": "订阅者",
+  "Live subscriptions from applications' pages on this server, right now": "此服务器上应用页面当前的实时订阅"
 }

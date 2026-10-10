@@ -47,7 +47,10 @@ import { T, useT } from "../i18n";
 const POLL_MS = 2000;
 
 /** What the poll knows about one stream, keyed by id. */
-type Live = Record<string, { status: StreamStatusValue | null; counters: Counters }>;
+type Live = Record<
+  string,
+  { status: StreamStatusValue | null; counters: Counters; subscribers: number }
+>;
 
 export function Streams() {
   const { t } = useT();
@@ -91,7 +94,11 @@ export function Streams() {
             const status = await api.streamStatus(stream.id);
             return [
               stream.id,
-              { status: readStatus(status.status), counters: readCounters(status.counters) },
+              {
+                status: readStatus(status.status),
+                counters: readCounters(status.counters),
+                subscribers: status.subscribers,
+              },
             ] as const;
           } catch {
             // A stream that has just been deleted in another tab, or a server
@@ -161,6 +168,9 @@ export function Streams() {
                 <th><T text="Name" /></th>
                 <th><T text="Provider" /></th>
                 <th><T text="Elements" /></th>
+                <th title={t("Live subscriptions from applications' pages on this server, right now")}>
+                  <T text="Subscribers" />
+                </th>
                 <th><T text="Status" /></th>
                 <th><T text="Last element" /></th>
                 <th className="text-end"><T text="Actions" /></th>
@@ -169,7 +179,7 @@ export function Streams() {
             <tbody>
               {streams?.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="text-muted">
+                  <td colSpan={7} className="text-muted">
                     <T text="No streams yet. A stream is a provider — an MQTT broker, a polled feed — with its settings filled in, and what arrives on it is not stored: a trigger that writes a row is what makes a flow durable." />
                   </td>
                 </tr>
@@ -180,6 +190,7 @@ export function Streams() {
                 const status = seen ? seen.status : readStatus(stream.status);
                 const badge = statusLabel(status, stream.enabled);
                 const notes = counterNotes(counters);
+                const subscribers = seen?.subscribers ?? stream.subscribers;
                 return (
                   <tr key={stream.id}>
                     <td>
@@ -209,6 +220,9 @@ export function Streams() {
                       {notes.length > 0 && (
                         <div className="text-warning small">{notes.join(" · ")}</div>
                       )}
+                    </td>
+                    <td className={subscribers === 0 ? "text-muted" : undefined}>
+                      {formatCount(subscribers)}
                     </td>
                     <td>
                       <StatusBadge tone={badge.tone} title={badge.title}>

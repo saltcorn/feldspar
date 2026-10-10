@@ -102,6 +102,13 @@ feldspar/
 │  │                              #    that advances a run of it (§10.3)
 │  ├─ sc-agent/                   # 7. Agent record + AgentTrait trait + registry + inference
 │  │                              #    loop + `_fd_agents`/`_fd_runs` storage (§11.2)
+│  ├─ sc-live/                    # 7. Live updates (§14.10): the multiplexed socket's protocol,
+│  │                              #    a connection's subscriptions, the topic index, the access
+│  │                              #    decisions as pure functions, and the hub that fans a
+│  │                              #    running stream's elements out. Above sc-stream (it
+│  │                              #    subscribes to running streams) and sc-auth (it decides by
+│  │                              #    role and hears session ends); below sc-server, which
+│  │                              #    mounts `{mount}/live`
 │  ├─ sc-model/                   # 6. Predictive models: a named dataset (sc-dataset) resolved,
 │  │                              #    the columnar Frame, the row-identity-hash split, the
 │  │                              #    DatasetSource + ModelProvider seams, `_fd_models` /
@@ -206,6 +213,9 @@ graph TD
   stan --> model
   coreact --> model
   server --> stream["sc-stream"]
+  server --> live["sc-live"]
+  live --> stream
+  live --> auth
   app --> stream
   module --> stream
   server --> python["sc-python"]
@@ -279,6 +289,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
+| `sc-live` | `sc-auth` `sc-error` `sc-stream` |
 | `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-model` `sc-query` `sc-types` |
 | `sc-app` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
 | `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
@@ -286,7 +297,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-module` | `sc-action` `sc-app` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
@@ -5109,21 +5120,26 @@ request through it — not "not written to".
   tables as the caller, so `click` and `fill` on a form write real rows — the tool's description
   says so, because the alternative (a scratch database per preview) is a different product.
 
-**The observe socket, mounted beside the endpoint set.** An application exposes streams the way
-it exposes triggers — `streams: Vec<StreamRef>` and `exposes_stream(name)` — on the same
-principle: a stream is server-side configuration, and it becomes reachable from outside only
-because an app said so. The route is `GET {mount}/streams/{name}/observe`, and it is mounted
-*beside* the app's APIs rather than inside one, because an `EndpointSet` is a typed
-request/response model (§13.1) and a socket has no shape in it — the split the IDE's language
-server and the admin chat socket already made. It authenticates with the application's own
-session cookie, enforces the **stream's** `min_role` (read off the stored row, so a stream this
-process has not started is still authorised by the same number), and answers an unknown *or*
-unexposed name with a **404** rather than a 403: a 403 would confirm the existence of a flow this
-application has no business knowing about. Every refusal is decided before the handshake, because
-a browser cannot read the body of a failed upgrade. After it, the frames are the admin socket's
-(§14.3). The generated client gets an `observeStream_{name}()` per exposed stream, typed from
-the element type — which is where the element type earns its keep, and it costs nothing to keep
-in step because an app's client is emitted at build time (§13.1).
+**The live socket, mounted beside the endpoint set.** An application exposes streams the way it
+exposes triggers — `streams: Vec<StreamRef>` and `exposes_stream(name)` — on the same principle:
+a stream is server-side configuration, and it becomes reachable from outside only because an app
+said so. A page reaches them over **one** WebSocket, `GET {mount}/live`, carrying any number of
+subscriptions (§14.10). It is mounted *beside* the app's APIs rather than inside one, because an
+`EndpointSet` is a typed request/response model (§13.1) and a socket has no shape in it — the
+split the IDE's language server and the admin chat socket already made. Three things are decided
+before the upgrade, with a status, because a browser cannot read the body of a failed handshake:
+that it is an upgrade (400), that its `Origin` is the page's own host (403 — a sibling subdomain
+is *same-site*, and with a shared session cookie would otherwise ride the user's session), and who
+the caller is, by the same function (`app_caller`) the app's REST API authenticates with.
+Anonymous is allowed and holds the public role. Everything after is a frame: one `unavailable`
+for a stream that is unknown, unexposed or above the caller's role — a 403 would confirm the
+existence of a flow this application has no business knowing about — and `ready`, the replay,
+`element`, `lagged`, `status` and `revoked` for one that is allowed. The generated client gets a
+`live` object with an accessor per exposed stream, typed from the element type, all sharing one
+`LiveConnection` that opens on first use and reconnects by itself — which is where the element
+type earns its keep, and it costs nothing to keep in step because an app's client is emitted at
+build time (§13.1). The per-stream socket this replaced, `{mount}/streams/{name}/observe`, is
+gone; the admin's `/api/streams/{id}/observe` stays (§14.3).
 
 **The catalogue route, mounted the same way.** `GET {mount}/i18n/{locale}.json` answers an
 application's own catalogue (§16.1, D7) and is mounted beside the endpoint sets for the reason
@@ -8199,7 +8215,9 @@ given — `listModelProviders`' arrangement, for its reason), `listStreams`, `ge
 afterwards, so the flow follows the row without a restart.
 
 Observing is a WebSocket rather than an endpoint, and it is mounted beside the endpoint set for
-§13.2's reason. `GET /api/streams/{id}/observe` is the admin's, and it is the admin chat socket's
+§13.2's reason. `GET /api/streams/{id}/observe` is the admin's (an application's page uses the
+multiplexed live socket instead, §14.10, and every socket checks the handshake's `Origin` the same
+way), and it is the admin chat socket's
 sibling in every respect that matters: admin-only, decided **before** the upgrade and refused with
 a status, because a browser cannot read a failed handshake's body; everything after it is JSON text
 frames. It sends `{"type":"ready","element_type":…,"status":…}`, replays the ring (the last 100
@@ -9571,6 +9589,176 @@ row-level security over a small schema. `analytics_done::the_try_it_of_milestone
 milestone's Try it over the demo data, with both applications at once: what a `staff` user sees
 and reads in each, before and after an ownership formula narrows `houses`, against the admin's
 reads of every row.
+
+### 14.10 Live updates (`sc-live`)
+
+The server pushing to an application's page while it is open: a toast when a job finishes, a
+kanban card moving on someone else's board, a document edited by two people, a sensor reading.
+The plan is TODO.md "Live updates" (milestones L1–L6); this section records what is built.
+**Milestone L1 is built**: one socket per page, the access rules and their re-checking, over the
+streams that already existed (`mqtt`, a module's). Topics are declared but only `Single` is
+served; the `internal`, `table_changes` and `document` providers, client publishing, presence and
+the bus are the later milestones.
+
+#### Everything is a stream, and a stream has topics
+
+Every update reaches the browser **through a stream**, and an application declares the streams it
+exposes, exactly as it did for MQTT. That keeps one entity, one admin screen, one place to set
+access, one socket and one client API, and a trigger can listen to any of them through the
+existing bridge (§10.2).
+
+What streams lacked was a way to say *who* may receive an element when the answer is not "anyone
+at or above `min_role`". So a provider now declares a **topic spec** as a function of its
+configuration, the way it declares its element type:
+
+```rust
+pub enum TopicSpec {
+    Single,                          // one topic; the stream's min_role decides (every provider today)
+    User,                            // the topic is a user id; a subscriber gets only their own
+    Row { table: String },           // the topic is a row's key; read access to that row decides
+    PerElementRow { table: String }, // every element is checked against the subscriber
+}
+```
+
+`StreamProvider::topic_spec` defaults to `Single`, so MQTT and module providers are unchanged.
+`RunningStream::topic_spec` answers for a running stream, and an error from the provider is a
+refusal rather than a guess — the guess that costs nothing (`Single`) is the one that would open a
+per-user stream to everyone above its floor. The stream's `min_role` stays a **floor on
+subscribing at all**, admin-only when unset; a topic or element check can only narrow it.
+
+The **envelope** (§14.3) gained an optional `topic`: present for a stream with topics, **absent —
+not null —** for a `Single` one, so every envelope a trigger or a generated client already reads
+is byte-for-byte unchanged. It is not MQTT's topic, which stays in `source`.
+
+#### One socket per page
+
+`GET {mount}/live` (§13.2) carries any number of subscriptions as JSON text frames, each naming
+the client's own `sub`:
+
+```
+client → server   subscribe {sub, stream, topic?, filter?} · unsubscribe {sub} · publish {sub, value}
+                  presence {sub, state} · doc_update {sub, update} · ping
+server → client   ready {sub, stream, element_type, replayed, can_publish, status, counters}
+                  element {sub, envelope} · lagged {sub, dropped} · status {sub, status, counters}
+                  revoked {sub} · error {sub?, code, message} · pong
+```
+
+`publish`, `presence` and `doc_update` are part of the protocol now, so a client is written
+against one contract, and are refused until their milestones (`publish` as `unavailable`, the
+others as `invalid`). A frame the server does not understand — malformed, an unknown `type`, a
+field of the wrong shape — is an `error` with `code: "invalid"` and the frame's `sub`, never a
+closed connection: one bad frame must not take every other subscription down with it, and a
+client a version ahead must still be able to use the server.
+
+**`ready` can come twice.** A subscription to a stream that is not running here (disabled,
+failing) gets `ready` with a `stopped` status and a null element type, and waits. When the stream
+starts — or restarts because its configuration changed, which replaces the `RunningStream` — the
+connection's status pass attaches it again and sends a fresh `ready` with the replay. A page
+follows the flow without reconnecting.
+
+#### Who may subscribe
+
+The decisions are **pure functions** in `sc-live::access`, over facts the socket has looked up,
+so they are tested as a table of cases and asked identically at subscribe time and at every
+re-check: `may_subscribe(facts, role)`, where the facts are whether the app exposes the stream and
+the stored row's `min_role` and topic spec. Unknown, unexposed and forbidden are one `Denied`,
+which the socket sends as one `unavailable` frame worded the same whatever the reason. Until L2
+and L3 bring the per-user, per-row and per-element checks, a stream declaring any topic spec but
+`Single` is refused, not opened to its floor.
+
+Order matters for not leaking: a subscription's own rules (its `sub` is unused, the connection
+has room) are checked **before** the stream is looked up, so even the limit answer cannot hint at
+whether a name exists; a `topic` or `filter` given to a stream that takes none is `invalid` only
+**after** access passed, because only then may the caller know the stream is there.
+
+#### Origin, for every socket
+
+A handshake is a `GET`, so CSRF does not cover it, CORS does not apply, and `SameSite=Strict`
+does not help between sibling subdomains — `shop.example.com` is *same-site* with
+`blog.example.com`, and with *Share sign-in between applications* on, the session cookie is sent
+to both. So `security::upgrade_origin_allowed` is asked by **every** socket the server accepts —
+`{mount}/live` and the admin's Observe, chat, language-server and fit-progress sockets: an
+`Origin` must be the request's own host and port (a preview host is its own origin, so a preview's
+page reaches its own socket, and not the live app's); with no `Origin` the caller is not a browser,
+and is refused only if it carries a session cookie without saying it is a native app
+(`x-feldspar-client: native`). The scheme is not compared: a TLS-terminating proxy shows `http`
+behind an `https` page.
+
+#### Re-checked while it is open
+
+A subscription is a standing read. Each connection re-reads its session and user every
+`recheck_interval` (the session cache's 60 s by default), re-resolves its application (a remount
+may have stopped exposing a stream) and asks `may_subscribe` again: a subscription that fails is
+sent `revoked` and dropped; a session that is gone closes the socket with an `error` of
+`signed_out`. A sign-out on this node does not wait for the clock: `SessionStore` now keeps weak
+`SessionListener`s, told synchronously after `logout`, `end_user_sessions` and
+`end_all_sessions`, and the hub is one — it closes exactly the connections that session (or user)
+held. A store that cannot answer keeps the connection as it was and asks again next time, rather
+than signing everyone out because a database blinked. An anonymous caller who carried a dead
+cookie holds no session, so it is never "signed out" of one.
+
+#### Inside: the hub and its fan-outs
+
+`LiveHub` (on `AppMounts`, so the router and the admin handlers share it) registers every
+connection with its application, user and session — which is what makes the per-user connection
+limit and the immediate sign-out possible — and holds **one fan-out task per running stream that
+somebody is subscribed to**. The fan-out holds the stream's one broadcast receiver and routes each
+element through a `TopicIndex` to the subscriptions on its topic, each a slot in a connection's
+bounded queue. Sending every element to every socket and filtering there would cost elements ×
+sockets; indexed, an element costs the subscribers on its topic.
+
+The fan-out keeps **its own copy of the replay ring**, taken together with its receiver under the
+stream's lock, and a subscription is added **by the fan-out task itself**, between two elements,
+and handed the ring at that moment: everything before is replay, everything after is delivered,
+nothing is both. Deliveries carry an attachment id rather than the client's `sub`, because a
+`sub` can be unsubscribed and reused while an element for its previous life is still queued.
+
+Nobody blocks the flow (§14.3's rule, reaching the browser): an element that does not fit a
+connection's queue is dropped *for that subscription* and counted, and the connection is woken to
+send `lagged`; a fan-out that falls behind its broadcast channel tells every subscription how
+much it lost. The last subscription out removes the fan-out, so a stream nobody watches costs
+nothing beyond what it cost before.
+
+#### Limits
+
+`LiveLimits` is configuration with survivable defaults, set on `AppMounts::with_live_limits`:
+64 subscriptions per connection (`too_many_subscriptions`, connection kept), 16 connections per
+user per application (`too_many_connections`, then closed; anonymous connections are not
+counted), 64 KB per client frame (`too_large`, not read, connection kept — the transport's own
+cap sits at four times that, at least 1 MB, so a frame over the limit is answered rather than hung
+up on), a WebSocket ping every 30 s and a close with `idle` after 90 s of silence (a browser pongs
+by itself, so only a dead connection is idle). Every clock is a parameter, which is how the tests
+run in milliseconds.
+
+#### The client
+
+The generated helper (§13.1) has `LiveConnection`: lazy (no socket until the first
+`subscribe`, closed again after the last), one per client, reconnecting with a capped exponential
+backoff with jitter and resubscribing everything, after which every subscriber is told
+`resync()` — delivery is at-most-once, so anything built from earlier elements may be stale. A
+subscription refused before `ready`, or `revoked`, is ended and handed to its `error` handler and
+is not asked for again. `client.live.<stream>.subscribe(handlers)` is typed from the element type;
+`connection.status` is `connecting | open | reconnecting`. A React app also gets
+`src/feldspar/live-react.ts`: `useStream(accessor, onElement)` (closed on unmount, the latest
+handler called without re-subscribing, returning `{ status, error }`) and `useLiveStatus`, named
+in the scaffold's `AGENTS.md`.
+
+#### Admin
+
+The Streams list shows each stream's **subscribers** — live subscriptions from applications'
+pages on this server, from the hub — beside the counters, and `listStreams`, `getStream` and
+`streamStatus` carry `subscribers` (and the stream's `topics`).
+
+**Tests.** `sc-live` unit-tests the frame round trips (an unknown `type` is `invalid`), the
+subscription states, the topic index and `may_subscribe` as a table; its `tests/hub.rs` runs the
+fan-out against a real supervisor and scripted provider (two connections, the replay meeting the
+deliveries exactly, a full queue as `lagged`, the per-user limit, a sign-out through
+`SessionStore`). `sc-server`'s `app_live.rs` drives real WebSocket clients against the assembled
+router and a real database: two subscriptions on one socket, one `unavailable` for forbidden,
+unexposed and misspelt, the Origin rule (sibling subdomain with a shared cookie, no Origin, a
+native app, a preview host, an admin socket), re-checking (a lowered role and a raised floor are
+`revoked`, a session deleted behind the store closes, a sign-out closes at once), every limit, and
+a stream that starts after it was subscribed to.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

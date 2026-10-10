@@ -113,6 +113,12 @@ impl Server {
         let mut request = format!("ws://{}{AGENT_CHAT_ROUTE}", self.addr)
             .into_client_request()
             .unwrap();
+        // A browser sends its page's origin on every handshake, and the server
+        // accepts an upgrade only from its own (TODO.md "Live updates" §3).
+        request.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_str(&format!("http://{}", self.addr)).unwrap(),
+        );
         if let Some(token) = session {
             request.headers_mut().insert(
                 header::COOKIE,
@@ -658,6 +664,12 @@ async fn a_server_without_agents_closes_the_socket_with_the_reason() -> Result<(
     let mut request = format!("ws://{addr}{AGENT_CHAT_ROUTE}")
         .into_client_request()
         .unwrap();
+    // A browser sends its page's origin on every handshake, and the server
+    // accepts an upgrade only from its own (TODO.md "Live updates" §3).
+    request.headers_mut().insert(
+        header::ORIGIN,
+        HeaderValue::from_str(&format!("http://{}", addr)).unwrap(),
+    );
     request.headers_mut().insert(
         header::COOKIE,
         HeaderValue::from_str(&format!("{SESSION_COOKIE}={admin}")).unwrap(),

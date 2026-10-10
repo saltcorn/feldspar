@@ -95,6 +95,13 @@ const RUNTIME_I18N_FILE: &str = "i18n.tsx";
 /// The same file as an import specifier, which carries no extension.
 const RUNTIME_I18N_FILE_STEM: &str = "i18n";
 
+/// React's hooks over the live socket (TODO.md "Live updates" L1.10):
+/// `useStream`, `useLiveStatus` and the app's `live` accessors.
+const RUNTIME_LIVE_FILE: &str = "live-react.ts";
+
+/// The same file as an import specifier.
+const RUNTIME_LIVE_FILE_STEM: &str = "live-react";
+
 /// The generated map of the *other* half of the application: the administration
 /// MCP tools that reach the configuration this project cannot see
 /// ([`generate_skill`](crate::generate_skill)). Rewritten with everything else in
@@ -302,6 +309,10 @@ pub fn runtime_files(ctx: &ProjectContext<'_>) -> Vec<GeneratedFile> {
         GeneratedFile::new(
             format!("{REACT_RUNTIME_SUBDIR}/{RUNTIME_I18N_FILE}"),
             format!("{GENERATED_HEADER}{I18N_TSX}"),
+        ),
+        GeneratedFile::new(
+            format!("{REACT_RUNTIME_SUBDIR}/{RUNTIME_LIVE_FILE}"),
+            live_react_ts(ctx.streams),
         ),
         GeneratedFile::new(
             format!("{REACT_RUNTIME_SUBDIR}/{RUNTIME_README_FILE}"),
@@ -774,6 +785,11 @@ fn runtime_readme(ctx: &ProjectContext<'_>) -> String {
          the middle of it. **Every string a person reads goes through one of \
          them** — `feldspar i18n lint` reports the ones that do not, and a \
          literal nothing wraps can never be translated.\n\
+         - `{RUNTIME_LIVE_FILE}` — live updates: `useStream(live.<stream>, onElement)` \
+         subscribes a component to a stream this application exposes, over one \
+         socket per page that reconnects by itself, and returns its `status` \
+         (`connecting`, `open`, `reconnecting`). `live` is the client's \
+         accessors, present once the application exposes a stream.\n\
          - `{RUNTIME_SKILL_FILE}` — for a coding agent: the half of this \
          application that is **not** in this repository, and the administration \
          MCP tools that reach it. Read it before adding a field or a trigger.\n"
@@ -1029,6 +1045,30 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          there is no database connection in this project, and there is no way to \
          add one. Every call is authorized by the server against the signed-in \
          user's role and the tables' ownership rules.\n\
+         \n\
+         ## Live updates\n\
+         \n\
+         The server can push to the page while it is open. Each stream the \
+         application exposes is an accessor on the generated client, \
+         `api.live.<stream>`, typed from the stream's elements, and every one of \
+         them shares **one** WebSocket per page that opens on first use, \
+         reconnects by itself and resubscribes. In a component, use the hook:\n\
+         \n\
+         ```tsx\n\
+         import {{ live, useStream }} from \"./{REACT_RUNTIME_SUBDIR}/{RUNTIME_LIVE_FILE_STEM}\";\n\
+         \n\
+         const {{ status, error }} = useStream(live.boiler, (envelope) => setReading(envelope.value));\n\
+         ```\n\
+         \n\
+         `status` is `connecting`, `open` or `reconnecting`; `error` is set when \
+         the server refuses the subscription (`unavailable`: the stream is not \
+         exposed, or the signed-in user is below its minimum role) or later \
+         revokes it. Delivery is at-most-once: after a reconnect, anything built \
+         from earlier elements may be stale, and the subscription's `resync` \
+         handler says so. Never open a `WebSocket` yourself — the socket \
+         authenticates with the user's session and refuses pages from any other \
+         origin. Which streams are exposed is configuration in the server (see \
+         the half of this application that is not in this project).\n\
          \n\
          ## When the API you need is missing\n\
          \n\
@@ -2809,6 +2849,89 @@ th {
 
 // --- the generated runtime --------------------------------------------------
 
+/// `src/feldspar/live-react.ts`: React's hooks over the live socket (TODO.md
+/// "Live updates" L1.10).
+///
+/// Emitted for every React app, whether or not it exposes a stream yet, so the
+/// import path a page uses never appears and disappears with the
+/// configuration; the `live` re-export is there only once there is a stream to
+/// subscribe to, because `api.live` is not on a client that has none. The
+/// framework-neutral half — the connection, its reconnects and its frames — is
+/// the generated helper's (`LiveConnection`); this file is only what React adds:
+/// a subscription tied to a component's lifetime, and its status as state.
+fn live_react_ts(streams: &[sc_api::StreamExport]) -> String {
+    let mut out = String::from(GENERATED_HEADER);
+    out.push_str(LIVE_REACT_TS);
+    if !streams.is_empty() {
+        out.push_str(
+            "\n/** The streams this application exposes, one accessor each, over one socket. */\n\
+             export const live = api.live;\n",
+        );
+    }
+    out
+}
+
+/// The body of `live-react.ts` that is the same in every application.
+const LIVE_REACT_TS: &str = r#"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { LiveConnection, LiveError, LiveHandlers, LiveStatus, LiveStream } from "./helper";
+import { api } from "./hooks";
+
+/** Where a live connection is, as state: re-renders when it connects, drops or reconnects. */
+export function useLiveStatus(connection: LiveConnection): LiveStatus {
+  return useSyncExternalStore(
+    (onChange) => connection.onStatus(onChange),
+    () => connection.status,
+    () => "connecting",
+  );
+}
+
+/** What `useStream` reports about its subscription. */
+export type StreamState = {
+  /** The connection's status: `connecting`, `open` or `reconnecting`. */
+  status: LiveStatus;
+  /** Why the server refused or ended the subscription, if it did. */
+  error: LiveError | undefined;
+};
+
+/**
+ * Subscribe this component to `stream` while it is mounted: `onElement` is
+ * called with each element, and the subscription is closed on unmount.
+ *
+ * `onElement` and `handlers` may be new functions on every render — the latest
+ * ones are called — so there is no need to memoise them. Re-subscribing happens
+ * only when `stream` itself changes.
+ */
+export function useStream<E>(
+  stream: LiveStream<E>,
+  onElement: (envelope: E) => void,
+  handlers: Omit<LiveHandlers<E>, "element"> = {},
+): StreamState {
+  const latest = useRef({ onElement, handlers });
+  useEffect(() => {
+    latest.current = { onElement, handlers };
+  });
+  const [error, setError] = useState<LiveError | undefined>(undefined);
+  useEffect(() => {
+    setError(undefined);
+    const subscription = stream.subscribe({
+      element: (envelope) => latest.current.onElement(envelope),
+      ready: (info) => latest.current.handlers.ready?.(info),
+      lagged: (dropped) => latest.current.handlers.lagged?.(dropped),
+      resync: () => latest.current.handlers.resync?.(),
+      status: (status) => latest.current.handlers.status?.(status),
+      error: (refusal) => {
+        setError(refusal);
+        latest.current.handlers.error?.(refusal);
+      },
+    });
+    return () => subscription.close();
+  }, [stream]);
+  const status = useLiveStatus(stream.connection);
+  return { status, error };
+}
+"#;
+
 /// `src/feldspar/hooks.ts`: a hook set **per table**, over that table's object on
 /// the generated client.
 ///
@@ -3568,6 +3691,48 @@ mod tests {
             .contents
     }
 
+    /// L1.10: every React app gets the live hooks, and the `live` accessors
+    /// only once it exposes a stream — `api.live` is not on a client without
+    /// one, and an import of it would not compile.
+    #[test]
+    fn the_live_hooks_are_emitted_and_name_the_streams_only_when_there_are_some() {
+        let tables = [tasks()];
+        let app = todo();
+        let endpoints = endpoints(&tables);
+        let without = runtime_files(&ctx(&app, &tables, &endpoints, None));
+        let hooks = file(&without, "src/feldspar/live-react.ts");
+        assert!(hooks.contains("DO NOT EDIT"), "{hooks}");
+        assert!(hooks.contains("export function useStream<E>("), "{hooks}");
+        assert!(hooks.contains("export function useLiveStatus("), "{hooks}");
+        assert!(
+            hooks.contains("return () => subscription.close();"),
+            "{hooks}"
+        );
+        assert!(!hooks.contains("export const live"), "{hooks}");
+
+        let streams = [sc_api::StreamExport {
+            name: "boiler".to_owned(),
+            path: "/api/live".to_owned(),
+            value: sc_api::TypeSchema::text(),
+        }];
+        let with = runtime_files(&ProjectContext {
+            streams: &streams,
+            ..ctx(&app, &tables, &endpoints, None)
+        });
+        assert!(
+            file(&with, "src/feldspar/live-react.ts").contains("export const live = api.live;")
+        );
+        // The contract the coding agent reads names the hook.
+        let project = project_files(&ctx(&app, &tables, &endpoints, None));
+        let agents = file(&project, "AGENTS.md");
+        assert!(agents.contains("## Live updates"), "{agents}");
+        assert!(
+            agents.contains("import { live, useStream } from \"./src/feldspar/live-react\";"),
+            "{agents}"
+        );
+        assert!(file(&with, "src/feldspar/README.md").contains("live-react.ts"));
+    }
+
     #[test]
     fn a_project_has_everything_needed_to_build_without_a_shell() {
         let tables = [tasks()];
@@ -3591,6 +3756,7 @@ mod tests {
             "src/feldspar/client.ts",
             "src/feldspar/helper.ts",
             "src/feldspar/hooks.ts",
+            "src/feldspar/live-react.ts",
             "src/feldspar/store.ts",
             "src/feldspar/schema.sql",
             "src/feldspar/README.md",
@@ -3639,7 +3805,7 @@ mod tests {
         let tables = [tasks()];
         let app = todo();
         let files = runtime_files(&ctx(&app, &tables, &endpoints(&tables), None));
-        assert_eq!(files.len(), 9);
+        assert_eq!(files.len(), 10);
         // Every regenerated file says so, each in a syntax its own reader can
         // parse; nothing outside the directory does, because nothing outside it
         // is overwritten.
@@ -3649,6 +3815,7 @@ mod tests {
         assert!(file(&files, "src/feldspar/helper.ts").contains("DO NOT EDIT"));
         assert!(file(&files, "src/feldspar/messages.ts").contains("DO NOT EDIT"));
         assert!(file(&files, "src/feldspar/i18n.tsx").contains("DO NOT EDIT"));
+        assert!(file(&files, "src/feldspar/live-react.ts").contains("DO NOT EDIT"));
         assert!(file(&files, "src/feldspar/schema.sql").starts_with("-- Schema generated"));
         assert!(
             file(&files, "src/feldspar/README.md").contains("overwritten without warning"),

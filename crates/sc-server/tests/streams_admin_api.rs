@@ -163,6 +163,12 @@ impl Server {
         let mut request = format!("ws://{}/api/streams/{id}/observe", self.addr)
             .into_client_request()
             .unwrap();
+        // A browser sends its page's origin on every handshake, and the server
+        // accepts an upgrade only from its own (TODO.md "Live updates" §3).
+        request.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_str(&format!("http://{}", self.addr)).unwrap(),
+        );
         if let Some(token) = session {
             request.headers_mut().insert(
                 header::COOKIE,

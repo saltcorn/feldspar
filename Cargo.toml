@@ -90,6 +90,15 @@ members = [
     # rather than above them: both are things that *run*, both persist their
     # state to `_fd_runs` after every step, and neither knows about the other.
     "crates/sc-workflow",
+    # Live updates (TODO.md, milestones L1–L6): the one multiplexed socket an
+    # application's page holds, its protocol, the per-connection subscription
+    # state, the topic index and the hub that fans a running stream's elements
+    # out to the subscriptions on each topic. Above `sc-stream` (it subscribes
+    # to running streams) and, from L2 on, the ownership evaluator; below
+    # `sc-server`, which mounts the route and fills in the seams. The
+    # authorisation decisions are pure functions here, so they are tested with
+    # tables of cases rather than sockets.
+    "crates/sc-live",
     # Layer 8 — applications & API
     "crates/sc-api",
     "crates/sc-app",
@@ -162,6 +171,7 @@ sc-llm = { path = "crates/sc-llm" }
 sc-email = { path = "crates/sc-email" }
 sc-agent = { path = "crates/sc-agent" }
 sc-workflow = { path = "crates/sc-workflow" }
+sc-live = { path = "crates/sc-live" }
 sc-api = { path = "crates/sc-api" }
 sc-app = { path = "crates/sc-app" }
 sc-viewpattern = { path = "crates/sc-viewpattern" }

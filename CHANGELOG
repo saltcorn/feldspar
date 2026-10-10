@@ -2,6 +2,60 @@
 
 Changes in reverse chronological order.
 
+## Live updates L1: one live socket per page, with the access rules
+
+An application's page now holds **one** WebSocket, `GET {mount}/live`, carrying any number of
+subscriptions to the streams the app exposes. It replaces the per-stream
+`{mount}/streams/{name}/observe` socket and `observeStream_<name>()` (no compatibility: the
+prototype rule). TODO.md L1.1–L1.12.
+
+- **New crate `sc-live`** (layer 7, above `sc-stream` and `sc-auth`, below `sc-server`):
+  the protocol frames (tagged on `type`; an unknown or malformed client frame is an `invalid`
+  error frame, never a hang-up), a connection's `SubscriptionSet`, the `TopicIndex`,
+  `LiveLimits`, `may_subscribe` as a pure function tested as a table, and `LiveHub` — the
+  connection registry and one fan-out task per running stream that somebody watches, routing by
+  topic into bounded per-connection queues (overflow is counted and sent as `lagged`). The
+  fan-out keeps its own copy of the replay ring, so replay and delivery never gap or double.
+- **Wire contract change: the envelope gains an optional `topic`**, absent (not null) on a
+  stream without topics, so existing envelopes are byte-for-byte unchanged.
+  `StreamProvider::topic_spec` (`Single | User | Row | PerElementRow`, default `Single`) and
+  `RunningStream::topic_spec`. Until L2/L3, a stream declaring anything but `Single` is refused.
+- **Origin check on every WebSocket upgrade** (`security::upgrade_origin_allowed`): the live
+  socket and the admin's Observe, chat, LSP and fit-progress sockets. An `Origin` must be the
+  request's own host (a preview host is its own origin); with none, a session cookie is refused
+  unless the client says it is native. Closes the sibling-subdomain hole that *Share sign-in
+  between applications* opens.
+- **The socket authenticates with the app's REST function** (`app_caller`, now shared by both).
+  Anonymous holds the public role. Unknown, unexposed and below-`min_role` streams are one
+  `unavailable` frame. A disabled stream is waited for and followed (a second `ready`) when it
+  starts or restarts.
+- **Re-checking**: every `recheck_interval` (60 s) a connection re-reads its session, its app
+  mount and every subscription's access — `revoked`, or `signed_out` and closed.
+  `SessionStore` gains weak `SessionListener`s told on `logout`, `end_user_sessions` and
+  `end_all_sessions`; the hub is one, so a sign-out on this node closes that session's sockets
+  at once.
+- **Limits** (`AppMounts::with_live_limits`): 64 subscriptions per connection, 16 connections
+  per user per app, 64 KB frames, ping every 30 s, idle close at 90 s — each with its own error
+  code.
+- **Generated client**: `LiveConnection` in `helper.ts` (lazy, one per client, capped
+  exponential backoff with jitter, resubscribes and calls `resync`, does not re-ask for a
+  refused subscription) and `client.live.<stream>.subscribe(handlers)`, typed from the element
+  type. React apps get `src/feldspar/live-react.ts` (`useStream`, `useLiveStatus`, `live`),
+  documented in the scaffold's `AGENTS.md` and the runtime README. All four admin `client.ts`
+  copies regenerated.
+- **Admin**: the Streams list has a **Subscribers** column; `listStreams`, `getStream` and
+  `streamStatus` carry `subscribers` (and stream objects `topics`). The Application form's
+  Streams note names the live socket.
+- **Docs**: TECHNICAL_DESIGN §2 (tree, diagram, table), §13.2 rewritten, §14.3 note, new §14.10;
+  `docs/tutorial-streams.md` step 6 rewritten; new `docs/tutorial-live.md` part 1.
+- **Tests**: `sc-live` unit tests and `tests/hub.rs`; `sc-auth` listener test;
+  `sc-server` `app_live.rs` (16 tests with real WebSocket clients: subscriptions, one
+  `unavailable`, Origin incl. shared cookie and preview host, re-checks, every limit) replacing
+  `app_streams.rs`; `tutorial_live.rs`, the part-1 definition of done, which type-checks the
+  tutorial's own component against the generated runtime when `tsc` and React types are present;
+  `sc-api` `live_connection.rs` runs the generated `LiveConnection` under Node with a fake
+  socket; `typescript_typecheck` updated; existing admin socket tests send an `Origin`.
+
 ## Live updates: design and plan (TODO.md)
 
 A new `TODO.md` (the analytics plan moved to `TODO-analytics.md`) for real-time updates

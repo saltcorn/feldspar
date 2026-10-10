@@ -34,6 +34,7 @@ mod fit_progress;
 mod handler;
 mod handlers;
 mod i18n;
+mod live;
 // An application's own strings: the Translations screen's server half
 // (§16.1, 4.4).
 mod logging;
@@ -146,6 +147,7 @@ pub use handler::{
 };
 pub use handlers::{admin_handlers, admin_handlers_with};
 pub use i18n::{LANG_COOKIE, LANG_QUERY};
+pub use live::LiveServices;
 pub use logging::log_requests;
 pub use lsp::{LSP_ROUTE, MAX_LANGUAGE_SERVERS};
 pub use mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME};

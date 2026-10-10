@@ -9349,6 +9349,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-live"
+version = "0.1.0"
+dependencies = [
+ "sc-auth",
+ "sc-error",
+ "sc-stream",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "sc-llm"
 version = "0.1.0"
 dependencies = [
@@ -9536,6 +9549,7 @@ dependencies = [
  "sc-expr",
  "sc-files",
  "sc-i18n",
+ "sc-live",
  "sc-llm",
  "sc-log",
  "sc-model",

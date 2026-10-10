@@ -196,7 +196,7 @@
   "A declared parameter is checked and converted to its type before the body runs.": "Ein deklarierter Parameter wird geprüft und in seinen Typ umgewandelt, bevor der Rumpf ausgeführt wird.",
   "Returns whatever its body returns.": "Gibt zurück, was ihr Rumpf zurückgibt.",
   "Each store's definition, every file in it, and each file's access rules.": "Die Definition jedes Speichers, jede darin enthaltene Datei und die Zugriffsregeln jeder Datei.",
-  "Each ticked stream can be observed at {route} over a WebSocket, guarded by the stream’s own minimum role, and appears in this app’s generated client as {call}.": "Jeder aktivierte Stream kann unter {route} über einen WebSocket beobachtet werden, geschützt durch die eigene Mindestrolle des Streams, und erscheint im generierten Client dieser App als {call}.",
+  "A page subscribes to each ticked stream over the application’s one live socket at {route}, guarded by the stream’s own minimum role, and it appears in this app’s generated client as {call}.": "Eine Seite abonniert jeden aktivierten Stream über den einen Live-Socket der Anwendung unter {route}, geschützt durch die eigene Mindestrolle des Streams, und er erscheint im generierten Client dieser App als {call}.",
   "Each ticked trigger is exposed as {route} on this app, guarded by the trigger’s own minimum role.": "Jeder aktivierte Trigger wird in dieser App unter {route} bereitgestellt und durch seine eigene Mindestrolle geschützt.",
   "Edit": "Bearbeiten",
   "Edit code": "Code bearbeiten",
@@ -918,5 +918,7 @@
     "one": "{count} angepasste Modellinstanz, mit ihren Ausgabetabellen und Posterior-Ziehungen. Diese können groß sein; ohne sie muss ein wiederhergestelltes Modell erneut angepasst werden.",
     "other": "{count} angepasste Modellinstanzen, mit ihren Ausgabetabellen und Posterior-Ziehungen. Diese können groß sein; ohne sie muss ein wiederhergestelltes Modell erneut angepasst werden."
   },
-  "Email, localisation and development settings, including the SMTP password.": "E-Mail-, Lokalisierungs- und Entwicklungseinstellungen, einschließlich des SMTP-Passworts."
+  "Email, localisation and development settings, including the SMTP password.": "E-Mail-, Lokalisierungs- und Entwicklungseinstellungen, einschließlich des SMTP-Passworts.",
+  "Subscribers": "Abonnenten",
+  "Live subscriptions from applications' pages on this server, right now": "Live-Abonnements von Anwendungsseiten auf diesem Server, gerade jetzt"
 }

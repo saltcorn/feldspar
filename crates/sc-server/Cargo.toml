@@ -88,6 +88,10 @@ sc-stan.workspace = true
 # and knows nothing about triggers, applications or sockets, so the bridge is
 # here, where both handles already are (§2's second seam).
 sc-stream.workspace = true
+# Live updates (TODO.md L1–L6): the protocol, the subscription states, the
+# access rules and the hub. This crate mounts `{mount}/live` and drives a
+# connection through them.
+sc-live.workspace = true
 sc-core-traits.workspace = true
 sc-db.workspace = true
 sc-db-postgres.workspace = true

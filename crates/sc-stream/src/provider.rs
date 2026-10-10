@@ -23,6 +23,17 @@
 //! module for why that shape, and not a `&mut self` loop, is what makes the
 //! supervisor's restart path three lines.
 //!
+//! ## A provider says what its topics are
+//!
+//! [`StreamProvider::topic_spec`] — again a function of the configuration, as
+//! `element_type` is — says how a stream's elements are split into **topics**
+//! (TODO.md "Live updates" §2) and so how access to them is decided: one topic
+//! under the stream's `min_role` ([`TopicSpec::Single`], every provider there
+//! was before live updates), one per user, one per row of a table, or one per
+//! subscription filter with every element checked against the subscriber. The
+//! default is `Single`, so a provider that has never heard of topics — MQTT, a
+//! module's polled feed — is exactly what it was.
+//!
 //! ## Nobody may block the flow
 //!
 //! [`StreamSink::deliver`] is **synchronous and infallible**. That is not an
@@ -38,6 +49,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sc_error::Result;
 use sc_types::{Attrs, FormField};
+use serde::{Deserialize, Serialize};
 
 use crate::element::ElementType;
 use crate::envelope::Element;
@@ -64,6 +76,50 @@ pub trait StreamSink: Send + Sync {
     /// so.
     fn malformed(&self, reason: &str) {
         let _ = reason;
+    }
+}
+
+/// How a stream's elements are split into **topics**, and so how access to
+/// them is decided (TODO.md "Live updates" §2).
+///
+/// Declared by the provider as a function of its configuration
+/// ([`StreamProvider::topic_spec`]), the way the element type is. The stream's
+/// `min_role` is a floor on subscribing at all whatever this says; a topic or
+/// element check comes **on top of** it and can only narrow access.
+///
+/// Serialised as `{"kind": "single"}`, `{"kind": "row", "table": "boards"}`
+/// and so on — what the Streams list and the client generator read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TopicSpec {
+    /// One topic. Access is the stream's `min_role`. Every provider there was
+    /// before live updates — MQTT, a module's — is this.
+    #[default]
+    Single,
+    /// The topic is a user id. A subscriber gets exactly their own topic and
+    /// never names it; an anonymous caller is refused.
+    User,
+    /// The topic is the primary key of a row of `table`. Subscribing needs
+    /// **read** access to that row; publishing from a client needs **update**
+    /// access.
+    Row {
+        /// The table whose rows the topics are.
+        table: String,
+    },
+    /// One topic per subscription filter, and **every element** is checked
+    /// against the subscriber's read access to the row it carries.
+    PerElementRow {
+        /// The table whose rows the elements carry.
+        table: String,
+    },
+}
+
+impl TopicSpec {
+    /// Whether a subscriber names a topic when subscribing. `Single` has one
+    /// topic and `User`'s is the subscriber's own, so neither takes one;
+    /// `Row` is nothing without one.
+    pub fn takes_topic(&self) -> bool {
+        matches!(self, TopicSpec::Row { .. })
     }
 }
 
@@ -159,6 +215,19 @@ pub trait StreamProvider: Send + Sync {
     /// and the admin hears about it on save rather than on the first element.
     fn element_type(&self, config: &Attrs) -> Result<ElementType>;
 
+    /// How this stream's elements are split into topics, for `config` (see
+    /// [`TopicSpec`]).
+    ///
+    /// Defaults to [`TopicSpec::Single`]: one topic, under the stream's
+    /// `min_role`. Only an in-process provider whose elements are about a user
+    /// or a row — Saltcorn's own `internal`, `table_changes` and `document` —
+    /// answers anything else, because only Saltcorn can vouch for which user or
+    /// row an element is about.
+    fn topic_spec(&self, config: &Attrs) -> Result<TopicSpec> {
+        let _ = config;
+        Ok(TopicSpec::Single)
+    }
+
     /// The element type for `config`, **asked for** rather than answered from
     /// what is already known.
     ///
@@ -253,4 +322,43 @@ pub trait StreamProviderHost: Send + Sync {
     /// route, a kind it does not recognise — is reported by name rather than
     /// silently missing from the picker.
     fn provider(&self, kind: &StreamProviderKind) -> Result<Arc<dyn StreamProvider>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_topic_spec_is_tagged_json_and_reads_back() {
+        let cases = [
+            (TopicSpec::Single, json!({ "kind": "single" })),
+            (TopicSpec::User, json!({ "kind": "user" })),
+            (
+                TopicSpec::Row {
+                    table: "boards".to_owned(),
+                },
+                json!({ "kind": "row", "table": "boards" }),
+            ),
+            (
+                TopicSpec::PerElementRow {
+                    table: "cards".to_owned(),
+                },
+                json!({ "kind": "per_element_row", "table": "cards" }),
+            ),
+        ];
+        for (spec, wire) in cases {
+            assert_eq!(serde_json::to_value(&spec).unwrap(), wire);
+            assert_eq!(serde_json::from_value::<TopicSpec>(wire).unwrap(), spec);
+        }
+        assert_eq!(TopicSpec::default(), TopicSpec::Single);
+        assert!(!TopicSpec::Single.takes_topic());
+        assert!(!TopicSpec::User.takes_topic());
+        assert!(
+            TopicSpec::Row {
+                table: "boards".to_owned()
+            }
+            .takes_topic()
+        );
+    }
 }

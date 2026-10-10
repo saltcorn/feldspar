@@ -47,14 +47,15 @@
 //! The replay and the subscription are taken **together, under one lock**
 //! (`subscribe_elements`), so the tail is neither gapped nor doubled.
 //!
-//! ## The same socket, from an application
+//! ## An application's page uses the live socket instead
 //!
-//! An application observes a stream it exposes on `{mount}/streams/{name}/observe`
-//! (TODO §10), and everything below this line is shared with it: the frames,
-//! the replay, the close reasons. What differs is decided before any of it, in
-//! `router.rs` — the app's own session cookie rather than an admin's, the
-//! stream's `min_role` rather than "admin", and a 404 for a stream the app did
-//! not expose. See [`stream_observe_by_name`].
+//! This socket is the **admin's**: one stream per connection, every topic, no
+//! per-subscriber checks beyond "is an admin". An application's page holds the
+//! multiplexed live socket, `{mount}/live` ([`crate::live`]), which replaced the
+//! per-stream app socket this module used to serve too (TODO.md "Live updates"
+//! L1.7). The two share how a running stream's status, counters and element
+//! type are written ([`status_parts`], [`element_type_json`]), so the Observe
+//! screen and a page cannot describe one stream two ways.
 //!
 //! ## What closes the socket
 //!
@@ -120,40 +121,6 @@ pub(crate) async fn stream_observe_upgrade(
     ws.on_upgrade(move |socket| observe(socket, running))
 }
 
-/// Serve one Observe socket for the stream named `name` — **an application's**
-/// half of [`stream_observe_upgrade`] (TODO "Streams" §10, task 8.2).
-///
-/// Everything an application's socket decides *before* the upgrade — is this
-/// app exposing this stream, does this session meet the stream's `min_role` —
-/// is the router's, because those are the refusals a browser has to be able to
-/// tell apart and only a status can carry. What is left is the same two
-/// questions the admin's socket asks, with the same two answers: no stream
-/// support installed, or nothing running here under that name.
-///
-/// By **name** rather than by id, because a name is what an app declares, what
-/// its generated client calls and what its socket's path spells (§10). An id in
-/// an app's URL would be a second way to name the same thing, and the one the
-/// app's own code does not use.
-pub(crate) async fn stream_observe_by_name(
-    ws: WebSocketUpgrade,
-    supervisor: Option<&Arc<StreamSupervisor>>,
-    name: &str,
-) -> axum::response::Response {
-    let Some(supervisor) = supervisor else {
-        let reason = "this server has no stream support installed, so there is nothing to observe";
-        return ws.on_upgrade(move |socket| refuse(socket, reason.to_owned()));
-    };
-    let Some(running) = supervisor.by_name(name) else {
-        // Disabled, or not reloaded here yet: a subscription is process-local
-        // (§6), and "not running on this server" is the true answer to both.
-        let reason = format!(
-            "stream `{name}` is not running on this server, so there are no elements to observe"
-        );
-        return ws.on_upgrade(move |socket| refuse(socket, reason));
-    };
-    ws.on_upgrade(move |socket| observe(socket, running))
-}
-
 /// Close a socket, saying why.
 async fn refuse(mut socket: WebSocket, reason: String) {
     let _ = socket
@@ -165,7 +132,7 @@ async fn refuse(mut socket: WebSocket, reason: String) {
 }
 
 /// A reason cut to what a close frame can carry, on a character boundary.
-fn fit_close_reason(reason: String) -> String {
+pub(crate) fn fit_close_reason(reason: String) -> String {
     if reason.len() <= MAX_CLOSE_REASON {
         return reason;
     }
@@ -181,25 +148,44 @@ fn fit_close_reason(reason: String) -> String {
 /// The `ready` frame: what this stream is, and how much of what follows is
 /// history.
 pub(crate) fn ready_frame(running: &RunningStream, replayed: usize) -> Json {
+    let (status, counters) = status_parts(running);
     json!({
         "type": "ready",
         "stream": running.name(),
-        "element_type": running
-            .element_type()
-            .and_then(|ty| serde_json::to_value(ty).ok()),
-        "status": serde_json::to_value(running.status()).unwrap_or(Json::Null),
-        "counters": running.counters().to_json(),
+        "element_type": element_type_json(running),
+        "status": status,
+        "counters": counters,
         "replayed": replayed,
     })
 }
 
 /// The `status` frame — sent when either half of it has moved.
 fn status_frame(running: &RunningStream) -> Json {
+    let (status, counters) = status_parts(running);
     json!({
         "type": "status",
-        "status": serde_json::to_value(running.status()).unwrap_or(Json::Null),
-        "counters": running.counters().to_json(),
+        "status": status,
+        "counters": counters,
     })
+}
+
+/// A running stream's element type as a frame carries it: `null` for a stream
+/// whose provider could not be resolved. Shared with the live socket's
+/// `ready`.
+pub(crate) fn element_type_json(running: &RunningStream) -> Json {
+    running
+        .element_type()
+        .and_then(|ty| serde_json::to_value(ty).ok())
+        .unwrap_or(Json::Null)
+}
+
+/// A running stream's status and counters as a frame carries them. Shared with
+/// the live socket's `ready` and `status`.
+pub(crate) fn status_parts(running: &RunningStream) -> (Json, Json) {
+    (
+        serde_json::to_value(running.status()).unwrap_or(Json::Null),
+        running.counters().to_json(),
+    )
 }
 
 /// Read the stream until the socket goes away.

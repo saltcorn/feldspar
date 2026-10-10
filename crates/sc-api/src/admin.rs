@@ -6382,6 +6382,10 @@ fn stream_provider_schema() -> TypeSchema {
 ///   validating — a provider whose module was uninstalled, a topic filter that
 ///   no longer parses — is **still listed and still editable**, because editing
 ///   it is the repair.
+/// - `subscribers` is how many live subscriptions applications' pages hold to it
+///   on this server right now (TODO.md "Live updates" L1.11), and `topics` how
+///   its provider splits it into topics — both from memory and the provider,
+///   like the status.
 ///
 /// The `configuration` is the **redacted** one: a setting the provider declared
 /// secret comes back as the sentinel, never as the password.
@@ -6392,9 +6396,9 @@ fn stream_schema() -> TypeSchema {
         StructField::new("description", TypeSchema::text()),
         StructField::new("provider", TypeSchema::text()),
         StructField::new("configuration", TypeSchema::json()),
-        // The floor for **observing** it through an application. Null is
-        // admin-only — the trigger rule, for the trigger reason: a flow nobody
-        // has thought about the access of is not public.
+        // The floor for **subscribing** to it from an application's page. Null
+        // is admin-only — the trigger rule, for the trigger reason: a flow
+        // nobody has thought about the access of is not public.
         StructField::new("min_role", TypeSchema::optional(TypeSchema::int())),
         StructField::new("attributes", TypeSchema::json()),
         // Lifted out of `attributes` for the list's switch, as a trigger's is:
@@ -6404,6 +6408,8 @@ fn stream_schema() -> TypeSchema {
         StructField::new("error", TypeSchema::optional(TypeSchema::text())),
         StructField::new("status", TypeSchema::optional(TypeSchema::json())),
         StructField::new("counters", TypeSchema::optional(TypeSchema::json())),
+        StructField::new("topics", TypeSchema::optional(TypeSchema::json())),
+        StructField::new("subscribers", TypeSchema::int()),
     ])
 }
 
@@ -6449,6 +6455,9 @@ fn stream_status_schema() -> TypeSchema {
         // How many sockets are attached, which is the number that says whether
         // an Observe screen somebody left open is still costing anything.
         StructField::new("listeners", TypeSchema::int()),
+        // How many of those are applications' pages: live subscriptions held
+        // on `{mount}/live` (TODO.md "Live updates" L1.11).
+        StructField::new("subscribers", TypeSchema::int()),
     ])
 }
 

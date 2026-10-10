@@ -48,11 +48,12 @@ use crate::fit_progress::{FIT_PROGRESS_ROUTE, fit_progress_upgrade};
 use crate::handler::{HandlerCtx, HandlerRegistry, HandlerResponse};
 use crate::lsp::{LSP_ROUTE, ServerSlots, language_server_upgrade, server_slots};
 use crate::mcp::MCP_ROUTE;
-use crate::observe::{STREAM_OBSERVE_ROUTE, stream_observe_by_name, stream_observe_upgrade};
+use crate::observe::{STREAM_OBSERVE_ROUTE, stream_observe_upgrade};
 use crate::security::{
     ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CSRF_COOKIE,
     CSRF_HEADER, CsrfPolicy, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE, SESSION_COOKIE,
     admin_content_security_policy, build_cookie, csrf_middleware, is_native_client,
+    upgrade_origin_allowed, upgrade_origin_refused,
 };
 
 /// A WebSocket upgrade, **if this request is one** — the extractor the fallback
@@ -231,6 +232,12 @@ pub fn build_router_with_apps(
             "applications are mounted but no catalog was given for their APIs to run against",
         ));
     }
+
+    // A sign-out on this node closes that session's live sockets at once
+    // rather than at their next re-check (TODO.md "Live updates" §3 rule 6).
+    // Weakly held: the hub lives as long as the registry does.
+    let live_listener: Arc<dyn sc_auth::SessionListener> = apps.live().hub().clone();
+    sessions.add_listener(Arc::downgrade(&live_listener));
 
     let routes = Arc::new(build_matchit(endpoints)?);
     let mut handlers = handlers;
@@ -690,15 +697,19 @@ async fn admin_of(
 /// type-checked is carried by the close frame instead (see [`crate::lsp`]).
 ///
 /// CSRF does not apply — this is a `GET`, and the middleware leaves safe methods
-/// alone — but the same-origin story still holds: the session cookie is
-/// `SameSite=Strict`, so a cross-site page's WebSocket carries no session and
-/// lands on the rejection below.
+/// alone — so the handshake's `Origin` is checked instead
+/// ([`upgrade_origin_allowed`]): `SameSite=Strict` keeps a cross-*site* page's
+/// cookie off the request, but not a sibling subdomain's.
 async fn language_server(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
     AxumPath(store): AxumPath<String>,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
+    if !upgrade_origin_allowed(&headers) {
+        return upgrade_origin_refused();
+    }
     let user = match session_user(&state, &jar).await {
         Ok(user) => user,
         Err(response) => return *response,
@@ -714,14 +725,17 @@ async fn language_server(
 /// The auth story is the language server's, word for word — this is the *other*
 /// route that hands its holder something that runs on the server, and the same
 /// two facts apply: a failed handshake carries no readable body, so the auth
-/// refusal is the one answered with a status; and the session cookie is
-/// `SameSite=Strict`, so a cross-site page's socket carries no session and lands
-/// on that refusal.
+/// refusal is the one answered with a status; and the handshake's `Origin` must
+/// be this host's own ([`upgrade_origin_allowed`]).
 async fn agent_chat(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
+    if !upgrade_origin_allowed(&headers) {
+        return upgrade_origin_refused();
+    }
     let user = match session_user(&state, &jar).await {
         Ok(user) => user,
         Err(response) => return *response,
@@ -754,9 +768,8 @@ async fn agent_chat(
 /// refusal that has to be an HTTP **status**: a browser cannot read the body of
 /// a failed WebSocket handshake, so everything decided after the upgrade — no
 /// stream support, no such stream, not running here — is a close frame instead
-/// (see [`crate::observe`]). The session cookie is `SameSite=Strict`, so a
-/// cross-site page's socket carries no session and lands on the rejection
-/// below.
+/// (see [`crate::observe`]). The handshake's `Origin` must be this host's own
+/// ([`upgrade_origin_allowed`]).
 async fn stream_observe(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -769,12 +782,14 @@ async fn stream_observe(
 ) -> Response {
     // This is a real axum route, so it wins over the fallback every
     // application's request goes through — including an app whose API is
-    // mounted at `/api`, whose own socket path is spelled exactly like this
-    // one. So the host is asked first, as `dispatch` asks it, and an
-    // application's socket is served as the application's (TODO "Streams" §10).
-    if let Resolved::App(app) = resolve_app(&state, &headers, &jar) {
-        let csp = state.apps.app_csp(&app.app);
-        return with_csp(app_stream_observe(&state, &app, &id, &jar, ws).await, &csp);
+    // mounted at `/api`. An application observes its streams over its live
+    // socket (`{mount}/live`), so a path spelled like this one on an
+    // application's host is nothing.
+    if let Resolved::App(_) = resolve_app(&state, &headers, &jar) {
+        return json_error(StatusCode::NOT_FOUND, "there is nothing at this path");
+    }
+    if !upgrade_origin_allowed(&headers) {
+        return upgrade_origin_refused();
     }
     let user = match session_user(&state, &jar).await {
         Ok(user) => user,
@@ -820,6 +835,9 @@ async fn fit_progress(
     // applications have no model editor.
     if let Resolved::App(_) = resolve_app(&state, &headers, &jar) {
         return json_error(StatusCode::NOT_FOUND, "there is nothing at this path");
+    }
+    if !upgrade_origin_allowed(&headers) {
+        return upgrade_origin_refused();
     }
     let user = match session_user(&state, &jar).await {
         Ok(user) => user,
@@ -1164,7 +1182,7 @@ enum Resolved {
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_app(
     state: &AppState,
-    app: &MountedApp,
+    app: &Arc<MountedApp>,
     method: axum::http::Method,
     uri: &Uri,
     headers: &axum::http::HeaderMap,
@@ -1183,12 +1201,12 @@ async fn dispatch_app(
     };
     let path = uri.path();
 
-    // An observe socket, before the API providers: the path sits *beside* the
-    // endpoint set (`{mount}/streams/{name}/observe`), so on an app whose API is
-    // at `/api` it is under a provider's mount and would otherwise be answered
-    // by the provider's "no such endpoint" (TODO "Streams" §10).
-    if let Some(name) = sc_app::stream_in_path(&app.app, path) {
-        return with_csp(app_stream_observe(state, app, name, &jar, ws).await, &csp);
+    // The live socket, before the API providers: the path sits *beside* the
+    // endpoint set (`{mount}/live`), so on an app whose API is at `/api` it is
+    // under a provider's mount and would otherwise be answered by the
+    // provider's "no such endpoint" (TODO.md "Live updates" §4).
+    if sc_app::is_live_path(&app.app, path) {
+        return with_csp(app_live(state, app, headers, &jar, ws).await, &csp);
     }
 
     // The app's catalogue, in the same place and for the same reason
@@ -1216,25 +1234,9 @@ async fn dispatch_app(
             );
         };
 
-        // A request the CSRF middleware let through without a token, for an
-        // endpoint open to the public role, is nobody's: its cookie is not
-        // read, so the session it may carry lends it no authority.
-        let session_token = jar
-            .get(SESSION_COOKIE)
-            .filter(|_| !anonymous)
-            .map(|c| c.value().to_owned());
-        let user = match &session_token {
-            Some(token) => match state.sessions.user_for(token).await {
-                Ok(u) => u,
-                Err(e) => {
-                    log_failure("session lookup failed", &e);
-                    return with_csp(
-                        json_error(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed"),
-                        &csp,
-                    );
-                }
-            },
-            None => None,
+        let (session_token, user) = match app_caller(state, &jar, anonymous).await {
+            Ok(caller) => caller,
+            Err(rejection) => return with_csp(*rejection, &csp),
         };
 
         // The declared content type decides how the body reaches the provider:
@@ -1866,28 +1868,52 @@ async fn app_i18n_catalog(
     response
 }
 
-/// An application's Observe socket: `GET {mount}/streams/{name}/observe` (TODO
-/// "Streams" §10, task 8.2).
+/// Who is calling an application's API: the session token the request carries
+/// and the user it names — **the** function an application authenticates with,
+/// for its REST providers and its live socket alike, so the socket can never
+/// be more permissive than a read.
 ///
-/// The admin socket's sibling, with two refusals the admin's does not have and
-/// one it shares:
-///
-/// - **Not exposed** (or no such stream) is a **404**, not a 403: an app that
-///   did not name the stream has nothing there, which is the same answer its
-///   triggers give and for the same reason — a 403 would confirm the existence
-///   of a flow this application has no business knowing about.
-/// - **`min_role`** is the stream's own, and `None` means admin (§5: a flow
-///   nobody has thought about the access of is not public). It is read off the
-///   **stored row**, not off the running stream, so a stream this process has
-///   not started is still authorised by the same number.
-/// - Both, and the "is this even an upgrade" check, are answered **before** the
-///   handshake, because a browser cannot read the body of a failed one. What is
-///   left — no stream support, not running here — is a close frame with a
-///   reason, in [`crate::observe`].
-async fn app_stream_observe(
+/// A request the CSRF middleware let through without a token, for an endpoint
+/// open to the public role (`anonymous`), is nobody's: its cookie is not read,
+/// so the session it may carry lends it no authority. A token that names no
+/// live session is an anonymous caller, and the token is returned anyway (a
+/// REST response may need to clear its cookie).
+async fn app_caller(
     state: &AppState,
-    app: &MountedApp,
-    name: &str,
+    jar: &CookieJar,
+    anonymous: bool,
+) -> std::result::Result<(Option<String>, Option<User>), Box<Response>> {
+    let session_token = jar
+        .get(SESSION_COOKIE)
+        .filter(|_| !anonymous)
+        .map(|c| c.value().to_owned());
+    let user = match &session_token {
+        Some(token) => state.sessions.user_for(token).await.map_err(|e| {
+            log_failure("session lookup failed", &e);
+            Box::new(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session lookup failed",
+            ))
+        })?,
+        None => None,
+    };
+    Ok((session_token, user))
+}
+
+/// An application's live socket: `GET {mount}/live` (TODO.md "Live updates"
+/// L1.4). One per page, carrying every subscription it makes.
+///
+/// Three refusals are answered **before** the upgrade, with a status, because
+/// a browser cannot read the body of a failed handshake: not an upgrade at all
+/// (400), an `Origin` that is not this host's own (403), and a session store
+/// that cannot answer (500). Who the caller is comes from [`app_caller`], the
+/// function the application's REST API uses; an anonymous caller is let in
+/// holding the public role, and every subscription decides for itself
+/// ([`crate::live`]).
+async fn app_live(
+    state: &AppState,
+    app: &Arc<MountedApp>,
+    headers: &axum::http::HeaderMap,
     jar: &CookieJar,
     ws: Option<axum::extract::ws::WebSocketUpgrade>,
 ) -> Response {
@@ -1900,52 +1926,43 @@ async fn app_stream_observe(
             "this path is a WebSocket: connect to it with `ws:`/`wss:` rather than fetching it",
         );
     };
-    // Unknown and unexposed are the same answer, deliberately.
-    let not_found = || {
-        json_error(
-            StatusCode::NOT_FOUND,
-            format!("this application does not expose a stream named `{name}`"),
-        )
-    };
-    if !app.app.exposes_stream(name) {
-        return not_found();
+    if !upgrade_origin_allowed(headers) {
+        return upgrade_origin_refused();
     }
-    let Some(catalog) = state.apps.catalog() else {
+    let (session, user) = match app_caller(state, jar, false).await {
+        Ok(caller) => caller,
+        Err(rejection) => return *rejection,
+    };
+    let Some(catalog) = state.apps.catalog().cloned() else {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
     };
-    let stream = match sc_stream::load_stream_by_name(catalog, name).await {
-        Ok(Some(stream)) => stream,
-        // Exposed by the app, gone from the server: the app is misconfigured
-        // and the honest answer to the caller is still "there is nothing here".
-        Ok(None) => return not_found(),
-        Err(e) => {
-            log_failure("reading a stream for an application's observe socket", &e);
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not read the stream",
-            );
-        }
-    };
-    let user = match jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) {
-        Some(token) => match state.sessions.user_for(&token).await {
-            Ok(user) => user,
-            Err(e) => {
-                log_failure("session lookup failed", &e);
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed");
-            }
+    // The live mount is followed through remounts; a preview is what it is.
+    let subdomain = app.app.subdomain.clone();
+    let handle = match state.apps.get(&subdomain) {
+        Some(mounted) if Arc::ptr_eq(&mounted, app) => crate::live::AppHandle::Mounted {
+            apps: state.apps.clone(),
+            subdomain: subdomain.clone(),
         },
-        None => None,
+        _ => crate::live::AppHandle::Fixed(app.clone()),
     };
-    let floor = stream.min_role.unwrap_or(sc_auth::ROLE_ADMIN);
-    if let Some(rejection) = enforce_auth(&AuthRequirement::MinRole(floor), user.as_ref()) {
-        return rejection;
-    }
-    stream_observe_by_name(
-        ws,
-        state.apps.streams().map(sc_server_stream_supervisor),
-        name,
-    )
-    .await
+    let env = crate::live::LiveEnv {
+        hub: state.apps.live().hub().clone(),
+        sessions: state.sessions.clone(),
+        catalog,
+        supervisor: state
+            .apps
+            .streams()
+            .map(|streams| streams.supervisor().clone()),
+        app: handle,
+        subdomain,
+    };
+    // A session is held only when it named somebody: an anonymous caller with
+    // a dead cookie has no session to be signed out of.
+    let caller = crate::live::LiveCaller {
+        session: session.filter(|_| user.is_some()),
+        user,
+    };
+    crate::live::live_upgrade(ws, env, caller)
 }
 
 /// The headers an application framework is shown (§8): what v1's patterns read,

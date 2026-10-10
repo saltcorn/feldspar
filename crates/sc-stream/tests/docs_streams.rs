@@ -251,9 +251,11 @@ fn the_tutorial_carries_the_names_a_reader_types() {
         // §8: a stream event reads the envelope, never a row.
         "payload.value.temperature",
         "payload.source.topic",
-        // §10: the generated client's method, and its envelope type.
-        "observeStream_boiler",
+        // §10 and the live socket: the generated client's accessor, its
+        // envelope type, and the socket's path.
+        "live.boiler",
         "BoilerEnvelope",
+        "{mount}/live",
         // §6: the limitation, said out loud, with the escape hatch.
         "$share/feldspar/house/+/temp",
     ] {

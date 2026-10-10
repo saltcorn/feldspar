@@ -89,8 +89,8 @@ button, and disabling the row is what stops it.
 Four things on that form are worth a sentence.
 
 **The name is a reference, not a label.** It is what a trigger's channel names, what an
-application's exposure names, and what the observe socket's path segment *is* — so it must be a
-legal identifier, and renaming the stream breaks those references visibly, exactly as renaming a
+application's exposure names, and what a page subscribes to and its generated accessor is called
+(`live.boiler`) — so it must be a legal identifier, and renaming the stream breaks those references visibly, exactly as renaming a
 trigger does.
 
 **The payload setting is what the element type is.** The same broker and the same filter are a
@@ -237,21 +237,26 @@ application said so — the rule its triggers already follow. Open your applicat
 
 Two things follow from that tick.
 
-**A socket appears** at `{mount}/streams/boiler/observe` on the app, authenticated by the
-application's *own* session cookie. It enforces the stream's **Minimum role to observe**, which
-you left blank in step 3 — blank means admin, because a flow nobody has thought about the access
-of is not public. If you want the app's members to watch it, set that to **Member (40)** on the
-stream and save. A name the app does not expose, or one that does not exist, is a 404 rather than
-a 403: the existence of a flow this application has no business knowing about is not a fact worth
-handing out.
+**A page can subscribe to it** over the application's one **live socket**, `{mount}/live` —
+`/api/live` for an app whose API is at `/api`. A page holds one such socket however many streams
+it watches, and it authenticates exactly as the application's own API does, with the app's
+session cookie. Each subscription is checked against the stream's **Minimum role to observe**,
+which you left blank in step 3 — blank means admin, because a flow nobody has thought about the
+access of is not public. If you want the app's members to watch it, set that to **Member (40)** on
+the stream and save. A name the app does not expose, one that does not exist, and one above the
+user's role all get the same answer, `unavailable`: the existence of a flow this application has
+no business knowing about is not a fact worth handing out. The socket goes on checking while it
+is open, so a user who signs out, or whose role is lowered, stops receiving.
 
-**The generated client gets a method**, because that is where the declared element type earns its
-keep. Rebuild the app and its client module (`src/feldspar/client.ts` in a React app) carries:
+**The generated client gets an accessor**, because that is where the declared element type earns
+its keep. Rebuild the app and its client module (`src/feldspar/client.ts` in a React app) carries:
 
 ```ts
 /** One element of the `boiler` stream, in its envelope. */
 export type BoilerEnvelope = {
   stream: string;
+  /** The topic it was published on, for a stream with topics. */
+  topic?: string;
   value: { temperature: number; unit: string | null };
   /** When *this server* saw it — not a claim about when it was produced. */
   received_at: string;
@@ -259,30 +264,33 @@ export type BoilerEnvelope = {
   source?: unknown;
 };
 
-observeStream_boiler(handlers: StreamHandlers<BoilerEnvelope>): StreamSubscription;
+export interface LiveStreams {
+  /** The `boiler` stream. */
+  readonly boiler: LiveStream<BoilerEnvelope>;
+}
 ```
 
-The `value` type is the keys you declared, and a key that is not required is `| null` rather
-than `?`-optional — deliberately, because a declared key that is absent *is* null, so an element
-of a stream that declared two keys has two keys and no consumer has to write `?? null` for a case
-the server already ruled out. A component reading `envelope.value.unit` is checked by the same
-compiler that checks its table reads. Use it the way you would any subscription:
+and the client object has `live: LiveStreams`. The `value` type is the keys you declared, and a
+key that is not required is `| null` rather than `?`-optional — deliberately, because a declared
+key that is absent *is* null, so an element of a stream that declared two keys has two keys and
+no consumer has to write `?? null` for a case the server already ruled out. A component reading
+`envelope.value.unit` is checked by the same compiler that checks its table reads. In a React
+app, the generated `useStream` hook ties a subscription to a component:
 
 ```tsx
-useEffect(() => {
-  const sub = client.observeStream_boiler({
-    ready: (info) => console.log(`${info.replayed} replayed`),
-    element: (envelope) => setLatest(envelope.value.temperature),
-    lagged: (dropped) => console.warn(`lost ${dropped}`),
-  });
-  return () => sub.close();
-}, []);
+import { live, useStream } from "./feldspar/live-react";
+
+const [latest, setLatest] = useState<number | null>(null);
+const { status } = useStream(live.boiler, (envelope) => setLatest(envelope.value.temperature));
 ```
 
-Note what it is **not**: a `Promise`. Opening a socket is not a request, and the caller wants the
-handle back now so it can `close()` it when the screen goes away. `ready` arrives first and says
-how many of the elements that follow are the replayed ring rather than new arrivals; `lagged` is
-this client falling behind, never a silent gap.
+Outside React, `api.live.boiler.subscribe({ element, ready, lagged, resync, error })` returns a
+handle to `close()`. Note what it is **not**: a `Promise`. Subscribing is not a request, and the
+caller wants the handle back now so it can close it when the screen goes away. `ready` arrives
+first and says how many of the elements that follow are the replayed ring rather than new
+arrivals; `lagged` is this client falling behind, never a silent gap; and `resync` follows a
+reconnect, which the client makes by itself. [The live updates tutorial](tutorial-live.md) takes
+this further.
 
 ## Step 7 — Stop the broker
 

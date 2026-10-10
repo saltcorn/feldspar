@@ -54,6 +54,18 @@
 //! seam that will hook to. A deployment that will not accept the window sets the
 //! cache TTL to zero, which turns every lookup into a database read.
 //!
+//! # Who else is told a session ended
+//!
+//! A session is also held open by things that are not requests: an
+//! application's live socket (TODO.md "Live updates" §3 rule 6) authenticated
+//! once, at its upgrade, and would otherwise go on delivering to a signed-out
+//! browser until its next re-check. So the store keeps a list of
+//! [`SessionListener`]s and tells each one, synchronously, when
+//! [`logout`](SessionStore::logout), [`end_user_sessions`](SessionStore::end_user_sessions)
+//! or [`end_all_sessions`](SessionStore::end_all_sessions) ends something —
+//! after the rows are gone, so a listener that re-reads finds them gone. Held
+//! weakly: a listener that has gone away is skipped, not kept alive.
+//!
 //! # Tokens at rest
 //!
 //! What is stored is the **SHA-256 of the token**, never the token. A session
@@ -205,11 +217,37 @@ enum Backend {
     },
 }
 
+/// What ended, as a [`SessionListener`] is told it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEnded<'a> {
+    /// The session with this token: a sign-out, or a session replaced by a
+    /// new one.
+    Token(&'a str),
+    /// Every session of this user: a forced sign-out, a disabled or deleted
+    /// account.
+    User(Uuid),
+    /// Every session there is.
+    All,
+}
+
+/// Something that holds a session open between requests and must let go of it
+/// when it ends — an application's live socket (see the module docs).
+///
+/// Called synchronously from the store, after the session is gone, so it must
+/// return promptly: a listener that has work to do signals its own task.
+pub trait SessionListener: Send + Sync {
+    /// A session, a user's sessions or every session ended on this node.
+    fn session_ended(&self, ended: &SessionEnded<'_>);
+}
+
 /// A store of active sessions, keyed by opaque token.
 pub struct SessionStore {
     ttl: Duration,
     cache_ttl: Duration,
     backend: Backend,
+    /// Told when a session ends (see the module docs). Weak, so registering
+    /// does not keep a listener alive.
+    listeners: RwLock<Vec<std::sync::Weak<dyn SessionListener>>>,
     /// The read-through cache in front of [`Backend::Database`], keyed by the
     /// **raw** token (the hash is what the database is keyed by). Unused by the
     /// memory backend, which is already a map.
@@ -235,6 +273,7 @@ impl SessionStore {
             cache_ttl: Duration::seconds(CACHE_TTL_SECONDS),
             backend: Backend::Memory(RwLock::new(std::collections::HashMap::new())),
             cache: new_cache(CACHE_CAPACITY),
+            listeners: RwLock::new(Vec::new()),
         }
     }
 
@@ -269,6 +308,35 @@ impl SessionStore {
                 last_sweep: Mutex::new(DateTime::<Utc>::MIN_UTC),
             },
             cache: new_cache(cache_capacity),
+            listeners: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Tell `listener` whenever a session ends on this node, for as long as it
+    /// lives (it is held weakly).
+    pub fn add_listener(&self, listener: std::sync::Weak<dyn SessionListener>) {
+        let mut listeners = match self.listeners.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        // Forget the ones that have gone, so a long-lived store does not
+        // accumulate dead entries one router at a time.
+        listeners.retain(|l| l.strong_count() > 0);
+        listeners.push(listener);
+    }
+
+    /// Tell every listener that `ended` ended.
+    fn ended(&self, ended: SessionEnded<'_>) {
+        let listeners: Vec<Arc<dyn SessionListener>> = match self.listeners.read() {
+            Ok(guard) => guard.iter().filter_map(std::sync::Weak::upgrade).collect(),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .collect(),
+        };
+        for listener in listeners {
+            listener.session_ended(&ended);
         }
     }
 
@@ -378,17 +446,19 @@ impl SessionStore {
     /// The row goes immediately and so does this node's cache entry; another
     /// node's cache entry lives out its freshness TTL (module docs).
     pub async fn logout(&self, token: &str) -> Result<bool> {
-        match &self.backend {
-            Backend::Memory(entries) => Ok(entries
+        let ended = match &self.backend {
+            Backend::Memory(entries) => entries
                 .write()
                 .map_err(|_| poisoned())?
                 .remove(token)
-                .is_some()),
+                .is_some(),
             Backend::Database { catalog, .. } => {
                 self.invalidate(token)?;
-                delete_session(catalog, &token_hash(token)).await
+                delete_session(catalog, &token_hash(token)).await?
             }
-        }
+        };
+        self.ended(SessionEnded::Token(token));
+        Ok(ended)
     }
 
     /// End **every** session belonging to one user, returning how many rows went.
@@ -403,6 +473,14 @@ impl SessionStore {
     /// node's cache honours a token it already resolved until the entry goes
     /// stale ([`CACHE_TTL_SECONDS`]).
     pub async fn end_user_sessions(&self, user_id: Uuid) -> Result<usize> {
+        let ended = self.end_user_rows(user_id).await?;
+        self.ended(SessionEnded::User(user_id));
+        Ok(ended)
+    }
+
+    /// [`end_user_sessions`](SessionStore::end_user_sessions)' work, before
+    /// the listeners are told.
+    async fn end_user_rows(&self, user_id: Uuid) -> Result<usize> {
         match &self.backend {
             Backend::Memory(entries) => {
                 let mut guard = entries.write().map_err(|_| poisoned())?;
@@ -437,13 +515,14 @@ impl SessionStore {
         match &self.backend {
             Backend::Memory(entries) => {
                 entries.write().map_err(|_| poisoned())?.clear();
-                Ok(())
             }
             Backend::Database { catalog, .. } => {
                 self.invalidate_all()?;
-                run(catalog, Statement::from(Delete::from(SESSIONS_TABLE))).await
+                run(catalog, Statement::from(Delete::from(SESSIONS_TABLE))).await?;
             }
         }
+        self.ended(SessionEnded::All);
+        Ok(())
     }
 
     /// Drop this node's cached answer for `token`, without touching the
@@ -692,6 +771,56 @@ mod tests {
         assert!(store.logout(&token).await.unwrap());
         assert_eq!(store.user_for(&token).await.unwrap(), None);
         assert!(!store.logout(&token).await.unwrap()); // already gone
+    }
+
+    /// A listener that writes down what it was told.
+    #[derive(Default)]
+    struct Heard(Mutex<Vec<String>>);
+
+    impl SessionListener for Heard {
+        fn session_ended(&self, ended: &SessionEnded<'_>) {
+            let line = match ended {
+                SessionEnded::Token(token) => format!("token {token}"),
+                SessionEnded::User(user) => format!("user {user}"),
+                SessionEnded::All => "all".to_owned(),
+            };
+            self.0.lock().unwrap().push(line);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_listener_hears_every_way_a_session_ends_and_is_held_weakly() {
+        let store = SessionStore::default();
+        let heard = Arc::new(Heard::default());
+        let listener: Arc<dyn SessionListener> = heard.clone();
+        store.add_listener(Arc::downgrade(&listener));
+
+        let user = admin();
+        let token = store.login(user.clone()).await.unwrap();
+        store.logout(&token).await.unwrap();
+        store.end_user_sessions(user.id).await.unwrap();
+        store.end_all_sessions().await.unwrap();
+        assert_eq!(
+            *heard.0.lock().unwrap(),
+            vec![
+                format!("token {token}"),
+                format!("user {}", user.id),
+                "all".to_owned()
+            ]
+        );
+
+        // Gone listeners are skipped, not kept alive and not called.
+        drop(listener);
+        drop(heard);
+        store.end_all_sessions().await.unwrap();
+        store.add_listener(Arc::downgrade(
+            &(Arc::new(Heard::default()) as Arc<dyn SessionListener>),
+        ));
+        assert_eq!(
+            store.listeners.read().unwrap().len(),
+            1,
+            "the dead entry was dropped on the next registration"
+        );
     }
 
     #[tokio::test]

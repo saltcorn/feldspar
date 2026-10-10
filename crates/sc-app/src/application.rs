@@ -117,14 +117,14 @@ impl std::fmt::Display for TriggerRef {
     }
 }
 
-/// A reference to a stream the application exposes for observation (TODO
-/// "Streams" §10), by the stream's unique **name**.
+/// A reference to a stream the application exposes to its pages (TODO
+/// "Streams" §10, TODO.md "Live updates"), by the stream's unique **name**.
 ///
 /// [`TriggerRef`]'s shape, word for word, and for its reasons: the name is what
-/// the socket's path is built from (`GET {mount}/streams/{name}/observe`) and
-/// what the generated client's method is called (`observeStream_{name}`), so it
-/// is already the app's contract with its own code. A rename breaks the
-/// reference visibly, which is what a rename *is*.
+/// a page subscribes to on the live socket (`{"type":"subscribe","stream":…}`
+/// on `GET {mount}/live`) and what the generated client's accessor is called
+/// (`live.{name}`), so it is already the app's contract with its own code. A
+/// rename breaks the reference visibly, which is what a rename *is*.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StreamRef(pub String);
 

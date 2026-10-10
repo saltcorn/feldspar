@@ -52,7 +52,7 @@ use tokio::sync::broadcast;
 
 use crate::element::ElementType;
 use crate::envelope::{Element, Envelope};
-use crate::provider::StreamProvider;
+use crate::provider::{StreamProvider, TopicSpec};
 use crate::stream::{Stream, StreamId};
 use crate::subscription::Subscription;
 
@@ -331,6 +331,26 @@ impl RunningStream {
     /// the generated client are written from.
     pub fn element_type(&self) -> Option<&ElementType> {
         self.element_type.as_ref()
+    }
+
+    /// How this stream's elements are split into topics (TODO.md "Live
+    /// updates" §2): the provider's answer for the configuration it runs
+    /// with. `Single` for a stream whose provider could not be resolved — it
+    /// delivers nothing, so there is nothing to split. A provider that cannot
+    /// answer is an error rather than a guess, because the guess that costs
+    /// nothing to make (`Single`) is the one that would open a per-user stream
+    /// to everyone above its `min_role`.
+    pub fn topic_spec(&self) -> sc_error::Result<TopicSpec> {
+        match &self.provider {
+            Some(provider) => provider.topic_spec(&self.configuration()),
+            None => Ok(TopicSpec::Single),
+        }
+    }
+
+    /// How many envelopes the replay ring keeps — what a consumer that keeps
+    /// its own copy of the ring (the live hub's fan-out) sizes it by.
+    pub fn ring_capacity(&self) -> usize {
+        self.ring_capacity
     }
 
     /// Replace the row **without** touching the connection.

@@ -446,12 +446,15 @@ fn none_prompt(app: &Application, store: &str, root: &str) -> String {
         String::new()
     } else {
         format!(
-            " Its streams are observed over a WebSocket at {}.",
+            " Its streams ({}) are observed over one WebSocket at `{}`: send \
+             `{{\"type\":\"subscribe\",\"sub\":\"s1\",\"stream\":\"<name>\"}}` and \
+             read `ready`, then `element` frames whose `envelope.value` is the element.",
             app.streams
                 .iter()
-                .map(|s| format!("`{}`", crate::stream_socket_path(app, &s.0)))
+                .map(|s| format!("`{}`", s.0))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            crate::live_socket_path(app),
         )
     };
     format!(

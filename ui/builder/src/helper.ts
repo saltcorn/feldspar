@@ -11,6 +11,8 @@ export interface ClientOptions {
   baseUrl?: string;
   /** Fetch implementation to use (defaults to global `fetch`). */
   fetch?: typeof fetch;
+  /** How the live connection behaves, for an application that exposes streams. */
+  live?: LiveOptions;
 }
 
 /** A failed request, as the error a caller sees: status, and what the server said. */
@@ -229,76 +231,259 @@ export type Selected<S extends TableSchema, Sel extends string> = string extends
     ? S["row"]
     : Flatten<UnionToIntersection<ItemsOf<S, SplitItems<Sel>>>>;
 
-// --- observing a stream -----------------------------------------------------
+// --- live updates -----------------------------------------------------------
 
-/** A live subscription to a stream's elements. `close()` stops it. */
-export interface StreamSubscription {
-  close(): void;
-}
+/** Where a live connection is: connecting for the first time, open, or reconnecting after a loss. */
+export type LiveStatus = "connecting" | "open" | "reconnecting";
 
-/** What the server says when the socket opens: the replay that follows, and the flow's state. */
-export interface StreamReady {
+/** What the server says when a subscription starts (and again if its stream restarts). */
+export interface LiveReady {
   stream: string;
   /** How many of the elements that follow are history, not new arrivals. */
   replayed: number;
+  /** What an element's `value` is, or `null` while the stream is not running on the server. */
+  element_type: unknown;
+  /** Whether this subscriber may publish on the stream. */
+  can_publish: boolean;
   status: unknown;
   counters: unknown;
 }
 
-/** What an observer is told. Only `element` is required. */
-export interface StreamHandlers<E> {
-  ready?(info: StreamReady): void;
-  element(envelope: E): void;
-  /** This client fell behind and lost `dropped` elements (it is never a silent gap). */
-  lagged?(dropped: number): void;
-  status?(status: unknown): void;
-  error?(error: unknown): void;
-  closed?(): void;
+/** Why the server refused, ended or complained about a subscription. */
+export interface LiveError {
+  /** `unavailable`, `revoked`, `invalid`, `too_many_subscriptions`, `signed_out`, … */
+  code: string;
+  message: string;
 }
 
-/** Open an observe socket on `path`, relative to the client's base URL. */
-export function openStream<E>(
-  baseUrl: string,
-  path: string,
-  handlers: StreamHandlers<E>,
-): StreamSubscription {
+/** What a subscriber is told. Only `element` is required. */
+export interface LiveHandlers<E> {
+  ready?(info: LiveReady): void;
+  element(envelope: E): void;
+  /** This subscription fell behind and lost `dropped` elements (it is never a silent gap). */
+  lagged?(dropped: number): void;
+  /** The connection was lost and re-established: anything built from earlier elements may be stale. */
+  resync?(): void;
+  status?(status: unknown): void;
+  /** A refusal. Before `ready`, or as `revoked`, it ends the subscription, which is not retried. */
+  error?(error: LiveError): void;
+}
+
+/** A live subscription. `close()` ends it. */
+export interface LiveSubscription {
+  close(): void;
+}
+
+/** One stream an application exposes, ready to subscribe to. */
+export interface LiveStream<E> {
+  readonly name: string;
+  /** The connection it is subscribed over, for its `status`. */
+  readonly connection: LiveConnection;
+  subscribe(handlers: LiveHandlers<E>): LiveSubscription;
+}
+
+/** How a live connection behaves. */
+export interface LiveOptions {
+  /** The `WebSocket` constructor to use (defaults to the global one). */
+  WebSocket?: typeof WebSocket;
+  /** The first reconnect delay, in milliseconds. */
+  minDelay?: number;
+  /** The longest reconnect delay, in milliseconds. */
+  maxDelay?: number;
+}
+
+/** The live socket's URL: `path` on the client's base URL, as `ws:` or `wss:`. */
+export function liveUrl(baseUrl: string, path: string): string {
   const origin = baseUrl || (typeof location === "undefined" ? "http://localhost" : location.origin);
   const url = new URL(path, origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(url.toString());
-  socket.onmessage = (event: MessageEvent) => {
-    let frame: unknown;
+  return url.toString();
+}
+
+type LiveEntry = { stream: string; handlers: LiveHandlers<unknown>; ready: boolean };
+
+/** One socket, any number of subscriptions, reconnecting by itself. */
+export class LiveConnection {
+  private socket: WebSocket | undefined;
+  private readonly entries = new Map<string, LiveEntry>();
+  private readonly listeners = new Set<(status: LiveStatus) => void>();
+  private nextSub = 1;
+  private attempt = 0;
+  private opened = false;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private current: LiveStatus = "connecting";
+  // Fields assigned in the body rather than as parameter properties: Node runs
+  // this file by stripping its types, and a parameter property is not erasable.
+  private readonly url: string;
+  private readonly options: LiveOptions;
+
+  constructor(url: string, options: LiveOptions = {}) {
+    this.url = url;
+    this.options = options;
+  }
+
+  /** Where the connection is now. */
+  get status(): LiveStatus {
+    return this.current;
+  }
+
+  /** Be told when the status changes. Returns the function that stops it. */
+  onStatus(listener: (status: LiveStatus) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** The accessor for the stream called `name`. */
+  stream<E>(name: string): LiveStream<E> {
+    return {
+      name,
+      connection: this,
+      subscribe: (handlers: LiveHandlers<E>) => this.subscribe(name, handlers),
+    };
+  }
+
+  /** Subscribe to `stream`, opening the socket if this is the first subscription. */
+  subscribe<E>(stream: string, handlers: LiveHandlers<E>): LiveSubscription {
+    const sub = `s${this.nextSub++}`;
+    this.entries.set(sub, { stream, handlers: handlers as LiveHandlers<unknown>, ready: false });
+    if (this.socket && this.socket.readyState === 1) {
+      this.send({ type: "subscribe", sub, stream });
+    } else {
+      this.open();
+    }
+    let active = true;
+    return {
+      close: () => {
+        if (!active) return;
+        active = false;
+        if (this.entries.delete(sub) && this.socket && this.socket.readyState === 1) {
+          this.send({ type: "unsubscribe", sub });
+        }
+        if (this.entries.size === 0) this.shutdown();
+      },
+    };
+  }
+
+  /** End every subscription and close the socket. */
+  close(): void {
+    this.entries.clear();
+    this.shutdown();
+  }
+
+  private setStatus(status: LiveStatus): void {
+    if (status === this.current) return;
+    this.current = status;
+    this.listeners.forEach((listener) => listener(status));
+  }
+
+  private send(frame: Record<string, unknown>): void {
+    this.socket?.send(JSON.stringify(frame));
+  }
+
+  private open(): void {
+    if (this.socket || this.timer !== undefined) return;
+    const Socket = this.options.WebSocket ?? (typeof WebSocket === "undefined" ? undefined : WebSocket);
+    if (!Socket) throw new Error("live updates need a WebSocket implementation (LiveOptions.WebSocket)");
+    const socket = new Socket(this.url);
+    this.socket = socket;
+    socket.onopen = () => {
+      const reconnect = this.opened;
+      this.opened = true;
+      this.attempt = 0;
+      this.setStatus("open");
+      this.entries.forEach((entry, sub) => {
+        entry.ready = false;
+        this.send({ type: "subscribe", sub, stream: entry.stream });
+        if (reconnect) entry.handlers.resync?.();
+      });
+    };
+    socket.onmessage = (event: MessageEvent) => this.receive(event.data);
+    socket.onclose = () => {
+      if (this.socket !== socket) return;
+      this.socket = undefined;
+      if (this.entries.size === 0) return;
+      this.setStatus("reconnecting");
+      const min = this.options.minDelay ?? 500;
+      const max = this.options.maxDelay ?? 30000;
+      const delay = Math.min(max, min * 2 ** this.attempt);
+      this.attempt += 1;
+      // Half the delay, plus up to half again at random: a server that restarts
+      // is not met by every page reconnecting in the same millisecond.
+      this.timer = setTimeout(() => {
+        this.timer = undefined;
+        this.open();
+      }, delay / 2 + Math.random() * (delay / 2));
+    };
+  }
+
+  private shutdown(): void {
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    const socket = this.socket;
+    this.socket = undefined;
+    this.opened = false;
+    this.attempt = 0;
+    socket?.close();
+    this.setStatus("connecting");
+  }
+
+  private receive(data: unknown): void {
+    let frame: Record<string, unknown>;
     try {
-      frame = JSON.parse(String(event.data));
+      const parsed: unknown = JSON.parse(String(data));
+      if (!parsed || typeof parsed !== "object") return;
+      frame = parsed as Record<string, unknown>;
     } catch {
       return;
     }
-    if (!frame || typeof frame !== "object") return;
-    const f = frame as Record<string, unknown>;
-    switch (f["type"]) {
+    const sub = typeof frame["sub"] === "string" ? frame["sub"] : undefined;
+    const entry = sub === undefined ? undefined : this.entries.get(sub);
+    switch (frame["type"]) {
       case "ready":
-        handlers.ready?.(f as unknown as StreamReady);
+        if (entry) {
+          entry.ready = true;
+          entry.handlers.ready?.(frame as unknown as LiveReady);
+        }
         break;
       case "element":
-        handlers.element(f["envelope"] as E);
+        entry?.handlers.element(frame["envelope"]);
         break;
       case "lagged":
-        handlers.lagged?.(Number(f["dropped"] ?? 0));
+        entry?.handlers.lagged?.(Number(frame["dropped"] ?? 0));
         break;
       case "status":
-        handlers.status?.(f["status"]);
+        entry?.handlers.status?.(frame["status"]);
         break;
+      case "revoked":
+        if (entry && sub !== undefined) {
+          this.entries.delete(sub);
+          entry.handlers.error?.({ code: "revoked", message: "access to this stream ended" });
+        }
+        break;
+      case "error": {
+        const error: LiveError = {
+          code: String(frame["code"] ?? "error"),
+          message: String(frame["message"] ?? ""),
+        };
+        if (sub === undefined) {
+          // About the connection, not one subscription: everyone hears it, and
+          // the reconnect that follows a close asks again.
+          this.entries.forEach((each) => each.handlers.error?.(error));
+        } else if (entry) {
+          // Refused before `ready`: the subscription never started, so it ends.
+          if (!entry.ready) this.entries.delete(sub);
+          entry.handlers.error?.(error);
+        }
+        break;
+      }
       default:
         // A frame this client was generated before: ignored, never thrown on.
         break;
     }
-  };
-  socket.onerror = (event: Event) => handlers.error?.(event);
-  socket.onclose = () => handlers.closed?.();
-  return {
-    close() {
-      socket.close();
-    },
-  };
+  }
 }
 

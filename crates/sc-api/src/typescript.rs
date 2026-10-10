@@ -133,13 +133,13 @@ export function requestHeaders(method: string, hasBody: boolean): Record<string,
         native = crate::auth::NATIVE_CLIENT,
     );
     out.push_str(READ_TYPES);
-    out.push_str(STREAM_TYPES);
+    out.push_str(LIVE_TYPES);
     out
 }
 
-/// One stream an application exposes for observation (TODO "Streams" §10), as
-/// the client generator needs it: what it is called, where its socket is, and
-/// what an element's `value` looks like.
+/// One stream an application exposes to its pages (TODO "Streams" §10, TODO.md
+/// "Live updates"), as the client generator needs it: what it is called, where
+/// the live socket is, and what an element's `value` looks like.
 ///
 /// A plain value rather than a `sc_stream::Stream`, and deliberately: this
 /// crate types an endpoint set, and what it needs from a stream is a name, a
@@ -149,10 +149,12 @@ export function requestHeaders(method: string, hasBody: boolean): Record<string,
 /// the same vocabulary every other generated type is written in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamExport {
-    /// The stream's name — the path segment, and what
-    /// `observeStream_{name}` is called.
+    /// The stream's name — what it is subscribed to by, and what its accessor
+    /// `live.{name}` is called.
     pub name: String,
-    /// The socket's path on this application, e.g. `/api/streams/boiler/observe`.
+    /// The live socket's path on this application, e.g. `/api/live` — the same
+    /// for every stream of an application, which holds one socket for all of
+    /// them.
     pub path: String,
     /// The shape of the envelope's `value`, from the stream's element type.
     pub value: TypeSchema,
@@ -166,16 +168,18 @@ pub fn generate_client(set: &EndpointSet) -> String {
     generate_client_with_streams(set, &[])
 }
 
-/// [`generate_client`] plus one `observeStream_{name}` per stream the
-/// application exposes (TODO "Streams" §10).
+/// [`generate_client`] plus `live.{name}` per stream the application exposes
+/// (TODO.md "Live updates" §6).
 ///
-/// The sockets are **beside** the endpoint set rather than in it: an
+/// The socket is **beside** the endpoint set rather than in it: an
 /// [`Endpoint`] is a typed request/response pair and a subscription has no
 /// shape in that model — the same split the IDE's language server and the admin
-/// chat already made. They are in the same generated module because that is
-/// where the element type earns its keep: an app that declares a stream of
+/// chat already made. The streams are in the same generated module because that
+/// is where the element type earns its keep: an app that declares a stream of
 /// `{ temperature: float }` gets a callback whose argument is typed, checked by
-/// the same compiler that checks its reads.
+/// the same compiler that checks its reads. Every accessor shares the client's
+/// one [`LiveConnection`](LIVE_TYPES), so a page that watches three streams
+/// holds one socket.
 pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport]) -> String {
     let mut out = String::new();
 
@@ -203,11 +207,11 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
         values.extend(["clientError", "requestHeaders", "trackCsrf"]);
     }
     if !streams.is_empty() {
-        values.push("openStream");
+        values.extend(["LiveConnection", "liveUrl"]);
     }
     let mut types: Vec<&str> = vec!["ClientOptions"];
     if !streams.is_empty() {
-        types.extend(["StreamHandlers", "StreamSubscription"]);
+        types.push("LiveStream");
     }
     if !tables.is_empty() {
         types.push("Selected");
@@ -247,7 +251,9 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     out.push_str("export type { ClientOptions } from \"./helper\";\n");
     if !streams.is_empty() {
         out.push_str(
-            "export type { StreamHandlers, StreamReady, StreamSubscription } from \"./helper\";\n",
+            "export { LiveConnection } from \"./helper\";\n\
+             export type { LiveError, LiveHandlers, LiveOptions, LiveReady, LiveStatus, LiveStream, \
+             LiveSubscription } from \"./helper\";\n",
         );
     }
     if !tables.is_empty() {
@@ -290,6 +296,8 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
             "/** One element of the `{}` stream, in its envelope. */\n\
              export type {}Envelope = {{\n\
              \x20 stream: string;\n\
+             \x20 /** The topic it was published on, for a stream with topics. */\n\
+             \x20 topic?: string;\n\
              \x20 value: {};\n\
              \x20 /** When *this server* saw it — not a claim about when it was produced. */\n\
              \x20 received_at: string;\n\
@@ -302,7 +310,18 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
         );
     }
     if !streams.is_empty() {
-        out.push('\n');
+        out.push_str("/** The streams this application exposes, one accessor each. */\n");
+        out.push_str("export interface LiveStreams {\n");
+        for stream in streams {
+            let _ = writeln!(
+                out,
+                "  /** The `{}` stream. */\n  readonly {}: LiveStream<{}Envelope>;",
+                stream.name,
+                stream.name,
+                to_pascal_case(&stream.name),
+            );
+        }
+        out.push_str("}\n\n");
     }
 
     // --- the tables: a row type and an object of methods each ---------------
@@ -319,9 +338,11 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
         let _ = writeln!(out, "  /** The `{}` table. */", table.model.name);
         let _ = writeln!(out, "  {}: {}Api;", table.property, table.pascal);
     }
-    for stream in streams {
-        let _ = writeln!(out, "  /** Observe the `{}` stream. */", stream.name);
-        let _ = writeln!(out, "  {};", stream_signature(stream));
+    if !streams.is_empty() {
+        out.push_str(
+            "  /** The streams this application exposes, over one live socket opened on first use. */\n\
+             \x20 live: LiveStreams;\n",
+        );
     }
     out.push_str("}\n\n");
 
@@ -343,6 +364,15 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     if !set.is_empty() {
         out.push_str("  const doFetch = trackCsrf(options.fetch ?? fetch);\n");
     }
+    // One connection for every stream, opened on the first `subscribe`: a page
+    // that never subscribes never connects.
+    if let Some(stream) = streams.first() {
+        let _ = writeln!(
+            out,
+            "  const connection = new LiveConnection(liveUrl(baseUrl, \"{}\"), options.live);",
+            stream.path,
+        );
+    }
     // Each table is bound to a name before the client is assembled, so `get` can
     // call `list` without going through `this` — a generated method's `this` is
     // whatever the caller destructured it onto, which is nothing worth relying on.
@@ -356,14 +386,19 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     for table in &tables {
         let _ = writeln!(out, "    {},", table.property);
     }
-    for stream in streams {
-        let _ = writeln!(out, "    {} {{", stream_signature(stream));
-        let _ = writeln!(
-            out,
-            "      return openStream<{}Envelope>(baseUrl, \"{}\", handlers);",
-            to_pascal_case(&stream.name),
-            stream.path,
-        );
+    // A stream's name is letters, digits and `_`, never starting with a digit
+    // (`check_stream_name`), so it is a property name as it stands.
+    if !streams.is_empty() {
+        out.push_str("    live: {\n");
+        for stream in streams {
+            let _ = writeln!(
+                out,
+                "      {}: connection.stream<{}Envelope>(\"{}\"),",
+                stream.name,
+                to_pascal_case(&stream.name),
+                stream.name,
+            );
+        }
         out.push_str("    },\n");
     }
     out.push_str("  };\n");
@@ -403,19 +438,6 @@ fn method_signature(ep: &Endpoint) -> String {
         format!("{pascal}Response")
     };
     format!("{}({}): Promise<{ret}>", ep.name, params.join(", "))
-}
-
-/// The `ApiClient` signature for one exposed stream, e.g.
-/// `observeStream_boiler(handlers: StreamHandlers<BoilerEnvelope>): StreamSubscription`.
-///
-/// Not a `Promise`: opening a socket is not a request, and the caller wants the
-/// handle back now so it can `close()` it when the screen goes away.
-fn stream_signature(stream: &StreamExport) -> String {
-    format!(
-        "observeStream_{}(handlers: StreamHandlers<{}Envelope>): StreamSubscription",
-        stream.name,
-        to_pascal_case(&stream.name),
-    )
 }
 
 /// Emit the factory's implementation of one endpoint method.
@@ -1129,6 +1151,8 @@ export interface ClientOptions {
   baseUrl?: string;
   /** Fetch implementation to use (defaults to global `fetch`). */
   fetch?: typeof fetch;
+  /** How the live connection behaves, for an application that exposes streams. */
+  live?: LiveOptions;
 }
 
 /** A failed request, as the error a caller sees: status, and what the server said. */
@@ -1147,95 +1171,281 @@ export async function clientError(op: string, res: Response): Promise<Error> {
 
 "#;
 
-/// The vocabulary an observed stream is expressed in (TODO "Streams" §10).
+/// The live socket, as a client speaks it (TODO.md "Live updates" §4, §6).
 ///
 /// In the helper rather than in `client.ts` because none of it is about *this*
-/// application: how a socket is opened, which frames arrive on it and what a
-/// caller does with them is the same for every stream of every app. What is
-/// this application's is the **element type**, and that is emitted beside the
-/// endpoints, as `ObserveXEnvelope`.
+/// application: how the socket is opened, kept open and multiplexed, and what a
+/// subscriber is told, is the same for every app. What is this application's is
+/// the **set of streams and their element types**, emitted beside the endpoints
+/// as `client.live.<stream>`.
 ///
-/// Three things it does deliberately:
+/// What [`LiveConnection`] does, deliberately:
 ///
-/// - **It never throws on a frame it does not understand.** A server that grows
-///   a fourth frame type must not break a client generated before it existed.
-/// - **`element` is the only required handler.** `ready`, `lagged`, `status`,
-///   `error` and `closed` are there for a screen that shows them; a script that
-///   just wants the elements writes one function.
-/// - **`lagged` is surfaced, not swallowed** — §7's rule reaching the client:
-///   a consumer that cannot keep up is *told* how many elements it lost rather
-///   than shown a silent gap.
-const STREAM_TYPES: &str = r#"// --- observing a stream -----------------------------------------------------
+/// - **One socket per client, opened lazily.** Nothing connects until the first
+///   `subscribe`, and the socket is closed again when the last subscription is.
+/// - **Reconnects by itself**, with a capped exponential backoff and jitter, and
+///   resubscribes everything it had. Every subscriber is then told `resync()`:
+///   what arrived while the socket was down is gone (delivery is at-most-once),
+///   so anything built from the elements may be out of date.
+/// - **A refused subscription is not retried.** An `error` before `ready`, or a
+///   `revoked`, ends that subscription and is handed to its `error` handler; a
+///   reconnect does not ask again for what the server already said no to.
+/// - **It never throws on a frame it does not understand**, so a server that
+///   grows a frame type does not break a client generated before it.
+const LIVE_TYPES: &str = r#"// --- live updates -----------------------------------------------------------
 
-/** A live subscription to a stream's elements. `close()` stops it. */
-export interface StreamSubscription {
-  close(): void;
-}
+/** Where a live connection is: connecting for the first time, open, or reconnecting after a loss. */
+export type LiveStatus = "connecting" | "open" | "reconnecting";
 
-/** What the server says when the socket opens: the replay that follows, and the flow's state. */
-export interface StreamReady {
+/** What the server says when a subscription starts (and again if its stream restarts). */
+export interface LiveReady {
   stream: string;
   /** How many of the elements that follow are history, not new arrivals. */
   replayed: number;
+  /** What an element's `value` is, or `null` while the stream is not running on the server. */
+  element_type: unknown;
+  /** Whether this subscriber may publish on the stream. */
+  can_publish: boolean;
   status: unknown;
   counters: unknown;
 }
 
-/** What an observer is told. Only `element` is required. */
-export interface StreamHandlers<E> {
-  ready?(info: StreamReady): void;
-  element(envelope: E): void;
-  /** This client fell behind and lost `dropped` elements (it is never a silent gap). */
-  lagged?(dropped: number): void;
-  status?(status: unknown): void;
-  error?(error: unknown): void;
-  closed?(): void;
+/** Why the server refused, ended or complained about a subscription. */
+export interface LiveError {
+  /** `unavailable`, `revoked`, `invalid`, `too_many_subscriptions`, `signed_out`, … */
+  code: string;
+  message: string;
 }
 
-/** Open an observe socket on `path`, relative to the client's base URL. */
-export function openStream<E>(
-  baseUrl: string,
-  path: string,
-  handlers: StreamHandlers<E>,
-): StreamSubscription {
+/** What a subscriber is told. Only `element` is required. */
+export interface LiveHandlers<E> {
+  ready?(info: LiveReady): void;
+  element(envelope: E): void;
+  /** This subscription fell behind and lost `dropped` elements (it is never a silent gap). */
+  lagged?(dropped: number): void;
+  /** The connection was lost and re-established: anything built from earlier elements may be stale. */
+  resync?(): void;
+  status?(status: unknown): void;
+  /** A refusal. Before `ready`, or as `revoked`, it ends the subscription, which is not retried. */
+  error?(error: LiveError): void;
+}
+
+/** A live subscription. `close()` ends it. */
+export interface LiveSubscription {
+  close(): void;
+}
+
+/** One stream an application exposes, ready to subscribe to. */
+export interface LiveStream<E> {
+  readonly name: string;
+  /** The connection it is subscribed over, for its `status`. */
+  readonly connection: LiveConnection;
+  subscribe(handlers: LiveHandlers<E>): LiveSubscription;
+}
+
+/** How a live connection behaves. */
+export interface LiveOptions {
+  /** The `WebSocket` constructor to use (defaults to the global one). */
+  WebSocket?: typeof WebSocket;
+  /** The first reconnect delay, in milliseconds. */
+  minDelay?: number;
+  /** The longest reconnect delay, in milliseconds. */
+  maxDelay?: number;
+}
+
+/** The live socket's URL: `path` on the client's base URL, as `ws:` or `wss:`. */
+export function liveUrl(baseUrl: string, path: string): string {
   const origin = baseUrl || (typeof location === "undefined" ? "http://localhost" : location.origin);
   const url = new URL(path, origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(url.toString());
-  socket.onmessage = (event: MessageEvent) => {
-    let frame: unknown;
+  return url.toString();
+}
+
+type LiveEntry = { stream: string; handlers: LiveHandlers<unknown>; ready: boolean };
+
+/** One socket, any number of subscriptions, reconnecting by itself. */
+export class LiveConnection {
+  private socket: WebSocket | undefined;
+  private readonly entries = new Map<string, LiveEntry>();
+  private readonly listeners = new Set<(status: LiveStatus) => void>();
+  private nextSub = 1;
+  private attempt = 0;
+  private opened = false;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private current: LiveStatus = "connecting";
+  // Fields assigned in the body rather than as parameter properties: Node runs
+  // this file by stripping its types, and a parameter property is not erasable.
+  private readonly url: string;
+  private readonly options: LiveOptions;
+
+  constructor(url: string, options: LiveOptions = {}) {
+    this.url = url;
+    this.options = options;
+  }
+
+  /** Where the connection is now. */
+  get status(): LiveStatus {
+    return this.current;
+  }
+
+  /** Be told when the status changes. Returns the function that stops it. */
+  onStatus(listener: (status: LiveStatus) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** The accessor for the stream called `name`. */
+  stream<E>(name: string): LiveStream<E> {
+    return {
+      name,
+      connection: this,
+      subscribe: (handlers: LiveHandlers<E>) => this.subscribe(name, handlers),
+    };
+  }
+
+  /** Subscribe to `stream`, opening the socket if this is the first subscription. */
+  subscribe<E>(stream: string, handlers: LiveHandlers<E>): LiveSubscription {
+    const sub = `s${this.nextSub++}`;
+    this.entries.set(sub, { stream, handlers: handlers as LiveHandlers<unknown>, ready: false });
+    if (this.socket && this.socket.readyState === 1) {
+      this.send({ type: "subscribe", sub, stream });
+    } else {
+      this.open();
+    }
+    let active = true;
+    return {
+      close: () => {
+        if (!active) return;
+        active = false;
+        if (this.entries.delete(sub) && this.socket && this.socket.readyState === 1) {
+          this.send({ type: "unsubscribe", sub });
+        }
+        if (this.entries.size === 0) this.shutdown();
+      },
+    };
+  }
+
+  /** End every subscription and close the socket. */
+  close(): void {
+    this.entries.clear();
+    this.shutdown();
+  }
+
+  private setStatus(status: LiveStatus): void {
+    if (status === this.current) return;
+    this.current = status;
+    this.listeners.forEach((listener) => listener(status));
+  }
+
+  private send(frame: Record<string, unknown>): void {
+    this.socket?.send(JSON.stringify(frame));
+  }
+
+  private open(): void {
+    if (this.socket || this.timer !== undefined) return;
+    const Socket = this.options.WebSocket ?? (typeof WebSocket === "undefined" ? undefined : WebSocket);
+    if (!Socket) throw new Error("live updates need a WebSocket implementation (LiveOptions.WebSocket)");
+    const socket = new Socket(this.url);
+    this.socket = socket;
+    socket.onopen = () => {
+      const reconnect = this.opened;
+      this.opened = true;
+      this.attempt = 0;
+      this.setStatus("open");
+      this.entries.forEach((entry, sub) => {
+        entry.ready = false;
+        this.send({ type: "subscribe", sub, stream: entry.stream });
+        if (reconnect) entry.handlers.resync?.();
+      });
+    };
+    socket.onmessage = (event: MessageEvent) => this.receive(event.data);
+    socket.onclose = () => {
+      if (this.socket !== socket) return;
+      this.socket = undefined;
+      if (this.entries.size === 0) return;
+      this.setStatus("reconnecting");
+      const min = this.options.minDelay ?? 500;
+      const max = this.options.maxDelay ?? 30000;
+      const delay = Math.min(max, min * 2 ** this.attempt);
+      this.attempt += 1;
+      // Half the delay, plus up to half again at random: a server that restarts
+      // is not met by every page reconnecting in the same millisecond.
+      this.timer = setTimeout(() => {
+        this.timer = undefined;
+        this.open();
+      }, delay / 2 + Math.random() * (delay / 2));
+    };
+  }
+
+  private shutdown(): void {
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    const socket = this.socket;
+    this.socket = undefined;
+    this.opened = false;
+    this.attempt = 0;
+    socket?.close();
+    this.setStatus("connecting");
+  }
+
+  private receive(data: unknown): void {
+    let frame: Record<string, unknown>;
     try {
-      frame = JSON.parse(String(event.data));
+      const parsed: unknown = JSON.parse(String(data));
+      if (!parsed || typeof parsed !== "object") return;
+      frame = parsed as Record<string, unknown>;
     } catch {
       return;
     }
-    if (!frame || typeof frame !== "object") return;
-    const f = frame as Record<string, unknown>;
-    switch (f["type"]) {
+    const sub = typeof frame["sub"] === "string" ? frame["sub"] : undefined;
+    const entry = sub === undefined ? undefined : this.entries.get(sub);
+    switch (frame["type"]) {
       case "ready":
-        handlers.ready?.(f as unknown as StreamReady);
+        if (entry) {
+          entry.ready = true;
+          entry.handlers.ready?.(frame as unknown as LiveReady);
+        }
         break;
       case "element":
-        handlers.element(f["envelope"] as E);
+        entry?.handlers.element(frame["envelope"]);
         break;
       case "lagged":
-        handlers.lagged?.(Number(f["dropped"] ?? 0));
+        entry?.handlers.lagged?.(Number(frame["dropped"] ?? 0));
         break;
       case "status":
-        handlers.status?.(f["status"]);
+        entry?.handlers.status?.(frame["status"]);
         break;
+      case "revoked":
+        if (entry && sub !== undefined) {
+          this.entries.delete(sub);
+          entry.handlers.error?.({ code: "revoked", message: "access to this stream ended" });
+        }
+        break;
+      case "error": {
+        const error: LiveError = {
+          code: String(frame["code"] ?? "error"),
+          message: String(frame["message"] ?? ""),
+        };
+        if (sub === undefined) {
+          // About the connection, not one subscription: everyone hears it, and
+          // the reconnect that follows a close asks again.
+          this.entries.forEach((each) => each.handlers.error?.(error));
+        } else if (entry) {
+          // Refused before `ready`: the subscription never started, so it ends.
+          if (!entry.ready) this.entries.delete(sub);
+          entry.handlers.error?.(error);
+        }
+        break;
+      }
       default:
         // A frame this client was generated before: ignored, never thrown on.
         break;
     }
-  };
-  socket.onerror = (event: Event) => handlers.error?.(event);
-  socket.onclose = () => handlers.closed?.();
-  return {
-    close() {
-      socket.close();
-    },
-  };
+  }
 }
 
 "#;

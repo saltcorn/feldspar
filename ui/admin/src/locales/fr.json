@@ -206,7 +206,7 @@
   "A declared parameter is checked and converted to its type before the body runs.": "Un paramètre déclaré est vérifié et converti dans son type avant l’exécution du corps.",
   "Returns whatever its body returns.": "Renvoie ce que renvoie son corps.",
   "Each store's definition, every file in it, and each file's access rules.": "La définition de chaque espace de stockage, tous les fichiers qu’il contient et les règles d’accès de chaque fichier.",
-  "Each ticked stream can be observed at {route} over a WebSocket, guarded by the stream’s own minimum role, and appears in this app’s generated client as {call}.": "Chaque flux coché peut être observé à l’adresse {route} via un WebSocket, protégé par le rôle minimal propre au flux, et apparaît dans le client généré de cette application sous la forme {call}.",
+  "A page subscribes to each ticked stream over the application’s one live socket at {route}, guarded by the stream’s own minimum role, and it appears in this app’s generated client as {call}.": "Une page s’abonne à chaque flux coché via l’unique socket en direct de l’application à l’adresse {route}, protégé par le rôle minimal propre au flux, et il apparaît dans le client généré de cette application sous la forme {call}.",
   "Each ticked trigger is exposed as {route} on this app, guarded by the trigger’s own minimum role.": "Chaque déclencheur coché est exposé sous la forme {route} dans cette application, protégé par le rôle minimal propre au déclencheur.",
   "Edit": "Modifier",
   "Edit code": "Modifier le code",
@@ -939,5 +939,7 @@
     "many": "{count} instances de modèles ajustées, avec leurs tableaux de sortie et leurs tirages a posteriori. Elles peuvent être volumineuses ; sans elles, un modèle restauré doit être ajusté à nouveau.",
     "other": "{count} instances de modèles ajustées, avec leurs tableaux de sortie et leurs tirages a posteriori. Elles peuvent être volumineuses ; sans elles, un modèle restauré doit être ajusté à nouveau."
   },
-  "Email, localisation and development settings, including the SMTP password.": "Paramètres d’e-mail, de localisation et de développement, y compris le mot de passe SMTP."
+  "Email, localisation and development settings, including the SMTP password.": "Paramètres d’e-mail, de localisation et de développement, y compris le mot de passe SMTP.",
+  "Subscribers": "Abonnés",
+  "Live subscriptions from applications' pages on this server, right now": "Abonnements en direct depuis les pages des applications sur ce serveur, en ce moment"
 }

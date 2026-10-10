@@ -1,4 +1,5 @@
-//! The streams an application exposes for observation (TODO "Streams" §10).
+//! The streams an application exposes to its pages (TODO "Streams" §10; TODO.md
+//! "Live updates").
 //!
 //! An app exposes streams the way it exposes triggers: a declared subset of
 //! names ([`StreamRef`](crate::StreamRef)), on the same principle — a stream is
@@ -6,10 +7,12 @@
 //! because an app said so. This module is the three things that follow from
 //! that:
 //!
-//! 1. **Where the socket is.** [`stream_socket_path`] is the one place
-//!    `{mount}/streams/{name}/observe` is spelled, and [`stream_in_path`] reads
-//!    a request's path back against it. The generated client and the server's
-//!    router both go through them, so the two cannot disagree about a path.
+//! 1. **Where the socket is.** A page holds **one** live socket,
+//!    `{mount}/live`, carrying a subscription per stream it watches.
+//!    [`live_socket_path`] is the one place that path is spelled, and
+//!    [`is_live_path`] reads a request's path back against it. The generated
+//!    client and the server's router both go through them, so the two cannot
+//!    disagree about a path.
 //! 2. **What an element looks like**, in the vocabulary the client generator
 //!    speaks: [`element_value_schema`] turns an [`ElementType`] into a
 //!    [`TypeSchema`], which is what gives an app's subscription a typed
@@ -19,7 +22,7 @@
 //!    refusing a name that does not resolve exactly as
 //!    [`app_triggers`](crate::app_triggers) does — an app naming a stream that
 //!    is not there is misconfigured, and quietly generating a client without
-//!    the method its own code calls would hide that.
+//!    the accessor its own code calls would hide that.
 //!
 //! ## Why the provider registry is installed rather than passed
 //!
@@ -44,10 +47,8 @@ use sc_types::BasicType;
 
 use crate::application::Application;
 
-/// The path segment that separates an app's mount from the stream's name.
-const STREAMS_SEGMENT: &str = "streams";
-/// The last segment of an observe socket's path.
-const OBSERVE_SEGMENT: &str = "observe";
+/// The live socket's path segment, after the app's mount.
+const LIVE_SEGMENT: &str = "live";
 
 /// The provider registry this process types an app's streams against.
 ///
@@ -96,43 +97,36 @@ pub struct ExposedStream {
     pub element_type: ElementType,
 }
 
-/// The socket path for `name` on `app`: `{mount}/streams/{name}/observe`.
-///
-/// The mount is the app's **first API mount**, because that is what "beside the
-/// endpoint set" means on the wire: an app whose data is at `/api` observes its
-/// streams at `/api/streams/…`, and its generated client has one base URL for
-/// both. An app with no API provider has no mount to sit beside, and its
-/// sockets are at the root of its subdomain.
-pub fn stream_socket_path(app: &Application, name: &str) -> String {
-    let mount = app
-        .apis
+/// The app's mount: its first API's, which is what "beside the endpoint set"
+/// means on the wire. Empty for an app with no API provider.
+fn mount(app: &Application) -> &str {
+    app.apis
         .first()
         .map(|api| api.mount.trim_end_matches('/'))
-        .unwrap_or("");
-    format!("{mount}/{STREAMS_SEGMENT}/{name}/{OBSERVE_SEGMENT}")
+        .unwrap_or("")
 }
 
-/// The stream `path` names on `app`, if it is an observe socket's path at all.
+/// The live socket's path on `app`: `{mount}/live`.
 ///
-/// The inverse of [`stream_socket_path`], and the router's half of it: the
-/// server matches a request against this rather than against a pattern of its
-/// own, so a change to one shape cannot leave a client calling a path nothing
-/// serves. It says nothing about whether the app *exposes* that stream — that
-/// is [`Application::exposes_stream`], and the distinction matters because the
-/// two refusals differ (a 404 for a path that is not a socket, a 404 naming the
-/// stream for one the app did not expose).
-pub fn stream_in_path<'a>(app: &Application, path: &'a str) -> Option<&'a str> {
-    let mount = app
-        .apis
-        .first()
-        .map(|api| api.mount.trim_end_matches('/'))
-        .unwrap_or("");
-    let rest = path.strip_prefix(mount)?;
-    let rest = rest.strip_prefix('/')?;
-    let rest = rest.strip_prefix(STREAMS_SEGMENT)?;
-    let rest = rest.strip_prefix('/')?;
-    let (name, tail) = rest.rsplit_once('/')?;
-    (tail == OBSERVE_SEGMENT && !name.is_empty() && !name.contains('/')).then_some(name)
+/// One path for every stream the app exposes — a page holds one socket and
+/// multiplexes its subscriptions over it (TODO.md "Live updates" §4). The mount
+/// is the app's **first API mount**: an app whose data is at `/api` has its
+/// socket at `/api/live`, and its generated client has one base URL for both.
+/// An app with no API provider has no mount to sit beside, and its socket is at
+/// `/live`.
+pub fn live_socket_path(app: &Application) -> String {
+    format!("{}/{LIVE_SEGMENT}", mount(app))
+}
+
+/// Whether `path` is `app`'s live socket.
+///
+/// The inverse of [`live_socket_path`], and the router's half of it: the server
+/// matches a request against this rather than against a pattern of its own, so
+/// a change to one shape cannot leave a client calling a path nothing serves.
+pub fn is_live_path(app: &Application, path: &str) -> bool {
+    path.strip_prefix(mount(app))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| rest == LIVE_SEGMENT)
 }
 
 /// The shape of an element's `value`, as the client generator's vocabulary
@@ -229,7 +223,7 @@ pub fn stream_exports(app: &Application, streams: &[ExposedStream]) -> Vec<Strea
         .iter()
         .map(|exposed| StreamExport {
             name: exposed.stream.name.clone(),
-            path: stream_socket_path(app, &exposed.stream.name),
+            path: live_socket_path(app),
             value: element_value_schema(&exposed.element_type),
         })
         .collect()
@@ -249,34 +243,33 @@ mod tests {
 
     #[test]
     fn the_socket_sits_beside_the_endpoint_set() {
-        assert_eq!(
-            stream_socket_path(&app(), "boiler"),
-            "/api/streams/boiler/observe"
-        );
+        assert_eq!(live_socket_path(&app()), "/api/live");
         // An app with no API provider has no mount to sit beside.
         let bare = Application::new("Bare", "bare", FrameworkRef::new("code"));
-        assert_eq!(
-            stream_socket_path(&bare, "boiler"),
-            "/streams/boiler/observe"
-        );
+        assert_eq!(live_socket_path(&bare), "/live");
+        // A mount written with a trailing slash is the same mount.
+        let slashed = Application::new("S", "s", FrameworkRef::new("code"))
+            .with_api(ApiConfig::new("rest", "/data/"));
+        assert_eq!(live_socket_path(&slashed), "/data/live");
     }
 
     #[test]
     fn a_path_is_read_back_against_the_shape_that_wrote_it() {
         let app = app();
-        let path = stream_socket_path(&app, "boiler");
-        assert_eq!(stream_in_path(&app, &path), Some("boiler"));
-        // Not an observe socket at all.
-        assert_eq!(stream_in_path(&app, "/api/posts"), None);
-        assert_eq!(stream_in_path(&app, "/api/streams/boiler"), None);
-        assert_eq!(stream_in_path(&app, "/streams/boiler/observe"), None);
-        assert_eq!(stream_in_path(&app, "/api/streams//observe"), None);
-        // A name the app does not expose still *parses* — whether it is exposed
-        // is a separate question with a separate answer.
-        assert_eq!(
-            stream_in_path(&app, "/api/streams/meter/observe"),
-            Some("meter")
-        );
+        assert!(is_live_path(&app, &live_socket_path(&app)));
+        for other in [
+            "/api/posts",
+            "/api/live/",
+            "/api/livestock",
+            "/live",
+            "/api/streams/boiler/observe",
+            "/apilive",
+        ] {
+            assert!(!is_live_path(&app, other), "{other}");
+        }
+        let bare = Application::new("Bare", "bare", FrameworkRef::new("code"));
+        assert!(is_live_path(&bare, "/live"));
+        assert!(!is_live_path(&bare, "/api/live"));
     }
 
     #[test]

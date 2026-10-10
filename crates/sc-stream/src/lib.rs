@@ -90,7 +90,7 @@ pub use observer::StreamObserver;
 pub use polling::{
     DEFAULT_INTERVAL_S, INTERVAL_FIELD, MIN_INTERVAL, PollAnswer, PollHost, PollingProvider,
 };
-pub use provider::{StreamProvider, StreamProviderHost, StreamProviderKind, StreamSink};
+pub use provider::{StreamProvider, StreamProviderHost, StreamProviderKind, StreamSink, TopicSpec};
 #[cfg(feature = "mqtt")]
 pub use providers::mqtt::{MQTT, Mqtt};
 pub use providers::{BUILTINS_COMPILED_OUT, MQTT_COMPILED_IN, builtin_providers, builtin_registry};

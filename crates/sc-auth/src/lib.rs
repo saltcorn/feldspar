@@ -62,7 +62,8 @@ pub use roles::{
 pub use session::{
     CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
     COL_TOKEN_HASH as COL_SESSION_TOKEN_HASH, COL_USER as COL_SESSION_USER, DEFAULT_TTL_HOURS,
-    SESSIONS_TABLE, SessionStore, bootstrap_sessions, create_session, delete_sessions_for_user,
+    SESSIONS_TABLE, SessionEnded, SessionListener, SessionStore, bootstrap_sessions,
+    create_session, delete_sessions_for_user,
 };
 pub use tokens::{
     API_TOKENS_TABLE, ApiCaller, ApiToken, COL_CREATED_AT as COL_TOKEN_CREATED_AT,
