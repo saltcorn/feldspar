@@ -187,6 +187,8 @@ mod saltcorn_ui_render;
 mod schema_edit_api;
 #[path = "settings_admin_api.rs"]
 mod settings_admin_api;
+#[path = "shared_session_cookie.rs"]
+mod shared_session_cookie;
 #[path = "stan_models.rs"]
 mod stan_models;
 #[path = "stream_triggers.rs"]

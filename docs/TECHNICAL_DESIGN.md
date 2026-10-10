@@ -6625,9 +6625,9 @@ for an application whose subdomain is **`@`**. The move is a save, not a restart
   gets a certificate naming it: `ordering` (with the CA's last error) until the order deploys,
   then `ready`. A pasted certificate (`tls::PastedCertificate`) is checked with `webpki` for the
   name; TLS off is `plain_http`. `GET /api/settings/admin-address` reports it.
-- **The session follows.** The session cookie is host-only — a `Domain` attribute would give the
-  admin's credential to every application under the base domain — so the new host has no
-  session. `POST /api/settings/admin-address/handoff` mints a single-use token (two minutes,
+- **The session follows.** The session cookie is host-only by default — a `Domain` attribute
+  would give the admin's credential to every application under the base domain — so the new
+  host has no session. `POST /api/settings/admin-address/handoff` mints a single-use token (two minutes,
   bound to the admin host, held in memory) which `GET /_feldspar/admin-handoff?token=…` on the
   new host exchanges for a fresh session of the same user, landing on Settings.
 - **The dialog** the save opens (`ui/admin` `AdminMove`) polls the address until the
@@ -6644,6 +6644,26 @@ domain when it was created, is widened for the admin host as it is served
 (`sc_app::follow_admin_host`), so the builder's preview pane keeps working after a move. A
 preview of the `@` application is `<label>.<base domain>`, having no subdomain to put after
 the `--`.
+
+**Sharing the sign-in between applications** (`shared_session_cookie`, Settings → Development,
+off by default). Users and sessions are already the instance's, not an application's: what keeps
+a sign-in on one host is only that `sc_session` is host-only. Ticking this gives the session
+cookie `Domain=<base domain>` — the base domain or extra base domain the request's `Host` is
+under; a host under none, an IP address, still gets a host-only one — so one sign-in reaches the
+admin UI and every application. The CSRF cookie stays host-only: each origin's client reads its
+own. The cost is the one the bullet above names: every application's pages, and its client code's
+requests to the admin host, carry the admin's session. Authorisation is still per endpoint, and
+an application's framework is never handed the `Cookie` header.
+
+It is live like the rest of the section (`AppMounts::shared_session_cookie`, read when the
+router sets or clears the cookie). **Changing it ends every session**, the saving admin's
+included (`SessionAction::EndAll`): a cookie already in a browser keeps the scope it was given,
+so turning sharing *off* would otherwise leave base-domain cookies valid on every application
+until they expire. The settings screen asks first, and reloads into the sign-in page after. A
+browser can then hold an ended `sc_session` in the old scope beside a new one; a response that
+sets or clears the session cookie for a request that carried one also expires it in the other
+scope, so a stale cookie never shadows the session just started. Clear all turns it off with
+the rest of `_fd_config`.
 
 **Name resolution is this process's own** (`sc-dns`, layer 0), and turning TLS on is what
 first made that necessary. glibc's `getaddrinfo` `dlopen`s a shared object per module named on

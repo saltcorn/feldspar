@@ -21,7 +21,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, Request, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{AppendHeaders, Html, IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::Cookie;
 use sc_api::{
@@ -486,9 +486,11 @@ async fn upload(
         locale: sc_i18n::active().default_locale().clone(),
     };
     match handler(ctx).await {
-        // `false` rather than `is_native_client`: this handler never starts a
-        // session, and `native` only matters for a login's cookie (`apply_session`).
-        Ok(resp) => apply_response(&state, jar, session_token, false, resp).await,
+        // No `SessionClient::of` the request: this handler never starts or ends
+        // a session, which is all the client matters for (`apply_session`).
+        Ok(resp) => {
+            apply_response(&state, jar, session_token, SessionClient::default(), resp).await
+        }
         Err(e) => {
             error_out(
                 &state,
@@ -537,7 +539,9 @@ async fn download(
         locale: sc_i18n::active().default_locale().clone(),
     };
     match handler(ctx).await {
-        Ok(resp) => apply_response(&state, jar, session_token, false, resp).await,
+        Ok(resp) => {
+            apply_response(&state, jar, session_token, SessionClient::default(), resp).await
+        }
         Err(e) => error_out(&state, &e, Audience::Admin, "GET", &route, caller.as_ref()).await,
     }
 }
@@ -581,9 +585,11 @@ async fn create_backup(State(state): State<AppState>, jar: CookieJar, body: Byte
         locale: sc_i18n::active().default_locale().clone(),
     };
     match handler(ctx).await {
-        // `false` rather than `is_native_client`: this handler never starts a
-        // session, and `native` only matters for a login's cookie (`apply_session`).
-        Ok(resp) => apply_response(&state, jar, session_token, false, resp).await,
+        // No `SessionClient::of` the request: this handler never starts or ends
+        // a session, which is all the client matters for (`apply_session`).
+        Ok(resp) => {
+            apply_response(&state, jar, session_token, SessionClient::default(), resp).await
+        }
         Err(e) => {
             error_out(
                 &state,
@@ -637,9 +643,11 @@ async fn upload_backup(State(state): State<AppState>, jar: CookieJar, body: Body
         locale: sc_i18n::active().default_locale().clone(),
     };
     match handler(ctx).await {
-        // `false` rather than `is_native_client`: this handler never starts a
-        // session, and `native` only matters for a login's cookie (`apply_session`).
-        Ok(resp) => apply_response(&state, jar, session_token, false, resp).await,
+        // No `SessionClient::of` the request: this handler never starts or ends
+        // a session, which is all the client matters for (`apply_session`).
+        Ok(resp) => {
+            apply_response(&state, jar, session_token, SessionClient::default(), resp).await
+        }
         Err(e) => {
             error_out(
                 &state,
@@ -1126,7 +1134,8 @@ async fn admin_handoff(
     };
     match state.sessions.login(user).await {
         Ok(token) => {
-            let cookie = build_cookie(SESSION_COOKIE, token, true, state.secure_cookies);
+            let domain = session_cookie_domain(&state, Some(&host));
+            let cookie = session_cookie(&state, token, domain.as_deref());
             (jar.add(cookie), Redirect::to("/#/settings")).into_response()
         }
         Err(e) => {
@@ -1295,7 +1304,7 @@ async fn dispatch_app(
                     state,
                     jar,
                     session_token,
-                    is_native_client(headers),
+                    SessionClient::of(headers),
                     HandlerResponse {
                         body: resp.body,
                         status: resp.status,
@@ -1404,12 +1413,13 @@ async fn dispatch_app(
             let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::OK);
             // The same session code an API provider's response goes through, so
             // an application's rendered login sets the same cookie the same way.
-            let native = is_native_client(headers);
-            let jar = match apply_session(state, jar, session_token, native, resp.session).await {
-                Ok(jar) => jar,
+            let client = SessionClient::of(headers);
+            let cookies = match apply_session(state, jar, session_token, client, resp.session).await
+            {
+                Ok(cookies) => cookies,
                 Err(rejection) => return with_csp(*rejection, &csp),
             };
-            let mut out = (status, jar, resp.body).into_response();
+            let mut out = (status, cookies.jar, cookies.stale, resp.body).into_response();
             if let Ok(ct) = HeaderValue::from_str(&resp.content_type) {
                 out.headers_mut().insert(header::CONTENT_TYPE, ct);
             }
@@ -1545,7 +1555,10 @@ async fn dispatch_analytics_api(
             None => return json_error(StatusCode::NOT_IMPLEMENTED, "handler not implemented"),
         },
         HandlerRef::GuestCode { .. } | HandlerRef::Custom(_) => {
-            return json_error(StatusCode::NOT_IMPLEMENTED, "custom handlers not yet supported");
+            return json_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "custom handlers not yet supported",
+            );
         }
     };
     // In the application's languages, as its pages are (§16.1).
@@ -1564,7 +1577,7 @@ async fn dispatch_analytics_api(
     };
     let out = match handler(ctx).await {
         Ok(resp) => {
-            apply_response(state, jar, session_token, is_native_client(headers), resp).await
+            apply_response(state, jar, session_token, SessionClient::of(headers), resp).await
         }
         Err(e) => {
             error_out(
@@ -2148,7 +2161,7 @@ async fn handle_api(
     // whether the answer was a 200 or a 403.
     let out = match handler(ctx).await {
         Ok(resp) => {
-            apply_response(state, jar, session_token, is_native_client(headers), resp).await
+            apply_response(state, jar, session_token, SessionClient::of(headers), resp).await
         }
         Err(e) => {
             error_out(
@@ -2197,20 +2210,21 @@ async fn apply_response(
     state: &AppState,
     jar: CookieJar,
     session_token: Option<String>,
-    native: bool,
+    client: SessionClient,
     resp: HandlerResponse,
 ) -> Response {
     let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::OK);
-    let jar = match apply_session(state, jar, session_token, native, resp.session).await {
-        Ok(jar) => jar,
-        Err(rejection) => return *rejection,
-    };
+    let SessionCookies { jar, stale } =
+        match apply_session(state, jar, session_token, client, resp.session).await {
+            Ok(cookies) => cookies,
+            Err(rejection) => return *rejection,
+        };
     // A response that *is* a file: the bytes under their own content type, named
     // so a browser's save dialog offers the right thing. There is no JSON body to
     // send alongside them, which is why this is a separate arm rather than a
     // header on the one below.
     if let Some(file) = resp.download {
-        let mut out = (status, jar, file.bytes).into_response();
+        let mut out = (status, jar, stale, file.bytes).into_response();
         if let Ok(value) = HeaderValue::from_str(&file.content_type) {
             out.headers_mut().insert(header::CONTENT_TYPE, value);
         }
@@ -2228,27 +2242,59 @@ async fn apply_response(
         }
         return out;
     }
-    (status, jar, Json(resp.body)).into_response()
+    (status, jar, stale, Json(resp.body)).into_response()
 }
 
 /// Apply a [`SessionAction`] to the cookie jar and the session store: the half of
 /// [`apply_response`] an application framework's response goes through too, so
 /// there is one session story (TODO "Saltcorn UI" §8).
 ///
-/// `native` is [`is_native_client`] of the request: a session it starts gets a
-/// cookie that lasts as long as the session, where a browser's lasts until the
-/// browser closes, as it always has.
+/// `client` says who the cookie is for: a native app's session gets a cookie
+/// that lasts as long as the session, where a browser's lasts until the browser
+/// closes, as it always has; and the request's host is what a shared session
+/// cookie is scoped from ([`session_cookie_domain`]).
 ///
 /// `Err` is the response to send instead, when a session could not be started.
 async fn apply_session(
     state: &AppState,
     jar: CookieJar,
     session_token: Option<String>,
-    native: bool,
+    client: SessionClient,
     session: SessionAction,
-) -> std::result::Result<CookieJar, Box<Response>> {
+) -> std::result::Result<SessionCookies, Box<Response>> {
+    let host = client.host.as_deref();
+    let domain = session_cookie_domain(state, host);
+    // A response that sets or clears the session cookie also expires it in the
+    // scope it is *not* in now. Both can be in the browser at once — the scope
+    // changed since one was set (Settings → Development) — and a request then
+    // carries two `sc_session`s, of which the server reads one. Clearing the
+    // other on every login and logout is what keeps a stale one from shadowing
+    // the session that was just started, or outliving the one just ended. A
+    // request that carried no session cookie has none in either scope, so its
+    // response says nothing about the other.
+    let carried = jar.get(SESSION_COOKIE).is_some();
+    let stale = || {
+        if !carried {
+            return None;
+        }
+        let other = match &domain {
+            Some(_) => None,
+            None => Some(base_domain_of(state, host)?),
+        };
+        let cookie = session_cookie_removal(other.as_deref());
+        HeaderValue::from_str(&cookie.encoded().to_string())
+            .ok()
+            .map(|value| (header::SET_COOKIE, value))
+    };
+    let cookies = |jar: CookieJar| SessionCookies {
+        jar,
+        stale: AppendHeaders(stale()),
+    };
     Ok(match session {
-        SessionAction::Keep => jar,
+        SessionAction::Keep => SessionCookies {
+            jar,
+            stale: AppendHeaders(None),
+        },
         SessionAction::Start(user) => match state.sessions.login(user.clone()).await {
             Ok(token) => {
                 // The session the request arrived with is replaced, not joined:
@@ -2263,12 +2309,12 @@ async fn apply_session(
                 // After the session exists, not before: an event that says
                 // someone logged in must not fire for a login that then failed.
                 fire_login(state, &user).await;
-                let mut cookie = build_cookie(SESSION_COOKIE, token, true, state.secure_cookies);
-                if native {
+                let mut cookie = session_cookie(state, token, domain.as_deref());
+                if client.native {
                     let ttl = state.sessions.ttl().num_seconds();
                     cookie.set_max_age(time::Duration::seconds(ttl));
                 }
-                jar.add(cookie)
+                cookies(jar.add(cookie))
             }
             Err(e) => {
                 log_failure("could not start session", &e);
@@ -2282,7 +2328,7 @@ async fn apply_session(
             if let Some(token) = &session_token {
                 let _ = state.sessions.logout(token).await;
             }
-            jar.remove(Cookie::build((SESSION_COOKIE, "")).path("/").build())
+            cookies(jar.remove(session_cookie_removal(domain.as_deref())))
         }
         // Somebody else's sessions (or, if the admin named themselves, their own
         // — in which case the cookie they still hold simply stops resolving).
@@ -2292,15 +2338,96 @@ async fn apply_session(
             if let Err(e) = state.sessions.end_user_sessions(user_id).await {
                 log_failure("could not end the user's sessions", &e);
             }
-            jar
+            SessionCookies {
+                jar,
+                stale: AppendHeaders(None),
+            }
         }
         SessionAction::EndAll => {
             if let Err(e) = state.sessions.end_all_sessions().await {
                 log_failure("could not end every session", &e);
             }
-            jar.remove(Cookie::build((SESSION_COOKIE, "")).path("/").build())
+            cookies(jar.remove(session_cookie_removal(domain.as_deref())))
         }
     })
+}
+
+/// What [`apply_session`] leaves for the response: the jar, and the session
+/// cookie of the other scope to expire, which the jar cannot hold because it
+/// keeps one cookie per name.
+struct SessionCookies {
+    jar: CookieJar,
+    stale: AppendHeaders<Option<(header::HeaderName, HeaderValue)>>,
+}
+
+/// What [`apply_session`] needs to know about the request a session cookie is
+/// set or cleared for.
+#[derive(Default)]
+struct SessionClient {
+    /// [`is_native_client`] of the request.
+    native: bool,
+    /// The request's `Host`, for scoping a shared session cookie.
+    host: Option<String>,
+}
+
+impl SessionClient {
+    /// The client a request's headers describe.
+    fn of(headers: &axum::http::HeaderMap) -> SessionClient {
+        SessionClient {
+            native: is_native_client(headers),
+            host: headers
+                .get(header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_owned),
+        }
+    }
+}
+
+/// The base domain — or extra base domain — that `host` is, or is under:
+/// where a shared session cookie for a request to `host` is scoped. `None` for
+/// a host under none of them (an IP address, a server with no base domain).
+fn base_domain_of(state: &AppState, host: Option<&str>) -> Option<String> {
+    let name = crate::admin_host::hostname(host?);
+    let base = state.base_domain.as_deref()?;
+    std::iter::once(base.as_str())
+        .chain(state.extra_base_domains.iter().map(String::as_str))
+        .find(|base| {
+            name.eq_ignore_ascii_case(base)
+                || name.len().checked_sub(base.len() + 1).is_some_and(|dot| {
+                    name.as_bytes()[dot] == b'.' && name[dot + 1..].eq_ignore_ascii_case(base)
+                })
+        })
+        .map(|base| base.to_ascii_lowercase())
+}
+
+/// The `Domain` of the session cookie a request to `host` is given: its base
+/// domain when Settings → Development shares the session cookie between
+/// applications, so one sign-in reaches the admin UI and every application;
+/// otherwise `None`, a host-only cookie, which no other application is sent.
+fn session_cookie_domain(state: &AppState, host: Option<&str>) -> Option<String> {
+    if !state.apps.shared_session_cookie() {
+        return None;
+    }
+    base_domain_of(state, host)
+}
+
+/// The session cookie naming `token`, scoped to `domain` (host-only for `None`).
+fn session_cookie(state: &AppState, token: String, domain: Option<&str>) -> Cookie<'static> {
+    let mut cookie = build_cookie(SESSION_COOKIE, token, true, state.secure_cookies);
+    if let Some(domain) = domain {
+        cookie.set_domain(domain.to_owned());
+    }
+    cookie
+}
+
+/// The cookie that expires the session cookie scoped to `domain`.
+fn session_cookie_removal(domain: Option<&str>) -> Cookie<'static> {
+    let mut cookie = Cookie::build((SESSION_COOKIE, "")).path("/").build();
+    if let Some(domain) = domain {
+        cookie.set_domain(domain.to_owned());
+    }
+    cookie.make_removal();
+    cookie
 }
 
 /// Whether a path belongs to the file-store IDE (design §12.1).

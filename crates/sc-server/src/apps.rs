@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -264,6 +265,9 @@ pub struct AppMounts {
     /// Where the admin UI is served (Settings → Development): live, because
     /// moving it is a save rather than a restart.
     admin: crate::admin_host::AdminHost,
+    /// Whether the session cookie is scoped to the base domain rather than to
+    /// the host that set it (Settings → Development): live for the same reason.
+    shared_session_cookie: AtomicBool,
 }
 
 /// One run's preview of one application.
@@ -318,6 +322,7 @@ impl AppMounts {
             preview_idle: Duration::from_secs(crate::config::DEFAULT_PREVIEW_IDLE_MINUTES * 60),
             target_builds: crate::target_builds::TargetBuilds::default(),
             admin: crate::admin_host::AdminHost::default(),
+            shared_session_cookie: AtomicBool::new(false),
         }
     }
 
@@ -337,6 +342,19 @@ impl AppMounts {
     pub fn set_admin_subdomain(&self, subdomain: Option<String>) {
         self.admin.set_subdomain(subdomain);
         self.certificate_changed();
+    }
+
+    /// Whether a session cookie set from the next response on is scoped to the
+    /// base domain, so one sign-in reaches the admin UI and every application.
+    pub fn shared_session_cookie(&self) -> bool {
+        self.shared_session_cookie.load(Ordering::Relaxed)
+    }
+
+    /// Scope session cookies to the base domain (`true`) or to the host that
+    /// sets them (`false`). Cookies already handed out keep their scope: the
+    /// caller ends every session when this changes.
+    pub fn set_shared_session_cookie(&self, shared: bool) {
+        self.shared_session_cookie.store(shared, Ordering::Relaxed);
     }
 
     /// The host the admin UI is served on, if this deployment has a base domain.

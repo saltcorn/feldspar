@@ -50,9 +50,10 @@ pub use defs::{
 };
 pub use development::{
     ADMIN_SUBDOMAIN, DevelopmentSettings, LOG_SQL, LOG_VERBOSITY, MCP_ENABLED, MCP_LOOPBACK_ONLY,
-    McpSettings, ROOT_SUBDOMAIN, admin_subdomain, admin_subdomain_from, apply_development_settings,
-    check_admin_subdomain, development_section, development_settings, development_settings_from,
-    mcp_settings, mcp_settings_from,
+    McpSettings, ROOT_SUBDOMAIN, SHARED_SESSION_COOKIE, admin_subdomain, admin_subdomain_from,
+    apply_development_settings, check_admin_subdomain, development_section, development_settings,
+    development_settings_from, mcp_settings, mcp_settings_from, shared_session_cookie,
+    shared_session_cookie_from,
 };
 pub use email::{
     DEFAULT_SMTP_PORT, EMAIL_FROM, EmailSettings, Mailbox, SECURITY_NONE, SECURITY_STARTTLS,

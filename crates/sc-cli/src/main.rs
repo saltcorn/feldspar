@@ -233,6 +233,12 @@ async fn serve_command(args: &[String]) -> Result<()> {
         Ok(None) => {}
         Err(e) => eprintln!("feldspar: the admin subdomain is ignored: {e}"),
     }
+    // Whether the session cookie is shared between applications (Settings →
+    // Development), read before the first request sets one.
+    match sc_config::shared_session_cookie(&catalog).await {
+        Ok(shared) => apps.set_shared_session_cookie(shared),
+        Err(e) => eprintln!("feldspar: the shared session cookie setting is ignored: {e}"),
+    }
 
     service.notify_status("mounting applications");
     if config.base_domain.is_some() {

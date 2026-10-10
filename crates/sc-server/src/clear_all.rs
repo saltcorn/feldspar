@@ -175,6 +175,9 @@ pub async fn clear_all(
             e.causes()
         ));
     }
+    // Its row is gone, so sign-in is no longer shared. Every session is about to
+    // end, and the response clears this admin's cookie in both scopes.
+    apps.set_shared_session_cookie(false);
 
     for def in stores.iter().filter(|d| delete_from_disk.contains(&d.name)) {
         match sc_files::remove_store_from_disk(def) {

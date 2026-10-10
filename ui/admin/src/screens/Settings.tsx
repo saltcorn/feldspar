@@ -30,10 +30,16 @@
 // - **The one act is why the values live in this component** rather than in each
 //   panel: a panel holding its own edits would post a bag missing every other
 //   tab's, which the server would read as "clear them".
+//
+// One setting is asked about before it is saved: **Share sign-in between
+// applications** (Development). Changing it ends every session, the admin's own
+// included, so the save waits for a confirmation that says so, and afterwards
+// the screen reloads into the sign-in page rather than failing its next call.
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
+import Modal from "react-bootstrap/Modal";
 import Spinner from "react-bootstrap/Spinner";
 
 import { api } from "../api";
@@ -83,6 +89,23 @@ export function settingsPayload(
     if (!(field.name in payload)) payload[field.name] = null;
   }
   return payload;
+}
+
+/** The setting whose change signs everyone out
+ * (`sc_config::SHARED_SESSION_COOKIE`): a session cookie already in a browser
+ * keeps the scope it was given, so the server ends every session when the
+ * scope changes. */
+export const SHARED_SESSION_COOKIE = "shared_session_cookie";
+
+/** Whether saving `values` over what is `stored` changes whether the session
+ * cookie is shared, and so signs everyone out — the admin saving it included.
+ * A checkbox never saved reads as its default, off. */
+export function signsEveryoneOut(
+  stored: Record<string, string>,
+  values: Record<string, string>,
+): boolean {
+  const on = (v: string | undefined) => v === "true";
+  return on(stored[SHARED_SESSION_COOKIE]) !== on(values[SHARED_SESSION_COOKIE]);
 }
 
 /** The Backup tab's identity: one of the two tabs that are not declared
@@ -144,6 +167,9 @@ export function Settings() {
   // Whether the last save moved the admin UI to another host, which opens the
   // dialog that waits for the new address and then goes there.
   const [moving, setMoving] = useState(false);
+  // Whether the dialog asking to sign everyone out is open, in front of a save
+  // that would.
+  const [confirming, setConfirming] = useState(false);
 
   /** Take a settings response as the screen's state. */
   const adopt = (response: GetSettingsResponse, opening: boolean) => {
@@ -165,9 +191,16 @@ export function Settings() {
     })();
   }, []);
 
-  const save = async (e: FormEvent) => {
+  const save = (e: FormEvent) => {
     e.preventDefault();
     if (!sections) return;
+    if (signsEveryoneOut(stored, values)) setConfirming(true);
+    else void commit();
+  };
+
+  const commit = async () => {
+    if (!sections) return;
+    setConfirming(false);
     setBusy(true);
     setError(null);
     setSaved(false);
@@ -177,9 +210,16 @@ export function Settings() {
       const response = await api.updateSettings({
         values: settingsPayload(allFields(sections), values),
       });
+      const after = readConfig(response.values);
+      // The session this screen runs on has ended: reloading is what shows the
+      // sign-in page, and there is nothing left to follow a move with.
+      if (signsEveryoneOut(stored, after)) {
+        window.location.reload();
+        return;
+      }
       // Compared as stored, before and after: the server has already moved the
       // admin UI by the time this answer arrives.
-      if (adminMoved(stored, readConfig(response.values))) setMoving(true);
+      if (adminMoved(stored, after)) setMoving(true);
       adopt(response, false);
       setSaved(true);
     } catch (e) {
@@ -245,7 +285,7 @@ export function Settings() {
                 </AlertBody>
               </Alert>
             )}
-            <form onSubmit={(e) => void save(e)}>
+            <form onSubmit={save}>
               <SectionCard
                 section={section}
                 values={values}
@@ -271,6 +311,26 @@ export function Settings() {
           <BackupTab />
         </TabPanel>
         {moving && <AdminMove onClose={() => setMoving(false)} />}
+        <Modal show={confirming} onHide={() => setConfirming(false)} centered>
+          <Modal.Header closeButton>
+            <Modal.Title>
+              <T text="You will be signed out" />
+            </Modal.Title>
+          </Modal.Header>
+          <Modal.Body>
+            <p className="mb-0">
+              <T text="Changing whether applications share a sign-in ends every session, yours included. Everyone, you as well, will need to sign in again." />
+            </p>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="secondary" onClick={() => setConfirming(false)}>
+              <T text="Cancel" />
+            </Button>
+            <Button onClick={() => void commit()}>
+              <T text="Save and sign out" />
+            </Button>
+          </Modal.Footer>
+        </Modal>
       </PageBody>
     </>
   );

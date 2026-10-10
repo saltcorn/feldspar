@@ -39,6 +39,9 @@ pub const MCP_LOOPBACK_ONLY: &str = "mcp_loopback_only";
 /// The subdomain of the base domain the admin UI is served on. Empty serves it
 /// on the base domain itself.
 pub const ADMIN_SUBDOMAIN: &str = "admin_subdomain";
+/// Whether the session cookie is scoped to the base domain, so that one sign-in
+/// is good for the admin UI and every application under it.
+pub const SHARED_SESSION_COOKIE: &str = "shared_session_cookie";
 /// The subdomain an application gives to be served on the base domain itself,
 /// which it may do only once the admin UI has moved to [`ADMIN_SUBDOMAIN`].
 pub const ROOT_SUBDOMAIN: &str = "@";
@@ -48,7 +51,8 @@ pub fn development_section() -> ConfigSection {
     ConfigSection {
         name: "development",
         label: "Development",
-        description: "Settings for logging, MCP server availability and where the admin UI is served",
+        description: "Settings for logging, MCP server availability, where the admin UI is served \
+                      and whether applications share a sign-in",
         fields: vec![
             ConfigDef::help(
                 FormField::new(LOG_SQL, BasicType::Bool)
@@ -90,6 +94,18 @@ pub fn development_section() -> ConfigSection {
                  admin.example.com) instead of on the base domain itself. Once it has moved, an \
                  application can be served on the base domain by giving @ as its subdomain. \
                  Leave empty to serve the admin UI on the base domain.",
+            ),
+            // Live too: the next cookie the server sets is scoped by it. Saving
+            // a change ends every session, the admin's own included, because a
+            // cookie already handed out keeps the scope it was given.
+            ConfigDef::help(
+                FormField::new(SHARED_SESSION_COOKIE, BasicType::Bool)
+                    .label("Share sign-in between applications")
+                    .default_value(false),
+                "Scope the session cookie to the base domain, so signing in to the admin UI or \
+                 to any application signs in to all of them. Every application's pages are then \
+                 sent the cookie, including its own client code's requests to the admin API. \
+                 Changing this signs everyone out, you included.",
             ),
         ],
     }
@@ -210,6 +226,22 @@ pub async fn mcp_settings(catalog: &Catalog) -> Result<McpSettings> {
     Ok(mcp_settings_from(&crate::store::all_config(catalog).await?))
 }
 
+/// Read whether the session cookie is shared between applications out of a
+/// settings bag (stored values over the declared default, which is off).
+///
+/// Anything but `true` reads as off, the same rule as [`mcp_settings_from`]: a
+/// junk value must not hand a credential to every application.
+pub fn shared_session_cookie_from(config: &Attrs) -> bool {
+    matches!(config.get(SHARED_SESSION_COOKIE), Some(Json::Bool(true)))
+}
+
+/// Read whether the session cookie is shared out of `_fd_config`.
+pub async fn shared_session_cookie(catalog: &Catalog) -> Result<bool> {
+    Ok(shared_session_cookie_from(
+        &crate::store::all_config(catalog).await?,
+    ))
+}
+
 /// Read the admin subdomain out of a settings bag: `None` when the admin UI is
 /// served on the base domain itself.
 ///
@@ -310,6 +342,36 @@ mod tests {
         assert_eq!(settings.verbosity, Verbosity::Info);
     }
 
+    /// Off unless it is stored as `true`: a value that is not a boolean must
+    /// not widen where the session cookie goes.
+    #[test]
+    fn the_session_cookie_is_shared_only_when_ticked() {
+        assert!(!shared_session_cookie_from(&Attrs::new()));
+        assert!(!shared_session_cookie_from(&attrs(&[(
+            SHARED_SESSION_COOKIE,
+            json!("true")
+        )])));
+        assert!(!shared_session_cookie_from(&attrs(&[(
+            SHARED_SESSION_COOKIE,
+            json!(false)
+        )])));
+        assert!(shared_session_cookie_from(&attrs(&[(
+            SHARED_SESSION_COOKIE,
+            json!(true)
+        )])));
+
+        let section = development_section();
+        let field = section
+            .fields
+            .iter()
+            .find(|def| def.key() == SHARED_SESSION_COOKIE)
+            .expect("the Development tab has the checkbox");
+        assert_eq!(
+            field.field.base.type_,
+            sc_types::TypeRef::Basic(BasicType::Bool)
+        );
+    }
+
     #[test]
     fn a_level_that_is_not_a_level_is_refused() {
         let err = development_settings_from(&attrs(&[(LOG_VERBOSITY, json!("loud"))]))
@@ -370,7 +432,8 @@ mod tests {
                 LOG_VERBOSITY,
                 MCP_ENABLED,
                 MCP_LOOPBACK_ONLY,
-                ADMIN_SUBDOMAIN
+                ADMIN_SUBDOMAIN,
+                SHARED_SESSION_COOKIE
             ]
         );
 

@@ -4417,6 +4417,12 @@ pub fn admin_handlers_with(
                 if moving {
                     check_admin_move(&catalog, &apps, admin_subdomain.as_deref()).await?;
                 }
+                // Whether one sign-in is good for every application. A cookie
+                // already in a browser keeps the scope it was set with, so a
+                // change ends every session, this admin's included: everyone
+                // signs in again and gets a cookie scoped the new way.
+                let shared_session_cookie = sc_config::shared_session_cookie_from(&merged);
+                let rescoping = shared_session_cookie != apps.shared_session_cookie();
 
                 sc_config::set_config_many(&catalog, &values).await?;
                 // The admin UI moves now, and the new name's certificate is
@@ -4425,6 +4431,7 @@ pub fn admin_handlers_with(
                 if moving {
                     apps.set_admin_subdomain(admin_subdomain);
                 }
+                apps.set_shared_session_cookie(shared_session_cookie);
                 // The two switches this process runs under move **now**, not at
                 // the next restart: an admin ticks "Log SQL" precisely because
                 // something is happening in the server they are looking at, and
@@ -4434,9 +4441,12 @@ pub fn admin_handlers_with(
                 // an admin who has just turned French on reloads the page to
                 // see it, not the server.
                 sc_i18n::set_active(localisation);
-                Ok(HandlerResponse::ok(
-                    settings_json(&catalog, &ctx.locale).await?,
-                ))
+                let body = settings_json(&catalog, &ctx.locale).await?;
+                Ok(if rescoping {
+                    HandlerResponse::end_all_sessions(body)
+                } else {
+                    HandlerResponse::ok(body)
+                })
             }
         }
     });

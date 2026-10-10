@@ -29,8 +29,10 @@ import {
   MODULES_TAB,
   allFields,
   initialTab,
+  SHARED_SESSION_COOKIE,
   settingsPayload,
   settingsTabs,
+  signsEveryoneOut,
 } from "./Settings";
 import { showsDetail, stateBadge } from "./PythonStatus";
 import { testEmailBody } from "./TestEmail";
@@ -352,5 +354,21 @@ describe("the Development tab's Python reading", () => {
     expect(showsDetail("off")).toBe(true);
     expect(showsDetail("not_initialised")).toBe(true);
     expect(showsDetail("running")).toBe(true);
+  });
+});
+
+describe("the Development tab's shared sign-in", () => {
+  /** The confirmation opens for a change either way, and for nothing else:
+   * the server ends every session when the cookie's scope changes, and only
+   * then. A setting never saved is off, which is what the form shows. */
+  it("asks before a save that changes whether the session cookie is shared", () => {
+    const off = { [SHARED_SESSION_COOKIE]: "false" };
+    const on = { [SHARED_SESSION_COOKIE]: "true" };
+    expect(signsEveryoneOut({}, on)).toBe(true);
+    expect(signsEveryoneOut(off, on)).toBe(true);
+    expect(signsEveryoneOut(on, off)).toBe(true);
+    expect(signsEveryoneOut({}, off)).toBe(false);
+    expect(signsEveryoneOut(on, on)).toBe(false);
+    expect(signsEveryoneOut(off, { ...off, log_sql: "true" })).toBe(false);
   });
 });

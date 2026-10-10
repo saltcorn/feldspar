@@ -2,6 +2,44 @@
 
 Changes in reverse chronological order.
 
+## Share sign-in between applications (Settings → Development)
+
+A checkbox on the Development tab, **Share sign-in between applications**
+(`shared_session_cookie`, off by default). Ticked, the session cookie is scoped to
+the base domain, so one sign-in reaches the admin UI and every application.
+
+- **`sc-config`**: the field in `development_section()`, with
+  `shared_session_cookie_from` / `shared_session_cookie` to read it (anything but
+  `true` is off).
+- **`sc-server`**: `AppMounts::shared_session_cookie` holds it live; `sc-cli`
+  reads it at boot, and `updateSettings` sets it on save. The router builds the
+  session cookie in one place (`session_cookie`), with `Domain` set to the base
+  domain or extra base domain the request's `Host` is under. A host under none
+  of them, such as an IP address, still gets a host-only cookie. The CSRF cookie
+  stays host-only.
+- **Changing it ends every session**, the saving admin's included: a cookie
+  already in a browser keeps its old scope. `updateSettings` answers with
+  `end_all_sessions` when the value changes. If the request carried a session
+  cookie, a response that sets or clears it also expires it in the other scope.
+  That way an ended cookie left in a browser can't shadow a new one.
+  `apply_session` now takes a `SessionClient` (native + `Host`) instead of
+  `native: bool`, and returns that extra `Set-Cookie`.
+- **Clear all** turns the live flag off with the rest of `_fd_config`.
+- **Admin UI** (`Settings.tsx`): the checkbox comes from the declaration as
+  every setting does. A save that changes it first opens a dialog, *You will be
+  signed out*, with *Cancel* / *Save and sign out*. After the save the page
+  reloads into the sign-in screen. `signsEveryoneOut` decides when to ask.
+- **Docs**: `TECHNICAL_DESIGN.md` (after "Where the admin UI is served"),
+  a troubleshooting row in `OPERATIONS.md` §8.5.
+- **Tests**: `sc-server/tests/shared_session_cookie.rs`, using a browser model
+  that keeps a cookie per name *and* domain. It covers: host-only by default;
+  the save ends every session and clears the admin's cookie in both scopes;
+  re-login gets `Domain=example.com`, also from another subdomain; that cookie
+  signs in on another host; the stale host-only cookie is expired at re-login;
+  an IP host stays host-only; an unchanged save ends nothing; turning it off
+  ends sessions again and returns to host-only. Plus a unit test in
+  `development.rs` and a vitest for `signsEveryoneOut`.
+
 ## Analytics A9.5–A9.6: applications documented, and their definition of done
 
 The last phase of milestone A9 (applications with a restricted Analytics UI). No

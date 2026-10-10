@@ -15,12 +15,12 @@
 //!   exactly as mounting an application is, and the move waits on
 //!   [`status_for`](crate::tls::Certificate::status_for) before it lets the
 //!   admin follow.
-//! - **The admin's session.** The session cookie is host-only — giving it a
-//!   `Domain` would hand the admin's credential to every application under the
-//!   base domain — so the new host has no session. Rather than make the admin
-//!   log in again, the old host mints a [`Handoff`]: a single-use token, good for
-//!   [`HANDOFF_TTL`], that the new host exchanges for a fresh session of the
-//!   same user at [`HANDOFF_ROUTE`].
+//! - **The admin's session.** The session cookie is host-only unless Settings →
+//!   Development shares it — giving it a `Domain` hands the admin's credential to
+//!   every application under the base domain — so the new host has no session.
+//!   Rather than make the admin log in again, the old host mints a [`Handoff`]:
+//!   a single-use token, good for [`HANDOFF_TTL`], that the new host exchanges
+//!   for a fresh session of the same user at [`HANDOFF_ROUTE`].
 
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
