@@ -524,26 +524,26 @@ re-checking. No new providers yet. Everything later builds on this.
   of subscribers (fan-out work runs off the write path).
 
 ### Phase 2: the provider and per-element access
-- [ ] **L3.4** The `table_changes` provider: `table`, `ops`, `payload: row|key`. The element type
+- [x] **L3.4** The `table_changes` provider: `table`, `ops`, `payload: row|key`. The element type
   comes from the table's fields (re-derived when the schema changes, through the
   `SchemaChanged` observer, so a new column reaches the generated types at the next build). The
   element is `{op, key, row?}`. Saving the stream refuses a table that does not exist. Saving an
   app refuses an exposed `table_changes` stream whose table is outside the app's subset.
-- [ ] **L3.5** Projection: the delivered row is the REST read projection for that table, from
+- [x] **L3.5** Projection: the delivered row is the REST read projection for that table, from
   the same function REST uses (no second list of hidden fields). `collab_doc` fields are left
   out. Test on `users`: no password hash.
-- [ ] **L3.6** Subscription filters: the REST `where` vocabulary, validated on subscribe
+- [x] **L3.6** Subscription filters: the REST `where` vocabulary, validated on subscribe
   (`invalid` for an unknown field), evaluated in Rust. **Parity tests**: for a matrix of filters
   × rows (with nulls), the Rust verdict equals "the REST read with this filter returns the row".
-- [ ] **L3.7** `deliver_to` in `sc-live`, a pure function: (old, new, readable_old,
+- [x] **L3.7** `deliver_to` in `sc-live`, a pure function: (old, new, readable_old,
   readable_new, matches_old, matches_new) → `insert | update | enter | leave | delete | nothing`.
   Test it with the full truth table, including that `leave` and `delete` carry no row.
-- [ ] **L3.8** Readability per subscriber: the role floor short-circuits; otherwise the
+- [x] **L3.8** Readability per subscriber: the role floor short-circuits; otherwise the
   ownership formula is evaluated reified, with Ⱶ/Ↄ prefetches batched once per element and
   verdicts computed once per distinct user. Fast path for `field === user.id`. Tests: the
   ownership tutorial's formulas (owner, shares via Ↄ, publisher via Ⱶ) × two users × each op.
   A row a user could never read produces no frame of any kind for that user.
-- [ ] **L3.9** Counters for the hub: elements checked, delivered, suppressed by access,
+- [x] **L3.9** Counters for the hub: elements checked, delivered, suppressed by access,
   suppressed by filter, and evaluator time. Shown on the stream's row in the admin list.
 
 ### Phase 3: the client

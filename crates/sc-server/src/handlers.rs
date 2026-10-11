@@ -4325,6 +4325,7 @@ pub fn admin_handlers_with(
                         .and_then(|ty| serde_json::to_value(ty).ok()),
                     "listeners": running.as_ref().map_or(0, |r| r.listeners()),
                     "subscribers": apps.live().hub().subscribers(stream.id),
+                    "changes": change_counts_json(&apps, stream.id),
                 })))
             }
         }
@@ -10153,7 +10154,22 @@ fn stream_json(
         // Live subscriptions to it from applications' pages right now, on
         // this server (L1.11): beside the counters, and as in-memory as they.
         "subscribers": apps.live().hub().subscribers(stream.id),
+        // For a `table_changes` stream, what its per-element checks decided
+        // (L3.9).
+        "changes": change_counts_json(apps, stream.id),
     })
+}
+
+/// What the live hub's fan-outs decided for the `table_changes` stream `id`
+/// since this server started — elements × subscriptions checked, delivered,
+/// withheld by the read rule, outside the filter, and the time spent deciding
+/// readability — or `null` for a stream that has had no such subscriber here.
+fn change_counts_json(apps: &AppMounts, id: sc_stream::StreamId) -> Json {
+    apps.live()
+        .hub()
+        .change_counts(id)
+        .and_then(|counts| serde_json::to_value(counts).ok())
+        .unwrap_or(Json::Null)
 }
 
 /// A [`Stream`](sc_stream::Stream) from a `saveStream` body.

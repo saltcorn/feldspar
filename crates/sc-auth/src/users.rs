@@ -117,6 +117,19 @@ pub fn is_system_user_column(column: &str) -> bool {
     SYSTEM_USER_COLUMNS.contains(&column)
 }
 
+/// Whether `column` of the table called `table` is one **no API reads or
+/// writes**: the users table's password hash.
+///
+/// The one statement of that rule. `sc-api`'s row layer projects every column
+/// but these and refuses a filter or write naming one, and the live hub's
+/// `table_changes` streams type and deliver a row through the same answer
+/// (TODO.md "Live updates" L3.5), so a column hidden from REST can never reach
+/// a page by another road. Here rather than in `sc-api` because the stream
+/// provider that types a row sits below it.
+pub fn is_api_hidden_column(table: &str, column: &str) -> bool {
+    table == USERS_TABLE && column == COL_PASSWORD_HASH
+}
+
 /// Ensure the roles, users and session-grant tables exist, creating them if
 /// absent, and return the users table.
 ///

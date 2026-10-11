@@ -274,6 +274,154 @@ pub async fn row_readable_as(
     }
 }
 
+/// One image of a row — as a write left it, or as it was before — held so its
+/// read access can be decided for any number of callers (TODO.md "Live
+/// updates" §3 rule 5, L3.8).
+///
+/// The live hub's question about a `table_changes` element is "may *this*
+/// subscriber read the row this change carries?", asked once per distinct
+/// subscriber and about a row that a read can no longer return: the old image
+/// of an update or a delete is gone from the table. So this is §7.3's rule
+/// applied to the image itself, the way [`row_allowed`] applies it to a
+/// proposed row:
+///
+/// - a caller who meets `min_role_read` reads it, and nothing is evaluated;
+/// - a table with no ownership formula grants nobody else anything;
+/// - the formula `owner === user.id` (either way round, `==` too, on a plain
+///   column) is a comparison of the column with the caller's id, decided here
+///   with no isolate and no I/O — the commonest formula there is;
+/// - any other formula is evaluated **reified** in the [`JsEvaluator`] — the
+///   reference evaluator, whose verdicts an RLS table's policies and the
+///   translated predicate are specified to equal — against the image with its
+///   Ⱶ-join and Ↄ-relation values prefetched by
+///   [`prefetch_bindings`](sc_catalog::prefetch_bindings). The prefetch is made
+///   **once per image**, on the first caller who needs it, and shared by every
+///   caller after: the bindings are a function of the row, not of who asks.
+///
+/// Everything that goes wrong denies, as [`allowed`] does: a formula that no
+/// longer validates, a prefetch that fails, a missing evaluator. The error is
+/// handed back once so the caller can say so; the verdict is `false` either
+/// way, and a failed prefetch is not retried for the next caller.
+pub struct RowImage<'a> {
+    table: &'a Table,
+    values: BTreeMap<String, Value>,
+    /// `None` until a caller below the floor needed the formula's bindings;
+    /// then whether fetching them worked.
+    prepared: Option<std::result::Result<(), String>>,
+}
+
+impl<'a> RowImage<'a> {
+    /// The image `row` (an event's JSON row) of a row of `table`.
+    pub fn new(table: &'a Table, row: &Json) -> RowImage<'a> {
+        RowImage {
+            table,
+            values: rows::row_json_values(table, row),
+            prepared: None,
+        }
+    }
+
+    /// The image's column values, typed by the table's columns.
+    pub fn values(&self) -> &BTreeMap<String, Value> {
+        &self.values
+    }
+
+    /// Whether the formula is one this image is decided for without the
+    /// evaluator — the role floor, no formula, or `owner === user.id`.
+    pub fn needs_evaluator(&self, role: u8) -> bool {
+        role > self.table.access.min_role_read
+            && self
+                .table
+                .ownership
+                .as_ref()
+                .is_some_and(|formula| owner_column(self.table, formula).is_none())
+    }
+
+    /// Whether a caller with `role`, signed in as `user` (or not), may read
+    /// this image. `Err` only to say why a denial was not a verdict — the
+    /// caller treats it as `false`.
+    pub async fn readable(
+        &mut self,
+        cat: &Catalog,
+        role: u8,
+        user: Option<&User>,
+        evaluator: Option<&Arc<dyn JsEvaluator>>,
+    ) -> Result<bool> {
+        let table = self.table;
+        if role <= table.access.min_role_read {
+            return Ok(true);
+        }
+        let Some(formula) = &table.ownership else {
+            return Ok(false);
+        };
+        if let Some(column) = owner_column(table, formula) {
+            return Ok(match user {
+                // `user.id` of nobody throws in the evaluator, which denies.
+                None => false,
+                Some(user) => is_user_id(self.values.get(column), user),
+            });
+        }
+        if self.prepared.is_none() {
+            let fetched = async {
+                let shape = cat.schema_shape()?;
+                let analysis = formula.validate(&shape, &table.name)?;
+                prefetch_bindings(cat, table, &analysis, &shape, &mut self.values).await
+            }
+            .await;
+            self.prepared = Some(fetched.map_err(|e| sc_error::format_chain(&e)));
+            if let Some(Err(reason)) = &self.prepared {
+                return Err(Error::msg(format!(
+                    "the values `{}`'s ownership formula reads could not be fetched for a \
+                     changed row, so nobody below its read role is sent the change: {reason}",
+                    table.name
+                )));
+            }
+        }
+        if !matches!(self.prepared, Some(Ok(()))) {
+            return Ok(false);
+        }
+        let evaluator = require_evaluator(evaluator)?;
+        Ok(allowed(evaluator, formula, Operation::Read, user, &self.values).await)
+    }
+}
+
+/// The column `formula` compares with the caller's id when it is exactly
+/// `column === user.id` (or `user.id === column`, or `==`), on a plain, stored
+/// column of `table` — `None` for every other formula.
+fn owner_column<'f>(table: &Table, formula: &'f Formula) -> Option<&'f str> {
+    use sc_expr::{Ast, BinaryOp, MemberProp};
+    let Ast::Binary { op, l, r } = formula.ast() else {
+        return None;
+    };
+    if !matches!(op, BinaryOp::StrictEq | BinaryOp::Eq) {
+        return None;
+    }
+    let is_user_id = |ast: &Ast| {
+        matches!(
+            ast,
+            Ast::Member { obj, prop: MemberProp::Static(prop), optional: false }
+                if prop == COL_ID && matches!(obj.as_ref(), Ast::Ident(name) if name == "user")
+        )
+    };
+    let column = match (l.as_ref(), r.as_ref()) {
+        (Ast::Ident(column), other) | (other, Ast::Ident(column)) if is_user_id(other) => column,
+        _ => return None,
+    };
+    let field = table.field(column)?;
+    (!field.is_calc()).then_some(column.as_str())
+}
+
+/// Whether a column's value is the caller's id, as the evaluator's `===`
+/// would find it: the id itself, or text spelling it exactly as the user
+/// object does (the hyphenated lower-case form). Null, absent and any other
+/// type are not equal to a string.
+fn is_user_id(value: Option<&Value>, user: &User) -> bool {
+    match value {
+        Some(Value::Uuid(id)) => *id == user.id,
+        Some(Value::Text(text)) => *text == user.id.hyphenated().to_string(),
+        _ => false,
+    }
+}
+
 /// How this caller's permission to read `table` can be expressed **inside** a
 /// statement — the form an aggregate needs, because an aggregate observes rows
 /// without returning them.

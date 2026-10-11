@@ -38,6 +38,39 @@ use crate::applications::{
 };
 use crate::framework::{CFG_STORE, validate_framework_config};
 
+/// Refuse an exposed `table_changes` stream whose table is outside the
+/// application's table subset.
+///
+/// A stream of a table's changes is a standing read of that table, so exposing
+/// one on an application that does not include the table would be a way round
+/// the subset; it is refused on save, naming the stream and the table, so the
+/// admin either adds the table or stops exposing the stream. A stream that does
+/// not exist (yet) is not this check's to report — the client generator names
+/// it — and neither is any other kind of stream.
+async fn validate_change_streams(catalog: &Catalog, app: &Application) -> Result<()> {
+    if app.streams.is_empty() || catalog.get(sc_stream::STREAMS_TABLE)?.is_none() {
+        return Ok(());
+    }
+    for declared in &app.streams {
+        let Some(stream) = sc_stream::load_stream_by_name(catalog, &declared.0).await? else {
+            continue;
+        };
+        if stream.provider.trim() != sc_stream::TABLE_CHANGES {
+            continue;
+        }
+        let settings = sc_stream::ChangeSettings::from_config(&stream.configuration)?;
+        if !app.can_access_table(&TableId(settings.table.clone())) {
+            return Err(Error::invalid(format!(
+                "application `{}` exposes stream `{}`, which carries the changes of `{}` — a \
+                 table the application does not include; add `{}` to its tables, or stop \
+                 exposing the stream",
+                app.name, stream.name, settings.table, settings.table
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Save an application: insert its row, or update it in place if a row with its
 /// [`AppId`] already exists.
 ///
@@ -80,6 +113,10 @@ pub async fn save_application(catalog: &Catalog, app: &Application) -> Result<Ap
     // …and the static directories, against the same two things: the store subset
     // this app declares, and the mounts the APIs above have just claimed (§13.2).
     validate_static_dirs(app)?;
+    // …and a stream of a table's changes, against the table subset: a page
+    // may only be told about rows of a table its application includes (TODO.md
+    // "Live updates" §3 rule 3; the socket checks it again on subscribe).
+    validate_change_streams(catalog, app).await?;
     // …and each provider's own settings, against the spec that provider
     // declares. An unknown key is refused rather than stored and ignored: the
     // form renders exactly the spec, so a key outside it is a typo or a stale

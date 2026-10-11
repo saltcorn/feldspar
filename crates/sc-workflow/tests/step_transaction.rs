@@ -414,7 +414,17 @@ async fn live(
             session: None,
         })
         .expect("connects");
-    let (attached, _) = connection.attach(&running, None).await;
+    // An admin, with no filter: sent every committed change.
+    connection.set_user(Some(sc_auth::User::new(
+        uuid::Uuid::from_u128(0xad),
+        sc_auth::ROLE_ADMIN,
+    )?));
+    let access = sc_live::ChangeAccess {
+        catalog: Arc::clone(&f.catalog),
+        evaluator: None,
+        filter: sc_live::RowFilter::all(),
+    };
+    let (attached, _) = connection.attach_changes(&running, access).await;
     Ok((supervisor, connection, attached, queue))
 }
 
@@ -473,7 +483,7 @@ async fn a_steps_write_reaches_a_live_stream_after_the_commit_and_never_after_a_
             .expect("delivered")
             .expect("the queue is open");
         assert_eq!(delivery.envelope.value["op"], "insert");
-        assert_eq!(delivery.envelope.value["new"]["id"], json!(7));
+        assert_eq!(delivery.envelope.value["row"]["id"], json!(7));
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(queue.try_recv().is_err(), "exactly once");
     }

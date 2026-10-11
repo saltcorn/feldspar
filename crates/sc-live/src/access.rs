@@ -29,9 +29,12 @@
 //!   topic for a stream that takes none, or none for a row stream, is
 //!   [`Refusal::Invalid`]: by then the caller has been allowed to know the
 //!   stream is there, so saying their frame was wrong tells them nothing new.
-//! - **Per-element topics wait for their milestone** (L3): a stream that
-//!   declares them is closed rather than open to its `min_role`, because the
-//!   narrowing they promise is exactly what would be missing.
+//! - **A per-element stream is subscribed without a topic** (L3): who may see
+//!   which change is decided element by element in the fan-out
+//!   ([`crate::changes`]), so here it needs only the stream-level rules — and
+//!   its table must be in the application's subset, like a row topic's (rule
+//!   3). Naming a topic for it is malformed: its subscriber narrows it with a
+//!   filter.
 
 use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
 use sc_stream::TopicSpec;
@@ -64,8 +67,9 @@ pub struct StreamFacts {
     /// The stored stream, if there is one by that name.
     pub stored: Option<StoredStream>,
     /// For a `row` stream asked about one row: what the caller's REST read of
-    /// it found. [`RowFact::NotAsked`] for every other kind of stream, and for
-    /// a row stream asked without a topic.
+    /// it found. For a per-element stream, [`RowFact::TableNotExposed`] when
+    /// its table is outside the application's subset. [`RowFact::NotAsked`]
+    /// otherwise.
     pub row: RowFact,
 }
 
@@ -186,7 +190,20 @@ pub fn may_subscribe(
                 return Err(Refusal::Denied);
             }
         },
-        (TopicSpec::PerElementRow { .. }, _) => return Err(Refusal::Denied),
+        // Its table must exist for this app — checked before the frame's shape,
+        // so naming a topic tells a caller nothing about a table they cannot
+        // see.
+        (TopicSpec::PerElementRow { .. }, _) if facts.row == RowFact::TableNotExposed => {
+            return Err(Refusal::Denied);
+        }
+        (TopicSpec::PerElementRow { .. }, None) => None,
+        (TopicSpec::PerElementRow { .. }, Some(_)) => {
+            return Err(Refusal::Invalid(
+                "this stream carries row changes, which are narrowed with a filter, not a \
+                 topic; subscribe without one"
+                    .to_owned(),
+            ));
+        }
     };
     Ok(Grant { stored, topic })
 }
@@ -229,6 +246,12 @@ mod tests {
     fn boards() -> TopicSpec {
         TopicSpec::Row {
             table: "boards".to_owned(),
+        }
+    }
+
+    fn cards() -> TopicSpec {
+        TopicSpec::PerElementRow {
+            table: "cards".to_owned(),
         }
     }
 
@@ -311,15 +334,28 @@ mod tests {
                 false,
             ),
             (
-                "per-element topics before their milestone",
-                facts(
-                    true,
-                    Some((
-                        Some(ROLE_PUBLIC),
-                        TopicSpec::PerElementRow {
-                            table: "cards".to_owned(),
-                        },
-                    )),
+                "per-element, at the floor",
+                facts(true, Some((Some(MEMBER), cards()))),
+                signed_in(MEMBER),
+                true,
+            ),
+            (
+                "per-element, below the floor",
+                facts(true, Some((Some(EDITOR), cards()))),
+                signed_in(MEMBER),
+                false,
+            ),
+            (
+                "per-element, anonymous at a public floor",
+                facts(true, Some((Some(ROLE_PUBLIC), cards()))),
+                anonymous(),
+                true,
+            ),
+            (
+                "per-element, table outside the app",
+                with_row(
+                    facts(true, Some((Some(ROLE_PUBLIC), cards()))),
+                    RowFact::TableNotExposed,
                 ),
                 signed_in(ROLE_ADMIN),
                 false,
@@ -410,6 +446,19 @@ mod tests {
     }
 
     #[test]
+    fn a_change_stream_takes_no_topic_and_its_table_must_be_the_apps() {
+        let live = facts(true, Some((Some(MEMBER), cards())));
+        assert_eq!(decide(&live, &signed_in(MEMBER), None), Ok(None));
+        // A topic is malformed — but only once access passed…
+        assert_eq!(decide(&live, &signed_in(MEMBER), Some("7")), Err(Some(())));
+        assert_eq!(decide(&live, &signed_in(ROLE_PUBLIC), Some("7")), Err(None));
+        // …and a table outside the app is absent, topic or not.
+        let outside = with_row(live, RowFact::TableNotExposed);
+        assert_eq!(decide(&outside, &signed_in(MEMBER), None), Err(None));
+        assert_eq!(decide(&outside, &signed_in(MEMBER), Some("7")), Err(None));
+    }
+
+    #[test]
     fn every_refusal_of_access_is_the_same_refusal() {
         let cases = [
             (facts(false, None), signed_in(ROLE_ADMIN), None),
@@ -439,6 +488,14 @@ mod tests {
                 ),
                 signed_in(MEMBER),
                 Some("7"),
+            ),
+            (
+                with_row(
+                    facts(true, Some((Some(MEMBER), cards()))),
+                    RowFact::TableNotExposed,
+                ),
+                signed_in(MEMBER),
+                None,
             ),
         ];
         for (facts, caller, topic) in &cases {

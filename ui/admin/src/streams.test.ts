@@ -23,6 +23,7 @@ import {
   TAIL_LIMIT,
   applyFrame,
   cellText,
+  changeNotes,
   counterNotes,
   elementCells,
   elementColumns,
@@ -37,6 +38,7 @@ import {
   nameProblem,
   parseFrame,
   providerSpec,
+  readChanges,
   readCounters,
   readElementType,
   readEnvelope,
@@ -239,6 +241,31 @@ describe("status and counters", () => {
     expect(
       counterNotes(readCounters({ dropped_for_triggers: 3, dropped_for_rate: 2, malformed: 1 })),
     ).toEqual(["3 dropped for triggers", "2 over the rate cap", "1 malformed"]);
+  });
+
+  it("reads a table-changes stream's checks and says what they decided", () => {
+    expect(readChanges(null)).toBeNull();
+    expect(changeNotes(readChanges(null))).toEqual([]);
+    expect(changeNotes(readChanges({ checked: 0 }))).toEqual([]);
+    const changes = readChanges({
+      checked: 10,
+      delivered: 6,
+      suppressed_access: 3,
+      suppressed_filter: 1,
+      evaluator_micros: 2500,
+    });
+    expect(changes).toMatchObject({ checked: 10, delivered: 6 });
+    expect(changeNotes(changes)).toEqual([
+      "6 of 10 sent",
+      "3 withheld by access",
+      "1 outside filters",
+      "3 ms evaluating",
+    ]);
+    // Zeroes say nothing, and the evaluator's time only once it is worth a
+    // millisecond.
+    expect(changeNotes(readChanges({ checked: 2, delivered: 2, evaluator_micros: 10 }))).toEqual([
+      "2 of 2 sent",
+    ]);
   });
 
   it("groups a count, because a busy stream reaches seven digits", () => {

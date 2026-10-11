@@ -43,6 +43,19 @@
 //! wakes this connection, which re-asks the same read for the subscriptions it
 //! could affect and revokes those that now fail, without waiting for the clock.
 //!
+//! ## Row changes (L3)
+//!
+//! A `table_changes` stream is subscribed without a topic and with an optional
+//! `filter` in the REST read's vocabulary. Its table must be in the
+//! application's subset (otherwise it is `unavailable`, like any absent
+//! stream); the filter is lowered against that table by the REST read's own
+//! walk ([`sc_live::RowFilter`]) and an unknown field is `invalid`. The
+//! subscription is attached with the filter, the catalog and the evaluator
+//! ([`sc_live::ChangeAccess`]), and the stream's fan-out decides for every
+//! element what this connection's caller is sent — `insert`, `update`,
+//! `enter`, `leave`, `delete` or nothing — reading the caller from the
+//! connection each time, so a re-read session reaches the next element.
+//!
 //! ## Following the stream
 //!
 //! A subscription to a stream that is not running here (disabled, or failing
@@ -61,16 +74,17 @@ use futures::{SinkExt, StreamExt};
 use sc_auth::{SessionStore, User};
 use sc_catalog::{Catalog, TableId};
 use sc_live::{
-    Attached, Caller, ClientFrame, CloseReason, Connection, ConnectionInfo, Delivery, ErrorCode,
-    FrameError, LiveHub, LiveLimits, Refusal, RowFact, ServerFrame, StoredStream, StreamFacts,
-    Subscription, SubscriptionSet, Touch, Watch, may_open, may_subscribe, read_rule_tables,
+    Attached, Caller, ChangeAccess, ClientFrame, CloseReason, Connection, ConnectionInfo, Delivery,
+    ErrorCode, FrameError, LikeRules, LiveHub, LiveLimits, Refusal, RowFact, RowFilter,
+    ServerFrame, StoredStream, StreamFacts, Subscription, SubscriptionSet, Touch, Watch, may_open,
+    may_subscribe, read_rule_tables,
 };
 use sc_stream::{RunningStream, Stream, StreamSupervisor, TopicSpec};
 use serde_json::{Value as Json, json};
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 
 use crate::apps::{AppMounts, MountedApp};
-use crate::observe::{element_type_json, fit_close_reason, status_parts};
+use crate::observe::{element_type_json_in, fit_close_reason, status_parts};
 
 /// The live machinery a server holds: the hub every application's connections
 /// register with. Rides on [`AppMounts`] beside the stream services, for their
@@ -196,10 +210,14 @@ async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
         }
     };
     let mut close_signal = connection.close_signal();
+    // Who the caller is, as a `table_changes` subscription's verdicts read it;
+    // replaced at every re-read of the session.
+    connection.set_user(caller.user.clone());
     let mut live = Live {
         subs: SubscriptionSet::new(limits.max_subscriptions),
         by_attachment: HashMap::new(),
         row_subs: HashMap::new(),
+        change_subs: HashMap::new(),
         connection,
         env,
         caller,
@@ -273,6 +291,9 @@ struct Live {
     /// depends on, and the watch that wakes this connection when one of them
     /// is written to.
     row_subs: HashMap<String, RowSub>,
+    /// The `table_changes` subscriptions, by `sub`: what their fan-out
+    /// decides each element by, kept to attach again after a restart.
+    change_subs: HashMap<String, ChangeAccess>,
     connection: Connection,
     env: LiveEnv,
     caller: LiveCaller,
@@ -424,32 +445,75 @@ impl Live {
                 ];
             }
         };
-        if filter.is_some() {
-            return vec![
-                FrameError::invalid(
-                    Some(sub),
-                    format!("`{stream}` takes no filter; only a stream of row changes does"),
-                )
-                .frame(),
-            ];
-        }
+        let change = match &grant.stored.topics {
+            TopicSpec::PerElementRow { table } => {
+                match self.change_access(table, filter.as_ref()) {
+                    Ok(access) => Some(access),
+                    Err(message) => {
+                        return vec![
+                            FrameError::invalid(Some(sub), format!("`{stream}`: {message}"))
+                                .frame(),
+                        ];
+                    }
+                }
+            }
+            _ if filter.is_some() => {
+                return vec![
+                    FrameError::invalid(
+                        Some(sub),
+                        format!("`{stream}` takes no filter; only a stream of row changes does"),
+                    )
+                    .frame(),
+                ];
+            }
+            _ => None,
+        };
         let row_sub = self.watch_row(&grant);
         let mut subscription = Subscription::waiting(sub.clone(), stream, grant.topic);
         let frames = start(
             &self.connection,
             &mut self.by_attachment,
             self.env.supervisor.as_ref(),
+            &self.env.catalog,
+            change.as_ref(),
             &mut subscription,
         )
         .await;
         // `check_new` passed above and nothing has been added since, so this
         // cannot fail; if it somehow did, dropping the subscription detaches it.
-        if self.subs.insert(subscription).is_ok()
-            && let Some(row_sub) = row_sub
-        {
-            self.row_subs.insert(sub, row_sub);
+        if self.subs.insert(subscription).is_ok() {
+            if let Some(row_sub) = row_sub {
+                self.row_subs.insert(sub.clone(), row_sub);
+            }
+            if let Some(change) = change {
+                self.change_subs.insert(sub, change);
+            }
         }
         frames
+    }
+
+    /// What a subscription to a `table_changes` stream on `table` is attached
+    /// with: its filter, lowered by the REST read's own walk against the table
+    /// (an `Err` is the sentence an `invalid` frame carries), and the catalog
+    /// and evaluator its elements are decided with.
+    fn change_access(&self, table: &str, filter: Option<&Json>) -> Result<ChangeAccess, String> {
+        let found = match self.env.catalog.get(table) {
+            Ok(Some(found)) => found,
+            // Access already found the table in the app; one dropped since is
+            // a stream nobody can be sent anything from.
+            _ => return Err(format!("its table `{table}` is not there")),
+        };
+        let like = match self.env.catalog.driver_for(&found) {
+            Ok(driver) => LikeRules::of(driver.as_ref()),
+            Err(_) => LikeRules::POSTGRES,
+        };
+        let filter = RowFilter::parse(&found, filter, like)
+            .map_err(|e| format!("`filter`: {}", sc_error::format_chain(&e)))?;
+        Ok(ChangeAccess {
+            catalog: Arc::clone(&self.env.catalog),
+            evaluator: self.env.evaluator.clone(),
+            filter,
+        })
     }
 
     /// For a `row` subscription, watch its table and every table its read rule
@@ -515,10 +579,22 @@ impl Live {
             stored,
             row: RowFact::NotAsked,
         };
-        if let (Some(key), Ok(stored)) = (topic, may_open(&facts, caller))
-            && let TopicSpec::Row { table } = &stored.topics
-        {
-            facts.row = self.row_fact(app, table, key).await;
+        if let Ok(stored) = may_open(&facts, caller) {
+            match (&stored.topics, topic) {
+                (TopicSpec::Row { table }, Some(key)) => {
+                    facts.row = self.row_fact(app, table, key).await;
+                }
+                // Rule 3: a stream of a table's changes exists for this app
+                // only if the table does — in its subset, and in the catalog.
+                (TopicSpec::PerElementRow { table }, _) => {
+                    let exposed = app.app.can_access_table(&TableId(table.clone()))
+                        && matches!(self.env.catalog.get(table), Ok(Some(_)));
+                    if !exposed {
+                        facts.row = RowFact::TableNotExposed;
+                    }
+                }
+                _ => {}
+            }
         }
         facts
     }
@@ -629,6 +705,7 @@ impl Live {
     async fn status_pass(&mut self) -> Vec<ServerFrame> {
         let mut frames = Vec::new();
         let supervisor = self.env.supervisor.clone();
+        let catalog = Arc::clone(&self.env.catalog);
         for subscription in self.subs.iter_mut() {
             let current = supervisor
                 .as_ref()
@@ -644,6 +721,8 @@ impl Live {
                         &self.connection,
                         &mut self.by_attachment,
                         supervisor.as_ref(),
+                        &catalog,
+                        self.change_subs.get(&subscription.sub),
                         subscription,
                     )
                     .await,
@@ -670,7 +749,12 @@ impl Live {
     async fn recheck(&mut self) -> Result<Vec<ServerFrame>, CloseReason> {
         if let Some(token) = &self.caller.session {
             match self.env.sessions.user_for(token).await {
-                Ok(Some(user)) => self.caller.user = Some(user),
+                Ok(Some(user)) => {
+                    // The next element of every `table_changes` subscription
+                    // is decided as the user is now.
+                    self.connection.set_user(Some(user.clone()));
+                    self.caller.user = Some(user);
+                }
                 Ok(None) => {
                     return Err(CloseReason {
                         code: ErrorCode::SignedOut,
@@ -773,6 +857,7 @@ impl Live {
         // Its watch goes with it, and with the last watcher of a table the
         // hub stops observing writes to it.
         self.row_subs.remove(&gone.sub);
+        self.change_subs.remove(&gone.sub);
     }
 }
 
@@ -784,6 +869,8 @@ async fn start(
     connection: &Connection,
     by_attachment: &mut HashMap<u64, String>,
     supervisor: Option<&Arc<StreamSupervisor>>,
+    catalog: &Catalog,
+    change: Option<&ChangeAccess>,
     subscription: &mut Subscription<Attached>,
 ) -> Vec<ServerFrame> {
     let running = supervisor.and_then(|supervisor| supervisor.by_name(&subscription.stream));
@@ -800,17 +887,32 @@ async fn start(
             counters: Json::Null,
         }];
     };
-    attach(connection, by_attachment, subscription, &running).await
+    attach(
+        connection,
+        by_attachment,
+        catalog,
+        change,
+        subscription,
+        &running,
+    )
+    .await
 }
 
-/// Attach `subscription` to `running`: `ready`, then the replay.
+/// Attach `subscription` to `running`: `ready`, then the replay. A
+/// `table_changes` subscription is attached with what its elements are decided
+/// by.
 async fn attach(
     connection: &Connection,
     by_attachment: &mut HashMap<u64, String>,
+    catalog: &Catalog,
+    change: Option<&ChangeAccess>,
     subscription: &mut Subscription<Attached>,
     running: &Arc<RunningStream>,
 ) -> Vec<ServerFrame> {
-    let (attached, replay) = connection.attach(running, subscription.topic.clone()).await;
+    let (attached, replay) = match change {
+        Some(change) => connection.attach_changes(running, change.clone()).await,
+        None => connection.attach(running, subscription.topic.clone()).await,
+    };
     by_attachment.insert(attached.attachment(), subscription.sub.clone());
     if let Some(previous) = subscription.activate(attached) {
         by_attachment.remove(&previous.attachment());
@@ -821,7 +923,7 @@ async fn attach(
     frames.push(ServerFrame::Ready {
         sub: subscription.sub.clone(),
         stream: subscription.stream.clone(),
-        element_type: element_type_json(running),
+        element_type: element_type_json_in(running, catalog),
         replayed: replay.len(),
         can_publish: false,
         status,

@@ -18,13 +18,17 @@
 //! | [`limits`] | The per-connection limits and clocks, as configuration |
 //! | [`hub`] | Connections, one fan-out task per running stream, publishing, the write watch, and handing committed writes to `table_changes` streams |
 //! | [`rows`] | Which tables a row topic's read rule reads |
+//! | [`filter`] | A `table_changes` subscription's filter, in the REST read's vocabulary, evaluated in Rust |
+//! | [`changes`] | What each subscriber of a `table_changes` stream is sent: the decision table, the per-element read checks, the counters |
 //!
 //! ## Where this sits
 //!
-//! Layer 7, beside `sc-workflow` and `sc-agent`: above `sc-stream`, whose
+//! Layer 8, beside `sc-app`: above `sc-stream`, whose
 //! running streams it subscribes to and publishes into, `sc-auth`, whose roles
-//! it decides by and whose session ends it listens for, and `sc-catalog`,
-//! whose write seam tells it a row topic's access may have changed; below
+//! it decides by and whose session ends it listens for, `sc-catalog`, whose
+//! write seam tells it a row topic's access may have changed, and `sc-api`,
+//! whose row layer is where a `table_changes` element's projection, filter
+//! vocabulary and read rule come from (one rule, not a copy of it); below
 //! `sc-server`. It implements `sc-expr`'s `LiveHost`, which is how the
 //! `publish` action and a code body's `live.publish` reach it without naming
 //! it.
@@ -42,6 +46,8 @@
 //!   not fit is dropped, counted and reported as `lagged`.
 
 pub mod access;
+pub mod changes;
+pub mod filter;
 pub mod hub;
 pub mod limits;
 pub mod protocol;
@@ -53,6 +59,11 @@ pub use access::{
     Caller, Denied, Grant, Refusal, RowFact, StoredStream, StreamFacts, caller_role, may_open,
     may_subscribe,
 };
+pub use changes::{
+    CallerCell, ChangeAccess, ChangeCounters, ChangeCounts, Delivered, Suppressed, deliver_to,
+    suppressed_by,
+};
+pub use filter::{LikeRules, RowFilter};
 pub use hub::{
     Attached, ChangeWatch, CloseReason, CloseSignal, Connection, ConnectionId, ConnectionInfo,
     Delivery, LiveHub, Touch, Watch, topic_of,

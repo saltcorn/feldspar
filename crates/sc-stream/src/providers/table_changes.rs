@@ -1,5 +1,5 @@
 //! The built-in `table_changes` stream provider (TODO.md "Live updates" §2,
-//! L3.3; L3.4 completes it).
+//! L3.3 and L3.4).
 //!
 //! One element per committed insert, update or delete on a table. Its elements
 //! are made by **writes**, not by a publisher: the live hub is a listener on
@@ -12,12 +12,28 @@
 //!
 //! ## The element is the change, not what a subscriber is sent
 //!
-//! An element carries `{op, key, old, new}`: both images of the row, as the
-//! write saw them. Who may see which of them, and in what shape (`update`,
-//! `enter`, `leave`), is decided per subscriber by the hub's fan-out, off the
-//! write's path (§3 rule 5). So a new subscriber is replayed nothing
-//! ([`Replay::Nothing`]): a ring of raw rows handed to whoever subscribes next
-//! would skip exactly that decision.
+//! An element on the stream carries `{op, key, row, old}`: the row as the
+//! write left it (`row`, null for a delete) and as it was before (`old`, for
+//! an update or a delete). `old` is **not declared** in the element type — a
+//! declared shape is a floor, and an undeclared key is carried (see
+//! [`ElementType`]) — because no page is ever sent it: it is what the hub's
+//! fan-out needs to decide, per subscriber, whether the change is an
+//! `update`, an `enter`, a `leave` or nothing (§3 rule 5). What a subscriber
+//! receives is `{op, key, row?}`, which is exactly the declared type. So a new
+//! subscriber is replayed nothing ([`Replay::Nothing`]): a ring of raw rows
+//! handed to whoever subscribes next would skip that decision.
+//!
+//! ## The element type is the table's
+//!
+//! [`element_type`](StreamProvider::element_type) can only say `row` is JSON:
+//! it sees the configuration, which names the table. Asked with the catalog
+//! ([`element_type_in`](StreamProvider::element_type_in)) it declares `row`'s
+//! keys — one per column an application's REST read returns, so the users
+//! table's password hash is not among them — and that is what a generated
+//! client is typed from. A column added to the table moves the type at the next
+//! client emit, which the schema observer triggers for every app that includes
+//! the table. With `payload: key` there is no `row` at all: a page is told
+//! `{op, key}` and fetches the row itself, for a wide row or a joined read.
 //!
 //! ## Its topics
 //!
@@ -43,18 +59,41 @@ pub const TABLE_CHANGES: &str = "table_changes";
 pub const CFG_TABLE: &str = "table";
 /// Which writes: any of `insert`, `update`, `delete`.
 pub const CFG_OPS: &str = "ops";
+/// What a page is sent: `row` (the default) or `key`.
+pub const CFG_PAYLOAD: &str = "payload";
 
 /// The keys of an element.
 pub const KEY_OP: &str = "op";
-/// The written row's primary key, as a topic spells it (`null` for a table
-/// without a one-column key).
+/// The written row's primary key, as the row holds it.
 pub const KEY_KEY: &str = "key";
-/// The row before the write — `null` for an insert.
+/// The row after the write — `null` for a delete. What a page is sent, in the
+/// REST read's projection, for an `insert`, an `update` and an `enter`.
+pub const KEY_ROW: &str = "row";
+/// The row before the write — absent for an insert. Carried on the stream for
+/// the fan-out's access decision and never sent to a page.
 pub const KEY_OLD: &str = "old";
-/// The row after the write — `null` for a delete.
-pub const KEY_NEW: &str = "new";
 
 const ALL_OPS: [WriteOp; 3] = [WriteOp::Insert, WriteOp::Update, WriteOp::Delete];
+
+/// What a page is sent of a changed row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Payload {
+    /// The row, in the REST read's projection.
+    #[default]
+    Row,
+    /// Only `{op, key}`; the page fetches the row (a wide row, a joined read).
+    Key,
+}
+
+impl Payload {
+    /// Its stored name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Payload::Row => "row",
+            Payload::Key => "key",
+        }
+    }
+}
 
 /// What a `table_changes` stream is configured to carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +102,8 @@ pub struct ChangeSettings {
     pub table: String,
     /// The writes, in insert/update/delete order, each at most once.
     pub ops: Vec<WriteOp>,
+    /// What a page is sent of the row.
+    pub payload: Payload,
 }
 
 impl ChangeSettings {
@@ -111,7 +152,29 @@ impl ChangeSettings {
                  stream carries nothing"
             )));
         }
-        Ok(ChangeSettings { table, ops })
+        let payload = match config.get(CFG_PAYLOAD) {
+            None | Some(Json::Null) => Payload::Row,
+            Some(Json::String(name)) => match name.trim().to_ascii_lowercase().as_str() {
+                "" | "row" => Payload::Row,
+                "key" => Payload::Key,
+                other => {
+                    return Err(Error::invalid(format!(
+                        "`{CFG_PAYLOAD}`: `{other}` is not a payload; it is `row` (the row is \
+                         sent) or `key` (only the key is, and the page fetches the row)"
+                    )));
+                }
+            },
+            Some(other) => {
+                return Err(Error::invalid(format!(
+                    "`{CFG_PAYLOAD}` is `row` or `key`, got {other}"
+                )));
+            }
+        };
+        Ok(ChangeSettings {
+            table,
+            ops,
+            payload,
+        })
     }
 
     /// Whether the stream carries `op`.
@@ -150,17 +213,52 @@ impl StreamProvider for TableChanges {
                 .default_value(Json::from(
                     ALL_OPS.iter().map(|op| op.as_str()).collect::<Vec<_>>(),
                 )),
+            FormField::new(CFG_PAYLOAD, BasicType::Text)
+                .label("What a page is sent")
+                .options([Payload::Row.as_str(), Payload::Key.as_str()])
+                .default_value(Json::from(Payload::Row.as_str())),
         ]
     }
 
     fn element_type(&self, config: &Attrs) -> Result<ElementType> {
-        ChangeSettings::from_config(config)?;
-        Ok(ElementType::json([
-            ElementField::new(KEY_OP, BasicType::Text).required(),
-            ElementField::new(KEY_KEY, BasicType::Json),
-            ElementField::new(KEY_OLD, BasicType::Json),
-            ElementField::new(KEY_NEW, BasicType::Json),
-        ]))
+        let settings = ChangeSettings::from_config(config)?;
+        Ok(change_type(&settings, None))
+    }
+
+    fn element_type_in(&self, config: &Attrs, catalog: &Catalog) -> Result<ElementType> {
+        let settings = ChangeSettings::from_config(config)?;
+        let table = catalog.get(&settings.table)?.ok_or_else(|| {
+            Error::invalid(format!(
+                "`{CFG_TABLE}`: there is no table `{}`",
+                settings.table
+            ))
+        })?;
+        let columns = table
+            .fields
+            .iter()
+            .filter(|field| !sc_auth::is_api_hidden_column(&table.name, &field.base.name))
+            .map(|field| {
+                // What REST types the column as: its basic type, or text for a
+                // rich type it cannot name.
+                let basic = field
+                    .base
+                    .type_
+                    .as_basic()
+                    .cloned()
+                    .unwrap_or(BasicType::Text);
+                let basic = match basic {
+                    BasicType::Other(_) => BasicType::Text,
+                    known => known,
+                };
+                let key = ElementField::new(field.base.name.clone(), basic);
+                // A required column is present in every row a page is sent.
+                if field.required || field.primary_key {
+                    key.required()
+                } else {
+                    key
+                }
+            });
+        Ok(change_type(&settings, Some(columns.collect())))
     }
 
     fn topic_spec(&self, config: &Attrs) -> Result<TopicSpec> {
@@ -179,10 +277,20 @@ impl StreamProvider for TableChanges {
 
     fn validate_in(&self, config: &Attrs, catalog: &Catalog) -> Result<()> {
         let settings = ChangeSettings::from_config(config)?;
-        if catalog.get(&settings.table)?.is_none() {
+        let Some(table) = catalog.get(&settings.table)? else {
             return Err(Error::invalid(format!(
                 "`{CFG_TABLE}`: there is no table `{}`",
                 settings.table
+            )));
+        };
+        // A page applies a change by key — the card that moved, the row that
+        // left — so a table whose rows have no one-column key has changes no
+        // page could place.
+        if table.primary_key.len() != 1 {
+            return Err(Error::invalid(format!(
+                "`{CFG_TABLE}`: `{}` has no one-column primary key, so a page could not tell \
+                 which row a change is about",
+                table.name
             )));
         }
         Ok(())
@@ -203,6 +311,23 @@ impl StreamProvider for TableChanges {
     }
 }
 
+/// The element type for `settings`: `{op, key}`, and `row` unless the payload
+/// is only the key — with `row`'s keys when the table's columns are known.
+fn change_type(settings: &ChangeSettings, columns: Option<Vec<ElementField>>) -> ElementType {
+    let mut keys = vec![
+        ElementField::new(KEY_OP, BasicType::Text).required(),
+        ElementField::new(KEY_KEY, BasicType::Json).required(),
+    ];
+    if settings.payload == Payload::Row {
+        let row = ElementField::new(KEY_ROW, BasicType::Json);
+        keys.push(match columns {
+            Some(columns) => row.with_keys(columns),
+            None => row,
+        });
+    }
+    ElementType::json(keys)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +342,11 @@ mod tests {
         let all = ChangeSettings::from_config(&config(json!({ "table": "cards" }))).unwrap();
         assert_eq!(all.table, "cards");
         assert_eq!(all.ops, ALL_OPS.to_vec());
+        assert_eq!(all.payload, Payload::Row);
+        let keyed =
+            ChangeSettings::from_config(&config(json!({ "table": "cards", "payload": "key" })))
+                .unwrap();
+        assert_eq!(keyed.payload, Payload::Key);
 
         let some = ChangeSettings::from_config(&config(
             json!({ "table": "cards", "ops": ["Delete", "insert", "delete"] }),
@@ -233,6 +363,11 @@ mod tests {
             (json!({ "table": "cards", "ops": [] }), "at least one"),
             (json!({ "table": "cards", "ops": ["upsert"] }), "`upsert`"),
             (json!({ "table": "cards", "ops": "insert" }), "is a list"),
+            (
+                json!({ "table": "cards", "payload": "diff" }),
+                "`diff` is not a payload",
+            ),
+            (json!({ "table": "cards", "payload": 1 }), "`row` or `key`"),
         ] {
             let err = TableChanges.validate(&config(bad.clone())).unwrap_err();
             assert!(err.to_string().contains(says), "{bad}: {err}");
@@ -255,5 +390,23 @@ mod tests {
             .unwrap()
             .validate()
             .unwrap();
+    }
+
+    #[test]
+    fn the_element_is_op_key_and_row_and_a_key_payload_has_no_row() {
+        let names = |ty: ElementType| -> Vec<String> {
+            ty.keys().iter().map(|key| key.name.clone()).collect()
+        };
+        let row = TableChanges
+            .element_type(&config(json!({ "table": "cards" })))
+            .unwrap();
+        assert_eq!(names(row.clone()), vec!["op", "key", "row"]);
+        // Without the catalog, `row` is JSON of no declared shape; `old` is
+        // never declared, because no page is sent it.
+        assert!(row.keys()[2].keys.is_empty());
+        let key = TableChanges
+            .element_type(&config(json!({ "table": "cards", "payload": "key" })))
+            .unwrap();
+        assert_eq!(names(key), vec!["op", "key"]);
     }
 }

@@ -640,7 +640,7 @@ impl RunningStream {
     /// updates" L3.3) — what the live hub does, after the commit, for a write
     /// on the stream's table while somebody is subscribed.
     ///
-    /// `change` is `{op, key, old, new}`, built by the hub from the write; it
+    /// `change` is `{op, key, row, old}`, built by the hub from the write; it
     /// is not decoded against the element type, because it is Saltcorn's own
     /// account of a row and not a payload from outside. Delivered through the
     /// running subscription's sink, so it is stamped, counted, broadcast and

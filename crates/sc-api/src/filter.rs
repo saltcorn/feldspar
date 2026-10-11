@@ -216,6 +216,28 @@ pub fn where_expr(table: &Table, fields: &[String], where_: Option<&Json>) -> Re
     where_resolved(table, fields, where_, &|_, _| Ok(None))
 }
 
+/// The fields an application's caller may filter `table` on: every column
+/// its REST read returns ([`visible_field`](crate::user_rows::visible_field)),
+/// less the calculated ones, which are returned but not filtered on.
+pub fn api_filter_fields(table: &Table) -> Vec<String> {
+    table
+        .fields
+        .iter()
+        .filter(|field| !field.is_calc())
+        .filter(|field| crate::user_rows::visible_field(table, &field.base.name).is_some())
+        .map(|field| field.base.name.clone())
+        .collect()
+}
+
+/// [`where_expr`] over [`api_filter_fields`]: the filter object as an
+/// application's caller may write it against `table` — what a live
+/// subscription to a `table_changes` stream is filtered by (TODO.md "Live
+/// updates" L3.6), so it can name exactly the fields a REST read could and the
+/// password hash is as unknown here as there.
+pub fn api_where(table: &Table, where_: Option<&Json>) -> Result<Option<Expr>> {
+    where_expr(table, &api_filter_fields(table), where_)
+}
+
 /// What a filter key that is **not** a column of the table being read may turn
 /// out to be, in a surface that has such keys.
 pub(crate) enum FilterKey {

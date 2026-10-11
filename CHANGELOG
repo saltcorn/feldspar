@@ -2,6 +2,69 @@
 
 Changes in reverse chronological order.
 
+## Live updates L3, phase 2: table change streams, decided per element and per subscriber
+
+A page can now subscribe to a `table_changes` stream and be sent exactly the changes its own REST
+read would have seen: a card moving on someone else's board, a row entering or leaving a filtered
+view, and nothing at all about a row the user may not read. TODO.md L3.4–L3.9. The generated
+client's typed `subscribe({ where })` and `useLiveRows` are L3.10–L3.11.
+
+- **The provider, completed (L3.4)** (`sc-stream::providers::table_changes`): `payload`
+  (`row` | `key`); saving refuses a table with no one-column primary key as well as a missing one.
+  **The element on the stream is now `{op, key, row, old}`** (was `{op, key, old, new}`): `row` is
+  the row as the write left it (null for a delete), `old` as it was (absent for an insert), and
+  `old` is deliberately undeclared — no page is sent it. A page receives `{op, key, row?}`.
+- **Element types can describe an object's keys**: `ElementField::keys` (`with_keys`), validated
+  (only on a `json` key; names unique), carried sparsely on the wire, and rendered by the client
+  generator as a nested record. New provider hook `StreamProvider::element_type_in(config,
+  catalog)` (defaults to `element_type`): `table_changes` answers `row` with the table's columns
+  as the REST read returns them. `sc_app::app_streams` and the socket's `ready` use it, so a
+  column added to a table reaches the generated client at the next emit (the schema observer
+  already re-emits every app that includes the table).
+- **Saving an application** refuses an exposed `table_changes` stream whose table is outside the
+  application's table subset, naming both; the socket refuses one as absent too.
+- **Projection (L3.5)**: `sc_api::api_row(table, row)` — the REST read's columns, through
+  `visible_field`. The hidden-column rule itself moved to `sc_auth::is_api_hidden_column`, which
+  `sc-api`'s row layer and the provider's typing both read (one statement of it).
+- **Filters (L3.6)**: `sc_api::filter::api_where` / `api_filter_fields` (the REST read's filter
+  object over the fields REST may filter on) and `sc_live::RowFilter`, which evaluates the
+  lowered predicate in Rust with SQL's three-valued logic, `LIKE` per the table's database
+  (`LikeRules::of`, read off the dialect). A filter naming an unknown, calculated or hidden field is
+  an `invalid` frame.
+- **`deliver_to` (L3.7)** (`sc_live::changes`): the pure decision table → `insert | update |
+  enter | leave | delete | nothing`; `leave` and `delete` carry the key only.
+- **Readability per subscriber (L3.8)**: `sc_api::RowImage` applies §7.3's rule to a row image —
+  the role floor, then `column === user.id` as a field comparison with no isolate, else the
+  formula reified with its Ⱶ/Ↄ bindings prefetched once per image. The fan-out matches each
+  distinct filter once and decides each distinct `(user, role)` once, asking readability only of
+  an image the filter matched. `Connection::attach_changes(running, ChangeAccess)` attaches with
+  the filter and row access; `Connection::set_user` (a `CallerCell` the socket refreshes at every
+  session re-read) is who each verdict is for. A plain `attach` to such a stream is sent nothing.
+  `may_subscribe` now admits `PerElementRow` subscriptions (no topic; table in the app's subset).
+- **Counters (L3.9)**: per stream, `checked`, `delivered`, `suppressed_access`,
+  `suppressed_filter`, `evaluator_micros` (`LiveHub::change_counts`), as `changes` on
+  `listStreams`, `getStream`, `saveStream` and `streamStatus` (client.ts regenerated in `ui/admin`,
+  `ui/ide`, `ui/builder`, `ui/analytics`), printed under the Streams list's subscriber count.
+- **Layering**: `sc-live` now depends on `sc-api` (and `sc-db`, `sc-query`, `sc-types`, `sc-log`)
+  and moves from layer 7 to layer 8, beside `sc-app` — so a change is decided by the row layer's
+  own projection, filter vocabulary and read rule rather than a copy. §2's table and diagram
+  updated.
+- **A property worth knowing**: the rows an ownership formula reads through Ⱶ/Ↄ are read when the
+  fan-out decides, not as of the write — a share added right after an insert may let its subject
+  hear of the insert, and a share removed may withhold an earlier change. Never more than the rule
+  grants at that moment.
+- **Tests**: `sc-live` unit tests (the full truth table, what is sent, suppression reasons, the
+  filter's logic and refusals, per-element `may_subscribe` rows); `tests/filters.rs` — filter
+  parity, 33 filters × 5 rows with nulls, against SQLite's and Postgres's reads;
+  `tests/readers.rs` (SQLite, real evaluator, two users) — owner / Ⱶ / Ↄ formulas × insert,
+  update, move, delete, filters, a `key` payload, a bare attachment, a users stream without the
+  password hash, the counters; `sc-server` `app_live_changes.rs` (Postgres, real sockets);
+  `sc-stream` and `sc-app` unit tests for nested keys and the provider's settings; `ui/admin`
+  vitest for the counters' notes. Updated for the new element shape: `sc-live` `tests/changes.rs`
+  and `sc-workflow` `step_transaction.rs`.
+- **Docs**: TECHNICAL_DESIGN §2 (layer and dependencies), §14.10 (the provider, the element
+  type, and a new "Per element: what each subscriber is sent").
+
 ## Live updates L3, phase 1: writes leave the write path after their commit
 
 A row write can now reach a `table_changes` stream — only once it has committed, only while

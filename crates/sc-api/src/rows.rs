@@ -1192,6 +1192,14 @@ pub(crate) fn json_row_values(
     values
 }
 
+/// A row as JSON — an event's row — as the typed values a formula or a filter
+/// is evaluated against, each column coerced through its storage type. The
+/// public door to the row layer's own reading of a row (see
+/// [`json_row_values`]'s rules).
+pub fn row_json_values(table: &Table, row: &Json) -> std::collections::BTreeMap<String, Value> {
+    json_row_values(table, row)
+}
+
 /// The basic (storage) type a JSON value is coerced through: the type itself for
 /// a basic field, or the SQL type a rich field sits on (a `String` stores as
 /// `text`, an `Integer` as `int8`).

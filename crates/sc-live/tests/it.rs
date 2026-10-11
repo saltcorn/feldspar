@@ -4,5 +4,9 @@
 
 #[path = "changes.rs"]
 mod changes;
+#[path = "filters.rs"]
+mod filters;
 #[path = "hub.rs"]
 mod hub;
+#[path = "readers.rs"]
+mod readers;

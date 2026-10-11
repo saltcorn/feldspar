@@ -301,6 +301,58 @@ export function counterNotes(counters: Counters): string[] {
   return notes;
 }
 
+/** What a `table_changes` stream's per-element checks decided since the server
+ * started (`sc_live::ChangeCounts`, TODO.md "Live updates" L3.9): every element
+ * × subscription pair checked, how many were sent something, how many were
+ * withheld by the read rule or fell outside the subscriber's filter, and the
+ * time spent deciding readability. */
+export type ChangeCounts = {
+  checked: number;
+  delivered: number;
+  suppressed_access: number;
+  suppressed_filter: number;
+  evaluator_micros: number;
+};
+
+/** The `changes` field of a stream row or status, or `null` for a stream that
+ * has none (any stream but `table_changes`, and one nobody has subscribed to on
+ * this server). */
+export function readChanges(raw: unknown): ChangeCounts | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const count = (key: string): number => {
+    const n = Number(value[key]);
+    return Number.isFinite(n) ? n : 0;
+  };
+  return {
+    checked: count("checked"),
+    delivered: count("delivered"),
+    suppressed_access: count("suppressed_access"),
+    suppressed_filter: count("suppressed_filter"),
+    evaluator_micros: count("evaluator_micros"),
+  };
+}
+
+/** The line under a `table_changes` stream's subscriber count: what was sent,
+ * what the read rule withheld, what the filters left out, and the evaluator's
+ * time — the last only once it is worth a millisecond. Empty before anything
+ * was checked. */
+export function changeNotes(changes: ChangeCounts | null): string[] {
+  if (!changes || changes.checked === 0) return [];
+  const notes = [
+    `${formatCount(changes.delivered)} of ${formatCount(changes.checked)} sent`,
+  ];
+  if (changes.suppressed_access > 0) {
+    notes.push(`${formatCount(changes.suppressed_access)} withheld by access`);
+  }
+  if (changes.suppressed_filter > 0) {
+    notes.push(`${formatCount(changes.suppressed_filter)} outside filters`);
+  }
+  const ms = Math.round(changes.evaluator_micros / 1000);
+  if (ms > 0) notes.push(`${formatCount(ms)} ms evaluating`);
+  return notes;
+}
+
 /** A count, grouped — `1,024`. A stream's element count is the one number on
  * this screen that reaches seven digits in an afternoon. */
 export function formatCount(n: number): string {

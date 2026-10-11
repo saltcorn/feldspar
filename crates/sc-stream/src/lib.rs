@@ -97,7 +97,7 @@ pub use provider::{
 pub use providers::internal::{INTERNAL, Internal};
 #[cfg(feature = "mqtt")]
 pub use providers::mqtt::{MQTT, Mqtt};
-pub use providers::table_changes::{ChangeSettings, TABLE_CHANGES, TableChanges};
+pub use providers::table_changes::{ChangeSettings, Payload, TABLE_CHANGES, TableChanges};
 pub use providers::{BUILTINS_COMPILED_OUT, MQTT_COMPILED_IN, builtin_providers, builtin_registry};
 pub use registry::StreamRegistry;
 pub use retained::Retained;

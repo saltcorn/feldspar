@@ -52,6 +52,17 @@ pub struct ElementField {
     /// Sparse on the wire: a key that is not required does not say so.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+    /// For a `json` key whose value is an object of a known shape, that
+    /// shape: the keys of the object, each declared the same way.
+    ///
+    /// What a `table_changes` stream's `row` key is — the table's row, one
+    /// sub-key per column — so a generated client types `element.row.title`
+    /// rather than handing over an `unknown` (TODO.md "Live updates" L3.4).
+    /// Descriptive only: [`ElementType::decode`] checks the key is JSON, not
+    /// that the object has these keys, because a declared shape is a floor
+    /// (see the module docs). Sparse on the wire: a key with none says nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<ElementField>,
 }
 
 impl ElementField {
@@ -61,7 +72,14 @@ impl ElementField {
             name: name.into(),
             r#type,
             required: false,
+            keys: Vec::new(),
         }
+    }
+
+    /// Declare the shape of this `json` key's object value.
+    pub fn with_keys(mut self, keys: impl IntoIterator<Item = ElementField>) -> ElementField {
+        self.keys = keys.into_iter().collect();
+        self
     }
 
     /// Mark the key required: an element without it is malformed.
@@ -171,6 +189,7 @@ impl ElementType {
                         )));
                     }
                     seen.push(name);
+                    validate_sub_keys(key)?;
                     match &key.r#type {
                         BasicType::Bytes => {
                             return Err(Error::invalid(format!(
@@ -300,6 +319,48 @@ impl ElementType {
             },
         }
     }
+}
+
+/// Check the declared shape of one key's object value, if it has one: only a
+/// `json` key can have one, and within it every name is non-empty, used once,
+/// and of a type this system knows. A sub-key may be `bytes` — a row's `bytea`
+/// column travels as base64 text, as it does over REST.
+fn validate_sub_keys(key: &ElementField) -> Result<()> {
+    if key.keys.is_empty() {
+        return Ok(());
+    }
+    if key.r#type != BasicType::Json {
+        return Err(Error::invalid(format!(
+            "the element key `{}` declares the keys of an object, so it must be `json`, not `{}`",
+            key.name,
+            key.r#type.name()
+        )));
+    }
+    let mut seen: Vec<&str> = Vec::with_capacity(key.keys.len());
+    for sub in &key.keys {
+        let name = sub.name.trim();
+        if name.is_empty() {
+            return Err(Error::invalid(format!(
+                "a key inside the element key `{}` must have a name",
+                key.name
+            )));
+        }
+        if seen.contains(&name) {
+            return Err(Error::invalid(format!(
+                "the key `{name}` is declared twice inside the element key `{}`",
+                key.name
+            )));
+        }
+        seen.push(name);
+        if let BasicType::Other(other) = &sub.r#type {
+            return Err(Error::invalid(format!(
+                "the key `{name}` inside the element key `{}` has the unknown type `{other}`",
+                key.name
+            )));
+        }
+        validate_sub_keys(sub)?;
+    }
+    Ok(())
 }
 
 /// The base64 alphabet the envelope carries bytes in: standard, padded — what
@@ -521,6 +582,49 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn a_json_key_may_declare_the_shape_of_its_object_and_round_trips() {
+        let ty = ElementType::json([
+            ElementField::new("op", BasicType::Text).required(),
+            ElementField::new("row", BasicType::Json).with_keys([
+                ElementField::new("id", BasicType::Int).required(),
+                ElementField::new("photo", BasicType::Bytes),
+            ]),
+        ]);
+        ty.validate().unwrap();
+        let wire = serde_json::to_value(&ty).unwrap();
+        assert_eq!(
+            wire["keys"][1]["keys"][0],
+            json!({ "name": "id", "type": "int", "required": true })
+        );
+        // A key with no shape says nothing about one.
+        assert!(wire["keys"][0].get("keys").is_none());
+        assert_eq!(serde_json::from_value::<ElementType>(wire).unwrap(), ty);
+
+        for (bad, says) in [
+            (
+                ElementField::new("row", BasicType::Text)
+                    .with_keys([ElementField::new("id", BasicType::Int)]),
+                "must be `json`",
+            ),
+            (
+                ElementField::new("row", BasicType::Json).with_keys([
+                    ElementField::new("id", BasicType::Int),
+                    ElementField::new("id", BasicType::Text),
+                ]),
+                "declared twice inside",
+            ),
+            (
+                ElementField::new("row", BasicType::Json)
+                    .with_keys([ElementField::new("x", BasicType::Other("money".into()))]),
+                "unknown type `money`",
+            ),
+        ] {
+            let err = ElementType::json([bad]).validate().unwrap_err().to_string();
+            assert!(err.contains(says), "{err}");
+        }
     }
 
     #[test]

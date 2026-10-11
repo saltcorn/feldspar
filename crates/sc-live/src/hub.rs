@@ -9,7 +9,8 @@
 //! each of which is a slot in some connection's bounded queue. That is the
 //! design's "fan-out is indexed by topic": the per-element cost is the
 //! subscribers *on that topic*, not every socket in the process. It is also
-//! where L3's per-element access checks will run, off the publisher's path.
+//! where a `table_changes` stream's per-element access checks run, off the
+//! writer's path (see "Writes somebody is subscribed to").
 //!
 //! ## Nobody blocks the flow, and nobody is lied to
 //!
@@ -64,9 +65,15 @@
 //! observes a `(table, op)` only while one of them carries it — so a stream
 //! that is defined, even exposed, but has nobody subscribed costs a write
 //! nothing. An observed write is handed to each such stream as
-//! `{op, key, old, new}` ([`RunningStream::publish_change`]) and nothing more:
+//! `{op, key, row, old}` ([`RunningStream::publish_change`]) and nothing more:
 //! no filter, no access check, no socket. Those run in the stream's fan-out
-//! task, off the write's path.
+//! task, off the write's path: a subscription to a `table_changes` stream is
+//! attached with its filter and the means to read rows
+//! ([`Connection::attach_changes`]), and for every element the fan-out decides
+//! what each subscriber is sent ([`crate::changes`]) — once per distinct user
+//! and filter, and only then queues it. A subscription attached without them
+//! ([`Connection::attach`]) is sent nothing from such a stream: a raw change is
+//! never anybody's.
 //!
 //! ## Only what committed is announced
 //!
@@ -92,13 +99,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 
 use chrono::Utc;
-use sc_auth::{SessionEnded, SessionListener};
+use sc_auth::{SessionEnded, SessionListener, User};
 use sc_catalog::{Catalog, TableEvents, TableWrite, WriteOp};
 use sc_error::{Error, Result};
 use sc_expr::{LiveHost, LiveTopics};
-use sc_stream::providers::table_changes::{KEY_KEY, KEY_NEW, KEY_OLD, KEY_OP};
+use sc_stream::providers::table_changes::{KEY_KEY, KEY_OLD, KEY_OP, KEY_ROW};
 use sc_stream::{
-    ChangeSettings, Envelope, Replay, Retained, RunningStream, StreamId, StreamSupervisor,
+    ChangeSettings, Envelope, Payload, Replay, Retained, RunningStream, StreamId, StreamSupervisor,
     TABLE_CHANGES, TopicSpec,
 };
 use serde_json::Value as Json;
@@ -106,6 +113,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use uuid::Uuid;
 
+use crate::changes::{CallerCell, ChangeAccess, ChangeCounters, ChangeCounts, Subscriber};
 use crate::limits::LiveLimits;
 use crate::protocol::{ErrorCode, FrameError};
 use crate::topic::TopicIndex;
@@ -172,6 +180,10 @@ pub struct LiveHub {
     /// attached to: what [`observes`](TableEvents::observes) reads for a
     /// change, without awaiting anything.
     changes: Mutex<HashMap<String, Vec<ChangeEntry>>>,
+    /// Per `table_changes` stream, what its fan-outs have decided since this
+    /// server started (L3.9) — kept here rather than on a fan-out, so a
+    /// fan-out that ends with its last subscriber does not take them with it.
+    change_counters: Mutex<HashMap<StreamId, Arc<ChangeCounters>>>,
     /// Itself, for a task that outlives the call that spawned it.
     me: Weak<LiveHub>,
 }
@@ -216,6 +228,7 @@ impl LiveHub {
             streams: RwLock::new(None),
             watched: Mutex::new(HashMap::new()),
             changes: Mutex::new(HashMap::new()),
+            change_counters: Mutex::new(HashMap::new()),
             me: me.clone(),
         })
     }
@@ -468,6 +481,7 @@ impl LiveHub {
                 wake: Arc::new(Notify::new()),
                 touches,
                 next_attachment: AtomicU64::new(1),
+                caller: CallerCell::default(),
             },
             deliveries,
         ))
@@ -503,6 +517,20 @@ impl LiveHub {
         lock(&self.fanouts).subscribers.clone()
     }
 
+    /// What the fan-outs of the `table_changes` stream `stream` have decided
+    /// since this server started — `None` for a stream that has had no
+    /// subscriber here (and for every other kind of stream).
+    pub fn change_counts(&self, stream: StreamId) -> Option<ChangeCounts> {
+        lock(&self.change_counters)
+            .get(&stream)
+            .map(|counters| counters.snapshot())
+    }
+
+    /// The counters a fan-out of `stream` adds to.
+    fn change_counters_for(&self, stream: StreamId) -> Arc<ChangeCounters> {
+        Arc::clone(lock(&self.change_counters).entry(stream).or_default())
+    }
+
     /// How many subscriptions are attached to one stream.
     pub fn subscribers(&self, stream: StreamId) -> usize {
         lock(&self.fanouts)
@@ -524,7 +552,7 @@ impl LiveHub {
             // that one keeps serving the subscriptions it has until they move
             // (the socket's status pass moves them), and new ones start here.
             _ => {
-                let fanout = Fanout::start(Arc::clone(running));
+                let fanout = Fanout::start(Arc::clone(running), self.change_counters_for(id));
                 fanouts.current.insert(id, Arc::clone(&fanout));
                 fanout
             }
@@ -577,7 +605,7 @@ impl LiveHost for LiveHub {
 /// subscription is attached to a `table_changes` stream carrying it — and
 /// nothing otherwise, so an unwatched write pays one lookup.
 ///
-/// `emit` does no access work: it builds `{op, key, old, new}` and hands it,
+/// `emit` does no access work: it builds `{op, key, row, old}` and hands it,
 /// with the touch, to whatever is listening **once the write has committed**
 /// — at once on the pooled path, as an after-commit callback inside a shared
 /// transaction. Filters, read checks and sockets are the fan-out's and the
@@ -611,17 +639,16 @@ impl TableEvents for LiveHub {
                 }
             }
         }
-        let change = Json::Object(
-            [
-                (KEY_OP, Json::from(write.op.as_str())),
-                (KEY_KEY, key),
-                (KEY_OLD, old),
-                (KEY_NEW, new),
-            ]
-            .into_iter()
-            .map(|(name, value)| (name.to_owned(), value))
-            .collect(),
-        );
+        // `{op, key, row, old}`: the row as the write left it (null for a
+        // delete) and as it was (absent for an insert) — see the provider.
+        let mut change = serde_json::Map::new();
+        change.insert(KEY_OP.to_owned(), Json::from(write.op.as_str()));
+        change.insert(KEY_KEY.to_owned(), key);
+        change.insert(KEY_ROW.to_owned(), new);
+        if !old.is_null() {
+            change.insert(KEY_OLD.to_owned(), old);
+        }
+        let change = Json::Object(change);
         let table = write.table.name.clone();
         let op = write.op;
         let keys: Vec<String> = keys.into_iter().collect();
@@ -653,6 +680,8 @@ pub struct Connection {
     wake: Arc<Notify>,
     touches: Arc<Touches>,
     next_attachment: AtomicU64,
+    /// Who it is now, as a `table_changes` subscription's verdicts read it.
+    caller: CallerCell,
 }
 
 /// A connection's watch on some tables, held by the subscription it is for.
@@ -727,6 +756,14 @@ impl Connection {
         &self.info
     }
 
+    /// Set who the connection's caller is — at the upgrade, and again each
+    /// time the socket re-reads its session — so every per-element verdict a
+    /// `table_changes` subscription is given after it uses the role and the
+    /// fields the user has now (§3 rule 6).
+    pub fn set_user(&self, user: Option<User>) {
+        self.caller.set(user);
+    }
+
     /// What resolves when the hub closes this connection — a session end.
     /// Owned separately from the connection, so a socket's loop can wait on it
     /// beside everything else the connection is doing.
@@ -790,6 +827,33 @@ impl Connection {
         running: &Arc<RunningStream>,
         topic: Option<String>,
     ) -> (Attached, Vec<Arc<Envelope>>) {
+        self.attach_with(running, topic, None).await
+    }
+
+    /// Attach a subscription to a `table_changes` stream: like
+    /// [`attach`](Connection::attach) with no topic, carrying what its
+    /// fan-out decides each element by — the subscription's filter, where rows
+    /// are read, and this connection's caller as it is when each element
+    /// arrives (L3.6–L3.8).
+    pub async fn attach_changes(
+        &self,
+        running: &Arc<RunningStream>,
+        access: ChangeAccess,
+    ) -> (Attached, Vec<Arc<Envelope>>) {
+        let change = SinkChange {
+            access,
+            caller: self.caller.clone(),
+        };
+        self.attach_with(running, None, Some(Arc::new(change)))
+            .await
+    }
+
+    async fn attach_with(
+        &self,
+        running: &Arc<RunningStream>,
+        topic: Option<String>,
+        change: Option<Arc<SinkChange>>,
+    ) -> (Attached, Vec<Arc<Envelope>>) {
         let changes = self.hub.watch_changes(running);
         let attachment = self.next_attachment.fetch_add(1, Ordering::Relaxed);
         let lagged = Arc::new(AtomicU64::new(0));
@@ -803,6 +867,7 @@ impl Connection {
                 queue: self.queue.clone(),
                 lagged: Arc::clone(&lagged),
                 wake: Arc::clone(&self.wake),
+                change,
             },
             reply,
         });
@@ -918,6 +983,15 @@ struct Sink {
     queue: mpsc::Sender<Delivery>,
     lagged: Arc<AtomicU64>,
     wake: Arc<Notify>,
+    /// For a subscription to a `table_changes` stream, what each element is
+    /// decided by; `None` for every other subscription.
+    change: Option<Arc<SinkChange>>,
+}
+
+/// A `table_changes` subscription's part of its sink.
+struct SinkChange {
+    access: ChangeAccess,
+    caller: CallerCell,
 }
 
 impl Sink {
@@ -950,9 +1024,9 @@ struct Fanout {
 }
 
 impl Fanout {
-    fn start(running: Arc<RunningStream>) -> Arc<Fanout> {
+    fn start(running: Arc<RunningStream>, counters: Arc<ChangeCounters>) -> Arc<Fanout> {
         let (commands, inbox) = mpsc::unbounded_channel();
-        tokio::spawn(route(Arc::clone(&running), inbox));
+        tokio::spawn(route(Arc::clone(&running), inbox, counters));
         Arc::new(Fanout {
             running,
             commands,
@@ -963,7 +1037,23 @@ impl Fanout {
 
 /// The fan-out task: route each element to its topic's subscriptions until
 /// every handle on the mailbox is gone.
-async fn route(running: Arc<RunningStream>, mut inbox: mpsc::UnboundedReceiver<Command>) {
+async fn route(
+    running: Arc<RunningStream>,
+    mut inbox: mpsc::UnboundedReceiver<Command>,
+    counters: Arc<ChangeCounters>,
+) {
+    // A stream of row changes is decided per element and per subscriber; the
+    // table and the payload are read once, as the running stream's
+    // configuration cannot change under it (a change restarts it).
+    let per_element: Option<(String, Payload)> = match running.topic_spec() {
+        Ok(TopicSpec::PerElementRow { table }) => {
+            let payload = ChangeSettings::from_config(&running.configuration())
+                .map(|settings| settings.payload)
+                .unwrap_or_default();
+            Some((table, payload))
+        }
+        _ => None,
+    };
     let feed = running.subscribe_elements();
     let policy = running.replay().clone();
     // Only the copy the policy reads is kept: a retaining stream's subscriber
@@ -1024,6 +1114,10 @@ async fn route(running: Arc<RunningStream>, mut inbox: mpsc::UnboundedReceiver<C
                         retained.keep(envelope.clone(), Utc::now());
                     }
                     let envelope = Arc::new(envelope);
+                    if let Some((table, payload)) = &per_element {
+                        route_change(table, *payload, &envelope, &index, &counters).await;
+                        continue;
+                    }
                     if capacity > 0 {
                         if ring.len() >= capacity {
                             ring.pop_front();
@@ -1046,6 +1140,39 @@ async fn route(running: Arc<RunningStream>, mut inbox: mpsc::UnboundedReceiver<C
                 // lives on it); handled so it cannot become a busy loop.
                 Err(RecvError::Closed) => flowing = false,
             },
+        }
+    }
+}
+
+/// One change from a `table_changes` stream: decide what each of its
+/// subscriptions is sent ([`crate::changes::decide`]) and queue it. A
+/// subscription attached without a filter and a way to read rows is sent
+/// nothing.
+async fn route_change(
+    table: &str,
+    payload: Payload,
+    envelope: &Arc<Envelope>,
+    index: &TopicIndex<Key, Sink>,
+    counters: &ChangeCounters,
+) {
+    let sinks: Vec<(&Sink, &SinkChange)> = index
+        .all()
+        .filter_map(|(_, sink)| sink.change.as_deref().map(|change| (sink, change)))
+        .collect();
+    if sinks.is_empty() {
+        return;
+    }
+    let subscribers: Vec<Subscriber<'_>> = sinks
+        .iter()
+        .map(|(_, change)| Subscriber {
+            access: &change.access,
+            caller: &change.caller,
+        })
+        .collect();
+    let decided = crate::changes::decide(table, payload, envelope, &subscribers, counters).await;
+    for ((sink, _), sent) in sinks.iter().zip(decided) {
+        if let Some(sent) = sent {
+            sink.offer(&sent);
         }
     }
 }

@@ -6386,6 +6386,10 @@ fn stream_provider_schema() -> TypeSchema {
 ///   on this server right now (TODO.md "Live updates" L1.11), and `topics` how
 ///   its provider splits it into topics — both from memory and the provider,
 ///   like the status.
+/// - `changes`, for a `table_changes` stream, is what its per-element checks
+///   have decided since this server started (L3.9): `checked`, `delivered`,
+///   `suppressed_access`, `suppressed_filter` and `evaluator_micros`. Null for
+///   any other stream, and for one nobody has subscribed to here.
 ///
 /// The `configuration` is the **redacted** one: a setting the provider declared
 /// secret comes back as the sentinel, never as the password.
@@ -6410,6 +6414,7 @@ fn stream_schema() -> TypeSchema {
         StructField::new("counters", TypeSchema::optional(TypeSchema::json())),
         StructField::new("topics", TypeSchema::optional(TypeSchema::json())),
         StructField::new("subscribers", TypeSchema::int()),
+        StructField::new("changes", TypeSchema::optional(TypeSchema::json())),
     ])
 }
 
@@ -6458,6 +6463,8 @@ fn stream_status_schema() -> TypeSchema {
         // How many of those are applications' pages: live subscriptions held
         // on `{mount}/live` (TODO.md "Live updates" L1.11).
         StructField::new("subscribers", TypeSchema::int()),
+        // For a `table_changes` stream, its per-element checks (L3.9).
+        StructField::new("changes", TypeSchema::optional(TypeSchema::json())),
     ])
 }
 

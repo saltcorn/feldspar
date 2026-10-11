@@ -25,6 +25,18 @@ sc-stream.workspace = true
 # through, installed on the catalog.
 sc-catalog.workspace = true
 sc-expr.workspace = true
+# A `table_changes` element is decided by the application's row layer (L3.5–
+# L3.8): the REST read's projection (`api_row`), its filter vocabulary
+# (`filter::api_where`) and its read rule applied to a row image (`RowImage`).
+# The same functions, so a page can never be sent what a REST read would not
+# return. This is why the crate sits at layer 8, above `sc-api`.
+sc-api.workspace = true
+# The filter's predicate is an `sc_query::Expr`, evaluated here; the database a
+# table lives on decides what `LIKE` means (`sc_db::DatabaseDriver::dialect`).
+sc-db.workspace = true
+sc-query.workspace = true
+sc-types.workspace = true
+sc-log.workspace = true
 async-trait.workspace = true
 # A retained element's freshness is judged against the wall clock, as its
 # `received_at` was stamped by it.
@@ -47,12 +59,12 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 # Postgres, over a driver that counts the statements it is asked to run — the
 # only way to see that an unobserved update reads no pre-image. Dev edges are
 # not part of the layering (see `repo_hygiene`).
-sc-api.workspace = true
-sc-db.workspace = true
 sc-db-postgres.workspace = true
-sc-query.workspace = true
 sc-test-harness.workspace = true
-sc-types.workspace = true
+# The filter parity and per-element read tests (L3.6, L3.8) run against an
+# in-memory SQLite database, with the real formula evaluator.
+sc-db-sqlite.workspace = true
+sc-expr = { workspace = true, features = ["eval"] }
 
 [lints]
 workspace = true

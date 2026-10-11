@@ -79,7 +79,7 @@ pub use graphql::{
     generate_graphql_client, graphql_config_spec,
 };
 pub use ownership::{
-    caller_context, caller_context_at, delete_row_as, insert_row_as, read_row_values_as,
+    RowImage, caller_context, caller_context_at, delete_row_as, insert_row_as, read_row_values_as,
     read_rows_as, row_readable_as, update_row_as,
 };
 pub use provider::{
@@ -105,6 +105,7 @@ pub use typescript::{
     CLIENT_HELPER_FILE, StreamExport, StreamTopics, client_helper, client_property,
     generate_client, generate_client_with_streams,
 };
+pub use user_rows::api_row;
 
 #[cfg(test)]
 mod tests {

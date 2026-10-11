@@ -55,6 +55,8 @@ mod app_i18n;
 mod app_invite;
 #[path = "app_live.rs"]
 mod app_live;
+#[path = "app_live_changes.rs"]
+mod app_live_changes;
 #[path = "app_live_topics.rs"]
 mod app_live_topics;
 #[path = "app_serving.rs"]

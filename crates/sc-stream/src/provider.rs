@@ -265,6 +265,25 @@ pub trait StreamProvider: Send + Sync {
         Ok(TopicSpec::Single)
     }
 
+    /// The element type for `config`, typed against **the schema it names** —
+    /// what a caller holding a catalog asks: the generated client, the Streams
+    /// list and form, a socket's `ready`.
+    ///
+    /// The sibling of [`validate_in`](StreamProvider::validate_in), for the same
+    /// reason: `table_changes` carries a table's rows, and the shape of a row is
+    /// the table's fields, which the configuration only names. Its
+    /// [`element_type`](StreamProvider::element_type) says `row` is JSON; this
+    /// says which keys it has, so a column added to the table reaches an
+    /// application's generated types at its next build (the schema observer
+    /// re-emits the client of every app that includes the table).
+    ///
+    /// Defaults to [`element_type`](StreamProvider::element_type): every other
+    /// provider's type is a function of its configuration alone.
+    fn element_type_in(&self, config: &Attrs, catalog: &Catalog) -> Result<ElementType> {
+        let _ = catalog;
+        self.element_type(config)
+    }
+
     /// The element type for `config`, **asked for** rather than answered from
     /// what is already known.
     ///

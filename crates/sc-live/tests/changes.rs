@@ -14,6 +14,11 @@
 //!   has reached the stream (its counter moved) and **no** subscriber has been
 //!   given it — that is the fan-out's work, on its own task, so a write's
 //!   latency does not grow with the number of subscribers.
+//!
+//! Subscriptions here are an admin's, with no filter (L3.6–L3.8 are tested in
+//! `filters.rs`, `readers.rs` and `sc-server`'s `app_live_changes.rs`): what
+//! reaches them is what each subscriber is sent, `{op, key, row}`, and the
+//! stream's own element — with `old` — is read off its broadcast channel.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,6 +26,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use sc_api::rows;
+use sc_auth::{ROLE_ADMIN, User};
 use sc_catalog::{Catalog, DataField, LIVE_EVENTS, TableEvents, WriteOp};
 use sc_db::{
     DatabaseDriver, DbCapabilities, DescribedColumn, PhysicalTable, RowStream, SchemaChange,
@@ -28,7 +34,7 @@ use sc_db::{
 };
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
-use sc_live::{ConnectionInfo, Delivery, LiveHub, LiveLimits};
+use sc_live::{ChangeAccess, ConnectionInfo, Delivery, LiveHub, LiveLimits, RowFilter};
 use sc_query::{SqlDialect, Statement};
 use sc_stream::{
     RunningStream, Stream, StreamConfig, StreamProvider, StreamRegistry, StreamSupervisor,
@@ -38,6 +44,7 @@ use sc_test_harness::TestDb;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value as Json, json};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 /// A real driver that counts the `SELECT`s that read `cards`.
 struct Counting {
@@ -173,6 +180,20 @@ fn anonymous() -> ConnectionInfo {
     }
 }
 
+/// An admin, who reads every row, and so is sent every change.
+fn admin() -> Option<User> {
+    Some(User::new(Uuid::from_u128(0xad), ROLE_ADMIN).expect("a role in range"))
+}
+
+/// A subscription's filter and row access: every row of `catalog`'s tables.
+fn everything(catalog: &Arc<Catalog>) -> ChangeAccess {
+    ChangeAccess {
+        catalog: Arc::clone(catalog),
+        evaluator: None,
+        filter: RowFilter::all(),
+    }
+}
+
 async fn next(deliveries: &mut mpsc::Receiver<Delivery>) -> Delivery {
     tokio::time::timeout(Duration::from_secs(10), deliveries.recv())
         .await
@@ -232,27 +253,38 @@ async fn an_unobserved_update_reads_no_pre_image_and_an_observed_one_reads_one()
     );
 
     let (connection, mut queue) = f.hub.connect(anonymous()).expect("connects");
-    let (attached, replay) = connection.attach(&f.cards, None).await;
+    connection.set_user(admin());
+    let (attached, replay) = connection
+        .attach_changes(&f.cards, everything(&f.catalog))
+        .await;
     assert!(replay.is_empty(), "a table-changes stream replays nothing");
+    let mut raw = f.cards.subscribe_elements().receiver;
     f.card_reads.store(0, Ordering::SeqCst);
     rows::update_row(&f.catalog, &cards, "1", &json!({ "title": "watched" })).await?;
     assert_eq!(f.card_reads.load(Ordering::SeqCst), 1, "one pre-image read");
 
+    // The stream's element carries both images…
+    let element = raw.recv().await.expect("the stream's element");
+    assert_eq!(element.value["op"], "update");
+    assert_eq!(element.value["key"], json!(1));
+    assert_eq!(element.value["old"]["title"], "unwatched");
+    assert_eq!(element.value["row"]["title"], "watched");
+    // …and the subscriber is sent the row as it is now, and not the old one.
     let change = next(&mut queue).await;
     assert_eq!(change.attachment, attached.attachment());
-    let value = &change.envelope.value;
-    assert_eq!(value["op"], "update");
-    assert_eq!(value["key"], json!(1));
-    assert_eq!(value["old"]["title"], "unwatched");
-    assert_eq!(value["new"]["title"], "watched");
+    assert_eq!(
+        change.envelope.value,
+        json!({ "op": "update", "key": 1, "row": { "id": 1, "title": "watched" } })
+    );
     assert_eq!(change.envelope.stream, "cards_live");
 
     // An insert carries no `old`; a delete is not a write this stream carries.
     rows::create_row(&f.catalog, &cards, &json!({ "id": 2, "title": "new" })).await?;
+    let element = raw.recv().await.expect("the stream's element");
+    assert!(element.value.get("old").is_none(), "{}", element.value);
     let inserted = next(&mut queue).await;
     assert_eq!(inserted.envelope.value["op"], "insert");
-    assert_eq!(inserted.envelope.value["old"], Json::Null);
-    assert_eq!(inserted.envelope.value["new"]["id"], json!(2));
+    assert_eq!(inserted.envelope.value["row"]["id"], json!(2));
     rows::delete_row(&f.catalog, &cards, "2").await?;
 
     drop(attached);
@@ -289,7 +321,10 @@ async fn the_write_hands_the_change_off_and_the_fan_out_delivers_it() -> Result<
     let mut held = Vec::new();
     for _ in 0..SUBSCRIBERS {
         let (connection, queue) = f.hub.connect(anonymous()).expect("connects");
-        let (attached, _) = connection.attach(&f.cards, None).await;
+        connection.set_user(admin());
+        let (attached, _) = connection
+            .attach_changes(&f.cards, everything(&f.catalog))
+            .await;
         held.push((connection, queue, attached));
     }
     let before = f.cards.counters().elements;
@@ -308,7 +343,7 @@ async fn the_write_hands_the_change_off_and_the_fan_out_delivers_it() -> Result<
         );
     }
     for (_, queue, _) in &mut held {
-        assert_eq!(next(queue).await.envelope.value["new"]["id"], json!(9));
+        assert_eq!(next(queue).await.envelope.value["row"]["id"], json!(9));
     }
     Ok(())
 }

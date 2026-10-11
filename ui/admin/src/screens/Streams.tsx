@@ -24,14 +24,17 @@ import { navigate } from "../App";
 import { IconPlus } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import {
+  changeNotes,
   counterNotes,
   elementTypeSummary,
   formatCount,
   formatTimestamp,
+  readChanges,
   readCounters,
   readElementType,
   readStatus,
   statusLabel,
+  type ChangeCounts,
   type Counters,
   type StreamItem,
   type StreamStatusValue,
@@ -49,7 +52,12 @@ const POLL_MS = 2000;
 /** What the poll knows about one stream, keyed by id. */
 type Live = Record<
   string,
-  { status: StreamStatusValue | null; counters: Counters; subscribers: number }
+  {
+    status: StreamStatusValue | null;
+    counters: Counters;
+    subscribers: number;
+    changes: ChangeCounts | null;
+  }
 >;
 
 export function Streams() {
@@ -98,6 +106,7 @@ export function Streams() {
                 status: readStatus(status.status),
                 counters: readCounters(status.counters),
                 subscribers: status.subscribers,
+                changes: readChanges(status.changes),
               },
             ] as const;
           } catch {
@@ -191,6 +200,9 @@ export function Streams() {
                 const badge = statusLabel(status, stream.enabled);
                 const notes = counterNotes(counters);
                 const subscribers = seen?.subscribers ?? stream.subscribers;
+                // A table-changes stream's per-element checks (L3.9): what its
+                // subscribers were sent, and what access and filters withheld.
+                const checks = changeNotes(seen ? seen.changes : readChanges(stream.changes));
                 return (
                   <tr key={stream.id}>
                     <td>
@@ -223,6 +235,9 @@ export function Streams() {
                     </td>
                     <td className={subscribers === 0 ? "text-muted" : undefined}>
                       {formatCount(subscribers)}
+                      {checks.length > 0 && (
+                        <div className="text-muted small">{checks.join(" · ")}</div>
+                      )}
                     </td>
                     <td>
                       <StatusBadge tone={badge.tone} title={badge.title}>

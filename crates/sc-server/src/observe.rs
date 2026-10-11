@@ -179,6 +179,24 @@ pub(crate) fn element_type_json(running: &RunningStream) -> Json {
         .unwrap_or(Json::Null)
 }
 
+/// [`element_type_json`], typed against the schema the configuration names
+/// ([`StreamProvider::element_type_in`](sc_stream::StreamProvider::element_type_in))
+/// — a `table_changes` stream's `row` with the table's columns. What the live
+/// socket's `ready` announces, so a page reads the type its generated client
+/// was written from. Falls back to the cached type when the provider cannot
+/// say (its table dropped under it).
+pub(crate) fn element_type_json_in(running: &RunningStream, catalog: &sc_catalog::Catalog) -> Json {
+    running
+        .provider()
+        .and_then(|provider| {
+            provider
+                .element_type_in(&running.configuration(), catalog)
+                .ok()
+        })
+        .and_then(|ty| serde_json::to_value(ty).ok())
+        .unwrap_or_else(|| element_type_json(running))
+}
+
 /// A running stream's status and counters as a frame carries them. Shared with
 /// the live socket's `ready` and `status`.
 pub(crate) fn status_parts(running: &RunningStream) -> (Json, Json) {
