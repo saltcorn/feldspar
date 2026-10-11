@@ -636,6 +636,41 @@ impl RunningStream {
         Ok(topic)
     }
 
+    /// Hand one committed write to a `table_changes` stream (TODO.md "Live
+    /// updates" L3.3) — what the live hub does, after the commit, for a write
+    /// on the stream's table while somebody is subscribed.
+    ///
+    /// `change` is `{op, key, old, new}`, built by the hub from the write; it
+    /// is not decoded against the element type, because it is Saltcorn's own
+    /// account of a row and not a payload from outside. Delivered through the
+    /// running subscription's sink, so it is stamped, counted, broadcast and
+    /// bridged to triggers exactly as any element. Refused for a stream whose
+    /// elements are not row changes, and for one that is not running here.
+    pub fn publish_change(&self, change: Json) -> Result<()> {
+        let name = self.name();
+        if !matches!(self.topic_spec()?, TopicSpec::PerElementRow { .. }) {
+            return Err(Error::invalid(format!(
+                "stream `{name}` does not carry row changes, so a write cannot be handed to it"
+            )));
+        }
+        let sink = match self.sink.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        let Some(sink) = sink else {
+            return Err(Error::invalid(format!(
+                "stream `{name}` is not running on this server ({})",
+                self.status().as_str()
+            )));
+        };
+        sink.deliver(Element {
+            value: change,
+            source: None,
+            topic: None,
+        });
+        Ok(())
+    }
+
     /// Set the status, and what the supervisor should do about it next.
     pub(crate) fn set_status(&self, status: StreamStatus, retry_at: Option<DateTime<Utc>>) {
         if let Ok(mut guard) = self.status.lock() {

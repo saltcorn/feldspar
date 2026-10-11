@@ -106,8 +106,9 @@ feldspar/
 │  │                              #    a connection's subscriptions, the topic index, the access
 │  │                              #    decisions as pure functions, and the hub that fans a
 │  │                              #    running stream's elements out, publishes into internal
-│  │                              #    streams (sc-expr's `LiveHost`) and watches the tables a row
-│  │                              #    topic's read rule reads (sc-catalog's `TableEvents`).
+│  │                              #    streams (sc-expr's `LiveHost`), watches the tables a row
+│  │                              #    topic's read rule reads and hands committed writes to
+│  │                              #    `table_changes` streams (sc-catalog's `TableEvents`).
 │  │                              #    Above sc-stream and sc-auth; below sc-server, which mounts
 │  │                              #    `{mount}/live`
 │  ├─ sc-model/                   # 6. Predictive models: a named dataset (sc-dataset) resolved,
@@ -2600,7 +2601,8 @@ same database.
 
 **The seam holds a list of listeners, keyed** (`Catalog::add_table_events(key, listener)`): the
 trigger dispatcher under `TRIGGER_EVENTS` and the live hub under `LIVE_EVENTS` (§14.10), which
-re-checks a row topic's access when a table its read rule reads is written to. Installing under a
+re-checks a row topic's access when a table its read rule reads is written to, and hands each
+write somebody is subscribed to to its `table_changes` streams. Installing under a
 key that is taken replaces — two dispatchers would fire every trigger twice — and a different key
 adds, so the second kind of listener can never silently switch the first off, which is what a
 replacing `set_table_events` would have done the day live updates were installed.
@@ -2610,6 +2612,18 @@ replacing `set_table_events` would have done the day live updates were installed
 the feature free for writes that do not use it: an update fetches its pre-image only when
 something will read it. A write is handed only to the listeners that observe it, each its own
 copy, and one listener's failure does not keep the write from the next.
+
+**"After the write" is not always "after the commit".** A write on the pooled path has
+committed when it is emitted. One made inside a `SharedTx` — a workflow step's, an import's
+(§10.3) — is emitted **before** that transaction commits, with the transaction in
+`TableWrite::tx`. A trigger wants exactly that: it joins the transaction and shares its fate. A
+listener that *tells somebody outside* about the write must not: a live page shown a row that
+the step then rolls back has been shown something that never happened. So such a listener hands
+what it would do to `SharedTx::after_commit(callback)`, which runs it once the commit has
+succeeded (in the order callbacks were added, on the committing task) and drops it unrun on a
+rollback, on a commit the database refuses, and when a savepoint taken before it was added is
+rolled back to (`SharedTx::savepoint` / `release_savepoint` / `rollback_to_savepoint`, which the
+CSV import's per-row savepoints use). The live hub is that listener (§14.10).
 
 Every other event is raised by something that already sits above `sc-action` and can simply
 hold the dispatcher: `login` from the one place a session starts, `startup` from the boot path,
@@ -2837,7 +2851,9 @@ trace row **per item** — the durability granularity of a loop is the item.
   (`rows::Executor::Transaction`); `TableWrite::tx` carries it into the emit seam so a cascade
   lands where its cause landed; and a code body's `db` operations and `trigger(…)` calls take it
   the same way. It **begins on its first statement**, so a step that calls an HTTP endpoint and
-  writes nothing holds no transaction while it waits.
+  writes nothing holds no transaction while it waits. What must happen only once the step's
+  writes are durable — a live page told about them (§14.10) — is registered with
+  `SharedTx::after_commit` and runs after the commit, or never (§10.2).
 
   Because the writers sharing one transaction are *not* the same caller, the caller-context GUCs
   travel with the **statement** rather than with the transaction: `SharedTx::run` re-applies them
@@ -8194,6 +8210,9 @@ tests are offline — the decoder, `element_type` over each `payload` setting, t
 validation and the topic-filter check need no broker. The live half is a human's, and
 `docs/tutorial-streams.md` is the recipe.
 
+The third built-in provider, **`table_changes`**, is also always compiled in: one element per
+committed write on a table, handed to it by the live hub while somebody is subscribed (§14.10).
+
 The second built-in provider, **`internal`**, observes nothing outside Saltcorn: its elements are
 published by Saltcorn's own code, it is always compiled in (a `--no-default-features` build still
 offers it, and the Streams screen's notice says only that MQTT was left out), and it is described
@@ -9622,9 +9641,11 @@ The plan is TODO.md "Live updates" (milestones L1–L6); this section records wh
 **Milestones L1 and L2 are built**: one socket per page, the access rules and their re-checking
 (L1); the built-in `internal` provider, `user` and `row` topics, retaining the latest element,
 re-checking a row topic when a write could change it, and server-side publishing from the
-`publish` action and `live.publish` in a code body (L2). `PerElementRow` topics, the
-`table_changes` and `document` providers, client publishing, presence and the bus are the later
-milestones.
+`publish` action and `live.publish` in a code body (L2). **L3's first phase is built**: writes
+are announced after their commit, and the hub hands each committed write somebody is subscribed
+to to its `table_changes` stream. Subscribing to one from a page (`PerElementRow` topics, with
+filters and per-element read checks), the `document` provider, client publishing, presence and
+the bus are the later milestones.
 
 #### Everything is a stream, and a stream has topics
 
@@ -9695,7 +9716,7 @@ rule and answers a `Grant` naming the topic the subscription is routed under:
 | `single` | nothing | no topic | below the floor |
 | `user` | nothing | their own user id | below the floor, or anonymous |
 | `row { table }` | a row's key (`"7"` or `7`) | the key | below the floor, the table outside the app's subset, or the caller's REST read of that row returns nothing |
-| `per_element_row` | — | — | always, until L3 |
+| `per_element_row` | — | — | always, until L3.8's per-element checks |
 
 A **row topic's** verdict is a fact the socket looks up through `sc_api::row_readable_as`, which
 is `read_row_values_as` with `pk = key` — the very read the application's REST API makes, with the
@@ -9771,9 +9792,57 @@ and sends `revoked` for those that now fail. Removing a share revokes the subscr
 without waiting for the clock. The last subscription watching a table takes the watch with it.
 
 A write made inside a `SharedTx` (a workflow step's) is emitted before that transaction commits
-(§10.2), so a re-check made at once would read the old state. Until L3.1 publishes after commit,
-the hub hands such a write over a second time two seconds later; the clock re-check is the
-backstop behind both.
+(§10.2), so a re-check made at once would read the old state. The hub therefore hands the touch
+over **after the commit** (`SharedTx::after_commit`), and not at all after a rollback — see "Table
+changes" below.
+
+#### Table changes: the write, after its commit (L3.1, L3.3)
+
+`sc-stream::providers::table_changes` is the third built-in provider: one element per committed
+insert, update or delete on `table`, for the writes `ops` lists (all three by default). For now it
+has those two settings and checks on save that the table exists; L3.4 adds `payload` and derives
+the element type from the table's fields. Its topics are `PerElementRow`, so `may_subscribe`
+still refuses a page's subscription to it — what a subscriber may be sent is decided per element,
+and that is L3.5–L3.8. It replays nothing (`Replay::Nothing`): a ring of raw rows handed to the
+next subscriber would skip that decision. Nothing publishes into it but a write —
+`accepts_publish` is false, and `RunningStream::publish_change(change)` is the hub's door, which
+delivers through the running subscription's sink like any element (cap, stamp, ring, broadcast,
+trigger bridge) but refuses a stream whose topics are not `PerElementRow`.
+
+**The element on the stream is the change, not what a subscriber is sent**: `{op, key, old,
+new}`, both images as the write saw them (`old` null for an insert, `new` null for a delete,
+`key` the one-column primary key or null). The per-subscriber shape — `insert`, `update`,
+`enter`, `leave`, `delete`, with or without the row — needs both images and is computed in the
+fan-out (L3.7).
+
+**Only a subscription makes a write observed.** The hub keeps, per table, the `table_changes`
+streams some subscription is attached to and the writes each carries; `Connection::attach`
+registers a `ChangeWatch` for a `table_changes` stream **before** joining its fan-out (so every
+write committed after `ready` is caught), and the `Attached` holds it, so unsubscribing,
+closing and a restart's re-attach all give it back. `observes(table, op)` is "a connection
+watches the table for a row topic, or a subscribed `table_changes` stream carries `op`" — one
+lock and a short scan, no await. A stream that is defined, running and exposed by an app but has
+nobody subscribed costs a write nothing; in particular an update does not read its pre-image.
+
+**`emit` does no access work.** It builds `{op, key, old, new}` and the touch keys, and hands
+both to `LiveHub::announce` — at once on the pooled path, through `SharedTx::after_commit` inside
+a shared transaction. `announce` looks the streams up again at that moment and calls
+`publish_change` on each, which is a synchronous broadcast send. Filters, read checks and socket
+writes belong to the stream's fan-out task, so a write's latency does not grow with the number
+of subscribers, and a fan-out that falls behind reports `lagged` to its subscribers rather than
+slowing the writer.
+
+**Tests.** `sc-catalog`'s `shared_tx.rs`: a callback runs after the commit and in order, never
+on a rollback or a commit the database refuses (a deferred foreign key), and rolling back to a
+savepoint drops exactly the callbacks added since. `sc-workflow`'s `step_transaction.rs`, with
+the real hub on the write seam: a step's insert has been handed to the stream zero times while
+the step runs and once after the run is done, and a step that fails after the same write hands
+over nothing. `sc-live`'s `tests/changes.rs`, through the row layer on a driver that counts its
+`SELECT`s: running streams with nobody subscribed observe nothing; attaching observes exactly
+the stream's writes, and the last detach stops it; an unobserved update reads no pre-image and
+an observed one reads one, with `old` as the row was; and with 500 subscribers on a
+current-thread runtime, the write has reached the stream when it returns while no subscriber has
+been served yet — that is the fan-out's work, afterwards.
 
 #### Server-side publishing
 

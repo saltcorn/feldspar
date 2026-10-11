@@ -503,7 +503,7 @@ re-checking. No new providers yet. Everything later builds on this.
 ## L3 — Table change streams (B, D)
 
 ### Phase 1: getting the event out of the write path, correctly
-- [ ] **L3.1** `SharedTx::after_commit(callback)`: run after commit, dropped on rollback. Test: a
+- [x] **L3.1** `SharedTx::after_commit(callback)`: run after commit, dropped on rollback. Test: a
   workflow step whose write is rolled back publishes nothing; one that commits publishes once,
   after the commit.
 - [x] **L3.2** *(Done with L2.6, which needed a second listener first; keyed, so a second
@@ -512,7 +512,9 @@ re-checking. No new providers yet. Everything later builds on this.
   OR over listeners and `emit` called only on the listeners that observe. Update the callers
   (`sc-server::triggers` and the tests that install a dispatcher). Test: with both the trigger
   dispatcher and live installed, a table trigger still fires.
-- [ ] **L3.3** The live `TableEvents` listener: `observes(table, op)` is true only while a
+- [x] **L3.3** *(A minimal `table_changes` provider — `table`, `ops`, `PerElementRow`, no
+  replay — came with it, so there is a stream to subscribe to; L3.4 completes it. The element on
+  the stream is `{op, key, old, new}`; the per-subscriber shape is the fan-out's.)* The live `TableEvents` listener: `observes(table, op)` is true only while a
   connection is **subscribed** to a `table_changes` stream on that table with that op (a counter
   per `(table, op)` that the hub keeps, read without awaiting anything). A stream that is defined
   and exposed but has no subscriber does not count. `emit` hands `{op, old, new}` to the stream's

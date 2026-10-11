@@ -289,7 +289,9 @@ fn the_design_carries_the_three_promises() {
     }
     // The crate is in the layering, as every other crate is.
     assert!(
-        design.contains("| `sc-stream` | `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |"),
+        design.contains(
+            "| `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |"
+        ),
         "the direct-dependency table has no `sc-stream` row"
     );
     // The provider seam is an extension point, listed with the others.

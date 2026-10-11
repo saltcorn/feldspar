@@ -56,6 +56,27 @@
 //! they re-check on their own task, off the write's path (§3 rule 6). A table
 //! nobody watches is not observed, so the write pays nothing.
 //!
+//! ## Writes somebody is subscribed to
+//!
+//! A `table_changes` stream's elements are writes. The hub keeps, per table,
+//! the `table_changes` streams some subscription is attached to and which
+//! writes each carries ([`ChangeWatch`], held by the subscription), and
+//! observes a `(table, op)` only while one of them carries it — so a stream
+//! that is defined, even exposed, but has nobody subscribed costs a write
+//! nothing. An observed write is handed to each such stream as
+//! `{op, key, old, new}` ([`RunningStream::publish_change`]) and nothing more:
+//! no filter, no access check, no socket. Those run in the stream's fan-out
+//! task, off the write's path.
+//!
+//! ## Only what committed is announced
+//!
+//! Both of the above — a touch and a change — are announced **after the
+//! write commits**. A write on the pooled path has committed by the time it is
+//! emitted, so it is announced at once; one inside a shared transaction (a
+//! workflow step's, an import's) is emitted before its commit, so it is handed
+//! to the transaction as an [after-commit](sc_catalog::SharedTx::after_commit)
+//! callback, and a rollback drops it unannounced.
+//!
 //! ## Publishing
 //!
 //! [`LiveHub::publish`] is the one door Saltcorn's own publishers use — the
@@ -69,14 +90,17 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
-use std::time::Duration;
 
 use chrono::Utc;
 use sc_auth::{SessionEnded, SessionListener};
 use sc_catalog::{Catalog, TableEvents, TableWrite, WriteOp};
 use sc_error::{Error, Result};
 use sc_expr::{LiveHost, LiveTopics};
-use sc_stream::{Envelope, Replay, Retained, RunningStream, StreamId, StreamSupervisor, TopicSpec};
+use sc_stream::providers::table_changes::{KEY_KEY, KEY_NEW, KEY_OLD, KEY_OP};
+use sc_stream::{
+    ChangeSettings, Envelope, Replay, Retained, RunningStream, StreamId, StreamSupervisor,
+    TABLE_CHANGES, TopicSpec,
+};
 use serde_json::Value as Json;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -144,6 +168,10 @@ pub struct LiveHub {
     streams: RwLock<Option<Arc<StreamSupervisor>>>,
     /// Table → connection → how many of its subscriptions watch it.
     watched: Mutex<HashMap<String, HashMap<ConnectionId, usize>>>,
+    /// Table → the `table_changes` streams on it that some subscription is
+    /// attached to: what [`observes`](TableEvents::observes) reads for a
+    /// change, without awaiting anything.
+    changes: Mutex<HashMap<String, Vec<ChangeEntry>>>,
     /// Itself, for a task that outlives the call that spawned it.
     me: Weak<LiveHub>,
 }
@@ -159,6 +187,14 @@ struct ConnectionEntry {
 struct Touches {
     pending: Mutex<Vec<Touch>>,
     bell: Notify,
+}
+
+/// One `table_changes` stream somebody is subscribed to.
+struct ChangeEntry {
+    running: Arc<RunningStream>,
+    ops: Vec<WriteOp>,
+    /// Subscriptions attached to this running stream.
+    subscribers: usize,
 }
 
 /// The fan-outs a new subscription joins, and the subscriber count per stream.
@@ -179,6 +215,7 @@ impl LiveHub {
             fanouts: Mutex::new(Fanouts::default()),
             streams: RwLock::new(None),
             watched: Mutex::new(HashMap::new()),
+            changes: Mutex::new(HashMap::new()),
             me: me.clone(),
         })
     }
@@ -269,6 +306,95 @@ impl LiveHub {
     /// Whether any connection watches `table`.
     pub fn watches(&self, table: &str) -> bool {
         lock(&self.watched).contains_key(table)
+    }
+
+    /// Whether some subscription is attached to a `table_changes` stream on
+    /// `table` that carries `op` — the live half of
+    /// [`observes`](TableEvents::observes). One lock and a short scan; no
+    /// await.
+    pub fn observes_changes(&self, table: &str, op: WriteOp) -> bool {
+        lock(&self.changes)
+            .get(table)
+            .is_some_and(|entries| entries.iter().any(|entry| entry.ops.contains(&op)))
+    }
+
+    /// The running `table_changes` streams `op` on `table` is handed to.
+    fn change_streams(&self, table: &str, op: WriteOp) -> Vec<Arc<RunningStream>> {
+        match lock(&self.changes).get(table) {
+            Some(entries) => entries
+                .iter()
+                .filter(|entry| entry.ops.contains(&op))
+                .map(|entry| Arc::clone(&entry.running))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Count a subscription to `running` toward observing its table's writes,
+    /// for as long as the returned [`ChangeWatch`] is held. `None` for a
+    /// stream that is not a `table_changes` stream (or whose settings no
+    /// longer read, which a running stream's cannot).
+    pub fn watch_changes(self: &Arc<Self>, running: &Arc<RunningStream>) -> Option<ChangeWatch> {
+        if running.provider_name() != TABLE_CHANGES {
+            return None;
+        }
+        let settings = ChangeSettings::from_config(&running.configuration()).ok()?;
+        let mut changes = lock(&self.changes);
+        let entries = changes.entry(settings.table.clone()).or_default();
+        match entries
+            .iter_mut()
+            .find(|entry| Arc::ptr_eq(&entry.running, running))
+        {
+            Some(entry) => entry.subscribers += 1,
+            None => entries.push(ChangeEntry {
+                running: Arc::clone(running),
+                ops: settings.ops,
+                subscribers: 1,
+            }),
+        }
+        Some(ChangeWatch {
+            hub: Arc::clone(self),
+            running: Arc::clone(running),
+            table: settings.table,
+        })
+    }
+
+    fn unwatch_changes(&self, table: &str, running: &Arc<RunningStream>) {
+        let mut changes = lock(&self.changes);
+        let Some(entries) = changes.get_mut(table) else {
+            return;
+        };
+        if let Some(at) = entries
+            .iter()
+            .position(|entry| Arc::ptr_eq(&entry.running, running))
+        {
+            entries[at].subscribers = entries[at].subscribers.saturating_sub(1);
+            if entries[at].subscribers == 0 {
+                entries.remove(at);
+            }
+        }
+        if entries.is_empty() {
+            changes.remove(table);
+        }
+    }
+
+    /// Announce one committed write: a [`Touch`] to the connections watching
+    /// its table, and the change to the `table_changes` streams carrying it.
+    /// Both are looked up **now**, at the commit, so a subscription made or
+    /// dropped while the write's transaction was open is answered as it
+    /// stands.
+    fn announce(&self, table: &str, op: WriteOp, keys: Vec<String>, change: &Json) {
+        if self.watches(table) {
+            self.touch(Touch {
+                table: table.to_owned(),
+                keys,
+            });
+        }
+        for running in self.change_streams(table, op) {
+            // A stream stopped between the write and its commit has nobody to
+            // tell; its subscriptions are moved by the socket's status pass.
+            let _ = running.publish_change(change.clone());
+        }
     }
 
     fn unwatch(&self, connection: ConnectionId, tables: &[String]) {
@@ -446,50 +572,63 @@ impl LiveHost for LiveHub {
     }
 }
 
-/// How long after a write made inside a shared transaction it is handed to
-/// the watching connections a second time.
+/// The write seam (§3 rule 6, L3.3). The hub observes a table while some
+/// connection's row subscriptions depend on it, and a `(table, op)` while some
+/// subscription is attached to a `table_changes` stream carrying it — and
+/// nothing otherwise, so an unwatched write pays one lookup.
 ///
-/// `TableEvents::emit` runs **before** such a transaction commits (§10.2), so
-/// a re-check made at once reads the state from before the write and passes.
-/// The second touch is the interim answer until writes are published after
-/// commit (TODO.md "Live updates" L3.1); the clock re-check is the backstop
-/// behind both.
-const IN_TRANSACTION_RETOUCH: Duration = Duration::from_secs(2);
-
-/// The re-check half of §3 rule 6: the hub observes exactly the tables some
-/// connection's row subscriptions depend on, and hands each write to them as a
-/// [`Touch`]. It does no access work itself — that is the connections', on
-/// their own tasks — so a write's latency does not grow with the number of
-/// subscribers.
+/// `emit` does no access work: it builds `{op, key, old, new}` and hands it,
+/// with the touch, to whatever is listening **once the write has committed**
+/// — at once on the pooled path, as an after-commit callback inside a shared
+/// transaction. Filters, read checks and sockets are the fan-out's and the
+/// connections', on their own tasks, so a write's latency does not grow with
+/// the number of subscribers.
 #[async_trait::async_trait]
 impl TableEvents for LiveHub {
-    fn observes(&self, table: &str, _op: WriteOp) -> bool {
-        self.watches(table)
+    fn observes(&self, table: &str, op: WriteOp) -> bool {
+        self.watches(table) || self.observes_changes(table, op)
     }
 
     async fn emit(&self, _catalog: &Catalog, write: TableWrite<'_>) -> Result<()> {
+        let Some(hub) = self.self_ref() else {
+            return Ok(());
+        };
+        let (old, new) = match write.op {
+            WriteOp::Insert => (Json::Null, write.row),
+            WriteOp::Update => (write.old_row.unwrap_or(Json::Null), write.row),
+            WriteOp::Delete => (write.row, Json::Null),
+        };
         let mut keys = BTreeSet::new();
-        if let [key] = write.table.primary_key.as_slice() {
-            for row in std::iter::once(&write.row).chain(write.old_row.iter()) {
-                if let Some(topic) = row.get(key).and_then(topic_of) {
+        let mut key = Json::Null;
+        if let [pk] = write.table.primary_key.as_slice() {
+            // The key as it is now, or — for a delete — as it was.
+            for row in [&new, &old] {
+                if let Some(topic) = row.get(pk).and_then(topic_of) {
                     keys.insert(topic);
+                    if key.is_null() {
+                        key = row.get(pk).cloned().unwrap_or(Json::Null);
+                    }
                 }
             }
         }
-        let touch = Touch {
-            table: write.table.name.clone(),
-            keys: keys.into_iter().collect(),
-        };
-        if write.tx.is_some() {
-            let hub_touch = touch.clone();
-            if let Some(hub) = self.self_ref() {
-                tokio::spawn(async move {
-                    tokio::time::sleep(IN_TRANSACTION_RETOUCH).await;
-                    hub.touch(hub_touch);
-                });
-            }
+        let change = Json::Object(
+            [
+                (KEY_OP, Json::from(write.op.as_str())),
+                (KEY_KEY, key),
+                (KEY_OLD, old),
+                (KEY_NEW, new),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+        );
+        let table = write.table.name.clone();
+        let op = write.op;
+        let keys: Vec<String> = keys.into_iter().collect();
+        match &write.tx {
+            Some(tx) => tx.after_commit(move || hub.announce(&table, op, keys, &change)),
+            None => hub.announce(&table, op, keys, &change),
         }
-        self.touch(touch);
         Ok(())
     }
 }
@@ -542,6 +681,37 @@ impl std::fmt::Debug for Watch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Watch")
             .field("tables", &self.tables)
+            .finish()
+    }
+}
+
+/// A subscription's share in observing its `table_changes` stream's writes
+/// ([`LiveHub::watch_changes`]). Dropping it gives the share back — and, with
+/// the last one on a table and write gone, stops the hub observing it.
+pub struct ChangeWatch {
+    hub: Arc<LiveHub>,
+    running: Arc<RunningStream>,
+    table: String,
+}
+
+impl ChangeWatch {
+    /// The table whose writes are observed.
+    pub fn table(&self) -> &str {
+        &self.table
+    }
+}
+
+impl Drop for ChangeWatch {
+    fn drop(&mut self) {
+        self.hub.unwatch_changes(&self.table, &self.running);
+    }
+}
+
+impl std::fmt::Debug for ChangeWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChangeWatch")
+            .field("table", &self.table)
+            .field("stream", &self.running.name())
             .finish()
     }
 }
@@ -611,11 +781,16 @@ impl Connection {
 
     /// Attach a subscription to `running`, on `topic`: join (or start) the
     /// stream's fan-out and get the replay that precedes the first delivery.
+    ///
+    /// A subscription to a `table_changes` stream also starts the hub
+    /// observing that stream's writes, **before** it joins the fan-out, so
+    /// every write committed after `ready` reaches it.
     pub async fn attach(
         &self,
         running: &Arc<RunningStream>,
         topic: Option<String>,
     ) -> (Attached, Vec<Arc<Envelope>>) {
+        let changes = self.hub.watch_changes(running);
         let attachment = self.next_attachment.fetch_add(1, Ordering::Relaxed);
         let lagged = Arc::new(AtomicU64::new(0));
         let fanout = self.hub.join(running);
@@ -637,6 +812,7 @@ impl Connection {
             hub: Arc::clone(&self.hub),
             fanout,
             lagged,
+            _changes: changes,
         };
         // The fan-out answers between two elements; a fan-out that ended
         // instead (its stream's channel closed) has nothing to replay.
@@ -678,6 +854,9 @@ pub struct Attached {
     hub: Arc<LiveHub>,
     fanout: Arc<Fanout>,
     lagged: Arc<AtomicU64>,
+    /// Its share in observing the stream's writes, for a `table_changes`
+    /// stream; dropped with it.
+    _changes: Option<ChangeWatch>,
 }
 
 impl Attached {

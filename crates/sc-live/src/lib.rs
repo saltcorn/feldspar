@@ -16,7 +16,7 @@
 //! | [`topic`] | Subscriptions bucketed by topic, for the fan-out |
 //! | [`access`] | Who may subscribe, as pure functions over looked-up facts |
 //! | [`limits`] | The per-connection limits and clocks, as configuration |
-//! | [`hub`] | Connections, one fan-out task per running stream, publishing, and the write watch |
+//! | [`hub`] | Connections, one fan-out task per running stream, publishing, the write watch, and handing committed writes to `table_changes` streams |
 //! | [`rows`] | Which tables a row topic's read rule reads |
 //!
 //! ## Where this sits
@@ -54,8 +54,8 @@ pub use access::{
     may_subscribe,
 };
 pub use hub::{
-    Attached, CloseReason, CloseSignal, Connection, ConnectionId, ConnectionInfo, Delivery,
-    LiveHub, Touch, Watch, topic_of,
+    Attached, ChangeWatch, CloseReason, CloseSignal, Connection, ConnectionId, ConnectionInfo,
+    Delivery, LiveHub, Touch, Watch, topic_of,
 };
 pub use limits::LiveLimits;
 pub use protocol::{ClientFrame, ErrorCode, FrameError, ServerFrame};

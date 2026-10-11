@@ -2,6 +2,49 @@
 
 Changes in reverse chronological order.
 
+## Live updates L3, phase 1: writes leave the write path after their commit
+
+A row write can now reach a `table_changes` stream — only once it has committed, only while
+somebody is subscribed, and without the write paying for the subscribers. TODO.md L3.1 and L3.3
+(L3.2 was done with L2.6). Pages cannot subscribe to a `table_changes` stream yet: what each
+subscriber may be sent is decided per element, which is L3.5–L3.8.
+
+- **`SharedTx::after_commit(callback)`** (`sc-catalog`): runs once the commit has succeeded, in
+  the order added, on the committing task; dropped unrun on a rollback and on a commit the
+  database refuses; added after the end, it runs at once (committed) or never (rolled back).
+  `savepoint` / `release_savepoint` / `rollback_to_savepoint` track which callbacks a savepoint
+  covers, so rolling back to one drops exactly those added since. The CSV import's per-row
+  savepoints now go through them, so a row it skips announces nothing.
+- **The `table_changes` stream provider** (`sc-stream::providers::table_changes`, always built
+  in): `table` and `ops` (any of insert/update/delete, default all), `TopicSpec::PerElementRow`,
+  `Replay::Nothing`, no publishing from Saltcorn code; saving refuses a table that does not exist.
+  The element is the change, `{op, key, old, new}`; L3.4 adds `payload` and the element type
+  derived from the table. `RunningStream::publish_change(change)` is the hub's way in: the running
+  subscription's sink, as any element, refused for a stream that does not carry row changes.
+- **The hub as the write seam's `table_changes` listener** (`sc-live`): `Connection::attach`
+  registers a `ChangeWatch` for a `table_changes` stream before joining its fan-out, held by the
+  `Attached`. `observes(table, op)` is now "a row topic watches the table, or a subscribed
+  `table_changes` stream carries `op`" (`LiveHub::observes_changes`), read under one lock with no
+  await — so a stream defined and exposed but with nobody subscribed costs nothing, and an update
+  reads its pre-image only when somebody is subscribed. `emit` builds `{op, key, old, new}` and
+  hands it, with the row-topic touch, to `LiveHub::announce` **after the commit**: at once on the
+  pooled path, through `after_commit` inside a `SharedTx`. No filter, access or socket work runs
+  on the write's path.
+- **Removed**: the hub's second touch two seconds after a write inside a `SharedTx` (the interim
+  from L2.6). Row-topic re-checks are now made once, after the commit, and not after a rollback.
+- **Tests**: `sc-catalog` `shared_tx.rs` (order, rollback, a failed deferred-key commit,
+  savepoints); `sc-workflow` `step_transaction.rs` (with the real hub: a step's insert is handed to
+  the stream zero times during the step and once after; a failing step hands over nothing);
+  `sc-live` `tests/changes.rs`, new, on a statement-counting driver (subscription-only observing,
+  no pre-image read when unobserved, the write returning before any of 500 subscribers is served);
+  `table_changes` settings unit tests. `sc-live` and `sc-workflow` gained dev-dependencies for
+  these.
+- **Fixed**: `sc-stream`'s `docs_streams` test still expected `sc-stream`'s dependency row
+  without `sc-auth`, which L2.1 added.
+- **Docs**: TECHNICAL_DESIGN §10.2 (when "after the write" is not "after the commit", and
+  `after_commit`), §10.3, §14.3 (the third built-in provider), §14.10 ("Table changes: the write,
+  after its commit").
+
 ## Live updates L2: internal streams, topics and server-side publishing
 
 Saltcorn can now say things to an application's page itself — a toast when a job starts, a

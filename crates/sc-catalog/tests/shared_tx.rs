@@ -9,12 +9,15 @@
 //!   transaction while it waits;
 //! - what it writes is **invisible until it commits** and gone if it rolls back,
 //!   through every handle on it;
-//! - and each statement carries **its own caller** to the policies, because the
+//! - each statement carries **its own caller** to the policies, because the
 //!   writers sharing it are not the same caller and a `SET LOCAL` outlives its
-//!   statement.
+//!   statement;
+//! - and an **after-commit** callback runs once the commit has succeeded, in
+//!   order, and never for a rollback, a failed commit or a savepoint rolled
+//!   back to (TODO.md "Live updates" L3.1).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use sc_catalog::{
     CallerContext, Catalog, SharedTx, TableMeta, bootstrap_table_meta, enable_rls, save_table_meta,
@@ -158,5 +161,123 @@ async fn every_statement_carries_its_own_caller_to_the_policies() -> Result<()> 
     // And no caller at all is no access, not "whoever went last".
     assert!(tx.run(None, &select()).await?.is_empty());
     tx.rollback().await?;
+    Ok(())
+}
+
+/// What a list of after-commit callbacks has said, shared with them.
+#[derive(Clone, Default)]
+struct Heard(Arc<Mutex<Vec<String>>>);
+
+impl Heard {
+    fn note(&self, what: &str) -> impl FnOnce() + Send + 'static {
+        let heard = self.clone();
+        let what = what.to_owned();
+        move || heard.0.lock().unwrap().push(what)
+    }
+
+    fn said(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// A callback runs **after** the commit — not when it is added, not before
+/// the commit returns — once, in the order callbacks were added; a rollback
+/// drops them unrun; and one added after the end follows the end's outcome.
+#[tokio::test]
+async fn an_after_commit_callback_runs_only_once_the_commit_has_succeeded() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = catalog(
+        &db,
+        "CREATE TABLE posts (id bigint primary key, owner text)",
+    )
+    .await?;
+
+    let heard = Heard::default();
+    let tx = SharedTx::begin_primary(&catalog)?;
+    tx.run(None, &insert(1, "alice@example.com")).await?;
+    tx.after_commit(heard.note("first"));
+    // From a clone, as a listener the write was handed to would.
+    tx.clone().after_commit(heard.note("second"));
+    assert_eq!(tx.after_commit_pending(), 2);
+    assert!(heard.said().is_empty(), "nothing runs before the commit");
+    tx.commit().await?;
+    assert_eq!(heard.said(), ["first", "second"]);
+    assert_eq!(committed(&db).await, 1);
+    // Added after the commit, it is already true: it runs at once.
+    tx.after_commit(heard.note("late"));
+    assert_eq!(heard.said(), ["first", "second", "late"]);
+
+    let heard = Heard::default();
+    let tx = SharedTx::begin_primary(&catalog)?;
+    tx.run(None, &insert(2, "bob@example.com")).await?;
+    tx.after_commit(heard.note("rolled back"));
+    tx.rollback().await?;
+    tx.after_commit(heard.note("after the rollback"));
+    assert!(heard.said().is_empty(), "{:?}", heard.said());
+    assert_eq!(committed(&db).await, 1);
+    Ok(())
+}
+
+/// A commit the database refuses — here a deferred foreign key, checked only
+/// at the commit — runs none of the callbacks: the write they announce never
+/// happened.
+#[tokio::test]
+async fn a_commit_that_fails_runs_no_callbacks() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = catalog(
+        &db,
+        "CREATE TABLE owners (name text primary key);          CREATE TABLE posts (id bigint primary key,              owner text references owners(name) deferrable initially immediate)",
+    )
+    .await?;
+
+    let heard = Heard::default();
+    let tx = SharedTx::begin_primary(&catalog)?;
+    tx.defer_constraints().await?;
+    tx.run(None, &insert(1, "nobody@example.com")).await?;
+    tx.after_commit(heard.note("announced"));
+    tx.commit()
+        .await
+        .expect_err("the deferred key fails the commit");
+    assert!(heard.said().is_empty(), "{:?}", heard.said());
+    assert_eq!(committed(&db).await, 0);
+    Ok(())
+}
+
+/// Rolling back to a savepoint drops the callbacks added since it, and only
+/// those; releasing one keeps them. That is what lets an import that skips a
+/// bad row announce only the rows it kept.
+#[tokio::test]
+async fn rolling_back_to_a_savepoint_drops_the_callbacks_added_since() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = catalog(
+        &db,
+        "CREATE TABLE posts (id bigint primary key, owner text)",
+    )
+    .await?;
+
+    let heard = Heard::default();
+    let tx = SharedTx::begin_primary(&catalog)?;
+    tx.run(None, &insert(1, "alice@example.com")).await?;
+    tx.after_commit(heard.note("1"));
+
+    tx.savepoint("row").await?;
+    tx.run(None, &insert(2, "bob@example.com")).await?;
+    tx.after_commit(heard.note("2"));
+    tx.release_savepoint("row").await?;
+
+    tx.savepoint("row").await?;
+    tx.run(None, &insert(3, "carol@example.com")).await?;
+    tx.after_commit(heard.note("3"));
+    tx.rollback_to_savepoint("row").await?;
+    assert_eq!(tx.after_commit_pending(), 2);
+
+    // The savepoint survives being rolled back to, as in SQL.
+    tx.run(None, &insert(4, "dave@example.com")).await?;
+    tx.after_commit(heard.note("4"));
+    tx.release_savepoint("row").await?;
+
+    tx.commit().await?;
+    assert_eq!(heard.said(), ["1", "2", "4"]);
+    assert_eq!(committed(&db).await, 3);
     Ok(())
 }

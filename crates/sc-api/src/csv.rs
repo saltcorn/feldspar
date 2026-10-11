@@ -213,7 +213,7 @@ pub async fn import_table(
         // failed statement poisons a Postgres transaction, and without one the
         // next row would fail with "current transaction is aborted" rather than
         // with anything about itself.
-        tx.batch(&format!("SAVEPOINT {ROW_SAVEPOINT}")).await?;
+        tx.savepoint(ROW_SAVEPOINT).await?;
         let result = write_row(
             catalog,
             table,
@@ -238,13 +238,14 @@ pub async fn import_table(
                         wrote_keys = true;
                     }
                 }
-                tx.batch(&format!("RELEASE SAVEPOINT {ROW_SAVEPOINT}"))
-                    .await?;
+                tx.release_savepoint(ROW_SAVEPOINT).await?;
             }
             Err(e) => {
                 outcome.errors.push(format!("line {line}: {}", e.causes()));
-                tx.batch(&format!("ROLLBACK TO SAVEPOINT {ROW_SAVEPOINT}"))
-                    .await?;
+                // Through the transaction's own savepoint call, so anything
+                // waiting to announce this row after the commit is dropped
+                // with it.
+                tx.rollback_to_savepoint(ROW_SAVEPOINT).await?;
             }
         }
     }

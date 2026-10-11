@@ -43,6 +43,16 @@ tokio = { workspace = true }
 # Starting a stream needs no database: `StreamSupervisor::start` takes the row.
 sc-stream = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# The table-changes tests (L3.3) write through the **row layer** against a real
+# Postgres, over a driver that counts the statements it is asked to run — the
+# only way to see that an unobserved update reads no pre-image. Dev edges are
+# not part of the layering (see `repo_hygiene`).
+sc-api.workspace = true
+sc-db.workspace = true
+sc-db-postgres.workspace = true
+sc-query.workspace = true
+sc-test-harness.workspace = true
+sc-types.workspace = true
 
 [lints]
 workspace = true

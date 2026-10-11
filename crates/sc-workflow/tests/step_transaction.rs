@@ -11,9 +11,14 @@
 //! (a step's action writes through `rows`, exactly as `insert_row` does) and the
 //! dispatcher, which is installed as the catalog's table-events observer so a
 //! write inside a step really does fire the trigger listening for it.
+//!
+//! And the live hub, for the one thing that must **not** share the step's fate
+//! by joining it: telling a page about the step's write. That waits for the
+//! commit, and a rollback means it never happens (TODO.md "Live updates" L3.1).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use chrono::Utc;
 use sc_action::{
@@ -39,13 +44,20 @@ use serde_json::{Value as Json, json};
 // The actions: real row writes, through the row layer, on the step's executor.
 // ---------------------------------------------------------------------------
 
+/// The `table_changes` stream on `orders`, once a test has started one — what
+/// [`WriteOrder`] looks at to say how many changes the stream had been handed
+/// while the step was still running.
+type Watched = Arc<OnceLock<Arc<sc_stream::RunningStream>>>;
+
 /// Insert one order and read it back — then, if the step says so, fail.
 ///
 /// The write goes through [`rows::create_row_in`] with the executor the step's
 /// transaction supplies, which is the one line every row action has (§10.3):
 /// nothing here knows whether there *is* a transaction, only that
 /// `ActionContext::transaction` answers for it.
-struct WriteOrder;
+struct WriteOrder {
+    watched: Watched,
+}
 
 #[async_trait::async_trait]
 impl Action for WriteOrder {
@@ -83,7 +95,13 @@ impl Action for WriteOrder {
         if ctx.setting("fail").and_then(Json::as_bool).unwrap_or(false) {
             return Err(Error::invalid("the step failed after writing"));
         }
-        Ok(json!({ "wrote": id, "visible": seen }))
+        // How many changes the live stream on `orders` had been handed by now —
+        // after this step's write, before its commit.
+        let published = self
+            .watched
+            .get()
+            .map(|running| running.counters().elements);
+        Ok(json!({ "wrote": id, "visible": seen, "published_during_step": published }))
     }
 }
 
@@ -131,6 +149,7 @@ struct Fixture {
     catalog: Arc<Catalog>,
     dispatcher: Arc<TriggerDispatcher>,
     trigger: Trigger,
+    watched: Watched,
     _db: TestDb,
 }
 
@@ -162,8 +181,11 @@ async fn fixture() -> Result<Fixture> {
     bootstrap_run_traces(&catalog).await?;
     bootstrap_runs(&catalog).await?;
 
+    let watched = Watched::default();
     let mut registry = ActionRegistry::new();
-    registry.register(Arc::new(WriteOrder))?;
+    registry.register(Arc::new(WriteOrder {
+        watched: Arc::clone(&watched),
+    }))?;
     registry.register(Arc::new(WriteAudit))?;
     let evaluator: Arc<dyn JsEvaluator> = Arc::new(DenoEvaluator::new());
     let dispatcher =
@@ -184,6 +206,7 @@ async fn fixture() -> Result<Fixture> {
         catalog,
         dispatcher,
         trigger,
+        watched,
         _db: db,
     })
 }
@@ -352,6 +375,107 @@ async fn a_cascade_off_a_step_lands_wherever_the_step_lands() -> Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// The live hub on the write seam beside the dispatcher, a running
+/// `table_changes` stream on `orders`, and one subscription to it — the
+/// subscription is what makes the hub observe the step's write at all.
+async fn live(
+    f: &Fixture,
+) -> Result<(
+    Arc<sc_stream::StreamSupervisor>,
+    sc_live::Connection,
+    sc_live::Attached,
+    tokio::sync::mpsc::Receiver<sc_live::Delivery>,
+)> {
+    let mut registry = sc_stream::StreamRegistry::new();
+    registry.register(Arc::new(sc_stream::TableChanges) as Arc<dyn sc_stream::StreamProvider>)?;
+    let supervisor = Arc::new(sc_stream::StreamSupervisor::new(
+        Arc::new(registry),
+        sc_stream::StreamConfig::default(),
+    ));
+    let mut stream = sc_stream::Stream::new("orders_live", "table_changes");
+    stream.configuration = json!({ "table": "orders" }).as_object().cloned().unwrap();
+    let running = supervisor.start(stream).await?;
+    let _ = f.watched.set(Arc::clone(&running));
+
+    let hub = sc_live::LiveHub::new(sc_live::LiveLimits::default());
+    hub.set_streams(Arc::clone(&supervisor));
+    f.catalog.add_table_events(
+        sc_catalog::LIVE_EVENTS,
+        Arc::clone(&hub) as Arc<dyn TableEvents>,
+    )?;
+    let (connection, queue) = hub
+        .connect(sc_live::ConnectionInfo {
+            app: "shop".to_owned(),
+            user: None,
+            session: None,
+        })
+        .expect("connects");
+    let (attached, _) = connection.attach(&running, None).await;
+    Ok((supervisor, connection, attached, queue))
+}
+
+/// A step's write is announced **once, after the commit**: while the step
+/// ran, the stream had been handed nothing; when the run is done, it has been
+/// handed exactly the one insert. A step that fails after the same write
+/// announces nothing at all — the page is never shown a row that was rolled
+/// back.
+#[tokio::test]
+async fn a_steps_write_reaches_a_live_stream_after_the_commit_and_never_after_a_rollback()
+-> Result<()> {
+    for fail in [false, true] {
+        let f = fixture().await?;
+        let (_supervisor, _connection, _attached, mut queue) = live(&f).await?;
+        assert!(
+            f.catalog
+                .observes_writes("orders", sc_catalog::WriteOp::Insert)
+        );
+
+        save_workflow(&f.catalog, &one_step(&f, fail), "v1", None).await?;
+        let clock = ManualClock::new(Utc::now());
+        let run = start_run(
+            &f.catalog,
+            &f.dispatcher,
+            &clock,
+            &f.trigger,
+            &start_event(),
+            vec!["billing".to_owned()],
+        )
+        .await?;
+        let stored = require_run(&f.catalog, run.id).await?;
+        let running = f.watched.get().unwrap();
+
+        if fail {
+            assert_eq!(stored.state, RunState::Failed);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(
+                running.counters().elements,
+                0,
+                "the rollback announced nothing"
+            );
+            assert!(queue.try_recv().is_err(), "and no page heard anything");
+            continue;
+        }
+
+        assert_eq!(stored.state, RunState::Done, "{:?}", stored.error);
+        let state = sc_workflow::run_state(&stored)?;
+        assert_eq!(
+            state.context()["write"]["published_during_step"],
+            json!(0),
+            "nothing was announced before the commit"
+        );
+        assert_eq!(running.counters().elements, 1, "once, after it");
+        let delivery = tokio::time::timeout(Duration::from_secs(10), queue.recv())
+            .await
+            .expect("delivered")
+            .expect("the queue is open");
+        assert_eq!(delivery.envelope.value["op"], "insert");
+        assert_eq!(delivery.envelope.value["new"]["id"], json!(7));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(queue.try_recv().is_err(), "exactly once");
     }
     Ok(())
 }

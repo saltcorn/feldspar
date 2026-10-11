@@ -99,7 +99,7 @@ pub use table_meta::{
     TableMetaId, bootstrap_table_meta, delete_table_meta, list_table_meta, load_table_meta,
     load_table_meta_by_name, orphan_table_meta, save_table_meta, save_table_meta_row,
 };
-pub use tx::SharedTx;
+pub use tx::{AfterCommit, SharedTx};
 pub use wakeups::RunWakeups;
 
 #[cfg(test)]

@@ -49,8 +49,21 @@
 //! not reachable from this transaction, so a write to one takes the ordinary
 //! pooled path and is *not* part of the step's atomic advance — the honest
 //! reading, and one the caller can see rather than one it has to infer.
+//!
+//! ## What may only happen once it has committed
+//!
+//! A table event is raised when the statement succeeds, which inside a shared
+//! transaction is **before** the commit (§10.2). A trigger wants exactly that —
+//! it joins the transaction and shares its fate. Telling somebody *outside* it
+//! does not: a live page shown a row the step then rolls back has been shown
+//! something that never happened. So a listener can hand the transaction a
+//! callback ([`SharedTx::after_commit`]) that runs only once the commit has
+//! succeeded, in the order the callbacks were added, and is dropped unrun on a
+//! rollback, on a commit that fails, and — through [`SharedTx::savepoint`] and
+//! [`SharedTx::rollback_to_savepoint`] — when the part of the transaction that
+//! added it is wound back.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
 use sc_db::{DatabaseDriver, Row, SchemaChange};
 use sc_error::{Error, Result};
@@ -94,6 +107,25 @@ enum Applied {
     Caller(u8, Option<String>),
 }
 
+/// Something to do once the transaction has committed
+/// ([`SharedTx::after_commit`]).
+pub type AfterCommit = Box<dyn FnOnce() + Send + 'static>;
+
+/// The callbacks waiting for the commit, and where each open savepoint began
+/// in them.
+///
+/// A synchronous lock rather than the transaction's own: adding a callback
+/// must not wait behind a statement another writer is running, and nothing is
+/// ever awaited while this one is held.
+#[derive(Default)]
+struct Pending {
+    callbacks: Vec<AfterCommit>,
+    /// `(savepoint name, callbacks.len() when it was taken)`, innermost last.
+    savepoints: Vec<(String, usize)>,
+    /// How the transaction finished, once it has: `Some(true)` committed.
+    outcome: Option<bool>,
+}
+
 /// An open transaction that several writers share, in turn.
 ///
 /// Cloning gives another handle on the **same** transaction; the last statement
@@ -104,6 +136,8 @@ enum Applied {
 #[derive(Clone)]
 pub struct SharedTx {
     inner: Arc<Mutex<Open>>,
+    /// What runs after the commit — see the module documentation.
+    pending: Arc<SyncMutex<Pending>>,
     /// What the transaction is begun on, when something first needs it.
     driver: Arc<dyn DatabaseDriver>,
     /// The database this transaction is on: a statement for any other database
@@ -152,6 +186,7 @@ impl SharedTx {
                 state: State::Pending,
                 applied: Applied::Unknown,
             })),
+            pending: Arc::new(SyncMutex::new(Pending::default())),
             driver: driver.clone(),
             database,
             row_level_security: driver.capabilities().row_level_security,
@@ -222,24 +257,109 @@ impl SharedTx {
         open.handle(&self.driver).await?.defer_constraints().await
     }
 
+    /// Run `callback` once this transaction has **committed** — never before,
+    /// and never at all if it rolls back, if the commit fails, or if a
+    /// savepoint taken before it was added is rolled back to.
+    ///
+    /// Callbacks run in the order they were added, on the task that commits,
+    /// right after the commit returns. They must not block: they are the place
+    /// a write is *announced* (a live page told of a row), not more work on
+    /// the write's path. Added to a transaction that has already committed, it
+    /// runs at once; to one already rolled back, it is dropped.
+    pub fn after_commit(&self, callback: impl FnOnce() + Send + 'static) {
+        let mut pending = lock(&self.pending);
+        match pending.outcome {
+            None => pending.callbacks.push(Box::new(callback)),
+            Some(true) => {
+                drop(pending);
+                callback();
+            }
+            Some(false) => {}
+        }
+    }
+
+    /// How many callbacks are waiting for the commit.
+    pub fn after_commit_pending(&self) -> usize {
+        lock(&self.pending).callbacks.len()
+    }
+
+    /// `SAVEPOINT name`, remembering which after-commit callbacks were added
+    /// before it, so [`rollback_to_savepoint`](SharedTx::rollback_to_savepoint)
+    /// drops exactly the ones added after. `name` is structural, never user
+    /// data.
+    pub async fn savepoint(&self, name: &str) -> Result<()> {
+        self.batch(&format!("SAVEPOINT {name}")).await?;
+        let mut pending = lock(&self.pending);
+        let mark = pending.callbacks.len();
+        pending.savepoints.push((name.to_owned(), mark));
+        Ok(())
+    }
+
+    /// `RELEASE SAVEPOINT name`: what was added since it stays, now part of
+    /// the enclosing transaction (or savepoint).
+    pub async fn release_savepoint(&self, name: &str) -> Result<()> {
+        self.batch(&format!("RELEASE SAVEPOINT {name}")).await?;
+        let mut pending = lock(&self.pending);
+        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| n == name) {
+            // Releasing a savepoint releases every one taken after it too.
+            pending.savepoints.truncate(at);
+        }
+        Ok(())
+    }
+
+    /// `ROLLBACK TO SAVEPOINT name`: the writes since it are undone, so the
+    /// callbacks announcing them are dropped. The savepoint itself stays, as
+    /// it does in SQL.
+    pub async fn rollback_to_savepoint(&self, name: &str) -> Result<()> {
+        self.batch(&format!("ROLLBACK TO SAVEPOINT {name}")).await?;
+        let mut pending = lock(&self.pending);
+        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| n == name) {
+            let mark = pending.savepoints[at].1;
+            pending.savepoints.truncate(at + 1);
+            pending.callbacks.truncate(mark);
+        }
+        Ok(())
+    }
+
     /// Commit, making everything every sharer wrote durable — once, for all of
-    /// them.
+    /// them — and then run the [after-commit](SharedTx::after_commit)
+    /// callbacks. A commit that fails runs none of them.
     ///
     /// A transaction nothing ever needed was never begun, and committing it is
     /// the success it describes: there is nothing to make durable.
     pub async fn commit(&self) -> Result<()> {
-        match self.take().await? {
+        let outcome = match self.take().await? {
             Some(tx) => tx.commit().await,
             None => Ok(()),
+        };
+        let callbacks = self.finish(outcome.is_ok());
+        if outcome.is_ok() {
+            for callback in callbacks {
+                callback();
+            }
         }
+        outcome
     }
 
-    /// Roll back, discarding everything every sharer wrote.
+    /// Roll back, discarding everything every sharer wrote, and every
+    /// after-commit callback with it.
     pub async fn rollback(&self) -> Result<()> {
-        match self.take().await? {
+        let outcome = match self.take().await? {
             Some(tx) => tx.rollback().await,
             None => Ok(()),
-        }
+        };
+        drop(self.finish(false));
+        outcome
+    }
+
+    /// Record how the transaction ended, and take the callbacks out — to be
+    /// run, or dropped, by the caller once the lock is released (a callback's
+    /// captures are dropped outside it, whatever their `Drop` does).
+    fn finish(&self, committed: bool) -> Vec<AfterCommit> {
+        let mut pending = lock(&self.pending);
+        pending.outcome = Some(committed);
+        pending.savepoints.clear();
+        std::mem::take(&mut pending.callbacks)
     }
 
     /// Whether this transaction can still be used — begun or not, but not
@@ -297,6 +417,15 @@ fn poisoned(e: Error) -> Error {
         );
     }
     e
+}
+
+/// The after-commit lock, recovered from poisoning: each change to it is one
+/// push, truncate or take, so it is valid after a panic elsewhere.
+fn lock(pending: &SyncMutex<Pending>) -> MutexGuard<'_, Pending> {
+    match pending.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 fn finished() -> Error {

@@ -2,5 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "changes.rs"]
+mod changes;
 #[path = "hub.rs"]
 mod hub;

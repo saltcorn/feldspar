@@ -60,6 +60,10 @@ sc-expr = { workspace = true, features = ["eval"] }
 sc-api.workspace = true
 sc-auth.workspace = true
 sc-db-postgres.workspace = true
+# The live hub and a `table_changes` stream, for "a step's write is announced
+# after its commit, and never if it rolls back" (TODO.md "Live updates" L3.1).
+sc-live.workspace = true
+sc-stream.workspace = true
 sc-test-harness.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
