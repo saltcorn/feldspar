@@ -102,6 +102,15 @@ const RUNTIME_LIVE_FILE: &str = "live-react.ts";
 /// The same file as an import specifier.
 const RUNTIME_LIVE_FILE_STEM: &str = "live-react";
 
+/// Collaborative documents (TODO.md "Live updates" L5.6): the `Y.Doc` over a
+/// `document` stream, and `useDocument`. A file of its own, emitted only for an
+/// app that exposes a document stream, because it is the one generated file
+/// that imports `yjs` — an app without documents ships none of it.
+pub const RUNTIME_DOC_FILE: &str = "live-doc.ts";
+
+/// The same file as an import specifier.
+const RUNTIME_DOC_FILE_STEM: &str = "live-doc";
+
 /// The generated map of the *other* half of the application: the administration
 /// MCP tools that reach the configuration this project cannot see
 /// ([`generate_skill`](crate::generate_skill)). Rewritten with everything else in
@@ -319,6 +328,12 @@ pub fn runtime_files(ctx: &ProjectContext<'_>) -> Vec<GeneratedFile> {
             runtime_readme(ctx),
         ),
     ];
+    if ctx.streams.iter().any(is_document) {
+        files.push(GeneratedFile::new(
+            format!("{REACT_RUNTIME_SUBDIR}/{RUNTIME_DOC_FILE}"),
+            live_doc_ts(ctx.streams, true),
+        ));
+    }
     files.extend(common_runtime_files(
         ctx,
         REACT_RUNTIME_SUBDIR,
@@ -801,6 +816,15 @@ fn runtime_readme(ctx: &ProjectContext<'_>) -> String {
          application that is **not** in this repository, and the administration \
          MCP tools that reach it. Read it before adding a field or a trigger.\n"
     );
+    if ctx.streams.iter().any(is_document) {
+        let _ = writeln!(
+            files,
+            "- `{RUNTIME_DOC_FILE}` — collaborative documents: \
+             `useDocument(docs.<stream>, rowKey)` opens one row's document as a `Y.Doc` \
+             with its `awareness`, for an editor binding (see AGENTS.md). The only \
+             generated file that imports `yjs`."
+        );
+    }
     if ctx.graphql.is_some() {
         files.push_str(
             "- `graphql.ts` — the GraphQL client, posting to this application's \
@@ -1117,6 +1141,105 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          origin. Which streams are exposed is configuration in the server (see \
          the half of this application that is not in this project).\n\
          \n\
+         ## Collaborative documents\n\
+         \n\
+         A **document stream** keeps a document — rich text or code — in a field \
+         of a row, edited by several people at once, each seeing the others' \
+         cursors. Open one row's document with the hook in \
+         `./{REACT_RUNTIME_SUBDIR}/{RUNTIME_DOC_FILE_STEM}` (generated once the \
+         application exposes a document stream):\n\
+         \n\
+         ```tsx\n\
+         import {{ docs, useDocument }} from \"./{REACT_RUNTIME_SUBDIR}/{RUNTIME_DOC_FILE_STEM}\";\n\
+         \n\
+         const {{ doc, awareness, root, field, readOnly, status, error }} = useDocument(docs.note_body, noteId);\n\
+         ```\n\
+         \n\
+         `doc` is a `Y.Doc` (the `yjs` package) and `awareness` its `y-protocols` \
+         awareness — what the standard editor bindings take, unchanged. Render the \
+         editor once `doc` is there, and make it non-editable while `readOnly` \
+         (the user may read the row but not update it, and the server refuses \
+         their edits). `status` is `connecting`, `synced` or `reconnecting`; edits \
+         made while reconnecting are kept and sent when the connection is back. \
+         The document's field is not in the generated row types and the server \
+         refuses to write it through the client — a whole value would overwrite \
+         everybody else's typing. Its text is readable as an ordinary column if \
+         the stream keeps a text mirror.\n\
+         \n\
+         **TipTap** (a stream whose root kind is `xml`): install `@tiptap/react`, \
+         `@tiptap/starter-kit`, `@tiptap/extension-collaboration` and \
+         `@tiptap/extension-collaboration-cursor` as ordinary dependencies.\n\
+         \n\
+         ```tsx\n\
+         import {{ EditorContent, useEditor }} from \"@tiptap/react\";\n\
+         import StarterKit from \"@tiptap/starter-kit\";\n\
+         import Collaboration from \"@tiptap/extension-collaboration\";\n\
+         import CollaborationCursor from \"@tiptap/extension-collaboration-cursor\";\n\
+         import type * as Y from \"yjs\";\n\
+         import type {{ Awareness }} from \"y-protocols/awareness\";\n\
+         \n\
+         function NoteEditor(props: {{ doc: Y.Doc; awareness: Awareness; field: string; readOnly: boolean; name: string }}) {{\n\
+         \x20 const editor = useEditor(\n\
+         \x20   {{\n\
+         \x20     editable: !props.readOnly,\n\
+         \x20     extensions: [\n\
+         \x20       StarterKit.configure({{ history: false }}), // Yjs keeps the undo history\n\
+         \x20       Collaboration.configure({{ document: props.doc, field: props.field }}),\n\
+         \x20       CollaborationCursor.configure({{\n\
+         \x20         provider: {{ awareness: props.awareness }},\n\
+         \x20         user: {{ name: props.name, color: \"#f783ac\" }},\n\
+         \x20       }}),\n\
+         \x20     ],\n\
+         \x20   }},\n\
+         \x20   [props.doc, props.readOnly],\n\
+         \x20 );\n\
+         \x20 return <EditorContent editor={{editor}} />;\n\
+         }}\n\
+         ```\n\
+         \n\
+         **CodeMirror** (root kind `text`): install `codemirror`, `@codemirror/state` \
+         and `y-codemirror.next`.\n\
+         \n\
+         ```tsx\n\
+         import {{ useEffect, useRef }} from \"react\";\n\
+         import {{ EditorView, basicSetup }} from \"codemirror\";\n\
+         import {{ EditorState }} from \"@codemirror/state\";\n\
+         import {{ yCollab }} from \"y-codemirror.next\";\n\
+         import type * as Y from \"yjs\";\n\
+         import type {{ Awareness }} from \"y-protocols/awareness\";\n\
+         \n\
+         function CodeEditor(props: {{ root: Y.Text; awareness: Awareness; readOnly: boolean; name: string }}) {{\n\
+         \x20 const host = useRef<HTMLDivElement>(null);\n\
+         \x20 useEffect(() => {{\n\
+         \x20   if (!host.current) return;\n\
+         \x20   props.awareness.setLocalStateField(\"user\", {{ name: props.name, color: \"#30bced\" }});\n\
+         \x20   const view = new EditorView({{\n\
+         \x20     parent: host.current,\n\
+         \x20     state: EditorState.create({{\n\
+         \x20       doc: props.root.toString(),\n\
+         \x20       extensions: [basicSetup, yCollab(props.root, props.awareness), EditorView.editable.of(!props.readOnly)],\n\
+         \x20     }}),\n\
+         \x20   }});\n\
+         \x20   return () => view.destroy();\n\
+         \x20 }}, [props.root, props.awareness, props.readOnly]);\n\
+         \x20 return <div ref={{host}} />;\n\
+         }}\n\
+         ```\n\
+         \n\
+         Load the page that holds the editor with `React.lazy` \
+         (`const NotePage = React.lazy(() => import(\"./pages/NotePage\"));` inside a \
+         `<Suspense>`), so `yjs` and the editor are in that page's chunk only and \
+         every other page stays small. `yjs` and `y-protocols` are already \
+         dependencies of this project; never add a second copy of `yjs` (two in \
+         one bundle break it).\n\
+         \n\
+         The server saves the document into its row a couple of seconds after \
+         the last keystroke, as an ordinary update: **an update trigger on that \
+         table fires about every 2 s while someone types**, so do not hang an \
+         e-mail on one. A trigger's code can read and append to a document with \
+         `live.document(stream, rowKey)` (`await doc.text()`, `await \
+         doc.append(text)`).\n\
+         \n\
          ## When the API you need is missing\n\
          \n\
          Do not hand-write a `fetch`. An untyped call beside a generated client is \
@@ -1167,6 +1290,13 @@ fn names_list(tables: &[Table]) -> String {
 /// server falls back to the TypeScript it was installed with; that one is a
 /// major behind, which can make the editor and the build disagree about an
 /// edge case. The build is the one that decides.
+///
+/// `yjs` (the major the editor bindings expect — two copies in one bundle
+/// break its constructor checks) and `y-protocols` are **always** here, for
+/// collaborative documents (L5.6): this file is written once, so a dependency
+/// added only when an app exposes a document stream would break `tsc` for an
+/// app that exposes one after it was scaffolded, and a package installed but
+/// never imported costs no bundle bytes.
 fn package_json(project: &str) -> String {
     format!(
         r#"{{
@@ -1183,7 +1313,9 @@ fn package_json(project: &str) -> String {
   "dependencies": {{
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.9.0"
+    "react-router-dom": "^7.9.0",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.0"
   }},
   "devDependencies": {{
     "@types/react": "^19.2.0",
@@ -2924,6 +3056,299 @@ fn live_react_ts(streams: &[sc_api::StreamExport]) -> String {
     out
 }
 
+/// Whether a stream is a collaborative document's.
+fn is_document(stream: &sc_api::StreamExport) -> bool {
+    matches!(stream.topics, sc_api::StreamTopics::Document { .. })
+}
+
+/// `live-doc.ts` (TODO.md "Live updates" L5.6): a `document` stream's rows as
+/// `Y.Doc`s, with the editor's awareness riding presence.
+///
+/// `react` adds `useDocument` and the app's `docs` accessors (over the
+/// client in `./hooks`); without it the file is the framework-neutral core
+/// alone — what a test runs under Node, and what a page outside React would
+/// use with its own client.
+///
+/// The protocol it speaks, so the server never looks inside a document or an
+/// awareness: a `doc_sync` is applied and answered with what the server lacks
+/// (`Y.encodeStateAsUpdate(doc, Y.encodeStateVectorFromUpdate(sync))`, so edits
+/// made while disconnected arrive), local edits go out as `doc_update` while
+/// synced and allowed to edit, and the page's awareness is its presence state —
+/// `encodeAwarenessUpdate` in base64 — applied to the others' with
+/// `applyAwarenessUpdate` and dropped with `removeAwarenessStates` when they
+/// leave. Existing editor bindings (TipTap's Collaboration, `y-codemirror.next`)
+/// work on the `doc` and `awareness` unchanged.
+pub fn live_doc_ts(streams: &[sc_api::StreamExport], react: bool) -> String {
+    let mut out = String::from(GENERATED_HEADER);
+    if react {
+        out.push_str("import { useEffect, useState } from \"react\";\n");
+    }
+    out.push_str(LIVE_DOC_IMPORTS);
+    if react {
+        out.push_str("import { api } from \"./hooks\";\n");
+    }
+    out.push_str(LIVE_DOC_TS);
+    if react {
+        out.push_str(LIVE_DOC_REACT_TS);
+        out.push_str(
+            "\n/** The document streams this application exposes: `docs.<stream>.open(key)`, or \
+             `useDocument(docs.<stream>, key)`. */\nexport const docs = {\n",
+        );
+        for stream in streams.iter().filter(|s| is_document(s)) {
+            let _ = writeln!(
+                out,
+                "  {}: documentStream(api.live.{}),",
+                stream.name, stream.name
+            );
+        }
+        out.push_str("};\n");
+    }
+    out
+}
+
+/// The imports every `live-doc.ts` has.
+const LIVE_DOC_IMPORTS: &str = r#"import * as Y from "yjs";
+import {
+  Awareness,
+  applyAwarenessUpdate,
+  encodeAwarenessUpdate,
+  removeAwarenessStates,
+} from "y-protocols/awareness";
+import type { LiveDocumentSession, LiveDocumentStream, LiveError, LiveTopic } from "./helper";
+"#;
+
+/// The framework-neutral half of `live-doc.ts`.
+const LIVE_DOC_TS: &str = r#"
+/** The shared type a root kind is: a `Y.XmlFragment` (TipTap, ProseMirror) or a `Y.Text` (CodeMirror, Monaco). */
+export type DocRoot<K extends "text" | "xml"> = K extends "xml" ? Y.XmlFragment : Y.Text;
+
+/** Where an open document is: waiting for its first sync, in sync, or reconnecting (edits are kept and sent after). */
+export type DocumentStatus = "connecting" | "synced" | "reconnecting";
+
+/** One row's collaborative document, open. Give `doc`, `field` (or `root`) and `awareness` to the editor's binding. */
+export interface LiveDocument<K extends "text" | "xml" = "text" | "xml"> {
+  readonly doc: Y.Doc;
+  readonly awareness: Awareness;
+  /** The root's name — what TipTap's Collaboration extension calls `field`. */
+  readonly field: string;
+  /** The root shared type itself — what `y-codemirror.next`'s `yCollab` takes. */
+  readonly root: DocRoot<K>;
+  /** Whether this page may only read: make the editor non-editable while it is true. */
+  readonly readOnly: boolean;
+  readonly status: DocumentStatus;
+  /** Why the server refused or ended this document (`unavailable`, `revoked`, `too_large`, …). */
+  readonly error: LiveError | undefined;
+  /** Be told when `readOnly`, `status` or `error` change. Returns the function that stops it. */
+  onChange(listener: () => void): () => void;
+  close(): void;
+}
+
+/** A document stream as a page uses it: `open(key)`. */
+export interface DocumentStream<K extends "text" | "xml" = "text" | "xml"> {
+  readonly stream: LiveDocumentStream<K>;
+  open(key: LiveTopic): LiveDocument<K>;
+}
+
+/** The accessor for a document stream of the generated client. */
+export function documentStream<K extends "text" | "xml">(stream: LiveDocumentStream<K>): DocumentStream<K> {
+  return { stream, open: (key: LiveTopic) => openDocument(stream, key) };
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let text = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(text);
+}
+
+function fromBase64(text: string): Uint8Array {
+  const raw = atob(text);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+/** What `Y` and the awareness are told a change came from, so it is not sent back. */
+const REMOTE = "feldspar-live";
+
+/** Open row `key`'s document on `stream`. Close it when the page is done with it. */
+export function openDocument<K extends "text" | "xml">(
+  stream: LiveDocumentStream<K>,
+  key: LiveTopic,
+): LiveDocument<K> {
+  const doc = new Y.Doc();
+  const awareness = new Awareness(doc);
+  const root = (stream.rootKind === "xml" ? doc.getXmlFragment(stream.root) : doc.getText(stream.root)) as DocRoot<K>;
+  const listeners = new Set<() => void>();
+  let readOnly = true;
+  let status: DocumentStatus = "connecting";
+  let error: LiveError | undefined;
+  let closed = false;
+  const changed = () => listeners.forEach((listener) => listener());
+  // The awareness client ids each other member's connection holds, dropped when it leaves.
+  const clientsOf = new Map<string, Set<number>>();
+  let applyingFor: string | undefined;
+  const ownState = () => toBase64(encodeAwarenessUpdate(awareness, [doc.clientID]));
+
+  const session: LiveDocumentSession<string> = stream.connect<string>(key, {
+    sync(update, ro) {
+      const bytes = fromBase64(update);
+      Y.applyUpdate(doc, bytes, REMOTE);
+      readOnly = ro;
+      status = "synced";
+      error = undefined;
+      // What the server lacks — edits made before this sync, or while disconnected.
+      if (!ro) {
+        const missing = Y.encodeStateAsUpdate(doc, Y.encodeStateVectorFromUpdate(bytes));
+        if (missing.length > 2) session.send(toBase64(missing));
+      }
+      if (awareness.getLocalState() !== null) session.setState(ownState());
+      changed();
+    },
+    update(update) {
+      Y.applyUpdate(doc, fromBase64(update), REMOTE);
+    },
+    presence(members) {
+      const present = new Set<string>();
+      for (const member of members) {
+        if (member.connection === session.me) continue;
+        present.add(member.connection);
+        if (typeof member.state !== "string") continue;
+        applyingFor = member.connection;
+        try {
+          applyAwarenessUpdate(awareness, fromBase64(member.state), REMOTE);
+        } catch {
+          // A state that is not an awareness update is somebody else's business.
+        } finally {
+          applyingFor = undefined;
+        }
+      }
+      for (const [connection, ids] of clientsOf) {
+        if (present.has(connection)) continue;
+        removeAwarenessStates(awareness, [...ids], REMOTE);
+        clientsOf.delete(connection);
+      }
+    },
+    resync() {
+      status = "reconnecting";
+      changed();
+    },
+    error(e) {
+      error = e;
+      changed();
+    },
+  });
+
+  // A lost socket is a document out of sync: edits are kept and answered to the next `sync`.
+  const stopStatus = stream.connection.onStatus((connection) => {
+    if (connection === "reconnecting" && status === "synced") {
+      status = "reconnecting";
+      changed();
+    }
+  });
+
+  doc.on("update", (update: Uint8Array, origin: unknown) => {
+    if (closed || origin === REMOTE || readOnly || status !== "synced") return;
+    session.send(toBase64(update));
+  });
+  awareness.on(
+    "update",
+    ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
+      if (closed) return;
+      if (origin === REMOTE) {
+        if (applyingFor === undefined) return;
+        const ids = clientsOf.get(applyingFor) ?? new Set<number>();
+        for (const id of [...added, ...updated]) if (id !== doc.clientID) ids.add(id);
+        clientsOf.set(applyingFor, ids);
+        return;
+      }
+      if ([...added, ...updated, ...removed].includes(doc.clientID)) session.setState(ownState());
+    },
+  );
+
+  return {
+    doc,
+    awareness,
+    field: stream.root,
+    root,
+    get readOnly() {
+      return readOnly;
+    },
+    get status() {
+      return status;
+    },
+    get error() {
+      return error;
+    },
+    onChange(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      listeners.clear();
+      stopStatus();
+      session.close();
+      awareness.destroy();
+      doc.destroy();
+    },
+  };
+}
+"#;
+
+/// React's half of `live-doc.ts`: `useDocument`.
+const LIVE_DOC_REACT_TS: &str = r#"
+/** What `useDocument` returns: the document once open (`undefined` before), and where it is. */
+export type DocumentState<K extends "text" | "xml"> = {
+  doc: Y.Doc | undefined;
+  awareness: Awareness | undefined;
+  root: DocRoot<K> | undefined;
+  /** The root's name, for TipTap's Collaboration `field`. */
+  field: string;
+  readOnly: boolean;
+  status: DocumentStatus;
+  error: LiveError | undefined;
+};
+
+/**
+ * Row `key`'s document on `stream`, open while the component is mounted (and
+ * reopened when `key` changes). Render the editor once `doc` is there, and make
+ * it non-editable while `readOnly`.
+ */
+export function useDocument<K extends "text" | "xml">(
+  stream: DocumentStream<K>,
+  key: LiveTopic | null | undefined,
+): DocumentState<K> {
+  const [open, setOpen] = useState<LiveDocument<K> | undefined>(undefined);
+  const [, setTick] = useState(0);
+  const id = key === null || key === undefined ? undefined : String(key);
+  useEffect(() => {
+    if (id === undefined) return;
+    const document = stream.open(id);
+    setOpen(document);
+    const stop = document.onChange(() => setTick((n) => n + 1));
+    return () => {
+      stop();
+      document.close();
+      setOpen(undefined);
+    };
+  }, [stream, id]);
+  return {
+    doc: open?.doc,
+    awareness: open?.awareness,
+    root: open?.root,
+    field: stream.stream.root,
+    readOnly: open?.readOnly ?? true,
+    status: open?.status ?? "connecting",
+    error: open?.error,
+  };
+}
+"#;
+
 /// The imports every `live-react.ts` has.
 const LIVE_REACT_IMPORTS: &str = r#"
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -3994,6 +4419,74 @@ mod tests {
             "{agents}"
         );
         assert!(file(&with, "src/feldspar/README.md").contains("live-react.ts"));
+    }
+
+    /// L5.6: `live-doc.ts` — the one generated file that imports `yjs` — is
+    /// emitted only for an app exposing a document stream; `yjs` and
+    /// `y-protocols` are in the write-once `package.json` either way; and the
+    /// contract names the editors' worked examples (L5.7).
+    #[test]
+    fn the_document_runtime_is_emitted_only_with_a_document_stream() {
+        let tables = [tasks()];
+        let app = todo();
+        let endpoints = endpoints(&tables);
+        let boiler = sc_api::StreamExport {
+            name: "boiler".to_owned(),
+            path: "/api/live".to_owned(),
+            value: sc_api::TypeSchema::text(),
+            topics: sc_api::StreamTopics::Single,
+            presence: false,
+            client_publish: false,
+        };
+        let without = runtime_files(&ProjectContext {
+            streams: std::slice::from_ref(&boiler),
+            ..ctx(&app, &tables, &endpoints, None)
+        });
+        assert!(
+            !without.iter().any(|f| f.path.ends_with(RUNTIME_DOC_FILE)),
+            "no document stream, no live-doc.ts"
+        );
+        assert!(
+            without.iter().all(|f| !f.contents.contains("from \"yjs\"")),
+            "nothing else imports yjs"
+        );
+        let note_body = sc_api::StreamExport {
+            name: "note_body".to_owned(),
+            topics: sc_api::StreamTopics::Document {
+                root: "default".to_owned(),
+                root_kind: "xml".to_owned(),
+            },
+            ..boiler.clone()
+        };
+        let with = runtime_files(&ProjectContext {
+            streams: &[boiler, note_body],
+            ..ctx(&app, &tables, &endpoints, None)
+        });
+        let doc = file(&with, "src/feldspar/live-doc.ts");
+        assert!(doc.contains("DO NOT EDIT"), "{doc}");
+        assert!(doc.contains("export function useDocument<"), "{doc}");
+        assert!(
+            doc.contains("note_body: documentStream(api.live.note_body),"),
+            "{doc}"
+        );
+        assert!(!doc.contains("boiler"), "only document streams: {doc}");
+        assert!(!file(&with, "src/feldspar/live-react.ts").contains("yjs"));
+
+        let project = project_files(&ctx(&app, &tables, &endpoints, None));
+        let package: serde_json::Value =
+            serde_json::from_str(file(&project, "package.json")).unwrap();
+        assert_eq!(package["dependencies"]["yjs"], "^13.6.0");
+        assert_eq!(package["dependencies"]["y-protocols"], "^1.0.6");
+        let agents = file(&project, "AGENTS.md");
+        for needle in [
+            "## Collaborative documents",
+            "@tiptap/extension-collaboration",
+            "y-codemirror.next",
+            "React.lazy",
+            "every 2 s",
+        ] {
+            assert!(agents.contains(needle), "{needle} in {agents}");
+        }
     }
 
     /// L3.10–L3.11: an exposed stream of a table's changes is typed with the

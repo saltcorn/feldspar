@@ -21,7 +21,7 @@ import Modal from "react-bootstrap/Modal";
 
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
-import { DataGrid, fileStoreOf, isCalc, type FieldInfo } from "./DataGrid";
+import { DataGrid, fileStoreOf, isCalc, isDocument, type FieldInfo } from "./DataGrid";
 import { display, type RowRecord } from "../grid/gridValues";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader } from "../layout";
@@ -143,7 +143,8 @@ export function TableData({ table }: { table: string }) {
  *
  * Opened two ways, and the difference is `row`: `null` creates, an existing row
  * updates the one it names. A calculated field is left out of both — it is
- * computed on read and refused on write — and the key is shown but not editable
+ * computed on read and refused on write — and so is a collaborative document,
+ * which is edited only through its stream — and the key is shown but not editable
  * while updating, because it is what identifies the row being changed.
  */
 function RowForm({
@@ -161,7 +162,10 @@ function RowForm({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const editable = useMemo(() => fields.filter((f) => !isCalc(f)), [fields]);
+  const editable = useMemo(
+    () => fields.filter((f) => !isCalc(f) && !isDocument(f)),
+    [fields],
+  );
   const pk = useMemo(() => {
     const keys = fields.filter((f) => f.primary_key);
     return keys.length === 1 ? keys[0].name : null;

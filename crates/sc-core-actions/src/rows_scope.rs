@@ -75,8 +75,9 @@ pub(crate) fn target_table(catalog: &Catalog, config: &Attrs) -> Result<Table> {
     catalog.require(&config_str(config, CFG_TABLE)?)
 }
 
-/// A field an action may write: one of the table's own, and not a calculated one
-/// (which has no column to write).
+/// A field an action may write: one of the table's own, not a calculated one
+/// (which has no column to write) and not a collaborative document (which is
+/// merged, never overwritten).
 pub(crate) fn writable_field(table: &Table, field: &str) -> Result<()> {
     match table.field(field) {
         None => Err(Error::invalid(format!(
@@ -85,6 +86,11 @@ pub(crate) fn writable_field(table: &Table, field: &str) -> Result<()> {
         ))),
         Some(f) if f.is_calc() => Err(Error::invalid(format!(
             "`{field}` is a calculated field and cannot be written"
+        ))),
+        Some(f) if f.is_collab_doc() => Err(Error::invalid(format!(
+            "`{field}` is a collaborative document and cannot be written by an action: a \
+             whole value would overwrite the edits other people are making to it. Use \
+             `live.document` in a code body to edit it"
         ))),
         Some(_) => Ok(()),
     }
@@ -387,5 +393,38 @@ mod tests {
             translated("[status].some(s => s === row.status)"),
             Err(TranslateError::Untranslatable(_))
         ));
+    }
+
+    /// An action may not name a collaborative document as a field to write
+    /// (live updates L5.1): saving its configuration says so.
+    #[test]
+    fn an_action_cannot_write_a_document() {
+        use sc_catalog::{DataField, DbId, TableId, TableSource};
+        use sc_types::{BasicType, RichTypeRef, TypeRef};
+        let doc = TypeRef::rich(RichTypeRef::resolve(sc_types::COLLAB_DOC).unwrap());
+        let table = Table {
+            id: TableId("notes".into()),
+            name: "notes".into(),
+            database: DbId::primary(),
+            source: TableSource::Database,
+            fields: vec![
+                DataField::plain("id", TypeRef::Basic(BasicType::Int)).primary_key(),
+                DataField::plain("title", TypeRef::Basic(BasicType::Text)),
+                DataField::plain("body", doc),
+            ],
+            primary_key: vec!["id".into()],
+            label: "notes".into(),
+            description: String::new(),
+            access: Default::default(),
+            attributes: Default::default(),
+            overlay: None,
+            ownership: None,
+            ownership_error: None,
+            rls_enabled: false,
+            constraints: Vec::new(),
+        };
+        assert!(writable_field(&table, "title").is_ok());
+        let err = writable_field(&table, "body").unwrap_err().to_string();
+        assert!(err.contains("collaborative document"), "{err}");
     }
 }

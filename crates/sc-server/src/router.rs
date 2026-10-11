@@ -248,6 +248,8 @@ pub fn build_router_with_apps(
         if let Some(streams) = apps.streams() {
             hub.set_streams(streams.supervisor().clone());
         }
+        // `live.document` in a code body loads and persists through it (L5.5).
+        hub.set_catalog(catalog);
         catalog.set_live_host(hub.clone() as Arc<dyn sc_expr::LiveHost>)?;
         catalog.add_table_events(
             sc_catalog::LIVE_EVENTS,

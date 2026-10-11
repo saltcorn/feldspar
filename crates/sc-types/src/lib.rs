@@ -57,7 +57,7 @@ pub use i18n::{translate_field, translate_spec};
 pub use json::{json_to_value, value_to_json};
 pub use operation::{Operation, OperationScope};
 pub use rich::{RichType, RichTypeRef, registered_rich_types, rich_type, rich_type_config_spec};
-pub use rich_types::{IntegerType, StringType};
+pub use rich_types::{COLLAB_DOC, CollabDocType, IntegerType, StringType, is_collab_doc};
 pub use type_ref::TypeRef;
 
 #[cfg(test)]

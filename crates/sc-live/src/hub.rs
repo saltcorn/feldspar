@@ -117,7 +117,7 @@ use chrono::Utc;
 use sc_auth::{SessionEnded, SessionListener, User};
 use sc_catalog::{Catalog, TableEvents, TableWrite, WriteOp};
 use sc_error::{Error, Result};
-use sc_expr::{LiveHost, LiveTopics};
+use sc_expr::{DocRequest, LiveHost, LiveTopics};
 use sc_stream::providers::table_changes::{KEY_KEY, KEY_OLD, KEY_OP, KEY_ROW};
 use sc_stream::{
     ChangeSettings, Envelope, Payload, Replay, Retained, RunningStream, StreamId, StreamSupervisor,
@@ -129,6 +129,8 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use crate::changes::{CallerCell, ChangeAccess, ChangeCounters, ChangeCounts, Subscriber};
+use crate::doc::RootKind;
+use crate::docroom::{DocInbox, DocRooms, DocSeat, DocTarget};
 use crate::limits::LiveLimits;
 use crate::presence::{Member, PresenceInbox, PresenceNews, RoomKey, Rooms};
 use crate::protocol::{ErrorCode, FrameError};
@@ -202,6 +204,11 @@ pub struct LiveHub {
     change_counters: Mutex<HashMap<StreamId, Arc<ChangeCounters>>>,
     /// Who is on each topic of each stream with presence (L4.3).
     rooms: Mutex<Rooms>,
+    /// The collaborative documents open on this server (L5).
+    docs: Arc<DocRooms>,
+    /// The catalog, for a server-side document edit (`live.document`) — weak,
+    /// because the catalog holds the hub as its live host.
+    catalog: RwLock<Weak<Catalog>>,
     /// Itself, for a task that outlives the call that spawned it.
     me: Weak<LiveHub>,
 }
@@ -239,7 +246,7 @@ impl LiveHub {
     /// A hub with no connections, enforcing `limits`.
     pub fn new(limits: LiveLimits) -> Arc<LiveHub> {
         Arc::new_cyclic(|me| LiveHub {
-            limits,
+            limits: limits.clone(),
             next_connection: AtomicU64::new(1),
             connections: Mutex::new(HashMap::new()),
             fanouts: Mutex::new(Fanouts::default()),
@@ -248,6 +255,8 @@ impl LiveHub {
             changes: Mutex::new(HashMap::new()),
             change_counters: Mutex::new(HashMap::new()),
             rooms: Mutex::new(Rooms::default()),
+            docs: DocRooms::new(limits.max_doc_bytes, limits.doc_persist_debounce),
+            catalog: RwLock::new(Weak::new()),
             me: me.clone(),
         })
     }
@@ -262,6 +271,65 @@ impl LiveHub {
         if let Ok(mut guard) = self.streams.write() {
             *guard = Some(supervisor);
         }
+    }
+
+    /// Hand the hub the catalog, so `live.document` in a code body can load
+    /// and persist a document. Once, at boot, beside
+    /// [`set_streams`](LiveHub::set_streams).
+    pub fn set_catalog(&self, catalog: &Arc<Catalog>) {
+        if let Ok(mut guard) = self.catalog.write() {
+            *guard = Arc::downgrade(catalog);
+        }
+    }
+
+    /// The open documents.
+    pub fn docs(&self) -> &Arc<DocRooms> {
+        &self.docs
+    }
+
+    /// Read or edit a document from the server (L5.5): open its room — the
+    /// one its editors are in, if it is open — make the change, persist, and
+    /// answer the text.
+    pub async fn document(&self, stream: &str, key: &str, request: DocRequest) -> Result<String> {
+        let running = self.running(stream)?;
+        if running.provider_name() != sc_stream::DOCUMENT {
+            return Err(Error::invalid(format!(
+                "stream `{stream}` is not a document stream"
+            )));
+        }
+        let catalog = match self.catalog.read() {
+            Ok(guard) => guard.upgrade(),
+            Err(poisoned) => poisoned.into_inner().upgrade(),
+        }
+        .ok_or_else(|| Error::config("this server has no catalog to read documents from"))?;
+        let target = DocTarget::of(&running, key)?;
+        let seat = self.docs.open(&catalog, &target).await.map_err(|e| {
+            if matches!(e.repr(), sc_error::Repr::NotFound(_)) {
+                Error::not_found(format!(
+                    "`{}` has no row `{key}` holding a document of `{stream}`",
+                    target.table
+                ))
+            } else {
+                e
+            }
+        })?;
+        match request {
+            DocRequest::Read => {}
+            DocRequest::Edit {
+                index,
+                delete,
+                insert,
+            } => seat.edit(|doc| doc.edit_text(index, delete, &insert))?,
+            DocRequest::Append { text } => seat.edit(|doc| match doc.shape().kind {
+                RootKind::Text => {
+                    let end = doc.text_len()?;
+                    doc.edit_text(end, 0, &text)
+                }
+                RootKind::Xml => doc.append_paragraph(&text),
+            })?,
+        }
+        seat.persist().await?;
+        seat.text()
     }
 
     /// The running stream called `name`, or the refusal a publisher sees.
@@ -501,6 +569,7 @@ impl LiveHub {
                 wake: Arc::new(Notify::new()),
                 touches,
                 presence: Arc::new(PresenceInbox::default()),
+                docs: DocInbox::new(),
                 next_attachment: AtomicU64::new(1),
                 caller: CallerCell::default(),
             },
@@ -624,6 +693,7 @@ impl SessionListener for LiveHub {
     }
 }
 
+#[async_trait::async_trait]
 impl LiveHost for LiveHub {
     fn topics(&self, stream: &str) -> Result<LiveTopics> {
         LiveHub::topics(self, stream)
@@ -631,6 +701,10 @@ impl LiveHost for LiveHub {
 
     fn publish(&self, stream: &str, topic: Option<String>, value: Json) -> Result<Option<String>> {
         LiveHub::publish(self, stream, topic, value)
+    }
+
+    async fn document(&self, stream: &str, key: &str, request: DocRequest) -> Result<String> {
+        LiveHub::document(self, stream, key, request).await
     }
 }
 
@@ -718,6 +792,8 @@ pub struct Connection {
     touches: Arc<Touches>,
     /// Presence changes waiting to be sent.
     presence: Arc<PresenceInbox>,
+    /// Document updates waiting to be sent (L5).
+    docs: Arc<DocInbox>,
     next_attachment: AtomicU64,
     /// Who it is now, as a `table_changes` subscription's verdicts read it.
     caller: CallerCell,
@@ -889,6 +965,25 @@ impl Connection {
     /// The presence changes waiting to be sent, taken.
     pub fn take_presence(&self) -> PresenceNews {
         self.presence.take()
+    }
+
+    /// Join the document `target` names (L5.3), as a member whose updates
+    /// are handed to this connection's [`doc_inbox`](Connection::doc_inbox).
+    /// Answers the seat — dropping it leaves — and the whole document.
+    pub async fn join_doc(
+        &self,
+        catalog: &Arc<Catalog>,
+        target: &DocTarget,
+    ) -> Result<(DocSeat, Vec<u8>)> {
+        self.hub
+            .docs
+            .join(catalog, target, Arc::clone(&self.docs))
+            .await
+    }
+
+    /// The document updates waiting for this connection.
+    pub fn doc_inbox(&self) -> &Arc<DocInbox> {
+        &self.docs
     }
 
     /// Set who the connection's caller is — at the upgrade, and again each

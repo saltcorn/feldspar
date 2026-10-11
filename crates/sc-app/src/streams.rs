@@ -276,7 +276,18 @@ pub fn stream_exports(app: &Application, streams: &[ExposedStream]) -> Vec<Strea
             topics: match &exposed.topics {
                 TopicSpec::Single => StreamTopics::Single,
                 TopicSpec::User => StreamTopics::User,
-                TopicSpec::Row { .. } => StreamTopics::Row,
+                // A document stream's topic is a row too, but a page opens its
+                // document rather than subscribing to elements (L5.6).
+                TopicSpec::Row { .. } => match sc_stream::providers::document::settings_of(
+                    &exposed.stream.provider,
+                    &exposed.stream.configuration,
+                ) {
+                    Some(doc) => StreamTopics::Document {
+                        root: doc.root,
+                        root_kind: doc.root_kind,
+                    },
+                    None => StreamTopics::Row,
+                },
                 // A stream of row changes is subscribed with the read's filter,
                 // not a topic, and typed with the table's row (L3.10).
                 TopicSpec::PerElementRow { table } => StreamTopics::Changes {

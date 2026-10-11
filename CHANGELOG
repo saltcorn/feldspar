@@ -2,6 +2,103 @@
 
 Changes in reverse chronological order.
 
+## Live updates L5: collaborative documents
+
+A note two people type into at once, each seeing the other's words and cursor, while a third
+person who may only read it watches: a `collab_doc` field, a `document` stream, and `yrs` (Yjs's
+CRDT in Rust) merging on the server. `docs/TECHNICAL_DESIGN.md` §14.10 "Collaborative documents"
+describes what was built; `docs/tutorial-live.md` has part 5.
+
+- **L5.1 — the `collab_doc` type** (`sc-types`, on `bytea`/`BLOB`). It is **left out of every API
+  read** (absent, not `null`; a table holding one is projected column by column), of the
+  generated row types and of `table_changes` element types; **refused as a write target** by the
+  row layer (so REST, GraphQL, the admin row editor and a code body's `db`), by `insert_row` /
+  `update_rows` when their configuration is saved, and by a code body's plan; refused by
+  filters and orderings; and invisible to formulas (left out of the schema shape). The admin UI's
+  grid and row form treat it as read-only. The one writer is `rows::write_document_in`.
+- **L5.2 — `yrs`** (new workspace dependency, 0.28). `sc-live::doc::CollabDoc`: load, apply (an
+  untrusted update cannot panic the room), merge, text and JSON for a `text` or an `xml` root,
+  UTF-16 positions, text edits and paragraph appends. A fixture recorded from the JS `yjs`
+  package (`crates/sc-live/tests/fixtures/`, with the script that records it) replays through
+  `yrs` to the same text and JSON for both root kinds.
+- **L5.3 — the `document` provider** (`table`, `field`, `root`, `root_kind`, `text_mirror`,
+  `mirror_format`; `Row` topics) and **document rooms** (`sc-live::docroom`): one per open
+  document, relaying each edit to the other members through a per-connection inbox (a resync as
+  `doc_sync` past its cap). On the socket: `doc_sync {update, read_only}` after `ready`;
+  `doc_update` both ways; a read-only member's edit `unavailable`; edits counted against the
+  publish rate; losing the edit right sends `doc_sync` again with `read_only: true`, losing the
+  read right is `revoked`. New limits `max_doc_bytes` (2 MB, `too_large`) and
+  `max_doc_update_bytes` (1 MB for a `doc_update` frame; every other frame keeps 64 KB); the
+  transport takes twice the latter. Presence is always on for a document; the admin's Observe
+  screen shows its editors. An application exposing a `document` stream must include its table.
+- **L5.4 — persisting**: debounced (`doc_persist_debounce`, 2 s) and when the last member leaves,
+  skipped when nothing changed, in one transaction: `SELECT … FOR UPDATE` (new
+  `sc_query::Select::lock` / `for_update()` and `SqlDialect::row_lock`; SQLite renders none),
+  merge with what is stored (and relay what another process added), write the field and the
+  mirror through the row layer as a system write.
+- **L5.5 — `live.document(stream, key)`** in JavaScript bodies (asynchronous op `op_sc_live_doc`:
+  `text`, `append`, `insert`, `delete`, `edit`) and Python bodies (`live.document(...)` → a
+  `Document`), over the new `LiveHost::document` (defaulted to a refusal). An edit merges, reaches
+  open editors at once, and is persisted before the call returns.
+- **L5.6 — the client.** The helper (and so the four UIs' copies, regenerated) gains the
+  transport — `LiveDocumentStream`, `doc_sync`/`doc_update` handling, `sendDocUpdate` — and imports
+  nothing. The React scaffold's new `src/feldspar/live-doc.ts`, emitted only for an app exposing a
+  document stream, is the only generated file importing `yjs`: `openDocument`, `docs.<stream>.open`
+  and `useDocument`, answering every `doc_sync` with what the server lacks (offline edits arrive),
+  and carrying the awareness as presence state. **Deviation from the plan:** the accessor is
+  `docs.<stream>.open(key)` rather than `live.<stream>.open(key)`, because `live` is the generated
+  client's object, which may not import `yjs`. `yjs` (`^13.6.0`) and `y-protocols` (`^1.0.6`) are in
+  every scaffold's `package.json`. They are also new dev dependencies of `ui/admin` (where the
+  repository's TypeScript tests find their `node_modules`); npm rewrote part of
+  `ui/admin/package-lock.json` (it deduplicated vitest's nested esbuild) — vitest (708 tests),
+  `tsc` and `vite build` of the admin UI pass with it.
+- **L5.7 — `AGENTS.md`**: a "Collaborative documents" section with TipTap and CodeMirror
+  examples, `React.lazy` for the editor page, and the 2-second update trigger.
+- **L5.8 — tutorial part 5** and its definition of done,
+  `crates/sc-server/tests/tutorial_live_documents.rs`.
+- **Tests** — run here and passing: `sc-types`, `sc-query`, `sc-db-sqlite`, `sc-stream`,
+  `sc-core-actions`, `sc-core-traits` (lib); `sc-live` lib and every SQLite/no-database test
+  (`doc_format`, `documents`, `hub`, `publish`, `readers`); `sc-api` `collab_doc`,
+  `admin_client_sync`, `live_connection`; `sc-expr` (`--features eval`) document tests; `sc-app`
+  lib and `live_doc` (Node with the real `yjs`, and `tsc`); `sc-server` `app_live_documents` and
+  `tutorial_live_documents` — **both on SQLite with a real server and real sockets**, the latter
+  including two headless Chromium contexts typing into one note through the scaffold's generated
+  runtime bundled by `esbuild`; `ui/admin` vitest and `tsc` in all four UIs.
+- **Not run here** (no Postgres, no libpython on this machine): every Postgres-backed test (they
+  fail here only on connecting), and `sc-python`'s `python_live::a_python_body_reads_and_edits_a_document`
+  (compiled; it needs `--features python-host`). Step 3 of the tutorial test type-checks the
+  TipTap page only when TipTap is installed in `ui/admin/node_modules`; it is not, so that step
+  says so and is skipped. `sc-api`'s `typescript_typecheck` fails here for reasons that predate L5:
+  this machine's global `tsc` is TypeScript 7, which rejects the test's `--moduleResolution
+  node`, and with the admin UI's TypeScript 5 (`SC_TSC=…/ui/admin/node_modules/.bin/tsc`) the L4
+  helper's `for … of` over a `Map` needs a `--target` the test does not pass.
+- **Noticed, not changed:** creating a table through the admin API (`POST /api/tables`, no
+  fields) fails on SQLite, which cannot hold a table with no columns; the tutorial test creates
+  each table with its key through the catalog and adds the rest through the admin API.
+
+## Live updates L5: plan revised before building
+
+The L5 plan (TODO.md §3–§6 and the L5 items) was reviewed and kept as a CRDT design, with these
+changes; `docs/TECHNICAL_DESIGN.md` §14.10 records them under "Collaborative documents".
+
+- **Document limits come from one setting**, `max_doc_bytes` (2 MB, was 5 MB). The old numbers
+  contradicted each other: a 5 MB document could not fit a 1 MB `doc_sync`, and a paste over
+  64 KB would have been `too_large`. `doc_update` frames get their own 1 MB cap.
+- **`root` defaults to `default`** (TipTap's name, was `content`), and a new `root_kind`
+  (`text` | `xml`) tells `yrs` what to read.
+- **The mirror has a `mirror_format`** (`text` | `json`), so documents with an `xml` or a map
+  root are readable over REST too.
+- **Reconnect is specified**: after every `doc_sync` the client sends what the server lacks.
+- **`collab_doc` is left out of REST reads** (not `null`) and the generated row types.
+- **Persisting skips unchanged documents**, and the docs say plainly that an update trigger fires
+  about every 2 s while someone types.
+- **`live.document` writes** text edits on a `text` root and paragraph appends on an `xml` root.
+- **Awareness is opaque presence state** (`encodeAwarenessUpdate` in base64).
+- **The document client is its own file**, `src/feldspar/live-doc.ts`, so `yjs` never reaches
+  apps without documents or the admin/IDE UIs. `yjs` and `y-protocols` are always in the
+  scaffold's `package.json`, because `package.json` is written once.
+- **The limits item was folded into L5.3**, so L5 is now L5.1–L5.8.
+
 ## Live updates L4: the Postgres-backed tests run, and an app's streams use its own server's registry
 
 The L4 tests that could not be run where L4 was built have now been run. The four

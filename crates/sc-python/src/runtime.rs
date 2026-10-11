@@ -395,6 +395,11 @@ impl Inner {
                                 )),
                             },
                             Surface::Live => match live {
+                                // `live.document(…)` (L5.5) rides the same
+                                // surface, marked, and is the one that awaits.
+                                Some(live) if plan.get("document").is_some() => {
+                                    document(live.as_ref(), &plan).await
+                                }
                                 Some(live) => publish(live.as_ref(), &plan),
                                 None => {
                                     Err(Error::msg("this code body cannot publish to a stream"))
@@ -492,6 +497,16 @@ fn publish(live: &dyn sc_expr::LiveHost, plan: &Json) -> Result<Json> {
     let value = plan.get("value").cloned().unwrap_or(Json::Null);
     live.publish(stream, topic, value)
         .map(|topic| topic.map_or(Json::Null, Json::String))
+}
+
+/// One `live.document(…)` call from Python (L5.5): read or edit a
+/// collaborative document, answering its text — `sc-expr`'s own reading of
+/// the request, so the two languages agree on it.
+async fn document(live: &dyn sc_expr::LiveHost, plan: &Json) -> Result<Json> {
+    let (stream, key, request) = sc_expr::document_request(plan).map_err(Error::invalid)?;
+    live.document(&stream, &key, request)
+        .await
+        .map(Json::String)
 }
 
 fn thread_loop(inbox: &Receiver<Job>, mine: &Sender<Job>, owner: &Weak<Inner>) {

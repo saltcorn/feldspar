@@ -1511,8 +1511,84 @@ class Live:
             raise TypeError("a topic is a string, a number or None")
         return _call_live({"stream": stream, "topic": topic, "value": value})
 
+    def document(self, stream, key):
+        """The collaborative document of row ``key`` on the ``document`` stream
+        ``stream``: ``live.document("note_body", row["id"]).append("Summary")``.
+        """
+        if not isinstance(stream, str) or stream == "":
+            raise TypeError(
+                'live.document() takes the document stream\'s name first, as in '
+                'live.document("note_body", row["id"])'
+            )
+        if isinstance(key, bool) or not isinstance(key, (str, int)) or key == "":
+            raise TypeError("live.document() takes the row's key second: a string or a number")
+        return Document(stream, str(key))
+
     def __repr__(self):
         return "<saltcorn live>"
+
+
+class Document:
+    """A collaborative document, read and edited from the server.
+
+    Every method answers the document's text after it. An edit is a CRDT
+    update: it merges with whatever people are typing, reaches their editors at
+    once, and is persisted before the call returns. Positions count UTF-16 code
+    units, as JavaScript does (the same as Python's for text without emoji and
+    other characters outside the Basic Multilingual Plane). A refusal is a
+    :class:`LiveError`.
+    """
+
+    __slots__ = ("_stream", "_key")
+
+    def __init__(self, stream, key):
+        self._stream = stream
+        self._key = key
+
+    def _ask(self, op, **args):
+        plan = {"document": True, "stream": self._stream, "key": self._key, "op": op}
+        plan.update(args)
+        return _call_live(plan)
+
+    @staticmethod
+    def _count(name, n):
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise TypeError(f"{name} is a whole number of characters, not {n!r}")
+        return n
+
+    @staticmethod
+    def _text(name, s):
+        if not isinstance(s, str):
+            raise TypeError(f"{name} is a string, not {type(s).__name__}")
+        return s
+
+    def text(self):
+        """The document's plain text."""
+        return self._ask("read")
+
+    def append(self, text):
+        """Append ``text``: to the end of a text root, as a paragraph of an xml one."""
+        return self._ask("append", text=self._text("the appended text", text))
+
+    def edit(self, index, delete_count, insert=""):
+        """Delete ``delete_count`` characters at ``index``, then insert ``insert``."""
+        return self._ask(
+            "edit",
+            index=self._count("the index", index),
+            delete=self._count("the number to delete", delete_count),
+            insert=self._text("the inserted text", insert),
+        )
+
+    def insert(self, index, text):
+        """Insert ``text`` at ``index``."""
+        return self.edit(index, 0, text)
+
+    def delete(self, index, count):
+        """Delete ``count`` characters at ``index``."""
+        return self.edit(index, count, "")
+
+    def __repr__(self):
+        return f"<saltcorn document {self._stream}/{self._key}>"
 
 
 # ---------------------------------------------------------------------------

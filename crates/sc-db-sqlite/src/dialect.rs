@@ -58,6 +58,12 @@ impl SqlDialect for SqliteDialect {
         format!("?{position}")
     }
 
+    /// SQLite has no row locks: a write transaction (`BEGIN IMMEDIATE`) holds
+    /// the whole database already.
+    fn row_lock(&self) -> Option<&'static str> {
+        None
+    }
+
     fn binary_op(&self, op: BinOp) -> &'static str {
         match op {
             // SQLite's LIKE is case-insensitive for ASCII already; there is no
@@ -79,6 +85,13 @@ mod tests {
 
     fn render(stmt: impl Into<Statement>) -> (String, Vec<Value>) {
         SqliteDialect.render(&stmt.into()).expect("render")
+    }
+
+    #[test]
+    fn a_locking_select_renders_no_lock_clause() {
+        // SQLite's write transaction already holds the database.
+        let (sql, _) = render(Select::from(Source::table("notes")).for_update());
+        assert_eq!(sql, "SELECT * FROM \"notes\"");
     }
 
     #[test]

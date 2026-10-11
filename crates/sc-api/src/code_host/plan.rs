@@ -949,6 +949,14 @@ fn writable_values(table: &Table, row: &Json, op: &str) -> Result<()> {
                     table.name
                 )));
             }
+            // A document is merged, never overwritten (live updates L5.1).
+            Some(field) if field.is_collab_doc() => {
+                return Err(Error::invalid(format!(
+                    "`{key}` of `{}` is a collaborative document and cannot be written \
+                     directly; use `live.document` to edit it",
+                    table.name
+                )));
+            }
             Some(_) => {}
         }
         // The same coercion the row layer will do, done early so a bad value in
@@ -1207,6 +1215,7 @@ impl<'a> Lowering<'a> {
     /// projects itself).
     fn projected(&self, name: &str) -> Result<Option<Expr>> {
         match self.table.field(name) {
+            Some(field) if field.is_collab_doc() => Err(not_a_value(&self.table.name, name)),
             Some(_) => Ok(None),
             None if is_plain_name(name) => Err(Error::invalid(format!(
                 "`{}` has no field `{name}` to select",
@@ -1221,6 +1230,7 @@ impl<'a> Lowering<'a> {
     /// way, so a formula means the same thing wherever a plan puts one.
     fn value_expr(&self, source: &str) -> Result<Expr> {
         match self.table.field(source) {
+            Some(field) if field.is_collab_doc() => Err(not_a_value(&self.table.name, source)),
             Some(field) if !field.is_calc() => Ok(Expr::col(source)),
             // A calculated field has no column; its own expression is what the
             // database computes, inlined by the translator's calc environment.
@@ -1526,4 +1536,13 @@ fn object_keys(value: &Json, out: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+/// The refusal for naming a collaborative document where a value is wanted
+/// (live updates L5.1): it is read with `live.document`, not selected.
+fn not_a_value(table: &str, name: &str) -> Error {
+    Error::invalid(format!(
+        "`{name}` of `{table}` is a collaborative document: it is not selected, filtered or \
+         ordered on; read it with `live.document`"
+    ))
 }

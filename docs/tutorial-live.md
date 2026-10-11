@@ -17,10 +17,10 @@ time, and every part rests on the same two ideas:
 | 2 | Notifications and progress from a workflow | L2 (this page) |
 | 3 | A live kanban board | L3 |
 | 4 | Presence: who else has the board open | L4 (this page) |
-| 5 | A collaborative notes app | L5 |
+| 5 | A collaborative notes app | L5 (this page) |
 | 6 | Two processes behind one proxy | L6 |
 
-Part 3 and parts 5–6 arrive with their milestones.
+Parts 3 and 6 arrive with their milestones.
 
 ## Part 1 — The live socket
 
@@ -456,3 +456,198 @@ listing, per board, who has it open and their state.
 
 The definition of done for this part is `part_four_presence_on_the_board` in
 `crates/sc-server/tests/tutorial_live.rs`.
+
+## Part 5 — A collaborative notes app
+
+Presence shows who is looking. This part lets them write together: a note whose text two people
+edit at the same time, each seeing the other's words and cursor as they type, while a third
+person, who may only read the note, watches it change. It is a **document stream**: a document
+kept in a field of a row, merged on the server with [Yjs](https://yjs.dev)'s CRDT so that edits
+made at the same moment never overwrite each other.
+
+It builds on part 1's `todo` application, its Member role, `member@example.com` and part 2's
+`colleague@example.com`. Add one more Member, `reader@example.com`.
+
+### Step 1 — A note with a document in it
+
+In **Tables**, create `notes` with these fields:
+
+- `title` — String;
+- `owner` — Key to `users`;
+- `body` — **Collaborative document** (`collab_doc`);
+- `body_text` — String.
+
+A `collab_doc` field is not like the others. It holds the document's merged state as bytes, and
+nothing writes it but its document stream: the REST API leaves it out of every row it returns
+(the generated `NotesRow` has no `body` at all), and refuses a write that names it, as do the
+`insert_row` and `update_rows` actions and the admin's row editor — a whole value written over a
+document would throw away whatever somebody else was typing. It cannot be filtered or sorted on,
+and no formula can read it. `body_text` is where its text will be readable.
+
+Create `shares` too — `note` (Key to `notes`), `user` (Key to `users`), `can_edit` (Bool) — and
+give `notes` this read rule on the **Ownership** tab:
+
+```
+owner === user.id || sharesↃnote.some(s => s.user === user.id && (_read || s.can_edit))
+```
+
+The owner may do anything; a share lets its user read the note, and edit it only with
+`can_edit`. Add a note owned by `member@example.com`, and share it with `colleague@example.com`
+(`can_edit` on) and `reader@example.com` (`can_edit` off).
+
+### Step 2 — The document stream
+
+Open **Streams → New**, name it `note_body`, pick **Collaborative document**, and fill in:
+
+```json
+{
+  "table": "notes",
+  "field": "body",
+  "root": "default",
+  "root_kind": "xml",
+  "text_mirror": "body_text",
+  "mirror_format": "text"
+}
+```
+
+- **Table** and **Document field** — where each note's document is kept. A subscriber names a
+  row (the topic is a note's id) and may open it only if it may **read** that note — the same
+  read the REST API makes. It may **edit** only if it may **update** the note.
+- **Root** and **Root kind** — what the editor binds to. TipTap and ProseMirror edit an `xml`
+  root called `default`; CodeMirror and Monaco edit a `text` root. The server must know which,
+  to read the document's text.
+- **Text mirror** — a String field the server keeps equal to the document's text, as plain text
+  (one line per paragraph) or, with **Mirror format** `json`, as Yjs's `root.toJSON()`. It is an
+  ordinary column: searchable, filterable, readable over REST.
+- **Minimum role to observe** — Member (40).
+
+Tick `note_body` in the application's **Streams** (the application must include `notes`, or the
+save is refused) and rebuild. The project now has `src/feldspar/live-doc.ts` — generated only for
+an application that exposes a document stream, and the only generated file that imports `yjs` —
+with `docs.note_body` and the `useDocument` hook.
+
+### Step 3 — An editor
+
+Install TipTap and its collaboration extensions as ordinary dependencies (`yjs` and
+`y-protocols` are in the project already):
+
+```sh
+npm install @tiptap/react @tiptap/starter-kit @tiptap/extension-collaboration @tiptap/extension-collaboration-cursor
+```
+
+and add a page:
+
+```tsx
+import { EditorContent, useEditor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import Collaboration from "@tiptap/extension-collaboration";
+import CollaborationCursor from "@tiptap/extension-collaboration-cursor";
+import type * as Y from "yjs";
+import type { Awareness } from "y-protocols/awareness";
+import { docs, useDocument } from "../feldspar/live-doc";
+import { useT } from "../feldspar/i18n";
+
+function NoteEditor(props: { doc: Y.Doc; awareness: Awareness; field: string; readOnly: boolean; name: string }) {
+  const editor = useEditor(
+    {
+      editable: !props.readOnly,
+      extensions: [
+        StarterKit.configure({ history: false }),
+        Collaboration.configure({ document: props.doc, field: props.field }),
+        CollaborationCursor.configure({
+          provider: { awareness: props.awareness },
+          user: { name: props.name, color: "#f783ac" },
+        }),
+      ],
+    },
+    [props.doc, props.readOnly],
+  );
+  return <EditorContent editor={editor} />;
+}
+
+export default function NotePage({ note, name }: { note: number; name: string }) {
+  const { t } = useT();
+  const { doc, awareness, field, readOnly, status, error } = useDocument(docs.note_body, note);
+  if (error) return <p>{error.message}</p>;
+  if (!doc || !awareness) return <p>{t("Opening the note…")}</p>;
+  return (
+    <section>
+      {readOnly && <p>{t("You can read this note but not edit it.")}</p>}
+      {status === "reconnecting" && <p>{t("Reconnecting — your edits are kept.")}</p>}
+      <NoteEditor doc={doc} awareness={awareness} field={field} readOnly={readOnly} name={name} />
+    </section>
+  );
+}
+```
+
+Load it with `React.lazy(() => import("./pages/NotePage"))` inside a `<Suspense>`, so `yjs` and
+TipTap are in that page's chunk and nowhere else.
+
+`useDocument(docs.note_body, note)` opens the note's document while the component is mounted.
+`doc` is a `Y.Doc` and `awareness` its awareness — what TipTap's `Collaboration` and
+`CollaborationCursor` take, unchanged; `field` is the stream's root, so the editor and the server
+cannot disagree about it. The server sends the whole document when the page subscribes
+(`doc_sync`), and every other member's edit after that (`doc_update`); the page sends its own.
+Cursors are presence: a page's awareness — its cursor, its selection, its name and colour — is
+its member state, which the server passes on without looking inside.
+
+### Step 4 — Two people writing, one reading
+
+Sign in as `member@example.com`, `colleague@example.com` and `reader@example.com` in three
+browsers and open the note in each. The member and the colleague type: each sees the other's
+words and a named cursor as they are typed, and edits made at the same spot both survive. The
+reader sees it all happen and cannot type — `doc_sync` said `read_only: true`, and a `doc_update`
+from the reader's socket would be answered `unavailable` and applied nowhere. `outsider@example.com`
+gets `unavailable` when opening the note, exactly as for a note that does not exist.
+
+Turn the colleague's `can_edit` off in `shares`: their editor becomes read-only at once (they are
+sent the document again with `read_only: true`). Delete the share: their subscription is
+`revoked`.
+
+Pull the network cable on the member's machine (or stop the server for a moment) and keep typing:
+the page says it is reconnecting and keeps the edits. When it is back, the server sends the
+document again and the page answers with what the server has not seen — the edits typed offline
+arrive, merged with whatever the colleague wrote meanwhile.
+
+### Step 5 — Saved
+
+Close every tab and open the note again: the text is there. The server keeps each open document
+in a room, and saves it into its row two seconds after the last edit and when the last editor
+leaves — in one transaction that locks the row and merges with what is stored, so two servers
+saving one note lose nothing. A save with nothing new writes nothing.
+
+`GET /api/notes` shows the text in `body_text`, and has no `body`:
+
+```json
+[{ "id": 1, "title": "Plans", "owner": "…", "body_text": "Agenda\nBudget" }]
+```
+
+A save is an ordinary update of the row, so an **update trigger on `notes` fires about every two
+seconds while someone types** — useful for keeping a search index current, a poor place for an
+e-mail. A trigger's own code can read a document and add to it:
+
+```js
+const doc = live.document("note_body", row.id);
+const text = await doc.text();
+await doc.append("Summary: " + text.split("\n").length + " paragraphs");
+```
+
+`append` adds a paragraph to an `xml` root (and text to the end of a `text` one); on a `text`
+root, `insert`, `delete` and `edit` change the text anywhere. Each is a CRDT edit: it merges with
+what people are typing, appears in their editors at once, and is saved before the call returns.
+Python's `live.document(...)` is the same, without `await`.
+
+### What part 5 is
+
+- **A `collab_doc` field** holds a document. No API reads or writes it; its **text mirror** is how
+  its text is read.
+- **A document stream** opens one row's document: read access to open it, update access to edit
+  it, re-checked while it stays open (a lost edit right is `read_only`, a lost read right is
+  `revoked`). Presence is always on, and a member's state is its editor's awareness.
+- **The server merges** with `yrs`, the Rust port of Yjs, so the browser keeps the standard `yjs`
+  package and its editor bindings. It saves debounced and on close, merging with what is stored.
+- **Limits**: a document is at most 2 MB, and an edit that would pass that is refused
+  `too_large`; an edit frame may be up to 1 MB (a long paste), every other frame 64 KB; edits
+  count against the 20-a-second publish rate.
+
+The definition of done for this part is `crates/sc-server/tests/tutorial_live_documents.rs`.

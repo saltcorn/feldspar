@@ -438,6 +438,12 @@ pub trait TriggerHost: Send + Sync {
 /// Server-side publishing is **trusted** (§3 rule 8): a body is admin-authored
 /// configuration, as an `insert_row` is, so it may publish to any topic. No
 /// caller's role is consulted here.
+///
+/// **Documents** (L5.5) are the one asynchronous part: `live.document(stream,
+/// key)` reads and edits a collaborative document, which may have to be loaded
+/// from and persisted to its row. [`document`](LiveHost::document) is
+/// defaulted to a refusal, so a host without documents need not mention it.
+#[async_trait]
 pub trait LiveHost: Send + Sync {
     /// How `stream` is split into topics — what the `publish` action needs to
     /// default a `user` stream's topic to the event's user, and to refuse
@@ -449,6 +455,41 @@ pub trait LiveHost: Send + Sync {
     /// without topics. Answers the topic as it was published (a user id in its
     /// canonical spelling).
     fn publish(&self, stream: &str, topic: Option<String>, value: Json) -> Result<Option<String>>;
+
+    /// Read or edit the collaborative document of row `key` on the `document`
+    /// stream `stream`, answering the document's plain text **after** the
+    /// request. An edit is a CRDT update, so it merges with whatever the
+    /// document's editors are typing, reaches them at once, and is persisted
+    /// before this returns. Trusted, like a publish.
+    async fn document(&self, stream: &str, key: &str, request: DocRequest) -> Result<String> {
+        let _ = (key, request);
+        Err(sc_error::Error::invalid(format!(
+            "this server keeps no collaborative documents, so `{stream}` cannot be opened"
+        )))
+    }
+}
+
+/// What a code body asks of a collaborative document ([`LiveHost::document`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocRequest {
+    /// Read its text.
+    Read,
+    /// On a `text` root: delete `delete` characters at `index` (UTF-16 code
+    /// units, as JavaScript counts), then insert `insert` there.
+    Edit {
+        /// Where.
+        index: u32,
+        /// How many to delete.
+        delete: u32,
+        /// What to insert.
+        insert: String,
+    },
+    /// Append `text`: to the end of a `text` root, or as a new paragraph of an
+    /// `xml` root.
+    Append {
+        /// What to append.
+        text: String,
+    },
 }
 
 /// How a stream Saltcorn publishes to is split into topics, as a publisher
@@ -2743,6 +2784,24 @@ pub(crate) const MODULE_FNS_PRELUDE: &str = r#"
 /// `await` costs nothing, and an `await` costs nothing either. A refusal (no
 /// such stream, a value that does not match, a stream not running) is thrown
 /// at the call, as an ordinary `Error` the body may catch.
+///
+/// And a second method, `live.document(stream, key)` (L5.5): a collaborative
+/// document — a `document` stream's row — read and edited from the server.
+///
+/// ```js
+/// const doc = live.document("note_body", row.id);
+/// const text = await doc.text();
+/// await doc.append("Summary: " + summary);      // a paragraph on an xml root
+/// await doc.insert(0, "DRAFT ");                 // text roots only
+/// await doc.delete(0, 6);
+/// await doc.edit(0, 5, "Hello");                 // delete 5 at 0, insert
+/// ```
+///
+/// Every method answers the document's text after it, and is asynchronous: a
+/// document may have to be loaded from its row, and an edit is persisted before
+/// its promise resolves. An edit is a CRDT update, so it merges with whatever
+/// people are typing and reaches their editors at once. Positions count UTF-16
+/// code units, as JavaScript strings do.
 #[cfg(feature = "eval")]
 pub(crate) const LIVE_PRELUDE: &str = r#"
 (() => {
@@ -2782,6 +2841,56 @@ pub(crate) const LIVE_PRELUDE: &str = r#"
       const reply = JSON.parse(__scLivePublish(__scTok, request));
       if (reply.error !== undefined) throw new Error(reply.error);
       return reply.ok;
+    },
+    document(stream, key) {
+      if (typeof stream !== "string" || stream === "") {
+        throw new TypeError(
+          "live.document() takes the document stream's name first, as in " +
+          "live.document(\"note_body\", row.id)"
+        );
+      }
+      if ((typeof key !== "string" && typeof key !== "number") || key === "") {
+        throw new TypeError(
+          "live.document() takes the row's key second — a string or a number — as in " +
+          "live.document(\"" + stream + "\", row.id)"
+        );
+      }
+      const at = { stream: stream, key: String(key) };
+      const count = (name, n) => {
+        if (!Number.isInteger(n) || n < 0) {
+          throw new TypeError(name + " is a whole number of characters, not " + String(n));
+        }
+        return n;
+      };
+      const text = (name, s) => {
+        if (typeof s !== "string") {
+          throw new TypeError(name + " is a string, not " + typeof s);
+        }
+        return s;
+      };
+      const ask = (op, args) => __scLiveDoc(__scTok, Object.assign({ op: op }, at, args));
+      return Object.freeze({
+        text() { return ask("read", {}); },
+        append(s) { return ask("append", { text: text("the appended text", s) }); },
+        edit(index, deleteCount, insert) {
+          return ask("edit", {
+            index: count("the index", index),
+            delete: count("the number to delete", deleteCount),
+            insert: insert === undefined ? "" : text("the inserted text", insert),
+          });
+        },
+        insert(index, s) {
+          return ask("edit", {
+            index: count("the index", index), delete: 0, insert: text("the inserted text", s),
+          });
+        },
+        delete(index, n) {
+          return ask("edit", {
+            index: count("the index", index), delete: count("the number to delete", n),
+            insert: "",
+          });
+        },
+      });
     },
   }));
 })();
@@ -2887,6 +2996,7 @@ const SETUP: &str = r#"
   const runs = Deno.core.ops.op_sc_trigger;
   const mods = Deno.core.ops.op_sc_modfn;
   const publish = Deno.core.ops.op_sc_live;
+  const documents = Deno.core.ops.op_sc_live_doc;
   const logline = Deno.core.ops.op_sc_log;
   const done = Deno.core.ops.op_sc_done;
   const fail = Deno.core.ops.op_sc_fail;
@@ -3031,6 +3141,24 @@ const SETUP: &str = r#"
   // answer is the op's return value. Kept here with the other ops, because
   // `Deno` is not in scope for the preludes that run after this one.
   fixed("__scLivePublish", (token, request) => publish(token, request));
+  // A document read or edit (L5.5) is asynchronous — a document may have to be
+  // loaded, and an edit is persisted before it answers — so it is a promise
+  // with the resumption mark and the not-awaited guard, like `db`'s.
+  const notAwaitedDoc = () =>
+    new Error("this document call was not awaited — write `await doc.text()`");
+  class DocPromise extends Promise {
+    toJSON() { throw notAwaitedDoc(); }
+    [Symbol.toPrimitive]() { throw notAwaitedDoc(); }
+    [Symbol.iterator]() { throw notAwaitedDoc(); }
+  }
+  fixed("__scLiveDoc", (token, plan) => new DocPromise((resolve, reject) => {
+    documents(token, JSON.stringify(plan)).then((answer) => {
+      mark(token);
+      const reply = JSON.parse(answer);
+      if (reply.error !== undefined) reject(new Error(reply.error));
+      else resolve(reply.ok);
+    }, reject);
+  }));
   // And once more, in the module surface's words: `md_to_html` is synchronous
   // in v1 and a forgotten `await` would put `[object Promise]` in a column.
   const notAwaitedModFn = () =>
@@ -3570,6 +3698,122 @@ fn op_sc_live(state: &mut OpState, #[string] token: &str, #[string] request: &st
     })
 }
 
+/// One **document** read or edit (TODO.md "Live updates" L5.5):
+/// `live.document(stream, key).text()`, `.append(…)`, `.edit(…)`.
+///
+/// Asynchronous, unlike a publish: the document may have to be loaded from its
+/// row, and an edit is persisted before the guest's promise resolves. An edit
+/// counts against the run's publish budget and clears its retry — somebody's
+/// editor has seen it — while a read is free. Bounded by what is left of the
+/// run's wall clock.
+#[cfg(feature = "eval")]
+#[deno_core::op2]
+#[string]
+async fn op_sc_live_doc(
+    state: Rc<RefCell<OpState>>,
+    #[string] token: String,
+    #[string] request: String,
+) -> String {
+    let reply = live_document(&state, &token, &request).await;
+    serde_json::to_string(&reply).unwrap_or_else(|_| {
+        r#"{"error":"the document reply could not be encoded as JSON"}"#.to_owned()
+    })
+}
+
+/// A document request as a code body's `live.document` sends it, read into the
+/// stream, the row's key and what is asked.
+pub fn document_request(plan: &Json) -> std::result::Result<(String, String, DocRequest), String> {
+    let stream = plan
+        .get("stream")
+        .and_then(Json::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or("live.document needs the document stream's name")?;
+    let key = match plan.get("key") {
+        Some(Json::String(key)) if !key.is_empty() => key.clone(),
+        Some(Json::Number(n)) => n.to_string(),
+        _ => return Err("live.document needs the row's key".to_owned()),
+    };
+    let count = |name: &str| -> std::result::Result<u32, String> {
+        plan.get(name)
+            .and_then(Json::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| format!("`{name}` is a whole number of characters"))
+    };
+    let text = |name: &str| -> std::result::Result<String, String> {
+        match plan.get(name) {
+            None | Some(Json::Null) => Ok(String::new()),
+            Some(Json::String(s)) => Ok(s.clone()),
+            Some(other) => Err(format!("`{name}` is text, not {other}")),
+        }
+    };
+    let request = match plan.get("op").and_then(Json::as_str).unwrap_or("read") {
+        "read" => DocRequest::Read,
+        "append" => DocRequest::Append {
+            text: text("text")?,
+        },
+        "edit" => DocRequest::Edit {
+            index: count("index")?,
+            delete: count("delete")?,
+            insert: text("insert")?,
+        },
+        other => return Err(format!("`{other}` is not something a document does")),
+    };
+    Ok((stream.to_owned(), key, request))
+}
+
+#[cfg(feature = "eval")]
+async fn live_document(state: &Rc<RefCell<OpState>>, token: &str, request: &str) -> Json {
+    let plan: Json = match serde_json::from_str(request) {
+        Ok(plan) => plan,
+        Err(e) => return refuse(format!("the document request is not JSON: {e}")),
+    };
+    let (stream, key, request) = match document_request(&plan) {
+        Ok(parts) => parts,
+        Err(message) => return refuse(message),
+    };
+    let (host, remaining, run_timeout) = {
+        let mut state = state.borrow_mut();
+        let Some(table) = state.try_borrow_mut::<RunTable>() else {
+            return refuse("this code body cannot open a document");
+        };
+        let Some(run) = table.runs.get_mut(token) else {
+            return refuse("this document call belongs to a code run that has already finished");
+        };
+        let now = Instant::now();
+        if now >= run.deadline {
+            let ms = run.timeout.as_millis();
+            return refuse(format!("this code exceeded its {ms} ms time limit"));
+        }
+        let Some(host) = run.live.clone() else {
+            return refuse("this code body cannot open a document");
+        };
+        if request != DocRequest::Read {
+            if run.publishes_left == 0 {
+                return refuse(format!(
+                    "this code published or edited more than {MAX_LIVE_PUBLISHES} times in one run"
+                ));
+            }
+            run.publishes_left -= 1;
+            // An edit reaches somebody's editor and the row: re-running this
+            // body could no longer be said to repeat nothing.
+            run.retry = None;
+        }
+        (
+            host,
+            run.deadline.saturating_duration_since(now),
+            run.timeout,
+        )
+    };
+    match tokio::time::timeout(remaining, host.document(&stream, &key, request)).await {
+        Ok(Ok(text)) => serde_json::json!({ "ok": text }),
+        Ok(Err(e)) => refuse(e.to_string()),
+        Err(_) => refuse(format!(
+            "this code exceeded its {} ms time limit while a document was read or written",
+            run_timeout.as_millis()
+        )),
+    }
+}
+
 #[cfg(feature = "eval")]
 fn live_publish(state: &mut OpState, token: &str, request: &str) -> Json {
     let plan: Json = match serde_json::from_str(request) {
@@ -4082,6 +4326,7 @@ deno_core::extension!(
         op_sc_trigger,
         op_sc_modfn,
         op_sc_live,
+        op_sc_live_doc,
         op_sc_done,
         op_sc_fail,
         op_sc_mark,
@@ -9635,6 +9880,139 @@ mod tests {
         assert_eq!(published[10].0, "announcements");
         assert_eq!(published[10].1, None, "two arguments: no topic");
         assert_eq!(published[10].2, json!({ "text": "no topic" }));
+    }
+
+    /// A host keeping one text document per `(stream, key)`, as the hub's
+    /// `document` answers: the text after the request.
+    #[derive(Default)]
+    struct FakeDocs {
+        texts: Mutex<std::collections::HashMap<(String, String), String>>,
+        asked: Mutex<Vec<DocRequest>>,
+    }
+
+    #[async_trait]
+    impl LiveHost for FakeDocs {
+        fn topics(&self, _stream: &str) -> Result<LiveTopics> {
+            Ok(LiveTopics::Single)
+        }
+
+        fn publish(&self, _: &str, topic: Option<String>, _: Json) -> Result<Option<String>> {
+            Ok(topic)
+        }
+
+        async fn document(&self, stream: &str, key: &str, request: DocRequest) -> Result<String> {
+            if stream != "note_body" {
+                return Err(Error::invalid(format!(
+                    "stream `{stream}` is not a document stream"
+                )));
+            }
+            self.asked.lock().unwrap().push(request.clone());
+            let mut texts = self.texts.lock().unwrap();
+            let text = texts
+                .entry((stream.to_owned(), key.to_owned()))
+                .or_default();
+            match request {
+                DocRequest::Read => {}
+                DocRequest::Append { text: more } => text.push_str(&more),
+                DocRequest::Edit {
+                    index,
+                    delete,
+                    insert,
+                } => {
+                    let mut units: Vec<u16> = text.encode_utf16().collect();
+                    let (i, d) = (index as usize, delete as usize);
+                    if i + d > units.len() {
+                        return Err(Error::invalid("the edit is outside the text"));
+                    }
+                    units.splice(i..i + d, insert.encode_utf16());
+                    *text = String::from_utf16(&units).unwrap();
+                }
+            }
+            Ok(text.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_body_reads_and_edits_a_document() {
+        let docs = Arc::new(FakeDocs::default());
+        let host: Arc<dyn LiveHost> = docs.clone();
+        let rt = CodeRuntime::with_workers(1);
+        let out = rt
+            .run(CodeCall {
+                code: r#"const doc = live.document("note_body", row.id);
+                         const empty = await doc.text();
+                         await doc.append("Hello world");
+                         await doc.insert(0, ">> ");
+                         await doc.delete(0, 3);
+                         const edited = await doc.edit(6, 5, "there");
+                         let refused = null;
+                         try { await live.document("job_status", 1).text(); }
+                         catch (e) { refused = e.message; }
+                         let typed = null;
+                         try { doc.insert(-1, "x"); } catch (e) { typed = e.message; }
+                         let unawaited = null;
+                         try { JSON.stringify({ t: doc.text() }); } catch (e) { unawaited = e.message; }
+                         return { empty, edited, refused, typed, unawaited };"#
+                    .to_owned(),
+                bindings: [("row".to_owned(), json!({ "id": 7 }))]
+                    .into_iter()
+                    .collect(),
+                live: Some(&host),
+                ..CodeCall::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(out["empty"], json!(""));
+        assert_eq!(out["edited"], json!("Hello there"));
+        assert!(
+            out["refused"].as_str().unwrap().contains("not a document"),
+            "{out}"
+        );
+        assert!(
+            out["typed"].as_str().unwrap().contains("whole number"),
+            "{out}"
+        );
+        assert!(
+            out["unawaited"].as_str().unwrap().contains("not awaited"),
+            "{out}"
+        );
+        let asked = docs.asked.lock().unwrap().clone();
+        assert_eq!(
+            asked[2],
+            DocRequest::Edit {
+                index: 0,
+                delete: 0,
+                insert: ">> ".into()
+            }
+        );
+        assert_eq!(
+            docs.texts.lock().unwrap()[&("note_body".to_owned(), "7".to_owned())],
+            "Hello there",
+            "a number key crosses as text"
+        );
+    }
+
+    #[test]
+    fn a_document_request_is_read_from_its_plan() {
+        let (stream, key, request) = document_request(&json!({
+            "stream": "note_body", "key": 3, "op": "edit", "index": 1, "delete": 2, "insert": "x"
+        }))
+        .unwrap();
+        assert_eq!((stream.as_str(), key.as_str()), ("note_body", "3"));
+        assert_eq!(
+            request,
+            DocRequest::Edit {
+                index: 1,
+                delete: 2,
+                insert: "x".into()
+            }
+        );
+        assert!(document_request(&json!({ "stream": "s", "key": "1", "op": "explode" })).is_err());
+        assert!(document_request(&json!({ "stream": "s" })).is_err());
+        assert!(
+            document_request(&json!({ "stream": "s", "key": "1", "op": "edit", "index": -1 }))
+                .is_err()
+        );
     }
 
     #[tokio::test]

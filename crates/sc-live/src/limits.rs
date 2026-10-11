@@ -53,6 +53,19 @@ pub struct LiveLimits {
     /// The largest presence state one member may hold, as JSON text in bytes.
     /// A larger one is refused with `too_large`, and the state is unchanged.
     pub max_presence_state_bytes: usize,
+    /// The largest collaborative document a `document` stream holds, encoded,
+    /// in bytes (L5.3). An edit that would take one past it is refused with
+    /// `too_large` and not applied. The largest `doc_sync` follows from it
+    /// ([`max_doc_sync_bytes`](LiveLimits::max_doc_sync_bytes)), so the two
+    /// cannot contradict each other.
+    pub max_doc_bytes: usize,
+    /// The largest `doc_update` frame a client may send, in bytes — its own
+    /// cap, because pasting a long passage is ordinary editing; every other
+    /// client frame keeps [`max_frame_bytes`](LiveLimits::max_frame_bytes).
+    pub max_doc_update_bytes: usize,
+    /// How long a document room waits after an edit before persisting it, so
+    /// typing is one write every couple of seconds rather than one per key.
+    pub doc_persist_debounce: Duration,
 }
 
 impl Default for LiveLimits {
@@ -72,6 +85,9 @@ impl Default for LiveLimits {
             presence_per_second: 20,
             presence_coalesce: Duration::from_millis(50),
             max_presence_state_bytes: 2 * 1024,
+            max_doc_bytes: 2 * 1024 * 1024,
+            max_doc_update_bytes: 1024 * 1024,
+            doc_persist_debounce: Duration::from_secs(2),
         }
     }
 }
@@ -82,8 +98,22 @@ impl LiveLimits {
     /// every frame over [`max_frame_bytes`](LiveLimits::max_frame_bytes) a
     /// client is likely to send is answered rather than hung up on, and small
     /// enough that a client cannot make the server buffer megabytes.
+    ///
+    /// A `doc_update` frame may be [`max_doc_update_bytes`](LiveLimits::max_doc_update_bytes),
+    /// so the transport takes twice that too, and a frame past it is answered
+    /// as well.
     pub fn transport_max_bytes(&self) -> usize {
-        self.max_frame_bytes.saturating_mul(4).max(1024 * 1024)
+        self.max_frame_bytes
+            .saturating_mul(4)
+            .max(self.max_doc_update_bytes.saturating_mul(2))
+            .max(1024 * 1024)
+    }
+
+    /// The largest `doc_sync` the server sends: a whole document at
+    /// [`max_doc_bytes`](LiveLimits::max_doc_bytes), in base64 (4/3), plus the
+    /// frame around it.
+    pub fn max_doc_sync_bytes(&self) -> usize {
+        self.max_doc_bytes.div_ceil(3).saturating_mul(4) + 1024
     }
 }
 
@@ -140,6 +170,13 @@ mod tests {
         assert_eq!(limits.presence_per_second, 20);
         assert_eq!(limits.presence_coalesce, Duration::from_millis(50));
         assert_eq!(limits.max_presence_state_bytes, 2048);
+        assert_eq!(limits.max_doc_bytes, 2 * 1024 * 1024);
+        assert_eq!(limits.max_doc_update_bytes, 1024 * 1024);
+        assert_eq!(limits.doc_persist_debounce, Duration::from_secs(2));
+        // The limits that follow from the document size agree with it: a whole
+        // document fits a `doc_sync`, and the transport reads a whole update.
+        assert!(limits.max_doc_sync_bytes() > limits.max_doc_bytes * 4 / 3);
+        assert!(limits.transport_max_bytes() > limits.max_doc_update_bytes);
     }
 
     #[test]

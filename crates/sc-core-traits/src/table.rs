@@ -110,6 +110,7 @@ pub fn visible_fields(table: &Table, config: &Attrs) -> Result<Vec<String>> {
     Ok(table
         .fields
         .iter()
+        .filter(|f| !f.is_collab_doc())
         .map(|f| f.base.name.clone())
         .filter(|name| allowed.is_empty() || allowed.contains(name))
         .collect())
@@ -118,7 +119,12 @@ pub fn visible_fields(table: &Table, config: &Attrs) -> Result<Vec<String>> {
 /// Every field of the table, named — what a trait passes where an allow-list
 /// does not apply (a write trait's filter).
 pub fn all_fields(table: &Table) -> Vec<String> {
-    table.fields.iter().map(|f| f.base.name.clone()).collect()
+    table
+        .fields
+        .iter()
+        .filter(|f| !f.is_collab_doc())
+        .map(|f| f.base.name.clone())
+        .collect()
 }
 
 /// The configured ceiling, or `default` when the admin set none.

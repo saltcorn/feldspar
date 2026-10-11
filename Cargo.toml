@@ -478,6 +478,9 @@ rcgen = "0.13"
 # rather than special-casing binary routes, so file contents ride in JSON as
 # base64 (with a UTF-8 `text` shortcut for editing text files).
 base64 = "0.22"
+# Yjs's CRDT in Rust (live updates L5): a collaborative document is stored and
+# merged in Yjs's own binary format, so the browser keeps the standard `yjs`.
+yrs = "0.28"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "set-header", "trace", "compression-br", "compression-gzip"] }
 matchit = "0.8"

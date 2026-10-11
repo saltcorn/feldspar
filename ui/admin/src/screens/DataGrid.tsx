@@ -122,6 +122,13 @@ export function isCalc(field: FieldInfo): boolean {
   return (field.kind as FieldKind)?.type === "calc";
 }
 
+/** Whether a field holds a collaborative document (`collab_doc`): never read by
+ * the API and never written by it — a whole value would overwrite the edits other
+ * people are making, so it is edited only through its document stream. */
+export function isDocument(field: FieldInfo): boolean {
+  return field.type === "collab_doc";
+}
+
 /** The store a `File` field points at, or `null` for any other kind. */
 export function fileStoreOf(field: FieldInfo): string | null {
   const kind = field.kind as FieldKind;
@@ -204,7 +211,7 @@ export function DataGrid({
     (name: string) => {
       if (!writes.update || pk === null) return true;
       const field = byName.get(name);
-      return field === undefined || isCalc(field) || name === pk;
+      return field === undefined || isCalc(field) || isDocument(field) || name === pk;
     },
     [byName, pk, writes.update],
   );

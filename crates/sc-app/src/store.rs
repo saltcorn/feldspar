@@ -38,8 +38,8 @@ use crate::applications::{
 };
 use crate::framework::{CFG_STORE, validate_framework_config};
 
-/// Refuse an exposed `table_changes` stream whose table is outside the
-/// application's table subset.
+/// Refuse an exposed `table_changes` or `document` stream whose table is
+/// outside the application's table subset.
 ///
 /// A stream of a table's changes is a standing read of that table, so exposing
 /// one on an application that does not include the table would be a way round
@@ -55,16 +55,25 @@ async fn validate_change_streams(catalog: &Catalog, app: &Application) -> Result
         let Some(stream) = sc_stream::load_stream_by_name(catalog, &declared.0).await? else {
             continue;
         };
-        if stream.provider.trim() != sc_stream::TABLE_CHANGES {
-            continue;
-        }
-        let settings = sc_stream::ChangeSettings::from_config(&stream.configuration)?;
-        if !app.can_access_table(&TableId(settings.table.clone())) {
+        let (table, carries) = match stream.provider.trim() {
+            sc_stream::TABLE_CHANGES => (
+                sc_stream::ChangeSettings::from_config(&stream.configuration)?.table,
+                "the changes of",
+            ),
+            // A document is a row's field, read and edited through the stream
+            // (L5): the same standing read.
+            sc_stream::DOCUMENT => (
+                sc_stream::DocSettings::from_config(&stream.configuration)?.table,
+                "documents kept in",
+            ),
+            _ => continue,
+        };
+        if !app.can_access_table(&TableId(table.clone())) {
             return Err(Error::invalid(format!(
-                "application `{}` exposes stream `{}`, which carries the changes of `{}` — a \
-                 table the application does not include; add `{}` to its tables, or stop \
+                "application `{}` exposes stream `{}`, which carries {carries} `{table}` — a \
+                 table the application does not include; add `{table}` to its tables, or stop \
                  exposing the stream",
-                app.name, stream.name, settings.table, settings.table
+                app.name, stream.name
             )));
         }
     }

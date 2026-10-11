@@ -20,6 +20,8 @@
 //! | [`rows`] | Which tables a row topic's read rule reads |
 //! | [`filter`] | A `table_changes` subscription's filter, in the REST read's vocabulary, evaluated in Rust |
 //! | [`changes`] | What each subscriber of a `table_changes` stream is sent: the decision table, the per-element read checks, the counters |
+//! | [`doc`] | A collaborative document's CRDT state through `yrs`: apply, merge, read the text, edit |
+//! | [`docroom`] | One room per open document: load, apply, relay, persist (debounced and on close) |
 //! | [`presence`] | Who is on each topic of a stream with presence: the rooms, the members, and each connection's inbox of changes |
 //!
 //! ## Where this sits
@@ -48,6 +50,8 @@
 
 pub mod access;
 pub mod changes;
+pub mod doc;
+pub mod docroom;
 pub mod filter;
 pub mod hub;
 pub mod limits;
@@ -65,6 +69,8 @@ pub use changes::{
     CallerCell, ChangeAccess, ChangeCounters, ChangeCounts, Delivered, Suppressed, deliver_to,
     suppressed_by,
 };
+pub use doc::{CollabDoc, DocShape, MirrorFormat, RootKind};
+pub use docroom::{DocInbox, DocKey, DocNews, DocRefusal, DocRoom, DocRooms, DocSeat, DocTarget};
 pub use filter::{LikeRules, RowFilter};
 pub use hub::{
     Attached, ChangeWatch, CloseReason, CloseSignal, Connection, ConnectionId, ConnectionInfo,

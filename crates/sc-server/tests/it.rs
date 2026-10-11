@@ -57,6 +57,8 @@ mod app_invite;
 mod app_live;
 #[path = "app_live_changes.rs"]
 mod app_live_changes;
+#[path = "app_live_documents.rs"]
+mod app_live_documents;
 #[path = "app_live_presence.rs"]
 mod app_live_presence;
 #[path = "app_live_topics.rs"]
@@ -219,6 +221,8 @@ mod tls_serving;
 mod trigger_admin_api;
 #[path = "tutorial_live.rs"]
 mod tutorial_live;
+#[path = "tutorial_live_documents.rs"]
+mod tutorial_live_documents;
 #[path = "tutorial_workflows.rs"]
 mod tutorial_workflows;
 #[path = "view_app.rs"]

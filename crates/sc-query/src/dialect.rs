@@ -61,6 +61,13 @@ pub trait SqlDialect {
         default_bin_op(op)
     }
 
+    /// The clause a [`Select::lock`](crate::Select::lock) renders as, or
+    /// `None` for a dialect without row locks. Standard SQL's `FOR UPDATE` by
+    /// default.
+    fn row_lock(&self) -> Option<&'static str> {
+        Some(" FOR UPDATE")
+    }
+
     /// Render a statement to a SQL string plus its ordered bind values.
     ///
     /// The returned `Vec<Value>` is exactly the parameters the SQL placeholders
@@ -232,6 +239,11 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
         if let Some(offset) = s.offset {
             self.push(" OFFSET ");
             self.bind(Value::Int(offset as i64))?;
+        }
+        if s.lock {
+            if let Some(clause) = self.dialect.row_lock() {
+                self.push(clause);
+            }
         }
         Ok(())
     }
@@ -757,6 +769,19 @@ mod tests {
         assert_eq!(
             binds,
             vec![Value::Text("a@b.c".into()), Value::Int(10), Value::Int(5)]
+        );
+    }
+
+    #[test]
+    fn a_locking_select_ends_with_for_update() {
+        let stmt = Select::from(Source::table("notes"))
+            .columns(vec![Projection::expr(Expr::col("body"))])
+            .filter(Expr::col("id").eq(Expr::lit(1)))
+            .for_update();
+        let (sql, _) = render(stmt);
+        assert_eq!(
+            sql,
+            "SELECT \"body\" FROM \"notes\" WHERE (\"id\" = $1) FOR UPDATE"
         );
     }
 

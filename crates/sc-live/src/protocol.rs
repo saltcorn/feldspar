@@ -19,6 +19,8 @@
 //!   {"type":"status",  "sub":"s1", "status":…, "counters":…}
 //!   {"type":"presence", "sub":"s2", "connection":"…", "members":[…]}
 //!   {"type":"presence_diff", "sub":"s2", "joined":[…], "left":["…"], "updated":[…]}
+//!   {"type":"doc_sync", "sub":"s3", "update":"<base64>", "read_only":false}
+//!   {"type":"doc_update", "sub":"s3", "update":"<base64>"}
 //!   {"type":"revoked", "sub":"s1"}
 //!   {"type":"error",   "sub"?:"s1", "code":"unavailable", "message":"…"}
 //!   {"type":"pong"}
@@ -38,9 +40,14 @@
 //! subscription on it down with the one bad frame, and a client a version
 //! ahead of the server would be unable to use the server at all.
 //!
-//! The frames for documents are declared here now, because the protocol is one
-//! contract and a client written against it should not have to learn it in
-//! instalments. What the server does with them arrives with L5.
+//! ## Documents (L5)
+//!
+//! A subscription to a `document` stream names a row (`topic`) and is sent
+//! the whole document as `doc_sync` after `ready`, then every other member's
+//! edit as `doc_update`. It sends its own edits as `doc_update` — refused
+//! `unavailable` when `doc_sync` said `read_only`. Both directions carry Yjs
+//! updates in base64; the server never needs more of the format than `yrs`
+//! applying and merging them.
 //!
 //! ## Publishing and presence (L4)
 //!
@@ -361,6 +368,26 @@ pub enum ServerFrame {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         updated: Vec<Json>,
     },
+    /// The whole document a `document` subscription is on (L5.3), as one Yjs
+    /// update: sent after `ready`, after a reconnect's `ready`, when the
+    /// member's write access changed, and when updates had to be dropped
+    /// rather than sent. The client applies it — merging is idempotent — and
+    /// answers with what the server lacks.
+    DocSync {
+        /// The subscription.
+        sub: String,
+        /// The document, base64.
+        update: String,
+        /// Whether this member may not edit: a `doc_update` from it is refused.
+        read_only: bool,
+    },
+    /// Another member's edit of the document (L5.3), as a Yjs update.
+    DocUpdate {
+        /// The subscription.
+        sub: String,
+        /// The update, base64.
+        update: String,
+    },
     /// Access was re-checked and refused: the subscription is gone. Worded as
     /// nothing more, for the reason an `unavailable` is.
     Revoked {
@@ -565,6 +592,21 @@ mod tests {
                     updated: vec![json!({ "connection": "c4", "state": { "dragging": 7 } })],
                 },
                 "presence_diff",
+            ),
+            (
+                ServerFrame::DocSync {
+                    sub: "s3".to_owned(),
+                    update: "AAA=".to_owned(),
+                    read_only: true,
+                },
+                "doc_sync",
+            ),
+            (
+                ServerFrame::DocUpdate {
+                    sub: "s3".to_owned(),
+                    update: "AQE=".to_owned(),
+                },
+                "doc_update",
             ),
             (
                 ServerFrame::Revoked {

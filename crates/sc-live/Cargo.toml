@@ -48,6 +48,10 @@ uuid.workspace = true
 # queue it is handed elements on: `mpsc`, `watch` and `Notify`, never a lock
 # held across an await.
 tokio = { workspace = true }
+# A `document` stream's CRDT (L5): the room applies, relays and merges Yjs
+# updates, and frames carry them in base64.
+yrs.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 # The hub's own tests subscribe to a stream the scripted provider publishes on,

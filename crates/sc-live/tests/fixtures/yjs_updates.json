@@ -1,0 +1,32 @@
+{
+  "yjs_version": "13.6.33",
+  "text": {
+    "root": "default",
+    "updates": [
+      "AQFlAAQBB2RlZmF1bHQLSGVsbG8gd29ybGQA",
+      "AQHKAQDEZQRlBQEsAA==",
+      "AAFlAQYF",
+      "AQHKAQGEZQoLWWpzIGFuZCB5cnMA",
+      "AQFlC0RlAA1HcsO8w59lIPCfkYsgAA=="
+    ],
+    "state": "AgLKAQDEZQRlBQEshGUKC1lqcyBhbmQgeXJzBGUABAEHZGVmYXVsdAVIZWxsb4RlBAEggWUFBURlAA1HcsO8w59lIPCfkYsgAWUBBgU=",
+    "text": "Grüße 👋 Hello, Yjs and yrs",
+    "json": "\"Grüße 👋 Hello, Yjs and yrs\""
+  },
+  "xml": {
+    "root": "default",
+    "updates": [
+      "AQNlAAcBB2RlZmF1bHQDB2hlYWRpbmcHAGUABigAZQAFbGV2ZWwBdwExAA==",
+      "AQFlAwQAZQEFTm90ZXMA",
+      "AQJlCIdlAAMJcGFyYWdyYXBoBwBlCAYA",
+      "AQFlCgQAZQkMRmlyc3QgbGluZSwgAA==",
+      "AQNlFoZlFQRib2xkBHRydWWEZRYEYm9sZIZlGgRib2xkBG51bGwA",
+      "AQLKAQCHZQgDCXBhcmFncmFwaAcAygEABgA=",
+      "AQHKAQIEAMoBARdTZWNvbmQgcGFyYWdyYXBoIGJ5IEJvYgA=",
+      "AQHKARmHygEAAwlwYXJhZ3JhcGgA"
+    ],
+    "state": "AgTKAQCHZQgDCXBhcmFncmFwaAcAygEABgQAygEBF1NlY29uZCBwYXJhZ3JhcGggYnkgQm9ih8oBAAMJcGFyYWdyYXBoCmUABwEHZGVmYXVsdAMHaGVhZGluZwcAZQAGKABlAAVsZXZlbAF3ATEEAGUBBU5vdGVzh2UAAwlwYXJhZ3JhcGgHAGUIBgQAZQkMRmlyc3QgbGluZSwghmUVBGJvbGQEdHJ1ZYRlFgRib2xkhmUaBGJvbGQEbnVsbAA=",
+    "xml": "<heading level=\"1\">Notes</heading><paragraph>First line, <bold>bold</bold></paragraph><paragraph>Second paragraph by Bob</paragraph><paragraph></paragraph>",
+    "json": "\"<heading level=\\\"1\\\">Notes</heading><paragraph>First line, <bold>bold</bold></paragraph><paragraph>Second paragraph by Bob</paragraph><paragraph></paragraph>\""
+  }
+}

@@ -265,8 +265,10 @@ pub(crate) async fn observe(
     // changes.
     let presence = |running: &RunningStream| -> Option<Json> {
         let config = running.configuration();
-        let shows = running.provider().is_some_and(|p| p.accepts_publish())
-            && sc_stream::providers::internal::presence(&config);
+        // A document's editors are always present (L5): who has it open.
+        let shows = (running.provider().is_some_and(|p| p.accepts_publish())
+            && sc_stream::providers::internal::presence(&config))
+            || running.provider_name() == sc_stream::DOCUMENT;
         shows.then(|| presence_frame(&hub.presence_of(running.id())))
     };
     let mut last_presence = presence(&running);

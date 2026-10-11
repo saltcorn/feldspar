@@ -36,7 +36,7 @@ use crate::declared::{
 };
 use crate::react::{REACT_CLIENT_FILE, REACT_FRAMEWORK, project_description, project_path};
 
-pub use files::GeneratedFile;
+pub use files::{GeneratedFile, RUNTIME_DOC_FILE, live_doc_ts};
 
 /// What a scaffold did.
 #[derive(Debug, Clone, PartialEq, Eq)]

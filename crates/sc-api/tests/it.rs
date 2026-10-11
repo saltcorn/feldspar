@@ -25,6 +25,8 @@ mod code_host_reads;
 mod code_host_sql;
 #[path = "code_host_writes.rs"]
 mod code_host_writes;
+#[path = "collab_doc.rs"]
+mod collab_doc;
 #[path = "constraints.rs"]
 mod constraints;
 #[path = "custom_queries.rs"]

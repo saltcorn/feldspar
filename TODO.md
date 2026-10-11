@@ -89,9 +89,13 @@ elements come from Saltcorn itself, not from a broker.
    or joined reads). The element type is **derived from the table's fields**, so the generated
    TypeScript is the table's row type.
 3. **`document`** — a collaborative document stored in a field of a row. `TopicSpec::Row`.
-   Settings: `table`, `field` (of the new type `collab_doc`), and an optional `text_mirror`
-   (a `String` field kept equal to the document's plain text, so the document can be searched,
-   filtered and read over REST). Presence is always on.
+   Settings: `table`, `field` (of the new type `collab_doc`), `root` (the shared type's name,
+   default `default`, which is what TipTap's Collaboration extension uses), `root_kind`
+   (`text` for a `Y.Text`, as CodeMirror binds; `xml` for a `Y.XmlFragment`, as
+   ProseMirror/TipTap binds — `yrs` must know which to read), and an optional `text_mirror`
+   (a `String` field kept equal to the document, so it can be searched, filtered and read over
+   REST) with `mirror_format`: `text` (plain text, walked out of an `xml` root too) or `json`
+   (`root.toJSON()`). Presence is always on.
 
 E is unchanged: `mqtt` and module providers are `TopicSpec::Single`.
 
@@ -136,7 +140,9 @@ This is where the design is strictest. The rules:
      it moves to board 8, and also when it stops being readable.
    - The delivered row is **the row the app's REST read returns for that table**: the same
      projection, so anything REST hides (a users table's password hash, a field outside the
-     read projection) is hidden here too. `collab_doc` fields are never included.
+     read projection) is hidden here too. `collab_doc` fields are never included: they are
+     left out of the REST read projection altogether (not sent as `null`), and so out of the
+     generated row types too.
    - "Readable" uses the access rule exactly: role ≥ `min_role_read` short-circuits; otherwise
      the ownership formula is evaluated **reified** (the reference evaluator, §7.3) against the
      row and the subscriber's `user`, with Ⱶ/Ↄ prefetches batched once per element. This works
@@ -202,9 +208,15 @@ server → client
   the client helper treats a reconnect or a `lagged` as **resync**: `useLiveRows` refetches.
   Replaying a gap by sequence number is left out on purpose (see §8).
 - **Limits** (configuration, with survivable defaults): 64 subscriptions per connection, 16
-  connections per user per app, 64 KB per frame (1 MB for a document's first `doc_sync`), client
-  publishes 20/s and presence updates 20/s per connection (presence is coalesced to the latest
-  state per 50 ms). A ping every 30 s; a connection silent for 90 s is closed.
+  connections per user per app, 64 KB per client frame, client publishes 20/s and presence
+  updates 20/s per connection (presence is coalesced to the latest state per 50 ms). A ping
+  every 30 s; a connection silent for 90 s is closed.
+- **Document limits derive from one setting**, `max_doc_bytes` (2 MB by default), so they cannot
+  contradict each other: a server `doc_sync` may be up to `max_doc_bytes × 4/3` plus a margin
+  (base64), and a client `doc_update` frame has its own cap, `max_doc_update_bytes` (1 MB by
+  default), because pasting a long passage is ordinary editing — every other client frame keeps
+  64 KB. `doc_update`s count against the publish rate. An update that would take the document
+  past `max_doc_bytes` is refused with `too_large` and a sentence, and not applied.
 - **The per-stream app socket is removed.** `{mount}/streams/{name}/observe` and
   `observeStream_x()` are replaced by the live socket (no backwards compatibility in the
   prototype). The admin's `/api/streams/{id}/observe` stays, because the admin Observe screen
@@ -277,12 +289,24 @@ server → client
   transaction holding a row lock, merging with what is stored. CRDT merges are idempotent, so a
   race with another process loses nothing. A persist writes the field and `text_mirror` through
   the row layer as a system write, so update triggers and `table_changes` streams see it (the
-  `collab_doc` bytes themselves are never in an element). REST and `update_rows` **refuse** to
-  write a `collab_doc` field, because a whole-value overwrite would discard concurrent edits.
-  The only server-side writer is `live.document(…)` in a code body, which applies a CRDT update.
+  `collab_doc` bytes themselves are never in an element). A persist is skipped when nothing
+  changed since the last one, so a room closing does not write an identical row. **An update
+  trigger on the table therefore fires about every 2 s while someone types**: consistent, and
+  said plainly in the docs and the tutorial, so nobody hangs an e-mail on it by surprise. REST
+  and `update_rows` **refuse** to write a `collab_doc` field, because a whole-value overwrite
+  would discard concurrent edits. The only server-side writer is `live.document(…)` in a code
+  body, which applies a CRDT update: any text edit on a `text` root, and appending a paragraph
+  on an `xml` root (arbitrary ProseMirror edits from a code body are out of scope). Reading the
+  document's text works on both kinds.
 - **Cursors are presence.** Yjs's *awareness* (cursor, selection, user colour) is ephemeral
-  per-connection state. That is what presence is, so the client adapter maps awareness onto
-  presence frames, and only one mechanism exists.
+  per-connection state. That is what presence is, so only one mechanism exists. The server
+  never looks inside it: a member's presence state carries the bytes of
+  `encodeAwarenessUpdate` in base64 (well inside the 2 KB state limit), receivers apply it with
+  `applyAwarenessUpdate`, and a member leaving is `removeAwarenessStates` for their client id.
+- **Reconnecting with unsent edits.** `doc_sync` is the whole stored-and-room state. After each
+  `doc_sync` (the first and every one after a reconnect) the client sends what the server is
+  missing: `Y.encodeStateAsUpdate(doc, Y.encodeStateVectorFromUpdate(syncUpdate))`. Edits made
+  while disconnected therefore arrive, and merging makes a repeat harmless.
 
 ## 6. In the application
 
@@ -307,6 +331,19 @@ const cards = useLiveRows(client.cards, { where: { board: "eq.7" } });        //
 const { members, setState } = usePresence(live.board_presence, boardId);      // B, C
 const { doc, awareness, readOnly, status } = useDocument(live.doc_body, docId); // C
 ```
+
+**Documents live in their own file, `src/feldspar/live-doc.ts`**, emitted (regenerated, like
+the rest of `src/feldspar/`) only when the app exposes a `document` stream. It holds the typed
+`live.<doc>.open` accessors and, for React, `useDocument`. `helper.ts` and `live-react.ts` never
+import `yjs`, so an app without documents ships none of it, and neither do the four admin/IDE
+UIs that carry a copy of `helper.ts`. `package.json` is written once and owned by the developer,
+so `yjs` and `y-protocols` are **always** in the scaffold's dependencies: a package that is
+installed but not imported costs no bundle bytes, while one added only "when a document stream
+is exposed" would break `tsc --noEmit` for any app that exposes one after it was scaffolded.
+`yjs` is pinned to the major the editor bindings expect (`^13`), because two copies of `yjs` in
+one bundle break its constructor checks. `AGENTS.md` tells the coding agent to load the editor
+page with `React.lazy`, so `yjs` lands in that page's chunk only, and to install the editor
+binding as an ordinary dependency.
 
 `useLiveRows` reads with the REST client, subscribes with the **same filter**, applies
 `insert/update/delete/enter/leave`, keeps the requested order, and refetches on `resync`. With
@@ -609,49 +646,69 @@ re-checking. No new providers yet. Everything later builds on this.
 
 ## L5 — Collaborative documents (C)
 
-- [ ] **L5.1** The `collab_doc` type in `sc-types`: stored as bytea / BLOB, read over REST as
-  `null` or not at all (decide, and test it), and refused as a write target by REST,
+- [x] **L5.1** The `collab_doc` type in `sc-types`: stored as bytea / BLOB, **left out of the
+  REST read projection altogether** (not sent as `null`, so the generated row types omit it
+  too; joins `sc_auth::is_api_hidden_column`), and refused as a write target by REST,
   `insert_row`/`update_rows` and the admin row editor, with a sentence saying why. It cannot be
-  used in filters, sorting, formulas or ownership formulas.
-- [ ] **L5.2** Add `yrs`. A `DocRoom` per open `(stream, row)`: load the stored state (an empty
+  used in filters, sorting, formulas or ownership formulas. Test the omission and each refusal.
+- [x] **L5.2** Add `yrs`. A `DocRoom` per open `(stream, row)`: load the stored state (an empty
   doc if it is null), apply incoming updates, relay them to the other members, and close the room
   when the last member leaves. Test that a Yjs update made by the JS `yjs` package (a recorded
-  fixture) applies in `yrs` and produces the same text. This checks the format compatibility we
-  rely on.
-- [ ] **L5.3** The `document` provider: `table`, `field` (must be `collab_doc`), `text_mirror`
-  (optional `String` field), and `root` (the shared type's name, default `content`). Topic is
-  `Row`. `doc_sync` on subscribe with `read_only` = !update access. A `doc_update` from a
-  read-only member is refused with `unavailable` and not applied. Re-checks (L2.6) apply: a
-  member who loses update access becomes read-only (`doc_sync` again with `read_only: true`),
-  and one who loses read access is `revoked`.
-- [ ] **L5.4** Persistence: debounced 2 s and when the room closes. In one transaction:
-  `SELECT … FOR UPDATE`, merge the stored state with the room's state, write the field and the
-  `text_mirror` through the row layer as a system write. Test: two rooms (simulating two
-  processes) persisting interleaved edits lose neither, and the mirror equals the merged text.
-- [ ] **L5.5** Limits: maximum document size (5 MB default, refusing further updates with a
-  sentence), maximum update size, and update rate.
-- [ ] **L5.6** `live.document(stream, key)` in code bodies: read the text, apply a text edit as a
-  CRDT update (for an agent or a workflow that appends to a document). The only server-side
-  writer.
-- [ ] **L5.7** Client: `live.<doc>.open(key)` → `{ doc: Y.Doc, awareness, readOnly, status,
-  close }`. The awareness is `y-protocols/awareness`, synced through presence frames, so
-  existing editor bindings work unchanged. `yjs` and `y-protocols` are added to the React
-  scaffold's `package.json` only when the app exposes a document stream. React:
-  `useDocument(accessor, key)`.
-- [ ] **L5.8** A worked example in the scaffold docs (`AGENTS.md` contract): TipTap with
+  fixture) applies in `yrs` and produces the same text, for a `text` root and an `xml` root.
+  This checks the format compatibility we rely on.
+- [x] **L5.3** The `document` provider: `table`, `field` (must be `collab_doc`), `root` (the
+  shared type's name, default `default`, TipTap's), `root_kind` (`text` | `xml`), `text_mirror`
+  (optional `String` field) and `mirror_format` (`text` | `json`; `text` walks the plain text out
+  of an `xml` root). Topic is `Row`. `doc_sync` on subscribe with `read_only` = !update access.
+  A `doc_update` from a read-only member is refused with `unavailable` and not applied.
+  Re-checks (L2.6) apply: a member who loses update access becomes read-only (`doc_sync` again
+  with `read_only: true`), and one who loses read access is `revoked`. Limits (§4, "Document
+  limits"), all from `max_doc_bytes` (2 MB): `doc_sync` up to `max_doc_bytes × 4/3` plus a
+  margin, client `doc_update` frames up to `max_doc_update_bytes` (1 MB; other client frames
+  keep 64 KB), `doc_update` counted against the publish rate, and an update that would pass
+  `max_doc_bytes` refused with `too_large` and a sentence. Test a document over 1 MB opens, and
+  a paste over 64 KB is accepted.
+- [x] **L5.4** Persistence: debounced 2 s and when the room closes, skipped when nothing changed
+  since the last persist. In one transaction: `SELECT … FOR UPDATE`, merge the stored state with
+  the room's state, write the field and the `text_mirror` through the row layer as a system
+  write. Test: two rooms (simulating two processes) persisting interleaved edits lose neither,
+  and the mirror equals the merged text (and the merged JSON, with `mirror_format: json`); and a
+  room closing with no change since its last persist writes nothing.
+- [x] **L5.5** `live.document(stream, key)` in code bodies: read the text (either root kind);
+  write as a CRDT update — any text edit on a `text` root, appending a paragraph on an `xml`
+  root (for an agent or a workflow that appends to a document). The only server-side writer.
+- [x] **L5.6** *(The accessor is `docs.<doc>.open(key)`, not `live.<doc>.open(key)`: `live` is the
+  generated client's object, which may not import `yjs`.)* Client, in its own regenerated file `src/feldspar/live-doc.ts`, emitted only when
+  the app exposes a `document` stream (`helper.ts` and `live-react.ts` never import `yjs`):
+  `live.<doc>.open(key)` → `{ doc: Y.Doc, awareness, readOnly, status, close }`, and for React
+  `useDocument(accessor, key)`. The awareness is `y-protocols/awareness`; a member's presence
+  state is its `encodeAwarenessUpdate` bytes in base64, applied with `applyAwarenessUpdate` and
+  dropped with `removeAwarenessStates` when the member leaves, so the server never looks inside
+  it and existing editor bindings work unchanged. After every `doc_sync` the client sends
+  `Y.encodeStateAsUpdate(doc, Y.encodeStateVectorFromUpdate(syncUpdate))`; test that edits made
+  while disconnected arrive after the reconnect. The generated client passes the stream's `root`
+  to the binding, so the two cannot drift. `yjs` (`^13`, the major the bindings expect) and
+  `y-protocols` are **always** in the scaffold's `package.json` (written once, so a conditional
+  dependency would break `tsc` for an app that exposes a document later; an unimported package
+  costs no bundle bytes). Test: an app without a document stream emits no `live-doc.ts` and its
+  build contains no `yjs`.
+- [x] **L5.7** A worked example in the scaffold docs (`AGENTS.md` contract): TipTap with
   `@tiptap/extension-collaboration` and `collaboration-cursor`, and CodeMirror with
-  `y-codemirror.next`, so the coding agent can write either.
+  `y-codemirror.next`, so the coding agent can write either. It says: load the editor page with
+  `React.lazy` (so `yjs` is in that chunk only), install the binding as an ordinary dependency,
+  and an update trigger on the table fires about every 2 s while someone types.
 
 ### Try it
 1. Table `notes` (`title`, `body` collab_doc, `body_text` string), ownership formula
    `owner === user.id || sharesↃnote.some(s => s.user === user.id)`, with `can_edit` on shares.
-2. A `document` stream `note_body` on `notes.body`, mirror `body_text`, exposed on a React app
-   with a TipTap editor.
+2. A `document` stream `note_body` on `notes.body` (`root_kind: xml`, root `default`), mirror
+   `body_text` as `text`, exposed on a React app with a TipTap editor.
 3. Alice and Bob edit the same note: both see each other's text and named cursors as they type.
    Carol, shared read-only, sees the edits live and cannot type.
-4. Close both tabs and reopen: the text is there. `GET /api/notes` shows it in `body_text`.
+4. Close both tabs and reopen: the text is there. `GET /api/notes` shows it in `body_text`, and
+   has no `body`.
 
-- [ ] **L5.9** Tutorial part 5 (a collaborative notes app) and its definition-of-done test,
+- [x] **L5.8** Tutorial part 5 (a collaborative notes app) and its definition-of-done test,
   with a puppeteer check of two contexts typing into one document.
 
 ---

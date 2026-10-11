@@ -30,7 +30,58 @@ use crate::{Attrs, BasicType, FormField, RichType};
 /// The rich types registered by default — what [`builtin_rich_types`] hands the
 /// registry. A new built-in type is added here.
 pub(crate) fn builtin_rich_types() -> Vec<Arc<dyn RichType>> {
-    vec![Arc::new(StringType::new()), Arc::new(IntegerType::new())]
+    vec![
+        Arc::new(StringType::new()),
+        Arc::new(IntegerType::new()),
+        Arc::new(CollabDocType),
+    ]
+}
+
+/// The registry name of [`CollabDocType`].
+pub const COLLAB_DOC: &str = "collab_doc";
+
+/// Whether a field of type `ty` holds a collaborative document.
+pub fn is_collab_doc(ty: &crate::TypeRef) -> bool {
+    ty.as_rich().is_some_and(|r| r.name() == COLLAB_DOC)
+}
+
+/// A collaborative document (TODO.md "Live updates" L5.1): Yjs's binary state,
+/// stored as `bytea` (a `BLOB` on SQLite), edited only through a `document`
+/// stream's room or `live.document` in a code body.
+///
+/// The type is a promise about who writes the value, and the rest of the
+/// system keeps it: the column is **left out of every API read** (not sent as
+/// null — the generated row types omit it too), **refused as a write target**
+/// by REST, the `insert_row` and `update_rows` actions and the admin row
+/// editor, and cannot be named by a filter, an ordering or a formula. A
+/// whole-value overwrite would discard every edit made concurrently with it;
+/// only a CRDT update merges.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CollabDocType;
+
+impl RichType for CollabDocType {
+    fn name(&self) -> &str {
+        COLLAB_DOC
+    }
+
+    fn attributes(&self) -> &[FormField] {
+        &[]
+    }
+
+    fn validate(&self, value: &Value, _attrs: &Attrs) -> Result<()> {
+        match value {
+            Value::Null | Value::Bytes(_) => Ok(()),
+            other => Err(Error::invalid(format!(
+                "a collaborative document is stored as bytes, got a value of kind `{}`",
+                other.kind()
+            ))),
+        }
+    }
+
+    fn sql_types(&self) -> &[&str] {
+        const TYPES: &[&str] = &["bytea"];
+        TYPES
+    }
 }
 
 /// The `options` attribute of [`StringType`].
@@ -353,10 +404,30 @@ mod tests {
     fn each_type_round_trips_its_sql_type_through_a_ref() {
         // `sql_type()` on a `TypeRef::Rich` must be the DDL type the field's
         // column actually has, so the two agree at §3.2's merge.
-        for (name, expected) in [(StringType::NAME, "text"), (IntegerType::NAME, "int8")] {
+        for (name, expected) in [
+            (StringType::NAME, "text"),
+            (IntegerType::NAME, "int8"),
+            (COLLAB_DOC, "bytea"),
+        ] {
             let r = RichTypeRef::resolve(name).expect("registered");
             assert_eq!(r.sql_type(), expected, "{name}");
             assert_eq!(TypeRef::rich(r).sql_type(), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn a_collab_doc_holds_bytes_and_says_so() {
+        let t = CollabDocType;
+        let none = Attrs::new();
+        assert!(t.validate(&Value::Bytes(vec![1, 2]), &none).is_ok());
+        assert!(t.validate(&Value::Null, &none).is_ok());
+        let err = t
+            .validate(&Value::Text("hello".into()), &none)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("stored as bytes"), "{err}");
+        let r = TypeRef::rich(RichTypeRef::resolve(COLLAB_DOC).unwrap());
+        assert!(is_collab_doc(&r));
+        assert!(!is_collab_doc(&TypeRef::Basic(BasicType::Bytes)));
     }
 }

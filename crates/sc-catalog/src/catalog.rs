@@ -1808,6 +1808,11 @@ pub(crate) fn schema_shape_of_tables<'a>(
         }
         let mut table_shape = sc_expr::TableShape::new();
         for field in &table.fields {
+            // A collaborative document is bytes no formula can read (live
+            // updates L5.1): left out, a formula naming it is an unknown field.
+            if field.is_collab_doc() {
+                continue;
+            }
             table_shape = match &field.kind {
                 crate::field::DataFieldKind::Key {
                     target_table,
@@ -1830,6 +1835,7 @@ pub(crate) fn schema_shape_of_tables<'a>(
             users
                 .fields
                 .iter()
+                .filter(|f| !f.is_collab_doc())
                 .map(|f| f.base.name.as_str())
                 .filter(|name| *name != USERS_PASSWORD_COLUMN),
         );

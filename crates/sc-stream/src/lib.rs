@@ -94,6 +94,7 @@ pub use polling::{
 pub use provider::{
     Replay, StreamProvider, StreamProviderHost, StreamProviderKind, StreamSink, TopicSpec,
 };
+pub use providers::document::{DOCUMENT, DocSettings, Document};
 pub use providers::internal::{INTERNAL, Internal};
 #[cfg(feature = "mqtt")]
 pub use providers::mqtt::{MQTT, Mqtt};

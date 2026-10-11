@@ -185,6 +185,13 @@ impl DataField {
         matches!(self.kind, DataFieldKind::Calc { .. })
     }
 
+    /// Whether this field holds a collaborative document (`collab_doc`, live
+    /// updates L5.1): never read or written through an API, never named by a
+    /// filter, an ordering or a formula.
+    pub fn is_collab_doc(&self) -> bool {
+        sc_types::is_collab_doc(&self.base.type_)
+    }
+
     /// The column definition this field emits when the table or column is
     /// created via the catalog. Primary-key membership is applied at the table
     /// level (in the `CREATE TABLE`), not here.

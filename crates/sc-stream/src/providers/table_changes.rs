@@ -236,7 +236,10 @@ impl StreamProvider for TableChanges {
         let columns = table
             .fields
             .iter()
-            .filter(|field| !sc_auth::is_api_hidden_column(&table.name, &field.base.name))
+            .filter(|field| {
+                !sc_auth::is_api_hidden_column(&table.name, &field.base.name)
+                    && !field.is_collab_doc()
+            })
             .map(|field| {
                 // What REST types the column as: its basic type, or text for a
                 // rich type it cannot name.

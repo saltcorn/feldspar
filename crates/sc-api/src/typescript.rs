@@ -173,6 +173,9 @@ impl StreamExport {
     /// settings allow them — joined and published to. `envelope` is the
     /// stream's envelope type.
     fn accessor_type(&self, envelope: &str) -> String {
+        if let StreamTopics::Document { root_kind, .. } = &self.topics {
+            return format!("LiveDocumentStream<\"{}\">", document_kind(root_kind));
+        }
         let row = self.topics == StreamTopics::Row;
         let mut parts = vec![format!(
             "{}<{envelope}>",
@@ -221,6 +224,23 @@ pub enum StreamTopics {
         /// The table whose changes the stream carries.
         table: String,
     },
+    /// A collaborative document per row (L5.6): the accessor is a
+    /// `LiveDocumentStream` that hands a page Yjs updates in base64, and the
+    /// generated `live-doc.ts` (which imports `yjs`, as nothing else does)
+    /// turns it into a `Y.Doc`. `root` and `root_kind` are the stream's
+    /// settings, carried so the binding and the server cannot drift.
+    Document {
+        /// The root shared type's name.
+        root: String,
+        /// `text` or `xml`.
+        root_kind: String,
+    },
+}
+
+/// A document stream's root kind as its accessor's type parameter: `xml` or
+/// `text`, anything else read as `text`.
+fn document_kind(root_kind: &str) -> &'static str {
+    if root_kind == "xml" { "xml" } else { "text" }
 }
 
 /// Generate a TypeScript client module from an endpoint set.
@@ -277,12 +297,16 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
         values.extend(["LiveConnection", "liveUrl"]);
     }
     let mut types: Vec<&str> = vec!["ClientOptions"];
+    let is_document = |s: &StreamExport| matches!(s.topics, StreamTopics::Document { .. });
     if streams
         .iter()
         .zip(&changes)
-        .any(|(s, typing)| typing.is_none() && s.topics != StreamTopics::Row)
+        .any(|(s, typing)| typing.is_none() && s.topics != StreamTopics::Row && !is_document(s))
     {
         types.push("LiveStream");
+    }
+    if streams.iter().any(is_document) {
+        types.push("LiveDocumentStream");
     }
     if streams.iter().any(|s| s.topics == StreamTopics::Row) {
         types.push("LiveRowStream");
@@ -445,6 +469,9 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
                 StreamTopics::Single | StreamTopics::Changes { .. } => "stream",
                 StreamTopics::User => "stream; each subscriber gets their own topic",
                 StreamTopics::Row => "stream; subscribe naming a row's key",
+                StreamTopics::Document { .. } => {
+                    "document stream; open one row's document with `live-doc.ts`"
+                }
             };
             let _ = writeln!(
                 out,
@@ -528,10 +555,23 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
                 );
                 continue;
             }
+            if let StreamTopics::Document { root, root_kind } = &stream.topics {
+                let _ = writeln!(
+                    out,
+                    "    {}: connection.documentStream<\"{}\">(\"{}\", {}, \"{}\"),",
+                    stream.name,
+                    document_kind(root_kind),
+                    stream.name,
+                    serde_json::Value::String(root.clone()),
+                    document_kind(root_kind),
+                );
+                continue;
+            }
             let accessor = match stream.topics {
-                StreamTopics::Single | StreamTopics::User | StreamTopics::Changes { .. } => {
-                    "stream"
-                }
+                StreamTopics::Single
+                | StreamTopics::User
+                | StreamTopics::Changes { .. }
+                | StreamTopics::Document { .. } => "stream",
                 StreamTopics::Row => "rowStream",
             };
             let _ = writeln!(
@@ -1526,6 +1566,10 @@ export interface LiveHandlers<E> {
   status?(status: unknown): void;
   /** A refusal. Before `ready`, or as `revoked`, it ends the subscription, which is not retried. */
   error?(error: LiveError): void;
+  /** On a document stream: the whole document, a Yjs update in base64, and whether this page may only read. */
+  docSync?(update: string, readOnly: boolean): void;
+  /** On a document stream: another member's edit, a Yjs update in base64. */
+  docUpdate?(update: string): void;
 }
 
 /** A live subscription. `close()` ends it. */
@@ -1587,6 +1631,49 @@ export interface LiveRowPublish<E, V = LiveValue<E>> {
   readonly name: string;
   readonly connection: LiveConnection;
   publish(topic: LiveTopic, value: V): void;
+}
+
+/** What a page with one row's document open is told — Yjs updates in base64, which `live-doc.ts` applies. */
+export interface LiveDocumentHandlers<S = unknown> {
+  /** The whole document — after `ready`, after a reconnect, when this page's edit right changed, and when edits had to be dropped. */
+  sync(update: string, readOnly: boolean): void;
+  /** Another member's edit. */
+  update(update: string): void;
+  /** Who has the document open, this page included; a member's `state` is its editor's awareness. */
+  presence?(members: LiveMember<S>[]): void;
+  ready?(info: LiveReady): void;
+  /** The connection was lost and re-established: a `sync` follows. */
+  resync?(): void;
+  status?(status: unknown): void;
+  error?(error: LiveError): void;
+}
+
+/** One row's document, open: send this page's edits and its awareness state. */
+export interface LiveDocumentSession<S = unknown> {
+  readonly members: LiveMember<S>[];
+  readonly me: string | undefined;
+  /** Whether the last `sync` said this page may only read. */
+  readonly readOnly: boolean;
+  /** Send an edit (a Yjs update, base64). Dropped while not connected: the next `sync` is answered with what the server lacks. */
+  send(update: string): boolean;
+  /** Set this page's presence state — its awareness, base64. */
+  setState(state: S): void;
+  close(): void;
+}
+
+/**
+ * A `document` stream: one collaborative document per row, kept in a
+ * `collab_doc` field. `K` is its root's kind — `"xml"` (a `Y.XmlFragment`, as
+ * TipTap/ProseMirror bind) or `"text"` (a `Y.Text`, as CodeMirror binds) —
+ * and `root` its name. `live-doc.ts` opens one as a `Y.Doc`; this is the
+ * transport underneath, and imports nothing.
+ */
+export interface LiveDocumentStream<K extends "text" | "xml" = "text" | "xml"> {
+  readonly name: string;
+  readonly connection: LiveConnection;
+  readonly root: string;
+  readonly rootKind: K;
+  connect<S = unknown>(topic: LiveTopic, handlers: LiveDocumentHandlers<S>): LiveDocumentSession<S>;
 }
 
 /** A presence frame (`presence` or `presence_diff`) applied to a member list — pure, so it is tested without a socket. */
@@ -1676,6 +1763,8 @@ type LiveEntry = {
   stateTimer: ReturnType<typeof setTimeout> | undefined;
   /** Publishes made before `ready`, sent once it arrives. */
   outbox: unknown[];
+  /** On a document stream: whether the last `doc_sync` said read-only. */
+  readOnly: boolean;
 };
 
 /** One socket, any number of subscriptions, reconnecting by itself. */
@@ -1769,6 +1858,66 @@ export class LiveConnection {
         return this.subscribe(name, handlers, undefined, where);
       },
     };
+  }
+
+  /** The accessor for the `document` stream called `name`, whose root is `root` of kind `rootKind`. */
+  documentStream<K extends "text" | "xml">(name: string, root: string, rootKind: K): LiveDocumentStream<K> {
+    return {
+      name,
+      connection: this,
+      root,
+      rootKind,
+      connect: <S = unknown>(topic: LiveTopic, handlers: LiveDocumentHandlers<S>) =>
+        this.openDocument<S>(name, String(topic), handlers),
+    };
+  }
+
+  /** Open `topic`'s document on `stream`: a subscription that keeps its members and carries its edits. */
+  openDocument<S = unknown>(
+    stream: string,
+    topic: string,
+    handlers: LiveDocumentHandlers<S>,
+  ): LiveDocumentSession<S> {
+    const { sub, subscription } = this.add(
+      stream,
+      {
+        element: () => undefined,
+        ready: handlers.ready,
+        resync: handlers.resync,
+        status: handlers.status,
+        error: handlers.error,
+        presence: (members: LiveMember[]) => handlers.presence?.(members as LiveMember<S>[]),
+        docSync: (update: string, readOnly: boolean) => handlers.sync(update, readOnly),
+        docUpdate: (update: string) => handlers.update(update),
+      },
+      topic,
+      undefined,
+    );
+    const entry = () => this.entries.get(sub);
+    return {
+      get members() {
+        return (entry()?.members ?? []) as LiveMember<S>[];
+      },
+      get me() {
+        return entry()?.me;
+      },
+      get readOnly() {
+        return entry()?.readOnly ?? true;
+      },
+      send: (update: string) => this.sendDocUpdate(sub, update),
+      setState: (state: S) => this.setState(sub, state),
+      close: () => subscription.close(),
+    };
+  }
+
+  /** Send an edit on the document subscription `sub`, if it is ready and may edit; `false` when it was not sent. */
+  sendDocUpdate(sub: string, update: string): boolean {
+    const entry = this.entries.get(sub);
+    if (!entry || !entry.ready || entry.readOnly || !this.socket || this.socket.readyState !== 1) {
+      return false;
+    }
+    this.send({ type: "doc_update", sub, update });
+    return true;
   }
 
   /**
@@ -1915,6 +2064,7 @@ export class LiveConnection {
       stateSentAt: 0,
       stateTimer: undefined,
       outbox: [],
+      readOnly: true,
     };
     this.entries.set(sub, entry);
     if (this.socket && this.socket.readyState === 1) {
@@ -1969,6 +2119,8 @@ export class LiveConnection {
       this.setStatus("open");
       this.entries.forEach((entry, sub) => {
         entry.ready = false;
+        // A document waits for its next `doc_sync` before it edits again.
+        entry.readOnly = true;
         if (entry.stateTimer !== undefined) {
           clearTimeout(entry.stateTimer);
           entry.stateTimer = undefined;
@@ -2050,6 +2202,15 @@ export class LiveConnection {
         break;
       case "element":
         entry?.handlers.element(frame["envelope"]);
+        break;
+      case "doc_sync":
+        if (entry && typeof frame["update"] === "string") {
+          entry.readOnly = frame["read_only"] !== false;
+          entry.handlers.docSync?.(frame["update"], entry.readOnly);
+        }
+        break;
+      case "doc_update":
+        if (entry && typeof frame["update"] === "string") entry.handlers.docUpdate?.(frame["update"]);
         break;
       case "lagged":
         entry?.handlers.lagged?.(Number(frame["dropped"] ?? 0));

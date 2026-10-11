@@ -361,6 +361,13 @@ pub struct Select {
     pub limit: Option<u64>,
     /// `OFFSET`.
     pub offset: Option<u64>,
+    /// `FOR UPDATE`: lock the rows read until the transaction ends (live
+    /// updates L5.4 — a document persist merges with what is stored while no
+    /// other process can). Rendered by a dialect that has row locks
+    /// ([`SqlDialect::row_lock`](crate::SqlDialect::row_lock)); SQLite, whose
+    /// write transaction holds the whole database, renders nothing.
+    #[serde(default)]
+    pub lock: bool,
 }
 
 impl Select {
@@ -377,7 +384,14 @@ impl Select {
             order: Vec::new(),
             limit: None,
             offset: None,
+            lock: false,
         }
+    }
+
+    /// Lock the rows read until the transaction ends (`FOR UPDATE`).
+    pub fn for_update(mut self) -> Self {
+        self.lock = true;
+        self
     }
 
     /// Replace the projection list.

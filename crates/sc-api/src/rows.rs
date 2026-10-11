@@ -16,7 +16,9 @@
 //! surface goes through the same §7 layer.
 
 use crate::calc_read::CalcPlan;
-use sc_catalog::{CallerContext, Catalog, DataFieldKind, SharedTx, Table, TableWrite, WriteOp};
+use sc_catalog::{
+    CallerContext, Catalog, DataField, DataFieldKind, SharedTx, Table, TableWrite, WriteOp,
+};
 use sc_db::Row;
 use sc_error::{Error, Repr, Result};
 use sc_query::{
@@ -654,6 +656,7 @@ pub async fn create_row_in(
 ) -> Result<Json> {
     let obj = require_object(body)?;
     reject_calc_writes(table, obj)?;
+    reject_document_writes(table, obj)?;
     user_rows::check_insert(table, obj, context)?;
     let mut columns = Vec::with_capacity(obj.len());
     let mut values = Vec::with_capacity(obj.len());
@@ -735,6 +738,53 @@ pub(crate) async fn update_row_guarded_in(
     executor: &Executor,
 ) -> Result<Json> {
     let obj = require_object(body)?;
+    reject_document_writes(table, obj)?;
+    update_row_unchecked_in(catalog, table, id, obj, guard, context, executor).await
+}
+
+/// Persist a collaborative document (live updates L5.4): write the
+/// `collab_doc` column `field` of row `id` — and the stream's text mirror, if
+/// it has one — as a **system write** through the row layer, so update
+/// triggers and `table_changes` streams see it like any other update. The
+/// only writer of a `collab_doc` column; every API refuses one
+/// ([`reject_document_writes`]). The caller holds the row's lock, in
+/// `executor`'s transaction, and has merged what was stored.
+pub async fn write_document_in(
+    catalog: &Catalog,
+    table: &Table,
+    id: &str,
+    field: &str,
+    state: &[u8],
+    mirror: Option<(&str, &str)>,
+    executor: &Executor,
+) -> Result<Json> {
+    if !table.field(field).is_some_and(DataField::is_collab_doc) {
+        return Err(Error::invalid(format!(
+            "`{}.{field}` is not a collaborative document",
+            table.name
+        )));
+    }
+    let mut obj = Map::new();
+    obj.insert(
+        field.to_owned(),
+        value_to_json(&Value::Bytes(state.to_vec())),
+    );
+    if let Some((column, text)) = mirror {
+        obj.insert(column.to_owned(), Json::String(text.to_owned()));
+    }
+    update_row_unchecked_in(catalog, table, id, &obj, None, None, executor).await
+}
+
+/// The update itself, after the refusals that depend on who is writing.
+async fn update_row_unchecked_in(
+    catalog: &Catalog,
+    table: &Table,
+    id: &str,
+    obj: &Map<String, Json>,
+    guard: Option<Expr>,
+    context: Option<&CallerContext>,
+    executor: &Executor,
+) -> Result<Json> {
     reject_calc_writes(table, obj)?;
     let guard = user_rows::and_guard(guard, user_rows::update_guard(table, id, obj, context)?);
     let pk = single_pk(table)?;
@@ -1086,6 +1136,24 @@ fn reject_calc_writes(table: &Table, columns: &Map<String, Json>) -> Result<()> 
     Ok(())
 }
 
+/// Refuse a write that names a `collab_doc` field (live updates L5.1) — from
+/// REST, an action, the admin's row editor, GraphQL or a code body alike. A
+/// document is merged, never overwritten: a whole value written over it would
+/// discard every edit made concurrently with it. Only the document stream's
+/// room and `live.document` write one, through [`write_document_in`].
+fn reject_document_writes(table: &Table, columns: &Map<String, Json>) -> Result<()> {
+    for key in columns.keys() {
+        if table.field(key).is_some_and(DataField::is_collab_doc) {
+            return Err(Error::invalid(format!(
+                "`{key}` is a collaborative document and cannot be written directly: a whole \
+                 value would overwrite the edits other people are making to it. It is edited \
+                 through its document stream, or with `live.document` in a code body"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Coerce a JSON value for a named column of `table`, validating it against the
 /// field's type and attributes, and rejecting unknown columns.
 ///
@@ -1269,7 +1337,7 @@ pub fn row_key(
 }
 
 /// `pk = <id>`, coercing the path-parameter string to the key column's type.
-pub(crate) fn pk_filter(table: &Table, pk: &str, id: &str) -> Result<Expr> {
+pub fn pk_filter(table: &Table, pk: &str, id: &str) -> Result<Expr> {
     let value = column_value(table, pk, &Json::String(id.to_owned()))?;
     Ok(Expr::col(pk).eq(Expr::lit(value)))
 }

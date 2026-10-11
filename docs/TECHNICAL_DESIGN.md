@@ -139,7 +139,8 @@ feldspar/
 │  │                              #    streams (sc-expr's `LiveHost`), watches the tables a row
 │  │                              #    topic's read rule reads and hands committed writes to
 │  │                              #    `table_changes` streams (sc-catalog's `TableEvents`),
-│  │                              #    deciding per element and per subscriber what each is sent.
+│  │                              #    deciding per element and per subscriber what each is sent,
+│  │                              #    and the collaborative documents' rooms (`yrs`, Yjs's CRDT).
 │  │                              #    Above sc-stream, sc-auth and sc-api (whose row layer is the
 │  │                              #    projection, the filter vocabulary and the read rule a
 │  │                              #    change is decided by); below sc-server, which mounts
@@ -1957,7 +1958,9 @@ means something for one provider is a cost paid by everybody.
   host surfaces: `db`, the tables (below), `fetch`, an HTTP request (below), `fs`, the file
   stores (below), `trigger`, this server's other triggers (below), `modfn`, an installed
   module's functions (§15.1), and `live`, whose `live.publish(stream, topic, value)` puts an
-  element on an internal stream (§14.10) — synchronously, on a budget of its own. Those six are
+  element on an internal stream (§14.10) — synchronously, on a budget of its own — and whose
+  `live.document(stream, key)` reads and edits a collaborative document (`await doc.text()`,
+  `.append`, `.insert`, `.delete`, `.edit`; §14.10, "Collaborative documents"). Those six are
   exactly the surface: no subprocess, no timers, no schema changes, no path to a file that is not
   a store an admin connected, and no way to fire an event except by being one more caller of the
   dispatcher every event already goes through. Beside them a body is handed Saltcorn 1's `Table`
@@ -9655,8 +9658,12 @@ generated client types `subscribe({ where }, handlers)` with the table's row and
 a page publishes on an `internal` stream whose settings allow it — on a `row` topic only with
 update access to the row — with `source` stamped by the server, and a stream with `presence` keeps
 each topic's members and their state, rate-limited and coalesced, shown to the members and on the
-admin's Observe screen; the client has `join`, `publish`, `usePresence` and `usePublish`. The
-`document` provider and the bus are the later milestones.
+admin's Observe screen; the client has `join`, `publish`, `usePresence` and `usePublish`. **L5 is
+built**: a `collab_doc` field holds a collaborative document that no API reads or writes; the
+`document` provider opens one row's document in a room on the server, merging Yjs updates with
+`yrs`, relaying them to the other members, persisting debounced and on close, and re-checking
+edit and read rights; a code body reads and edits a document with `live.document`; and the
+client opens one as a `Y.Doc` from its own generated file, `live-doc.ts`. The bus is L6.
 
 #### Everything is a stream, and a stream has topics
 
@@ -9699,11 +9706,12 @@ client → server   subscribe {sub, stream, topic?, filter?, echo?} · unsubscri
 server → client   ready {sub, stream, element_type, replayed, can_publish, status, counters}
                   element {sub, envelope} · lagged {sub, dropped} · status {sub, status, counters}
                   presence {sub, connection, members} · presence_diff {sub, joined?, left?, updated?}
+                  doc_sync {sub, update, read_only} · doc_update {sub, update}
                   revoked {sub} · error {sub?, code, message} · pong
 ```
 
-`doc_update` is part of the protocol now, so a client is written against one contract, and is
-refused as `invalid` until L5. A frame the server does not understand — malformed, an unknown `type`, a
+`doc_sync` and `doc_update` carry a document's Yjs updates in base64 (L5, "Collaborative
+documents" below); a `doc_update` on a subscription that is not a document's is `invalid`. A frame the server does not understand — malformed, an unknown `type`, a
 field of the wrong shape — is an `error` with `code: "invalid"` and the frame's `sub`, never a
 closed connection: one bad frame must not take every other subscription down with it, and a
 client a version ahead must still be able to use the server.
@@ -9913,7 +9921,7 @@ became, and nobody learns anything about a row they could never read.
 - **Projected**: the row sent is `sc_api::api_row`, the REST read's projection (the table's own
   columns that `visible_field` lets through, absent ones left absent). Hidden columns are stated
   once, in `sc_auth::is_api_hidden_column`, which the row layer and the provider's typing both
-  read. `collab_doc` fields join that rule in L5.1.
+  read, and every `collab_doc` field beside it (L5.1).
 
 **Counters (L3.9).** Per `table_changes` stream the hub keeps what its fan-outs decided since the
 server started — `checked` (element × subscription pairs), `delivered`, `suppressed_access` (an
@@ -10141,6 +10149,150 @@ the reducer and `LiveRows` against a fake table in `ui/admin/src/liveRows.test.t
 server); the generated client run under Node (`sc-api` `live_connection`: the filter frame,
 resent after a reconnect); the types under `tsc` (`typescript_typecheck`, and a component using
 `useLiveRows` against the scaffold's generated runtime).
+
+#### Collaborative documents (L5)
+
+The case this exists for is text edited by several people at once, where an edit's position moves
+under concurrent edits — so a document is a **CRDT**, Yjs's, merged on the server by `yrs` (its
+Rust port, whose binary update format is Yjs's own). The browser keeps the standard `yjs` package
+and every editor binding built on it (TipTap/ProseMirror, CodeMirror, Monaco). Shapes on a canvas,
+cards and other objects are rows (`table_changes` + presence), and an operation log is append-only
+rows; neither needs a document.
+
+**The `collab_doc` type (L5.1)** is a rich type in `sc-types` (`CollabDocType`, on `bytea`, a
+`BLOB` on SQLite), and a promise about who writes the value that the rest of the system keeps:
+
+- **Never read through an API.** `sc_api::user_rows::is_hidden_column` — the one rule a REST
+  read, a `select`, a filter, an ordering, GraphQL's derived fields, `api_row` and the generated
+  `ResourceModel` all consult — answers true for it, and a table holding one is projected column
+  by column (as `users` is), so the column is **absent** from a row, not `null`. The generated
+  row types omit it, and so does a `table_changes` element type.
+- **Never written through an API.** `rows::create_row_in` and `update_row_guarded_in` refuse a
+  body that names one, with a sentence saying why (a whole value would overwrite concurrent
+  edits) — REST, GraphQL, the admin's row editor, a code body's `db` and the actions alike;
+  `insert_row`/`update_rows` refuse one already when their configuration is saved
+  (`writable_field`), and a code body's plan refuses one before it reaches the row layer. The
+  admin UI's grid and row form treat it as read-only. The only writer is
+  `rows::write_document_in`, the persister's system write.
+- **Never named by a filter, an ordering or a formula.** `filter::queryable_field` refuses it,
+  and `schema_shape_of_tables` leaves it out of every table's shape, so a formula — a calculated
+  field, an ownership rule — naming it is an unknown field.
+
+**The CRDT (`sc-live::doc`, L5.2).** `CollabDoc` is one document: `load` (an empty document for a
+null field), `apply` (an untrusted update, decoded behind `catch_unwind`, so a malformed one is an
+error for its sender and never a panic in the room everyone shares), `state`, `diff`, `text`,
+`json`, `edit_text`, `append_paragraph`, and the free `merge_states`. The root is named and typed
+(`DocShape`): `yrs` must be told whether the shared type under `root` is a `Y.Text` or a
+`Y.XmlFragment`, because the update format does not say. Positions count UTF-16 code units, as
+JavaScript's do. Text walked out of an `xml` root is a line per block, marks left out; `json` is
+`JSON.stringify(root.toJSON())` as Yjs computes it (a string for `text`, the XML serialisation for
+`xml`). `tests/doc_format.rs` replays updates recorded from the JS `yjs` package
+(`tests/fixtures/record_yjs_updates.js`) through `yrs` for both root kinds and gets the same text
+and the same JSON — the format compatibility everything else relies on.
+
+**The `document` provider (`sc-stream::providers::document`, L5.3)**: `table`, `field` (must be
+`collab_doc`, checked on save by `validate_in`), `root` (default `default`, TipTap's), `root_kind`
+(`text` | `xml`), an optional `text_mirror` (a stored text column) and `mirror_format` (`text` |
+`json`). Its topics are `Row { table }`, so subscribing is the row topic's read check and every
+L2.6 re-check applies; it replays nothing and accepts no publish. **The stream itself carries
+nothing**: a document's edits go from the room to its members directly, as presence does, never
+through the ring and broadcast — a dropped edit would leave a member diverged until it re-synced,
+and a ring of raw edits handed to the next subscriber is not a document. The element type
+(`{update}`) is declared so a client has a type to name. An application exposing a `document`
+stream must include its table (`save_application`; the socket refuses it as absent).
+
+**Rooms (`sc-live::docroom`, L5.2–L5.4).** `LiveHub::docs()` is a `DocRooms`: one `DocRoom` per
+open `(stream id, row key)`, loaded from the row by its first member (`rows::read_field`), holding
+the `CollabDoc` behind a lock, its members' inboxes, and two counters (edits applied, edits
+persisted). A member is a `DocSeat`, held by the subscription's `Extras`; dropping it leaves, and
+the last to leave **closes** the room, persisting first — the room stays registered while it
+closes, so a page that joins meanwhile joins it rather than loading a stale copy. An edit is
+applied, then handed to every **other** member's `DocInbox` (a list behind a lock and a bell, as
+presence's; past `DOC_INBOX_CAP` a seat's queued edits are replaced by a resync, sent as a whole
+`doc_sync`), then a persist is scheduled `doc_persist_debounce` (2 s) later unless one is waiting.
+
+**Persisting** is one persist per room at a time, in **one transaction**: the stored value is
+read with `SELECT … FOR UPDATE` (`sc_query::Select::lock`, rendered by a dialect with row locks —
+`SqlDialect::row_lock`; SQLite renders nothing, its `BEGIN IMMEDIATE` holds the database), applied
+into the room — whatever another process persisted meanwhile is merged, and relayed to this
+room's members — and the merged state and the mirror are written by `rows::write_document_in`
+through the row layer as a system write, so update triggers and `table_changes` streams see an
+ordinary update (whose row never carries the document's bytes). A persist with no edit since the
+last one writes nothing, so a room closing after its last persist is free. **An update trigger on
+the table therefore fires about every 2 s while someone types** — documented, not suppressed.
+
+**The socket (`sc-server::live`, L5.3).** After `ready` (and the member list — presence is always
+on for a document, with no user fields shown), a subscription to a `document` stream joins the
+room (`Connection::join_doc`) and is sent `doc_sync {update, read_only}` — the whole document, with
+`read_only` unless `row_updatable_as` says the caller may update the row. A `doc_update` is
+refused `unavailable` (worded like any absence) from a read-only member, counted against
+`publishes_per_second` (`rate_limited`), decoded (`invalid`), size-checked and applied. The
+connection's `DocInbox` is one more `select!` arm, turned into `doc_update` frames, or `doc_sync`
+for a resync. Re-checks: `refresh_rights` decides the update right again whenever access is
+re-checked (a touched row or rule table, the clock), and a changed right sends `doc_sync` again
+with the new `read_only`; a lost read right is `revoked` and the seat goes with the subscription.
+A restart that keeps the room sends `doc_sync` again after the fresh `ready`. The admin's Observe
+screen lists a document's editors as presence.
+
+**Limits** come from one setting: `max_doc_bytes` (2 MB) is the largest document — an edit that
+would pass it is refused `too_large` with a sentence and not applied (the room keeps an upper bound
+of its size and encodes the document to measure only when that bound says it might be too big);
+the largest `doc_sync` follows (`max_doc_sync_bytes`, base64's 4/3 plus a margin). A client
+`doc_update` frame has its own cap, `max_doc_update_bytes` (1 MB), because pasting a long passage
+is ordinary editing; every other client frame keeps 64 KB, and the transport takes twice the
+`doc_update` cap so a frame past it is answered rather than hung up on.
+
+**Server-side writes (L5.5).** `sc_expr::LiveHost` gained `async fn document(stream, key,
+DocRequest) -> text`, defaulted to a refusal: `Read`, `Edit {index, delete, insert}` (a `text`
+root) and `Append {text}` (a paragraph on an `xml` root, text at the end of a `text` one).
+`LiveHub::document` opens the room — the editors' own, when it is open, so they see the edit at
+once — makes the edit through the seat, **persists before answering** and answers the text; the
+hub reaches the catalog through a weak handle the router sets (`LiveHub::set_catalog`). JavaScript
+bodies call it through the asynchronous op `op_sc_live_doc` (`live.document(stream, key)` →
+`text()`, `append()`, `insert()`, `delete()`, `edit()`, each a not-awaited-guarded promise); an
+edit counts against the run's publish budget and clears its retry, a read is free. Python bodies
+call the same host over the `Live` surface (`live.document(...)` → a `Document`, synchronous for
+the guest), reading the request with the same `sc_expr::document_request`. Trusted, like a
+publish: no caller's role is consulted.
+
+**The client (L5.6).** `StreamTopics::Document {root, root_kind}` types a document stream's
+accessor as `LiveDocumentStream<"xml" | "text">` (`connection.documentStream(name, root, kind)`),
+whose `connect(key, handlers)` is a subscription carrying base64 `sync`/`update` and the member
+list, and returns `send`, `setState` and `readOnly`. The helper imports nothing; `yjs` lives in
+`src/feldspar/live-doc.ts`, emitted (and regenerated) only for an application that exposes a
+document stream: `openDocument(stream, key)` → `{doc, awareness, field, root, readOnly, status,
+error, onChange, close}`, `docs.<stream>.open(key)`, and React's `useDocument(docs.<stream>, key)`.
+It applies `doc_sync` and answers it with what the server lacks
+(`encodeStateAsUpdate(doc, encodeStateVectorFromUpdate(sync))`), so edits made while disconnected
+arrive; sends local edits while synced and allowed; reports `reconnecting` as soon as the socket
+drops; and carries the awareness as the page's presence state — `encodeAwarenessUpdate` in
+base64, applied with `applyAwarenessUpdate`, dropped with `removeAwarenessStates` when a member
+leaves — so the server never looks inside it. **Deviation:** the plan's `live.<doc>.open(key)` is
+`docs.<doc>.open(key)`, because `live` is the generated client's own object and the client may not
+import `yjs`. `yjs` (`^13`) and `y-protocols` are always in the scaffold's write-once
+`package.json`. `live-doc.ts` is emitted for the React scaffold; a module's framework gets the
+helper's transport. The scaffold's `AGENTS.md` (L5.7) has the TipTap and CodeMirror examples,
+`React.lazy` for the editor page, and the 2-second update trigger.
+
+**Tests.** `sc-types`: the type validates bytes. `sc-api` `tests/collab_doc.rs` (SQLite): absent
+from every read and the generated row type, refused by every write path with its sentence,
+written by the persister, refused by a filter and by a formula. `sc-core-actions`: an action's
+configuration may not name one. `sc-query`/`sc-db-sqlite`: `FOR UPDATE` rendered, or not.
+`sc-live`: the CRDT units; `doc_format.rs` (the JS fixture); `documents.rs` (SQLite) — relay to
+the others and not back, close with the last member, two rooms (two processes) persisting
+interleaved edits lose neither for both roots and both mirror formats, the persist an ordinary
+update without the bytes, a close with nothing new writes nothing, `too_large`, a document over
+1 MB opens, and `live.document` read/edit/append on both roots reaching an open room.
+`sc-expr`/`sc-python`: the JS and Python surfaces against a fake host. `sc-app`: `live-doc.ts`
+emitted only with a document stream, `package.json`, `AGENTS.md`; `tests/live_doc.rs` runs it under
+Node with the real `yjs` against a fake socket (sync, a local edit out once, a remote one in and
+not echoed, awareness both ways and a leave, **an offline edit arriving after the reconnect**,
+read-only sending nothing) and type-checks `useDocument` for both kinds. `sc-server`
+`app_live_documents.rs` (SQLite, real sockets): owner, editor, reader and stranger; the reader's
+edit refused and heard by nobody; losing and regaining the edit right, then the read right; a
+1.2 MB document and a 100 KB paste; persisted and read back over REST. `tutorial_live_documents.rs`
+walks part 5 of `docs/tutorial-live.md`, ending with two headless Chromium contexts typing into one
+note through the scaffold's own generated runtime.
 
 #### Admin
 

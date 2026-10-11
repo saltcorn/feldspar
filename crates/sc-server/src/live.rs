@@ -92,19 +92,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use sc_auth::{SessionStore, User};
 use sc_catalog::{Catalog, TableId};
 use sc_live::{
     Attached, Caller, ChangeAccess, ClientFrame, CloseReason, Connection, ConnectionInfo, Delivery,
-    ErrorCode, FrameError, LikeRules, LiveHub, LiveLimits, PresenceEvent, PublishFacts, RateLimit,
-    Refusal, RoomKey, RowFact, RowFilter, Seat, ServerFrame, StoredStream, StreamFacts,
-    Subscription, SubscriptionSet, Touch, Watch, may_open, may_publish, may_subscribe,
-    read_rule_tables,
+    DocNews, DocRefusal, DocSeat, DocTarget, ErrorCode, FrameError, LikeRules, LiveHub, LiveLimits,
+    PresenceEvent, PublishFacts, RateLimit, Refusal, RoomKey, RowFact, RowFilter, Seat,
+    ServerFrame, StoredStream, StreamFacts, Subscription, SubscriptionSet, Touch, Watch, may_open,
+    may_publish, may_subscribe, read_rule_tables,
 };
 use sc_stream::providers::internal;
-use sc_stream::{RunningStream, Stream, StreamSupervisor, TopicSpec};
+use sc_stream::{DOCUMENT, RunningStream, Stream, StreamSupervisor, TopicSpec};
 use serde_json::{Value as Json, json};
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 
@@ -216,6 +218,7 @@ enum Event {
     Ping,
     Presence,
     PresenceFlush,
+    Docs,
 }
 
 type Sender = SplitSink<WebSocket, Message>;
@@ -269,6 +272,7 @@ async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
             () = live.connection.lagged() => Event::Lagged,
             () = live.connection.touched() => Event::Touched,
             () = live.connection.presence_changed() => Event::Presence,
+            () = live.connection.doc_inbox().rung() => Event::Docs,
             () = sleep_until(flush_at) => Event::PresenceFlush,
             _ = recheck.tick() => Event::Recheck,
             _ = status.tick() => Event::Status,
@@ -290,6 +294,7 @@ async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
             },
             Event::Status => live.status_pass().await,
             Event::Presence => live.presence_news(),
+            Event::Docs => live.doc_news(),
             Event::PresenceFlush => {
                 live.flush_presence();
                 Vec::new()
@@ -361,6 +366,11 @@ struct Extras {
     seat: Option<Seat>,
     /// A state update held until the presence window ends.
     pending_state: Option<Json>,
+    /// Its seat in the document's room, on a `document` stream (L5).
+    doc: Option<DocSeat>,
+    /// Whether the page may edit that document, as last decided — `doc_sync`'s
+    /// `read_only` is its negation.
+    can_edit: bool,
 }
 
 /// A `row` subscription's access, as far as writes can change it.
@@ -398,13 +408,27 @@ impl Live {
         match message {
             Message::Text(text) => {
                 if text.len() > self.limits.max_frame_bytes {
+                    // A `doc_update` has its own, larger cap (pasting a long
+                    // passage is ordinary editing); every other frame keeps
+                    // the small one.
+                    if text.len() <= self.limits.max_doc_update_bytes
+                        && let Ok(frame @ ClientFrame::DocUpdate { .. }) =
+                            ClientFrame::parse(text.as_str())
+                    {
+                        return self.frame(frame).await;
+                    }
+                    let cap = if text.contains("\"doc_update\"") {
+                        self.limits.max_doc_update_bytes
+                    } else {
+                        self.limits.max_frame_bytes
+                    };
                     return vec![
                         FrameError::new(
                             None,
                             ErrorCode::TooLarge,
                             format!(
-                                "a frame may be at most {} bytes and this one was {}; it was not read",
-                                self.limits.max_frame_bytes,
+                                "a frame may be at most {cap} bytes and this one was {}; it was not \
+                                 read",
                                 text.len()
                             ),
                         )
@@ -445,16 +469,7 @@ impl Live {
             },
             ClientFrame::Publish { sub, value } => self.publish(sub, value),
             ClientFrame::Presence { sub, state } => self.set_presence(sub, state),
-            ClientFrame::DocUpdate { sub, .. } => match self.subs.get(&sub) {
-                Some(found) => vec![
-                    FrameError::invalid(
-                        Some(sub.clone()),
-                        format!("`{}` is not a document", found.stream),
-                    )
-                    .frame(),
-                ],
-                None => vec![not_subscribed(sub)],
-            },
+            ClientFrame::DocUpdate { sub, update } => self.doc_update(sub, &update),
             ClientFrame::Ping => vec![ServerFrame::Pong],
         }
     }
@@ -542,6 +557,7 @@ impl Live {
                 },
             );
             frames.extend(self.seat(&sub).await);
+            frames.extend(self.join_doc(&sub).await);
         }
         frames
     }
@@ -611,7 +627,12 @@ impl Live {
 
     /// Decide again whether each of `names` may be published on — after
     /// access was re-checked, which is when an update right can change too.
-    async fn refresh_rights(&mut self, names: &[String]) {
+    ///
+    /// A document member whose update right changed is sent the document
+    /// again with the new `read_only` (L5.3): a reader who becomes an editor
+    /// may type, and an editor who loses the right stops.
+    async fn refresh_rights(&mut self, names: &[String]) -> Vec<ServerFrame> {
+        let mut frames = Vec::new();
         for name in names {
             let Some((stream, topic)) = self
                 .subs
@@ -624,7 +645,193 @@ impl Live {
             if let Some(extras) = self.extras.get_mut(name) {
                 extras.can_publish = can_publish;
             }
+            let doc_table = self
+                .extras
+                .get(name)
+                .and_then(|extras| extras.doc.as_ref())
+                .map(|seat| seat.room().target().table.clone());
+            if let (Some(table), Some(key)) = (doc_table, topic) {
+                let can_edit = self.row_updatable(&table, &key).await;
+                let Some(extras) = self.extras.get_mut(name) else {
+                    continue;
+                };
+                if extras.can_edit != can_edit {
+                    extras.can_edit = can_edit;
+                    if let Some(seat) = &extras.doc {
+                        frames.push(doc_sync(name, seat, can_edit));
+                    }
+                }
+            }
         }
+        frames
+    }
+
+    /// Give `sub` its seat in its document's room if it is attached to a
+    /// `document` stream, and send it the document (L5.3): `doc_sync`, with
+    /// `read_only` unless the caller may update the row. On a restart that
+    /// kept the room, the page has had a fresh `ready` and is sent the
+    /// document again.
+    async fn join_doc(&mut self, sub: &str) -> Vec<ServerFrame> {
+        let Some(subscription) = self.subs.get(sub) else {
+            return Vec::new();
+        };
+        let target = subscription.attached().and_then(|attached| {
+            let running = attached.running();
+            (running.provider_name() == DOCUMENT)
+                .then(|| {
+                    subscription
+                        .topic
+                        .as_deref()
+                        .map(|key| DocTarget::of(running, key))
+                })
+                .flatten()
+        });
+        let target = match target {
+            None => {
+                if let Some(extras) = self.extras.get_mut(sub) {
+                    extras.doc = None;
+                }
+                return Vec::new();
+            }
+            Some(Err(e)) => {
+                return vec![
+                    FrameError::invalid(Some(sub.to_owned()), sc_error::format_chain(&e)).frame(),
+                ];
+            }
+            Some(Ok(target)) => target,
+        };
+        let can_edit = self.row_updatable(&target.table, &target.key).await;
+        let same_room = self
+            .extras
+            .get(sub)
+            .and_then(|extras| extras.doc.as_ref())
+            .is_some_and(|seat| *seat.room().target() == target);
+        if !same_room {
+            // Leave the old room (if any) before joining the new one.
+            if let Some(extras) = self.extras.get_mut(sub) {
+                extras.doc = None;
+            }
+            match self.connection.join_doc(&self.env.catalog, &target).await {
+                Ok((seat, _)) => {
+                    if let Some(extras) = self.extras.get_mut(sub) {
+                        extras.doc = Some(seat);
+                    }
+                }
+                Err(e) => {
+                    sc_log::log_warn!(
+                        "the live socket could not open document `{}` of `{}`: {}",
+                        target.key,
+                        target.stream_name,
+                        sc_error::format_chain(&e)
+                    );
+                    return vec![
+                        FrameError::new(
+                            Some(sub.to_owned()),
+                            ErrorCode::Unavailable,
+                            format!("the document could not be opened: {}", e),
+                        )
+                        .frame(),
+                    ];
+                }
+            }
+        }
+        let Some(extras) = self.extras.get_mut(sub) else {
+            return Vec::new();
+        };
+        extras.can_edit = can_edit;
+        match &extras.doc {
+            Some(seat) => vec![doc_sync(sub, seat, can_edit)],
+            None => Vec::new(),
+        }
+    }
+
+    /// A page's `doc_update` frame: an edit of the document its subscription
+    /// is on (L5.3). Refused `unavailable` for a member who may not edit —
+    /// worded like any absence — and counted against the publish rate.
+    fn doc_update(&mut self, sub: String, update: &str) -> Vec<ServerFrame> {
+        let Some(found) = self.subs.get(&sub) else {
+            return vec![not_subscribed(sub)];
+        };
+        let Some(extras) = self.extras.get(&sub) else {
+            return vec![not_subscribed(sub)];
+        };
+        let Some(seat) = &extras.doc else {
+            return vec![
+                FrameError::invalid(
+                    Some(sub.clone()),
+                    format!("`{}` is not a document", found.stream),
+                )
+                .frame(),
+            ];
+        };
+        if !extras.can_edit {
+            return vec![
+                FrameError::new(
+                    Some(sub.clone()),
+                    ErrorCode::Unavailable,
+                    format!("there is nothing on `{}` you can edit", found.stream),
+                )
+                .frame(),
+            ];
+        }
+        if !self.publish_rate.take(std::time::Instant::now()) {
+            return vec![
+                FrameError::new(
+                    Some(sub),
+                    ErrorCode::RateLimited,
+                    format!(
+                        "this connection may send at most {} edits and publishes a second; this \
+                         edit was not applied — send it again",
+                        self.limits.publishes_per_second
+                    ),
+                )
+                .frame(),
+            ];
+        }
+        let Ok(bytes) = BASE64.decode(update) else {
+            return vec![FrameError::invalid(Some(sub), "`update` is not base64").frame()];
+        };
+        match seat.apply(&bytes) {
+            Ok(()) => Vec::new(),
+            Err(DocRefusal::TooLarge(why)) => {
+                vec![FrameError::new(Some(sub), ErrorCode::TooLarge, why).frame()]
+            }
+            Err(DocRefusal::Invalid(why)) => vec![FrameError::invalid(Some(sub), why).frame()],
+        }
+    }
+
+    /// Other members edited documents this connection has open: send each
+    /// edit as `doc_update`, or the whole document where edits were dropped.
+    fn doc_news(&mut self) -> Vec<ServerFrame> {
+        let news = self.connection.doc_inbox().take();
+        if news.is_empty() {
+            return Vec::new();
+        }
+        let by_seat: HashMap<u64, String> = self
+            .extras
+            .iter()
+            .filter_map(|(sub, extras)| extras.doc.as_ref().map(|seat| (seat.id(), sub.clone())))
+            .collect();
+        let mut frames = Vec::new();
+        for (seat_id, item) in news {
+            let Some(sub) = by_seat.get(&seat_id) else {
+                continue;
+            };
+            match item {
+                DocNews::Update(update) => frames.push(ServerFrame::DocUpdate {
+                    sub: sub.clone(),
+                    update: BASE64.encode(update.as_slice()),
+                }),
+                DocNews::Resync => {
+                    if let Some(extras) = self.extras.get(sub)
+                        && let Some(seat) = &extras.doc
+                    {
+                        frames.push(doc_sync(sub, seat, extras.can_edit));
+                    }
+                }
+            }
+        }
+        frames
     }
 
     /// Give `sub` its seat in its topic's room if its stream has presence on
@@ -637,7 +844,10 @@ impl Live {
             let running = attached.running();
             let config = running.configuration();
             let accepts = running.provider().is_some_and(|p| p.accepts_publish());
-            (accepts && internal::presence(&config)).then(|| {
+            // A document's members always see each other: their presence
+            // state is their editor's awareness (L5.6).
+            let document = running.provider_name() == DOCUMENT;
+            ((accepts && internal::presence(&config)) || document).then(|| {
                 (
                     (running.id(), subscription.topic.clone()),
                     internal::presence_fields(&config).unwrap_or_default(),
@@ -1126,6 +1336,7 @@ impl Live {
         }
         for name in followed {
             frames.extend(self.seat(&name).await);
+            frames.extend(self.join_doc(&name).await);
         }
         frames
     }
@@ -1167,9 +1378,9 @@ impl Live {
             });
         };
         let names = self.subs.names();
-        let frames = self.recheck_subs(&app, names).await;
+        let mut frames = self.recheck_subs(&app, names).await;
         let kept = self.subs.names();
-        self.refresh_rights(&kept).await;
+        frames.extend(self.refresh_rights(&kept).await);
         Ok(frames)
     }
 
@@ -1193,10 +1404,14 @@ impl Live {
         let Some(app) = self.env.app.current() else {
             return Vec::new();
         };
-        let frames = self.recheck_subs(&app, affected.clone()).await;
+        let mut frames = self.recheck_subs(&app, affected.clone()).await;
         // A write that could change who may read a row could change who may
         // update it.
-        self.refresh_rights(&affected).await;
+        let kept: Vec<String> = affected
+            .into_iter()
+            .filter(|name| self.subs.get(name).is_some())
+            .collect();
+        frames.extend(self.refresh_rights(&kept).await);
         frames
     }
 
@@ -1293,6 +1508,18 @@ async fn start(
         &running,
     )
     .await
+}
+
+/// The whole document `seat` is in, as `doc_sync` for `sub`.
+fn doc_sync(sub: &str, seat: &DocSeat, can_edit: bool) -> ServerFrame {
+    match seat.state() {
+        Ok(state) => ServerFrame::DocSync {
+            sub: sub.to_owned(),
+            update: BASE64.encode(state),
+            read_only: !can_edit,
+        },
+        Err(e) => FrameError::invalid(Some(sub.to_owned()), sc_error::format_chain(&e)).frame(),
+    }
 }
 
 /// What a subscription is attached with besides its stream and topic.

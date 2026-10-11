@@ -451,6 +451,12 @@ pub fn queryable_field<'a>(
              but cannot be filtered, ordered on or written"
         )));
     }
+    if field.is_collab_doc() {
+        return Err(Error::invalid(format!(
+            "`{what}`: `{name}` is a collaborative document; it cannot be filtered or \
+             ordered on (filter on its text mirror instead, if its stream keeps one)"
+        )));
+    }
     Ok(field)
 }
 
