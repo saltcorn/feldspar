@@ -18,6 +18,7 @@
 // that the new host turns into a session.
 
 import type { GetAdminAddressResponse } from "./client";
+import { format, type Translator } from "./i18n";
 
 /** The setting the dialog watches. */
 export const ADMIN_SUBDOMAIN = "admin_subdomain";
@@ -43,9 +44,9 @@ export function originOf(host: string, here: Here): string {
   return `${here.protocol}//${host}${portOf(here)}`;
 }
 
-/** One line of the dialog's progress. `label` is a message to translate, with
- * `{host}` standing for the new host; `detail` is the server's own sentence (the
- * CA's error, say) or a hint, shown under it. */
+/** One line of the dialog's progress. `label` is translated, the new host
+ * filled in; `detail` is the server's own sentence (the CA's error, say) or a
+ * hint, shown under it. */
 export type MoveStep = {
   id: "moved" | "certificate" | "reachable";
   label: string;
@@ -59,31 +60,37 @@ export type MoveStep = {
 export function moveSteps(
   address: GetAdminAddressResponse | null,
   reachable: boolean | null,
+  t: Translator["t"] = format,
 ): MoveStep[] {
+  const host = address?.admin_host ?? t("the new address");
   const certificate = address?.certificate ?? null;
   const certStep = ((): MoveStep => {
-    if (!address) return { id: "certificate", label: "Certificate", state: "pending" };
+    if (!address) return { id: "certificate", label: t("Certificate"), state: "pending" };
     switch (certificate?.state) {
       case undefined:
       case "plain_http":
         return {
           id: "certificate",
-          label: "No certificate needed: this server serves plain HTTP",
+          label: t("No certificate needed: this server serves plain HTTP"),
           state: "done",
         };
       case "ready":
-        return { id: "certificate", label: "Certificate for {host} is ready", state: "done" };
+        return {
+          id: "certificate",
+          label: t("Certificate for {host} is ready", { host }),
+          state: "done",
+        };
       case "ordering":
         return {
           id: "certificate",
-          label: "Obtaining a certificate for {host}…",
+          label: t("Obtaining a certificate for {host}…", { host }),
           state: "active",
           detail: certificate.message ?? undefined,
         };
       default:
         return {
           id: "certificate",
-          label: "No certificate covers {host}",
+          label: t("No certificate covers {host}", { host }),
           state: "failed",
           detail: certificate?.message ?? undefined,
         };
@@ -91,22 +98,32 @@ export function moveSteps(
   })();
   const reachStep: MoveStep =
     certStep.state !== "done"
-      ? { id: "reachable", label: "{host} answers this browser", state: "pending" }
+      ? {
+          id: "reachable",
+          label: t("{host} answers this browser", { host }),
+          state: "pending",
+        }
       : reachable
-        ? { id: "reachable", label: "{host} answers this browser", state: "done" }
+        ? {
+            id: "reachable",
+            label: t("{host} answers this browser", { host }),
+            state: "done",
+          }
         : {
             id: "reachable",
-            label: "Waiting for {host} to answer this browser…",
+            label: t("Waiting for {host} to answer this browser…", { host }),
             state: "active",
             detail:
               reachable === false
-                ? "Not yet. Check that DNS points the name at this server; this keeps trying."
+                ? t("Not yet. Check that DNS points the name at this server; this keeps trying.")
                 : undefined,
           };
   return [
     {
       id: "moved",
-      label: address ? "The admin UI is now served at {host}" : "Moving the admin UI…",
+      label: address
+        ? t("The admin UI is now served at {host}", { host })
+        : t("Moving the admin UI…"),
       state: address ? "done" : "active",
     },
     certStep,

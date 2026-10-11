@@ -30,6 +30,7 @@ import Spinner from "react-bootstrap/Spinner";
 import { api, errorMessage } from "../api";
 import type { ListDatasetsResponse } from "../client";
 import { T, useT } from "../i18n";
+import { mapToolText } from "../labels";
 import { mapPanel } from "../panels/panel";
 import { DragHandle } from "../panels/PanelView";
 import { useAnnounce, useChanges, usePane } from "../panes";
@@ -300,7 +301,7 @@ export function MapWorkspace({ state: raw, setState, name }: WorkspaceProps) {
     const dataset = made.dataset as { id: string; name: string };
     changed("dataset", dataset.id);
     update((s) => addLayer(s, made.layer as MapLayer, dataset.name));
-    setNotice({ text: t("{tool} made the dataset {name}.", { tool: t(tool.label), name: dataset.name }), dataset: dataset.id });
+    setNotice({ text: t("{tool} made the dataset {name}.", { tool: mapToolText(tool.label, t), name: dataset.name }), dataset: dataset.id });
     setVersion((v) => v + 1);
   };
 

@@ -1286,6 +1286,44 @@ pub async fn run_tool(
 mod tests {
     use super::*;
 
+    /// The Analytics UI translates a tool's text by matching the English the
+    /// server sends (`mapToolText` in `ui/analytics/src/labels.ts`), since a
+    /// message id has to be written at its call site. So a built-in tool, a
+    /// field or a choice added or reworded here without a case there would
+    /// silently stay English in every locale.
+    #[test]
+    fn every_built_in_tool_text_is_translated_by_the_analytics_ui() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../ui/analytics/src/labels.ts"
+        );
+        let labels = std::fs::read_to_string(path).expect("ui/analytics/src/labels.ts");
+        let mut missing = Vec::new();
+        for tool in builtin_tools().iter().map(|t| t.descriptor()) {
+            let mut texts = vec![tool.group, tool.label, tool.description];
+            for param in tool.params {
+                texts.push(param.label);
+                if let ParamKind::Choice { options } = param.kind {
+                    texts.extend(options.into_iter().map(|o| o.label));
+                }
+            }
+            for text in texts {
+                let quoted = serde_json::to_string(&text).unwrap_or_default();
+                if !labels.contains(&format!("case {quoted}:"))
+                    || !labels.contains(&format!("return t({quoted});"))
+                {
+                    missing.push(text);
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "add these to mapToolText in ui/analytics/src/labels.ts: {missing:#?}"
+        );
+    }
+
     #[test]
     fn the_toolbox_has_the_three_groups_and_unique_ids() {
         let tools = tool_descriptors();

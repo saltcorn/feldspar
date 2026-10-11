@@ -10,13 +10,7 @@ import Modal from "react-bootstrap/Modal";
 import Spinner from "react-bootstrap/Spinner";
 
 import { api } from "../api";
-import {
-  answers,
-  moveSteps,
-  originOf,
-  readyToFollow,
-  type MoveStep,
-} from "../adminAddress";
+import { answers, moveSteps, originOf, readyToFollow, type MoveStep } from "../adminAddress";
 import type { GetAdminAddressResponse } from "../client";
 import { IconAlertTriangle, IconCheck } from "../icons";
 import { AlertBody } from "../layout";
@@ -32,7 +26,7 @@ export function AdminMove({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [following, setFollowing] = useState(false);
 
-  const steps = moveSteps(address, reachable);
+  const steps = moveSteps(address, reachable, t);
   const ready = readyToFollow(steps);
   const host = address?.admin_host ?? null;
 
@@ -94,7 +88,9 @@ export function AdminMove({ onClose }: { onClose: () => void }) {
           {host ? (
             <T
               text="You will now be directed to {address}. It can be followed once it has a certificate and answers this browser; you stay signed in."
-              values={{ address: <strong>{originOf(host, window.location)}</strong> }}
+              values={{
+                address: <strong>{originOf(host, window.location)}</strong>,
+              }}
             />
           ) : (
             <T text="You will now be directed to the new address of the admin UI." />
@@ -102,7 +98,7 @@ export function AdminMove({ onClose }: { onClose: () => void }) {
         </p>
         <ul className="list-unstyled mb-0">
           {steps.map((step) => (
-            <Step key={step.id} step={step} host={host ?? t("the new address")} />
+            <Step key={step.id} step={step} />
           ))}
         </ul>
         {error && (
@@ -132,8 +128,7 @@ export function AdminMove({ onClose }: { onClose: () => void }) {
 }
 
 /** One line of progress: an icon for its state, its label, and any detail. */
-function Step({ step, host }: { step: MoveStep; host: string }) {
-  const { t } = useT();
+function Step({ step }: { step: MoveStep }) {
   const icon =
     step.state === "done" ? (
       <IconCheck className="text-success" />
@@ -150,7 +145,7 @@ function Step({ step, host }: { step: MoveStep; host: string }) {
     <li className={`d-flex gap-2 mb-2${step.state === "pending" ? " text-secondary" : ""}`}>
       <span className="flex-shrink-0">{icon}</span>
       <span>
-        {t(step.label, { host })}
+        {step.label}
         {step.detail && <div className="small text-secondary text-break">{step.detail}</div>}
       </span>
     </li>

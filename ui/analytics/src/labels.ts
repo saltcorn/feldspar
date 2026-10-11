@@ -410,3 +410,90 @@ export function effectName(kind: string, t: Translate): string {
       return kind;
   }
 }
+
+/** A map tool's text — its group, label, description, a field's label or a
+ * choice's — as `listMapTools` sends it, translated when it is a built-in's.
+ *
+ * Keyed by the English itself, because that is all the server sends; a
+ * module's tool has no entry and is shown as its module wrote it. The server's
+ * `sc-analytics` checks that every built-in's text has a case here. */
+export function mapToolText(text: string, t: Translate): string {
+  switch (text) {
+    // The groups.
+    case "Proximity":
+      return t("Proximity");
+    case "Overlay":
+      return t("Overlay");
+    case "Aggregate":
+      return t("Aggregate");
+    // The tools.
+    case "Buffer":
+      return t("Buffer");
+    case "The area within a distance of each feature.":
+      return t("The area within a distance of each feature.");
+    case "Distance to nearest":
+      return t("Distance to nearest");
+    case "Each feature's distance in metres to the nearest feature of another layer.":
+      return t("Each feature's distance in metres to the nearest feature of another layer.");
+    case "Within a distance":
+      return t("Within a distance");
+    case "The features within a distance of any feature of another layer.":
+      return t("The features within a distance of any feature of another layer.");
+    case "Spatial join":
+      return t("Spatial join");
+    case "Each feature with the columns of the features of another layer it meets.":
+      return t("Each feature with the columns of the features of another layer it meets.");
+    case "Intersection":
+      return t("Intersection");
+    case "The parts where the features of two layers overlap, with the columns of both.":
+      return t("The parts where the features of two layers overlap, with the columns of both.");
+    case "Count per region":
+      return t("Count per region");
+    case "Each region with the number of features in it.":
+      return t("Each region with the number of features in it.");
+    case "Sum per region":
+      return t("Sum per region");
+    case "Each region with the total of a column over the features in it.":
+      return t("Each region with the total of a column over the features in it.");
+    case "Dissolve":
+      return t("Dissolve");
+    case "The features with the same value of a column merged into one.":
+      return t("The features with the same value of a column merged into one.");
+    // Their fields.
+    case "Layer":
+      return t("Layer");
+    case "Distance":
+      return t("Distance");
+    case "Nearest of":
+      return t("Nearest of");
+    case "Of":
+      return t("Of");
+    case "With":
+      return t("With");
+    case "Where each feature":
+      return t("Where each feature");
+    case "Keep":
+      return t("Keep");
+    case "Features":
+      return t("Features");
+    case "Regions":
+      return t("Regions");
+    case "Sum of":
+      return t("Sum of");
+    case "By":
+      return t("By");
+    // Their choices.
+    case "intersects":
+      return t("intersects");
+    case "is within":
+      return t("is within");
+    case "contains":
+      return t("contains");
+    case "every feature":
+      return t("every feature");
+    case "only the features that meet one":
+      return t("only the features that meet one");
+    default:
+      return text;
+  }
+}

@@ -13,6 +13,7 @@ import Modal from "react-bootstrap/Modal";
 
 import { errorMessage } from "../api";
 import { T, useT } from "../i18n";
+import { mapToolText } from "../labels";
 import type { MapLayer } from "./spec";
 import {
   columnChoices,
@@ -46,10 +47,10 @@ export function ToolboxMenu({
         {groupTools(tools).map(([group, items], i) => (
           <div key={group}>
             {i > 0 && <Dropdown.Divider />}
-            <Dropdown.Header>{t(group)}</Dropdown.Header>
+            <Dropdown.Header>{mapToolText(group, t)}</Dropdown.Header>
             {items.map((tool) => (
-              <Dropdown.Item key={tool.id} onClick={() => onPick(tool)} title={tool.description}>
-                {t(tool.label)}
+              <Dropdown.Item key={tool.id} onClick={() => onPick(tool)} title={mapToolText(tool.description, t)}>
+                {mapToolText(tool.label, t)}
                 {tool.module && <span className="text-secondary small ms-1">({tool.module})</span>}
               </Dropdown.Item>
             ))}
@@ -101,10 +102,10 @@ export function ToolDialog({
   return (
     <Modal show onHide={onClose}>
       <Modal.Header closeButton>
-        <Modal.Title>{t(tool.label)}</Modal.Title>
+        <Modal.Title>{mapToolText(tool.label, t)}</Modal.Title>
       </Modal.Header>
       <Modal.Body>
-        {tool.description && <p className="small text-secondary">{t(tool.description)}</p>}
+        {tool.description && <p className="small text-secondary">{mapToolText(tool.description, t)}</p>}
         {toolParams(tool).map((p) => {
           const id = `tool-${tool.id}-${p.name}`;
           const value = answers[p.name] ?? "";
@@ -147,7 +148,7 @@ export function ToolDialog({
                 <Form.Select id={id} size="sm" value={value} onChange={(e) => set(p.name, e.target.value)}>
                   {(p.options ?? []).map((o) => (
                     <option key={o.value} value={o.value}>
-                      {t(o.label)}
+                      {mapToolText(o.label, t)}
                     </option>
                   ))}
                 </Form.Select>
@@ -161,7 +162,7 @@ export function ToolDialog({
           return (
             <Form.Group key={p.name} className="mb-2">
               <Form.Label htmlFor={id} className="small mb-1">
-                {t(p.label)}
+                {mapToolText(p.label, t)}
               </Form.Label>
               {control}
             </Form.Group>
@@ -195,7 +196,7 @@ export function ToolDialog({
         <Button
           variant="primary"
           disabled={running || missing !== null}
-          title={missing ? t("Fill in {field}", { field: t(missing) }) : undefined}
+          title={missing ? t("Fill in {field}", { field: mapToolText(missing, t) }) : undefined}
           onClick={() => void run()}
         >
           {running ? t("Running…") : t("Run")}

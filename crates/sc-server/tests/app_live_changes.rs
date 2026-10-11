@@ -157,6 +157,9 @@ struct Server {
     alice: Uuid,
     bob: Uuid,
     db: TestDb,
+    /// This server's providers. The process-wide registry `sc_app` falls back
+    /// to is whichever server in this binary installed one last.
+    registry: Arc<StreamRegistry>,
 }
 
 impl Server {
@@ -226,7 +229,13 @@ fn change_stream(name: &str, table: &str) -> Stream {
 }
 
 fn app() -> Application {
-    Application::new("Kanban", "kanban", FrameworkRef::new("code"))
+    // The framework's required settings, so that saving the app reaches the
+    // check on its change streams rather than stopping at its framework.
+    let framework = FrameworkRef::new("code")
+        .with("store", "apps")
+        .with("output", "dist")
+        .with("command", "true");
+    Application::new("Kanban", "kanban", framework)
         .with_api(ApiConfig::new("rest", "/api"))
         .with_table(TableId("boards".to_owned()))
         .with_table(TableId("cards".to_owned()))
@@ -335,6 +344,7 @@ async fn setup() -> Result<Server> {
         alice,
         bob,
         db,
+        registry,
     };
 
     // Board 1 is Alice's, board 2 is Bob's.
@@ -652,11 +662,11 @@ async fn a_column_added_to_the_table_reaches_the_generated_element_type() -> Res
             .map(|key| key.name.clone())
             .collect()
     };
-    let before = sc_app::app_streams(&app, &server.catalog).await?;
+    let before = sc_app::app_streams_with(&app, &server.catalog, &server.registry).await?;
     assert!(!row_keys(&before).contains(&"due".to_owned()));
     server.sql("ALTER TABLE cards ADD COLUMN due date;").await;
     server.catalog.reload().await?;
-    let after = sc_app::app_streams(&app, &server.catalog).await?;
+    let after = sc_app::app_streams_with(&app, &server.catalog, &server.registry).await?;
     assert!(
         row_keys(&after).contains(&"due".to_owned()),
         "{:?}",

@@ -682,6 +682,7 @@ mod tests {
                 crate::git::OP_PUSH,
                 crate::git::OP_STAGE,
                 crate::git::OP_UNSTAGE,
+                crate::git::OP_DISCARD,
                 crate::git::OP_COMMIT,
                 crate::git::OP_CHECKOUT,
             ]

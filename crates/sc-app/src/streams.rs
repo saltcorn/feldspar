@@ -190,10 +190,20 @@ fn value_type_of(basic: &BasicType) -> ValueType {
 /// is mounted, and what an observer gets is the honest "not running on this
 /// server". Enabling it must not require rebuilding the app.
 pub async fn app_streams(app: &Application, cat: &Catalog) -> Result<Vec<ExposedStream>> {
+    app_streams_with(app, cat, &stream_registry()).await
+}
+
+/// [`app_streams`] against a registry the caller holds rather than the
+/// installed one — what a test that runs beside other servers in one process
+/// uses, since each of them installs its own.
+pub async fn app_streams_with(
+    app: &Application,
+    cat: &Catalog,
+    registry: &StreamRegistry,
+) -> Result<Vec<ExposedStream>> {
     if app.streams.is_empty() {
         return Ok(Vec::new());
     }
-    let registry = stream_registry();
     let mut resolved = Vec::with_capacity(app.streams.len());
     for declared in &app.streams {
         let stream = sc_stream::load_stream_by_name(cat, &declared.0)

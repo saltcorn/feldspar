@@ -1064,9 +1064,11 @@ async fn ping_is_answered_and_a_silent_connection_is_closed() -> Result<()> {
 async fn the_generated_client_subscribes_over_the_live_socket() -> Result<()> {
     let server = setup(quick()).await?;
     let app = blog_app();
-    // Resolved against the stored rows and the installed provider registry,
-    // which is what an app's build does.
-    let streams = sc_app::app_streams(&app, &server.catalog).await?;
+    // Resolved against the stored rows and this server's provider registry,
+    // which is what an app's build does — passed rather than installed,
+    // because the installed one is whichever test's server came up last.
+    let registry = server.apps.streams().unwrap().registry();
+    let streams = sc_app::app_streams_with(&app, &server.catalog, &registry).await?;
     assert_eq!(streams.len(), 3);
     let exports = sc_app::stream_exports(&app, &streams);
     assert!(exports.iter().all(|e| e.path == "/api/live"));
@@ -1098,7 +1100,8 @@ async fn a_stream_that_is_gone_is_named_rather_than_skipped() -> Result<()> {
     let app = Application::new("Ghost", "ghost", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
         .with_stream(StreamRef::new("nothing_here"));
-    let error = sc_app::app_streams(&app, &server.catalog)
+    let registry = server.apps.streams().unwrap().registry();
+    let error = sc_app::app_streams_with(&app, &server.catalog, &registry)
         .await
         .expect_err("a stream that does not exist is refused");
     let message = error.to_string();

@@ -144,13 +144,20 @@ fn the_workspace_keeps_debug_info_off_dependencies() {
 /// several hundred megabytes on top of that, so the ceiling moves to 600 MB and
 /// still catches a build where the budget stopped applying.
 ///
+/// Measured again in October 2026: the `sc-server` aggregate is 624 MB with
+/// the budget applying — 87 MB of DWARF in all, line tables and their strings,
+/// against 219 MB of `.text` and 205 MB of symbol tables. The growth is code,
+/// not debug info, so the ceiling moves to 800 MB. Dependency DWARF was 267 MB
+/// when the budget landed (440 MB against 173 MB) for a far smaller tree, which
+/// is already more than the 176 MB of headroom this leaves.
+///
 /// A partial build (`-p sc-cli` alone) may have linked nothing large yet, in
 /// which case there is simply nothing to measure and the test passes — this is a
 /// second line of defence behind the manifest assertion above, which is the one
 /// that always holds.
 #[test]
 fn linked_test_binaries_stay_within_the_debug_info_budget() {
-    const CEILING_MB: u64 = 600;
+    const CEILING_MB: u64 = 800;
 
     // `<target>/debug/deps/` — derived from this binary rather than assumed, so
     // it follows CARGO_TARGET_DIR and a `--target` build.
@@ -2093,16 +2100,34 @@ fn every_integration_test_file_reaches_a_target() {
                 Some(line.split('"').nth(1)?.to_string())
             })
             .collect();
+        let paths = |source: &str| -> Vec<String> {
+            source
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("#[path = \""))
+                .filter_map(|l| l.strip_suffix(".rs\"]"))
+                .map(str::to_string)
+                .collect()
+        };
         let aggregate = fs::read_to_string(tests.join("it.rs")).unwrap_or_default();
-        let modules: Vec<String> = aggregate
-            .lines()
-            .filter_map(|l| l.trim().strip_prefix("#[path = \""))
-            .filter_map(|l| l.strip_suffix(".rs\"]"))
-            .map(str::to_string)
-            .collect();
+        let modules = paths(&aggregate);
+        // A module of the aggregate may pull in a file of its own the same
+        // way (`backup_api.rs` → `backup_remote.rs`, to share its helpers
+        // through `super::`), so what is reached is followed to the end.
+        let mut reached = modules.clone();
+        let mut next = 0;
+        while next < reached.len() {
+            let source =
+                fs::read_to_string(tests.join(format!("{}.rs", reached[next]))).unwrap_or_default();
+            for nested in paths(&source) {
+                if !reached.contains(&nested) {
+                    reached.push(nested);
+                }
+            }
+            next += 1;
+        }
 
         for file in &files {
-            if !modules.contains(file) && !explicit.contains(file) {
+            if !reached.contains(file) && !explicit.contains(file) {
                 unreachable.push(format!("{name}/tests/{file}.rs"));
             }
         }

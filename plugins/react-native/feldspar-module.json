@@ -6,6 +6,6 @@
   "supplies": [
     "An application framework, \"React Native (web)\": pick it when creating an application, and Saltcorn writes a React Native project for the web — Vite, react-native-web, a screen and typed hooks for every table the app exposes."
   ],
-  "installs": [],
+  "installs": ["node-forge"],
   "permissions": {}
 }

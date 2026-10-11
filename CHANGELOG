@@ -2,6 +2,45 @@
 
 Changes in reverse chronological order.
 
+## Live updates L3, phases 2–3 run against Postgres; the suite is green again
+
+Phases 2 and 3 of L3 were built where only the database-free tests could run. The whole workspace
+has now run here (`scripts/test.sh --workspace`, doctests included, plus vitest and `tsc` in all
+four UIs): 4,500 tests pass. All of the tests the two phases left unrun pass:
+`app_live_changes`, `filters::the_rust_verdict_is_the_postgres_reads`, `sc-live`'s `changes`,
+`sc-workflow`'s `step_transaction`, and `app_live`'s boiler substring check. Two L3 tests needed
+fixing, and six older failures that had nothing to do with L3 were fixed with them.
+
+- **L3: the change streams' socket tests** (`sc-server/tests/app_live_changes.rs`).
+  - The `save_application` refusal test stopped at the framework, which requires `store`, `output`
+    and `command`. It never reached the change-stream check it was written for. The fixture's
+    `code` framework now carries all three.
+  - `a_column_added_to_the_table_reaches_the_generated_element_type` passed alone and failed in
+    the suite with "unknown stream provider `table_changes`". `sc_app::app_streams` resolves
+    against the process-wide registry, which is whichever test's server installed one last, and
+    `app_live`'s registry has no `table_changes`. The new `sc_app::app_streams_with(app, catalog,
+    registry)` takes the registry from its caller. `app_streams` is now that function applied to
+    the installed registry. Both test files now pass their own server's registry. The server's
+    behaviour is unchanged.
+- **Older failures, not L3.**
+  - `sc-files`: the backend-operations test now lists the git `discard` operation.
+  - `plugins/react-native`: the module card now names `node-forge` in `installs`, as its
+    `package.json` requires.
+  - `ui/admin` admin move: `moveSteps(address, reachable, t)` translates its own labels (and the
+    DNS hint, which was never translated). `AdminMove.tsx` no longer calls `t(step.label)`.
+  - `ui/analytics` map toolbox: called `t()` on the server's tool texts. The new
+    `mapToolText(text, t)` in `labels.ts` matches them by their English, as the module's other
+    data names already are. A module's own tool falls through untranslated. The dropdown's
+    tooltip, which was untranslated, now goes through it too. New test
+    `sc-analytics::tools::tests::every_built_in_tool_text_is_translated_by_the_analytics_ui`:
+    every built-in group, label, description, field and choice has a case there.
+  - `repo_hygiene::every_integration_test_file_reaches_a_target` now follows `#[path]` modules
+    nested in a module of `it.rs`. `backup_remote.rs` is reached through `backup_api.rs` and
+    always ran, as `backup_api::remote::*`.
+  - `repo_hygiene::linked_test_binaries_stay_within_the_debug_info_budget`: the ceiling goes from
+    600 to 800 MB. The `sc-server` binary is 624 MB with the budget applying. Of that, 87 MB is
+    DWARF, 219 MB is `.text` and 205 MB is symbol tables, so the growth is code, not debug info.
+
 ## Live updates L3, phase 3: the client follows a table's changes
 
 A React page can now show a table's rows and keep them current as anyone writes them:
