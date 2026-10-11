@@ -260,7 +260,10 @@ async fn the_bundled_react_native_module_declares_a_web_framework() {
             "own_keystore",
             "keystore_file",
             "keystore_alias",
-            "keystore_password"
+            "keystore_password",
+            "ios_profile_source",
+            "ios_profile",
+            "simulator_configuration"
         ]
     );
 
@@ -279,8 +282,15 @@ async fn the_bundled_react_native_module_declares_a_web_framework() {
         "todo/src/feldspar/client.ts"
     );
 
-    // The APK is a build target beside the web bundle, run in the same project.
-    assert_eq!(rn.targets.len(), 1);
+    // The APK is a build target beside the web bundle, run in the same project,
+    // and so are the two iOS builds.
+    assert_eq!(
+        rn.targets
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        ["android", "ios", "ios_simulator"]
+    );
     let apk = rn.target_spec("android", &config).unwrap();
     assert_eq!(apk.label, "Android app");
     assert_eq!(apk.command, "npm");
@@ -295,14 +305,12 @@ async fn the_bundled_react_native_module_declares_a_web_framework() {
     let spec = rn.target_spec("android", &aab).unwrap();
     assert_eq!(spec.args, ["run", "build:android:release-aab"]);
     assert_eq!(spec.artifact, "todo/android-output/app-release.aab");
-    // Its own settings, which the application form shows under the target; the
-    // icon is picked from the application's store.
+    // Its own settings, which the application form shows under the target. The
+    // App ID, version and icon are not among them: they are the application's,
+    // shared by Android and iOS, and shown with the framework's settings.
     assert_eq!(
         rn.targets[0].options,
         [
-            "app_id",
-            "app_version",
-            "app_icon",
             "build_type",
             "package_format",
             "own_keystore",
@@ -316,7 +324,35 @@ async fn the_bundled_react_native_module_declares_a_web_framework() {
         .iter()
         .find(|f| f.name() == "app_icon")
         .unwrap();
-    assert_eq!(icon.query(), Some("store_files:png,jpg,jpeg"));
+    // The native apps' settings are a group of their own under a heading,
+    // starting at the server URL; the project's above it have none.
+    let sections: Vec<(&str, Option<&str>)> = rn
+        .config_spec
+        .iter()
+        .take(6)
+        .map(|f| (f.name(), f.section.as_deref()))
+        .collect();
+    assert_eq!(
+        sections,
+        [
+            ("store", None),
+            ("project", None),
+            ("mobile_url", Some("Native apps (Android and iOS)")),
+            ("app_id", None),
+            ("app_version", None),
+            ("app_icon", None)
+        ]
+    );
+    // Picked from the application's store, and a PNG: iOS takes nothing else.
+    assert_eq!(icon.query(), Some("store_files:png"));
+    for shared in ["app_id", "app_version", "app_icon"] {
+        assert!(
+            rn.targets
+                .iter()
+                .all(|t| !t.options.iter().any(|o| o == shared)),
+            "{shared} belongs to no target"
+        );
+    }
     // The keystore settings: a release build's, once its own keystore is
     // chosen, and the password a secret that reaches the build as its
     // environment.
@@ -353,6 +389,48 @@ async fn the_bundled_react_native_module_declares_a_web_framework() {
     assert_eq!(apk.args, ["run", "build:android:debug-apk"]);
     assert_eq!(apk.artifact, "todo/android-output/app-debug.apk");
 
+    // iOS: an IPA for App Store Connect, signed from an App Store profile
+    // that is either the admin's own or generated, and an unsigned simulator
+    // app, which needs neither.
+    let ipa = rn.target_spec("ios", &config).unwrap();
+    assert_eq!(ipa.label, "iOS app");
+    assert_eq!(ipa.args, ["run", "build:ios:device"]);
+    assert_eq!(ipa.source_dir, "todo");
+    assert_eq!(ipa.artifact, "todo/ios-output/app.ipa");
+    assert_eq!(rn.targets[1].options, ["ios_profile_source", "ios_profile"]);
+    assert_eq!(field("ios_profile_source").default, Some(json!("own")));
+    let mut generated = config.clone();
+    generated.insert("ios_profile_source".to_owned(), json!("generate"));
+    sc_types::validate_attrs(&rn.config_spec, &generated).unwrap();
+    generated.insert("ios_profile_source".to_owned(), json!("ad-hoc"));
+    assert!(sc_types::validate_attrs(&rn.config_spec, &generated).is_err());
+    // An uploaded profile is asked for only when it is the source, and never
+    // required: an application need not be built for iOS at all.
+    assert_eq!(
+        field("ios_profile").query(),
+        Some("store_files:mobileprovision")
+    );
+    assert_eq!(
+        field("ios_profile").show_if,
+        [ShowIfCondition::new(
+            "ios_profile_source",
+            vec![json!("own")]
+        )]
+    );
+    assert!(!field("ios_profile").required);
+    let sim = rn.target_spec("ios_simulator", &config).unwrap();
+    assert_eq!(sim.label, "iOS simulator app");
+    assert_eq!(sim.args, ["run", "build:ios:simulator"]);
+    assert_eq!(sim.artifact, "todo/ios-output/app-simulator.zip");
+    // Release unless asked: Debug is for the dev menu and warnings.
+    assert_eq!(rn.targets[2].options, ["simulator_configuration"]);
+    assert_eq!(field("simulator_configuration").default, Some(json!("release")));
+    let mut debug_sim = config.clone();
+    debug_sim.insert("simulator_configuration".to_owned(), json!("debug"));
+    sc_types::validate_attrs(&rn.config_spec, &debug_sim).unwrap();
+    debug_sim.insert("simulator_configuration".to_owned(), json!("profile"));
+    assert!(sc_types::validate_attrs(&rn.config_spec, &debug_sim).is_err());
+
     // One widening beyond React's policy: react-native-web injects its styles at
     // run time. Scripts stay strict.
     let csp = rn.default_csp();
@@ -371,16 +449,39 @@ async fn the_modules_toolchain_settings_are_the_apk_builds_environment() {
     skip_without!(have_npm(), "npm is not on the PATH");
     let (configured, manifest) = frameworks_configured(
         "bundled-rn-toolchain",
-        json!({ "android_home": "/opt/android-sdk", "java_home": "" }),
+        json!({
+            "android_home": "/opt/android-sdk",
+            "java_home": "",
+            "use_pod_dir": true,
+            "pod_dir": "/opt/homebrew/bin",
+            "use_asc": true,
+            "asc_issuer_id": "69a6de70-0000-47e3-e053-5b8c7c11a4d1",
+            "asc_key_id": "2X9R4HXF34",
+            "asc_key": "-----BEGIN PRIVATE KEY-----\nMIGT\n-----END PRIVATE KEY-----",
+            "ios_distribution_identity": ""
+        }),
     )
     .await;
-    // The two settings the Modules tab shows for this module.
+    // The settings the Modules tab shows for this module.
     let names: Vec<&str> = manifest
         .config_fields
         .iter()
         .filter_map(|f| f["name"].as_str())
         .collect();
-    assert_eq!(names, ["android_home", "java_home"]);
+    assert_eq!(
+        names,
+        [
+            "android_home",
+            "java_home",
+            "use_pod_dir",
+            "pod_dir",
+            "use_asc",
+            "asc_issuer_id",
+            "asc_key_id",
+            "asc_key",
+            "ios_distribution_identity"
+        ]
+    );
 
     let config: Attrs = [("store".to_owned(), json!("apps"))].into_iter().collect();
     let apk = configured.frameworks()[0]
@@ -414,11 +515,165 @@ async fn the_modules_toolchain_settings_are_the_apk_builds_environment() {
             .all(|r| r.hint.contains("Settings → Modules"))
     );
 
-    // And unconfigured, the build carries no environment of its own at all.
-    let apk = frameworks("bundled-rn-toolchain-none").await.frameworks()[0]
-        .target_spec("android", &config)
+    // Both iOS builds need a Mac with Xcode (the one xcode-select points to)
+    // and CocoaPods, which may also be in the module's CocoaPods directory:
+    // the builds get it as `FELDSPAR_POD_DIR`, and `ios/build.cjs` puts it on the
+    // PATH. What signing needs depends on the profile's source, so `ios/build.cjs`
+    // checks it rather than a requirement.
+    let rn = &configured.frameworks()[0];
+    for target in ["ios", "ios_simulator"] {
+        let spec = rn.target_spec(target, &config).unwrap();
+        assert!(!spec.env.contains_key("DEVELOPER_DIR"), "{target}");
+        assert_eq!(
+            spec.env["FELDSPAR_POD_DIR"], "/opt/homebrew/bin",
+            "{target}"
+        );
+        let needs: Vec<String> = spec
+            .requires
+            .iter()
+            .map(|r| match &r.kind {
+                sc_app::TargetRequirementKind::Os { name } => format!("os {name}"),
+                sc_app::TargetRequirementKind::Command { name, dir_env } => match dir_env {
+                    Some(dir) => format!("command {name} or in {dir}"),
+                    None => format!("command {name}"),
+                },
+                sc_app::TargetRequirementKind::Env { name, directory } => {
+                    assert!(!directory, "{name}");
+                    format!("env {name}")
+                }
+            })
+            .collect();
+        assert_eq!(
+            needs,
+            [
+                "os macos",
+                "command xcodebuild",
+                "command pod or in FELDSPAR_POD_DIR"
+            ],
+            "{target}"
+        );
+        assert!(spec.requires.iter().all(|r| !r.hint.is_empty()), "{target}");
+    }
+
+    // With the API switched on, the App Store Connect key is the server's, so
+    // it reaches the App Store build from the module's settings; the blank
+    // identity is left out. The profile operation is offered.
+    let ipa = rn.target_spec("ios", &config).unwrap();
+    assert_eq!(
+        ipa.env.get("FELDSPAR_ASC_KEY").map(String::as_str),
+        Some("-----BEGIN PRIVATE KEY-----\nMIGT\n-----END PRIVATE KEY-----")
+    );
+    assert_eq!(ipa.env["FELDSPAR_ASC_KEY_ID"], "2X9R4HXF34");
+    assert!(ipa.env.contains_key("FELDSPAR_ASC_ISSUER_ID"));
+    assert!(!ipa.env.contains_key("FELDSPAR_IOS_IDENTITY"));
+    let sim = rn.target_spec("ios_simulator", &config).unwrap();
+    assert!(!sim.env.contains_key("FELDSPAR_ASC_KEY"));
+    let ios = rn.targets.iter().find(|t| t.name == "ios").unwrap();
+    assert_eq!(ios.operations[0].name, "generate_profile");
+
+    // Switched off, the key stays with the module: no API settings reach the
+    // build. The operation is still offered, and refuses (see
+    // `the_profile_operation_runs_in_the_modules_worker`).
+    let (off, _) = frameworks_configured(
+        "bundled-rn-toolchain-asc-off",
+        json!({
+            "use_pod_dir": false,
+            "pod_dir": "/opt/homebrew/bin",
+            "use_asc": false,
+            "asc_key_id": "2X9R4HXF34",
+            "asc_key": "secret"
+        }),
+    )
+    .await;
+    let rn_off = &off.frameworks()[0];
+    let ipa = rn_off.target_spec("ios", &config).unwrap();
+    assert!(
+        ipa.env.keys().all(|k| !k.starts_with("FELDSPAR_ASC")),
+        "{:?}",
+        ipa.env
+    );
+    let ios = rn_off.targets.iter().find(|t| t.name == "ios").unwrap();
+    assert_eq!(ios.operations[0].name, "generate_profile");
+    // Likewise the CocoaPods directory, with its checkbox off.
+    assert!(!ipa.env.contains_key("FELDSPAR_POD_DIR"), "{:?}", ipa.env);
+
+    // Grouped under a heading per platform on the Modules tab, the API's
+    // settings shown only while it is switched on, and each explained under
+    // its input.
+    let (spec, issues) = sc_module::config_fields_to_form_fields(&manifest.config_fields, "test");
+    assert!(issues.is_empty(), "{issues:?}");
+    let headed: Vec<(&str, &str)> = spec
+        .iter()
+        .filter_map(|f| f.section.as_deref().map(|s| (f.name(), s)))
+        .collect();
+    assert_eq!(headed, [("android_home", "Android"), ("use_pod_dir", "iOS")]);
+    let pod = spec.iter().find(|f| f.name() == "pod_dir").unwrap();
+    assert_eq!(
+        pod.show_if,
+        [ShowIfCondition::new("use_pod_dir", vec![json!(true)])]
+    );
+    for name in [
+        "asc_issuer_id",
+        "asc_key_id",
+        "asc_key",
+        "ios_distribution_identity",
+    ] {
+        let field = spec.iter().find(|f| f.name() == name).unwrap();
+        assert_eq!(
+            field.show_if,
+            [ShowIfCondition::new("use_asc", vec![json!(true)])],
+            "{name}"
+        );
+    }
+    assert!(
+        spec.iter().all(|f| f.sublabel.is_some()),
+        "every setting explained"
+    );
+    assert!(
+        pod.sublabel.as_deref().unwrap().contains("which pod"),
+        "{:?}",
+        pod.sublabel
+    );
+    // The API key's three parts are refused on save unless they look like
+    // what App Store Connect hands out: a pasted key keeps its PEM lines, and
+    // whitespace around a value is fine (the generator trims it).
+    let api = |issuer: &str, key_id: &str, key: &str| {
+        let mut attrs = sc_types::Attrs::new();
+        attrs.insert("use_asc".to_owned(), json!(true));
+        attrs.insert("asc_issuer_id".to_owned(), json!(issuer));
+        attrs.insert("asc_key_id".to_owned(), json!(key_id));
+        attrs.insert("asc_key".to_owned(), json!(key));
+        sc_types::validate_patterns(&spec, &attrs)
+    };
+    let pem = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkw\nGJ+1/q==\n-----END PRIVATE KEY-----\n";
+    api("57246542-96fe-1a63-e053-0824d011072a ", "2X9R4HXF34", pem).unwrap();
+    // A key pasted into the one-line field loses its line breaks.
+    api("57246542-96fe-1a63-e053-0824d011072a", " 2X9R4HXF34", &pem.replace('\n', "")).unwrap();
+    for (issuer, key_id, key, wanted) in [
+        ("issuer-1", "2X9R4HXF34", pem, "UUID"),
+        ("57246542-96fe-1a63-e053-0824d011072a", "2x9r4hxf34", pem, "ten capital"),
+        ("57246542-96fe-1a63-e053-0824d011072a", "2X9R4HXF34", "MIGTAgEAMBMG", "whole .p8"),
+    ] {
+        let err = api(issuer, key_id, key).unwrap_err().to_string();
+        assert!(err.contains(wanted), "{err}");
+    }
+
+    // The key is a secret: a password input, masked by the admin API.
+    let key = manifest
+        .config_fields
+        .iter()
+        .find(|f| f["name"] == "asc_key")
         .unwrap();
-    assert!(apk.env.is_empty(), "{:?}", apk.env);
+    assert_eq!(key["input_type"], "password");
+
+    // And unconfigured, the build carries no environment of its own at all.
+    let unconfigured = frameworks("bundled-rn-toolchain-none").await;
+    for target in ["android", "ios", "ios_simulator"] {
+        let spec = unconfigured.frameworks()[0]
+            .target_spec(target, &config)
+            .unwrap();
+        assert!(spec.env.is_empty(), "{target}: {:?}", spec.env);
+    }
 }
 
 #[tokio::test]
@@ -451,6 +706,10 @@ async fn the_scaffold_is_an_expo_project_whose_every_import_resolves() {
         "src/feldspar/hooks.ts",
         "src/feldspar/config.ts",
         "src/feldspar/native.json",
+        "src/feldspar/ios/build.cjs",
+        "src/feldspar/ios/prebuild.cjs",
+        "src/feldspar/ios/signing.cjs",
+        "src/feldspar/ios/profile-generator.cjs",
         "src/feldspar/README.md",
     ] {
         assert!(paths.contains(&expected), "missing {expected}: {paths:?}");
@@ -506,6 +765,23 @@ async fn the_scaffold_is_an_expo_project_whose_every_import_resolves() {
         );
     }
     assert!(file(&files, ".gitignore").contains("android-output"));
+    // The iOS builds are the generated `ios/build.cjs`, so a fix to them reaches every
+    // project at its next build; their results go to `ios-output/`.
+    for (script, kind) in [("simulator", "simulator"), ("device", "device")] {
+        assert!(
+            package.contains(&format!(
+                "\"build:ios:{script}\": \"node src/feldspar/ios/build.cjs {kind}\""
+            )),
+            "{package}"
+        );
+    }
+    assert!(file(&files, ".gitignore").contains("ios-output"));
+    // Only the project's own native directories are ignored, not the runtime's
+    // `src/feldspar/ios/`.
+    let gitignore = file(&files, ".gitignore");
+    let ignored: Vec<&str> = gitignore.lines().collect();
+    assert!(ignored.contains(&"/ios") && ignored.contains(&"/android"), "{ignored:?}");
+    assert!(!ignored.contains(&"ios"), "{ignored:?}");
     assert!(file(&files, "index.ts").contains("registerRootComponent(Root)"));
     let app_config = file(&files, "app.config.js");
     assert!(
@@ -513,6 +789,26 @@ async fn the_scaffold_is_an_expo_project_whose_every_import_resolves() {
         "{app_config}"
     );
     assert!(app_config.contains("package: native.appId"), "{app_config}");
+    // The bundle ID is the profile's on a device build, `native.json`'s
+    // otherwise, and the profile is read only for a device build.
+    assert!(
+        app_config.contains("src/feldspar/ios/prebuild.cjs"),
+        "{app_config}"
+    );
+    assert!(app_config.contains("bundleIdentifier,"), "{app_config}");
+    assert!(
+        app_config.contains("ios.prebuildSigning(__dirname, native)"),
+        "{app_config}"
+    );
+    assert!(
+        file(&files, "src/feldspar/ios/prebuild.cjs")
+            .contains("process.env.FELDSPAR_IOS_BUILD === \"device\""),
+        "the profile is read only for a device build"
+    );
+    assert!(
+        !app_config.contains("NSAllowsArbitraryLoads"),
+        "{app_config}"
+    );
     assert!(app_config.contains("output: \"single\""), "{app_config}");
     // The checks' regular expressions survive the template they are written
     // from: an unescaped `.` or `d` would refuse every version.
@@ -532,7 +828,9 @@ async fn the_scaffold_is_an_expo_project_whose_every_import_resolves() {
     assert_eq!(
         native,
         json!({ "appId": "com.feldspar.todo", "version": "1.0.0", "icon": null,
-                "buildType": "release", "signing": null })
+                "buildType": "release", "signing": null,
+                "ios": { "profileSource": "own", "profile": null, "bundleId": "com.feldspar.todo",
+                         "simulatorConfiguration": "release" } })
     );
     assert!(!package.contains("expo-build-properties"), "{package}");
 
@@ -637,6 +935,11 @@ async fn an_app_served_over_http_lets_its_apk_reach_it() {
         "{app_config}"
     );
     assert!(file(&files, "package.json").contains("\"expo-build-properties\":"));
+    // iOS's App Transport Security refuses plain HTTP the same way.
+    assert!(
+        app_config.contains("NSAppTransportSecurity: { NSAllowsArbitraryLoads: true }"),
+        "{app_config}"
+    );
     assert!(
         file(&files, "src/feldspar/config.ts").contains("http://todo.192.168.1.50.nip.io:3032")
     );
@@ -684,7 +987,9 @@ async fn the_apk_settings_reach_native_json_on_every_build() {
     assert_eq!(
         native,
         json!({ "appId": "com.example.todo", "version": "2.3.4",
-                "icon": "assets/icon.png", "buildType": "debug", "signing": null })
+                "icon": "assets/icon.png", "buildType": "debug", "signing": null,
+                "ios": { "profileSource": "own", "profile": null, "bundleId": "com.example.todo",
+                         "simulatorConfiguration": "release" } })
     );
     // An icon outside the project is reached from it.
     ctx["settings"]["app_icon"] = json!("branding/logo.png");
@@ -721,11 +1026,614 @@ async fn the_apk_settings_reach_native_json_on_every_build() {
     ctx["settings"]["build_type"] = json!("debug");
     let files = frameworks("bundled-rn-native-debug")
         .await
-        .framework_files(FRAMEWORK, FilePhase::Runtime, ctx)
+        .framework_files(FRAMEWORK, FilePhase::Runtime, ctx.clone())
         .await
         .expect("the runtime runs");
     let native: Json = serde_json::from_str(&file(&files, "src/feldspar/native.json")).unwrap();
     assert_eq!(native["signing"], Json::Null);
+
+    // iOS: the profile is reached from the project like the icon is. The
+    // bundle ID is the shared App ID, with `_` (which iOS refuses) as `-`.
+    ctx["settings"] = json!({
+        "app_id": "com.example.my_todo",
+        "ios_profile": "todo/signing/adhoc.mobileprovision"
+    });
+    let files = frameworks("bundled-rn-native-ios")
+        .await
+        .framework_files(FRAMEWORK, FilePhase::Runtime, ctx.clone())
+        .await
+        .expect("the runtime runs");
+    let native: Json = serde_json::from_str(&file(&files, "src/feldspar/native.json")).unwrap();
+    assert_eq!(
+        native["ios"],
+        json!({
+            "profileSource": "own",
+            "profile": "signing/adhoc.mobileprovision",
+            "bundleId": "com.example.my-todo",
+            "simulatorConfiguration": "release"
+        })
+    );
+    // And it is the same App ID Android packages the app under.
+    assert_eq!(native["appId"], "com.example.my_todo");
+
+    // A generated profile is made at build time: an uploaded one still
+    // chosen (but hidden) is not passed on.
+    ctx["settings"]["ios_profile_source"] = json!("generate");
+    ctx["settings"]["simulator_configuration"] = json!("debug");
+    let files = frameworks("bundled-rn-native-ios-generate")
+        .await
+        .framework_files(FRAMEWORK, FilePhase::Runtime, ctx)
+        .await
+        .expect("the runtime runs");
+    let native: Json = serde_json::from_str(&file(&files, "src/feldspar/native.json")).unwrap();
+    assert_eq!(
+        native["ios"],
+        json!({ "profileSource": "generate", "profile": null, "bundleId": "com.example.my-todo",
+                "simulatorConfiguration": "debug" })
+    );
+}
+
+/// The generated iOS files into `dir`, side by side as in a project, so Node
+/// can `require` them; each carries the generated-code header.
+fn write_ios_files(files: &[DeclaredFile], dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    for name in [
+        "ios/build.cjs",
+        "ios/prebuild.cjs",
+        "ios/signing.cjs",
+        "ios/profile-generator.cjs",
+    ] {
+        let contents = file(files, &format!("src/feldspar/{name}"));
+        assert!(contents.starts_with("// Code generated by Saltcorn. DO NOT EDIT."));
+        let path = dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+}
+
+/// Signing an iOS build from nothing but a provisioning profile, as Saltcorn 1
+/// does: the generated iOS files read the team, bundle ID, export method,
+/// expiry and certificates out of the profile **by key**, and refuses one no
+/// build could sign with. Run under Node with the profile as `@expo/plist`
+/// parses it, so it needs neither a Mac's `security` nor Xcode.
+#[tokio::test]
+async fn an_ios_build_is_signed_from_what_its_provisioning_profile_says() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let files = frameworks("bundled-rn-ios-profile")
+        .await
+        .framework_files(
+            FRAMEWORK,
+            FilePhase::Runtime,
+            context(true, vec![tasks_table()]),
+        )
+        .await
+        .expect("the runtime runs");
+    let dir = temp_root("bundled-rn-ios-profile-node");
+    write_ios_files(&files, &dir);
+    let script = r#"
+const ios = { ...require("./ios/signing.cjs"), ...require("./ios/prebuild.cjs") };
+// An ad hoc profile (it lists devices, and no debugger may attach) whose one
+// certificate is the three bytes 00 01 02, as @expo/plist parses it: <data>
+// is a Buffer and <date> a Date.
+const plist = {
+  DeveloperCertificates: [Buffer.from([0, 1, 2])],
+  Entitlements: {
+    "application-identifier": "ABCDE12345.com.example.todo",
+    "get-task-allow": false,
+  },
+  ExpirationDate: new Date("2030-01-01T00:00:00Z"),
+  Name: "Todo Ad Hoc",
+  ProvisionedDevices: ["00008101-000A1234"],
+  TeamIdentifier: ["ABCDE12345"],
+  UUID: "1b2c3d4e-0000-4000-8000-123456789abc",
+};
+const info = ios.profileInfo(plist);
+const refused = (f) => { try { f(); return null; } catch (e) { return e.message; } };
+const identity = { sha1: info.certificates[0], name: "Apple Distribution: Test (ABCDE12345)" };
+const signing = { info, bundleId: ios.bundleIdFor(info, "com.feldspar.todo"), identity };
+// The app target is the one with a bundle ID; the other configuration is left.
+const configs = {
+  A: { buildSettings: { PRODUCT_BUNDLE_IDENTIFIER: "com.example.todo",
+                        '"CODE_SIGN_IDENTITY[sdk=iphoneos*]"': '"iPhone Developer"' } },
+  B: { buildSettings: { SDKROOT: "iphoneos" } },
+};
+ios.applySigning({ pbxXCBuildConfigurationSection: () => configs }, signing);
+console.log(JSON.stringify({
+  info: { ...info, expires: info.expires.toISOString() },
+  bundleId: signing.bundleId,
+  exportOptions: ios.exportOptions(signing),
+  app: configs.A.buildSettings,
+  other: configs.B.buildSettings,
+  methods: [
+    ios.profileInfo({ ...plist, Entitlements: { ...plist.Entitlements, "get-task-allow": true } }).method,
+    ios.profileInfo({ ...plist, ProvisionedDevices: undefined }).method,
+    ios.profileInfo({ ...plist, ProvisionsAllDevices: true }).method,
+  ],
+  wildcard: ios.bundleIdFor({ ...info, appId: "com.feldspar.*" }, "com.feldspar.todo"),
+  refusals: {
+    expired: refused(() => ios.checkProfile(info, new Date("2031-01-01"))),
+    wildcard: refused(() => ios.bundleIdFor({ ...info, appId: "com.other.*" }, "com.feldspar.todo")),
+    keychain: refused(() => ios.signingIdentity(info, [{ sha1: "0".repeat(40), name: "Apple Development: X" }])),
+    bundle: refused(() => ios.checkConfig(".", { version: "1.0.0" }, "com.my_todo")),
+    jpeg: refused(() => ios.checkConfig(".", { version: "1.0.0", icon: "icon.jpg" }, "com.example.todo")),
+    adHoc: refused(() => ios.checkAppStore(info)),
+    appStore: refused(() => ios.checkAppStore({ ...info, method: "app-store-connect" })),
+  },
+}));
+"#;
+    let out = std::process::Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .current_dir(&dir)
+        .output()
+        .expect("node runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let got: Json = serde_json::from_slice(&out.stdout).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(
+        got["info"],
+        json!({
+            "uuid": "1b2c3d4e-0000-4000-8000-123456789abc",
+            "name": "Todo Ad Hoc",
+            "team": "ABCDE12345",
+            "appId": "com.example.todo",
+            "method": "release-testing",
+            "expires": "2030-01-01T00:00:00.000Z",
+            // SHA-1 of the certificate's DER, as `security find-identity` prints it.
+            "certificates": ["0C7A623FD2BBC05B06423BE359E4021D36E721AD"]
+        })
+    );
+    // The profile's own bundle ID wins over the application's.
+    assert_eq!(got["bundleId"], "com.example.todo");
+    assert_eq!(
+        got["methods"],
+        json!(["debugging", "app-store-connect", "enterprise"])
+    );
+    assert_eq!(got["wildcard"], "com.feldspar.todo");
+
+    // Manual signing on the app target only, with the profile and the identity
+    // pinned by UUID and SHA-1; the SDK-specific identity Expo writes is gone.
+    assert_eq!(
+        got["app"],
+        json!({
+            "PRODUCT_BUNDLE_IDENTIFIER": "com.example.todo",
+            "CODE_SIGN_STYLE": "Manual",
+            "DEVELOPMENT_TEAM": "ABCDE12345",
+            "PROVISIONING_PROFILE_SPECIFIER": "\"1b2c3d4e-0000-4000-8000-123456789abc\"",
+            "CODE_SIGN_IDENTITY": "\"0C7A623FD2BBC05B06423BE359E4021D36E721AD\""
+        })
+    );
+    assert_eq!(got["other"], json!({ "SDKROOT": "iphoneos" }));
+    let export = got["exportOptions"].as_str().unwrap();
+    for line in [
+        "<key>method</key><string>release-testing</string>",
+        "<key>teamID</key><string>ABCDE12345</string>",
+        "<key>signingCertificate</key><string>0C7A623FD2BBC05B06423BE359E4021D36E721AD</string>",
+        "<key>com.example.todo</key><string>1b2c3d4e-0000-4000-8000-123456789abc</string>",
+        "<key>manageAppVersionAndBuildNumber</key><false/>",
+    ] {
+        assert!(export.contains(line), "{line}:\n{export}");
+    }
+
+    // Each refusal is a sentence naming what to do, before Xcode is started.
+    let refusal = |name: &str| got["refusals"][name].as_str().unwrap_or("").to_owned();
+    assert!(
+        refusal("expired").contains("expired on 2030-01-01"),
+        "{}",
+        refusal("expired")
+    );
+    assert!(refusal("wildcard").contains("does not cover the bundle ID com.feldspar.todo"));
+    assert!(refusal("keychain").contains("Import the certificate's .p12"));
+    assert!(refusal("bundle").contains("com.my_todo"));
+    assert!(refusal("jpeg").contains("not a PNG"));
+    // Only an App Store profile signs: the app is built for App Store Connect.
+    assert!(
+        refusal("adHoc").contains("\"Todo Ad Hoc\" is an ad hoc profile"),
+        "{}",
+        refusal("adHoc")
+    );
+    assert_eq!(got["refusals"]["appStore"], Json::Null);
+}
+
+/// A generated provisioning profile: `ios/build.cjs` signs into the App Store
+/// Connect API with the module's key, picks the one distribution certificate
+/// both Apple and the keychain have, registers the bundle ID if Apple lacks
+/// it, and reuses the profile an earlier build made until it goes stale. Run
+/// under Node against a fake API, so it needs neither Apple nor a Mac.
+#[tokio::test]
+async fn an_ios_build_can_generate_its_app_store_profile() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let files = frameworks("bundled-rn-ios-generate")
+        .await
+        .framework_files(
+            FRAMEWORK,
+            FilePhase::Runtime,
+            context(true, vec![tasks_table()]),
+        )
+        .await
+        .expect("the runtime runs");
+    let dir = temp_root("bundled-rn-ios-generate-node");
+    write_ios_files(&files, &dir);
+    let script = r#"
+const crypto = require("crypto");
+const fs = require("fs");
+const { IosProfileGenerator } = require("./ios/profile-generator.cjs");
+const refused = (f) => { try { f(); return null; } catch (e) { return e.message; } };
+const now = new Date("2027-01-01T00:00:00Z");
+
+// The key as the module setting holds it: the .p8's contents, here pasted
+// into a one-line field, so its line breaks became spaces.
+const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+const pem = privateKey.export({ type: "pkcs8", format: "pem" }).replace(/\n/g, " ");
+const env = { FELDSPAR_ASC_ISSUER_ID: "issuer-1", FELDSPAR_ASC_KEY_ID: "KEY123", FELDSPAR_ASC_KEY: pem };
+// A generator on a fake API and clock, optionally naming a certificate.
+const quiet = () => {};
+const generator = (api, wanted) =>
+  new IosProfileGenerator({ ...env, FELDSPAR_IOS_IDENTITY: wanted || "" }, { api, now, log: quiet });
+const decode = (part) => JSON.parse(Buffer.from(part, "base64url").toString());
+
+// Two certificates Apple knows, one of them in the keychain, one expired.
+const der = (text) => Buffer.from(text).toString("base64");
+const sha1 = (text) => crypto.createHash("sha1").update(Buffer.from(text)).digest("hex").toUpperCase();
+const certs = [
+  { id: "C1", attributes: { certificateContent: der("one"), expirationDate: "2028-01-01T00:00:00Z" } },
+  { id: "C2", attributes: { certificateContent: der("two"), expirationDate: "2028-01-01T00:00:00Z" } },
+  { id: "C3", attributes: { certificateContent: der("old"), expirationDate: "2026-01-01T00:00:00Z" } },
+];
+const keychain = [
+  { sha1: sha1("one"), name: "Apple Distribution: One" },
+  { sha1: sha1("old"), name: "Apple Distribution: Old" },
+];
+const both = keychain.concat([{ sha1: sha1("two"), name: "Apple Distribution: Two" }]);
+const cert = generator().pickCertificate(certs, keychain);
+
+// A fake API: what it was asked, answered from a little state.
+function fakeApi(state) {
+  const calls = [];
+  const api = async (method, path, body) => {
+    calls.push(method + " " + path.split("?")[0]);
+    if (method === "GET" && path.startsWith("/v1/bundleIds")) return { data: state.bundles };
+    if (method === "POST" && path === "/v1/bundleIds") {
+      const made = { id: "B9", attributes: body.data.attributes };
+      state.bundles.push(made);
+      return { data: made };
+    }
+    if (method === "GET" && path.startsWith("/v1/profiles")) {
+      if (!path.includes("filter[profileType]=IOS_APP_STORE")) throw new Error("not App Store: " + path);
+      return { data: state.profiles };
+    }
+    if (method === "DELETE") return null;
+    if (method === "POST" && path === "/v1/profiles") {
+      state.posted = body;
+      return { data: { attributes: { profileContent: "TkVX" } } };
+    }
+    throw new Error("unexpected " + method + " " + path);
+  };
+  return { api, calls };
+}
+const profile = (id, certId, extra) => ({
+  id,
+  attributes: { profileState: "ACTIVE", expirationDate: "2027-06-01T00:00:00Z",
+                profileContent: "T0xE", ...extra },
+  relationships: { bundleId: { data: { id: "B1" } }, certificates: { data: [{ id: certId }] } },
+});
+const bundle = { id: "B1", attributes: { identifier: "com.example.todo" } };
+
+(async () => {
+  const token = generator().token(1800000000);
+  const [h, c, sig] = token.split(".");
+  const verified = crypto.verify("sha256", Buffer.from(h + "." + c),
+    { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(sig, "base64url"));
+  const fresh = fakeApi({ bundles: [], profiles: [] });
+  const freshContent = (await generator(fresh.api).profileFor("com.example.todo", cert)).content;
+  const state = { bundles: [bundle], profiles: [profile("P1", "C1")] };
+  const reuse = fakeApi(state);
+  const reused = await generator(reuse.api).profileFor("com.example.todo", cert);
+  const staleState = { bundles: [bundle],
+    profiles: [profile("P2", "C2"), profile("P3", "C1", { expirationDate: "2027-01-03T00:00:00Z" })] };
+  const stale = fakeApi(staleState);
+  const remade = (await generator(stale.api).profileFor("com.example.todo", cert)).content;
+  // The operation's way: no keychain, so any unexpired certificate Apple
+  // knows, and the whole job in one call.
+  const whole = fakeApi({ bundles: [bundle], profiles: [profile("P1", "C1")] });
+  const certApi = async (method, path, body) =>
+    path.startsWith("/v1/certificates") ? { data: certs.slice(0, 1).concat(certs.slice(2)) } : whole.api(method, path, body);
+  const operation = await generator(certApi).generate("com.example.todo", null);
+  console.log(JSON.stringify({
+    claims: decode(c), header: decode(h), verified,
+    cert,
+    named: generator(null, "Apple Distribution: Two").pickCertificate(certs, both).id,
+    bySha1: generator(null, sha1("two").toLowerCase()).pickCertificate(certs, both).id,
+    fresh: { content: freshContent, calls: fresh.calls },
+    reuse: { content: reused.content, name: reused.name, expires: reused.expires, calls: reuse.calls },
+    stale: { content: remade, calls: stale.calls, posted: staleState.posted },
+    operation: { content: operation.content, certificate: operation.certificate.id },
+    refusals: {
+      none: refused(() => generator().pickCertificate(certs, [])),
+      many: refused(() => generator().pickCertificate(certs, both)),
+      manyWithoutKeychain: refused(() => generator().pickCertificate(certs, null)),
+      config: refused(() => new IosProfileGenerator({ FELDSPAR_ASC_KEY_ID: "KEY123" })),
+      badKey: refused(() => new IosProfileGenerator({ ...env, FELDSPAR_ASC_KEY: "bm90IGEga2V5" }).token(1)),
+    },
+  }));
+})().catch((e) => { console.error(e.stack); process.exit(1); });
+"#;
+    let out = std::process::Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .current_dir(&dir)
+        .output()
+        .expect("node runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The last line: the lines before it are what the build would log.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let got: Json = serde_json::from_str(stdout.lines().last().unwrap_or("")).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+
+    // The bearer token: the key's ID in the header, the issuer and Apple's
+    // audience in the claims, valid for 15 minutes, and signed by the key.
+    assert_eq!(
+        got["header"],
+        json!({ "alg": "ES256", "kid": "KEY123", "typ": "JWT" })
+    );
+    assert_eq!(
+        got["claims"],
+        json!({ "iss": "issuer-1", "iat": 1800000000u64, "exp": 1800000900u64, "aud": "appstoreconnect-v1" })
+    );
+    assert_eq!(got["verified"], true);
+
+    // The certificate: the one Apple and the keychain share and that has not
+    // expired; with two, the module's setting picks by name or SHA-1.
+    assert_eq!(got["cert"]["id"], "C1");
+    assert_eq!(got["cert"]["name"], "Apple Distribution: One");
+    assert_eq!(got["named"], "C2");
+    assert_eq!(got["bySha1"], "C2");
+
+    // A first build registers the bundle ID and makes the profile.
+    assert_eq!(got["fresh"]["content"], "TkVX");
+    assert_eq!(
+        got["fresh"]["calls"],
+        json!([
+            "GET /v1/bundleIds",
+            "POST /v1/bundleIds",
+            "GET /v1/profiles",
+            "POST /v1/profiles"
+        ])
+    );
+    // A later one reuses it while it is good.
+    assert_eq!(got["reuse"]["content"], "T0xE");
+    assert_eq!(got["reuse"]["name"], "Feldspar com.example.todo App Store");
+    assert_eq!(got["reuse"]["expires"], "2027-06-01T00:00:00Z");
+    // Without a keychain, the one unexpired certificate Apple knows.
+    assert_eq!(
+        got["operation"],
+        json!({ "content": "T0xE", "certificate": "C1" })
+    );
+    assert_eq!(
+        got["reuse"]["calls"],
+        json!(["GET /v1/bundleIds", "GET /v1/profiles"])
+    );
+    // One for another certificate, or days from expiring, is replaced.
+    assert_eq!(got["stale"]["content"], "TkVX");
+    assert_eq!(
+        got["stale"]["calls"],
+        json!([
+            "GET /v1/bundleIds",
+            "GET /v1/profiles",
+            "DELETE /v1/profiles/P2",
+            "DELETE /v1/profiles/P3",
+            "POST /v1/profiles"
+        ])
+    );
+    let posted = &got["stale"]["posted"]["data"];
+    assert_eq!(
+        posted["attributes"],
+        json!({ "name": "Feldspar com.example.todo App Store", "profileType": "IOS_APP_STORE" })
+    );
+    assert_eq!(posted["relationships"]["bundleId"]["data"]["id"], "B1");
+    assert_eq!(
+        posted["relationships"]["certificates"]["data"][0]["id"],
+        "C1"
+    );
+
+    // Each refusal says what to do.
+    let refusal = |name: &str| got["refusals"][name].as_str().unwrap_or("").to_owned();
+    assert!(
+        refusal("none").contains("Manage Certificates"),
+        "{}",
+        refusal("none")
+    );
+    assert!(
+        refusal("many").contains("name one under Settings → Modules"),
+        "{}",
+        refusal("many")
+    );
+    assert!(
+        refusal("manyWithoutKeychain").contains("name one under Settings → Modules"),
+        "{}",
+        refusal("manyWithoutKeychain")
+    );
+    assert!(
+        refusal("config").contains("issuer ID, private key"),
+        "{}",
+        refusal("config")
+    );
+    assert!(
+        refusal("badKey").contains("not a valid .p8 key"),
+        "{}",
+        refusal("badKey")
+    );
+}
+
+/// "Generate a provisioning profile" runs in the module's worker: it is
+/// declared on the iOS target, says what is missing without the module's App
+/// Store Connect settings, and with them signs its token there (Node's `crypto.sign`
+/// in the sandbox) before calling Apple. The test grants the worker no network,
+/// so that call is refused and nothing reaches Apple; the API itself is
+/// covered against a fake by `an_ios_build_can_generate_its_app_store_profile`.
+#[tokio::test]
+async fn the_profile_operation_runs_in_the_modules_worker() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    // The API switched on, but none of its settings filled in.
+    let (frameworks, _) =
+        frameworks_configured("bundled-rn-profile-op", json!({ "use_asc": true })).await;
+    let declared = frameworks.frameworks();
+    let ios = declared[0]
+        .targets
+        .iter()
+        .find(|t| t.name == "ios")
+        .unwrap();
+    assert_eq!(ios.operations.len(), 1);
+    let op = &ios.operations[0];
+    assert_eq!(op.name, "generate_profile");
+    assert_eq!(
+        op.show_if,
+        [ShowIfCondition::new(
+            "ios_profile_source",
+            vec![json!("own")]
+        )]
+    );
+    let context = json!({ "app": { "name": "My Todo", "subdomain": "todo" }, "project": "todo",
+                          "settings": { "app_id": "com.example.my_todo" } });
+    let err = frameworks
+        .call_target_operation(FRAMEWORK, "ios", "generate_profile", context.clone())
+        .await
+        .expect_err("no API key is set")
+        .to_string();
+    assert!(err.contains("issuer ID, key ID, private key"), "{err}");
+    assert!(err.contains("Use the App Store Connect API"), "{err}");
+
+    // Switched off, the button is still there and says where to switch it on.
+    let (off, _) =
+        frameworks_configured("bundled-rn-profile-op-off", json!({ "use_asc": false })).await;
+    let err = off
+        .call_target_operation(FRAMEWORK, "ios", "generate_profile", context.clone())
+        .await
+        .expect_err("the API is switched off")
+        .to_string();
+    assert!(err.contains("switched off"), "{err}");
+    assert!(err.contains("Settings → Modules → React Native"), "{err}");
+
+    let out = std::process::Command::new("node")
+        .arg("-e")
+        .arg(
+            "const { privateKey } = require('crypto').generateKeyPairSync('ec', { namedCurve: 'P-256' });\n\
+             process.stdout.write(privateKey.export({ type: 'pkcs8', format: 'pem' }));",
+        )
+        .output()
+        .expect("node runs");
+    let pem = String::from_utf8(out.stdout).unwrap();
+    assert!(pem.starts_with("-----BEGIN PRIVATE KEY-----"), "{pem}");
+    let (configured, _) = frameworks_configured(
+        "bundled-rn-profile-op-key",
+        json!({ "use_asc": true, "asc_issuer_id": "issuer-1", "asc_key_id": "KEY123", "asc_key": pem }),
+    )
+    .await;
+    let err = configured
+        .call_target_operation(FRAMEWORK, "ios", "generate_profile", context)
+        .await
+        .expect_err("the test grants no network")
+        .to_string();
+    assert!(!err.contains("not a valid .p8 key"), "{err}");
+    assert!(err.contains("api.appstoreconnect.apple.com"), "{err}");
+}
+
+/// A project whose path has a space, as every local file store on macOS has
+/// (`~/Library/Application Support/…`). Two build phases Expo writes break on
+/// it: expo-constants' in the Pods project, and the app's own "Bundle React
+/// Native code and images". `ios/build.cjs` quotes both after `pod install`, matched
+/// exactly, and leaves every other phase alone.
+#[tokio::test]
+async fn an_ios_build_quotes_the_project_path_in_the_phases_that_split_it() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let files = frameworks("bundled-rn-ios-space")
+        .await
+        .framework_files(
+            FRAMEWORK,
+            FilePhase::Runtime,
+            context(true, vec![tasks_table()]),
+        )
+        .await
+        .expect("the runtime runs");
+    let dir = temp_root("bundled-rn-ios-space-node");
+    write_ios_files(&files, &dir);
+    // The two phases as Expo writes them, each beside one that is not theirs.
+    let ios = dir.join("Application Support/app/ios");
+    let pods = ios.join("Pods/Pods.xcodeproj/project.pbxproj");
+    let app = ios.join("app.xcodeproj/project.pbxproj");
+    std::fs::create_dir_all(pods.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(app.parent().unwrap()).unwrap();
+    let constants =
+        r#"shellScript = "bash -l -c \"$PODS_TARGET_SRCROOT/../scripts/get-app-config-ios.sh\"";"#;
+    let bundle = r#"`\"$NODE_BINARY\" --print \"require('path').dirname(require.resolve('react-native/package.json')) + '/scripts/react-native-xcode.sh'\"`"#;
+    let other = r#"shellScript = "bash -l -c \"$PODS_TARGET_SRCROOT/other.sh\"";"#;
+    std::fs::write(&pods, format!("\t\t\t{constants}\n\t\t\t{other}\n")).unwrap();
+    std::fs::write(
+        &app,
+        format!("\t\t\tshellScript = \"fi\\n\\n{bundle}\\n\\n\";\n\t\t\t{other}\n"),
+    )
+    .unwrap();
+    let script = r#"
+const ios = require("./ios/build.cjs");
+const dir = require("path").join(process.cwd(), "Application Support/app/ios");
+const first = ios.quoteScriptPaths(dir);
+const again = ios.quoteScriptPaths(dir);
+// A Debug simulator build is plain Debug: its JavaScript comes from Metro.
+const sim = [ios.simulatorConfiguration({ ios: { simulatorConfiguration: "debug" } }),
+             ios.simulatorConfiguration({})];
+console.log(JSON.stringify({ first, again, sim }));
+"#;
+    let out = std::process::Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .current_dir(&dir)
+        .output()
+        .expect("node runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let got: Json = serde_json::from_slice(&out.stdout).unwrap();
+    let pods = std::fs::read_to_string(&pods).unwrap();
+    let app = std::fs::read_to_string(&app).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+
+    // Both fixed once; a second build finds nothing left to fix.
+    assert_eq!(got["first"], 2);
+    assert_eq!(got["again"], 0);
+    assert_eq!(
+        got["sim"],
+        json!([
+            { "configuration": "Debug" },
+            { "configuration": "Release" }
+        ])
+    );
+    assert!(!pods.contains(constants), "{pods}");
+    assert!(
+        pods.contains(
+            r#"shellScript = "PROJECT_ROOT=\"$PODS_ROOT/../..\" PROJECT_DIR=Pods bash -l \"$PODS_TARGET_SRCROOT/../scripts/get-app-config-ios.sh\"";"#
+        ),
+        "{pods}"
+    );
+    assert!(!app.contains(bundle), "{app}");
+    assert!(
+        app.contains(
+            r#"\"$(\"$NODE_BINARY\" --print \"require('path').dirname(require.resolve('react-native/package.json')) + '/scripts/react-native-xcode.sh'\")\""#
+        ),
+        "{app}"
+    );
+    // Any other phase is left as it is.
+    assert!(pods.contains(other) && app.contains(other), "{pods}\n{app}");
 }
 
 #[tokio::test]
@@ -747,6 +1655,10 @@ async fn a_rebuild_rewrites_the_generated_directory_and_nothing_else() {
             "src/feldspar/hooks.ts",
             "src/feldspar/config.ts",
             "src/feldspar/native.json",
+            "src/feldspar/ios/build.cjs",
+            "src/feldspar/ios/prebuild.cjs",
+            "src/feldspar/ios/signing.cjs",
+            "src/feldspar/ios/profile-generator.cjs",
             "src/feldspar/README.md"
         ],
         "a build must not rewrite a screen the developer owns"

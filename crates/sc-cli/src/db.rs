@@ -197,12 +197,31 @@ impl Serving<'_> {
     /// domain, and a port to reach it on.
     ///
     /// `base_domain` overrides the file's, for a command with a flag of its own.
+    /// With neither, a server that listens on this machine only serves under
+    /// `localhost`, as `serve` does ([`sc_server::implied_base_domain`]), so a
+    /// build writes the URL that server answers at.
     pub fn public_origin(&self, base_domain: Option<&str>) -> Option<sc_catalog::PublicOrigin> {
-        let domain = base_domain.or_else(|| self.base_domain())?;
+        let domain = base_domain
+            .or_else(|| self.base_domain())
+            .or_else(|| self.implied_base_domain())?;
         Some(
             sc_catalog::PublicOrigin::new(domain, self.port().unwrap_or(DEFAULT_HTTP_PORT))
                 .secure(self.secure_cookies().unwrap_or(false)),
         )
+    }
+}
+
+impl Serving<'_> {
+    /// The base domain `serve` would use without one configured: `localhost`
+    /// for a loopback-only bind (the configured one, else the default) and no
+    /// TLS. A bind that does not parse implies nothing.
+    fn implied_base_domain(&self) -> Option<&'static str> {
+        let addr: std::net::SocketAddr = self
+            .bind()
+            .unwrap_or(sc_server::DEFAULT_BIND)
+            .parse()
+            .ok()?;
+        sc_server::implied_base_domain(&addr, self.secure_cookies().unwrap_or(false))
     }
 }
 

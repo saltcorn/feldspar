@@ -26,7 +26,7 @@ import { workspaceKindName } from "../labels";
 import { ShareSelect } from "../share";
 import { useShell } from "../shell";
 import { describeGrain, type Base, type Grain } from "./ops";
-import { PublicDatasetsModal } from "./PublicDatasets";
+import { PublicDatasetsModal } from "./PublicDatasetsModal";
 
 export type DatasetItem = ListDatasetsResponse[number];
 type TableItem = ListDatasetTablesResponse[number];

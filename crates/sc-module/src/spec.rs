@@ -36,14 +36,26 @@ pub struct SpecIssue(pub String);
 ///
 /// `owner` names the thing whose fields these are (`the action mqtt_publish`),
 /// so an issue reads as a sentence.
+///
+/// A `section_header` is not a setting, but its label heads the settings after
+/// it: it becomes the [`section`](FormField::section) of the next field that is
+/// one. A heading with no setting after it heads nothing and is dropped.
 pub fn config_fields_to_form_fields(fields: &[Json], owner: &str) -> (Vec<FormField>, Vec<String>) {
     let mut out = Vec::new();
     let mut issues = Vec::new();
+    let mut heading: Option<String> = None;
     for field in fields {
+        if let Some(label) = section_header(field) {
+            heading = Some(label);
+            continue;
+        }
         match config_field(field, owner) {
-            Ok(Some((form_field, issue))) => {
+            Ok(Some((mut form_field, issue))) => {
                 if let Some(issue) = issue {
                     issues.push(issue);
+                }
+                if let Some(label) = heading.take() {
+                    form_field.section = Some(label);
                 }
                 out.push(form_field);
             }
@@ -58,6 +70,20 @@ pub fn config_fields_to_form_fields(fields: &[Json], owner: &str) -> (Vec<FormFi
 /// a heading between groups of fields, and a hidden field the workflow itself
 /// fills in. Neither is a setting, so neither is translated — or reported.
 const NOT_SETTINGS: [&str; 2] = ["section_header", "hidden"];
+
+/// A v1 `section_header`'s heading: its label, else its `sublabel`. One with
+/// neither heads nothing, and reads as no heading at all.
+fn section_header(field: &Json) -> Option<String> {
+    if field.get("input_type").and_then(Json::as_str) != Some("section_header") {
+        return None;
+    }
+    ["label", "sublabel"]
+        .iter()
+        .filter_map(|key| field.get(*key).and_then(Json::as_str))
+        .map(str::trim)
+        .find(|text| !text.is_empty())
+        .map(str::to_owned)
+}
 
 /// One v1 field. `Err` is a field that could not be translated at all (it has no
 /// name); `Ok(None)` is one that is not a setting ([`NOT_SETTINGS`]); `Ok`'s
@@ -158,10 +184,29 @@ fn config_field(field: &Json, owner: &str) -> Result<Option<(FormField, Option<S
     form_field
         .show_if
         .extend(show_if_conditions(field.get("showIf")));
-    // `sublabel` — v1's sentence under the control — has nowhere to go:
-    // `FormField` carries no help text (a `ConfigDef` does, and that is a
-    // settings-screen type). Dropped deliberately rather than folded into the
-    // label, where it would read as part of the name.
+    // `sublabel`: v1's sentence under the control.
+    if let Some(text) = field
+        .get("sublabel")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        form_field = form_field.sublabel(text);
+    }
+    // v1's `attributes.regexp`: what a text value must look like, and the
+    // sentence `re_invalid_error` says when it does not.
+    let attributes = field.get("attributes");
+    if let Some(pattern) = attributes
+        .and_then(|a| a.get("regexp"))
+        .and_then(Json::as_str)
+        .filter(|p| !p.is_empty())
+    {
+        let error = attributes
+            .and_then(|a| a.get("re_invalid_error"))
+            .and_then(Json::as_str)
+            .map(str::to_string);
+        form_field = form_field.pattern(pattern, error);
+    }
     Ok(Some((form_field, issue)))
 }
 
@@ -213,9 +258,8 @@ fn basic_type(declared: &str) -> Option<BasicType> {
 ///
 /// v1 writes options three ways — `["a", "b"]`, `[{name: "a", label: "A"}]` and a
 /// select's `[{label: "A", value: 1}]` — and all mean the same set of stored
-/// values. The label is dropped for the same reason `sublabel` is: there is
-/// nowhere for it to go today, and inventing a place for it here would be a
-/// second vocabulary. An empty value is the select's "none", which the form
+/// values. The label is dropped: there is nowhere for it to go today, and
+/// inventing a place for it here would be a second vocabulary. An empty value is the select's "none", which the form
 /// offers of its own accord, so it is not an option.
 fn options(field: &Json) -> Option<Vec<Json>> {
     let options = field
@@ -389,6 +433,58 @@ mod tests {
         assert!(issues[0].contains("no name"), "{}", issues[0]);
     }
 
+    /// v1's `section_header` groups the settings after it: its label becomes
+    /// the next setting's `section`. Two headings in a row are one group (the
+    /// later wins), and a heading with nothing after it is dropped.
+    #[test]
+    fn a_v1_regexp_becomes_the_settings_pattern() {
+        let (fields, issues) = translate(json!([
+            { "name": "key_id", "type": "String",
+              "attributes": { "regexp": "[A-Z0-9]{10}", "re_invalid_error": "Ten characters." } },
+            { "name": "plain", "type": "String", "attributes": { "regexp": "" } }
+        ]));
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(fields[0].pattern.as_deref(), Some("[A-Z0-9]{10}"));
+        assert_eq!(fields[0].pattern_error.as_deref(), Some("Ten characters."));
+        // An empty pattern is no pattern.
+        assert_eq!(fields[1].pattern, None);
+    }
+
+    #[test]
+    fn a_section_header_heads_the_setting_after_it() {
+        let (fields, issues) = translate(json!([
+            { "name": "store", "type": "String" },
+            { "input_type": "section_header", "label": "Superseded" },
+            { "input_type": "section_header", "label": " Native apps " },
+            { "name": "mobile_url", "type": "String", "sublabel": " Where a phone reaches the server. " },
+            { "name": "app_id", "type": "String" },
+            { "input_type": "section_header", "sublabel": "Advanced" },
+            { "name": "debug", "type": "Bool" },
+            { "input_type": "section_header", "label": "Nothing below" }
+        ]));
+        assert!(issues.is_empty(), "{issues:?}");
+        let sections: Vec<(&str, Option<&str>)> = fields
+            .iter()
+            .map(|f| (f.name(), f.section.as_deref()))
+            .collect();
+        assert_eq!(
+            sections,
+            [
+                ("store", None),
+                ("mobile_url", Some("Native apps")),
+                ("app_id", None),
+                ("debug", Some("Advanced"))
+            ]
+        );
+        // A setting's own `sublabel` is its description, trimmed; the
+        // heading's is not one.
+        assert_eq!(
+            fields[1].sublabel.as_deref(),
+            Some("Where a phone reaches the server.")
+        );
+        assert!(fields[3].sublabel.is_none());
+    }
+
     /// What a view pattern's configuration form is made of (TODO "Saltcorn UI"
     /// 10.1): v1's `Form` fields, which spell a few things a plugin's
     /// `configFields` do not.
@@ -415,6 +511,13 @@ mod tests {
                 "formula_destinations"
             ]
         );
+        // The heading is not a setting, but it heads the first one after it
+        // (the hidden field is not a setting either), and only that one.
+        assert_eq!(
+            fields[0].section.as_deref(),
+            Some("These fields were missing")
+        );
+        assert!(fields[1..].iter().all(|f| f.section.is_none()));
         assert_eq!(fields[0].base.type_, TypeRef::Basic(BasicType::Int));
         assert_eq!(fields[1].base.type_, TypeRef::Basic(BasicType::Int));
         // The select's blank is the form's own "none", not a choice.

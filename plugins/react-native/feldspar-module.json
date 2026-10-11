@@ -1,11 +1,16 @@
 {
   "name": "@feldspar/react-native",
   "language": "javascript",
-  "title": "React Native (web)",
-  "description": "Build an application's UI with React Native components, rendered in the browser by react-native-web: the same scaffold, typed client and build, in React Native's idiom.",
+  "title": "React Native (web, Android, iOS)",
+  "description": "Build an application's UI with React Native components: rendered in the browser by react-native-web, and built into Android and iOS apps from the same source, with the same scaffold, typed client and build.",
   "supplies": [
-    "An application framework, \"React Native (web)\": pick it when creating an application, and Saltcorn writes a React Native project for the web — Vite, react-native-web, a screen and typed hooks for every table the app exposes."
+    "An application framework, \"React Native (web)\": pick it when creating an application, and Saltcorn writes a React Native project for the web — Vite, react-native-web, a screen and typed hooks for every table the app exposes.",
+    "Native builds of the same project: an Android APK or AAB, and on a Mac an iOS simulator app or an IPA signed from a provisioning profile in the file store."
   ],
   "installs": ["node-forge"],
-  "permissions": {}
+  "permissions": {
+    "net": [
+      "api.appstoreconnect.apple.com"
+    ]
+  }
 }

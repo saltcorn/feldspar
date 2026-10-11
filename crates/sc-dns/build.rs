@@ -18,6 +18,10 @@
 //! that one links `__wrap_freeaddrinfo` too, so it needs `__real_freeaddrinfo`
 //! to exist.
 fn main() {
+    // `--wrap` is a GNU ld option; Apple's linker has no equivalent.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return;
+    }
     for symbol in ["getaddrinfo", "freeaddrinfo"] {
         println!("cargo:rustc-link-arg=-Wl,--wrap={symbol}");
     }

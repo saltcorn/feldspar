@@ -141,7 +141,10 @@ pub fn default_python_adapter() -> std::sync::Arc<sc_python::PythonRuntime> {
     python_adapter(&ServerConfig::default())
 }
 pub use builder::{BUILDER_BOOT_ID, BUILDER_PAGE_MODE, BUILDER_PREFIX, BUILDER_VIEW_MODES};
-pub use config::{DEFAULT_BIND, DEFAULT_HTTPS_PORT, PythonMode, ServerConfig};
+pub use config::{
+    DEFAULT_BIND, DEFAULT_HTTPS_PORT, LOOPBACK_BASE_DOMAIN, PythonMode, ServerConfig,
+    implied_base_domain,
+};
 pub use handler::{
     BoxFuture, HandlerCtx, HandlerFn, HandlerRegistry, HandlerResponse, SessionAction,
 };

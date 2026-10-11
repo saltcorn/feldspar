@@ -70,7 +70,7 @@ A complete deployment, from a clean Debian 13 ("trixie") machine to a service th
 starts at boot: PostgreSQL, a Rust toolchain, a build from source, a
 `feldspar.toml`, and a systemd unit. Each step links to the section that explains
 it properly — read those when something does not fit your box. If you only want to
-*try* Saltcorn, skip this and follow §3–§8 instead.
+*try* Saltcorn, skip this and follow §3–§8 instead (on a Mac, §4.2 is the short version).
 
 Everything below assumes a `sudo`-capable login, and uses `example.com` as the
 domain applications will be served under.
@@ -298,8 +298,10 @@ Notes on that file, all of which §7 covers in full:
 - `base_domain` and `bind` mirror the flags of the same names, so `feldspar serve`
   needs neither on the command line — and a `feldspar build-app` run against the same
   environment writes the application's real URL into the documentation it generates.
-- **Without `base_domain` no application is served at all**, only the admin UI: the
-  server has no way to address an app.
+- **Without `base_domain`**, a server that listens on this machine only (the default
+  `127.0.0.1:3032`, no TLS) serves its applications under `localhost`:
+  `http://<subdomain>.localhost:3032`. Any other server serves no application at all,
+  only the admin UI: it has no way to address an app.
 - `extra_base_domains = ["10.0.2.2.nip.io", "192.168.1.50.nip.io"]` (or
   `--extra-base-domain`, repeatable) makes every application answer under those domains
   too — `todo.10.0.2.2.nip.io` is the app `todo`. That is how an Android emulator
@@ -745,6 +747,87 @@ deployment: `/etc/nsswitch.conf` no longer affects how this process resolves any
 and a name it must reach has to be in DNS or in `/etc/hosts` — mDNS (`.local`),
 `myhostname`'s synthesis of the local hostname, and LDAP/sssd hosts do not apply to it.
 
+### 4.2 Development on macOS
+
+A development setup on a Mac (Apple silicon or Intel), from a clean machine to `feldspar
+serve`. It needs no `install.sh` and no `setup-host.sh`: those are for a Linux server.
+
+```bash
+# 1. Tools: Xcode's command line tools, then Homebrew's Postgres and Node, and Rust
+xcode-select --install
+brew install postgresql@16 node
+brew services start postgresql@16
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source ~/.cargo/env
+
+# 2. The database. Homebrew's Postgres makes your login a superuser, so no `sudo -u postgres`.
+psql -d postgres -c "CREATE ROLE feldspar WITH LOGIN PASSWORD 'change-me';"
+psql -d postgres -c "CREATE DATABASE feldspar OWNER feldspar;"
+
+# 3. Build: the binary and the web UIs, as on Linux (§6)
+cargo build -p sc-cli
+
+# 4. Put `feldspar` on the PATH: a link, so every later build is picked up as it is
+ln -s "$PWD/target/debug/feldspar" ~/.cargo/bin/feldspar
+```
+
+Then put the connection in the configuration file macOS looks in (§7), so the server
+needs no flags:
+
+```bash
+mkdir -p ~/Library/Application\ Support/feldspar
+cat > ~/Library/Application\ Support/feldspar/feldspar.toml <<'EOF'
+default_environment = "development"
+
+[environments.development]
+host = "localhost"
+user = "feldspar"
+password = "change-me"
+database = "feldspar"
+EOF
+chmod 600 ~/Library/Application\ Support/feldspar/feldspar.toml
+```
+
+```bash
+feldspar serve      # http://127.0.0.1:3032 — the first visit creates the admin user (§8)
+```
+
+After a change, `cargo build -p sc-cli` and restart the server. Differences from Linux:
+
+- **Hostnames resolve through macOS's own resolver.** The `getaddrinfo` wrapper of §4.1 is a
+  GNU linker feature and is linked on Linux only.
+- **Building iOS apps** (the React Native framework's iOS targets) needs Xcode itself, not
+  only its command line tools, and CocoaPods (`brew install cocoapods`). An app signed for
+  devices also needs its distribution certificate in the login keychain.
+- **Running the tests:** macOS's temporary directory is reached through a symlink, which the
+  module tests' read permissions do not resolve yet. Give them its real path:
+  `TMPDIR=$(cd "$TMPDIR" && pwd -P) cargo test --workspace`.
+
+**Debug simulator builds.** The "iOS simulator app" target has a Configuration setting:
+
+- `release`: the app runs on its own.
+- `debug`: dev menu, warnings and Fast Refresh, but the app loads its JavaScript from
+  Metro, Expo's development server. Start Metro in the project folder before the app.
+
+For example, for an app whose file store `simubuild` is in its suggested directory (with
+the app's Project setting filled in, add that folder to the path):
+
+```bash
+# Terminal 1: Metro; leave it running (r reloads, Ctrl-C stops)
+cd "$HOME/Library/Application Support/Feldspar/local-stores/simubuild"
+npx expo start
+
+# Terminal 2: install the Debug build in the simulator and start it
+cd "$HOME/Library/Application Support/Feldspar/local-stores/simubuild"
+open -a Simulator
+rm -rf /tmp/simapp && ditto -x -k ios-output/app-simulator.zip /tmp/simapp
+APP=$(echo /tmp/simapp/*.app)
+xcrun simctl install booted "$APP"
+xcrun simctl launch booted "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")"
+```
+
+Without Metro the Debug app stops with "No script URL provided".
+
 ---
 
 ## 5. Database setup
@@ -1098,7 +1181,7 @@ name = "claude-haiku-4-5"
 | `--static-dir <dir>` | directory holding the built admin bundle | (the embedded bundle, unless built with `SC_BUILD_ADMIN=0`) |
 | `--session-ttl-hours <n>` | session lifetime | `24` |
 | `--secure-cookies` | set the `Secure` attribute on session/CSRF cookies (use behind HTTPS) | off |
-| `--base-domain <domain>` | domain that applications are served under: an app with subdomain `blog` is served at `blog.<domain>` | none (app routing off) |
+| `--base-domain <domain>` | domain that applications are served under: an app with subdomain `blog` is served at `blog.<domain>` | `localhost` if bound to loopback without TLS, else none (app routing off) |
 | `--extra-base-domain <domain>` | a further domain the same applications answer under (repeatable): `blog.<domain>` is the app `blog` too | none |
 | `--code-workers <n>` | V8 isolates serving `run_js_code` trigger bodies | `2` |
 | `--code-max-inflight <n>` | runs each of those isolates keeps resident at once | `256` |
@@ -1134,8 +1217,9 @@ Unknown flags in either group are rejected with a clear error rather than ignore
 > **`--base-domain` mounts your applications.** With it set, `feldspar serve` loads
 > every `_fd_applications` row at boot, builds each, and serves it at
 > `<subdomain>.<base-domain>`; an app that fails to build is logged and skipped, not
-> fatal, and can be fixed and rebuilt without a restart. Without a base domain the
-> server has no way to address an app, so it serves the admin only.
+> fatal, and can be fixed and rebuilt without a restart. Without a base domain, a
+> server bound to loopback (the default) without TLS uses `localhost` and says so at
+> startup; any other server has no way to address an app, so it serves the admin only.
 
 > **A coding run's previews.** A green `check` in a coding run mounts that build
 > as the run's **preview** at `<label>--<subdomain>.<base-domain>`, beside the

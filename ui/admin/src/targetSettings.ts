@@ -1,7 +1,7 @@
 // A framework's build targets' own settings on the application form.
 //
-// A target (an Android APK) may declare settings that configure it alone: an
-// application id, a version, an icon, debug or release. The server lists them in
+// A target (an Android APK) may declare settings that configure it alone:
+// debug or release, a signing keystore. The server lists them in
 // the framework's `config_spec` like every other setting — they are stored,
 // validated and handed to the framework's generators the same way — and names
 // them per target in `targets`. This module splits them out so the form shows

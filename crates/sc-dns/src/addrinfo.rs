@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::resolver::{LookupError, lookup};
 
+#[cfg(target_os = "linux")]
 unsafe extern "C" {
     /// glibc's `getaddrinfo`, under the name `--wrap` leaves it at.
     fn __real_getaddrinfo(
@@ -35,6 +36,26 @@ unsafe extern "C" {
     ) -> c_int;
     /// glibc's `freeaddrinfo`, likewise.
     fn __real_freeaddrinfo(res: *mut libc::addrinfo);
+}
+
+// Elsewhere (macOS) the linker has no `--wrap`, so nothing is intercepted and
+// the system resolver is called directly; these stand in for the `__real_`
+// names so the wrapper still links.
+#[cfg(not(target_os = "linux"))]
+unsafe fn __real_getaddrinfo(
+    node: *const c_char,
+    service: *const c_char,
+    hints: *const libc::addrinfo,
+    res: *mut *mut libc::addrinfo,
+) -> c_int {
+    // SAFETY: the caller's contract is `getaddrinfo`'s.
+    unsafe { libc::getaddrinfo(node, service, hints, res) }
+}
+
+#[cfg(not(target_os = "linux"))]
+unsafe fn __real_freeaddrinfo(res: *mut libc::addrinfo) {
+    // SAFETY: the caller's contract is `freeaddrinfo`'s.
+    unsafe { libc::freeaddrinfo(res) }
 }
 
 /// How many calls have come through the wrapper.

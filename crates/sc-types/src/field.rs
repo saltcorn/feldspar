@@ -208,6 +208,28 @@ pub struct FormField {
     /// is required only when signing with an own keystore is switched on. Its
     /// value is kept rather than cleared, so switching back restores it.
     pub show_if: Vec<ShowIfCondition>,
+    /// The heading of a **group of settings that starts with this one**, or
+    /// `None` for a field that continues the group before it — v1's
+    /// `section_header`, which a v1 form writes as a field of its own.
+    ///
+    /// Presentation only, like [`multiline`](FormField::multiline): it changes
+    /// nothing about the value. It is on the field that opens the group, rather
+    /// than a heading entry in the spec, so that a spec stays a list of
+    /// settings — something every consumer can validate, store and look up by
+    /// name without stepping over entries that are not settings.
+    pub section: Option<String>,
+    /// A sentence or two shown **under the control**, explaining the setting
+    /// beyond its label: what to enter, where to find it. v1's `sublabel`.
+    ///
+    /// Presentation only, like [`section`](FormField::section).
+    pub sublabel: Option<String>,
+    /// A regular expression a non-empty text value must match in full — v1's
+    /// `attributes.regexp`. Checked by [`validate_patterns`] on save, and by the
+    /// admin UI as the admin types.
+    pub pattern: Option<String>,
+    /// What to tell the admin when [`pattern`](FormField::pattern) does not
+    /// match — v1's `attributes.re_invalid_error`.
+    pub pattern_error: Option<String>,
     // Post-MVP (§6.2, §6.3, §12): `fieldview: FieldViewRef` and
     // `visibility: Option<Formula>`. Both name types that do not exist yet —
     // fieldviews and formulas are out of MVP scope — so they are left out rather
@@ -228,7 +250,33 @@ impl FormField {
             create_only: false,
             code_language: None,
             show_if: Vec::new(),
+            section: None,
+            sublabel: None,
+            pattern: None,
+            pattern_error: None,
         }
+    }
+
+    /// Require a non-empty text value to match `pattern` in full, saying
+    /// `error` when it does not (see [`pattern`](FormField::pattern)).
+    pub fn pattern(mut self, pattern: impl Into<String>, error: Option<String>) -> FormField {
+        self.pattern = Some(pattern.into());
+        self.pattern_error = error;
+        self
+    }
+
+    /// Explain this field under its control (see
+    /// [`sublabel`](FormField::sublabel)).
+    pub fn sublabel(mut self, text: impl Into<String>) -> FormField {
+        self.sublabel = Some(text.into());
+        self
+    }
+
+    /// Open a group of settings headed `heading` with this field (see
+    /// [`section`](FormField::section)).
+    pub fn section(mut self, heading: impl Into<String>) -> FormField {
+        self.section = Some(heading.into());
+        self
     }
 
     /// Apply this field only while setting `name` resolves to one of `values`
@@ -451,6 +499,7 @@ pub fn validate_attrs(spec: &[FormField], attrs: &Attrs) -> Result<()> {
             optional.validate(attrs)?;
         }
     }
+    validate_patterns(spec, attrs)?;
     for key in attrs.keys() {
         if !spec.iter().any(|f| &f.base.name == key) {
             let known = spec
@@ -462,6 +511,43 @@ pub fn validate_attrs(spec: &[FormField], attrs: &Attrs) -> Result<()> {
                 format!("unknown setting `{key}`; this takes no settings")
             } else {
                 format!("unknown setting `{key}`; known settings are {known}")
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// Check every applying field's [`pattern`](FormField::pattern) against its
+/// value in `attrs`. An empty value, a non-text value and a secret's
+/// [`SECRET_SENTINEL`] are not checked, nor is a field `show_if` hides, so a
+/// switched-off group of settings never blocks a save.
+///
+/// Separate from [`validate_attrs`] (which calls it) so that a v1 module's
+/// settings, which are not held to the full spec, can still be held to it.
+pub fn validate_patterns(spec: &[FormField], attrs: &Attrs) -> Result<()> {
+    for field in spec {
+        let Some(pattern) = field.pattern.as_deref().filter(|p| !p.is_empty()) else {
+            continue;
+        };
+        let Some(value) = field.resolve(attrs).and_then(Json::as_str) else {
+            continue;
+        };
+        if value.is_empty() || value == SECRET_SENTINEL || !field.applies(spec, attrs) {
+            continue;
+        }
+        let re = regex_lite::Regex::new(&format!("^(?:{pattern})$")).map_err(|e| {
+            Error::invalid(format!(
+                "setting `{}`: `{pattern}` is not a valid regular expression: {e}",
+                field.base.name
+            ))
+        })?;
+        if !re.is_match(value) {
+            return Err(Error::invalid(match &field.pattern_error {
+                Some(message) => format!("{}: {message}", field.base.label),
+                None => format!(
+                    "setting `{}` must match the pattern `{pattern}`",
+                    field.base.name
+                ),
             }));
         }
     }
@@ -724,6 +810,50 @@ mod tests {
         let err = field.validate(&bad).unwrap_err().to_string();
         assert!(err.contains("bundler"), "{err}");
         assert!(err.contains("vite"), "should list what is allowed: {err}");
+    }
+
+    #[test]
+    fn a_pattern_is_matched_in_full_where_the_field_applies() {
+        let spec = [
+            FormField::new("use_api", BasicType::Bool),
+            FormField::new("key_id", BasicType::Text)
+                .pattern("[A-Z0-9]{10}", Some("ten capitals and digits".to_owned()))
+                .show_if("use_api", vec![json!(true)]),
+            FormField::new("secret", BasicType::Text)
+                .secret()
+                .pattern("[a-z]+", None)
+                .show_if("use_api", vec![json!(true)]),
+        ];
+        let bag = |use_api: bool, key_id: &str, secret: &str| {
+            let mut attrs = Attrs::new();
+            attrs.insert("use_api".to_owned(), json!(use_api));
+            attrs.insert("key_id".to_owned(), json!(key_id));
+            attrs.insert("secret".to_owned(), json!(secret));
+            attrs
+        };
+        assert!(validate_attrs(&spec, &bag(true, "2X9R4HXF34", "abc")).is_ok());
+
+        // The whole value, and the field's own sentence, under its label.
+        let err = validate_patterns(&spec, &bag(true, "2X9R4HXF34x", "abc"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("key_id: ten capitals and digits"), "{err}");
+        // No sentence declared: the pattern itself.
+        let err = validate_attrs(&spec, &bag(true, "2X9R4HXF34", "ABC"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`secret` must match the pattern `[a-z]+`"), "{err}");
+
+        // Not judged: an empty value, a stored secret handed back, a hidden field.
+        assert!(validate_patterns(&spec, &bag(true, "", SECRET_SENTINEL)).is_ok());
+        assert!(validate_patterns(&spec, &bag(false, "nonsense", "NOPE")).is_ok());
+
+        // A pattern that does not compile is the declaration's mistake, named.
+        let broken = [FormField::new("x", BasicType::Text).pattern("(", None)];
+        let mut attrs = Attrs::new();
+        attrs.insert("x".to_owned(), json!("y"));
+        let err = validate_patterns(&broken, &attrs).unwrap_err().to_string();
+        assert!(err.contains("not a valid regular expression"), "{err}");
     }
 
     #[test]

@@ -688,7 +688,20 @@ impl Spawned {
         let (mut reader, writer) = {
             let mut fds = [0 as libc::c_int; 2];
             // SAFETY: `fds` has room for the two descriptors `pipe2` writes.
-            if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            #[cfg(target_os = "linux")]
+            let failed = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0;
+            // macOS has no `pipe2`: create the pipe, then mark both ends
+            // close-on-exec. (Not atomic with respect to a concurrent fork.)
+            // SAFETY: as above, and `fcntl` only touches the descriptors just
+            // created.
+            #[cfg(not(target_os = "linux"))]
+            let failed = unsafe {
+                libc::pipe(fds.as_mut_ptr()) != 0
+                    || fds
+                        .iter()
+                        .any(|&fd| libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) != 0)
+            };
+            if failed {
                 return Err(Error::config(format!(
                     "could not create a pipe: {}",
                     std::io::Error::last_os_error()

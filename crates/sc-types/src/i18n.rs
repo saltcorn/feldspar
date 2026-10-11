@@ -50,6 +50,15 @@ use crate::FormField;
 pub fn translate_spec(spec: &mut [FormField], locale: &Locale) {
     for field in spec.iter_mut() {
         field.base.label = sc_i18n::core::translate(locale, &field.base.label, &[]);
+        if let Some(section) = &field.section {
+            field.section = Some(sc_i18n::core::translate(locale, section, &[]));
+        }
+        if let Some(sublabel) = &field.sublabel {
+            field.sublabel = Some(sc_i18n::core::translate(locale, sublabel, &[]));
+        }
+        if let Some(message) = &field.pattern_error {
+            field.pattern_error = Some(sc_i18n::core::translate(locale, message, &[]));
+        }
     }
 }
 

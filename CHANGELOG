@@ -402,6 +402,49 @@ subscriber may be sent is decided per element, which is L3.5–L3.8.
   `after_commit`), §10.3, §14.3 (the third built-in provider), §14.10 ("Table changes: the write,
   after its commit").
 
+## Development servers serve their applications under `localhost`
+
+A server with no `base_domain` that listens on loopback without TLS (the default
+`127.0.0.1:3032`) now serves each application at `http://<subdomain>.localhost:3032`.
+Before, it served no applications. Native apps get that URL as their server URL. A server
+reachable from other machines still needs `base_domain`, and an Android emulator or a phone
+still needs the app's "Server URL for the mobile app".
+
+- Tests: `sc-server` config tests and `crates/sc-cli/tests/config_file.rs`.
+
+## Module settings: headings, descriptions and input checks
+
+Settings can be grouped under headings, explained under their input, and checked against a
+pattern, using Saltcorn 1's `section_header`, `sublabel` and `regexp`. This works on application
+forms and on the Modules tab. A value that does not match is marked as you type and refused
+on save. The React Native settings use this to group Android and iOS, and to check the App
+Store Connect API key.
+
+- Tests: `sc-module` spec tests, `sc-types` field tests, `settingSections.test.ts`,
+  `settingPattern.test.ts`.
+
+## React Native: iOS builds
+
+On a macOS server with Xcode and CocoaPods, `plugins/react-native` builds iOS apps from the
+same Expo project. On Linux, the iOS targets show as not ready.
+
+- **iOS simulator app** (`ios_simulator`): an unsigned Release or Debug build in
+  `ios-output/app-simulator.zip`. A Debug build loads its JavaScript from Metro.
+- **iOS app** (`ios`): an `.ipa` for App Store Connect in `ios-output/app.ipa`. As in
+  Saltcorn 1, the team, bundle ID, export method and signing identity all come from the
+  provisioning profile. The profile is either picked from the file store or generated through
+  the App Store Connect API. The certificate's private key must be in the keychain of the
+  user the server runs as. A bad profile or a missing certificate stops the build before
+  Xcode starts. Only App Store profiles are supported.
+- **"Generate a provisioning profile"**: a button on the iOS app card that stores an App Store
+  profile in the file store without building, from any OS.
+- **Module settings:** a custom CocoaPods directory, the App Store Connect API key (the `.p8`
+  is a secret) and the distribution certificate to use.
+- **Application settings:** the App ID, version and icon (PNG only) now apply to both
+  platforms. The iOS bundle ID is the App ID with `_` replaced by `-`.
+- Project paths that contain spaces now build.
+- Tests: `crates/sc-module/tests/bundled_react_native.rs`.
+
 ## Live updates L2: internal streams, topics and server-side publishing
 
 Saltcorn can now say things to an application's page itself — a toast when a job starts, a

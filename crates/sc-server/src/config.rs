@@ -31,6 +31,19 @@ pub enum PythonMode {
 /// Default address the server binds when `--bind` is not given.
 pub const DEFAULT_BIND: &str = "127.0.0.1:3032";
 
+/// The base domain of a server that was given none and listens on this machine
+/// only: an app `blog` is then served at `blog.localhost:<port>`.
+pub const LOOPBACK_BASE_DOMAIN: &str = "localhost";
+
+/// The base domain to use when none is configured: `localhost` for a server
+/// that listens on this machine only, so its apps are served at
+/// `<subdomain>.localhost` (browsers and the iOS simulator resolve these).
+/// None for a server reachable from elsewhere or using TLS: it must be told its
+/// domain, and `localhost` gets no certificate.
+pub fn implied_base_domain(addr: &SocketAddr, tls: bool) -> Option<&'static str> {
+    (addr.ip().is_loopback() && !tls).then_some(LOOPBACK_BASE_DOMAIN)
+}
+
 /// Runtime configuration for the HTTP server.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -93,6 +106,8 @@ pub struct ServerConfig {
     /// `None` (the default) disables subdomain app routing entirely, so every
     /// request reaches the admin. App routing is opt-in because without a base
     /// domain to anchor it, a request's own `Host` header would choose its app.
+    /// `serve` fills it in with [`implied_base_domain`] for a loopback-only
+    /// server that was given none.
     pub base_domain: Option<String>,
     /// Further domains the same applications answer under
     /// (`--extra-base-domain`, repeatable): `blog.<extra>` reaches the app `blog`
@@ -544,6 +559,24 @@ fn positive(raw: &str, flag: &str) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a server nobody else can reach gets `localhost` without asking, and
+    /// only without TLS.
+    #[test]
+    fn a_loopback_server_without_a_base_domain_serves_its_apps_under_localhost() {
+        let addr = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert_eq!(
+            implied_base_domain(&addr(DEFAULT_BIND), false),
+            Some("localhost")
+        );
+        assert_eq!(
+            implied_base_domain(&addr("[::1]:3032"), false),
+            Some("localhost")
+        );
+        assert_eq!(implied_base_domain(&addr("0.0.0.0:3032"), false), None);
+        assert_eq!(implied_base_domain(&addr("192.168.1.50:80"), false), None);
+        assert_eq!(implied_base_domain(&addr(DEFAULT_BIND), true), None);
+    }
 
     #[test]
     fn defaults_bind_to_localhost_3032() {

@@ -70,7 +70,7 @@ import {
   type ModulePermissionSet,
   type Toolchains,
 } from "../modules";
-import { SettingField, buildConfig, initialValues, type FieldSpec } from "../settings";
+import { SettingsFields, buildConfig, initialValues, type FieldSpec } from "../settings";
 import { T, useT } from "../i18n";
 
 export function ModulesTab() {
@@ -695,17 +695,16 @@ function ModuleCard({
               onConfigure(values);
             }}
           >
-            {(module.config_spec as FieldSpec[]).map((field) => (
-              <SettingField
-                key={field.name}
-                field={field}
-                value={values[field.name] ?? ""}
-                idPrefix={`module-${module.id}`}
-                onChange={(value) =>
-                  setValues((current) => ({ ...current, [field.name]: value }))
-                }
-              />
-            ))}
+            {/* Through SettingsFields, so a module's headings (v1's
+                `section_header`) group its settings as on other forms. */}
+            <SettingsFields
+              spec={module.config_spec as FieldSpec[]}
+              values={values}
+              idPrefix={`module-${module.id}`}
+              onChange={(name, value) =>
+                setValues((current) => ({ ...current, [name]: value }))
+              }
+            />
             <Button type="submit" size="sm" disabled={busy}>
               <T text="Save settings" />
             </Button>

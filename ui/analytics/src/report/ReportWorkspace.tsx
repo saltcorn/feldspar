@@ -29,7 +29,7 @@ import Dropdown from "react-bootstrap/Dropdown";
 import Form from "react-bootstrap/Form";
 
 import { T, useT } from "../i18n";
-import { Markdown } from "../panels/Markdown";
+import { Markdown } from "../panels/MarkdownView";
 import { carriesPanel, newPanelId, readPanelDrag } from "../panels/panel";
 import { PanelView, type PanelLook } from "../panels/PanelView";
 import type { WorkspaceProps, WorkspaceState } from "../workspaces/WorkspaceFrame";

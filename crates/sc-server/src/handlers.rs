@@ -2058,6 +2058,12 @@ pub fn admin_handlers_with(
                         ),
                         None => submitted,
                     };
+                    // Not the full spec check (a v1 module's settings are not
+                    // held to it), but a pattern the module declares is: a
+                    // malformed key is refused in front of the form.
+                    if let Some(loaded) = set.get(&module.name) {
+                        sc_types::validate_patterns(&loaded.config_spec, &module.configuration)?;
+                    }
                 }
                 if let Some(submitted) = obj.get("permissions").filter(|v| !v.is_null()) {
                     // Checked here rather than at the worker: a permission an
@@ -10715,6 +10721,10 @@ fn form_field_json(field: &FormField) -> Json {
         "secret": field.secret,
         "create_only": field.create_only,
         "code_language": field.code_language,
+        "section": field.section,
+        "sublabel": field.sublabel,
+        "pattern": field.pattern,
+        "pattern_error": field.pattern_error,
         "show_if": field
             .show_if
             .iter()

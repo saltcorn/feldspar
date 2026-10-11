@@ -195,10 +195,16 @@ pub enum TargetRequirementKind {
         /// Whether its value must be an existing directory.
         directory: bool,
     },
-    /// A program is on the build's `PATH`: `xcodebuild`, `pod`.
+    /// A program is on the build's `PATH`: `xcodebuild`, `pod`. Or, with
+    /// `dir_env`, in the directory that variable names, which the build is
+    /// expected to put on its own `PATH` (a module setting, so the program need
+    /// not be on the `PATH` the server was started with).
     Command {
         /// The program's name.
         name: String,
+        /// A variable naming one more directory to look in, checked first:
+        /// `FELDSPAR_POD_DIR`. Blank or unset: the `PATH` only.
+        dir_env: Option<String>,
     },
     /// The server runs on this operating system, as Rust names it: `macos`,
     /// `linux`, `windows`.

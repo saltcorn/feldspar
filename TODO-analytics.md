@@ -817,6 +817,18 @@ Outside the analytics milestones. See CHANGELOG for what each item covers.
 - [x] RN.15 "Generate a keystore": a target operation that makes one in the file store and fills
       in the signing settings; warns when the store is a git repository.
 - [ ] RN.16 Keep secrets such as a generated keystore out of a git file store's commits.
+- [x] RN.17 iOS targets on a macOS server: an unsigned simulator build, and a device `.ipa`
+      signed from one provisioning profile in the store (Saltcorn 1's approach: team, bundle ID,
+      export method and signing identity are all read from the profile).
+- [x] RN.18 iOS app for App Store Connect only, with the profile either uploaded or generated
+      through the App Store Connect API; the API key and distribution certificate are module
+      settings shared by every app.
+- [x] RN.19 "Generate a provisioning profile": a target operation that stores an App Store
+      profile in the file store without a build; the API key is a secret module setting.
+- [ ] RN.20 Create the distribution certificate from Saltcorn (a module-level operation, which
+      the framework does not have yet), and ad hoc profiles with device registration.
+- [x] RN.21 A loopback-only server with no `base_domain` serves its applications under
+      `localhost`, so a fresh development setup serves apps and a native app's URL is real.
 
 # Not in a milestone yet
 

@@ -821,16 +821,25 @@ fn why_missing(
             }
             Some(_) => return None,
         },
-        TargetRequirementKind::Command { name } => {
-            let path = var("PATH").unwrap_or_default();
-            let found = std::env::split_paths(&path).any(|dir| {
+        TargetRequirementKind::Command { name, dir_env } => {
+            let runs = |dir: &Path| {
                 let candidate = dir.join(name);
                 candidate.is_file() && is_executable(&candidate)
-            });
-            if found {
+            };
+            let extra = dir_env.as_deref().and_then(|env| Some((env, var(env)?)));
+            if extra.as_ref().is_some_and(|(_, dir)| runs(Path::new(dir))) {
                 return None;
             }
-            format!("`{name}` is not on the PATH.")
+            let path = var("PATH").unwrap_or_default();
+            if std::env::split_paths(&path).any(|dir| runs(&dir)) {
+                return None;
+            }
+            match extra {
+                Some((env, dir)) => {
+                    format!("`{name}` is neither in `{dir}` (`{env}`) nor on the PATH.")
+                }
+                None => format!("`{name}` is not on the PATH."),
+            }
         }
         TargetRequirementKind::Os { name } => {
             if os == name {
@@ -1889,6 +1898,7 @@ mod tests {
             TargetRequirement {
                 kind: TargetRequirementKind::Command {
                     name: "xcodebuild".to_owned(),
+                    dir_env: None,
                 },
                 hint: "Install Xcode.".to_owned(),
             },
@@ -1904,6 +1914,48 @@ mod tests {
                 "This target builds only on macos; this server runs on linux.",
                 "`xcodebuild` is not on the PATH. Install Xcode."
             ]
+        );
+    }
+
+    #[test]
+    fn a_command_requirement_also_looks_in_the_directory_its_variable_names() {
+        let tmp = TempDir::new("reqdir");
+        write_script(tmp.path(), "pod", "#!/bin/sh\n");
+        let mut spec = target_spec("ios.sh");
+        spec.requires = vec![TargetRequirement {
+            kind: TargetRequirementKind::Command {
+                name: "pod".to_owned(),
+                dir_env: Some("FELDSPAR_POD_DIR".to_owned()),
+            },
+            hint: "Set the CocoaPods directory.".to_owned(),
+        }];
+        let dir = tmp.path().display().to_string();
+
+        // Found in the target's directory, with nothing on the PATH.
+        spec.env.insert("FELDSPAR_POD_DIR".to_owned(), dir.clone());
+        assert!(readiness_in(&spec, |_| None, "macos").is_ready());
+
+        // Not there: the PATH still counts.
+        spec.env
+            .insert("FELDSPAR_POD_DIR".to_owned(), "/nonexistent".to_owned());
+        let path = dir.clone();
+        let with_path = move |name: &str| (name == "PATH").then(|| path.clone());
+        assert!(readiness_in(&spec, with_path, "macos").is_ready());
+
+        // Neither: the message names both places.
+        assert_eq!(
+            readiness_in(&spec, |_| None, "macos").missing,
+            [
+                "`pod` is neither in `/nonexistent` (`FELDSPAR_POD_DIR`) nor on the PATH. \
+              Set the CocoaPods directory."
+            ]
+        );
+
+        // The variable unset: as a plain command requirement.
+        spec.env.remove("FELDSPAR_POD_DIR");
+        assert_eq!(
+            readiness_in(&spec, |_| None, "macos").missing,
+            ["`pod` is not on the PATH. Set the CocoaPods directory."]
         );
     }
 

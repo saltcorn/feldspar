@@ -246,8 +246,8 @@ export function ApplicationForm({
   // describes it: its label, settings, build targets and file pickers.
   const selectedFramework = frameworks?.find((f) => f.name === frameworkName);
   const ownTab = settingsOnOwnTab(selectedFramework);
-  // The framework's settings, and each build target's own (an APK's id,
-  // version and icon), which get a card of their own below the framework's.
+  // The framework's settings, and each build target's own (an APK's build
+  // type and signing), which get a card of their own below the framework's.
   const settings = splitTargetSettings(
     selectedFramework?.config_spec ?? [],
     selectedFramework?.targets ?? [],
@@ -277,7 +277,7 @@ export function ApplicationForm({
       cancelled = true;
     };
   }, [storeName, filePickers]);
-  const targetExtraOptions = fileOptions(filePickers, found, config);
+  const fileExtraOptions = fileOptions(filePickers, found, config);
   // A file picker is a drop-down even with nothing in it, saying why.
   const filePickerHints = Object.fromEntries(
     filePickers.map(({ name, extensions }) => [
@@ -552,12 +552,18 @@ export function ApplicationForm({
                     }
                     // A new application's store picker ends with "create one":
                     // the server names it after the subdomain and puts it in
-                    // the directory "Suggest a directory" would pick.
-                    extraOptions={newStoreOptions(
-                      selectedFramework?.file_store_settings ?? [],
-                      !appId,
-                      t("Create a new local file store"),
-                    )}
+                    // the directory "Suggest a directory" would pick. A file
+                    // picker here (an app icon both platforms share) offers
+                    // the store's files, as a target's do.
+                    extraOptions={{
+                      ...fileExtraOptions,
+                      ...newStoreOptions(
+                        selectedFramework?.file_store_settings ?? [],
+                        !appId,
+                        t("Create a new local file store"),
+                      ),
+                    }}
+                    pickerHints={filePickerHints}
                   />
                 )}
               </Card.Body>
@@ -579,7 +585,7 @@ export function ApplicationForm({
                       onChange={(name, v) =>
                         setConfig((c) => ({ ...c, [name]: v }))
                       }
-                      extraOptions={targetExtraOptions}
+                      extraOptions={fileExtraOptions}
                       pickerHints={filePickerHints}
                       // A target's settings may depend on the framework's.
                       conditionSpec={selectedFramework?.config_spec ?? []}

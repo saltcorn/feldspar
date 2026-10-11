@@ -223,8 +223,48 @@ fn an_environment_carries_where_its_applications_are_served() {
     );
 }
 
-/// With nothing configuring an origin there is no origin — and that has to stay
-/// a quiet `None`, because it is every deployment that never had one.
+/// No base domain anywhere: a server listening on this machine only serves its
+/// applications under `localhost`, as `serve` does, so a build writes that URL.
+/// One reachable from elsewhere, or behind TLS, has to be told its domain.
+#[test]
+fn a_loopback_server_without_a_base_domain_is_served_under_localhost() {
+    let file = Fixture::new(
+        "implied",
+        "[environments.plain]\n\
+         database = \"saltcorn\"\n\
+         \n\
+         [environments.own_port]\n\
+         database = \"saltcorn\"\n\
+         bind = \"127.0.0.1:4000\"\n\
+         \n\
+         [environments.public]\n\
+         database = \"saltcorn\"\n\
+         bind = \"0.0.0.0:3032\"\n\
+         \n\
+         [environments.tls]\n\
+         database = \"saltcorn\"\n\
+         secure_cookies = true\n",
+    );
+    let origin = |env: &str| {
+        let (db, _) =
+            DbConfig::extract(["--environment", env, "--config", file.path()]).expect("extract");
+        db.serving().public_origin(None).map(|o| o.url_for("todo"))
+    };
+    assert_eq!(
+        origin("plain").as_deref(),
+        Some("http://todo.localhost:3032")
+    );
+    assert_eq!(
+        origin("own_port").as_deref(),
+        Some("http://todo.localhost:4000")
+    );
+    assert_eq!(origin("public"), None);
+    assert_eq!(origin("tls"), None);
+}
+
+/// With nothing configuring an origin, the origin is the one a default `serve`
+/// answers at: it binds `127.0.0.1:3032`, so its applications are served under
+/// `localhost` (see `a_loopback_server_without_a_base_domain_is_served_under_localhost`).
 ///
 /// **Nothing here may search for a configuration file.** The two ways to reach
 /// this state are "no file was found" and "the file that was found applies
@@ -235,19 +275,32 @@ fn an_environment_carries_where_its_applications_are_served() {
 /// nothing to do with the code. So the state is built directly, and the
 /// searching path is covered by the fixture-driven tests above.
 #[test]
-fn without_a_base_domain_there_is_no_origin() {
+fn without_a_base_domain_the_default_bind_is_served_under_localhost() {
+    let url = |o: Option<sc_catalog::PublicOrigin>| o.map(|o| o.url_for("todo"));
     // No file, no flag, no environment — the deployment that never had one.
     let cfg = DbConfig::from_url("postgres:///x");
-    assert!(cfg.serving().public_origin(None).is_none());
-    // ...but a flag alone is enough.
-    assert!(cfg.serving().public_origin(Some("example.com")).is_some());
+    assert_eq!(
+        url(cfg.serving().public_origin(None)).as_deref(),
+        Some("http://todo.localhost:3032")
+    );
+    // ...and a flag still wins.
+    assert_eq!(
+        url(cfg.serving().public_origin(Some("example.com"))).as_deref(),
+        Some("http://todo.example.com:3032")
+    );
 
     // The other road to the same place: a file was found and selected nothing,
     // which is `Ok(None)` rather than an error (see `config_file::select`).
     let empty = Fixture::new("no-environments", "# nothing here\n");
     let (found, _) = DbConfig::extract(["--config", empty.path()]).expect("extract");
-    assert!(found.serving().public_origin(None).is_none());
-    assert!(found.serving().public_origin(Some("example.com")).is_some());
+    assert_eq!(
+        url(found.serving().public_origin(None)).as_deref(),
+        Some("http://todo.localhost:3032")
+    );
+    assert_eq!(
+        url(found.serving().public_origin(Some("example.com"))).as_deref(),
+        Some("http://todo.example.com:3032")
+    );
 }
 
 /// A key the file does not define is a typo, and typos in this file are errors

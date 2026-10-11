@@ -50,7 +50,7 @@ pub use attrs::Attrs;
 pub use basic::BasicType;
 pub use field::{
     BaseField, FormField, OptionsSource, SECRET_SENTINEL, ShowIfCondition, merge_secrets,
-    preserve_create_only, redact_attrs, validate_attrs,
+    preserve_create_only, redact_attrs, validate_attrs, validate_patterns,
 };
 pub use geometry::GeometryKind;
 pub use i18n::{translate_field, translate_spec};

@@ -184,6 +184,21 @@ async fn serve_command(args: &[String]) -> Result<()> {
         // front), so this only ever adds.
         config.secure_cookies = true;
     }
+    // A server on this machine only, given no base domain, serves its
+    // applications under `localhost` rather than not at all. Decided here,
+    // after TLS: everything below (the public origin, the mounts, the
+    // certificate's names) reads the base domain.
+    if config.base_domain.is_none()
+        && let Some(domain) = sc_server::implied_base_domain(&config.addr, ssl.enabled())
+    {
+        eprintln!(
+            "feldspar: no base_domain is set and this server listens on {} only, so \
+             applications are served at http://<subdomain>.{domain}:{}",
+            config.addr.ip(),
+            config.addr.port()
+        );
+        config.base_domain = Some(domain.to_owned());
+    }
     // Where this process serves its applications, recorded for the project
     // generator: an app's `AGENTS.md` and `src/feldspar/README.md` name the URL
     // to open, and this is the only place that knows it (§13.2).

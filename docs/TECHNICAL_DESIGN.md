@@ -5408,19 +5408,46 @@ Modules tab, and its `frameworks` export is a function of them. Saving the setti
 module and so the declaration. A blank value is left out rather than set empty, so an unconfigured
 module falls back to the server's environment. A target also declares `requires`: what the machine must have before it can
 build. Each entry is one of `{ env, directory }` (a variable the build sees is set, and is a
-directory), `{ command }` (a program is on the build's `PATH`) and `{ os }` (the host's operating
-system), with an optional `hint`. They are data, so the server checks them synchronously:
+directory), `{ command, dir_env }` (a program is on the build's `PATH`, or in the directory the
+optional `dir_env` variable names, which the build is expected to put on its own `PATH`) and
+`{ os }` (the host's operating system), with an optional `hint`. They are data, so the server checks them synchronously:
 `listApplications` reports each target's `readiness` (`ready`, and the `missing` sentences), a
 state of this machine rather than part of the target, so the button warns before it is
 pressed, and `buildApplicationTarget` refuses with all of them before a job starts. An Android APK
-needs `ANDROID_HOME` and `JAVA_HOME`; an iOS target will add `{ os: "macos" }`, `xcodebuild` and
-`pod` without a change to the mechanism. A server without the toolchain fails that target
+needs `ANDROID_HOME` and `JAVA_HOME`; the iOS targets need `{ os: "macos" }`, `xcodebuild` and
+`pod`, with no change to the mechanism. A server without the toolchain fails that target
 with the tools' own message, and still builds and serves the web bundle. The built-in frameworks declare none.
 `plugins/react-native` is the one that does.
 
+**iOS: two targets, an App Store `.ipa` signed from a provisioning profile.** `plugins/react-native`
+declares `ios_simulator` (an unsigned simulator build, Release or Debug) and `ios` (an `.ipa` for
+App Store Connect). They are two targets rather than one with a build type because a template
+interpolates names only and cannot choose the artifact's extension. Only App Store profiles are
+supported for now.
+
+Signing follows Saltcorn 1: the provisioning profile is the whole of it. The team, bundle ID,
+export method and certificates are read from the profile at build time, and the signing identity
+is whichever of those certificates the keychain of the user the server runs as holds with its
+private key. Invalid profiles are refused before Xcode starts. The profile is either uploaded to
+the store (`ios_profile_source: own`) or generated through the App Store Connect API
+(`generate`), which registers the bundle ID if needed and reuses a still-valid profile. The API
+key (a secret) and the distribution certificate to use are **module** settings: one Apple team
+and one certificate serve every application. Saltcorn never creates a certificate, because
+Apple allows only a few per team.
+
+Decoding a profile needs `security` and the keychain, so the signing code runs in the build,
+not in the sandboxed module worker. It is generated into `src/feldspar/ios/` on every build, so
+a fix reaches existing projects, and `expo prebuild` applies manual signing to the app target
+only, since the Pods refuse a profile. What signing needs depends on the profile's source, which
+a `requires` entry cannot see, so the build script checks it itself. The **"Generate a
+provisioning profile"** target operation runs the API steps in the worker, without a build and
+on any OS, and stores a dated profile in the file store. The worker cannot see the keychain, so
+it chooses the certificate from App Store Connect alone, and the keychain check is left to the
+build.
+
 **A target's own settings are application settings, shown under the target.** A target may
 declare `options`, fields in the same vocabulary as `config_fields`. They configure that target
-for one application (an APK's application ID, version, icon and build type), so they are not the
+for one application (an APK's build type and signing, an iOS app's provisioning profile), so they are not the
 module's settings (which hold the machine's toolchain) and not the build button's (which only
 starts a build). When the module loads they are **appended to the framework's `config_spec`**,
 so they are stored, validated, handed to the generators as `ctx.settings` and interpolated by
@@ -5431,10 +5458,19 @@ names each target's options, and the application form shows them in a card per t
 of among the framework's settings. A setting declaring `server_query: "store_files:png,jpg"`
 holds a file of that kind in the application's store (an icon, a keystore). The form offers the
 files `listStoreFiles` finds there, skipping dependency folders and generated native projects.
-The value is a store-relative path, and on save it is unrestricted. A setting may also declare
+The value is a store-relative path, and on save it is unrestricted. What all of a framework's targets
+share is not a target's option but one of the framework's own settings: `plugins/react-native`'s
+App ID, version and icon are in its `config_fields`, because Android and iOS both use them. The
+form fills a file picker among those settings with the store's files the same way. A setting may also declare
 v1's `showIf` (`{ build_type: "release", own_keystore: true }`): the form hides it while any
 condition fails, and the server does not require it then, so "sign with your own keystore" shows
-the keystore's settings only when it is ticked. A target's `env` values are templates too, which
+the keystore's settings only when it is ticked. A module may also group its settings under
+headings with v1's `{ input_type: "section_header", label }`. That entry is not a setting, so it
+is not kept as one: its label becomes the `section` of the next setting, and the form draws it
+above the first shown setting of the group. `plugins/react-native` heads its native apps'
+settings this way, from the server URL on. A text setting may also declare a pattern (v1's
+`regexp`, with `re_invalid_error` as its message), which the form checks as the admin types and
+the server checks on save, for module settings too. A target's `env` values are templates too, which
 is how a secret setting (the keystore password) reaches the build without being written into
 the project. An application's secret framework settings are masked in what the admin API sends
 and kept when a save hands the mask back, as a provider's are; a backup keeps them.
@@ -6056,8 +6092,9 @@ alternative is a documentation parameter in the signature of everything that bui
 processes must resolve it or the two disagree: a `feldspar build-app` that rewrote `README.md`
 with the URL taken *out* would be worse than one that never wrote it, which is why an
 environment in `feldspar.toml` carries `base_domain`/`bind`/`secure_cookies` beside its
-connection parameters. Never guessed: a process that was not told says which setting is
-missing rather than inventing `localhost`.
+connection parameters. The only default is `localhost`, for a server that listens on loopback
+without TLS (`sc_server::implied_base_domain`). Any other process that was not told says which
+setting is missing.
 
 **`feldspar auth token`** is the session half. An application's screens require a signed-in
 user, so a screenshot taken by a script is a screenshot of the sign-in page unless something

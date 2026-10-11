@@ -573,7 +573,8 @@ fn target_env(
 /// ```
 ///
 /// Each entry names **exactly one** of `env`, `command` and `os`; `directory`
-/// belongs with `env` alone, and `hint` with any. Anything else is refused when
+/// belongs with `env` alone, `dir_env` (a variable naming one more directory
+/// to look for the program in) with `command` alone, and `hint` with any. Anything else is refused when
 /// the module loads — a check that silently checks nothing would let a target
 /// reach Gradle with the SDK it says it needs still missing.
 fn target_requires(target: &str, declared: Option<&Json>) -> Result<Vec<TargetRequirement>> {
@@ -603,6 +604,12 @@ fn target_requires(target: &str, declared: Option<&Json>) -> Result<Vec<TargetRe
             }
         };
         let (env, command, os) = (text("env")?, text("command")?, text("os")?);
+        let dir_env = text("dir_env")?;
+        if dir_env.is_some() && command.is_none() {
+            return Err(bad(
+                "sets `dir_env`, which only a `command` requirement has",
+            ));
+        }
         let directory = match entry.get("directory") {
             None | Some(Json::Null) => false,
             Some(Json::Bool(b)) => *b,
@@ -610,7 +617,9 @@ fn target_requires(target: &str, declared: Option<&Json>) -> Result<Vec<TargetRe
         };
         let kind = match (env, command, os) {
             (Some(name), None, None) => TargetRequirementKind::Env { name, directory },
-            (None, Some(name), None) if !directory => TargetRequirementKind::Command { name },
+            (None, Some(name), None) if !directory => {
+                TargetRequirementKind::Command { name, dir_env }
+            }
             (None, None, Some(name)) if !directory => TargetRequirementKind::Os { name },
             (None, None, None) => return Err(bad("names none of `env`, `command` and `os`")),
             _ if directory && entry.get("env").is_none() => {
@@ -1119,7 +1128,7 @@ mod tests {
                 "artifact": "a.apk",
                 "requires": [
                     { "env": "ANDROID_HOME", "directory": true, "hint": "Set the SDK." },
-                    { "command": "pod" },
+                    { "command": "pod", "dir_env": "POD_DIR" },
                     { "os": "macos" }
                 ]
             }
@@ -1137,7 +1146,8 @@ mod tests {
         assert_eq!(
             requires[1].kind,
             TargetRequirementKind::Command {
-                name: "pod".to_owned()
+                name: "pod".to_owned(),
+                dir_env: Some("POD_DIR".to_owned())
             }
         );
         assert_eq!(
@@ -1154,6 +1164,7 @@ mod tests {
                 json!([{ "command": "pod", "directory": true }]),
                 "`directory`",
             ),
+            (json!([{ "env": "A", "dir_env": "B" }]), "`dir_env`"),
             (json!({ "env": "A" }), "not a list"),
         ] {
             let mut broken = vue();
