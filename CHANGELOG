@@ -2,13 +2,44 @@
 
 Changes in reverse chronological order.
 
+## Live updates L4: the Postgres-backed tests run, and an app's streams use its own server's registry
+
+The L4 tests that could not be run where L4 was built have now been run. The four
+`app_live_presence` tests passed first time. `tutorial_live::part_four_presence_on_the_board`
+failed in two ways, neither of them in L4's own code:
+
+- **The tutorial's server had no JavaScript evaluator.** `serve` always attaches one; the test's
+  `AppMounts` did not, so the board's ownership formula could not be evaluated and `ready` said
+  `can_publish: false`. The test now attaches `default_js_evaluator()`, as `app_live_presence`
+  already did.
+- **An app's streams were typed against the last stream registry installed in the process.**
+  `sc_app::app_streams` (used by scaffolding and the build's client emit) read one process-wide
+  registry, and every server a test binary starts installs its own. When the tests ran together,
+  another test's registry could replace the tutorial's between boot and scaffold, and `boiler`'s
+  `mqtt` provider was then "unknown". Parts 1 and 2 had the same race and were just luckier.
+  `sc_app::install_stream_registry` now takes the catalog and stores the registry on it as well
+  (`Catalog::{set_,}stream_registry`, opaque like `host_llm_provider`), and the new
+  `sc_app::catalog_stream_registry` reads the catalog's first and falls back to the process's.
+  `app_streams` and the live socket's topic lookup use it. This also fixes something in
+  production: a module change rebuilt the supervisor's registry but never reinstalled the one
+  clients are typed from. Until a restart, building or scaffolding an app that exposed a stream from
+  a module installed since boot failed with "unknown stream provider". `ModuleServices` now installs it too.
+- **Tests**: new `sc-app` `stream_registry::an_app_is_typed_against_its_own_servers_registry`
+  (two catalogs, the second registry installed last, the first app still resolves its scripted
+  provider). Run and passing: `sc-server` (all 523 `it` tests plus its units and other targets),
+  `sc-app`, `sc-live`, `sc-stream`. Clippy is clean on `sc-catalog`, `sc-app` and `sc-server`.
+- **Note:** `scripts/test.sh` cannot pass test-binary arguments: it appends `--no-run` after
+  whatever it is given, so `scripts/test.sh -p sc-server --test it -- app_live_presence` fails with
+  `Unrecognized option: 'no-run'`. Run a filtered binary with `scripts/cargo-guarded.sh test …`
+  instead. Not changed here.
+
 ## Live updates L4: a page publishes, and sees who else is here
 
 A page can now publish on an `internal` stream whose settings let it, and a stream with presence
 shows each topic's members — who has a board open, and what each is dragging. TODO.md L4.1–L4.6.
-**Not run here:** the Postgres-backed tests (`sc-server`'s `app_live_presence` and
-`tutorial_live::part_four_presence_on_the_board`) were written but could not be run on this
-machine; everything else listed under *Tests* was run and passes.
+The Postgres-backed tests (`sc-server`'s `app_live_presence` and
+`tutorial_live::part_four_presence_on_the_board`) were first run in the entry above, which fixes
+what they found.
 
 - **Wire contract**: `subscribe` takes `echo` (default off). New server frames: `presence {sub,
   connection, members}` after `ready` on a stream with presence, and `presence_diff {sub, joined?,

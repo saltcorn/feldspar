@@ -251,7 +251,7 @@ pub async fn install_streams_with(
     // `sc-app` resolves those through an installed registry rather than a
     // parameter threaded down the whole build path. This is where the running
     // server's goes in; a module change installs the rebuilt one the same way.
-    sc_app::install_stream_registry(services.registry());
+    sc_app::install_stream_registry(catalog, services.registry());
     services
         .supervisor
         .set_consumer(Arc::new(TriggerBridge::new(

@@ -55,6 +55,7 @@ tokio = { workspace = true, features = ["process"] }
 sc-db-postgres.workspace = true
 async-trait.workspace = true
 sc-test-harness.workspace = true
+sc-stream = { path = "../sc-stream", default-features = false, features = ["testing"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]

@@ -1012,7 +1012,7 @@ impl Live {
         }
         let registry = match &self.env.supervisor {
             Some(supervisor) => supervisor.registry(),
-            None => sc_app::stream_registry(),
+            None => sc_app::catalog_stream_registry(&self.env.catalog),
         };
         match registry.get(&row.provider) {
             Some(provider) => provider.topic_spec(&row.configuration).ok(),

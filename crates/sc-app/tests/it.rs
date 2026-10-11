@@ -33,5 +33,7 @@ mod declared_framework;
 mod graphql_scaffold;
 #[path = "scaffold_app.rs"]
 mod scaffold_app;
+#[path = "stream_registry.rs"]
+mod stream_registry;
 #[path = "tutorial_app_build.rs"]
 mod tutorial_app_build;

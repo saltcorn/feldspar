@@ -263,6 +263,9 @@ async fn assumed() -> Result<Tutorial> {
             .with_triggers(triggers)
             .with_models(models)
             .with_streams(streams)
+            // As `serve` attaches it: part 4's board is decided by an
+            // ownership formula.
+            .with_evaluator(sc_server::default_js_evaluator())
             // The re-check clock is a parameter; a minute is the tutorial's,
             // and a test does not wait a minute.
             .with_live_limits(LiveLimits {

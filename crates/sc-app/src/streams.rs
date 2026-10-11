@@ -35,7 +35,10 @@
 //! is: `sc-server` puts its own in at boot and on every module change, and a
 //! process that has not (a test, a `feldspar` command that is not serving)
 //! falls back to the compiled-in providers, which is exactly what such a
-//! process has.
+//! process has. It is installed on the server's [`Catalog`] as well as for the
+//! process, and the catalog's is the one read: a process running several
+//! servers (a test binary) would otherwise type one server's app against
+//! whichever registry another server installed last.
 
 use std::sync::{Arc, RwLock};
 
@@ -64,12 +67,21 @@ static REGISTRY: RwLock<Option<Arc<StreamRegistry>>> = RwLock::new(None);
 /// the supervisor's own registry is replaced then: a module can supply a stream
 /// provider, and a client generated a minute later must type its elements from
 /// the provider that is actually installed.
-pub fn install_stream_registry(registry: Arc<StreamRegistry>) {
+pub fn install_stream_registry(cat: &Catalog, registry: Arc<StreamRegistry>) {
+    cat.set_stream_registry(registry.clone());
     let mut guard = match REGISTRY.write() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
     *guard = Some(registry);
+}
+
+/// The registry `cat`'s server installed, or [`stream_registry`] when no
+/// server has installed one on it.
+pub fn catalog_stream_registry(cat: &Catalog) -> Arc<StreamRegistry> {
+    cat.stream_registry()
+        .and_then(|any| any.downcast::<StreamRegistry>().ok())
+        .unwrap_or_else(stream_registry)
 }
 
 /// The installed registry, or the compiled-in providers when nothing has
@@ -191,7 +203,7 @@ fn value_type_of(basic: &BasicType) -> ValueType {
 /// is mounted, and what an observer gets is the honest "not running on this
 /// server". Enabling it must not require rebuilding the app.
 pub async fn app_streams(app: &Application, cat: &Catalog) -> Result<Vec<ExposedStream>> {
-    app_streams_with(app, cat, &stream_registry()).await
+    app_streams_with(app, cat, &catalog_stream_registry(cat)).await
 }
 
 /// [`app_streams`] against a registry the caller holds rather than the

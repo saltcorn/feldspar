@@ -184,6 +184,11 @@ pub struct Catalog {
     /// `_fd_llm_providers`. Opaque at this layer, like the hosts above it: `sc-llm`
     /// sets it and is the only reader that knows its type.
     host_llm_provider: RwLock<Option<Arc<dyn std::any::Any + Send + Sync>>>,
+    /// The stream provider registry of the server this catalog serves. Opaque
+    /// here for the same reason: `sc-app` stores it and reads it back, so an
+    /// app's streams are typed against *this* server's providers and not
+    /// whichever server in the process installed its registry last.
+    stream_registry: RwLock<Option<Arc<dyn std::any::Any + Send + Sync>>>,
     /// How many times this catalog has been (re)loaded — the **generation
     /// stamp**, bumped by [`reload`](Catalog::reload) and by nothing else.
     ///
@@ -290,6 +295,7 @@ impl Catalog {
             public_origin: RwLock::new(None),
             host_config: RwLock::new(sc_types::Attrs::new()),
             host_llm_provider: RwLock::new(None),
+            stream_registry: RwLock::new(None),
             table_events: RwLock::new(Vec::new()),
             generation: AtomicU64::new(0),
             code_schema: RwLock::new(None),
@@ -1053,6 +1059,21 @@ impl Catalog {
     /// The LLM provider this host supplies, if it supplies one.
     pub fn host_llm_provider(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         self.host_llm_provider.read().ok()?.clone()
+    }
+
+    /// Replace the stream provider registry this catalog's server runs.
+    ///
+    /// Not checked here: `sc_app::install_stream_registry` is the way to call
+    /// this, and what it stores is `sc-stream`'s registry.
+    pub fn set_stream_registry(&self, registry: Arc<dyn std::any::Any + Send + Sync>) {
+        if let Ok(mut guard) = self.stream_registry.write() {
+            *guard = Some(registry);
+        }
+    }
+
+    /// The stream provider registry this catalog's server runs, if one was set.
+    pub fn stream_registry(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.stream_registry.read().ok()?.clone()
     }
 
     /// What this process believes about workflow runs that want the engine.

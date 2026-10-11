@@ -146,7 +146,7 @@ pub use store::{
     load_application_by_subdomain, save_application,
 };
 pub use streams::{
-    ExposedStream, app_streams, app_streams_with, element_value_schema, install_stream_registry,
-    is_live_path, live_socket_path, stream_exports, stream_registry,
+    ExposedStream, app_streams, app_streams_with, catalog_stream_registry, element_value_schema,
+    install_stream_registry, is_live_path, live_socket_path, stream_exports, stream_registry,
 };
 pub use target_ops::{OperationOutcome, run_target_operation};

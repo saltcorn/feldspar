@@ -351,7 +351,11 @@ impl ModuleServices {
         // sentence naming it rather than disappearing from the Streams screen.
         // Reloaded below, with the catalog, because the reload reads the rows.
         if let Some(streams) = self.streams() {
-            streams.supervisor().set_registry(self.stream_registry());
+            let registry = self.stream_registry();
+            streams.supervisor().set_registry(registry.clone());
+            // And for the clients generated from here on, which type a
+            // module's stream from the provider it has just installed.
+            sc_app::install_stream_registry(&self.catalog, registry);
         }
         // Then reload the catalog, because that is what *applies* the line
         // above: a provided table's columns are the module's answer, so
