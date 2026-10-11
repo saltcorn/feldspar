@@ -129,6 +129,15 @@ impl Projection {
         self.endpoint.mcp.as_ref().and_then(|tag| tag.grant)
     }
 
+    /// Every grant this tool needs, in the order they are checked.
+    pub fn grants(&self) -> Vec<Grant> {
+        self.endpoint
+            .mcp
+            .as_ref()
+            .map(|tag| tag.grant.into_iter().chain(tag.also).collect())
+            .unwrap_or_default()
+    }
+
     /// Whether this endpoint's failure is a **build result** the model reads
     /// rather than a refusal of the call
     /// ([`McpTag::build_result`](crate::McpTag::build_result)).
@@ -344,14 +353,14 @@ pub fn check_caller(projection: &Projection, ctx: &ToolContext<'_>, grants: &Gra
     // And the grant the tag declared, which is the third question and the one
     // this caller's administrator answered: a tool that changes something is
     // refused by the same flag that refuses the hand-written tool beside it.
-    match projection.grant() {
-        None => Ok(()),
-        Some(grant) => require_grant(
+    for grant in projection.grants() {
+        require_grant(
             grant.allowed_by(grants),
             &format!("call `{}`", projection.name()),
             grant.key(),
-        ),
+        )?;
     }
+    Ok(())
 }
 
 /// One query parameter's schema: the scalar, an array of it, or a map of

@@ -219,6 +219,8 @@ mod tls_live_domains;
 mod tls_serving;
 #[path = "trigger_admin_api.rs"]
 mod trigger_admin_api;
+#[path = "tutorial_code_queries.rs"]
+mod tutorial_code_queries;
 #[path = "tutorial_live.rs"]
 mod tutorial_live;
 #[path = "tutorial_live_documents.rs"]

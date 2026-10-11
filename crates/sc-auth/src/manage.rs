@@ -27,7 +27,9 @@ use std::collections::BTreeMap;
 use sc_catalog::Catalog;
 use sc_db::Row;
 use sc_error::{Error, Result};
-use sc_query::{Assignment, Delete, Expr, Projection, Statement, Update, Value};
+use sc_query::{
+    Assignment, BinOp, Delete, Expr, Projection, Select, Source, Statement, Update, Value,
+};
 use uuid::Uuid;
 
 use crate::lookup::load_user;
@@ -35,8 +37,8 @@ use crate::password::hash_password;
 use crate::roles::load_role;
 use crate::user::User;
 use crate::users::{
-    COL_DISABLED, COL_EMAIL, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE, USERS_TABLE,
-    is_system_user_column, role_in_range,
+    COL_DISABLED, COL_EMAIL, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN,
+    USERS_TABLE, is_system_user_column, role_in_range,
 };
 
 /// The changes an admin is making to a user. Every field is optional: what is
@@ -126,7 +128,13 @@ pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Res
 /// already holds. That is the difference from deletion, and the reason both
 /// exist: a person who has left is disabled, not erased along with every row
 /// that names them.
+///
+/// Disabling the **last enabled admin** is refused ([`refuse_last_admin`]):
+/// nobody could then administer the installation from the admin UI.
 pub async fn set_user_disabled(catalog: &Catalog, id: Uuid, disabled: bool) -> Result<User> {
+    if disabled {
+        refuse_last_admin(catalog, id, "disable").await?;
+    }
     write(
         catalog,
         id,
@@ -160,12 +168,58 @@ pub async fn set_user_password(catalog: &Catalog, id: Uuid, password: &str) -> R
 /// The sessions it holds are **not** dropped here (see the module docs); a caller
 /// that leaves them is leaving rows that resolve to nobody, which is inert but
 /// untidy, and rows the sweep will collect at their expiry.
+///
+/// Deleting the **last enabled admin** is refused, as disabling it is.
 pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
+    refuse_last_admin(catalog, id, "delete").await?;
     let delete = Delete {
         returning: vec![Projection::expr(Expr::col(COL_ID))],
         ..Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id)))
     };
     Ok(!rows(catalog, Statement::from(delete)).await?.is_empty())
+}
+
+/// Refuse to `verb` this user when it is the last enabled admin (TODO F1.9).
+///
+/// Every caller — the admin API, the CLI, the MCP tools — goes through
+/// [`delete_user`] and [`set_user_disabled`], so the rule is here once rather
+/// than at each door. An installation with no enabled admin can only be
+/// recovered from a terminal (`feldspar modify-user … --enabled`), and that is
+/// not a state any of those callers means to produce.
+pub async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Result<()> {
+    let Some(user) = load_user(catalog, id).await? else {
+        return Ok(());
+    };
+    if user.role != ROLE_ADMIN || user.is_disabled() {
+        return Ok(());
+    }
+    let select = Select::from(Source::table(USERS_TABLE))
+        .columns(vec![Projection::all()])
+        .filter(
+            Expr::col(COL_ROLE)
+                .eq(Expr::lit(i64::from(ROLE_ADMIN)))
+                .and(Expr::binary(BinOp::Ne, Expr::col(COL_ID), Expr::lit(id))),
+        );
+    let mut others = 0;
+    for row in rows(catalog, Statement::from(select)).await? {
+        if !User::from_row(&row)?.is_disabled() {
+            others += 1;
+        }
+    }
+    if others == 0 {
+        let who = user
+            .get(COL_EMAIL)
+            .and_then(|v| match v {
+                Value::Text(email) => Some(email.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| id.to_string());
+        return Err(Error::invalid(format!(
+            "cannot {verb} `{who}`: it is the last enabled admin, and nobody could \
+             administer this installation without one. Make another user an admin first"
+        )));
+    }
+    Ok(())
 }
 
 /// Refuse a role that is out of range or that no `_fd_roles` row defines.

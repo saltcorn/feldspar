@@ -344,6 +344,76 @@ async fn deleting_a_query_needs_the_drop_grant_and_says_what_it_was() -> Result<
     Ok(())
 }
 
+/// TODO F1.6: `public: true` is `min_role: 100`, on the way in and on the way
+/// out, under the same grant.
+#[tokio::test]
+async fn public_is_a_synonym_for_role_100_both_ways() -> Result<()> {
+    let env = Env::with_schema(SCHEMA).await?;
+    app_with_api(&env).await?;
+
+    let mut public = top_authors();
+    public["public"] = json!(true);
+    let err = call(&env, &default_grants(), TOOL_SAVE_QUERY, public.clone())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("allow_access_changes"), "{err}");
+
+    let result = call(&env, &all_grants(), TOOL_SAVE_QUERY, public).await?;
+    assert_eq!(result["query"]["min_role"], json!(100));
+    assert_eq!(result["query"]["public"], json!(true));
+    assert_eq!(stored(&env).await?[0].min_role, 100);
+
+    let described = call(&env, &default_grants(), TOOL_DESCRIBE_APPS, json!({})).await?;
+    let query = &described["applications"][0]["apis"][0]["queries"][0];
+    assert_eq!(
+        (&query["min_role"], &query["public"]),
+        (&json!(100), &json!(true))
+    );
+
+    // Both together must agree.
+    let mut both = top_authors();
+    both["public"] = json!(true);
+    both["min_role"] = json!(40);
+    let err = call(&env, &all_grants(), TOOL_SAVE_QUERY, both)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("disagree"), "{err}");
+    let mut agreeing = top_authors();
+    agreeing["public"] = json!(false);
+    agreeing["min_role"] = json!(40);
+    let result = call(&env, &all_grants(), TOOL_SAVE_QUERY, agreeing).await?;
+    assert_eq!(result["query"]["public"], json!(false));
+    assert_eq!(result["query"]["min_role"], json!(40));
+    Ok(())
+}
+
+/// TODO F1.1: a code query that declares no parameters is saved with a note
+/// saying its client method still takes a body, untyped.
+#[tokio::test]
+async fn a_code_query_with_no_params_is_saved_with_a_note() -> Result<()> {
+    let env = Env::with_schema(SCHEMA).await?;
+    app_with_api(&env).await?;
+    let result = call(
+        &env,
+        &default_grants(),
+        TOOL_SAVE_QUERY,
+        json!({
+            "application": "blog",
+            "name": "echo",
+            "method": "POST",
+            "path": "/echo",
+            "language": "javascript",
+            "code": "return body;",
+        }),
+    )
+    .await?;
+    let notes = result["notes"].to_string();
+    assert!(notes.contains("declares no parameters"), "{notes}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn describing_the_applications_reports_the_apis_and_their_queries() -> Result<()> {
     let env = Env::with_schema(SCHEMA).await?;

@@ -605,6 +605,7 @@ fn entry_json(entry: &Entry) -> Json {
         "path": entry.path,
         "isDirectory": entry.is_dir,
         "size": entry.size,
+        "modified": entry.modified,
     })
 }
 

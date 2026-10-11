@@ -248,6 +248,8 @@ argon2 = { version = "0.5", features = ["std"] }
 # token is 256 bits of uniform randomness, so there is no dictionary for a slow
 # hash to defeat — argon2 above is for passwords, which are guessable.
 sha2 = "0.10"
+# HMAC for a code body's `crypto.subtle.sign`/`verify` (TODO F1.3), over `sha2`.
+hmac = "0.12"
 # Line and character diffs for the coding trait (TODO §6): the run's unified
 # diff and diffstat from the change ledger, and the similarity ratio the edit
 # cascade's fuzzy step scores a candidate region by.

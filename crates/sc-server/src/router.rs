@@ -1320,8 +1320,9 @@ async fn dispatch_app(
             // status, session change — so it goes out through the same
             // `apply_response`: an app's `login` sets its session cookie the very
             // same way the admin's does.
-            Ok(resp) => with_csp(
-                apply_response(
+            Ok(resp) => {
+                let extra = resp.headers;
+                let mut out = apply_response(
                     state,
                     jar,
                     session_token,
@@ -1342,9 +1343,23 @@ async fn dispatch_app(
                         download: None,
                     },
                 )
-                .await,
-                &csp,
-            ),
+                .await;
+                // A code query's `response({ headers })` (TODO F1.4). Checked
+                // again here, where they are written: the server's own headers
+                // (cookies, CSP, framing, the content type) are never a body's.
+                for (name, value) in extra {
+                    if !sc_expr::allowed_header(&name, &value) {
+                        continue;
+                    }
+                    if let (Ok(name), Ok(value)) = (
+                        header::HeaderName::from_bytes(name.as_bytes()),
+                        HeaderValue::from_str(&value),
+                    ) {
+                        out.headers_mut().append(name, value);
+                    }
+                }
+                with_csp(out, &csp)
+            }
             Err(e) => with_csp(
                 error_out(
                     state,

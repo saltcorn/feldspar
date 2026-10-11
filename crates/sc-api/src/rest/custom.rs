@@ -596,10 +596,16 @@ pub fn custom_endpoint(mount: &str, query: &CustomQuery) -> Endpoint {
         ))
     };
 
-    let endpoint = Endpoint::new(&query.name, query.method, path)
+    let mut endpoint = Endpoint::new(&query.name, query.method, path)
         .output(output)
         .auth(AuthRequirement::MinRole(query.min_role))
         .handler(HandlerRef::Custom(query.name.clone()));
+    if query.is_code() {
+        // A body reads whatever it was sent, declared or not (`code_scope`
+        // passes undeclared keys through), so the client must be able to send
+        // it: the declared parameters are the typed part of an open object.
+        endpoint = endpoint.open_args();
+    }
 
     if query.args_in_query() {
         endpoint.query(query.params.iter().map(|p| {
@@ -619,6 +625,27 @@ pub fn custom_endpoint(mount: &str, query: &CustomQuery) -> Endpoint {
             )
         })))
     }
+}
+
+/// The note a save of `query` returns when it is a code query that declares no
+/// parameters: the generated method still sends a body (or query string), but
+/// nothing types or checks it.
+pub fn undeclared_params_note(query: &CustomQuery) -> Option<String> {
+    if !query.is_code() || !query.params.is_empty() {
+        return None;
+    }
+    let (arg, kind) = match query.args_in_query() {
+        true => ("query", "query string"),
+        false => ("body", "JSON body"),
+    };
+    Some(format!(
+        "`{}` declares no parameters. Its client method still takes `{arg}` \
+         (typed `Record<string, unknown>`) and the code reads the whole {kind}, \
+         but nothing is typed or checked. Declare the parameters it reads to \
+         type the client method and have each one converted and required before \
+         the code runs.",
+        query.name
+    ))
 }
 
 /// The query's SQL with this database's placeholders in it, and its declared
@@ -1082,5 +1109,23 @@ mod tests {
         let scope = code_scope(&post, &req).unwrap();
         assert_eq!(scope["body"], json!({ "n": 3, "extra": [1, 2] }));
         assert_eq!(scope["query"], json!({ "page": "2" }));
+    }
+
+    #[test]
+    fn a_code_query_with_no_params_sees_the_whole_body_and_is_open() {
+        let mut echo = js_query();
+        echo.method = Method::Post;
+        echo.params.clear();
+        let sent = json!({ "anything": 1, "nested": { "b": "é" } });
+        let req = ApiRequest::new(Method::Post, "/api/greet").body(sent.clone());
+        assert_eq!(code_scope(&echo, &req).unwrap()["body"], sent);
+
+        // So its endpoint is open, and the client takes the body (F1.1).
+        let ep = custom_endpoint("api", &echo);
+        assert!(ep.open_args && ep.input.is_empty());
+        assert!(
+            !custom_endpoint("api", &query()).open_args,
+            "SQL declares what it reads"
+        );
     }
 }

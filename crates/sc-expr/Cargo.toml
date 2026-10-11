@@ -17,7 +17,14 @@ autotests = false
 
 [features]
 default = ["eval"]
-eval = ["dep:deno_core", "dep:getrandom", "dep:tokio"]
+eval = [
+    "dep:deno_core",
+    "dep:getrandom",
+    "dep:tokio",
+    "dep:sha2",
+    "dep:hmac",
+    "dep:argon2",
+]
 
 [dependencies]
 # Required (not `eval`-gated): the `JsEvaluator` trait itself is part of the
@@ -28,6 +35,11 @@ deno_core = { workspace = true, optional = true }
 # 128 bits per run token: the only thing separating two resident runs' authority
 # on one isolate, so it wants the operating system's entropy and not a counter.
 getrandom = { workspace = true, optional = true }
+# A code body's `crypto` (TODO F1.2, F1.3): digests, HMAC, and argon2id
+# password hashes with `sc-auth`'s parameters (`Argon2::default()`).
+sha2 = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+argon2 = { workspace = true, optional = true }
 sc-error = { workspace = true }
 sc-query = { workspace = true }
 serde_json = { workspace = true }

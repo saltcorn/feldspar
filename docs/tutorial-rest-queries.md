@@ -404,6 +404,99 @@ If the generated code ever looks stale — a file store that was unreachable whe
 or a project tree somebody deleted — press **Update code** on the applications screen. It
 re-emits, or **rescaffolds** when the directory is empty, and tells you which of the two it did.
 
+## Step 11 — Code queries from React: the body, status codes and crypto
+
+Some server logic is not one statement: a link to a book that anyone holding it may open, but
+nobody can forge. **First ask whether a table can do it** — a table with an ownership formula
+and a File field covers most "my things, private to me" features with no server code at all
+([tutorial-ownership.md](tutorial-ownership.md)). A signed link cannot be expressed that way,
+so it is a **code query**: a custom query whose language is JavaScript.
+
+A role for the people who may share, from a terminal:
+
+```bash
+feldspar role add Reader --level 80 --description "Signed-in readers"
+feldspar role list
+```
+
+(`feldspar add-user you@example.com --role Reader` makes an account to try it with;
+`feldspar modify-user you@example.com --disabled` takes it away again without deleting it.)
+
+Add two queries on the same REST row as `topAuthors`, both with **Language** `JavaScript`.
+
+**`shareBook`** — `POST`, sub-path `/books/share`, minimum role `Reader (80)`, **no
+parameters** yet:
+
+```js
+const SECRET = "replace me with a long random string";
+const book = await db.books.get(body.book);
+if (!book) throw httpError(404, "no such book");
+const key = await crypto.subtle.importKey(
+  "raw", new TextEncoder().encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(String(book.id)));
+const b64url = btoa(String.fromCharCode(...new Uint8Array(sig)))
+  .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+const token = book.id + "." + b64url;
+return response({
+  status: 201,
+  headers: { "cache-control": "no-store" },
+  body: { token, id: crypto.randomUUID() },
+});
+```
+
+**`openShare`** — `GET`, sub-path `/shares/open`, minimum role `Public (100)` — the editor puts
+a **Public** badge beside it, because anyone at all may call it:
+
+```js
+const SECRET = "replace me with a long random string";
+const [id, b64url] = query.token.split(".");
+const sig = Uint8Array.from(
+  atob(b64url.replaceAll("-", "+").replaceAll("_", "/")), (c) => c.charCodeAt(0));
+const key = await crypto.subtle.importKey(
+  "raw", new TextEncoder().encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+const ok = await crypto.subtle.verify("HMAC", key, sig, new TextEncoder().encode(id));
+if (!ok) throw httpError(403, "this link is not valid");
+const book = await db.books.get(Number(id));
+return { title: book.title };
+```
+
+What is going on, and what you no longer have to write:
+
+- **The body arrives with nothing declared.** Saving `shareBook` says so in a note — *"declares
+  no parameters … nothing is typed or checked"* — but the generated method still takes one,
+  typed `Record<string, unknown>`, and sends it:
+
+  ```ts
+  const { token } = await api.shareBook({ book: 1 });
+  const { title } = await api.openShare({ token });   // a GET: the object is the query string
+  ```
+
+  Declare `book` as an `int` parameter and the client types it
+  (`ShareBookRequest = { book: number } & Record<string, unknown>`) and the server converts
+  `"1"` to `1` and refuses a missing one before the body runs. Declare what the code reads.
+- **No hand-written SHA, HMAC or base64.** `crypto.subtle` has SHA-256/384/512 digests and HMAC
+  (`verify` compares in constant time), `btoa`/`atob` and `TextEncoder`/`TextDecoder` are the
+  browser's, and `crypto.randomUUID()` and `crypto.getRandomValues()` are there. For a password
+  a person chose, `await crypto.password.hash(pw)` stores an argon2id hash — the same the
+  server's own accounts use — and `await crypto.password.verify(pw, stored)` checks one. Neither
+  counts against the body's one-second slice.
+- **The status is the body's to choose.** `throw httpError(404, "no such book")` answers
+  **404** `{"error":"no such book"}`; a third argument replaces that body. `response({ status,
+  headers, body })` is the success side: 201 with `cache-control: no-store` here. The headers
+  the server owns — `set-cookie`, the Content-Security-Policy, framing, the content type — are
+  refused. The client's error carries the status, so the page can say "that link is not valid"
+  for a 403 rather than "something went wrong".
+
+Now break it on purpose: open `/api/shares/open` with **no** `token`. `query.token.split` throws,
+and the answer is a **500** `{"error":"internal error","id":"3f2a…"}` — no stack, no query
+name, nothing about your code for an anonymous caller to read. The server log has the whole
+stack under that id, and so does the same request made by an admin, so you can debug it from the
+browser while you are signed in. A body that spins without awaiting is stopped at its slice and
+answers **503** `{"error":"timeout"}`.
+
+Exposed triggers (`POST /api/actions/<name>`) answer the same way: `httpError`, `response` and
+the 500 without a stack are the contract for every code body somebody calls over HTTP.
+
 ## What to read next
 
 - [TECHNICAL_DESIGN.md §13.4](./TECHNICAL_DESIGN.md) — the REST provider, the taken and

@@ -372,6 +372,38 @@ describe("the types the code editor loads", () => {
     expect(check(`return fetch("https://x.test/").status;`).join(" ")).toMatch(/status/);
   });
 
+  it("type-check a body that uses the web codecs and crypto", () => {
+    // TODO F1.2, F1.3: the globals a body used to hand-write.
+    expect(
+      check(`
+        const enc = new TextEncoder();
+        const bytes = enc.encode("naïve");
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        const b64 = btoa("hi") + atob("aGk=");
+        const id = crypto.randomUUID();
+        const nonce = crypto.getRandomValues(new Uint8Array(16));
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        const key = await crypto.subtle.importKey(
+          "raw", enc.encode("secret"), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+        const sig = await crypto.subtle.sign("HMAC", key, bytes);
+        const ok = await crypto.subtle.verify("HMAC", key, sig, bytes);
+        const hash = await crypto.password.hash("pw");
+        const right = await crypto.password.verify("pw", hash);
+        return { text, b64, id, n: nonce.length, d: digest.byteLength, ok, right, alg: key.algorithm.hash.name };
+      `),
+    ).toEqual([]);
+    expect(
+      check(
+        `if (user === null) throw httpError(401, "sign in");
+         return response({ status: 201, headers: { "x-id": "7" }, body: { ok: true } });`,
+      ),
+    ).toEqual([]);
+    // The counter-test: a digest the sandbox does not have, and a string where
+    // bytes are wanted.
+    expect(check(`await crypto.subtle.digest("MD5", new Uint8Array(1));`).join(" ")).toMatch(/MD5/);
+    expect(check(`await crypto.subtle.digest("SHA-256", "text");`).join(" ")).toMatch(/string/);
+  });
+
   it("type-check a body that reads and writes files", () => {
     // `fs` is the third thing a body can reach. The editor has to know that a
     // reference is not a promise, that everything touching bytes is awaited, and
@@ -402,10 +434,12 @@ describe("the types the code editor loads", () => {
         return { mine, saved, rule: meta.effectiveMinRole, stores: fs.stores.length };
       `),
     ).toEqual([]);
-    // The counter-tests: a property the sandbox does not have (the departure
-    // from `Blob` the API is deliberate about), a misspelled method, and a
-    // forgotten `await`.
-    expect(check(`return fs("uploads").open("a.txt").size;`).join(" ")).toMatch(/size/);
+    // The counter-tests: a size used as if an opened file knew it (only a
+    // listed one does — TODO F1.5 — so it may be undefined), a misspelled
+    // method, and a forgotten `await`.
+    expect(check(`return fs("uploads").open("a.txt").size.toFixed();`).join(" ")).toMatch(
+      /possibly .*undefined/,
+    );
     expect(check(`return await fs("uploads").open("a.txt").readText();`).join(" ")).toMatch(
       /readText/,
     );

@@ -36,7 +36,8 @@ import type {
 } from "../client";
 import { navigate } from "../App";
 import { IconArrowLeft } from "../icons";
-import { PageBody, PageHeader } from "../layout";
+import { PageBody, PageHeader, PublicBadge } from "../layout";
+import { isPublic } from "../roles";
 import { setNotice } from "../notice";
 import {
   SettingsFields,
@@ -681,6 +682,7 @@ export function ApplicationForm({
                     label={
                       <>
                         <span className="fw-semibold">{trigger.name}</span>
+                        {isPublic(trigger.min_role) && <PublicBadge className="ms-2" />}
                         <div className="text-muted small">
                           {/* A workflow body has no action to name (§10.3). */}
                           {t("{body} · on {event} · {access}", {
@@ -758,6 +760,7 @@ export function ApplicationForm({
                     label={
                       <>
                         <span className="fw-semibold">{s.name}</span>
+                        {isPublic(s.min_role) && <PublicBadge className="ms-2" />}
                         <div className="text-muted small">
                           {s.provider}
                           {s.enabled ? "" : " · disabled"} ·{" "}

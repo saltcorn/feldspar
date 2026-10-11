@@ -61,6 +61,20 @@ pub struct Error {
     backtrace: Backtrace,
 }
 
+/// The answer an [`Error::http`] carries: what a code body's `httpError` said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpReply {
+    /// The status, as the body gave it. A transport checks the range (400–599)
+    /// itself, because a body is not trusted to have.
+    pub status: u16,
+    /// The message, which is also the body's `{ "error": … }` when no body was
+    /// given.
+    pub message: String,
+    /// The response body as JSON text, when the body gave one. Text rather than
+    /// a value because this crate has no dependencies.
+    pub body: Option<String>,
+}
+
 /// The classified representation of an [`Error`]: *where* something went wrong
 /// (query, database, auth, …) rather than an enumeration of every failure.
 ///
@@ -89,6 +103,10 @@ pub enum Repr {
     Serde(String),
     /// A catch-all internal error that does not fit the categories above.
     Internal(String),
+    /// A deliberate HTTP answer a code body chose — `throw httpError(403, …)`
+    /// (TODO F1.4). Not a fault: the status and body are the body's, and a
+    /// transport serves them as they are rather than mapping a kind to a code.
+    Http(Box<HttpReply>),
     /// A lower-level error wrapped with a human-readable context message.
     ///
     /// Prefer constructing this via the [`Context`] trait rather than by hand.
@@ -141,6 +159,27 @@ impl Error {
     /// the specific variant (e.g. mapping to an HTTP status).
     pub fn repr(&self) -> &Repr {
         &self.repr
+    }
+
+    /// A [`Repr::Http`]: the deliberate answer `status` with `message`, and the
+    /// JSON text of its body when there is one.
+    #[track_caller]
+    pub fn http(status: u16, message: impl Into<String>, body: Option<String>) -> Self {
+        Self::new(Repr::Http(Box::new(HttpReply {
+            status,
+            message: message.into(),
+            body,
+        })))
+    }
+
+    /// The deliberate HTTP answer this error is, if it is one — looking through
+    /// any context wrapped around it.
+    pub fn http_reply(&self) -> Option<&HttpReply> {
+        match &self.repr {
+            Repr::Http(reply) => Some(reply),
+            Repr::Context { source, .. } => source.downcast_ref::<Error>()?.http_reply(),
+            _ => None,
+        }
     }
 
     /// A [`Repr::NotFound`] from any displayable message.
@@ -214,7 +253,8 @@ impl Error {
             | Repr::Invalid(_)
             | Repr::Config(_)
             | Repr::Query(_)
-            | Repr::Auth(_) => ErrorKind::Application,
+            | Repr::Auth(_)
+            | Repr::Http(_) => ErrorKind::Application,
             Repr::Database(_) | Repr::File(_) | Repr::Serde(_) | Repr::Internal(_) => {
                 ErrorKind::System
             }
@@ -257,6 +297,7 @@ impl fmt::Display for Error {
             Repr::File(m) => write!(f, "file error: {m}"),
             Repr::Serde(m) => write!(f, "serialization error: {m}"),
             Repr::Internal(m) => write!(f, "internal error: {m}"),
+            Repr::Http(reply) => write!(f, "{}", reply.message),
             // Only the top-level context is shown here; the wrapped cause is
             // reachable via `source()` so callers can print the whole chain.
             Repr::Context { context, .. } => write!(f, "{context}"),
@@ -581,6 +622,18 @@ mod tests {
         assert!(matches!(Error::file("t").repr(), Repr::File(_)));
         assert!(matches!(Error::serde("t").repr(), Repr::Serde(_)));
         assert!(matches!(Error::msg("t").repr(), Repr::Internal(_)));
+    }
+
+    #[test]
+    fn an_http_reply_survives_a_context_and_is_an_application_error() {
+        let err = Error::http(401, "sign in", None);
+        assert_eq!(err.to_string(), "sign in");
+        assert_eq!(err.kind(), ErrorKind::Application);
+        let wrapped: Result<()> = Err(err).context("running `login`");
+        let wrapped = wrapped.unwrap_err();
+        let reply = wrapped.http_reply().expect("still an http reply");
+        assert_eq!((reply.status, reply.message.as_str()), (401, "sign in"));
+        assert!(Error::invalid("x").http_reply().is_none());
     }
 
     #[test]

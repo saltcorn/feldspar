@@ -432,6 +432,12 @@ declare class ScFile {
   /** The last component of the path. */
   readonly name: string;
   readonly isDirectory: false;
+  /** Bytes, as of the listing this file came from; \`undefined\` on a file that
+   * was opened rather than listed — \`await stat()\` for that. */
+  readonly size: number | null | undefined;
+  /** RFC 3339, as of the listing (null where the store does not record it);
+   * \`undefined\` on a file that was opened rather than listed. */
+  readonly modified: string | null | undefined;
   readonly store: ScFileStore;
   readonly parent: ScDir;
   /** Whether a **file** is there. A directory of the same name is not one, and
@@ -466,6 +472,10 @@ declare class ScDir {
   readonly path: string;
   readonly name: string;
   readonly isDirectory: true;
+  /** Null for a listed directory; \`undefined\` on one that was not listed. */
+  readonly size: number | null | undefined;
+  /** As {@link ScFile.modified}. */
+  readonly modified: string | null | undefined;
   readonly store: ScFileStore;
   /** Null at the store's root. */
   readonly parent: ScDir | null;
@@ -1016,6 +1026,119 @@ export function scopeDeclarations(
   return `${parts.join("\n\n")}\n`;
 }
 
+/** The web globals a code body has (TODO F1.2, F1.3): base64, the UTF-8
+ * codecs and \`crypto\`. The editor's lib is \`es2022\` with no DOM, so they are
+ * declared here — a transcription of \`sc-expr\`'s \`SETUP\` and fetch
+ * prelude, on the same terms as {@link chainDeclarations}. */
+export function webDeclarations(): string {
+  return `
+/** Base64 of a binary string (one character per byte, up to U+00FF). For
+ * text, encode it first: \`btoa(String.fromCharCode(...new TextEncoder().encode(text)))\`. */
+declare function btoa(data: string): string;
+/** The binary string a base64 string encodes. Throws on anything not base64. */
+declare function atob(data: string): string;
+
+/** UTF-8, the only encoding there is here. */
+declare class TextEncoder {
+  readonly encoding: "utf-8";
+  encode(input?: string): Uint8Array;
+  encodeInto(source: string, destination: Uint8Array): { read: number; written: number };
+}
+
+/** UTF-8 only. \`fatal: true\` throws on bytes that are not UTF-8 instead of
+ * decoding them as U+FFFD. There is no streaming: decode the whole buffer. */
+declare class TextDecoder {
+  constructor(label?: "utf-8" | "utf8", options?: { fatal?: boolean; ignoreBOM?: boolean });
+  readonly encoding: "utf-8";
+  readonly fatal: boolean;
+  readonly ignoreBOM: boolean;
+  decode(input?: ArrayBuffer | ArrayBufferView): string;
+}
+
+type ScHash = "SHA-256" | "SHA-384" | "SHA-512";
+type ScBytes = ArrayBuffer | ArrayBufferView;
+
+/** An HMAC key from \`crypto.subtle.importKey\`. Its bytes are not readable
+ * from the object. */
+declare class CryptoKey {
+  readonly type: "secret";
+  readonly extractable: boolean;
+  readonly algorithm: { name: "HMAC"; hash: { name: ScHash }; length: number };
+  readonly usages: ReadonlyArray<"sign" | "verify">;
+}
+
+/** The Web Crypto subset this sandbox has: SHA-2 digests and HMAC. */
+interface ScSubtle {
+  digest(algorithm: ScHash | { name: ScHash }, data: ScBytes): Promise<ArrayBuffer>;
+  importKey(
+    format: "raw",
+    keyData: ScBytes,
+    algorithm: { name: "HMAC"; hash: ScHash | { name: ScHash } },
+    extractable: boolean,
+    keyUsages: Array<"sign" | "verify">,
+  ): Promise<CryptoKey>;
+  exportKey(format: "raw", key: CryptoKey): Promise<ArrayBuffer>;
+  sign(algorithm: "HMAC" | { name: "HMAC" }, key: CryptoKey, data: ScBytes): Promise<ArrayBuffer>;
+  /** Compared in constant time. */
+  verify(
+    algorithm: "HMAC" | { name: "HMAC" },
+    key: CryptoKey,
+    signature: ScBytes,
+    data: ScBytes,
+  ): Promise<boolean>;
+}
+
+/** Passwords, hashed the way this server hashes its own accounts' (argon2id).
+ * The work happens off the JavaScript thread, so it does not count against
+ * the body's time slice.
+ *
+ * \`\`\`js
+ * const hash = await crypto.password.hash(body.password); // store this
+ * if (!(await crypto.password.verify(body.password, row.hash))) throw httpError(403, "wrong password");
+ * \`\`\` */
+interface ScPassword {
+  hash(password: string): Promise<string>;
+  /** False for a wrong password; throws when \`hash\` is not a password hash. */
+  verify(password: string, hash: string): Promise<boolean>;
+}
+
+/** Answer the HTTP caller with \`status\` (400–599) and \`{ error: message }\`,
+ * or \`body\` when given. It throws, so write \`throw httpError(…)\` to say so.
+ * Only a body serving a request (a custom query, a trigger called as an
+ * endpoint) has a caller to answer; anywhere else it is a failure. */
+declare function httpError(status: number, message?: string, body?: unknown): never;
+
+/** What \`response(…)\` answers: return it from the body. */
+interface ScHttpAnswer {
+  readonly status: number;
+  readonly headers: ReadonlyArray<[string, string]>;
+  readonly body: unknown;
+}
+
+/** A success with a status (200–599) and headers of the body's choosing:
+ * \`return response({ status: 201, headers: { "x-id": id }, body: { id } })\`.
+ * The server's own headers (\`set-cookie\`, the CSP, framing, \`content-type\`)
+ * are refused. */
+declare function response(init: {
+  status?: number;
+  headers?: Record<string, string> | [string, string][];
+  body?: unknown;
+}): ScHttpAnswer;
+
+/** Randomness, digests, HMAC and password hashes. Never hand-write SHA or
+ * base64 in a body. */
+declare const crypto: {
+  /** Fill an integer typed array with random values (at most 65 536 bytes)
+   * and return it. */
+  getRandomValues<T extends Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array | Int32Array | Uint32Array | BigInt64Array | BigUint64Array>(array: T): T;
+  /** A random version-4 UUID. */
+  randomUUID(): string;
+  readonly subtle: ScSubtle;
+  readonly password: ScPassword;
+};
+`;
+}
+
 /** The whole ambient library handed to the editor. */
 export function codeLibrary(
   tables: TableInfo[],
@@ -1027,6 +1150,7 @@ export function codeLibrary(
     "// server's tables; not a file in any project.",
     "",
     chainDeclarations(),
+    webDeclarations(),
     fileDeclarations(),
     triggerDeclarations(),
     modelDeclarations(),

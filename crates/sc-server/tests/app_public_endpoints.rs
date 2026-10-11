@@ -52,6 +52,7 @@ const SCHEMA: &str = "\
         message text not null);";
 
 const EDITOR: &str = "editor@example.com";
+const ADMIN: &str = "admin@example.com";
 const PASSWORD: &str = "correct-horse";
 const ROLE_EDITOR: u8 = 80;
 
@@ -165,6 +166,44 @@ fn guests_app() -> Application {
             )
             .language(QueryLanguage::Javascript)
             .min_role(ROLE_PUBLIC),
+            // TODO F1.1, F1.2 and F1.4: no params, yet the body arrives; the
+            // web codecs; and a status of the body's choosing.
+            CustomQuery::new(
+                "created",
+                Method::Post,
+                "/js/created",
+                "return response({ status: 201, headers: { 'X-Id': '7' }, \
+                   body: { uuid: crypto.randomUUID().length, b: btoa('hi'), echo: body } });",
+            )
+            .language(QueryLanguage::Javascript)
+            .min_role(ROLE_PUBLIC),
+            CustomQuery::new(
+                "deny",
+                Method::Get,
+                "/js/deny",
+                "throw httpError(401, 'sign in');",
+            )
+            .language(QueryLanguage::Javascript)
+            .min_role(ROLE_PUBLIC),
+            CustomQuery::new(
+                "taken",
+                Method::Post,
+                "/js/taken",
+                "httpError(409, 'taken', { field: 'email', taken: true });",
+            )
+            .language(QueryLanguage::Javascript)
+            .min_role(ROLE_PUBLIC),
+            CustomQuery::new(
+                "cookie",
+                Method::Get,
+                "/js/cookie",
+                "return response({ headers: { 'set-cookie': 'sid=forged' }, body: {} });",
+            )
+            .language(QueryLanguage::Javascript)
+            .min_role(ROLE_PUBLIC),
+            CustomQuery::new("spin", Method::Get, "/js/spin", "while (true) {}")
+                .language(QueryLanguage::Javascript)
+                .min_role(ROLE_PUBLIC),
         ],
     )
     .unwrap();
@@ -174,6 +213,7 @@ fn guests_app() -> Application {
         .with_api(api)
         .with_trigger(TriggerRef::new("sign"))
         .with_trigger(TriggerRef::new("sign_as_editor"))
+        .with_trigger(TriggerRef::new("refuse"))
 }
 
 struct Server {
@@ -197,13 +237,19 @@ impl Server {
     /// Log the editor in through the app's own login, returning the session and
     /// CSRF cookies a browser would then hold.
     async fn editor_session(&self) -> (String, String) {
+        self.session_of(EDITOR).await
+    }
+
+    /// Log `email` in through the app's own login, returning the session and
+    /// CSRF cookies a browser would then hold.
+    async fn session_of(&self, email: &str) -> (String, String) {
         let (_, _, primed) = send(&self.router, "GET", "/api/whoami", None, &[], None).await;
         let csrf = cookie(&primed, CSRF_COOKIE).expect("a first contact mints the CSRF cookie");
         let (status, body, set) = send(
             &self.router,
             "POST",
             "/api/login",
-            Some(json!({ "email": EDITOR, "password": PASSWORD })),
+            Some(json!({ "email": email, "password": PASSWORD })),
             &[(CSRF_COOKIE, &csrf)],
             Some(&csrf),
         )
@@ -237,6 +283,7 @@ async fn setup() -> sc_error::Result<Server> {
     bootstrap_table_meta(&catalog).await?;
     save_role(&catalog, &Role::new(ROLE_EDITOR, "Editor")).await?;
     create_user(&catalog, EDITOR, PASSWORD, ROLE_EDITOR).await?;
+    create_user(&catalog, ADMIN, PASSWORD, sc_auth::ROLE_ADMIN).await?;
 
     // The guestbook is open to everybody, both ways; `secrets` keeps the
     // default, admin-only.
@@ -256,6 +303,18 @@ async fn setup() -> sc_error::Result<Server> {
     ] {
         save_trigger(&catalog, &dispatcher.registry(), &trigger).await?;
     }
+    // An exposed trigger whose body answers with a status (TODO F1.4).
+    save_trigger(
+        &catalog,
+        &dispatcher.registry(),
+        &Trigger::new("refuse", EventKind::None, "run_js_code")
+            .config(
+                "code",
+                "if (payload.boom) throw new Error('kaboom'); throw httpError(402, 'pay first');",
+            )
+            .min_role(ROLE_PUBLIC),
+    )
+    .await?;
     dispatcher.reload(&catalog).await?;
 
     let apps = Arc::new(
@@ -394,14 +453,108 @@ async fn a_javascript_custom_query_reads_the_request_and_answers_with_its_result
         vec![("from js".to_owned(), Some(EDITOR.to_owned()))]
     );
 
-    // A body that throws is an error answer naming the query, not a trigger.
+    // A body that throws is a 500 to a caller who is not an admin: no stack,
+    // no query name, just an id the log has the rest under (TODO F1.4).
     let (status, body, _) = send(r, "POST", "/api/js/sign", Some(json!({})), &[], None).await;
-    assert!(status.is_client_error(), "{status}: {body}");
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["error"], json!("internal error"), "{body}");
+    assert!(body["id"].is_string(), "{body}");
     let message = body.to_string();
+    assert!(
+        !message.contains("signJs")
+            && !message.contains("say something")
+            && !message.contains("at "),
+        "{message}"
+    );
+    // An admin gets the whole text, without the doubled `invalid:` prefix.
+    let (session, csrf) = server.session_of(ADMIN).await;
+    let jar = [
+        (SESSION_COOKIE, session.as_str()),
+        (CSRF_COOKIE, csrf.as_str()),
+    ];
+    let (status, body, _) = send(
+        r,
+        "POST",
+        "/api/js/sign",
+        Some(json!({})),
+        &jar,
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    let message = body["error"].as_str().unwrap_or_default();
     assert!(
         message.contains("custom query `signJs`") && message.contains("say something"),
         "{message}"
     );
+    assert!(!message.contains("invalid:"), "{message}");
+    Ok(())
+}
+
+/// TODO F1.4: a code body chooses its status — `httpError` for a refusal,
+/// `response` for a success with headers — and a body that runs away is a 503.
+/// An exposed trigger answers the same way.
+#[tokio::test]
+async fn a_code_body_chooses_its_status_and_never_shows_its_stack() -> sc_error::Result<()> {
+    let server = setup().await?;
+    let r = &server.router;
+
+    let (status, body, _) = send(r, "GET", "/api/js/deny", None, &[], None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body, json!({ "error": "sign in" }));
+
+    let (status, body, _) = send(r, "POST", "/api/js/taken", Some(json!({})), &[], None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body, json!({ "field": "email", "taken": true }));
+
+    // A no-params query receives the body it was sent (F1.1), with the web's
+    // codecs to hand (F1.2), and answers 201 with a header of its own.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/js/created")
+        .header(header::HOST, APP_HOST)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"anything":1}"#))
+        .unwrap();
+    let response = r.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(response.headers()["x-id"], "7");
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        body,
+        json!({ "uuid": 36, "b": "aGk=", "echo": { "anything": 1 } })
+    );
+
+    // A body may not set the server's headers: the response is refused, and
+    // no cookie of the body's making goes out.
+    let (status, body, cookies) = send(r, "GET", "/api/js/cookie", None, &[], None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(!cookies.iter().any(|c| c.contains("forged")), "{cookies:?}");
+
+    // A body that never yields is stopped, and the caller is told it timed out.
+    let (status, body, _) = send(r, "GET", "/api/js/spin", None, &[], None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body, json!({ "error": "timeout" }));
+
+    // An exposed trigger is the same contract.
+    let (status, body, _) =
+        send(r, "POST", "/api/actions/refuse", Some(json!({})), &[], None).await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body, json!({ "error": "pay first" }));
+    let (status, body, _) = send(
+        r,
+        "POST",
+        "/api/actions/refuse",
+        Some(json!({ "boom": true })),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(!body.to_string().contains("kaboom"), "{body}");
     Ok(())
 }
 

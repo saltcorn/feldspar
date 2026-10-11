@@ -88,6 +88,28 @@ mod tests {
     }
 
     #[test]
+    fn the_reference_teaches_the_web_globals_status_codes_and_where_logic_goes() {
+        // TODO F1.1–F1.5, F1.10.
+        for taught in [
+            "ownership formula",
+            "Never hand-write base64",
+            "crypto.subtle.digest(\"SHA-256\"",
+            "crypto.password.verify(",
+            "crypto.randomUUID()",
+            "TextEncoder",
+            "throw httpError(401",
+            "return response({ status: 201",
+            "isDirectory, size, modified",
+            "api.myQuery({ anything: 1 })",
+        ] {
+            assert!(JS_CODE_API.contains(taught), "missing `{taught}`");
+        }
+        let tables = JS_CODE_API.find("A table with access rules").unwrap();
+        let code = JS_CODE_API.find("A code query or trigger").unwrap();
+        assert!(tables < code, "tables come first");
+    }
+
+    #[test]
     fn the_reference_teaches_the_model_handle_and_not_the_flat_functions() {
         for taught in [
             "const m = await models.get(\"House prices\");",

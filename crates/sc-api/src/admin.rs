@@ -350,7 +350,13 @@ pub fn admin_endpoints() -> EndpointSet {
     set.register(
         Endpoint::new("listRoles", Method::Get, api().lit("roles"))
             .output(TypeSchema::array(role_schema()))
-            .auth(AuthRequirement::admin()),
+            .auth(AuthRequirement::admin())
+            .mcp(
+                "List the roles: each one's number (1 is admin, 100 is public — \
+                 anyone, signed in or not; a lower number is more privileged), name \
+                 and description. A user holds one role; a table, query, trigger or \
+                 stream's `min_role` is the least-privileged role that may use it.",
+            ),
     );
 
     set.register(
@@ -361,7 +367,16 @@ pub fn admin_endpoints() -> EndpointSet {
                 StructField::new("description", TypeSchema::text()),
             ]))
             .output(role_schema())
-            .auth(AuthRequirement::admin()),
+            .auth(AuthRequirement::admin())
+            .mcp(
+                McpTag::new(
+                    "Create a role: `role` is its number, 2 to 99 (1 and 100 are built \
+                     in), lower being more privileged; `name` must be unused. A role \
+                     decides what its users may reach, so say plainly what you are \
+                     creating it for.",
+                )
+                .needs(Grant::AccessChanges),
+            ),
     );
 
     // Addressed by the role *number*, not the row id: the number is what
@@ -377,7 +392,15 @@ pub fn admin_endpoints() -> EndpointSet {
             "deleted",
             TypeSchema::bool(),
         )]))
-        .auth(AuthRequirement::admin()),
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Delete a role by its number. Refused for a built-in role and for one \
+                 a user still holds — move those users first.",
+            )
+            .needs(Grant::AccessChanges)
+            .and_needs(Grant::Drop),
+        ),
     );
 
     set.register(
@@ -2557,7 +2580,11 @@ pub fn admin_endpoints() -> EndpointSet {
     set.register(
         Endpoint::new("listUsers", Method::Get, api().lit("users"))
             .output(TypeSchema::array(user_row_schema()))
-            .auth(AuthRequirement::admin()),
+            .auth(AuthRequirement::admin())
+            .mcp(
+                "List the user accounts: id, email, role and whether each is disabled, \
+                 with any columns the admin added. Never the password hashes.",
+            ),
     );
 
     set.register(
@@ -2596,7 +2623,16 @@ pub fn admin_endpoints() -> EndpointSet {
             "deleted",
             TypeSchema::bool(),
         )]))
-        .auth(AuthRequirement::admin()),
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Delete a user account by id (from `listUsers`). Prefer \
+                 `setUserDisabled`, which keeps the row and everything that names it. \
+                 Refused for your own account and for the last enabled admin.",
+            )
+            .needs(Grant::AccessChanges)
+            .and_needs(Grant::Drop),
+        ),
     );
 
     set.register(
@@ -2613,7 +2649,16 @@ pub fn admin_endpoints() -> EndpointSet {
             TypeSchema::bool(),
         )]))
         .output(user_row_schema())
-        .auth(AuthRequirement::admin()),
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Disable (`disabled: true`) or re-enable a user account by id. A \
+                 disabled account cannot sign in and its sessions stop working, but \
+                 its row stays. Refused for your own account and for the last \
+                 enabled admin.",
+            )
+            .needs(Grant::AccessChanges),
+        ),
     );
 
     set.register(
@@ -6531,6 +6576,12 @@ mod tests {
             tagged,
             [
                 "listTableProviders",
+                // Roles and accounts (TODO F1.9): an agent building an app from
+                // a terminal needs the roles its queries' `min_role` names, and
+                // the field report's agent had no way to make one.
+                "listRoles",
+                "createRole",
+                "deleteRole",
                 "listFieldTypes",
                 "listAgents",
                 "createAgent",
@@ -6541,6 +6592,10 @@ mod tests {
                 "getRun",
                 "listApplications",
                 "buildApplication",
+                // …and disabling or removing an account it made for testing.
+                "listUsers",
+                "deleteUser",
+                "setUserDisabled",
                 "listTriggers",
                 "listActions",
                 "getWorkflow",
@@ -6585,8 +6640,12 @@ mod tests {
             "updateBackupSchedule",
             "deleteBackupSchedule",
             "clearAll",
-            "listUsers",
+            // `listUsers`, `setUserDisabled` and `deleteUser` are projected
+            // (TODO F1.9); creating one, becoming one and setting a password
+            // still are not.
             "createUser",
+            "becomeUser",
+            "setRandomPassword",
             // And above all: a token that could mint tokens could not be
             // revoked (phase 2.4 says so in its own comment).
             "createApiToken",
@@ -6667,6 +6726,20 @@ mod tests {
         // Building writes the generated client and replaces what a subdomain
         // serves: a change to what is there, whatever the method reads as.
         assert_eq!(grant_of("buildApplication"), Some(Grant::Edit));
+        // Roles and accounts are access (TODO F1.9); deleting one is a deletion
+        // as well.
+        let also_of = |name: &str| {
+            set.find(name)
+                .and_then(|e| e.mcp.as_ref())
+                .and_then(|t| t.also)
+        };
+        for name in ["createRole", "setUserDisabled", "deleteRole", "deleteUser"] {
+            assert_eq!(grant_of(name), Some(Grant::AccessChanges), "{name}");
+        }
+        assert_eq!(also_of("createRole"), None);
+        assert_eq!(also_of("setUserDisabled"), None);
+        assert_eq!(also_of("deleteRole"), Some(Grant::Drop));
+        assert_eq!(also_of("deleteUser"), Some(Grant::Drop));
 
         for read_only in [
             "listAgents",
@@ -6680,6 +6753,8 @@ mod tests {
             "listTableProviders",
             "getWorkflow",
             "listWorkflowRuns",
+            "listRoles",
+            "listUsers",
         ] {
             assert_eq!(grant_of(read_only), None, "`{read_only}` only reads");
         }

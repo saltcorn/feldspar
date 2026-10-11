@@ -685,7 +685,8 @@ async fn a_token_without_the_trigger_area_is_offered_no_trigger_tools() -> sc_er
         assert!(offered.contains(&name.to_owned()), "{offered:?}");
     }
     // Tier 3 is absent — the number of tools is the design constraint.
-    for absent in ["listRows", "writeFile", "listUsers", "createApiToken"] {
+    // (`listUsers` left tier 3 with TODO F1.9; `createUser` has not.)
+    for absent in ["listRows", "writeFile", "createUser", "createApiToken"] {
         assert!(!offered.contains(&absent.to_owned()), "{offered:?}");
     }
 
@@ -1262,5 +1263,178 @@ async fn a_failed_build_comes_back_as_a_result_with_its_diagnostics() -> sc_erro
     // The application that was serving before is still the one mounted: a failed
     // build changes nothing.
     assert!(apps.get("shop").is_some());
+    Ok(())
+}
+
+// --- roles and accounts (TODO F1.9) ------------------------------------------
+
+/// One `tools/call`, as `(isError, text or structured result)`.
+async fn call_tool(router: &Router, token: &str, name: &str, arguments: Value) -> (bool, Value) {
+    let (status, body) = McpRequest::new(
+        token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        }),
+    )
+    .send(router)
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["error"].is_null(), "a protocol error: {body}");
+    let result = &body["result"];
+    let text = result["content"][0]["text"].as_str().unwrap_or_default();
+    let value = serde_json::from_str(text).unwrap_or_else(|_| json!(text));
+    (result["isError"] == json!(true), value)
+}
+
+/// The role and account tools are offered, each refusal names the grant it
+/// lacks, deleting needs `allow_drop` as well as `allow_access_changes`, and
+/// the admin the token runs as cannot disable or delete themselves — the last
+/// admin there is.
+#[tokio::test]
+async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_error::Result<()> {
+    let Harness {
+        mut client,
+        router,
+        catalog,
+        _db,
+        ..
+    } = setup().await?;
+    enable_mcp(&catalog, true).await?;
+    let plain = mint(&mut client, "no access", json!({})).await;
+    let access = mint(
+        &mut client,
+        "access",
+        json!({ "allow_access_changes": true }),
+    )
+    .await;
+    let both = mint(
+        &mut client,
+        "access and drop",
+        json!({ "allow_access_changes": true, "allow_drop": true }),
+    )
+    .await;
+
+    let (status, listed) = McpRequest::new(
+        &plain,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+    )
+    .send(&router)
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let names = tool_names(&listed);
+    for tool in [
+        "listRoles",
+        "createRole",
+        "deleteRole",
+        "listUsers",
+        "setUserDisabled",
+        "deleteUser",
+    ] {
+        assert!(
+            names.contains(&tool.to_owned()),
+            "`{tool}` is not offered: {names:?}"
+        );
+    }
+
+    // Reads need no grant.
+    let (failed, roles) = call_tool(&router, &plain, "listRoles", json!({})).await;
+    assert!(!failed, "{roles}");
+    assert!(roles.to_string().contains("\"role\":1"), "{roles}");
+    let (failed, users) = call_tool(&router, &plain, "listUsers", json!({})).await;
+    assert!(!failed, "{users}");
+    let admin_id = users[0]["id"].as_str().expect("the admin's id").to_owned();
+    assert!(!users.to_string().contains("password_hash"), "{users}");
+
+    // Creating a role is an access change.
+    let editor = json!({ "role": 40, "name": "Editor", "description": "Edits" });
+    let (failed, text) = call_tool(&router, &plain, "createRole", editor.clone()).await;
+    assert!(
+        failed && text.to_string().contains("allow_access_changes"),
+        "{text}"
+    );
+    let (failed, created) = call_tool(&router, &access, "createRole", editor).await;
+    assert!(!failed, "{created}");
+    assert!(sc_auth::load_role(&catalog, 40).await?.is_some());
+
+    // Deleting one is an access change *and* a deletion, and each refusal names
+    // the flag that is missing.
+    let (failed, text) = call_tool(&router, &plain, "deleteRole", json!({ "role": 40 })).await;
+    assert!(
+        failed && text.to_string().contains("allow_access_changes"),
+        "{text}"
+    );
+    let (failed, text) = call_tool(&router, &access, "deleteRole", json!({ "role": 40 })).await;
+    assert!(failed && text.to_string().contains("allow_drop"), "{text}");
+
+    // An account to act on.
+    let (status, made) = client
+        .send(
+            "POST",
+            "/api/users",
+            Some(json!({ "email": "ed@example.com", "password": "pw-12345", "role": 40 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let ed = made["user"]["id"].as_str().unwrap().to_owned();
+
+    let (failed, text) = call_tool(
+        &router,
+        &plain,
+        "setUserDisabled",
+        json!({ "id": ed, "disabled": true }),
+    )
+    .await;
+    assert!(
+        failed && text.to_string().contains("allow_access_changes"),
+        "{text}"
+    );
+    let (failed, row) = call_tool(
+        &router,
+        &access,
+        "setUserDisabled",
+        json!({ "id": ed, "disabled": true }),
+    )
+    .await;
+    assert!(!failed, "{row}");
+    assert!(
+        sc_auth::authenticate(&catalog, "ed@example.com", "pw-12345")
+            .await?
+            .is_none(),
+        "disabled"
+    );
+
+    let (failed, text) = call_tool(&router, &access, "deleteUser", json!({ "id": ed })).await;
+    assert!(failed && text.to_string().contains("allow_drop"), "{text}");
+    let (failed, text) = call_tool(&router, &both, "deleteUser", json!({ "id": ed })).await;
+    assert!(!failed, "{text}");
+    let (failed, text) = call_tool(&router, &both, "deleteRole", json!({ "role": 40 })).await;
+    assert!(!failed, "{text}");
+
+    // The only admin — the one this token runs as — cannot be disabled or
+    // deleted through it.
+    let (failed, text) = call_tool(
+        &router,
+        &both,
+        "setUserDisabled",
+        json!({ "id": admin_id, "disabled": true }),
+    )
+    .await;
+    assert!(
+        failed && text.to_string().contains("cannot disable"),
+        "{text}"
+    );
+    let (failed, text) = call_tool(&router, &both, "deleteUser", json!({ "id": admin_id })).await;
+    assert!(
+        failed && text.to_string().contains("cannot delete"),
+        "{text}"
+    );
+    assert!(
+        sc_auth::authenticate(&catalog, "admin@example.com", "hunter2pass")
+            .await?
+            .is_some()
+    );
     Ok(())
 }

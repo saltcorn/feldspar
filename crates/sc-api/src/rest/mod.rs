@@ -775,8 +775,8 @@ impl RestProvider {
         let caller = ownership::caller_context(user);
         let result = dispatcher
             .run_code(cat, action, &query.name, &query.code, scope, Some(&caller))
-            .await?;
-        Ok(ApiResponse::ok(result))
+            .await;
+        code_answer(result, user)
     }
 
     /// Inject the JavaScript evaluator ownership formulas' reified path runs
@@ -824,8 +824,8 @@ impl RestProvider {
         let caller = ownership::caller_context(user);
         let result = dispatcher
             .run_trigger(cat, trigger, req.body.clone(), Some(&caller))
-            .await?;
-        Ok(ApiResponse::ok(result))
+            .await;
+        code_answer(result, user)
     }
 
     /// Add a developer-authored custom route as a bare endpoint (§13.4).
@@ -1303,6 +1303,87 @@ fn list_query_params() -> Vec<QueryParam> {
 /// acknowledges, and a caller who wanted the row could have read it. The
 /// GraphQL projection makes the other choice, which is why the shape is decided
 /// here rather than in the row layer.
+/// What a code body's run answers an HTTP caller with (TODO F1.4; design
+/// §10.1 "Status codes and error bodies") — a custom query's and an exposed
+/// trigger's alike:
+///
+/// - a `response({ status, headers, body })` is served as it says;
+/// - a `throw httpError(status, message, body?)` is that status with `body`, or
+///   `{ "error": message }`. A status outside 400–599 is a 500, with the reason
+///   in the log;
+/// - any other failure of the body is a **500** `{ "error": "internal error",
+///   "id" }` — or a **503** `{ "error": "timeout" }` when a clock or the heap
+///   stopped it — to a caller who is not an admin, with the full text (the
+///   query's name, the stack) in the log under that id. An admin gets the full
+///   text, under the same status;
+/// - a refusal before the body ran (a missing trigger, a role that may not run
+///   it) is left as the error it is.
+fn code_answer(result: Result<Json>, user: Option<&User>) -> Result<ApiResponse> {
+    let err = match result {
+        Ok(value) => {
+            return Ok(match sc_expr::take_code_response(value) {
+                Ok(reply) => ApiResponse {
+                    headers: reply.headers,
+                    ..ApiResponse::with_status(reply.status, reply.body)
+                },
+                Err(value) => ApiResponse::ok(value),
+            });
+        }
+        Err(err) => err,
+    };
+    if let Some(reply) = err.http_reply() {
+        if !(400..=599).contains(&reply.status) {
+            let id = log_id();
+            eprintln!(
+                "feldspar: code failure {id}: httpError was given status {}, which is not \
+                 400–599 (message: {})",
+                reply.status, reply.message
+            );
+            return Ok(ApiResponse::with_status(
+                500,
+                json!({ "error": "internal error", "id": id }),
+            ));
+        }
+        let body = reply
+            .body
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok())
+            .unwrap_or_else(|| json!({ "error": reply.message }));
+        return Ok(ApiResponse::with_status(reply.status, body));
+    }
+    let Some(failure) = sc_expr::code_failure(&err) else {
+        return Err(err);
+    };
+    let id = log_id();
+    let full = without_doubled_prefix(&err.causes());
+    eprintln!("feldspar: code failure {id}: {}", err.chain());
+    let (status, public) = match failure {
+        sc_expr::CodeFailure::Timeout => (503, json!({ "error": "timeout" })),
+        sc_expr::CodeFailure::Threw => (500, json!({ "error": "internal error", "id": id })),
+    };
+    let admin = user.is_some_and(|u| u.role == sc_auth::ROLE_ADMIN);
+    let body = match admin {
+        true => json!({ "error": full, "id": id }),
+        false => public,
+    };
+    Ok(ApiResponse::with_status(status, body))
+}
+
+/// A short id a failure is logged under and its caller is given, so the two
+/// can be matched without the caller seeing the log line.
+fn log_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..12].to_owned()
+}
+
+/// `invalid: custom query `q`: `code`: invalid: JavaScript code failed: …` as
+/// `custom query `q`: `code`: JavaScript code failed: …` — the category the
+/// error's `Display` puts on each layer says nothing to the admin reading it.
+fn without_doubled_prefix(text: &str) -> String {
+    text.strip_prefix("invalid: ")
+        .unwrap_or(text)
+        .replacen(": invalid: ", ": ", 1)
+}
+
 fn deleted() -> ApiResponse {
     ApiResponse::ok(json!({ "deleted": true }))
 }

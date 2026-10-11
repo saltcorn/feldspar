@@ -40,13 +40,15 @@ import {
   isCode,
   languageLabel,
   languageOptions,
+  needsParamsNote,
   pythonAvailable,
   statusSummary,
   type CheckStatus,
   type QueryLanguage,
   type QueryRow,
 } from "../customQueries";
-import { roleOptions, useRoles } from "../roles";
+import { PublicBadge } from "../layout";
+import { isPublic, roleOptions, useRoles } from "../roles";
 import { T, useT } from "../i18n";
 
 /** The queries of one API row, edited in place.
@@ -225,6 +227,7 @@ export function CustomQueries({
               <Col md={2}>
                 <Form.Label className="small mb-1" htmlFor={`${idPrefix}-q${index}-role`}>
                   <T text="Minimum role" />
+                  {isPublic(query.minRole) && <PublicBadge className="ms-2" />}
                 </Form.Label>
                 <Form.Select
                   id={`${idPrefix}-q${index}-role`}
@@ -313,8 +316,13 @@ export function CustomQueries({
                   <T text="Add parameter" />
                 </Button>
               </div>
-              {query.params.length === 0 && (
+              {query.params.length === 0 && !needsParamsNote(query) && (
                 <div className="text-muted small">None.</div>
+              )}
+              {needsParamsNote(query) && (
+                <div className="text-muted small" data-testid="undeclared-params-note">
+                  <T text="None declared. The client method still sends its arguments, typed as an open object, and the code reads all of them — but nothing is typed or checked. Declare the parameters the code reads to type the client method and have each converted before the body runs." />
+                </div>
               )}
               {query.params.map((param, pi) => (
                 <Row key={pi} className="mb-2 align-items-end">

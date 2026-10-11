@@ -2,6 +2,84 @@
 
 Changes in reverse chronological order.
 
+## F1: quick wins for building apps from a coding agent
+
+The first milestone of the PADDI//GRID field report (TODO.md F1): each item deletes a
+workaround an agent wrote because the server lacked something small.
+
+- **F1.1 — a code query's client method always takes its arguments.** A JavaScript/Python
+  custom query's projected endpoint is now `Endpoint::open_args`: the generated method takes
+  `body` (POST/PUT/PATCH) or `query` (GET/DELETE) typed as the declared params
+  `& Record<string, unknown>` (`Record<string, unknown>` when none), optional when no declared
+  param is required. An omitted body is sent as `{}`; an open query object sends every set key.
+  `save_api_query` returns a note when a code query declares no params
+  (`sc_api::undeclared_params_note`), and the admin editor shows the same note. Tests run the
+  generated client under Node (`sc-api/tests/code_query_client.rs`) and type-check both shapes
+  (`typescript_typecheck.rs`).
+- **F1.2 — `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto.getRandomValues`,
+  `crypto.randomUUID`**, as thin wrappers over the prelude's codecs and one `getrandom` op.
+  UTF-8 only; `getRandomValues` refuses more than 65 536 bytes (`QuotaExceededError`).
+- **F1.3 — `crypto.subtle.digest` (SHA-256/384/512), HMAC (`importKey("raw")`, `sign`,
+  `verify`, `exportKey`), and `crypto.password.hash/verify`** (argon2id at `sc-auth`'s
+  parameters) in `sc-expr::code_crypto`. New workspace dependency `hmac` 0.12. Digest and HMAC
+  ops are synchronous (fast, over bytes already in the heap) behind promise-returning Web Crypto
+  shapes — a deviation from the TODO's "async ops", for which the reason was the slice. The
+  password ops are asynchronous on the blocking pool: `SETUP` now tracks the run whose JS is on
+  the isolate and re-marks it when a hash comes back, so the watchdog stays armed (a body that
+  spins after `await crypto.password.hash()` is still stopped at its slice). Tests: NIST and RFC
+  4231 vectors, in Rust and through the isolate; four hashes in a row do not trip the slice.
+- **F1.4 — `httpError` and `response`, and no stack traces for users.** `throw httpError(status,
+  message, body?)` ends the run with the new `sc_error::Repr::Http` (not a fault; passed through
+  `run_js_code` unflattened); `return response({ status, headers, body })` is wrapped under a
+  per-process random key only the host writes (`sc_expr::take_code_response`), so an echoed
+  request body cannot forge it. Server-owned headers (`set-cookie`, CSP, framing,
+  `content-type`, hop-by-hop) are refused in the guest and dropped again in the router.
+  `ApiResponse` gains `headers`. Any other failure of a custom query or an exposed trigger is a
+  500 `{"error":"internal error","id"}` for non-admin callers (full text to the log under the id
+  and to admins, without the doubled `invalid:` prefix); slice/clock/heap trips are 503
+  `{"error":"timeout"}` (`sc_api::rest::code_answer`, `sc_expr::code_failure`). Python bodies
+  have no `httpError`/`response` yet, but their failures get the same 500/503 treatment.
+  `app_public_endpoints.rs`'s test of a throwing body now expects the 500.
+- **F1.5 — listing entries keep `name`, `isDirectory`, `size`, `modified`** as properties and in
+  `toJSON` (`{store, path, name, isDirectory, size, modified}`); the host's listing now sends
+  `modified`. An opened (not listed) handle has `size`/`modified` `undefined`, and its `toJSON`
+  gains `name` and `isDirectory`.
+- **F1.6 — "Public".** A **Public** badge (`layout.tsx` `PublicBadge`, `roles.ts` `isPublic`)
+  beside min_role 100 in the custom-query editor and the application form's exposed triggers
+  and streams; `describe_applications` reports `public: true|false` per query, and
+  `save_api_query` accepts `public: true` as a synonym for `min_role: 100` (both together must
+  agree; same grant).
+- **F1.7 — the React CSP default** is now `img-src 'self' data: blob:` and
+  `media-src 'self' blob:`. `AGENTS.md` gains a CSP section (where the policy is, how to widen
+  it with `update_application`'s `csp` section, and that it needs `allow_access_changes`).
+- **F1.8 — CLI:** `feldspar role list [--json] | add NAME --level N [--description] | delete
+  NAME`, `feldspar delete-user EMAIL`, and `modify-user EMAIL --disabled|--enabled` (which
+  ends the account's sessions when disabling).
+- **F1.9 — MCP:** `listRoles`, `createRole`, `deleteRole`, `listUsers`, `setUserDisabled` and
+  `deleteUser` are tier-2 tools. `McpTag` gains a second grant (`.and_needs`), checked in order
+  so each refusal names its flag: creating/changing needs `allow_access_changes`, deleting also
+  `allow_drop`. New `sc_auth::refuse_last_admin`, called inside `delete_user` and
+  `set_user_disabled`, so no caller (admin API, CLI, MCP) can disable or delete the last enabled
+  admin. (`db_api_tokens.rs` now keeps a second admin for the account it disables.) The MCP
+  path does not apply the handler's "end this user's sessions" side effect; a disabled or
+  deleted user already stops resolving from a session, so the rows are only litter until their
+  expiry.
+- **F1.10 — "Choosing where logic goes"** in `describe_code_api` (`code_api_js.md`) and the
+  scaffold's `AGENTS.md`: tables with access rules and ownership formulas first, File fields,
+  SQL queries, and code queries last — plus the globals and status codes above. The
+  `save_api_query` language description says the same. `codeTypes.ts` declares every new
+  global (`webDeclarations`), `httpError`, `response`, and listed entries' `size`/`modified`.
+- **F1.11 — tutorial.** `docs/tutorial-rest-queries.md` step 11, "Code queries from React":
+  a role from the CLI, signed share links with HMAC, the undeclared body, `httpError`/`response`,
+  `crypto.password`, and what a mistake looks like to an anonymous caller and to an admin. Its
+  definition-of-done test (`sc-server/tests/tutorial_code_queries.rs`) reads the two bodies out
+  of the tutorial and runs them; `repo_hygiene.rs` checks the page's fragments.
+
+`docs/TECHNICAL_DESIGN.md`: §10.1 gains "Globals, and the answer a body gives an HTTP caller"
+and the listing-entry fields; §13.4 records open arguments and the status-code contract;
+§13.6 records the role/account tools, the second grant and the last-admin rule; §12's example
+CSP shows the new React default.
+
 ## Live updates L5: the full suite, run against Postgres
 
 The whole workspace (`scripts/test.sh --workspace`, 4,560 tests), the `python-host` suite and the

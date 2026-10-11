@@ -973,6 +973,19 @@ fn the_rest_tutorial_reaches_the_motivating_query_and_its_rules() {
         "schema.sql",
         "AGENTS.md",
         "Update code",
+        // Step 11, code queries from React (TODO F1.11): a table first, then a
+        // body that arrives undeclared, statuses, crypto, and the 500 a mistake
+        // becomes. `tutorial_code_queries.rs` runs its two bodies.
+        "First ask whether a table can do it",
+        "feldspar role add Reader --level 80",
+        "declares\n  no parameters",
+        "api.shareBook({ book: 1 })",
+        "crypto.subtle.importKey(",
+        "crypto.password.hash(pw)",
+        "throw httpError(404",
+        "response({",
+        "\"error\":\"internal error\"",
+        "503",
     ] {
         assert!(
             tutorial.contains(fragment),

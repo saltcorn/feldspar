@@ -60,3 +60,12 @@ export function roleOptions(
       : [...listed, { role: current, name: `Role ${current}` }];
   return options.sort((a, b) => a.role - b.role);
 }
+
+/** The role number anyone has, signed in or not (`sc_auth::ROLE_PUBLIC`). */
+export const PUBLIC_ROLE = 100;
+
+/** Whether a role floor lets anyone in — what the admin UI calls **Public**
+ * (TODO F1.6). Role 100 stays the one stored fact; this only names it. */
+export function isPublic(role: number | null | undefined): boolean {
+  return role === PUBLIC_ROLE;
+}

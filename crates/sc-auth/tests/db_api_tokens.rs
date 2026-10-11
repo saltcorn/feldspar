@@ -223,6 +223,9 @@ async fn an_expired_token_stops_working() -> Result<()> {
 #[tokio::test]
 async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     let f = fixture().await?;
+    // Somebody to stay admin: the last enabled admin cannot be disabled or
+    // deleted (TODO F1.9), and this test is about tokens, not about that.
+    admin(&f.catalog, "keeper@example.com").await?;
 
     // Demoted below admin.
     let demoted = admin(&f.catalog, "demoted@example.com").await?;

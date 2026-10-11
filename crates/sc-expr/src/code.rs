@@ -121,6 +121,11 @@ use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
 #[cfg(feature = "eval")]
+use crate::code_crypto::{
+    op_sc_digest, op_sc_hmac, op_sc_hmac_verify, op_sc_password_hash, op_sc_password_verify,
+    op_sc_random,
+};
+#[cfg(feature = "eval")]
 use deno_core::OpState;
 #[cfg(feature = "eval")]
 use deno_core::futures::StreamExt;
@@ -1816,8 +1821,8 @@ pub(crate) const FETCH_PRELUDE: &str = r#"
 
   // --- bytes --------------------------------------------------------------
   // The seam is JSON, so a body that is not text travels base64. Both codecs are
-  // written out here because the sandbox has no `TextEncoder` and no `atob` —
-  // and because a response nobody asks for the bytes of pays for neither.
+  // written out here because the sandbox has no `deno_web`; `TextEncoder`,
+  // `TextDecoder`, `btoa` and `atob` below are thin wrappers over them.
   const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const encodeUtf8 = (text) => {
     const out = [];
@@ -1931,6 +1936,113 @@ pub(crate) const FETCH_PRELUDE: &str = r#"
     fromBase64: fromBase64,
     asBytes: asBytes,
   }));
+
+  // --- the web's own codecs (TODO F1.2; design §10.1 "Globals") ----------
+  // Thin wrappers over the codecs above, so a body never hand-writes base64 or
+  // UTF-8 again. UTF-8 only, as the encoding standard has `TextEncoder` be and
+  // as every caller here wants `TextDecoder` to be.
+  const invalidCharacter = (message) => {
+    const e = new Error(message);
+    e.name = "InvalidCharacterError";
+    return e;
+  };
+  // A "binary string" (one char per byte, U+0000–U+00FF) to base64.
+  fixed("btoa", (data) => {
+    const text = String(data);
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      if (code > 0xff) {
+        throw invalidCharacter(
+          "btoa takes a binary string (characters up to U+00FF); for text, encode " +
+          "it first: btoa(String.fromCharCode(...new TextEncoder().encode(text)))"
+        );
+      }
+      bytes[i] = code;
+    }
+    return toBase64(bytes);
+  });
+  // Base64 to a binary string, refusing what `atob` refuses rather than
+  // silently decoding around it.
+  fixed("atob", (data) => {
+    let text = String(data).replace(/[\t\n\f\r ]/g, "");
+    if (text.length % 4 === 0) text = text.replace(/==?$/, "");
+    if (text.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(text)) {
+      throw invalidCharacter("atob was given a string that is not base64");
+    }
+    const bytes = fromBase64(text);
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 4096) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + 4096));
+    }
+    return out;
+  });
+  class TextEncoder {
+    get encoding() { return "utf-8"; }
+    encode(input) {
+      const text = input === undefined ? "" : String(input);
+      // A lone surrogate is U+FFFD, as the encoding standard has it.
+      return encodeUtf8(typeof text.toWellFormed === "function" ? text.toWellFormed() : text);
+    }
+    encodeInto(source, destination) {
+      if (!(destination instanceof Uint8Array)) {
+        throw new TypeError("encodeInto writes into a Uint8Array");
+      }
+      const text = String(source);
+      let read = 0;
+      let written = 0;
+      for (const ch of text) {
+        const bytes = this.encode(ch);
+        if (written + bytes.length > destination.length) break;
+        destination.set(bytes, written);
+        written += bytes.length;
+        read += ch.length;
+      }
+      return { read: read, written: written };
+    }
+  }
+  const UTF8_LABELS = ["utf-8", "utf8", "unicode-1-1-utf-8"];
+  class TextDecoder {
+    #fatal; #ignoreBOM;
+    constructor(label, options) {
+      const name = label === undefined ? "utf-8" : String(label).trim().toLowerCase();
+      if (!UTF8_LABELS.includes(name)) {
+        throw new RangeError(
+          "TextDecoder here decodes UTF-8 only, not " + JSON.stringify(String(label))
+        );
+      }
+      const opts = options === undefined || options === null ? {} : options;
+      this.#fatal = opts.fatal === true;
+      this.#ignoreBOM = opts.ignoreBOM === true;
+    }
+    get encoding() { return "utf-8"; }
+    get fatal() { return this.#fatal; }
+    get ignoreBOM() { return this.#ignoreBOM; }
+    decode(input, options) {
+      if (options && options.stream) {
+        throw new TypeError("TextDecoder here does not stream; decode the whole buffer at once");
+      }
+      let bytes = input === undefined ? new Uint8Array(0) : asBytes(input);
+      if (bytes === null) {
+        throw new TypeError("decode takes an ArrayBuffer, a typed array or a DataView");
+      }
+      if (!this.#ignoreBOM && bytes.length >= 3 &&
+          bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+        bytes = bytes.subarray(3);
+      }
+      const text = decodeUtf8(bytes);
+      if (this.#fatal) {
+        // Valid UTF-8 survives the round trip byte for byte; anything the
+        // decoder had to replace or normalise does not.
+        const again = encodeUtf8(text);
+        const same = again.length === bytes.length && again.every((b, i) => b === bytes[i]);
+        if (!same) throw new TypeError("the data is not valid UTF-8");
+      }
+      return text;
+    }
+  }
+  fixed("TextEncoder", TextEncoder);
+  fixed("TextDecoder", TextDecoder);
 
   // --- the response -------------------------------------------------------
   // Built by `fetch` from what the host answered, and constructible by a body
@@ -2238,19 +2350,29 @@ pub(crate) const FILES_PRELUDE: &str = r##"
     );
 
   // --- a file -------------------------------------------------------------
+  // What a listing said about an entry (TODO F1.5): its size and when it was
+  // modified, as of the listing. `undefined` on a handle that was opened rather
+  // than listed — nothing has looked at the store for it, so `await stat()`.
+  const listedJSON = (listed) => listed === undefined ? {} : {
+    size: listed.size === undefined ? null : listed.size,
+    modified: listed.modified === undefined ? null : listed.modified,
+  };
   class SaltcornFile {
-    #handle; #path;
-    constructor(handle, path, internal) {
+    #handle; #path; #listed;
+    constructor(handle, path, internal, listed) {
       if (internal !== INTERNAL) {
         throw new TypeError("a file is opened with fs(store).open(path), not constructed");
       }
       this.#handle = handle;
       this.#path = path;
+      this.#listed = listed;
     }
     // Identity: synchronous, and none of it has touched the store.
     get path() { return this.#path; }
     get name() { return basename(this.#path); }
     get isDirectory() { return false; }
+    get size() { return this.#listed === undefined ? undefined : this.#listed.size; }
+    get modified() { return this.#listed === undefined ? undefined : this.#listed.modified; }
     get store() { return makeStore(this.#handle); }
     get parent() { return new SaltcornDir(this.#handle, dirname(this.#path), INTERNAL); }
     // For the operations that name two files (a copy, a move): the other file's
@@ -2259,7 +2381,12 @@ pub(crate) const FILES_PRELUDE: &str = r##"
       return internal === INTERNAL ? { handle: this.#handle, path: this.#path } : undefined;
     }
     toString() { return this.#handle.store + ":" + this.#path; }
-    toJSON() { return { store: this.#handle.store, path: this.#path }; }
+    toJSON() {
+      return Object.assign(
+        { store: this.#handle.store, path: this.#path, name: this.name, isDirectory: false },
+        listedJSON(this.#listed)
+      );
+    }
 
     // Reading. `exists` is a question rather than a `catch`: a missing file is
     // `false` here, and an error everywhere that was told to read one.
@@ -2411,17 +2538,20 @@ pub(crate) const FILES_PRELUDE: &str = r##"
 
   // --- a directory --------------------------------------------------------
   class SaltcornDir {
-    #handle; #path;
-    constructor(handle, path, internal) {
+    #handle; #path; #listed;
+    constructor(handle, path, internal, listed) {
       if (internal !== INTERNAL) {
         throw new TypeError("a directory is reached with fs(store).dir(path), not constructed");
       }
       this.#handle = handle;
       this.#path = path;
+      this.#listed = listed;
     }
     get path() { return this.#path; }
     get name() { return basename(this.#path); }
     get isDirectory() { return true; }
+    get size() { return this.#listed === undefined ? undefined : this.#listed.size; }
+    get modified() { return this.#listed === undefined ? undefined : this.#listed.modified; }
     get store() { return makeStore(this.#handle); }
     // The root's parent is null rather than the root itself: a loop walking
     // upwards has to end somewhere, and pretending a store contains itself is
@@ -2435,7 +2565,12 @@ pub(crate) const FILES_PRELUDE: &str = r##"
       return internal === INTERNAL ? { handle: this.#handle, path: this.#path } : undefined;
     }
     toString() { return this.#handle.store + ":" + this.#path + "/"; }
-    toJSON() { return { store: this.#handle.store, path: this.#path, isDirectory: true }; }
+    toJSON() {
+      return Object.assign(
+        { store: this.#handle.store, path: this.#path, name: this.name, isDirectory: true },
+        listedJSON(this.#listed)
+      );
+    }
 
     file(name) {
       return new SaltcornFile(this.#handle, join(this.#path, named(name, "file()")), INTERNAL);
@@ -2448,11 +2583,12 @@ pub(crate) const FILES_PRELUDE: &str = r##"
     list() {
       const handle = this.#handle;
       return send(handle, { op: "list", path: this.#path }).then((entries) =>
-        entries.map((entry) =>
-          entry.isDirectory
-            ? new SaltcornDir(handle, entry.path, INTERNAL)
-            : new SaltcornFile(handle, entry.path, INTERNAL)
-        )
+        entries.map((entry) => {
+          const listed = { size: entry.size, modified: entry.modified };
+          return entry.isDirectory
+            ? new SaltcornDir(handle, entry.path, INTERNAL, listed)
+            : new SaltcornFile(handle, entry.path, INTERNAL, listed);
+        })
       );
     }
     stat() { return send(this.#handle, { op: "stat", path: this.#path }); }
@@ -3000,12 +3136,20 @@ const SETUP: &str = r#"
   const logline = Deno.core.ops.op_sc_log;
   const done = Deno.core.ops.op_sc_done;
   const fail = Deno.core.ops.op_sc_fail;
-  const mark = Deno.core.ops.op_sc_mark;
+  const markOp = Deno.core.ops.op_sc_mark;
+  const httpErrorOp = Deno.core.ops.op_sc_http_error;
+  const respondOp = Deno.core.ops.op_sc_respond;
   Deno.core.setUnhandledPromiseRejectionHandler(() => true);
   const fixed = (name, value) =>
     Object.defineProperty(globalThis, name, {
       value: value, writable: false, configurable: false, enumerable: false,
     });
+  // The run whose JavaScript is on the isolate, as far as this side knows: set
+  // when a run is invoked and at every resumption mark. A global with no token
+  // of its own — `crypto.password` — reads it when called, and marks that run
+  // again when its host work comes back (see `settle` below).
+  let current = null;
+  const mark = (token) => { current = token; markOp(token); };
   const notAwaited = () =>
     new Error(
       "this database call was not awaited — write `await db.invoices.rows()`"
@@ -3193,6 +3337,256 @@ const SETUP: &str = r#"
       else resolve(reply.ok);
     }, reject);
   }));
+  // --- crypto (TODO F1.2, F1.3; design §10.1 "Globals") ---------------------
+  // The Web Crypto shapes a body written for a browser or Node reaches for,
+  // over a handful of host ops (`code_crypto.rs`) rather than `deno_crypto`,
+  // whose JavaScript would be read from build-machine paths without a snapshot.
+  // The ops are pure functions of their arguments, so none takes a run token.
+  const randomOp = Deno.core.ops.op_sc_random;
+  const digestOp = Deno.core.ops.op_sc_digest;
+  const hmacOp = Deno.core.ops.op_sc_hmac;
+  const hmacVerifyOp = Deno.core.ops.op_sc_hmac_verify;
+  const passwordHashOp = Deno.core.ops.op_sc_password_hash;
+  const passwordVerifyOp = Deno.core.ops.op_sc_password_verify;
+  // The web throws a `DOMException` by name; there is none here, so an Error
+  // carrying the same `name` is what a `catch` that checks it will see.
+  const domError = (name, message) => {
+    const e = new Error(message);
+    e.name = name;
+    return e;
+  };
+  const INTEGER_ARRAYS = [
+    Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
+    Int32Array, Uint32Array, BigInt64Array, BigUint64Array,
+  ];
+  const bufferSource = (data, what) => {
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (ArrayBuffer.isView(data)) {
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    throw new TypeError(
+      what + " must be an ArrayBuffer, a typed array or a DataView — encode a " +
+      "string first with new TextEncoder().encode(text)"
+    );
+  };
+  const arrayBufferOf = (bytes) =>
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const HASHES = ["SHA-256", "SHA-384", "SHA-512"];
+  const hashName = (algorithm) => {
+    const raw = typeof algorithm === "string" ? algorithm : algorithm && algorithm.name;
+    const name = String(raw).toUpperCase();
+    if (!HASHES.includes(name)) {
+      throw domError(
+        "NotSupportedError",
+        "unsupported hash " + JSON.stringify(raw) + "; use " + HASHES.join(", ")
+      );
+    }
+    return name;
+  };
+  const algorithmName = (algorithm) =>
+    String(typeof algorithm === "string" ? algorithm : algorithm && algorithm.name).toUpperCase();
+  const fill = (bytes) => {
+    if (!randomOp(bytes)) throw new Error("the operating system's random source failed");
+  };
+  const getRandomValues = (array) => {
+    if (!INTEGER_ARRAYS.some((T) => array instanceof T)) {
+      throw domError(
+        "TypeMismatchError",
+        "crypto.getRandomValues takes an integer typed array, such as a Uint8Array"
+      );
+    }
+    if (array.byteLength > 65536) {
+      throw domError(
+        "QuotaExceededError",
+        "crypto.getRandomValues fills at most 65536 bytes per call; this array has " +
+        array.byteLength
+      );
+    }
+    fill(new Uint8Array(array.buffer, array.byteOffset, array.byteLength));
+    return array;
+  };
+  const randomUUID = () => {
+    const b = new Uint8Array(16);
+    fill(b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+    return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" +
+      h.slice(16, 20) + "-" + h.slice(20);
+  };
+  // A key's bytes are held here, not on the object: `key.algorithm` is public
+  // and the secret is not, as in the browser.
+  const secrets = new WeakMap();
+  class CryptoKey {
+    constructor() { throw new TypeError("use crypto.subtle.importKey to make a key"); }
+  }
+  const makeKey = (bytes, hash, extractable, usages) => {
+    const key = Object.create(CryptoKey.prototype);
+    Object.defineProperties(key, {
+      type: { value: "secret", enumerable: true },
+      extractable: { value: extractable === true, enumerable: true },
+      algorithm: {
+        value: Object.freeze({
+          name: "HMAC", hash: Object.freeze({ name: hash }), length: bytes.length * 8,
+        }),
+        enumerable: true,
+      },
+      usages: { value: Object.freeze([...usages]), enumerable: true },
+    });
+    secrets.set(key, bytes);
+    return Object.freeze(key);
+  };
+  const keyFor = (key, usage) => {
+    const bytes = secrets.get(key);
+    if (bytes === undefined) throw new TypeError("expected a CryptoKey from crypto.subtle.importKey");
+    if (!key.usages.includes(usage)) {
+      throw domError("InvalidAccessError", "this key's usages do not include " + JSON.stringify(usage));
+    }
+    return bytes;
+  };
+  const hmacOnly = (algorithm) => {
+    if (algorithmName(algorithm) !== "HMAC") {
+      throw domError("NotSupportedError", "crypto.subtle here supports HMAC keys only");
+    }
+  };
+  const subtle = Object.freeze({
+    async digest(algorithm, data) {
+      const name = hashName(algorithm);
+      return arrayBufferOf(digestOp(name, bufferSource(data, "the data to digest")));
+    },
+    async importKey(format, keyData, algorithm, extractable, keyUsages) {
+      if (format !== "raw") {
+        throw domError("NotSupportedError", "crypto.subtle.importKey supports the \"raw\" format only");
+      }
+      hmacOnly(algorithm);
+      const hash = hashName(algorithm && algorithm.hash);
+      const usages = Array.isArray(keyUsages) ? keyUsages : [];
+      for (const usage of usages) {
+        if (usage !== "sign" && usage !== "verify") {
+          throw new SyntaxError("an HMAC key's usages are \"sign\" and \"verify\", not " + JSON.stringify(usage));
+        }
+      }
+      const bytes = bufferSource(keyData, "the key").slice();
+      if (bytes.length === 0) throw new TypeError("an HMAC key may not be empty");
+      return makeKey(bytes, hash, extractable, usages);
+    },
+    async exportKey(format, key) {
+      if (format !== "raw") {
+        throw domError("NotSupportedError", "crypto.subtle.exportKey supports the \"raw\" format only");
+      }
+      const bytes = secrets.get(key);
+      if (bytes === undefined) throw new TypeError("expected a CryptoKey");
+      if (!key.extractable) throw domError("InvalidAccessError", "this key is not extractable");
+      return arrayBufferOf(bytes);
+    },
+    async sign(algorithm, key, data) {
+      hmacOnly(algorithm);
+      const bytes = keyFor(key, "sign");
+      return arrayBufferOf(hmacOp(key.algorithm.hash.name, bytes, bufferSource(data, "the data to sign")));
+    },
+    async verify(algorithm, key, signature, data) {
+      hmacOnly(algorithm);
+      const bytes = keyFor(key, "verify");
+      return hmacVerifyOp(
+        key.algorithm.hash.name, bytes,
+        bufferSource(signature, "the signature"), bufferSource(data, "the signed data")
+      );
+    },
+  });
+  // Host work that leaves the isolate with no run token: when it comes back,
+  // the run that started it is marked again, so its continuation runs under its
+  // own slice and an overrun names it — what every token-carrying call does in
+  // its own `then`.
+  const settle = (promise) => {
+    const token = current;
+    const resumed = () => { if (token !== null) mark(token); };
+    return promise.then(
+      (answer) => {
+        resumed();
+        const reply = JSON.parse(answer);
+        if (reply.error !== undefined) throw new Error(reply.error);
+        return reply.ok;
+      },
+      (e) => { resumed(); throw e; }
+    );
+  };
+  const password = Object.freeze({
+    async hash(pw) {
+      if (typeof pw !== "string") throw new TypeError("crypto.password.hash takes a string");
+      return settle(passwordHashOp(pw));
+    },
+    async verify(pw, hash) {
+      if (typeof pw !== "string" || typeof hash !== "string") {
+        throw new TypeError("crypto.password.verify takes the password and the stored hash, both strings");
+      }
+      return settle(passwordVerifyOp(pw, hash));
+    },
+  });
+  fixed("CryptoKey", CryptoKey);
+  fixed("crypto", Object.freeze({
+    getRandomValues: getRandomValues,
+    randomUUID: randomUUID,
+    subtle: subtle,
+    password: password,
+  }));
+  // --- HTTP answers (TODO F1.4; design §10.1 "Status codes and error bodies")
+  // `throw httpError(401, "sign in")` is a deliberate status rather than a
+  // failure, and `return response({ status, headers, body })` is a success
+  // with a status and headers. Both are tagged with a symbol a body cannot
+  // reach, and recognised by the run wrapper below.
+  const HTTP_ERROR = Symbol("sc.httpError");
+  const RESPONSE = Symbol("sc.response");
+  class HttpError extends Error {
+    constructor(status, message, body) {
+      super(message);
+      Object.defineProperty(this, "name", { value: "HttpError" });
+      Object.defineProperty(this, "status", { value: status, enumerable: true });
+      Object.defineProperty(this, "body", { value: body, enumerable: true });
+      Object.defineProperty(this, HTTP_ERROR, { value: true });
+      Object.freeze(this);
+    }
+  }
+  fixed("httpError", (status, message, body) => {
+    const code = Number(status);
+    const text = message === undefined || message === null
+      ? "HTTP " + String(status)
+      : String(message);
+    throw new HttpError(code, text, body);
+  });
+  // What the server sets itself, kept in step with `SERVER_OWNED_HEADERS`.
+  const SERVER_OWNED = new Set([
+    "set-cookie", "content-security-policy", "content-security-policy-report-only",
+    "x-frame-options", "x-content-type-options", "strict-transport-security",
+    "cross-origin-opener-policy", "content-type", "content-length", "content-encoding",
+    "transfer-encoding", "connection", "keep-alive", "upgrade", "trailer", "te",
+  ]);
+  const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-z-]+$/;
+  fixed("response", (init) => {
+    const options = init === undefined || init === null ? {} : init;
+    const status = options.status === undefined ? 200 : Number(options.status);
+    if (!Number.isInteger(status) || status < 200 || status > 599) {
+      throw new RangeError("a response status must be a whole number from 200 to 599");
+    }
+    const given = options.headers === undefined || options.headers === null ? {} : options.headers;
+    const pairs = Array.isArray(given)
+      ? given
+      : typeof given.__scPairs === "function" ? given.__scPairs() : Object.entries(given);
+    const headers = pairs.map((pair) => {
+      const name = String(pair[0]).toLowerCase();
+      const value = String(pair[1]);
+      if (!HEADER_NAME.test(name)) throw new TypeError("not a header name: " + JSON.stringify(pair[0]));
+      if (/[\r\n\0]/.test(value)) throw new TypeError("the " + name + " header's value has a line break in it");
+      if (SERVER_OWNED.has(name)) {
+        throw new TypeError(
+          "a response may not set " + name + ": the server sets it itself"
+        );
+      }
+      return [name, value];
+    });
+    const out = { status: status, headers: headers, body: options.body === undefined ? null : options.body };
+    Object.defineProperty(out, RESPONSE, { value: true });
+    return Object.freeze(out);
+  });
   // What an admin should be shown: the stack when there is one, because a body
   // of any size wants the line, and the value itself when there is not.
   const describe = (e) => {
@@ -3304,6 +3698,25 @@ const SETUP: &str = r#"
   // this run's alone. A body with no host is defined to take one argument, so
   // there is no `db` in its scope to name — a ReferenceError, as it has always
   // been, rather than a handle that fails on use.
+  // How a run that threw ends: a deliberate `httpError` as the answer it
+  // chose, anything else as a failure with its stack.
+  const failed = (token, e) => {
+    if (e !== null && typeof e === "object" && e[HTTP_ERROR] === true) {
+      let body = "";
+      if (e.body !== undefined && e.body !== null) {
+        try {
+          body = JSON.stringify(e.body);
+        } catch (err) {
+          fail(token, "the body given to httpError is not JSON: " + describe(err));
+          return;
+        }
+      }
+      const status = Number.isInteger(e.status) && e.status >= 0 && e.status < 65536 ? e.status : 0;
+      httpErrorOp(token, status, e.message, body === undefined ? "" : body);
+      return;
+    }
+    fail(token, describe(e));
+  };
   fixed("__scInvoke", (token, key, bindings, stores, triggers, functions, schemaGeneration, consoleMethods) => {
     const entry = bodies.get(key);
     if (entry === undefined) {
@@ -3323,6 +3736,7 @@ const SETUP: &str = r#"
       // until then, resolving it is what turns a generation this isolate does
       // not hold into a named failure on the run that asked for it.
       const snapshot = schemaFor(schemaGeneration);
+      current = token;
       // The handles this body was compiled to take, in the order its parameter
       // list has them. A body with neither is the pure one `run_js_code` began
       // as: nothing in its scope to reach anything with.
@@ -3372,12 +3786,22 @@ const SETUP: &str = r#"
       if (entry.wantsConsole) handles.push(__scMakeConsole(token, consoleMethods));
       running = entry.body(...handles);
     } catch (e) {
-      fail(token, describe(e));
+      failed(token, e);
       return;
     }
     Promise.resolve(running).then(
       (result) => {
         let text;
+        if (result !== null && typeof result === "object" && result[RESPONSE] === true) {
+          try {
+            text = JSON.stringify({ status: result.status, headers: result.headers, body: result.body });
+          } catch (e) {
+            fail(token, describe(e));
+            return;
+          }
+          respondOp(token, text === undefined ? "null" : text);
+          return;
+        }
         try {
           text = JSON.stringify(result);
         } catch (e) {
@@ -3388,7 +3812,7 @@ const SETUP: &str = r#"
         // nothing answers null, as it always has.
         done(token, text === undefined ? "null" : text);
       },
-      (e) => fail(token, describe(e))
+      (e) => failed(token, e)
     );
   });
 })();
@@ -4303,6 +4727,40 @@ fn op_sc_fail(state: &mut OpState, #[string] token: &str, #[string] message: &st
     );
 }
 
+/// A run threw `httpError(status, message, body?)` (TODO F1.4): a deliberate
+/// answer, not a failure. `body` is the JSON text of the body the guest gave,
+/// or empty for none. The status is carried as given; the transport checks its
+/// range, because it is the one that knows what it will serve.
+#[cfg(feature = "eval")]
+#[deno_core::op2(fast)]
+fn op_sc_http_error(
+    state: &mut OpState,
+    #[string] token: &str,
+    status: u32,
+    #[string] message: &str,
+    #[string] body: &str,
+) {
+    let body = (!body.is_empty()).then(|| body.to_owned());
+    finish(
+        state,
+        token,
+        Err(Error::http(
+            u16::try_from(status).unwrap_or(0),
+            message.to_owned(),
+            body,
+        )),
+    );
+}
+
+/// A run answered `response({ status, headers, body })` (TODO F1.4): its JSON
+/// text, wrapped where only the host can wrap it (`code_reply`).
+#[cfg(feature = "eval")]
+#[deno_core::op2(fast)]
+fn op_sc_respond(state: &mut OpState, #[string] token: &str, #[string] spec: &str) {
+    let spec = serde_json::from_str(spec).unwrap_or(Json::Null);
+    finish(state, token, Ok(crate::code_reply::wrap_response(spec)));
+}
+
 /// End a run: answer its caller and take it out of the table. A token that names
 /// nothing is not an error — a run abandoned at its deadline was taken out
 /// already, and its continuation reporting afterwards is exactly that.
@@ -4330,7 +4788,15 @@ deno_core::extension!(
         op_sc_done,
         op_sc_fail,
         op_sc_mark,
-        op_sc_log
+        op_sc_log,
+        op_sc_random,
+        op_sc_digest,
+        op_sc_hmac,
+        op_sc_hmac_verify,
+        op_sc_password_hash,
+        op_sc_password_verify,
+        op_sc_http_error,
+        op_sc_respond
     ]
 );
 
@@ -9031,12 +9497,12 @@ mod tests {
                                 seen.push(dir.to_owned());
                                 out.push(json!({
                                     "name": dir, "path": format!("{prefix}{dir}"),
-                                    "isDirectory": true, "size": null,
+                                    "isDirectory": true, "size": null, "modified": null,
                                 }));
                             }
                             None => out.push(json!({
                                 "name": rest, "path": p, "isDirectory": false,
-                                "size": bytes.len(),
+                                "size": bytes.len(), "modified": "2026-08-21T09:00:00.000Z",
                             })),
                         }
                     }
@@ -9263,6 +9729,63 @@ mod tests {
         assert_eq!(out["total"], json!(3));
         assert_eq!(out["root"], json!(""));
         assert_eq!(out["up"], Json::Null, "the store root has no parent");
+    }
+
+    #[tokio::test]
+    async fn a_listed_entry_keeps_what_the_listing_said() {
+        // TODO F1.5: name, isDirectory, size and modified, as properties and in
+        // what `JSON.stringify` makes of a listing — and `stat()` still works
+        // on either kind of entry.
+        let files = FakeFiles::new(&["s"])
+            .put("s", "a.txt", "abc")
+            .put("s", "sub/c.txt", "c");
+        let rt = CodeRuntime::new();
+        let out = rt
+            .run(with_files(
+                r#"const listed = await fs("s").dir("").list();
+                   const [file, dir] = listed;
+                   const opened = fs("s").open("a.txt");
+                   return {
+                     json: JSON.parse(JSON.stringify(listed)),
+                     props: [file.name, file.isDirectory, file.size, file.modified,
+                             dir.name, dir.isDirectory, dir.size, dir.modified],
+                     fileStat: await file.stat(),
+                     dirStat: await dir.stat(),
+                     opened: [opened.size === undefined, JSON.parse(JSON.stringify(opened))],
+                   };"#,
+                &*files,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            out["json"],
+            json!([
+                { "store": "s", "path": "a.txt", "name": "a.txt", "isDirectory": false,
+                  "size": 3, "modified": "2026-08-21T09:00:00.000Z" },
+                { "store": "s", "path": "sub", "name": "sub", "isDirectory": true,
+                  "size": null, "modified": null },
+            ])
+        );
+        assert_eq!(
+            out["props"],
+            json!([
+                "a.txt",
+                false,
+                3,
+                "2026-08-21T09:00:00.000Z",
+                "sub",
+                true,
+                null,
+                null
+            ])
+        );
+        assert_eq!(out["fileStat"]["size"], json!(3));
+        assert_eq!(out["dirStat"]["isDirectory"], json!(true));
+        // A handle that was opened rather than listed has looked at nothing.
+        assert_eq!(
+            out["opened"],
+            json!([true, { "store": "s", "path": "a.txt", "name": "a.txt", "isDirectory": false }])
+        );
     }
 
     #[tokio::test]

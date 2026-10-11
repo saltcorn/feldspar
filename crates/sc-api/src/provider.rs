@@ -223,6 +223,10 @@ pub struct ApiResponse {
     pub raw: Option<Box<RawBody>>,
     /// The session change for the transport to apply, if any.
     pub session: SessionAction,
+    /// Extra response headers a code query chose with `response({ headers })`
+    /// (TODO F1.4): lower-case names, none of them one the server owns
+    /// ([`sc_expr::SERVER_OWNED_HEADERS`]). Empty for everything else.
+    pub headers: Vec<(String, String)>,
 }
 
 impl ApiResponse {
@@ -233,6 +237,7 @@ impl ApiResponse {
             body,
             raw: None,
             session: SessionAction::Keep,
+            headers: Vec::new(),
         }
     }
 
@@ -243,6 +248,7 @@ impl ApiResponse {
             body,
             raw: None,
             session: SessionAction::Keep,
+            headers: Vec::new(),
         }
     }
 
@@ -256,6 +262,7 @@ impl ApiResponse {
                 content_type: content_type.into(),
             })),
             session: SessionAction::Keep,
+            headers: Vec::new(),
         }
     }
 
@@ -266,6 +273,7 @@ impl ApiResponse {
             body: serde_json::json!({ "error": message.into() }),
             raw: None,
             session: SessionAction::Keep,
+            headers: Vec::new(),
         }
     }
 
@@ -276,6 +284,7 @@ impl ApiResponse {
             body,
             raw: None,
             session: SessionAction::Start(user),
+            headers: Vec::new(),
         }
     }
 
@@ -286,6 +295,7 @@ impl ApiResponse {
             body,
             raw: None,
             session: SessionAction::End,
+            headers: Vec::new(),
         }
     }
 }

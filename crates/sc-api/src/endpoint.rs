@@ -352,6 +352,11 @@ pub struct McpTag {
     /// the four grants are about what a caller may *change*.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<Grant>,
+    /// A second grant it needs as well, checked after [`grant`](McpTag::grant)
+    /// so a refusal names the first one missing — `deleteUser` is an access
+    /// change *and* a deletion, and needs both flags (TODO F1.9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub also: Option<Grant>,
     /// This endpoint runs build tools, so its **failure is news about the
     /// application** rather than a refusal of the call: the projection reports it
     /// as a tool result with the tools' output and the file/line/message
@@ -375,6 +380,7 @@ impl McpTag {
             description: prose.into(),
             area: None,
             grant: None,
+            also: None,
             build_result: false,
         }
     }
@@ -388,6 +394,12 @@ impl McpTag {
     /// Require a grant of the caller before it runs.
     pub fn needs(mut self, grant: Grant) -> McpTag {
         self.grant = Some(grant);
+        self
+    }
+
+    /// Require a second grant as well as the one [`needs`](McpTag::needs) named.
+    pub fn and_needs(mut self, grant: Grant) -> McpTag {
+        self.also = Some(grant);
         self
     }
 
@@ -440,6 +452,14 @@ pub struct Endpoint {
     /// transport writes the provider's bytes with their own content type.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub binary_output: bool,
+    /// The arguments object is **open**: it carries the declared fields (the
+    /// `input` struct, or the `query` parameters) *and any other key*. A
+    /// JavaScript or Python custom query reads whatever arrives, so the
+    /// generated method always takes the argument — typed as the declared
+    /// fields `& Record<string, unknown>`, optional when none is required —
+    /// rather than dropping a body nobody declared.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open_args: bool,
     /// The authorization required to call it.
     pub auth: AuthRequirement,
     /// The handler that runs it.
@@ -466,6 +486,7 @@ impl Endpoint {
             output: TypeSchema::empty(),
             binary_input: false,
             binary_output: false,
+            open_args: false,
             auth: AuthRequirement::LoggedIn,
             handler,
             mcp: None,
@@ -506,6 +527,12 @@ impl Endpoint {
     /// Mark the response body as raw bytes (a file download).
     pub fn binary_output(mut self) -> Endpoint {
         self.binary_output = true;
+        self
+    }
+
+    /// Mark the arguments object as open (see [`Endpoint::open_args`]).
+    pub fn open_args(mut self) -> Endpoint {
+        self.open_args = true;
         self
     }
 

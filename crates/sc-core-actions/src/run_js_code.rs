@@ -318,7 +318,12 @@ impl Action for RunJsCode {
         evaluator
             .run_code(hosts.call(code, bindings, timeout))
             .await
-            .map_err(|e| Error::invalid(format!("{}: `{CFG_CODE}`: {e}", code_body::subject(ctx))))
+            .map_err(|e| match e.http_reply() {
+                // `throw httpError(…)` is the answer the body chose (TODO
+                // F1.4): kept whole so the transport can serve it.
+                Some(_) => e,
+                None => Error::invalid(format!("{}: `{CFG_CODE}`: {e}", code_body::subject(ctx))),
+            })
     }
 }
 

@@ -355,42 +355,42 @@ it shows "used by" (queries and triggers whose code mentions `lib("name")`). MCP
 
 None of these needs a design beyond Part I. Each one deletes a workaround from the report.
 
-- [ ] **F1.1** (3.1) The generated client always gives a POST/PUT/PATCH `javascript`/`python`
+- [x] **F1.1** (3.1) The generated client always gives a POST/PUT/PATCH `javascript`/`python`
   custom query a `body` argument, typed as the declared params `& Record<string, unknown>`
   (all optional when nothing is declared). GET/DELETE get an optional `query` argument the same
   way. `save_api_query` and the admin editor return a note when a code query declares no params.
   Tests: a no-params code query's generated method sends its body, and the query sees it.
   `typescript_typecheck.rs` covers both shapes.
-- [ ] **F1.2** (2.1) `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto.getRandomValues` and
+- [x] **F1.2** (2.1) `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto.getRandomValues` and
   `crypto.randomUUID` (§3.1). Tests: round-trips against known vectors, including non-ASCII
   and binary; `getRandomValues` refuses more than 65 536 bytes as the Web API does.
-- [ ] **F1.3** (2.1) `crypto.subtle.digest`, HMAC (`importKey`/`sign`/`verify`) and
+- [x] **F1.3** (2.1) `crypto.subtle.digest`, HMAC (`importKey`/`sign`/`verify`) and
   `crypto.password.hash/verify` (§3.1). Tests: NIST and RFC 4231 vectors; a password hash
   verifies, a wrong password does not, and hashing does not trip the 1 s slice.
-- [ ] **F1.4** (2.3) `httpError` and `response` (§3.2), plus the 500/503 bodies without stack traces
+- [x] **F1.4** (2.3) `httpError` and `response` (§3.2), plus the 500/503 bodies without stack traces
   for callers who are not admins. Tests: `httpError(401, …)` is a 401 with `{error}`; a plain throw is a
   500 with no stack and no query name for an anonymous caller, but the full text for an admin;
   `response({status: 201, headers, body})` is honoured, and a `set-cookie` header is refused.
   Triggers called as endpoints behave the same way.
-- [ ] **F1.5** (2.5) Listing entries keep `name`, `isDirectory`, `size` and `modified`, both as
+- [x] **F1.5** (2.5) Listing entries keep `name`, `isDirectory`, `size` and `modified`, both as
   properties and in `toJSON`. `stat()` on a listed entry works for files and directories. Test:
   `JSON.stringify(fs(s).dir("").list())` contains all four fields.
-- [ ] **F1.6** (3.5) "Public" is shown wherever min_role 100 is: a badge in `CustomQueries.tsx`
+- [x] **F1.6** (3.5) "Public" is shown wherever min_role 100 is: a badge in `CustomQueries.tsx`
   and the app's endpoint list, and `public: true` in `describe_applications`. `save_api_query`
   accepts `public: true` as a synonym for `min_role: 100` (both together must agree). Test: the
   MCP round-trip.
-- [ ] **F1.7** (5.4) The React CSP default becomes `img-src 'self' data: blob:` and
+- [x] **F1.7** (5.4) The React CSP default becomes `img-src 'self' data: blob:` and
   `media-src 'self' blob:`. `AGENTS.md` gains a CSP paragraph (where the policy is, how to widen it
   through `update_application`, and that it needs `allow_access_changes`). Test: the default policy
   string.
-- [ ] **F1.8** (4.2) CLI: `feldspar role list|add NAME --level N [--description]|delete NAME`,
+- [x] **F1.8** (4.2) CLI: `feldspar role list|add NAME --level N [--description]|delete NAME`,
   `feldspar delete-user EMAIL`, and `modify-user EMAIL --disabled|--enabled`, all over the
   existing `sc-auth` functions. Tests in the CLI suite.
-- [ ] **F1.9** (4.2) MCP: project `listRoles`, `createRole`, `deleteRole`, `listUsers`,
+- [x] **F1.9** (4.2) MCP: project `listRoles`, `createRole`, `deleteRole`, `listUsers`,
   `setUserDisabled` and `deleteUser` with `.mcp(...)`. Creating or changing needs
   `allow_access_changes`; deleting also needs `allow_drop`. Tests: each refusal names its grant,
   and an admin cannot disable or delete the last admin.
-- [ ] **F1.10** `describe_code_api` and `AGENTS.md` gain a short "choosing where logic goes"
+- [x] **F1.10** `describe_code_api` and `AGENTS.md` gain a short "choosing where logic goes"
   section (Part I §1, the cross-cutting lesson): tables with ownership formulas and File fields
   first, code queries for the rest, and never hand-written base64 or SHA again.
 
@@ -400,7 +400,7 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
 2. `throw httpError(401, "sign in")` returns a 401 that the client's error carries, with no stack.
 3. `feldspar role add Editor --level 40` from a terminal, then pick it in the query's role select.
 
-- [ ] **F1.11** Tutorial: extend `docs/tutorial-rest-queries.md` with a "code queries from React"
+- [x] **F1.11** Tutorial: extend `docs/tutorial-rest-queries.md` with a "code queries from React"
   part (body, status codes, crypto), and add a definition-of-done test.
 
 ---

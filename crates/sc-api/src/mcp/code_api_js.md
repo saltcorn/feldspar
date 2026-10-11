@@ -7,6 +7,22 @@ you know. Do not guess a method: if it is not on this page, it does not exist. (
 code with `db`.) The body is the inside of an `async function`: write
 statements, `await` every database/network/file call, and `return` the result.
 
+## Choosing where logic goes
+
+Before writing a code body for an application, reach for these in order and stop at the first
+that can express it:
+
+1. **A table with access rules**: a minimum role to read and to write, and an **ownership
+   formula** (`user_id == user.id`) so each user reads and changes only their own rows. The
+   app's generated client then works with no server code, and the server enforces the rules for
+   every caller. Do not make tables admin-only and wrap them in code queries.
+2. **A File field** on that table for uploads: stored, served and access-checked with its row.
+3. **A custom SQL query** (`language: sql`) for a read that is one statement.
+4. **A code query or trigger** (this page) only for what the above cannot express: several
+   steps, a call out with `fetch`, a password check, a computed status code.
+
+Never hand-write base64, UTF-8 or SHA: the globals below have them.
+
 ## What is in scope
 
 - `row` — the row the event is about (`insert`/`update`/`delete` triggers only; naming it
@@ -15,8 +31,46 @@ statements, `await` every database/network/file call, and `return` the result.
 - `payload` — what a directly-run or scheduled trigger was called with, or `null`.
 - `context` — in a **workflow step** only: the run's context so far.
 - `body`, `query`, `user` — in a **custom API query** only: the request's JSON body, its
-  query string, and the caller. There is no `row` or `payload` there.
+  query string, and the caller. There is no `row` or `payload` there. The app's generated
+  client method always sends them (`api.myQuery({ anything: 1 })`), declared params or not;
+  a declared param is typed in the client and converted and required before the body runs.
 - `db`, `models`, `fetch`, `fs`, `trigger`, `modfn`, `console` — below.
+- `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto`, `httpError`, `response` — below.
+
+## Bytes, randomness, hashes and passwords
+
+```js
+btoa("hi"); atob("aGk=");                               // binary strings, as in a browser
+const bytes = new TextEncoder().encode("naïve");        // UTF-8 only
+const text = new TextDecoder().decode(bytes);           // { fatal: true } throws on bad UTF-8
+const id = crypto.randomUUID();
+const nonce = crypto.getRandomValues(new Uint8Array(16)); // at most 65 536 bytes per call
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+const sha = hex(await crypto.subtle.digest("SHA-256", bytes));   // also SHA-384, SHA-512
+const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret),
+  { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+const sig = await crypto.subtle.sign("HMAC", key, bytes);
+const ok = await crypto.subtle.verify("HMAC", key, sig, bytes);  // constant-time
+const hash = await crypto.password.hash(body.password);          // argon2id; store this string
+const right = await crypto.password.verify(body.password, row.password_hash); // true / false
+```
+
+`crypto.subtle` has SHA digests and HMAC only. `crypto.password` hashes off the JavaScript
+thread, so it does not count against the one-second slice.
+
+## Status codes (custom queries and triggers called as endpoints)
+
+```js
+if (!user) throw httpError(401, "sign in");             // 401 { "error": "sign in" }
+throw httpError(409, "taken", { field: "email" });      // 409, the third argument is the body
+return response({ status: 201, headers: { "x-id": id }, body: { id } });
+```
+
+`httpError` takes 400–599. `response` takes 200–599 and any header except the ones the server
+owns (`set-cookie`, the CSP, framing, `content-type`, …), which it refuses. **Any other throw is
+a 500** `{ "error": "internal error", "id": "…" }` to callers who are not admins — the query
+name and stack go to the server log under that id, and to admin callers. A body stopped by its
+timeout, its slice or the heap is a 503 `{ "error": "timeout" }`.
 
 ## `db`: reading and writing tables
 
@@ -132,6 +186,8 @@ const f = fs("myFileStore").open("reports/summary.json");  // a file store an ad
 if (await f.exists()) { const data = await f.json(); }       // also .text(), .bytes(), .stat()
 await f.write({ total: 3 });                                  // replaces; parents are created
 const entries = await fs("myFileStore").dir("reports").list();
+// each entry is a file or directory handle: name, isDirectory, size, modified (as listed),
+// and JSON.stringify(entries) keeps all four; `await entry.stat()` works on either kind
 
 await trigger("send_invoice").run({ id: row.id });    // run another trigger by name
 

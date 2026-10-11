@@ -21,6 +21,7 @@ import {
   describeBody,
   isCode,
   languageOptions,
+  needsParamsNote,
   pythonAvailable,
   queryRowsFromConfig,
   queryRowsToConfig,
@@ -204,5 +205,17 @@ describe("the language a query is written in", () => {
 
   it("reports a checked code query without claiming columns", () => {
     expect(statusSummary({ kind: "checked" })).toMatch(/whatever its body returns/);
+  });
+});
+
+describe("the note on a code query with no parameters (TODO F1.1)", () => {
+  it("is shown for a code query that declares none, and only then", () => {
+    const row = { ...blankQueryRow(), language: "javascript" as const, params: [] };
+    expect(needsParamsNote(row)).toBe(true);
+    expect(needsParamsNote({ ...row, params: [{ name: "q", type: "text", required: true }] })).toBe(
+      false,
+    );
+    // SQL declares exactly what it uses, so the note would be noise there.
+    expect(needsParamsNote({ ...row, language: "sql" })).toBe(false);
   });
 });

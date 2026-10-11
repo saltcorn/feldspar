@@ -2336,7 +2336,7 @@ error only to something that was told to read it — `exists` is a question, not
 | on a directory | |
 | --- | --- |
 | `file(name)`, `dir(name)`, `parent`, `path`, `name` | references, synchronous |
-| `list()` | the direct children — as the same file and directory objects, so a listing is walked and acted on rather than re-opened by name |
+| `list()` | the direct children — as the same file and directory objects, so a listing is walked and acted on rather than re-opened by name. A listed entry also carries what the listing said: `size` and `modified` beside `name` and `isDirectory`, as properties and in `toJSON` (`{store, path, name, isDirectory, size, modified}`), so `JSON.stringify(await dir.list())` is a usable listing. A file that was *opened* rather than listed has `size`/`modified` `undefined` — nothing has looked at the store for it — and `stat()` works on either kind of entry |
 | `exists()`, `stat()`, `create()`, `delete()` | `create()` is `mkdir -p` and idempotent; `delete()` takes everything in it |
 
 **Authority** is `db`'s: the admin's by default, because a trigger is server-side configuration,
@@ -2369,6 +2369,58 @@ languages inherit `fs` the way they inherit `db`:
 `toStore`/`toPath`, so a cross-store move is one operation. Nothing in a request is trusted: the
 store is resolved through the catalog, the path is re-checked for the traversal the guest already
 refused, and an unknown field is a refusal naming it.
+
+#### Globals, and the answer a body gives an HTTP caller
+
+Beside the host surfaces a body has the web's own small globals (TODO F1.2–F1.4), defined in
+`SETUP` and the fetch prelude with `fixed(...)` like everything else on the isolate. They are
+not a surface — none of them reaches anything — and they exist so that a body never hand-writes
+base64, UTF-8 or SHA again:
+
+- `btoa`, `atob`, `TextEncoder`, `TextDecoder` — thin wrappers over the prelude's own codecs
+  (`__scCodec`). UTF-8 only; `TextDecoder` does not stream, and `fatal: true` throws on bytes
+  that are not UTF-8.
+- `crypto.getRandomValues(typedArray)` (at most 65 536 bytes, as the Web API) and
+  `crypto.randomUUID()`, over one sync op on `getrandom`.
+- `crypto.subtle.digest("SHA-256"|"SHA-384"|"SHA-512", data)` and HMAC through
+  `importKey("raw", …, { name: "HMAC", hash })`, `sign` and `verify` (constant-time), over
+  `sha2`/`hmac` (`sc-expr::code_crypto`). These answer promises, as the Web Crypto API does, but
+  the ops are **synchronous**: hashing runs at hundreds of MB/s over bytes already in the
+  isolate's heap, so it is bounded by the heap, and a sync op needs no resumption mark. Only
+  HMAC keys and the raw format exist; anything else is `NotSupportedError`.
+- `crypto.password.hash(pw)` / `crypto.password.verify(pw, hash)` — argon2id at `sc-auth`'s
+  parameters (`Argon2::default()`), **asynchronous on tokio's blocking pool**, so a deliberately
+  slow hash is not charged to the 1 s JavaScript slice and does not stall co-resident bodies.
+  A global has no run token, so `SETUP` tracks the run whose JavaScript is on the isolate
+  (`current`, set at invoke and at every resumption mark) and marks that run again when the
+  hash comes back — otherwise its continuation would run with the watchdog disarmed.
+  `verify` against something that is not a PHC hash throws rather than answering `false`.
+
+We do not pull in `deno_web` or `deno_crypto`: without a snapshot their JavaScript is read from
+build-machine paths.
+
+**Status codes.** A body that serves a request — a custom query (§13.4) or a trigger called as an
+endpoint — chooses its answer:
+
+- `throw httpError(status, message, body?)` throws a frozen `HttpError` (an `Error`, catchable
+  and inspectable) tagged with a symbol no body can reach. The run wrapper recognises the tag and
+  calls `op_sc_http_error`, which ends the run with `sc_error::Repr::Http` — a variant that is
+  *not a fault* and passes through `run_js_code` unflattened. The REST provider answers
+  `ApiResponse::with_status(status, body ?? { error: message })`; a status outside 400–599 is a
+  500 with the reason logged. Anywhere else (a trigger fired by an event) it is an ordinary
+  failure.
+- `return response({ status, headers, body })` (status 200–599) is the success side. The run
+  wrapper hands it to `op_sc_respond`, which wraps it under a key that is random per process
+  (`sc_expr::response_key`) — only the host writes it, so a body that echoes its caller's JSON
+  cannot forge a status or a header. Headers the server owns (`set-cookie`, the CSP headers,
+  `x-frame-options`, `content-type`, the hop-by-hop ones; `sc_expr::SERVER_OWNED_HEADERS`) are
+  refused in the guest, so the author is told, and dropped again where the router writes them.
+- **Any other throw or rejection** is a **500** `{ "error": "internal error", "id" }` to a
+  caller who is not an admin; the full text (query name, stack) goes to the log under that id,
+  and to an admin caller, without the doubled `invalid:` prefix. A watchdog, wall-clock or heap
+  trip is a **503** `{ "error": "timeout" }`. The classification (`sc_expr::code_failure`) reads
+  the phrases the runtime writes, kept beside the code that writes them. A refusal *before* the
+  body runs (a missing required parameter, a role below the floor) keeps its own status.
 
 #### `trigger`: another trigger in a code body
 
@@ -5362,7 +5414,9 @@ frameworks: {
       runtime: "{{ project }}/src/feldspar",
       client: "client.ts",
     },
-    csp: { "img-src": ["'self'", "data:"] },  // widenings on the strict baseline
+    // widenings on the strict baseline; React's own default also has `blob:` in
+    // `img-src` and `media-src 'self' blob:`, for object URLs (TODO F1.7)
+    csp: { "img-src": ["'self'", "data:", "blob:"], "media-src": ["'self'", "blob:"] },
     builder_prompt: "You maintain {{ app }} in {{ root }} …",
     scaffold: async (ctx) => [{ path, contents }, …],  // the project, written once
     runtime:  async (ctx) => [{ path, contents }, …],  // rewritten on every build
@@ -6429,8 +6483,20 @@ with `db.asUser()` delegating to the caller. The request is in scope as `body` (
 `user`, and there is no `payload`, because there is no event. A declared parameter is checked
 and coerced where it arrives (the query string for `GET`/`DELETE`, the body otherwise) before
 the body runs, so the client method's argument types hold inside the body too; what was not
-declared is passed as sent. What the body returns is the response, and a body that throws is an
-error answer naming the query.
+declared is passed as sent. What the body returns is the response. A body chooses its own status
+with `throw httpError(…)` or `return response({ status, headers, body })`, and any other throw is
+a 500 with no stack for a caller who is not an admin (§10.1, "Globals, and the answer a body gives
+an HTTP caller").
+
+**The arguments are open (TODO F1.1).** Because a body reads `body` and `query` whole, its
+projected endpoint carries `Endpoint::open_args`: the generated method **always** takes the
+argument — `body` for a method with one, `query` for `GET`/`DELETE` — typed as the declared
+parameters `& Record<string, unknown>`, or `Record<string, unknown>` when nothing is declared,
+and optional when no declared parameter is required. An omitted body is sent as `{}`; an open
+query object sends every key the caller set (null and undefined left out). Before this, an empty
+input struct counted as "no body" and the method dropped what it was given. `save_api_query`
+and the admin editor say so when a code query declares no parameters
+(`sc_api::undeclared_params_note`): the client still sends, but nothing is typed or checked.
 
 Neither `body` nor `query` is `payload` spelled differently: an exposed trigger's body gets the
 request body as `payload` because a trigger is an event handler first, and a trigger has no
@@ -6946,10 +7012,21 @@ of those endpoints are the SPA's own plumbing.
 - **Tier 2 — generated from tagged endpoints.** An `Endpoint` gains an opt-in MCP tag carrying
   the prose a model reads. Everything else is already in the value: the name, the typed path and
   query parameters, and both `TypeSchema`s. `TypeSchema` → JSON Schema is the one new function,
-  and it is the sibling of the TypeScript generator's type mapping (§13.1).
+  and it is the sibling of the TypeScript generator's type mapping (§13.1). A tag declares the
+  grant a change needs (`.needs(Grant::…)`), and may declare a second (`.and_needs(…)`), checked
+  in order so a refusal names the first flag missing. **Roles and accounts** are tier 2 since
+  TODO F1.9: `listRoles` and `listUsers` read; `createRole` and `setUserDisabled` need
+  `allow_access_changes`; `deleteRole` and `deleteUser` need it *and* `allow_drop`. The last
+  enabled admin cannot be disabled or deleted by anyone (`sc_auth::refuse_last_admin`, inside
+  `delete_user` and `set_user_disabled`, so the CLI's `delete-user` and `modify-user
+  --disabled` are held to it too), and a token cannot disable or delete the admin it runs as.
+  A tool result for a query lists `public: true` beside `min_role: 100`, and `save_api_query`
+  takes `public: true` as a synonym (both together must agree); the role stays the one stored
+  fact.
 - **Tier 3 — deliberately absent.** Row CRUD, the file-store IDE routes (§12.1) — creating a
   store is a tier-1 tool, browsing or writing one is not — backup and
-  restore, user management, and anything that reads a provider's key. Each is a real capability
+  restore, creating a user, becoming one or setting a password, and anything that reads a
+  provider's key. Each is a real capability
   and none of them is *administering the application*, which is what this server is for. An
   agent that can add a column and an agent that can read customer rows are different
   propositions, and only the first is what building an application requires.

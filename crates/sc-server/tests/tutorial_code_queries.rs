@@ -1,0 +1,297 @@
+//! `docs/tutorial-rest-queries.md` step 11, run (TODO F1.11): the two code
+//! queries the tutorial prints, **read out of the tutorial itself**, served by
+//! a real router over a real Postgres — so the page cannot drift from what the
+//! server does.
+//!
+//! What it walks: a role made from a terminal's point of view (`Reader`), a
+//! `POST` that declares no parameters yet receives its body (F1.1), HMAC and
+//! base64 from the sandbox's own globals (F1.2, F1.3), statuses of the body's
+//! choosing (F1.4), and the 500 with no stack that a mistake becomes for an
+//! anonymous caller — but not for an admin.
+
+use std::sync::Arc;
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use sc_api::{CustomQuery, Method, QueryLanguage, set_custom_queries};
+use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
+use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, Role, SessionStore, create_user, save_role};
+use sc_catalog::{Catalog, TableId, TableMeta, bootstrap_table_meta, save_table_meta};
+use sc_db::DatabaseDriver;
+use sc_db_postgres::PgDriver;
+use sc_server::{
+    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers,
+    build_router_with_apps, default_js_evaluator, install_triggers,
+};
+use sc_test_harness::TestDb;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+const HOST: &str = "library.example.com";
+const PASSWORD: &str = "correct-horse";
+const READER: &str = "reader@example.com";
+const ADMIN: &str = "admin@example.com";
+
+/// The tutorial's `js` blocks in step 11, in order: `shareBook`, then
+/// `openShare`.
+fn step_11_bodies() -> (String, String) {
+    let doc = include_str!("../../../docs/tutorial-rest-queries.md");
+    let step = doc
+        .split("## Step 11")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("the tutorial has a step 11");
+    let mut blocks = step.split("```js\n").skip(1).map(|b| {
+        b.split("\n```")
+            .next()
+            .expect("a closed code block")
+            .to_owned()
+    });
+    let share = blocks.next().expect("shareBook's body");
+    let open = blocks.next().expect("openShare's body");
+    (share, open)
+}
+
+async fn send(
+    router: &Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    cookies: &[(&str, &str)],
+    csrf: Option<&str>,
+) -> (StatusCode, Value, axum::http::HeaderMap) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, HOST);
+    if !cookies.is_empty() {
+        let jar: Vec<String> = cookies.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        builder = builder.header(header::COOKIE, jar.join("; "));
+    }
+    if let Some(token) = csrf {
+        builder = builder.header(CSRF_HEADER, token);
+    }
+    let request = match body {
+        Some(b) => builder
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&b).unwrap()))
+            .unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    };
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
+        .await
+        .unwrap();
+    let value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
+    (status, value, headers)
+}
+
+fn cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers.get_all(header::SET_COOKIE).iter().find_map(|raw| {
+        let (k, v) = raw.to_str().ok()?.split(';').next()?.split_once('=')?;
+        (k.trim() == name).then(|| v.trim().to_owned())
+    })
+}
+
+/// Sign `email` in through the app's own login: the session and CSRF cookies.
+async fn sign_in(router: &Router, email: &str) -> (String, String) {
+    let (_, _, primed) = send(router, "GET", "/api/whoami", None, &[], None).await;
+    let csrf = cookie(&primed, CSRF_COOKIE).expect("a CSRF cookie");
+    let (status, body, set) = send(
+        router,
+        "POST",
+        "/api/login",
+        Some(json!({ "email": email, "password": PASSWORD })),
+        &[(CSRF_COOKIE, &csrf)],
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (cookie(&set, SESSION_COOKIE).expect("a session"), csrf)
+}
+
+async fn setup() -> sc_error::Result<(Router, TestDb)> {
+    let db = TestDb::new().await?;
+    db.client()
+        .await?
+        .batch_execute(
+            "DO $$ DECLARE r record; BEGIN \
+               FOR r IN SELECT table_schema FROM information_schema.tables \
+               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
+                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
+               END LOOP; END $$; \
+             CREATE TABLE authors (id bigint generated by default as identity primary key, \
+                 name text not null, country text); \
+             CREATE TABLE books (id bigint generated by default as identity primary key, \
+                 title text not null, published date, pages int, \
+                 author bigint references authors(id)); \
+             INSERT INTO authors (name) VALUES ('Susanna Clarke'); \
+             INSERT INTO books (title, author) VALUES ('Piranesi', 1);",
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+
+    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
+    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    sc_auth::bootstrap(&catalog).await?;
+    sc_app::bootstrap(&catalog).await?;
+    bootstrap_table_meta(&catalog).await?;
+    // `feldspar role add Reader --level 80`, and an account holding it.
+    save_role(
+        &catalog,
+        &Role::new(80, "Reader").description("Signed-in readers"),
+    )
+    .await?;
+    create_user(&catalog, READER, PASSWORD, 80).await?;
+    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_table_meta(&catalog, &TableMeta::new("books")).await?;
+
+    let (share, open) = step_11_bodies();
+    let mut api = ApiConfig::new("rest", "/api");
+    set_custom_queries(
+        &mut api.config,
+        &[
+            CustomQuery::new("shareBook", Method::Post, "/books/share", share)
+                .language(QueryLanguage::Javascript)
+                .min_role(80),
+            CustomQuery::new("openShare", Method::Get, "/shares/open", open)
+                .language(QueryLanguage::Javascript)
+                .min_role(ROLE_PUBLIC),
+        ],
+    )?;
+    let app = Application::new("Library", "library", FrameworkRef::new("code"))
+        .with_table(TableId("authors".to_owned()))
+        .with_table(TableId("books".to_owned()))
+        .with_api(api);
+
+    let evaluator = default_js_evaluator();
+    let agents = sc_server::install_agents(&catalog).await?;
+    let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
+    let dispatcher = install_triggers(&catalog, evaluator.clone(), &agents, &models).await?;
+    let apps = Arc::new(
+        AppMounts::new(catalog.clone())
+            .with_evaluator(evaluator)
+            .with_triggers(dispatcher),
+    );
+    let framework = Arc::new(CodeFramework::new(
+        "code",
+        AssetBundle::new().with("index.html", "<!doctype html>"),
+    ));
+    apps.mount(MountedApp::new_with(
+        app,
+        framework,
+        &catalog,
+        apps.evaluator(),
+        apps.triggers(),
+    )?)?;
+    let router = build_router_with_apps(
+        &sc_api::admin_endpoints(),
+        admin_handlers(catalog.clone(), apps.clone()),
+        Arc::new(SessionStore::default()),
+        &ServerConfig {
+            base_domain: Some("example.com".to_owned()),
+            ..ServerConfig::default()
+        },
+        apps,
+    )?;
+    Ok((router, db))
+}
+
+#[tokio::test]
+async fn the_rest_tutorials_code_queries_run_as_printed() -> sc_error::Result<()> {
+    let (router, _db) = setup().await?;
+    let r = &router;
+
+    // A Reader shares a book: no parameters declared, and the body arrives.
+    let (session, csrf) = sign_in(r, READER).await;
+    let jar = [
+        (SESSION_COOKIE, session.as_str()),
+        (CSRF_COOKIE, csrf.as_str()),
+    ];
+    let (status, shared, headers) = send(
+        r,
+        "POST",
+        "/api/books/share",
+        Some(json!({ "book": 1 })),
+        &jar,
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{shared}");
+    assert_eq!(headers["cache-control"], "no-store");
+    let token = shared["token"].as_str().expect("a token").to_owned();
+    assert!(token.starts_with("1."), "{token}");
+    assert_eq!(shared["id"].as_str().map(str::len), Some(36), "{shared}");
+
+    // A book that is not there is the body's own 404.
+    let (status, body, _) = send(
+        r,
+        "POST",
+        "/api/books/share",
+        Some(json!({ "book": 99 })),
+        &jar,
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body, json!({ "error": "no such book" }));
+
+    // Anyone holding the link opens it.
+    let open = format!("/api/shares/open?token={token}");
+    let (status, body, _) = send(r, "GET", &open, None, &[], None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "title": "Piranesi" }));
+
+    // A forged one — another book's id under this signature — is a 403.
+    let forged = format!("/api/shares/open?token=2.{}", &token[2..]);
+    let (status, body, _) = send(r, "GET", &forged, None, &[], None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body, json!({ "error": "this link is not valid" }));
+
+    // Break it on purpose: no token. Anonymous: a 500 with an id and nothing
+    // else. An admin: the stack.
+    let (status, body, _) = send(r, "GET", "/api/shares/open", None, &[], None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["error"], json!("internal error"));
+    assert!(body["id"].is_string(), "{body}");
+    assert!(!body.to_string().contains("split"), "{body}");
+    let (admin_session, admin_csrf) = sign_in(r, ADMIN).await;
+    let (status, body, _) = send(
+        r,
+        "GET",
+        "/api/shares/open",
+        None,
+        &[
+            (SESSION_COOKIE, admin_session.as_str()),
+            (CSRF_COOKIE, admin_csrf.as_str()),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    let text = body["error"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("openShare") && text.contains("split"),
+        "{text}"
+    );
+
+    // Below the role floor, the body never runs.
+    let (status, _, _) = send(
+        r,
+        "POST",
+        "/api/books/share",
+        Some(json!({ "book": 1 })),
+        &[],
+        None,
+    )
+    .await;
+    assert!(
+        status.is_client_error() && status != StatusCode::NOT_FOUND,
+        "{status}"
+    );
+    Ok(())
+}

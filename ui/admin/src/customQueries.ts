@@ -65,6 +65,15 @@ export function isCode(language: QueryLanguage): boolean {
   return language !== "sql";
 }
 
+/** Whether a code query with no declared parameters should carry the note
+ * that its body is untyped. The generated client method still sends a body
+ * (`GET`/`DELETE`: a query string) typed `Record<string, unknown>`, and the
+ * code reads all of it; declaring parameters types and checks them. The same
+ * rule as the server's `undeclared_params_note`. */
+export function needsParamsNote(row: Pick<QueryRow, "language" | "params">): boolean {
+  return isCode(row.language) && row.params.length === 0;
+}
+
 function languageFrom(value: unknown): QueryLanguage {
   return QUERY_LANGUAGES.includes(value as QueryLanguage) ? (value as QueryLanguage) : "sql";
 }

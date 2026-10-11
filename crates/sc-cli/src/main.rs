@@ -54,6 +54,8 @@ async fn run(args: &[String]) -> Result<()> {
         Some("mcp-token") => mcp_token_command(&args[1..]).await,
         Some("add-user") => add_user_command(&args[1..]).await,
         Some("modify-user") => modify_user_command(&args[1..]).await,
+        Some("delete-user") => delete_user_command(&args[1..]).await,
+        Some("role") => role_command(&args[1..]).await,
         Some("backup") => backup_command(&args[1..]).await,
         Some("restore") => restore_command(&args[1..]).await,
         Some("app") => app_command(&args[1..]).await,
@@ -1433,6 +1435,25 @@ async fn modify_user_command(args: &[String]) -> Result<()> {
         Some(arg) => Some(sc_cli::users::password_from(Some(arg))?),
         None => None,
     };
+    // First, so a refusal (the last enabled admin) changes nothing else.
+    if let Some(disabled) = parsed.disabled {
+        sc_auth::set_user_disabled(&catalog, user.id, disabled).await?;
+        if disabled {
+            // A disabled account stops resolving from a session it holds; the
+            // rows are dropped too, as the admin UI's "Disable" drops them.
+            sc_auth::SessionStore::database(catalog.clone())
+                .end_user_sessions(user.id)
+                .await?;
+        }
+        eprintln!(
+            "feldspar: {} is now {}",
+            parsed.email.trim(),
+            if disabled { "disabled" } else { "enabled" }
+        );
+    }
+    if role.is_none() && password.is_none() {
+        return Ok(());
+    }
     sc_auth::update_user(
         &catalog,
         user.id,
@@ -1455,6 +1476,74 @@ async fn modify_user_command(args: &[String]) -> Result<()> {
         eprintln!("feldspar: password changed for {}", parsed.email.trim());
     }
     Ok(())
+}
+
+/// `feldspar delete-user EMAIL` — delete an account from a terminal (TODO
+/// F1.8). The last enabled admin is refused, as it is in the admin UI.
+async fn delete_user_command(args: &[String]) -> Result<()> {
+    let (db, rest) = DbConfig::extract(args)?;
+    let email = sc_cli::users::parse_delete_user(&rest)?;
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    let catalog = connect_catalog(&db).await?;
+    let user = sc_auth::load_user_by_email(&catalog, email.trim())
+        .await?
+        .ok_or_else(|| {
+            sc_error::Error::not_found(format!("no user with the email `{}`", email.trim()))
+        })?;
+    sc_auth::delete_user(&catalog, user.id).await?;
+    sc_auth::SessionStore::database(catalog.clone())
+        .end_user_sessions(user.id)
+        .await?;
+    eprintln!("feldspar: deleted {}", email.trim());
+    Ok(())
+}
+
+/// `feldspar role list|add|delete` — the roles users and endpoints are
+/// assigned, from a terminal (TODO F1.8), over `sc-auth`'s own functions.
+async fn role_command(args: &[String]) -> Result<()> {
+    let (db, rest) = DbConfig::extract(args)?;
+    let command = sc_cli::users::parse_role(&rest)?;
+    let catalog = connect_catalog(&db).await?;
+    sc_log::set_log_sql(false);
+    match command {
+        sc_cli::users::RoleCommand::List { json } => {
+            let roles = sc_auth::list_roles(&catalog).await?;
+            if json {
+                let out: Vec<serde_json::Value> = roles
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "role": r.role, "name": r.name, "description": r.description,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+                return Ok(());
+            }
+            for r in &roles {
+                println!("{:>3}  {:<20} {}", r.role, r.name, r.description);
+            }
+            Ok(())
+        }
+        sc_cli::users::RoleCommand::Add {
+            name,
+            level,
+            description,
+        } => {
+            let role = sc_auth::Role::new(level, name.trim()).description(description.trim());
+            sc_auth::save_role(&catalog, &role).await?;
+            eprintln!("feldspar: created role {} ({level})", name.trim());
+            Ok(())
+        }
+        sc_cli::users::RoleCommand::Delete { role } => {
+            let found = sc_cli::auth::resolve_role(&catalog, &role).await?;
+            sc_auth::delete_role(&catalog, found.role).await?;
+            eprintln!("feldspar: deleted role {} ({})", found.name, found.role);
+            Ok(())
+        }
+    }
 }
 
 /// The FILE a `backup` or `restore` names, which comes first, and the
@@ -2085,7 +2174,14 @@ fn print_usage() {
     eprintln!("  feldspar mcp-token list [--json] [database flags]");
     eprintln!("  feldspar mcp-token revoke ID [database flags]");
     eprintln!("  feldspar add-user EMAIL --role ROLE [--password [VALUE]] [database flags]");
-    eprintln!("  feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]] [database flags]");
+    eprintln!(
+        "  feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]] [--disabled|--enabled] \
+         [database flags]"
+    );
+    eprintln!("  feldspar delete-user EMAIL [database flags]");
+    eprintln!("  feldspar role list [--json] [database flags]");
+    eprintln!("  feldspar role add NAME --level N [--description TEXT] [database flags]");
+    eprintln!("  feldspar role delete NAME [database flags]");
     eprintln!("  feldspar app list [--json] [database flags]");
     eprintln!("  feldspar backup FILE [database flags]");
     eprintln!("  feldspar restore FILE [database flags] [server flags]");
@@ -2166,6 +2262,15 @@ fn print_usage() {
        line: leave --password out of add-user, or give it no value, and it is
        asked for without echo (or read as one line from stdin when that is not a
        terminal). A password starting with -- is written --password=VALUE.
+       modify-user --disabled stops an account signing in (and ends its
+       sessions) without deleting it; --enabled gives it back.
+
+  delete-user: deletes an account. The last enabled admin cannot be deleted
+       or disabled, here or anywhere else.
+
+  role: lists, adds and deletes roles. --level is the role's number, 1 (admin)
+       to 100 (public); a lower number is more privileged. A built-in role, or
+       one a user still holds, cannot be deleted.
 
   backup: writes everything this installation has to FILE, as the zip
        Settings → Backup downloads with every box ticked but SSL / TLS: the

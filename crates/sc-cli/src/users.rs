@@ -1,4 +1,5 @@
-//! `feldspar add-user` and `feldspar modify-user`: accounts, from a terminal.
+//! `feldspar add-user`, `modify-user`, `delete-user` and `role`: accounts and
+//! roles, from a terminal.
 //!
 //! The way back in for an admin who has forgotten their password on a server
 //! with no SMTP configured — where the reset email that would otherwise do this
@@ -41,6 +42,8 @@ pub struct ModifyUserArgs {
     pub email: String,
     pub role: Option<String>,
     pub password: Option<PasswordArg>,
+    /// `--disabled` (`Some(true)`) or `--enabled` (`Some(false)`) (TODO F1.8).
+    pub disabled: Option<bool>,
 }
 
 /// The flags both commands share, and the one positional argument.
@@ -49,6 +52,7 @@ struct Parsed {
     email: Option<String>,
     role: Option<String>,
     password: Option<PasswordArg>,
+    disabled: Option<bool>,
 }
 
 fn parse(command: &str, args: &[String]) -> Result<Parsed> {
@@ -71,6 +75,14 @@ fn parse(command: &str, args: &[String]) -> Result<Parsed> {
                     .ok_or_else(|| Error::config("--role needs a value: a role name or number"))?
                     .clone(),
             );
+        } else if (arg == "--disabled" || arg == "--enabled") && command == "modify-user" {
+            let disabled = arg == "--disabled";
+            if parsed.disabled.is_some_and(|d| d != disabled) {
+                return Err(Error::config(
+                    "modify-user takes --disabled or --enabled, not both",
+                ));
+            }
+            parsed.disabled = Some(disabled);
         } else if arg.starts_with("--") {
             return Err(Error::config(format!("unknown {command} argument `{arg}`")));
         } else if parsed.email.is_none() {
@@ -111,16 +123,118 @@ pub fn parse_modify_user(args: &[String]) -> Result<ModifyUserArgs> {
     let email = parsed.email.ok_or_else(|| {
         Error::config("modify-user needs the email address of the user to change")
     })?;
-    if parsed.role.is_none() && parsed.password.is_none() {
+    if parsed.role.is_none() && parsed.password.is_none() && parsed.disabled.is_none() {
         return Err(Error::config(
-            "modify-user needs something to change: --role ROLE and/or --password [VALUE]",
+            "modify-user needs something to change: --role ROLE, --password [VALUE], \
+             --disabled or --enabled",
         ));
     }
     Ok(ModifyUserArgs {
         email,
         role: parsed.role,
         password: parsed.password,
+        disabled: parsed.disabled,
     })
+}
+
+/// Parse `delete-user EMAIL` (TODO F1.8): the one email, nothing else.
+pub fn parse_delete_user(args: &[String]) -> Result<String> {
+    match args {
+        [] => Err(Error::config(
+            "delete-user needs the email address of the user to delete",
+        )),
+        [first, ..] if first.starts_with("--") => Err(Error::config(format!(
+            "unknown delete-user argument `{first}`"
+        ))),
+        [email] => Ok(email.clone()),
+        [first, second, ..] => Err(Error::config(format!(
+            "delete-user takes one email address, not `{first}` and `{second}`"
+        ))),
+    }
+}
+
+/// What `feldspar role` was asked for (TODO F1.8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleCommand {
+    /// `role list [--json]`.
+    List { json: bool },
+    /// `role add NAME --level N [--description TEXT]`.
+    Add {
+        name: String,
+        level: u8,
+        description: String,
+    },
+    /// `role delete NAME` — a name or a number, as `--role` takes one.
+    Delete { role: String },
+}
+
+/// Parse `role list|add|delete …`.
+pub fn parse_role(args: &[String]) -> Result<RoleCommand> {
+    let usage = "role needs a subcommand: list [--json], add NAME --level N \
+                 [--description TEXT], or delete NAME";
+    let (sub, rest) = args.split_first().ok_or_else(|| Error::config(usage))?;
+    match sub.as_str() {
+        "list" => match rest {
+            [] => Ok(RoleCommand::List { json: false }),
+            [flag] if flag == "--json" => Ok(RoleCommand::List { json: true }),
+            [other, ..] => Err(Error::config(format!(
+                "unknown role list argument `{other}`"
+            ))),
+        },
+        "add" => {
+            let mut name = None;
+            let mut level = None;
+            let mut description = String::new();
+            let mut it = rest.iter();
+            while let Some(arg) = it.next() {
+                let mut value = |flag: &str| {
+                    it.next()
+                        .cloned()
+                        .ok_or_else(|| Error::config(format!("{flag} needs a value")))
+                };
+                if arg == "--level" {
+                    let raw = value("--level")?;
+                    level = Some(
+                        raw.parse::<u8>()
+                            .ok()
+                            .filter(|n| (1..=100).contains(n))
+                            .ok_or_else(|| {
+                                Error::config(format!(
+                                    "--level is a role number from 1 to 100, not `{raw}`"
+                                ))
+                            })?,
+                    );
+                } else if arg == "--description" {
+                    description = value("--description")?;
+                } else if arg.starts_with("--") {
+                    return Err(Error::config(format!("unknown role add argument `{arg}`")));
+                } else if name.is_none() {
+                    name = Some(arg.clone());
+                } else {
+                    return Err(Error::config(format!(
+                        "role add takes one name; quote a name with spaces (`{arg}` is extra)"
+                    )));
+                }
+            }
+            Ok(RoleCommand::Add {
+                name: name.ok_or_else(|| Error::config("role add needs the new role's name"))?,
+                level: level.ok_or_else(|| {
+                    Error::config("role add needs --level N: 1 is admin, 100 is public")
+                })?,
+                description,
+            })
+        }
+        "delete" => match rest {
+            [role] if !role.starts_with("--") => Ok(RoleCommand::Delete { role: role.clone() }),
+            [] => Err(Error::config("role delete needs the role's name or number")),
+            [other, ..] => Err(Error::config(format!(
+                "unknown role delete argument `{other}`"
+            ))),
+        },
+        other => Err(Error::config(format!(
+            "unknown role subcommand `{other}`; {usage}"
+        ))),
+    }
 }
 
 /// The password `arg` names, asking for it if it names none.
@@ -252,5 +366,74 @@ mod tests {
         assert!(
             parse_modify_user(&args(&["a@example.com", "b@example.com", "--password"])).is_err()
         );
+    }
+
+    #[test]
+    fn modify_user_disables_or_enables_but_not_both() {
+        let parsed = parse_modify_user(&args(&["a@example.com", "--disabled"])).unwrap();
+        assert_eq!(parsed.disabled, Some(true));
+        let parsed = parse_modify_user(&args(&["a@example.com", "--enabled"])).unwrap();
+        assert_eq!(parsed.disabled, Some(false));
+        let err = parse_modify_user(&args(&["a@example.com", "--enabled", "--disabled"]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not both"), "{err}");
+        // add-user has no such flag.
+        assert!(parse_add_user(&args(&["a@example.com", "--role", "1", "--disabled"])).is_err());
+    }
+
+    #[test]
+    fn delete_user_takes_exactly_one_email() {
+        assert_eq!(
+            parse_delete_user(&args(&["a@example.com"])).unwrap(),
+            "a@example.com"
+        );
+        assert!(parse_delete_user(&args(&[])).is_err());
+        assert!(parse_delete_user(&args(&["a@example.com", "b@example.com"])).is_err());
+        assert!(parse_delete_user(&args(&["--force"])).is_err());
+    }
+
+    #[test]
+    fn role_subcommands_parse() {
+        assert_eq!(
+            parse_role(&args(&["list"])).unwrap(),
+            RoleCommand::List { json: false }
+        );
+        assert_eq!(
+            parse_role(&args(&["list", "--json"])).unwrap(),
+            RoleCommand::List { json: true }
+        );
+        assert_eq!(
+            parse_role(&args(&[
+                "add",
+                "Editor",
+                "--level",
+                "40",
+                "--description",
+                "Edits"
+            ]))
+            .unwrap(),
+            RoleCommand::Add {
+                name: "Editor".into(),
+                level: 40,
+                description: "Edits".into()
+            }
+        );
+        let err = parse_role(&args(&["add", "Editor"]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--level"), "{err}");
+        let err = parse_role(&args(&["add", "Editor", "--level", "101"]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("1 to 100"), "{err}");
+        assert_eq!(
+            parse_role(&args(&["delete", "Editor"])).unwrap(),
+            RoleCommand::Delete {
+                role: "Editor".into()
+            }
+        );
+        assert!(parse_role(&args(&[])).is_err());
+        assert!(parse_role(&args(&["rename"])).is_err());
     }
 }

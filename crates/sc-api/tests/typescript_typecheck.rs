@@ -163,6 +163,32 @@ export async function exercise(): Promise<void> {
 }
 "#;
 
+/// A usage module for code queries (TODO F1.1): the arguments object is open,
+/// so a no-params query takes any body or none, and a declared parameter is
+/// still typed (and required when declared so).
+const CODE_QUERY_USAGE_TS: &str = r#"
+import { createClient } from "./client";
+
+export async function exercise(): Promise<void> {
+  const api = createClient({});
+
+  // Nothing declared: any keys, or no argument at all.
+  await api.echo({ anything: 1, nested: { deep: [true] } });
+  await api.echo();
+  await api.peek({ page: 2 });
+  await api.peek();
+
+  // A declared parameter keeps its type beside the open keys.
+  await api.tagged({ tag: "x", extra: 1 });
+  // @ts-expect-error `tag` is required
+  await api.tagged({ extra: 1 });
+  // @ts-expect-error `tag` is a string
+  await api.tagged({ tag: 3 });
+  await api.lookup({ q: "a", more: "b" });
+  await api.lookup();
+}
+"#;
+
 /// A usage module for an application that exposes three streams — one of each
 /// [`ElementType`](sc_stream::ElementType) shape (TODO "Streams" §10; TODO.md
 /// "Live updates" L1.9).
@@ -483,6 +509,27 @@ fn generated_query_parameter_client_type_checks() -> std::io::Result<()> {
         );
     let client_ts = sc_api::generate_client(&set);
     type_check("query-params", &client_ts, QUERY_USAGE_TS)
+}
+
+#[test]
+fn generated_code_query_client_type_checks() -> std::io::Result<()> {
+    use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, ValueType};
+
+    let js = |name: &str, method: Method, path: &str| {
+        CustomQuery::new(name, method, path, "return body;").language(QueryLanguage::Javascript)
+    };
+    let provider = RestProvider::project("/api", &[])
+        .with_queries(vec![
+            js("echo", Method::Post, "/echo"),
+            js("peek", Method::Get, "/peek"),
+            js("tagged", Method::Post, "/tagged")
+                .params([CustomParam::new("tag", ValueType::Text)]),
+            js("lookup", Method::Get, "/lookup")
+                .params([CustomParam::new("q", ValueType::Text).optional()]),
+        ])
+        .expect("valid queries");
+    let client_ts = sc_api::generate_client(ApiProvider::endpoints(&provider));
+    type_check("code-query", &client_ts, CODE_QUERY_USAGE_TS)
 }
 
 #[test]

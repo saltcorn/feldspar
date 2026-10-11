@@ -394,11 +394,11 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     // `Blob` (download) directly, which are the platform's own names for them.
     for ep in &loose {
         let pascal = to_pascal_case(&ep.name);
-        if !ep.query.is_empty() {
+        if takes_query(ep) {
             let _ = writeln!(out, "export type {pascal}Query = {};", query_type(ep));
         }
-        if !ep.input.is_empty() && !ep.binary_input {
-            let _ = writeln!(out, "export type {pascal}Request = {};", ts_type(&ep.input));
+        if takes_body(ep) && !ep.binary_input {
+            let _ = writeln!(out, "export type {pascal}Request = {};", request_type(ep));
         }
         if !ep.output.is_empty() && !ep.binary_output {
             let _ = writeln!(
@@ -619,13 +619,14 @@ fn method_signature(ep: &Endpoint) -> String {
         // An upload takes whatever `fetch` can send raw: a `Blob`/`File` from an
         // `<input type=file>`, an `ArrayBuffer`, a string.
         params.push("body: BodyInit".to_owned());
-    } else if !ep.input.is_empty() {
-        params.push(format!("body: {pascal}Request"));
+    } else if takes_body(ep) {
+        let opt = if body_arg_optional(ep) { "?" } else { "" };
+        params.push(format!("body{opt}: {pascal}Request"));
     }
     // The query parameters arrive as one options object, last — and the argument
     // itself is optional when every parameter in it is, so declaring a `select`
     // nobody has to pass does not put an empty `{}` at every call site.
-    if !ep.query.is_empty() {
+    if takes_query(ep) {
         let opt = if query_arg_optional(ep) { "?" } else { "" };
         params.push(format!("{QUERY_ARG}{opt}: {pascal}Query"));
     }
@@ -643,11 +644,10 @@ fn method_signature(ep: &Endpoint) -> String {
 fn emit_method_impl(out: &mut String, ep: &Endpoint) {
     let pascal = to_pascal_case(&ep.name);
     let mut param_names: Vec<String> = ep.path.params().map(|(n, _)| n.to_owned()).collect();
-    let has_body = ep.binary_input || !ep.input.is_empty();
-    if has_body {
+    if takes_body(ep) {
         param_names.push("body".to_owned());
     }
-    if !ep.query.is_empty() {
+    if takes_query(ep) {
         param_names.push(QUERY_ARG.to_owned());
     }
 
@@ -709,7 +709,7 @@ impl<'a> Request<'a> {
 fn emit_request(out: &mut String, ep: &Endpoint, req: &Request<'_>) {
     let pad = " ".repeat(req.indent);
     emit_query_encoding(out, ep, &pad);
-    let suffix = if ep.query.is_empty() {
+    let suffix = if !takes_query(ep) {
         ""
     } else {
         // Nested template literal: the `?` disappears with the last parameter,
@@ -723,7 +723,7 @@ fn emit_request(out: &mut String, ep: &Endpoint, req: &Request<'_>) {
         url_template(ep)
     );
     let _ = writeln!(out, "{pad}  method: \"{}\",", ep.method.as_str());
-    let has_body = ep.binary_input || !ep.input.is_empty();
+    let has_body = takes_body(ep);
     // A binary body goes out as-is with no JSON content type — `fetch` derives
     // one from a `Blob` itself — so `hasBody` is false for the header helper
     // (which only decides the JSON content type; CSRF rides on the method).
@@ -738,6 +738,9 @@ fn emit_request(out: &mut String, ep: &Endpoint, req: &Request<'_>) {
         let _ = writeln!(out, "{pad}  body,");
     } else if ep.binary_input {
         let _ = writeln!(out, "{pad}  body: {},", req.body);
+    } else if has_body && body_arg_optional(ep) {
+        // An open body nobody has to pass: an omitted one is sent as `{}`.
+        let _ = writeln!(out, "{pad}  body: JSON.stringify({} ?? {{}}),", req.body);
     } else if has_body {
         let _ = writeln!(out, "{pad}  body: JSON.stringify({}),", req.body);
     }
@@ -768,7 +771,25 @@ fn emit_request(out: &mut String, ep: &Endpoint, req: &Request<'_>) {
 /// than the caller wrote. A repeated parameter appends once per element, which
 /// is what makes `?published=gte.…&published=lt.…` expressible at all.
 fn emit_query_encoding(out: &mut String, ep: &Endpoint, pad: &str) {
-    if ep.query.is_empty() {
+    if !takes_query(ep) {
+        return;
+    }
+    if open_query(ep) {
+        // An open options object: every key the caller set is a parameter,
+        // declared or not. A code query's declared parameters are scalars, so
+        // one pair per key covers them too.
+        let base = if query_arg_optional(ep) {
+            format!("{QUERY_ARG} ?? {{}}")
+        } else {
+            QUERY_ARG.to_owned()
+        };
+        let _ = writeln!(out, "{pad}const search = new URLSearchParams();");
+        let _ = writeln!(
+            out,
+            "{pad}for (const [key, value] of Object.entries({base})) \
+             if (value !== undefined && value !== null) search.append(key, String(value));"
+        );
+        let _ = writeln!(out, "{pad}const qs = search.toString();");
         return;
     }
     // When the whole options object is optional the caller may have omitted it,
@@ -828,7 +849,61 @@ fn query_type(ep: &Endpoint) -> String {
             format!("{}{opt}: {ty}", p.name)
         })
         .collect();
-    format!("{{ {} }}", members.join("; "))
+    open_type(
+        &format!("{{ {} }}", members.join("; ")),
+        members.is_empty(),
+        open_query(ep),
+    )
+}
+
+/// The TypeScript type of an endpoint's JSON request body.
+fn request_type(ep: &Endpoint) -> String {
+    open_type(&ts_type(&ep.input), ep.input.is_empty(), open_body(ep))
+}
+
+/// `declared`, widened to take any other key when the arguments are open:
+/// `{ a: number } & Record<string, unknown>`, or just the record when nothing
+/// was declared.
+fn open_type(declared: &str, nothing_declared: bool, open: bool) -> String {
+    match (open, nothing_declared) {
+        (false, _) => declared.to_owned(),
+        (true, true) => "Record<string, unknown>".to_owned(),
+        (true, false) => format!("{declared} & Record<string, unknown>"),
+    }
+}
+
+/// Whether the endpoint's open arguments travel as a JSON body (every method
+/// that has one).
+fn open_body(ep: &Endpoint) -> bool {
+    ep.open_args && ep.method.has_body()
+}
+
+/// Whether the endpoint's open arguments travel in the query string (`GET`,
+/// `DELETE`).
+fn open_query(ep: &Endpoint) -> bool {
+    ep.open_args && !ep.method.has_body()
+}
+
+/// Whether the generated method takes a `body` argument.
+fn takes_body(ep: &Endpoint) -> bool {
+    ep.binary_input || !ep.input.is_empty() || open_body(ep)
+}
+
+/// Whether the generated method takes a `query` options argument.
+fn takes_query(ep: &Endpoint) -> bool {
+    !ep.query.is_empty() || open_query(ep)
+}
+
+/// Whether the `body` argument may be omitted — an open body none of whose
+/// declared fields is required.
+fn body_arg_optional(ep: &Endpoint) -> bool {
+    open_body(ep)
+        && match &ep.input {
+            TypeSchema::Struct(fields) => fields
+                .iter()
+                .all(|f| matches!(f.schema, TypeSchema::Optional(_))),
+            _ => false,
+        }
 }
 
 /// Whether the options argument itself may be omitted — true when no query

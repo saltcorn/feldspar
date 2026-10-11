@@ -178,6 +178,10 @@ pub fn react_client_path(project: &str) -> String {
 /// - `img-src`/`font-src` allow `data:` because Vite inlines small assets as data
 ///   URIs (its `assetsInlineLimit`), so a strict policy would break an app for a
 ///   reason the admin cannot see in their own source.
+/// - `img-src` and `media-src` allow `blob:` (TODO F1.7): an app previewing a
+///   file before it uploads it, or showing one it fetched through its API as a
+///   `Blob`, does so through `URL.createObjectURL`. A `blob:` URL names bytes
+///   this page already holds, so it reaches no other origin.
 /// - `connect-src 'self'` is where the app's API calls go; the app's only path to
 ///   data is its own origin's API providers (§13.4).
 /// - `object-src 'none'`, `base-uri 'self'` and `frame-ancestors 'none'` are
@@ -188,7 +192,8 @@ pub fn react_client_path(project: &str) -> String {
 /// not a fixture.
 pub fn react_csp() -> CspPolicy {
     CspPolicy::strict()
-        .directive("img-src", ["'self'", "data:"])
+        .directive("img-src", ["'self'", "data:", "blob:"])
+        .directive("media-src", ["'self'", "blob:"])
         .directive("font-src", ["'self'", "data:"])
         .directive("connect-src", ["'self'"])
         .directive("object-src", ["'none'"])
@@ -352,8 +357,10 @@ mod tests {
         // Still anchored on the strict baseline...
         assert!(header.contains("default-src 'self'"), "{header}");
         // ...widened only where Vite's own output requires it...
-        assert!(header.contains("img-src 'self' data:"), "{header}");
-        assert!(header.contains("font-src 'self' data:"), "{header}");
+        assert!(header.contains("img-src 'self' data: blob:;"), "{header}");
+        // ...and for object URLs of bytes the page already holds (F1.7)...
+        assert!(header.contains("media-src 'self' blob:;"), "{header}");
+        assert!(header.contains("font-src 'self' data:;"), "{header}");
         // ...and the app's data path is its own origin's API.
         assert!(header.contains("connect-src 'self'"), "{header}");
         assert!(header.contains("frame-ancestors 'none'"), "{header}");

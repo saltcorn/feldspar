@@ -72,7 +72,7 @@ use sc_api::mcp::{
 };
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
 use sc_api::{CustomParam, CustomQuery, Method, ValueType};
-use sc_auth::ROLE_ADMIN;
+use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
@@ -208,9 +208,13 @@ const ARG_CODE: &str = "code";
 const ARG_LANGUAGE: &str = "language";
 const ARG_PARAMS: &str = "params";
 const ARG_MIN_ROLE: &str = "min_role";
+/// `true` is `min_role: 100` said the way people say it (TODO F1.6). Stored
+/// as the role; `min_role` stays the one fact.
+const ARG_PUBLIC: &str = "public";
 
 /// The arguments [`save`] accepts.
-const SAVE_ARGS: [&str; 10] = [
+const SAVE_ARGS: [&str; 11] = [
+    ARG_PUBLIC,
     ARG_APPLICATION,
     ARG_API,
     ARG_NAME,
@@ -348,6 +352,9 @@ fn query_json(query: &CustomQuery) -> Json {
         "code": query.code,
         "params": query.params.iter().map(param_json).collect::<Vec<_>>(),
         "min_role": query.min_role,
+        // Said, not left to be known: 100 is the public role, and "who can
+        // call this?" is the question a reader of this list is asking.
+        "public": query.min_role == ROLE_PUBLIC,
         // Server-written, never declared: the shape the database said this
         // statement produces when it was last saved. Empty means it has not been
         // described, which types the response as opaque rather than lying.
@@ -379,12 +386,13 @@ fn save_description(grants: &Grants) -> String {
     };
     let access = match grants.access_changes {
         true => format!(
-            "You may set `{ARG_MIN_ROLE}`, which decides who may call the \
-             endpoint. That changes what users of this deployment can reach, so \
+            "You may set `{ARG_MIN_ROLE}` (or `{ARG_PUBLIC}: true`, the same as \
+             `{ARG_MIN_ROLE}: 100`), which decides who may call the endpoint. That changes what users of this deployment can reach, so \
              say plainly what you are about to do before you do it."
         ),
         false => format!(
-            "You may **not** set `{ARG_MIN_ROLE}`; a call naming it is refused. \
+            "You may **not** set `{ARG_MIN_ROLE}` or `{ARG_PUBLIC}`; a call naming \
+             either is refused. \
              Without it a query is admin-only, which is the safe default."
         ),
     };
@@ -482,10 +490,17 @@ fn save_parameters() -> Json {
                      `run_python_code` body, with the request's JSON body as \
                      `body`, its query string as `query` and the caller as `user`; \
                      what it returns is the response. A code body is not prepared, \
-                     and a declared parameter need not appear in it. Its `db`, \
-                     `fetch` and `fs` are this server's own API: call \
-                     `describe_code_api` before writing a `javascript` body \
-                     rather than guessing the methods.",
+                     and a declared parameter need not appear in it; the app's \
+                     client method sends whatever it is given either way, but \
+                     declare the parameters the body reads so they are typed and \
+                     checked. `throw httpError(status, message)` and `return \
+                     response({ status, headers, body })` choose the status; any \
+                     other throw is a 500 with no stack for non-admin callers. \
+                     Its `db`, `fetch`, `fs` and `crypto` are this server's own \
+                     API: call `describe_code_api` before writing a `javascript` \
+                     body rather than guessing the methods. Prefer a table with an \
+                     ownership formula, or SQL, to a code body where either can \
+                     express it.",
                 "enum": ["sql", "javascript", "python"],
             },
             ARG_PARAMS: {
@@ -525,10 +540,18 @@ fn save_parameters() -> Json {
                 "type": "integer",
                 "description":
                     "Least-privileged role that may call this endpoint, 1 (admin) \
-                     to 100 (anyone). A new query is admin-only unless this says \
-                     otherwise.",
+                     to 100 (anyone — **public**, no sign-in). A new query is \
+                     admin-only unless this says otherwise.",
                 "minimum": 1,
                 "maximum": 100,
+            },
+            ARG_PUBLIC: {
+                "type": "boolean",
+                "description":
+                    "`true` makes the endpoint public — callable by anyone, \
+                     signed in or not — and is the same as `min_role: 100`. Send \
+                     one or the other; if you send both they must agree. Needs \
+                     the same grant as `min_role`.",
             },
         },
         "required": [ARG_APPLICATION, ARG_NAME],
@@ -558,7 +581,7 @@ async fn save(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Jso
         )?,
         None => require_grant(grants.create, "add a custom SQL query", GRANT_CREATE)?,
     }
-    if args.contains_key(ARG_MIN_ROLE) {
+    if args.contains_key(ARG_MIN_ROLE) || args.contains_key(ARG_PUBLIC) {
         require_grant(
             grants.access_changes,
             "set who may call a custom SQL query",
@@ -602,6 +625,7 @@ async fn save(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Jso
     }
 
     let stored = stored_query(&saved, &mount, &name)?;
+    notes.extend(sc_api::undeclared_params_note(&stored));
     Ok(json!({
         "saved": name,
         "application": subdomain,
@@ -677,11 +701,32 @@ fn build(
     // Admin unless stated, on a create as well as on an edit that does not name
     // it: an access nobody has thought about must not be the one that turns out
     // to be public (§13.4).
-    query.min_role = match optional_role(args, ARG_MIN_ROLE)? {
+    query.min_role = match requested_role(args)? {
         Some(role) => role,
         None => existing.map(|q| q.min_role).unwrap_or(ROLE_ADMIN),
     };
     Ok(query)
+}
+
+/// The role floor the arguments ask for: `min_role`, or `public: true` for
+/// 100. Both together must agree, and `public: false` says only "not 100" —
+/// so on its own it is refused rather than guessed into some other role.
+fn requested_role(args: &Map<String, Json>) -> Result<Option<u8>> {
+    let role = optional_role(args, ARG_MIN_ROLE)?;
+    let public = optional_bool(args, ARG_PUBLIC)?;
+    match (role, public) {
+        (role, None) => Ok(role),
+        (None, Some(true)) => Ok(Some(ROLE_PUBLIC)),
+        (Some(role), Some(public)) if (role == ROLE_PUBLIC) == public => Ok(Some(role)),
+        (Some(role), Some(public)) => Err(Error::invalid(format!(
+            "`{ARG_PUBLIC}: {public}` and `{ARG_MIN_ROLE}: {role}` disagree: public is \
+             {ARG_MIN_ROLE} {ROLE_PUBLIC}. Send one of them"
+        ))),
+        (None, Some(false)) => Err(Error::invalid(format!(
+            "`{ARG_PUBLIC}: false` does not say who may call it; send `{ARG_MIN_ROLE}` \
+             with the least-privileged role that may (1 is admin)"
+        ))),
+    }
 }
 
 /// The declared parameters, as sent. `null` is an empty list — how a query that

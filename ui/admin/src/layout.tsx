@@ -89,6 +89,21 @@ export function StatusBadge({
   );
 }
 
+/** "Public" beside an endpoint whose role floor is 100 (TODO F1.6): anyone
+ * may call it, signed in or not. Shown wherever min_role 100 is, because a
+ * number is easy to read past. */
+export function PublicBadge({ className }: { className?: string }) {
+  return (
+    <StatusBadge
+      tone="yellow"
+      className={className}
+      title="Minimum role 100: anyone may call this, signed in or not"
+    >
+      Public
+    </StatusBadge>
+  );
+}
+
 /** An alert's body.
  *
  * Tabler's `.alert` is a flex **row** (its first column is the optional icon),

@@ -9312,15 +9312,18 @@ version = "0.1.0"
 name = "sc-expr"
 version = "0.1.0"
 dependencies = [
+ "argon2 0.5.3",
  "async-trait",
  "base64 0.22.1",
  "deno_core",
  "getrandom 0.3.4",
+ "hmac 0.12.1",
  "sc-db-postgres",
  "sc-error",
  "sc-query",
  "sc-test-harness",
  "serde_json",
+ "sha2 0.10.9",
  "swc_common 24.0.0",
  "swc_ecma_ast 26.0.0",
  "swc_ecma_parser 42.0.0",
