@@ -194,8 +194,10 @@ fn a_document_syncs_edits_reconnects_and_carries_awareness() -> std::io::Result<
     );
     let log: Vec<serde_json::Value> =
         serde_json::from_slice(&output.stdout).expect("the driver prints its log");
-    let log: Vec<String> = log.iter().map(|entry| entry.to_string()).collect();
-    let expected = [
+    // Compared as values, not strings: whether an object's keys print sorted
+    // depends on serde_json's `preserve_order`, which feature unification
+    // turns on in a workspace build and leaves off in `-p sc-app`.
+    let expected: Vec<serde_json::Value> = [
         r#"["field","default","root is a Y.Text",true]"#,
         r#"["subscribed",[{"stream":"note_body","sub":"s1","topic":"7","type":"subscribe"}]]"#,
         r#"["after sync","synced",false,"Hello","answered",0]"#,
@@ -208,7 +210,10 @@ fn a_document_syncs_edits_reconnects_and_carries_awareness() -> std::io::Result<
         r#"["after reconnect","synced","answered",1,">> Hello world!"]"#,
         r#"["read-only sends nothing",true,0]"#,
         r#"["closed",true]"#,
-    ];
+    ]
+    .iter()
+    .map(|entry| serde_json::from_str(entry).expect("an expected entry is JSON"))
+    .collect();
     assert_eq!(log, expected, "{log:#?}");
     Ok(())
 }

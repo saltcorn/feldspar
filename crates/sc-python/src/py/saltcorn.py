@@ -1477,8 +1477,9 @@ class Triggers:
 # ---------------------------------------------------------------------------
 # `live` — publishing to an internal stream (TODO.md "Live updates" L2.8)
 # ---------------------------------------------------------------------------
-
-_MISSING = object()
+#
+# `_MISSING` is the one defined above `fetch`: a second `object()` here would
+# rebind the global that `fetch`'s body compares its default against.
 
 
 class Live:

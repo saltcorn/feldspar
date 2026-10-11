@@ -2,6 +2,32 @@
 
 Changes in reverse chronological order.
 
+## Live updates L5: the full suite, run against Postgres
+
+The whole workspace (`scripts/test.sh --workspace`, 4,560 tests), the `python-host` suite and the
+TypeScript type-check tests were run on a machine with Postgres. Five fixes:
+
+- **`ui/admin/package-lock.json` broke `npm ci`.** When L5 added `yjs` and `y-protocols`, the
+  rewrite also dropped vitest's nested `esbuild` 0.28.2, which `package.json` still needs, so
+  `npm ci` (what `sc-cli`'s build script runs) refused to install. The lock was rebuilt from the
+  pre-L5 file plus the two new packages. `npm ci`, `tsc`, vitest (708) and `vite build` pass.
+- **Python `fetch()` sent every request as if it carried a body.** `saltcorn.py` defined
+  `_MISSING` twice: once above `fetch` and again above `Live` (L2.8). `fetch`'s `json=` default
+  was the first sentinel, but its body compared against the global, which was by then the
+  second. So a plain GET was refused ("a GET request cannot carry a body"), and `data=` was
+  refused as "not both". The second definition is gone. The 9 `python_fetch` tests that caught
+  this now pass.
+- **`python_live` named `LiveError` bare.** A body reaches the errors as `saltcorn.LiveError`,
+  like `saltcorn.DbError` (§ "The errors are a hierarchy the Rust half owns"). Both tests, the
+  L4 one and the L5 `live.document` one, now import `saltcorn`.
+- **`sc-app` `live_doc` compared JSON as strings.** Whether an object's keys print sorted depends
+  on serde_json's `preserve_order`. Feature unification turns it on in a workspace build and
+  leaves it off under `-p sc-app`, so the test passed only in the latter. It now compares values.
+- **`sc-api` `typescript_typecheck` now passes `--target es2020` and `--moduleResolution
+  bundler`.** TypeScript 5's default ES5 target can't iterate the helper's `Map`, and
+  TypeScript 7 has no `--moduleResolution node`. A scaffolded app already uses ES2022/bundler.
+  Verified with `SC_TSC` pointed at `ui/admin`'s TypeScript 5.9 (5 pass).
+
 ## Live updates L5: collaborative documents
 
 A note two people type into at once, each seeing the other's words and cursor, while a third

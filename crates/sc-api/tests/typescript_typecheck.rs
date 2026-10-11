@@ -600,10 +600,15 @@ fn type_check(tag: &str, client_ts: &str, usage_ts: &str) -> std::io::Result<()>
         .args([
             "--noEmit",
             "--strict",
+            // A scaffolded app's own settings: TypeScript 5's default target
+            // is ES5, which cannot iterate a `Map`, and TypeScript 7 no
+            // longer has `--moduleResolution node`.
+            "--target",
+            "es2020",
             "--lib",
             "es2020,dom",
             "--moduleResolution",
-            "node",
+            "bundler",
             "--module",
             "esnext",
         ])

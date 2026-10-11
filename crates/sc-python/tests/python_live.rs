@@ -4,7 +4,7 @@
 //! the running stream, which `sc-server`'s socket tests drive. What is under
 //! test is the surface — the three-argument and two-argument spellings, the
 //! topic as text or a number, the order of a loop's publishes, a refusal as a
-//! catchable `LiveError`, and that a body with no host cannot name `live`.
+//! catchable `saltcorn.LiveError`, and that a body with no host cannot name `live`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -48,6 +48,7 @@ async fn a_loop_publishes_in_order_and_a_refusal_is_a_live_error() {
     let out = PythonRuntime::new()
         .run(CodeCall {
             code: r#"
+import saltcorn
 for i in range(1, 11):
     live.publish("job_status", "u-1", {"message": "step", "progress": i / 10})
 live.publish("announcements", {"text": "no topic"})
@@ -55,7 +56,7 @@ numbered = live.publish("board_activity", 7, {"n": 1})
 try:
     live.publish("stopped", None, {})
     refused = None
-except LiveError as e:
+except saltcorn.LiveError as e:
     refused = str(e)
 return {"numbered": numbered, "refused": refused}
 "#
@@ -151,6 +152,7 @@ async fn a_python_body_reads_and_edits_a_document() {
     let out = PythonRuntime::new()
         .run(CodeCall {
             code: r#"
+import saltcorn
 doc = live.document("note_body", 7)
 empty = doc.text()
 doc.append("Hello world")
@@ -160,7 +162,7 @@ edited = doc.edit(6, 5, "there")
 try:
     live.document("note_body", 8).text()
     refused = None
-except LiveError as e:
+except saltcorn.LiveError as e:
     refused = str(e)
 try:
     doc.insert(-1, "x")
