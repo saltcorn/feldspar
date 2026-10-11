@@ -575,24 +575,24 @@ re-checking. No new providers yet. Everything later builds on this.
 
 ## L4 — Client publishing and presence (B: who is here, C's cursors)
 
-- [ ] **L4.1** Client `publish` on `internal` streams with `client_publish: on`, following §3
+- [x] **L4.1** Client `publish` on `internal` streams with `client_publish: on`, following §3
   rule 7: `min_role` on `single`, update access on `row`, never on `user`. The value is
   validated, and `source: {user, connection}` is stamped by the server (a client-sent `source`
   is ignored). The sender does not get its own element back unless it asks (`echo: true` on
   subscribe). `can_publish` goes in `ready`. Tests: a reader who may not update the row gets
   `unavailable` on publish, and a forged `source` never reaches another subscriber.
-- [ ] **L4.2** Rate limits per connection for publish and presence, answered with
+- [x] **L4.2** Rate limits per connection for publish and presence, answered with
   `rate_limited` rather than a closed socket. Presence is coalesced to the latest state per
   50 ms.
-- [ ] **L4.3** Presence on `internal` (`presence: on`) streams: per `(stream, topic)` membership
+- [x] **L4.3** Presence on `internal` (`presence: on`) streams: per `(stream, topic)` membership
   per connection. `presence` snapshot after `ready`, then `presence_diff` (join, leave, state).
   A member is `{connection, user_id, …presence_fields, state}`, with `presence_fields` read from
   `users` at join time. A member leaves on unsubscribe, close or `revoked`. State is capped at
   2 KB. Test: a user who fails the topic check never appears in, and never receives, the
   member list.
-- [ ] **L4.4** Client: `live.<s>.join(topic, handlers)` → `{ members, setState, publish, leave }`.
+- [x] **L4.4** Client: `live.<s>.join(topic, handlers)` → `{ members, setState, publish, leave }`.
   React: `usePresence(accessor, topic)` and `usePublish(accessor, topic)`.
-- [ ] **L4.5** Admin: the Observe screen shows current presence per topic.
+- [x] **L4.5** Admin: the Observe screen shows current presence per topic.
 
 ### Try it
 1. Add an internal stream `board_presence`: topics `row` of `boards`, presence on,
@@ -601,7 +601,9 @@ re-checking. No new providers yet. Everything later builds on this.
    Bob sees it highlighted (`setState({ dragging: cardId })`).
 3. Close Alice's tab: her avatar disappears from Bob's board within a second.
 
-- [ ] **L4.6** Tutorial part 4 (presence on the kanban board) and its definition-of-done test.
+- [x] **L4.6** *(Part 3, L3.12, is not written yet, so part 4 states the two tables of part 3's
+  it needs, and its test makes them with SQL.)* Tutorial part 4 (presence on the kanban board)
+  and its definition-of-done test.
 
 ---
 

@@ -792,7 +792,10 @@ fn runtime_readme(ctx: &ProjectContext<'_>) -> String {
          is the latest element, for a progress bar. A stream with a topic per \
          row is `live.<stream>.topic(rowKey)`. `useLiveRows(api.<table>, {{ where, \
          orderBy, select }})` is a read kept current by the table's stream of \
-         changes. `live` is the client's \
+         changes. `usePresence(live.<stream>, rowKey)` is who else has a topic \
+         open, with `setState` for this page's own (what it drags, a cursor) and \
+         `publish`; `usePublish(live.<stream>, rowKey)` publishes without \
+         joining. `live` is the client's \
          accessors, present once the application exposes a stream.\n\
          - `{RUNTIME_SKILL_FILE}` — for a coding agent: the half of this \
          application that is **not** in this repository, and the administration \
@@ -1093,10 +1096,23 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          the order asked for. It reads again by itself after a reconnect. It \
          returns `{{ rows, loading, error, status, refresh }}`. A user is only \
          ever sent changes to rows they may read.\n\
+         - **Who else is here** (`live.board_presence`, a stream with presence): \
+         `const {{ members, me, setState }} = usePresence(live.board_presence, boardId)`. \
+         `members` is everybody with that topic open — this page included, `me` \
+         is its `connection` — each `{{ connection, user_id, state }}` plus the \
+         user fields the stream shows (avatars are one per `connection`, not per \
+         user: one person can have two tabs open). `setState({{ dragging: cardId }})` \
+         is shown to the others as that member's `state`; call it as often as \
+         you like, it is throttled. A member who closes the tab disappears from \
+         the others' lists by itself.\n\
          \n\
          Elements are published by the server — a trigger's `publish` action, \
-         `live.publish(stream, topic, value)` in a trigger's code — never by \
-         this project. Never open a `WebSocket` yourself — the socket \
+         `live.publish(stream, topic, value)` in a trigger's code — and, on a \
+         stream whose settings let pages publish, by this project: \
+         `usePresence(…).publish(value)` or `usePublish(live.<stream>, rowKey)`. \
+         A page's own publish is not sent back to it, and on a topic per row only \
+         a user who may update that row may publish (`canPublish` says whether \
+         this one may). Never open a `WebSocket` yourself — the socket \
          authenticates with the user's session and refuses pages from any other \
          origin. Which streams are exposed is configuration in the server (see \
          the half of this application that is not in this project).\n\
@@ -2910,16 +2926,24 @@ fn live_react_ts(streams: &[sc_api::StreamExport]) -> String {
 
 /// The imports every `live-react.ts` has.
 const LIVE_REACT_IMPORTS: &str = r#"
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { LiveRows } from "./helper";
 import type {
   LiveConnection,
   LiveError,
   LiveHandlers,
+  LiveJoinHandlers,
+  LiveMember,
+  LivePresence,
+  LivePublish,
+  LiveRoom,
+  LiveRowPresence,
+  LiveRowPublish,
   LiveRowsOptions,
   LiveStatus,
   LiveStream,
   LiveTable,
+  LiveTopic,
   Selected,
   TableSchema,
 } from "./helper";
@@ -2993,6 +3017,116 @@ export function useLatest<E>(stream: LiveStream<E>): E | undefined {
   useStream(stream, (envelope) => setLatest({ stream, envelope }));
   // A value from the previous stream is not this one's.
   return latest !== undefined && latest.stream === stream ? latest.envelope : undefined;
+}
+
+/** What `usePresence` answers with. */
+export type PresenceState<V, S> = {
+  /** Everybody on the topic now, this page included; empty until the list arrives. */
+  members: LiveMember<S>[];
+  /** This page's own `connection`, as `members` names it. */
+  me: string | undefined;
+  /** Set this page's state (what it is dragging, a cursor); the others see it. */
+  setState(state: S): void;
+  /** Publish on the topic; everybody else on it receives it. */
+  publish(value: V): void;
+  /** Whether the server lets this page publish here. */
+  canPublish: boolean;
+  /** The connection's status: `connecting`, `open` or `reconnecting`. */
+  status: LiveStatus;
+  /** Why the server refused or ended the subscription, if it did. */
+  error: LiveError | undefined;
+};
+
+/**
+ * Join a topic's presence while this component is mounted: who else has it
+ * open (`members`), this page's own state (`setState`), and publishing on it.
+ * `live.board_presence` with a board's key for a stream with a topic per row;
+ * no topic for a stream with one. Leaves on unmount, and the others see the
+ * page go. `handlers` may be new functions on every render.
+ */
+export function usePresence<E, V, S = unknown>(
+  stream: LiveRowPresence<E, V, S>,
+  topic: LiveTopic,
+  handlers?: LiveJoinHandlers<E, S>,
+): PresenceState<V, S>;
+export function usePresence<E, V, S = unknown>(
+  stream: LivePresence<E, V, S>,
+  topic?: undefined,
+  handlers?: LiveJoinHandlers<E, S>,
+): PresenceState<V, S>;
+export function usePresence<E, V, S = unknown>(
+  stream: LiveRowPresence<E, V, S> | LivePresence<E, V, S>,
+  topic?: LiveTopic,
+  handlers: LiveJoinHandlers<E, S> = {},
+): PresenceState<V, S> {
+  const latest = useRef(handlers);
+  useEffect(() => {
+    latest.current = handlers;
+  });
+  const [members, setMembers] = useState<LiveMember<S>[]>([]);
+  const [error, setError] = useState<LiveError | undefined>(undefined);
+  const [canPublish, setCanPublish] = useState(false);
+  const room = useRef<LiveRoom<V, S> | undefined>(undefined);
+  const key = topic === undefined ? undefined : String(topic);
+  useEffect(() => {
+    setMembers([]);
+    setError(undefined);
+    const joined: LiveJoinHandlers<E, S> = {
+      echo: latest.current.echo,
+      element: (envelope) => latest.current.element?.(envelope),
+      ready: (info) => {
+        setCanPublish(info.can_publish);
+        latest.current.ready?.(info);
+      },
+      lagged: (dropped) => latest.current.lagged?.(dropped),
+      resync: () => latest.current.resync?.(),
+      status: (status) => latest.current.status?.(status),
+      presence: (list) => {
+        setMembers(list);
+        latest.current.presence?.(list);
+      },
+      error: (refusal) => {
+        setError(refusal);
+        latest.current.error?.(refusal);
+      },
+    };
+    const current =
+      key === undefined
+        ? (stream as LivePresence<E, V, S>).join(joined)
+        : (stream as LiveRowPresence<E, V, S>).join(key, joined);
+    room.current = current;
+    return () => {
+      room.current = undefined;
+      current.leave();
+    };
+  }, [stream, key]);
+  const setState = useCallback((state: S) => room.current?.setState(state), []);
+  const publish = useCallback((value: V) => room.current?.publish(value), []);
+  const me = room.current?.me;
+  const status = useLiveStatus(stream.connection);
+  return { members, me, setState, publish, canPublish, status, error };
+}
+
+/**
+ * A function that publishes on a topic of `stream` — a stream pages may
+ * publish on. Stable across renders, so it can go in a dependency list. A page
+ * that has joined the topic publishes on its own subscription; otherwise a
+ * short-lived one is opened for each value.
+ */
+export function usePublish<E, V>(stream: LiveRowPublish<E, V>, topic: LiveTopic): (value: V) => void;
+export function usePublish<E, V>(stream: LivePublish<E, V>, topic?: undefined): (value: V) => void;
+export function usePublish<E, V>(
+  stream: LiveRowPublish<E, V> | LivePublish<E, V>,
+  topic?: LiveTopic,
+): (value: V) => void {
+  const key = topic === undefined ? undefined : String(topic);
+  return useCallback(
+    (value: V) =>
+      key === undefined
+        ? (stream as LivePublish<E, V>).publish(value)
+        : (stream as LiveRowPublish<E, V>).publish(key, value),
+    [stream, key],
+  );
 }
 
 /** What `useLiveRows` answers with. */
@@ -3841,6 +3975,8 @@ mod tests {
             path: "/api/live".to_owned(),
             value: sc_api::TypeSchema::text(),
             topics: sc_api::StreamTopics::Single,
+            presence: false,
+            client_publish: false,
         }];
         let with = runtime_files(&ProjectContext {
             streams: &streams,
@@ -3878,6 +4014,8 @@ mod tests {
             topics: sc_api::StreamTopics::Changes {
                 table: "tasks".to_owned(),
             },
+            presence: false,
+            client_publish: false,
         }];
         let files = runtime_files(&ProjectContext {
             streams: &streams,
@@ -3898,24 +4036,10 @@ mod tests {
         let hooks = file(&files, "src/feldspar/live-react.ts");
         assert!(hooks.contains("export function useLiveRows<"), "{hooks}");
 
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let admin_modules = root.join("ui/admin/node_modules");
-        let tsc = std::env::var("SC_TSC")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| admin_modules.join(".bin/tsc"));
-        if !tsc.exists() || !admin_modules.join("@types/react").is_dir() {
-            eprintln!("skipping the type check: no tsc or React types (run `npm ci` in ui/admin)");
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("sc-app-live-rows-{}", std::process::id()));
-        for generated in &files {
-            let path = dir.join(&generated.path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, &generated.contents).unwrap();
-        }
-        std::fs::create_dir_all(dir.join("src/pages")).unwrap();
-        std::fs::write(
-            dir.join("src/pages/LiveTasks.tsx"),
+        type_check_component(
+            &files,
+            "live-rows",
+            "src/pages/LiveTasks.tsx",
             r#"import { api, type TasksRow } from "../feldspar/hooks";
 import { useLiveRows, type LiveRowsResult } from "../feldspar/live-react";
 
@@ -3953,8 +4077,38 @@ export function LiveTasks() {
   );
 }
 "#,
-        )
-        .unwrap();
+            "useLiveRows",
+        );
+    }
+
+    /// Compile `source` at `path` against the generated runtime `files` with
+    /// `ui/admin`'s compiler and React types, strictly — skipped (with a note)
+    /// when they are not installed.
+    fn type_check_component(
+        files: &[GeneratedFile],
+        tag: &str,
+        path: &str,
+        source: &str,
+        what: &str,
+    ) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let admin_modules = root.join("ui/admin/node_modules");
+        let tsc = std::env::var("SC_TSC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| admin_modules.join(".bin/tsc"));
+        if !tsc.exists() || !admin_modules.join("@types/react").is_dir() {
+            eprintln!("skipping the type check: no tsc or React types (run `npm ci` in ui/admin)");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("sc-app-{tag}-{}", std::process::id()));
+        for generated in files {
+            let path = dir.join(&generated.path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, &generated.contents).unwrap();
+        }
+        let page = dir.join(path);
+        std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+        std::fs::write(&page, source).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&admin_modules, dir.join("node_modules")).unwrap();
         let output = std::process::Command::new(&tsc)
@@ -3974,16 +4128,106 @@ export function LiveTasks() {
                 "esnext",
                 "--moduleResolution",
                 "bundler",
-                "src/pages/LiveTasks.tsx",
+                path,
             ])
             .output()
             .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
             output.status.success(),
-            "useLiveRows does not type-check against the generated runtime:\n{}{}",
+            "{what} does not type-check against the generated runtime:\n{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// L4.4: a stream with presence and page publishes gets `join` and
+    /// `publish` on its accessor, and `usePresence` / `usePublish` type-check
+    /// against the generated runtime; a stream without them offers neither.
+    #[test]
+    fn use_presence_type_checks_against_the_generated_runtime() {
+        let tables = [tasks()];
+        let app = todo();
+        let endpoints = endpoints(&tables);
+        let dragging = sc_api::TypeSchema::struct_of([sc_api::StructField::new(
+            "dragging",
+            sc_api::TypeSchema::optional(sc_api::TypeSchema::value(sc_api::ValueType::Int)),
+        )]);
+        let stream = |name: &str, topics, presence, client_publish| sc_api::StreamExport {
+            name: name.to_owned(),
+            path: "/api/live".to_owned(),
+            value: dragging.clone(),
+            topics,
+            presence,
+            client_publish,
+        };
+        let streams = [
+            stream("board_presence", sc_api::StreamTopics::Row, true, true),
+            stream("lobby", sc_api::StreamTopics::Single, true, false),
+            stream("board_activity", sc_api::StreamTopics::Row, false, false),
+        ];
+        let files = runtime_files(&ProjectContext {
+            streams: &streams,
+            ..ctx(&app, &tables, &endpoints, None)
+        });
+        let client = file(&files, "src/feldspar/client.ts");
+        assert!(
+            client.contains(
+                "readonly board_presence: LiveRowStream<BoardPresenceEnvelope> & \
+                 LiveRowPresence<BoardPresenceEnvelope> & LiveRowPublish<BoardPresenceEnvelope>;"
+            ),
+            "{client}"
+        );
+        assert!(
+            client.contains(
+                "readonly lobby: LiveStream<LobbyEnvelope> & LivePresence<LobbyEnvelope>;"
+            ),
+            "{client}"
+        );
+        let hooks = file(&files, "src/feldspar/live-react.ts");
+        assert!(hooks.contains("export function usePresence<"), "{hooks}");
+        assert!(hooks.contains("export function usePublish<"), "{hooks}");
+        type_check_component(
+            &files,
+            "presence",
+            "src/pages/Board.tsx",
+            r#"import { live, usePresence, usePublish } from "../feldspar/live-react";
+
+export function Board({ id }: { id: number }) {
+  const { members, me, setState, publish, canPublish, status, error } = usePresence(
+    live.board_presence,
+    id,
+  );
+  const lobby = usePresence(live.lobby);
+  const send = usePublish(live.board_presence, id);
+  const onDrag = (card: number) => {
+    setState({ dragging: card });
+    if (canPublish) publish({ dragging: card });
+    send({ dragging: null });
+  };
+  // @ts-expect-error a per-row stream is joined naming the row
+  usePresence(live.board_presence);
+  // @ts-expect-error a stream without presence cannot be joined
+  usePresence(live.board_activity, id);
+  // @ts-expect-error a stream pages may not publish on
+  usePublish(live.lobby);
+  // @ts-expect-error `nope` is not a declared key
+  send({ nope: 1 });
+  return (
+    <ul data-status={status} data-error={error?.code} onClick={() => onDrag(1)}>
+      {members.map((member) => (
+        <li key={member.connection}>
+          {member.user_id}
+          {member.connection === me ? " (you)" : ""}
+          {String(member["name"] ?? "")}
+        </li>
+      ))}
+      <li>{lobby.members.length}</li>
+    </ul>
+  );
+}
+"#,
+            "usePresence",
         );
     }
 

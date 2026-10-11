@@ -42,6 +42,7 @@ import {
   readCounters,
   readElementType,
   readEnvelope,
+  readPresence,
   readStatus,
   readTopics,
   statusLabel,
@@ -459,5 +460,54 @@ describe("the observe socket", () => {
   it("ignores an element frame whose envelope is not one", () => {
     const state = applyFrame(emptyObserve(), { type: "element", envelope: { nope: true } });
     expect(state.tail).toEqual([]);
+  });
+});
+
+describe("presence on the Observe screen (L4.5)", () => {
+  it("reads the frame the server writes, every topic and member", () => {
+    const frame = parseFrame(
+      JSON.stringify({
+        type: "presence",
+        topics: [
+          {
+            topic: "1",
+            members: [
+              { connection: "c1", user_id: "u-alice", name: "Alice", state: { dragging: 7 } },
+              { connection: "c2", user_id: null, state: null },
+            ],
+          },
+          { topic: null, members: [] },
+        ],
+      }),
+    );
+    expect(frame?.type).toBe("presence");
+    const state = applyFrame(emptyObserve(), frame as ObserveFrame);
+    expect(state.presence).toEqual([
+      {
+        topic: "1",
+        members: [
+          { connection: "c1", user_id: "u-alice", fields: { name: "Alice" }, state: { dragging: 7 } },
+          { connection: "c2", user_id: null, fields: {}, state: null },
+        ],
+      },
+      { topic: null, members: [] },
+    ]);
+  });
+
+  it("starts with no presence, and a later frame replaces the earlier one", () => {
+    expect(emptyObserve().presence).toBeNull();
+    let state = applyFrame(emptyObserve(), {
+      type: "presence",
+      topics: [{ topic: "1", members: [{ connection: "c1", user_id: null, state: null }] }],
+    });
+    state = applyFrame(state, { type: "presence", topics: [] });
+    expect(state.presence).toEqual([]);
+  });
+
+  it("leaves out what is malformed rather than throwing", () => {
+    expect(readPresence(null)).toEqual([]);
+    expect(readPresence([{ topic: "1" }, "x", { topic: 2, members: [{ user_id: "u" }, 3] }])).toEqual([
+      { topic: null, members: [] },
+    ]);
   });
 });

@@ -25,6 +25,10 @@
 // A stream with topics (TODO.md "Live updates" L2.9) — a user's id, a row's key
 // — gets a **topic** column and a box that narrows the tail to one topic. The
 // admin's socket watches every topic, which an application's page never does.
+//
+// A stream with presence (L4.5) gets a **Present now** card: per topic, who has
+// it open — the user, the fields the stream shows the members, and the state
+// the page last set — exactly what the members see of each other.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -57,6 +61,7 @@ import {
   type ElementType,
   type Envelope,
   type ObserveState,
+  type PresenceTopic,
   type TopicKind,
 } from "../streams";
 import { T, useT } from "../i18n";
@@ -226,6 +231,10 @@ export function StreamObserve({ streamId }: { streamId: string }) {
           </Alert>
         )}
 
+        {state.presence !== null && (
+          <PresenceCard topics={state.presence} heading={heading} />
+        )}
+
         {showTopic && (
           <Form.Group className="mb-3" style={{ maxWidth: "24rem" }} controlId="observe-topic">
             <Form.Label>{heading}</Form.Label>
@@ -256,6 +265,58 @@ export function StreamObserve({ streamId }: { streamId: string }) {
         )}
       </PageBody>
     </>
+  );
+}
+
+/** Who has each topic open now. */
+function PresenceCard({ topics, heading }: { topics: PresenceTopic[]; heading: string }) {
+  const { t } = useT();
+  return (
+    <div className="card mb-3">
+      <div className="card-header">
+        <h3 className="card-title"><T text="Present now" /></h3>
+      </div>
+      {topics.length === 0 ? (
+        <div className="card-body text-muted">
+          <T text="Nobody has this stream open." />
+        </div>
+      ) : (
+        <Table responsive className="card-table table-vcenter">
+          <thead>
+            <tr>
+              <th>{heading}</th>
+              <th><T text="User" /></th>
+              <th><T text="Shown fields" /></th>
+              <th><T text="State" /></th>
+            </tr>
+          </thead>
+          <tbody>
+            {topics.flatMap(({ topic, members }) =>
+              members.map((member, index) => (
+                <tr key={`${topic ?? ""}-${member.connection}`}>
+                  <td className="small font-monospace text-break">
+                    {index === 0 ? (topic ?? "—") : ""}
+                  </td>
+                  <td className="small font-monospace text-break">
+                    {member.user_id ?? t("anonymous")}
+                  </td>
+                  <td className="small">
+                    {Object.keys(member.fields).length === 0
+                      ? "—"
+                      : Object.entries(member.fields)
+                          .map(([name, value]) => `${name}: ${cellText(value)}`)
+                          .join(", ")}
+                  </td>
+                  <td className="small font-monospace text-break">
+                    {member.state === null ? "—" : cellText(member.state)}
+                  </td>
+                </tr>
+              )),
+            )}
+          </tbody>
+        </Table>
+      )}
+    </div>
   );
 }
 

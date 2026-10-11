@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! client → server
-//!   {"type":"subscribe",   "sub":"s1", "stream":"boiler", "topic"?: "7", "filter"?: {...}}
+//!   {"type":"subscribe",   "sub":"s1", "stream":"boiler", "topic"?: "7", "filter"?: {...},
+//!                          "echo"?: false}
 //!   {"type":"unsubscribe", "sub":"s1"}
 //!   {"type":"publish",     "sub":"s2", "value": {...}}
 //!   {"type":"presence",    "sub":"s2", "state": {...}}
@@ -16,6 +17,8 @@
 //!   {"type":"element", "sub":"s1", "envelope":{…}}
 //!   {"type":"lagged",  "sub":"s1", "dropped":n}
 //!   {"type":"status",  "sub":"s1", "status":…, "counters":…}
+//!   {"type":"presence", "sub":"s2", "connection":"…", "members":[…]}
+//!   {"type":"presence_diff", "sub":"s2", "joined":[…], "left":["…"], "updated":[…]}
 //!   {"type":"revoked", "sub":"s1"}
 //!   {"type":"error",   "sub"?:"s1", "code":"unavailable", "message":"…"}
 //!   {"type":"pong"}
@@ -35,10 +38,23 @@
 //! subscription on it down with the one bad frame, and a client a version
 //! ahead of the server would be unable to use the server at all.
 //!
-//! The frames for publishing, presence and documents are declared here now,
-//! because the protocol is one contract and a client written against it should
-//! not have to learn it in instalments. What the server does with them arrives
-//! with the milestones that give them meaning (L4, L5).
+//! The frames for documents are declared here now, because the protocol is one
+//! contract and a client written against it should not have to learn it in
+//! instalments. What the server does with them arrives with L5.
+//!
+//! ## Publishing and presence (L4)
+//!
+//! A page publishes on a subscription it holds (`publish`), never on a stream
+//! it has not subscribed to: the subscription is where access was decided.
+//! The element reaches every subscriber of the topic **but the sender**, unless
+//! the sender asked for its own back with `echo: true` on `subscribe`.
+//!
+//! A presence member, in `presence.members`, `presence_diff.joined`, and the
+//! admin's Observe socket, is
+//! `{"connection":"…", "user_id":"…"|null, …presence_fields, "state":…|null}`.
+//! `connection` is an opaque id per socket — what a page tells its own tabs
+//! apart by, and what `presence.connection` says is the receiver's own. An
+//! update is `{"connection":"…", "state":…}`; a leave is the connection id.
 
 use sc_stream::Envelope;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -67,6 +83,11 @@ pub enum ClientFrame {
         /// changes (L3).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<Json>,
+        /// Whether elements this connection publishes on the subscription come
+        /// back to it (L4). Off by default: a page that drew its own change
+        /// does not want to draw it twice.
+        #[serde(default, skip_serializing_if = "is_false")]
+        echo: bool,
     },
     /// End the subscription named `sub`.
     Unsubscribe {
@@ -97,6 +118,10 @@ pub enum ClientFrame {
     },
     /// Are you there? Answered with `pong`.
     Ping,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Every `type` a client may send — what an unknown one is told it is not.
@@ -310,6 +335,32 @@ pub enum ServerFrame {
         /// The stream's counters.
         counters: Json,
     },
+    /// Who is on the subscription's topic, the receiver included: sent after
+    /// `ready` on a stream with presence, and again whenever the list had to
+    /// be rebuilt rather than patched (L4.3).
+    Presence {
+        /// The subscription.
+        sub: String,
+        /// The receiving connection's own id, as `members` names it.
+        connection: String,
+        /// Every member, the receiver included.
+        members: Vec<Json>,
+    },
+    /// What changed in the member list since the last `presence` or
+    /// `presence_diff` (L4.3). Never about the receiver itself.
+    PresenceDiff {
+        /// The subscription.
+        sub: String,
+        /// Members who arrived.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        joined: Vec<Json>,
+        /// The connection ids of members who left.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        left: Vec<String>,
+        /// `{connection, state}` for members whose state changed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        updated: Vec<Json>,
+    },
     /// Access was re-checked and refused: the subscription is gone. Worded as
     /// nothing more, for the reason an `unavailable` is.
     Revoked {
@@ -364,12 +415,14 @@ mod tests {
                 stream: "boiler".to_owned(),
                 topic: None,
                 filter: None,
+                echo: false,
             },
             ClientFrame::Subscribe {
                 sub: "s2".to_owned(),
                 stream: "cards".to_owned(),
                 topic: Some("7".to_owned()),
                 filter: Some(json!({ "board": "eq.7" })),
+                echo: true,
             },
             ClientFrame::Unsubscribe {
                 sub: "s1".to_owned(),
@@ -403,6 +456,7 @@ mod tests {
                 stream: "boiler".to_owned(),
                 topic: None,
                 filter: None,
+                echo: false,
             }
         );
         assert_eq!(frame(json!({ "type": "ping" })).unwrap(), ClientFrame::Ping);
@@ -496,6 +550,23 @@ mod tests {
                 "status",
             ),
             (
+                ServerFrame::Presence {
+                    sub: "s2".to_owned(),
+                    connection: "c1".to_owned(),
+                    members: vec![json!({ "connection": "c1", "user_id": null, "state": null })],
+                },
+                "presence",
+            ),
+            (
+                ServerFrame::PresenceDiff {
+                    sub: "s2".to_owned(),
+                    joined: vec![json!({ "connection": "c2", "user_id": null, "state": null })],
+                    left: vec!["c3".to_owned()],
+                    updated: vec![json!({ "connection": "c4", "state": { "dragging": 7 } })],
+                },
+                "presence_diff",
+            ),
+            (
                 ServerFrame::Revoked {
                     sub: "s1".to_owned(),
                 },
@@ -540,5 +611,51 @@ mod tests {
         let forbidden = FrameError::unavailable("s1", "boiler");
         assert_eq!(missing, forbidden);
         assert_eq!(missing.code.as_str(), "unavailable");
+    }
+
+    #[test]
+    fn a_publish_frame_carries_a_value_and_nothing_a_client_could_forge() {
+        // A `source` beside the value is not part of the frame: it is read
+        // past, and the server stamps its own.
+        let parsed = frame(json!({
+            "type": "publish",
+            "sub": "s2",
+            "value": { "dragging": 3 },
+            "source": { "user": "somebody-else" },
+            "received_at": "1999-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed,
+            ClientFrame::Publish {
+                sub: "s2".to_owned(),
+                value: json!({ "dragging": 3 }),
+            }
+        );
+        let ClientFrame::Subscribe { echo, .. } = frame(
+            json!({ "type": "subscribe", "sub": "s", "stream": "b", "topic": 7, "echo": true }),
+        )
+        .unwrap() else {
+            panic!("a subscribe frame");
+        };
+        assert!(echo);
+    }
+
+    #[test]
+    fn an_empty_part_of_a_presence_diff_is_left_out() {
+        let wire: Json = serde_json::from_str(
+            &ServerFrame::PresenceDiff {
+                sub: "s2".to_owned(),
+                joined: Vec::new(),
+                left: vec!["c3".to_owned()],
+                updated: Vec::new(),
+            }
+            .to_text(),
+        )
+        .unwrap();
+        assert_eq!(
+            wire,
+            json!({ "type": "presence_diff", "sub": "s2", "left": ["c3"] })
+        );
     }
 }

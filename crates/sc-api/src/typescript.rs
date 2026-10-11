@@ -161,6 +161,42 @@ pub struct StreamExport {
     pub value: TypeSchema,
     /// How a page subscribes to it: with no topic, or naming a row.
     pub topics: StreamTopics,
+    /// Whether its topics have presence (`live.<s>.join(…)`, L4.4).
+    pub presence: bool,
+    /// Whether a page may publish on it (`live.<s>.publish(…)`, L4.4) — the
+    /// setting; the server still decides per subscriber.
+    pub client_publish: bool,
+}
+
+impl StreamExport {
+    /// The accessor's type: how it is subscribed, and — on a stream whose
+    /// settings allow them — joined and published to. `envelope` is the
+    /// stream's envelope type.
+    fn accessor_type(&self, envelope: &str) -> String {
+        let row = self.topics == StreamTopics::Row;
+        let mut parts = vec![format!(
+            "{}<{envelope}>",
+            if row { "LiveRowStream" } else { "LiveStream" }
+        )];
+        if self.presence {
+            parts.push(format!(
+                "{}<{envelope}>",
+                if row {
+                    "LiveRowPresence"
+                } else {
+                    "LivePresence"
+                }
+            ));
+        }
+        // A user topic never takes a page's publish (§3 rule 7).
+        if self.client_publish && self.topics != StreamTopics::User {
+            parts.push(format!(
+                "{}<{envelope}>",
+                if row { "LiveRowPublish" } else { "LivePublish" }
+            ));
+        }
+        parts.join(" & ")
+    }
 }
 
 /// How a page names what it subscribes to on a stream (TODO.md "Live updates"
@@ -251,6 +287,27 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     if streams.iter().any(|s| s.topics == StreamTopics::Row) {
         types.push("LiveRowStream");
     }
+    // The presence and publishing halves the accessors' types name.
+    let accessors: Vec<String> = streams
+        .iter()
+        .zip(&changes)
+        .filter(|(_, typing)| typing.is_none())
+        .map(|(stream, _)| stream.accessor_type("E"))
+        .collect();
+    for name in [
+        "LivePresence",
+        "LiveRowPresence",
+        "LivePublish",
+        "LiveRowPublish",
+    ] {
+        let named = format!("{name}<");
+        if accessors
+            .iter()
+            .any(|accessor| accessor.split(" & ").any(|part| part.starts_with(&named)))
+        {
+            types.push(name);
+        }
+    }
     if changes.iter().any(Option::is_some) {
         types.extend(["LiveChange", "LiveChangesStream", "LiveEnvelope"]);
     }
@@ -294,8 +351,10 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
         out.push_str(
             "export { LiveConnection, LiveRows } from \"./helper\";\n\
              export type { LiveChange, LiveChangesQuery, LiveChangesStream, LiveEnvelope, LiveError, \
-             LiveHandlers, LiveOptions, LiveReady, LiveRowStream, LiveRowsOptions, LiveRowsState, \
-             LiveStatus, LiveStream, LiveSubscription, LiveTable, LiveTopic } from \"./helper\";\n",
+             LiveHandlers, LiveJoinHandlers, LiveMember, LiveOptions, LivePresence, LivePublish, \
+             LiveReady, LiveRoom, LiveRowPresence, LiveRowPublish, LiveRowStream, LiveRowsOptions, \
+             LiveRowsState, LiveStatus, LiveStream, LiveSubscription, LiveTable, LiveTopic, \
+             LiveValue } from \"./helper\";\n",
         );
     }
     if !tables.is_empty() {
@@ -382,19 +441,17 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
                 );
                 continue;
             }
-            let (accessor, what) = match stream.topics {
-                StreamTopics::Single | StreamTopics::Changes { .. } => ("LiveStream", "stream"),
-                StreamTopics::User => {
-                    ("LiveStream", "stream; each subscriber gets their own topic")
-                }
-                StreamTopics::Row => ("LiveRowStream", "stream; subscribe naming a row's key"),
+            let what = match stream.topics {
+                StreamTopics::Single | StreamTopics::Changes { .. } => "stream",
+                StreamTopics::User => "stream; each subscriber gets their own topic",
+                StreamTopics::Row => "stream; subscribe naming a row's key",
             };
             let _ = writeln!(
                 out,
-                "  /** The `{}` {what}. */\n  readonly {}: {accessor}<{}Envelope>;",
+                "  /** The `{}` {what}. */\n  readonly {}: {};",
                 stream.name,
                 stream.name,
-                stream_type_name(&stream.name),
+                stream.accessor_type(&format!("{}Envelope", stream_type_name(&stream.name))),
             );
         }
         out.push_str("}\n\n");
@@ -1410,6 +1467,13 @@ export async function clientError(op: string, res: Response): Promise<Error> {
 ///   reconnect does not ask again for what the server already said no to.
 /// - **It never throws on a frame it does not understand**, so a server that
 ///   grows a frame type does not break a client generated before it.
+/// - **Presence and publishing ride on a subscription** (L4.4): `join` is a
+///   subscription that also keeps the topic's member list (applying
+///   `presence` and `presence_diff` with the pure `applyPresence`), and
+///   `publish` sends on a subscription to the topic — the page's own if it has
+///   one, a short-lived one otherwise. A page's own presence state is
+///   throttled before it is sent (the server rate-limits it) and sent again
+///   after a reconnect, so a cursor survives a dropped socket.
 const LIVE_TYPES: &str = r#"// --- live updates -----------------------------------------------------------
 
 /** Where a live connection is: connecting for the first time, open, or reconnecting after a loss. */
@@ -1435,10 +1499,26 @@ export interface LiveError {
   message: string;
 }
 
+/**
+ * One member of a topic's presence, as every member sees the others: the
+ * connection (one per open page), the user (`null` for an anonymous page), the
+ * `users` fields the stream shows, and the state the page last set.
+ */
+export type LiveMember<S = unknown> = {
+  connection: string;
+  user_id: string | null;
+  state: S | null;
+  [field: string]: unknown;
+};
+
 /** What a subscriber is told. Only `element` is required. */
 export interface LiveHandlers<E> {
   ready?(info: LiveReady): void;
   element(envelope: E): void;
+  /** Ask for this page's own publishes back; without it they reach everyone else only. */
+  echo?: boolean;
+  /** Who is on the topic now, this page included — on a stream with presence. */
+  presence?(members: LiveMember[]): void;
   /** This subscription fell behind and lost `dropped` elements (it is never a silent gap). */
   lagged?(dropped: number): void;
   /** The connection was lost and re-established: anything built from earlier elements may be stale. */
@@ -1451,6 +1531,82 @@ export interface LiveHandlers<E> {
 /** A live subscription. `close()` ends it. */
 export interface LiveSubscription {
   close(): void;
+}
+
+/** An element's value type, from its envelope type. */
+export type LiveValue<E> = E extends { value: infer V } ? V : unknown;
+
+/** What a page that joins a topic is told: every handler is optional. */
+export type LiveJoinHandlers<E, S = unknown> = Omit<LiveHandlers<E>, "element" | "presence"> & {
+  element?(envelope: E): void;
+  presence?(members: LiveMember<S>[]): void;
+};
+
+/** A page in a topic's presence: who else is there, its own state, and its publishes. */
+export interface LiveRoom<V, S = unknown> {
+  /** Everybody on the topic now, this page included; empty until the first list arrives. */
+  readonly members: LiveMember<S>[];
+  /** This page's own `connection`, as `members` names it, once the list has arrived. */
+  readonly me: string | undefined;
+  /** Whether the server lets this page publish here (`ready`'s `can_publish`). */
+  readonly canPublish: boolean;
+  /** Set this page's state (a cursor, what it is dragging); the others are told. */
+  setState(state: S): void;
+  /** Publish on the topic. Everybody else on it receives it. */
+  publish(value: V): void;
+  /** Leave the topic. */
+  leave(): void;
+}
+
+/**
+ * A stream with presence and one topic: join it. `E` is its envelope, `V` an
+ * element's value (what a page publishes) and `S` a member's state.
+ */
+export interface LivePresence<E, V = LiveValue<E>, S = unknown> {
+  readonly name: string;
+  readonly connection: LiveConnection;
+  join(handlers?: LiveJoinHandlers<E, S>): LiveRoom<V, S>;
+}
+
+/** A stream with presence and a topic per row: join one row's topic. */
+export interface LiveRowPresence<E, V = LiveValue<E>, S = unknown> {
+  readonly name: string;
+  readonly connection: LiveConnection;
+  join(topic: LiveTopic, handlers?: LiveJoinHandlers<E, S>): LiveRoom<V, S>;
+}
+
+/** A stream with one topic that pages may publish on. */
+export interface LivePublish<E, V = LiveValue<E>> {
+  readonly name: string;
+  readonly connection: LiveConnection;
+  publish(value: V): void;
+}
+
+/** A stream with a topic per row that pages may publish on. */
+export interface LiveRowPublish<E, V = LiveValue<E>> {
+  readonly name: string;
+  readonly connection: LiveConnection;
+  publish(topic: LiveTopic, value: V): void;
+}
+
+/** A presence frame (`presence` or `presence_diff`) applied to a member list — pure, so it is tested without a socket. */
+export function applyPresence(members: LiveMember[], frame: Record<string, unknown>): LiveMember[] {
+  const list = (key: string): unknown[] => (Array.isArray(frame[key]) ? (frame[key] as unknown[]) : []);
+  const isMember = (m: unknown): m is LiveMember =>
+    !!m && typeof m === "object" && typeof (m as { connection?: unknown }).connection === "string";
+  if (frame["type"] === "presence") return list("members").filter(isMember);
+  if (frame["type"] !== "presence_diff") return members;
+  // In the order the server means them: arrivals, then states, then leaves.
+  let next = [...members];
+  for (const joined of list("joined").filter(isMember)) {
+    next = next.filter((m) => m.connection !== joined.connection);
+    next.push(joined);
+  }
+  for (const update of list("updated").filter(isMember)) {
+    next = next.map((m) => (m.connection === update.connection ? { ...m, state: update.state ?? null } : m));
+  }
+  const left = new Set(list("left").filter((c): c is string => typeof c === "string"));
+  return next.filter((m) => !left.has(m.connection));
 }
 
 /** One stream an application exposes, ready to subscribe to — or one row's topic of a row stream. */
@@ -1481,6 +1637,8 @@ export interface LiveOptions {
   minDelay?: number;
   /** The longest reconnect delay, in milliseconds. */
   maxDelay?: number;
+  /** The least time between two presence states sent, in milliseconds (the latest wins). */
+  presenceInterval?: number;
 }
 
 /** The live socket's URL: `path` on the client's base URL, as `ws:` or `wss:`. */
@@ -1491,16 +1649,12 @@ export function liveUrl(baseUrl: string, path: string): string {
   return url.toString();
 }
 
-/** A `subscribe` frame: the topic and the filter only when there is one. */
-function subscribeFrame(
-  sub: string,
-  stream: string,
-  topic: string | undefined,
-  filter: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  const frame: Record<string, unknown> = { type: "subscribe", sub, stream };
-  if (topic !== undefined) frame["topic"] = topic;
-  if (filter !== undefined) frame["filter"] = filter;
+/** A `subscribe` frame: the topic, the filter and `echo` only when there is one. */
+function subscribeFrame(sub: string, entry: LiveEntry): Record<string, unknown> {
+  const frame: Record<string, unknown> = { type: "subscribe", sub, stream: entry.stream };
+  if (entry.topic !== undefined) frame["topic"] = entry.topic;
+  if (entry.filter !== undefined) frame["filter"] = entry.filter;
+  if (entry.handlers.echo) frame["echo"] = true;
   return frame;
 }
 
@@ -1510,6 +1664,18 @@ type LiveEntry = {
   filter: Record<string, unknown> | undefined;
   handlers: LiveHandlers<unknown>;
   ready: boolean;
+  canPublish: boolean;
+  /** Who is on the topic, on a stream with presence. */
+  members: LiveMember[];
+  /** This connection's id, from the last `presence` frame. */
+  me: string | undefined;
+  /** The page's presence state, kept to send again after a reconnect. */
+  state: { value: unknown } | undefined;
+  /** When the state was last sent, and the timer holding a newer one back. */
+  stateSentAt: number;
+  stateTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Publishes made before `ready`, sent once it arrives. */
+  outbox: unknown[];
 };
 
 /** One socket, any number of subscriptions, reconnecting by itself. */
@@ -1545,23 +1711,32 @@ export class LiveConnection {
     };
   }
 
-  /** The accessor for the stream called `name` — one with no topic, or whose topic is the subscriber's own. */
-  stream<E>(name: string): LiveStream<E> {
+  /**
+   * The accessor for the stream called `name` — one with no topic, or whose
+   * topic is the subscriber's own. It can join and publish too; the generated
+   * client's types offer those only on a stream whose settings allow them.
+   */
+  stream<E>(name: string): LiveStream<E> & LivePresence<E> & LivePublish<E> {
     return {
       name,
       connection: this,
       subscribe: (handlers: LiveHandlers<E>) => this.subscribe(name, handlers),
+      join: (handlers: LiveJoinHandlers<E> = {}) => this.join<E>(name, undefined, handlers),
+      publish: (value: LiveValue<E>) => this.publishOn(name, undefined, value),
     };
   }
 
   /** The accessor for the stream called `name`, whose topics are rows. */
-  rowStream<E>(name: string): LiveRowStream<E> {
+  rowStream<E>(name: string): LiveRowStream<E> & LiveRowPresence<E> & LiveRowPublish<E> {
     const topics = new Map<string, LiveStream<E>>();
     return {
       name,
       connection: this,
       subscribe: (topic: LiveTopic, handlers: LiveHandlers<E>) =>
         this.subscribe(name, handlers, String(topic)),
+      join: (topic: LiveTopic, handlers: LiveJoinHandlers<E> = {}) =>
+        this.join<E>(name, String(topic), handlers),
+      publish: (topic: LiveTopic, value: LiveValue<E>) => this.publishOn(name, String(topic), value),
       topic: (topic: LiveTopic) => {
         const key = String(topic);
         let stream = topics.get(key);
@@ -1607,22 +1782,160 @@ export class LiveConnection {
     topic?: string,
     filter?: Record<string, unknown>,
   ): LiveSubscription {
+    return this.add(stream, handlers as LiveHandlers<unknown>, topic, filter).subscription;
+  }
+
+  /**
+   * Join `topic` of `stream` (none for a stream with one topic): a
+   * subscription that also keeps the topic's members, and through which this
+   * page sets its state and publishes.
+   */
+  join<E, S = unknown>(
+    stream: string,
+    topic: string | undefined,
+    handlers: LiveJoinHandlers<E, S>,
+  ): LiveRoom<LiveValue<E>, S> {
+    const { sub, subscription } = this.add(
+      stream,
+      {
+        ...(handlers as LiveJoinHandlers<unknown>),
+        element: (envelope: unknown) => handlers.element?.(envelope as E),
+        presence: (members: LiveMember[]) => handlers.presence?.(members as LiveMember<S>[]),
+      },
+      topic,
+      undefined,
+    );
+    const entry = () => this.entries.get(sub);
+    return {
+      get members() {
+        return (entry()?.members ?? []) as LiveMember<S>[];
+      },
+      get me() {
+        return entry()?.me;
+      },
+      get canPublish() {
+        return entry()?.canPublish ?? false;
+      },
+      setState: (state: S) => this.setState(sub, state),
+      publish: (value: LiveValue<E>) => this.publish(sub, value),
+      leave: () => subscription.close(),
+    };
+  }
+
+  /** Publish `value` on the subscription `sub`, once it is `ready`. */
+  publish(sub: string, value: unknown): void {
+    const entry = this.entries.get(sub);
+    if (!entry) return;
+    if (entry.ready && this.socket && this.socket.readyState === 1) {
+      this.send({ type: "publish", sub, value });
+    } else {
+      entry.outbox.push(value);
+    }
+  }
+
+  /**
+   * Publish `value` on `topic` of `stream`: on a subscription this page
+   * already holds to it, or on one opened for the purpose and closed once the
+   * value is sent.
+   */
+  publishOn(stream: string, topic: string | undefined, value: unknown): void {
+    for (const [sub, entry] of this.entries) {
+      if (entry.stream === stream && entry.topic === topic && entry.filter === undefined) {
+        this.publish(sub, value);
+        return;
+      }
+    }
+    let done = false;
+    const once = this.add(
+      stream,
+      {
+        element: () => undefined,
+        ready: () => {
+          if (done) return;
+          done = true;
+          this.publish(once.sub, value);
+          once.subscription.close();
+        },
+        error: () => {
+          done = true;
+        },
+      },
+      topic,
+      undefined,
+    );
+  }
+
+  /** Set this page's presence state on `sub`, sent at most every `presenceInterval` ms (the latest wins). */
+  setState(sub: string, state: unknown): void {
+    const entry = this.entries.get(sub);
+    if (!entry) return;
+    entry.state = { value: state };
+    // This page's own entry in the list changes at once, for its own render.
+    if (entry.me !== undefined) {
+      entry.members = entry.members.map((m) => (m.connection === entry.me ? { ...m, state } : m));
+      entry.handlers.presence?.(entry.members);
+    }
+    this.flushState(sub);
+  }
+
+  private flushState(sub: string): void {
+    const entry = this.entries.get(sub);
+    if (!entry || entry.state === undefined || entry.stateTimer !== undefined) return;
+    if (!entry.ready || !this.socket || this.socket.readyState !== 1) return;
+    const interval = this.options.presenceInterval ?? 60;
+    const wait = entry.stateSentAt + interval - Date.now();
+    if (wait > 0) {
+      entry.stateTimer = setTimeout(() => {
+        entry.stateTimer = undefined;
+        this.flushState(sub);
+      }, wait);
+      return;
+    }
+    entry.stateSentAt = Date.now();
+    this.send({ type: "presence", sub, state: entry.state.value });
+  }
+
+  private add(
+    stream: string,
+    handlers: LiveHandlers<unknown>,
+    topic: string | undefined,
+    filter: Record<string, unknown> | undefined,
+  ): { sub: string; subscription: LiveSubscription } {
     const sub = `s${this.nextSub++}`;
-    this.entries.set(sub, { stream, topic, filter, handlers: handlers as LiveHandlers<unknown>, ready: false });
+    const entry: LiveEntry = {
+      stream,
+      topic,
+      filter,
+      handlers,
+      ready: false,
+      canPublish: false,
+      members: [],
+      me: undefined,
+      state: undefined,
+      stateSentAt: 0,
+      stateTimer: undefined,
+      outbox: [],
+    };
+    this.entries.set(sub, entry);
     if (this.socket && this.socket.readyState === 1) {
-      this.send(subscribeFrame(sub, stream, topic, filter));
+      this.send(subscribeFrame(sub, entry));
     } else {
       this.open();
     }
     let active = true;
     return {
-      close: () => {
-        if (!active) return;
-        active = false;
-        if (this.entries.delete(sub) && this.socket && this.socket.readyState === 1) {
-          this.send({ type: "unsubscribe", sub });
-        }
-        if (this.entries.size === 0) this.shutdown();
+      sub,
+      subscription: {
+        close: () => {
+          if (!active) return;
+          active = false;
+          const gone = this.entries.get(sub);
+          if (gone?.stateTimer !== undefined) clearTimeout(gone.stateTimer);
+          if (this.entries.delete(sub) && this.socket && this.socket.readyState === 1) {
+            this.send({ type: "unsubscribe", sub });
+          }
+          if (this.entries.size === 0) this.shutdown();
+        },
       },
     };
   }
@@ -1656,7 +1969,12 @@ export class LiveConnection {
       this.setStatus("open");
       this.entries.forEach((entry, sub) => {
         entry.ready = false;
-        this.send(subscribeFrame(sub, entry.stream, entry.topic, entry.filter));
+        if (entry.stateTimer !== undefined) {
+          clearTimeout(entry.stateTimer);
+          entry.stateTimer = undefined;
+        }
+        entry.stateSentAt = 0;
+        this.send(subscribeFrame(sub, entry));
         if (reconnect) entry.handlers.resync?.();
       });
     };
@@ -1705,9 +2023,29 @@ export class LiveConnection {
     const entry = sub === undefined ? undefined : this.entries.get(sub);
     switch (frame["type"]) {
       case "ready":
-        if (entry) {
+        if (entry && sub !== undefined) {
           entry.ready = true;
+          entry.canPublish = frame["can_publish"] === true;
           entry.handlers.ready?.(frame as unknown as LiveReady);
+          for (const value of entry.outbox.splice(0)) this.publish(sub, value);
+        }
+        break;
+      case "presence":
+      case "presence_diff":
+        if (entry && sub !== undefined) {
+          if (frame["type"] === "presence" && typeof frame["connection"] === "string") {
+            entry.me = frame["connection"];
+          }
+          entry.members = applyPresence(entry.members, frame);
+          // A list that does not carry the state this page set — the first
+          // one after a reconnect — is told it again.
+          const own = entry.state;
+          const mine = entry.members.find((m) => m.connection === entry.me);
+          if (own !== undefined && mine && JSON.stringify(mine.state) !== JSON.stringify(own.value)) {
+            entry.members = entry.members.map((m) => (m === mine ? { ...m, state: own.value } : m));
+            this.flushState(sub);
+          }
+          entry.handlers.presence?.(entry.members);
         }
         break;
       case "element":

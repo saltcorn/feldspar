@@ -56,6 +56,29 @@
 //! `enter`, `leave`, `delete` or nothing — reading the caller from the
 //! connection each time, so a re-read session reaches the next element.
 //!
+//! ## Publishing and presence (L4)
+//!
+//! A page publishes on a subscription it holds. Whether it may is decided when
+//! the subscription is attached, by [`sc_live::may_publish`] — the stream's
+//! `client_publish`, and on a `row` topic the caller's **update** access to the
+//! row ([`sc_api::row_updatable_as`]) — sent as `can_publish` in `ready`, and
+//! decided again whenever the subscription's read access is (a touched row, the
+//! clock). A refused publish is `unavailable`, worded like any absence. The
+//! element is the hub's to stamp ([`Connection::publish`]): `source` is
+//! `{user, connection}` from this connection, never from the frame. Publishes
+//! and presence updates are each rate-limited per connection and answered
+//! `rate_limited` past the limit, the connection staying up.
+//!
+//! A subscription to a stream with `presence` on takes a seat in its topic's
+//! room once attached ([`Connection::join_presence`]), with the `users`
+//! columns the stream shows read at that moment, and is sent the member list
+//! as a `presence` frame; the hub's changes to the room arrive in the
+//! connection's inbox and leave as `presence_diff`. A state update is applied
+//! at once when the connection has been quiet, and the ones that follow within
+//! [`presence_coalesce`](sc_live::LiveLimits::presence_coalesce) are held and
+//! applied as the latest one when it ends. Unsubscribing, a revoke and the
+//! socket closing give the seat back.
+//!
 //! ## Following the stream
 //!
 //! A subscription to a stream that is not running here (disabled, or failing
@@ -75,10 +98,12 @@ use sc_auth::{SessionStore, User};
 use sc_catalog::{Catalog, TableId};
 use sc_live::{
     Attached, Caller, ChangeAccess, ClientFrame, CloseReason, Connection, ConnectionInfo, Delivery,
-    ErrorCode, FrameError, LikeRules, LiveHub, LiveLimits, Refusal, RowFact, RowFilter,
-    ServerFrame, StoredStream, StreamFacts, Subscription, SubscriptionSet, Touch, Watch, may_open,
-    may_subscribe, read_rule_tables,
+    ErrorCode, FrameError, LikeRules, LiveHub, LiveLimits, PresenceEvent, PublishFacts, RateLimit,
+    Refusal, RoomKey, RowFact, RowFilter, Seat, ServerFrame, StoredStream, StreamFacts,
+    Subscription, SubscriptionSet, Touch, Watch, may_open, may_publish, may_subscribe,
+    read_rule_tables,
 };
+use sc_stream::providers::internal;
 use sc_stream::{RunningStream, Stream, StreamSupervisor, TopicSpec};
 use serde_json::{Value as Json, json};
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -189,6 +214,8 @@ enum Event {
     Recheck,
     Status,
     Ping,
+    Presence,
+    PresenceFlush,
 }
 
 type Sender = SplitSink<WebSocket, Message>;
@@ -213,11 +240,16 @@ async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
     // Who the caller is, as a `table_changes` subscription's verdicts read it;
     // replaced at every re-read of the session.
     connection.set_user(caller.user.clone());
+    let now = std::time::Instant::now();
     let mut live = Live {
         subs: SubscriptionSet::new(limits.max_subscriptions),
         by_attachment: HashMap::new(),
         row_subs: HashMap::new(),
         change_subs: HashMap::new(),
+        extras: HashMap::new(),
+        publish_rate: RateLimit::new(limits.publishes_per_second, now),
+        presence_rate: RateLimit::new(limits.presence_per_second, now),
+        flush_at: None,
         connection,
         env,
         caller,
@@ -229,12 +261,15 @@ async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
     let mut heard = Instant::now();
 
     let ending = loop {
+        let flush_at = live.flush_at;
         let event = tokio::select! {
             reason = close_signal.closed() => Event::Closed(reason),
             incoming = receiver.next() => Event::Incoming(incoming),
             Some(delivery) = deliveries.recv() => Event::Delivery(delivery),
             () = live.connection.lagged() => Event::Lagged,
             () = live.connection.touched() => Event::Touched,
+            () = live.connection.presence_changed() => Event::Presence,
+            () = sleep_until(flush_at) => Event::PresenceFlush,
             _ = recheck.tick() => Event::Recheck,
             _ = status.tick() => Event::Status,
             _ = ping.tick() => Event::Ping,
@@ -254,6 +289,11 @@ async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
                 Err(reason) => break Some(reason),
             },
             Event::Status => live.status_pass().await,
+            Event::Presence => live.presence_news(),
+            Event::PresenceFlush => {
+                live.flush_presence();
+                Vec::new()
+            }
             Event::Ping => {
                 if heard.elapsed() >= limits.idle_timeout {
                     break Some(CloseReason {
@@ -294,10 +334,33 @@ struct Live {
     /// The `table_changes` subscriptions, by `sub`: what their fan-out
     /// decides each element by, kept to attach again after a restart.
     change_subs: HashMap<String, ChangeAccess>,
+    /// Every subscription's publishing and presence, by `sub` (L4).
+    extras: HashMap<String, Extras>,
+    /// Publishes this connection may still make this second.
+    publish_rate: RateLimit,
+    /// Presence updates this connection may still send this second.
+    presence_rate: RateLimit,
+    /// When the presence window ends: until then a state update is held, and
+    /// the latest one held is applied then. `None` when the connection is
+    /// quiet.
+    flush_at: Option<Instant>,
     connection: Connection,
     env: LiveEnv,
     caller: LiveCaller,
     limits: LiveLimits,
+}
+
+/// One subscription's publishing and presence.
+#[derive(Default)]
+struct Extras {
+    /// Whether this connection's own elements come back to it.
+    echo: bool,
+    /// Whether the page may publish on it, as last decided.
+    can_publish: bool,
+    /// Its seat in its topic's room, on a stream with presence.
+    seat: Option<Seat>,
+    /// A state update held until the presence window ends.
+    pending_state: Option<Json>,
 }
 
 /// A `row` subscription's access, as far as writes can change it.
@@ -371,7 +434,8 @@ impl Live {
                 stream,
                 topic,
                 filter,
-            } => self.subscribe(sub, stream, topic, filter).await,
+                echo,
+            } => self.subscribe(sub, stream, topic, filter, echo).await,
             ClientFrame::Unsubscribe { sub } => match self.subs.remove(&sub) {
                 Ok(gone) => {
                     self.forget(&gone);
@@ -379,30 +443,8 @@ impl Live {
                 }
                 Err(error) => vec![error.frame()],
             },
-            ClientFrame::Publish { sub, .. } => match self.subs.get(&sub) {
-                // Not a stream a page may publish on — the only kind there is
-                // until L4's `internal` streams with `client_publish` — and
-                // worded like any other "not here".
-                Some(found) => vec![
-                    FrameError::new(
-                        Some(sub.clone()),
-                        ErrorCode::Unavailable,
-                        format!("there is nowhere on `{}` you can publish", found.stream),
-                    )
-                    .frame(),
-                ],
-                None => vec![not_subscribed(sub)],
-            },
-            ClientFrame::Presence { sub, .. } => match self.subs.get(&sub) {
-                Some(found) => vec![
-                    FrameError::invalid(
-                        Some(sub.clone()),
-                        format!("`{}` has no presence", found.stream),
-                    )
-                    .frame(),
-                ],
-                None => vec![not_subscribed(sub)],
-            },
+            ClientFrame::Publish { sub, value } => self.publish(sub, value),
+            ClientFrame::Presence { sub, state } => self.set_presence(sub, state),
             ClientFrame::DocUpdate { sub, .. } => match self.subs.get(&sub) {
                 Some(found) => vec![
                     FrameError::invalid(
@@ -425,6 +467,7 @@ impl Live {
         stream: String,
         topic: Option<String>,
         filter: Option<Json>,
+        echo: bool,
     ) -> Vec<ServerFrame> {
         if let Err(error) = self.subs.check_new(&sub) {
             return vec![error.frame()];
@@ -469,13 +512,15 @@ impl Live {
             _ => None,
         };
         let row_sub = self.watch_row(&grant);
+        let can_publish = self.publish_right(&stream, grant.topic.as_deref()).await;
         let mut subscription = Subscription::waiting(sub.clone(), stream, grant.topic);
-        let frames = start(
+        let mut frames = start(
             &self.connection,
             &mut self.by_attachment,
             self.env.supervisor.as_ref(),
             &self.env.catalog,
             change.as_ref(),
+            Rights { echo, can_publish },
             &mut subscription,
         )
         .await;
@@ -486,7 +531,325 @@ impl Live {
                 self.row_subs.insert(sub.clone(), row_sub);
             }
             if let Some(change) = change {
-                self.change_subs.insert(sub, change);
+                self.change_subs.insert(sub.clone(), change);
+            }
+            self.extras.insert(
+                sub.clone(),
+                Extras {
+                    echo,
+                    can_publish,
+                    ..Extras::default()
+                },
+            );
+            frames.extend(self.seat(&sub).await);
+        }
+        frames
+    }
+
+    /// Whether this connection's page may publish on a subscription to
+    /// `stream` on `topic` (§3 rule 7): the running stream's settings, and on
+    /// a `row` topic the caller's update access to the row. `false` while the
+    /// stream is not running here — there is nothing to publish into.
+    async fn publish_right(&self, stream: &str, topic: Option<&str>) -> bool {
+        let Some(running) = self
+            .env
+            .supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.by_name(stream))
+        else {
+            return false;
+        };
+        let client_publish = running.provider().is_some_and(|p| p.accepts_publish())
+            && internal::client_publish(&running.configuration());
+        if !client_publish {
+            return false;
+        }
+        let Ok(spec) = running.topic_spec() else {
+            return false;
+        };
+        let row_updatable = match (&spec, topic) {
+            (TopicSpec::Row { table }, Some(key)) => self.row_updatable(table, key).await,
+            _ => false,
+        };
+        may_publish(
+            &spec,
+            PublishFacts {
+                client_publish,
+                row_updatable,
+            },
+        )
+    }
+
+    /// Whether this connection's caller may update `table`'s row `key`.
+    async fn row_updatable(&self, table: &str, key: &str) -> bool {
+        let found = match self.env.catalog.get(table) {
+            Ok(Some(found)) => found,
+            _ => return false,
+        };
+        match sc_api::row_updatable_as(
+            &self.env.catalog,
+            &found,
+            key,
+            self.caller().role,
+            self.caller.user.as_ref(),
+            self.env.evaluator.as_ref(),
+        )
+        .await
+        {
+            Ok(verdict) => verdict,
+            // Refused rather than guessed at, as a read that fails is.
+            Err(e) => {
+                sc_log::log_warn!(
+                    "the live socket could not decide whether row `{key}` of `{table}` may be \
+                     updated, so publishing on it is refused: {}",
+                    sc_error::format_chain(&e)
+                );
+                false
+            }
+        }
+    }
+
+    /// Decide again whether each of `names` may be published on — after
+    /// access was re-checked, which is when an update right can change too.
+    async fn refresh_rights(&mut self, names: &[String]) {
+        for name in names {
+            let Some((stream, topic)) = self
+                .subs
+                .get(name)
+                .map(|s| (s.stream.clone(), s.topic.clone()))
+            else {
+                continue;
+            };
+            let can_publish = self.publish_right(&stream, topic.as_deref()).await;
+            if let Some(extras) = self.extras.get_mut(name) {
+                extras.can_publish = can_publish;
+            }
+        }
+    }
+
+    /// Give `sub` its seat in its topic's room if its stream has presence on
+    /// and it is attached, and say who is there; give it back if not.
+    async fn seat(&mut self, sub: &str) -> Vec<ServerFrame> {
+        let Some(subscription) = self.subs.get(sub) else {
+            return Vec::new();
+        };
+        let wanted: Option<(RoomKey, Vec<String>)> = subscription.attached().and_then(|attached| {
+            let running = attached.running();
+            let config = running.configuration();
+            let accepts = running.provider().is_some_and(|p| p.accepts_publish());
+            (accepts && internal::presence(&config)).then(|| {
+                (
+                    (running.id(), subscription.topic.clone()),
+                    internal::presence_fields(&config).unwrap_or_default(),
+                )
+            })
+        });
+        let Some(extras) = self.extras.get_mut(sub) else {
+            return Vec::new();
+        };
+        let Some((room, shown)) = wanted else {
+            extras.seat = None;
+            extras.pending_state = None;
+            return Vec::new();
+        };
+        let members = match &extras.seat {
+            // Still in the same room (a restart that kept presence on): the
+            // page has had a fresh `ready`, so it is handed the list again.
+            Some(seat) if *seat.room() == room => self.env.hub.presence_members(&room),
+            _ => {
+                let fields =
+                    shown_fields(&self.env.catalog, self.caller.user.as_ref(), &shown).await;
+                let (seat, members) = self.connection.join_presence(
+                    room,
+                    self.caller.user.as_ref().map(|user| user.id),
+                    fields,
+                );
+                if let Some(extras) = self.extras.get_mut(sub) {
+                    extras.seat = Some(seat);
+                }
+                members
+            }
+        };
+        vec![ServerFrame::Presence {
+            sub: sub.to_owned(),
+            connection: self.connection.tag().to_owned(),
+            members,
+        }]
+    }
+
+    /// A page's `publish` frame (§3 rule 7).
+    fn publish(&mut self, sub: String, value: Json) -> Vec<ServerFrame> {
+        let Some(found) = self.subs.get(&sub) else {
+            return vec![not_subscribed(sub)];
+        };
+        let allowed = self
+            .extras
+            .get(&sub)
+            .is_some_and(|extras| extras.can_publish);
+        let Some(attached) = found.attached().filter(|_| allowed) else {
+            // Worded like any other "not here": a reader who may not update
+            // the row learns nothing from it that `ready` did not say.
+            return vec![
+                FrameError::new(
+                    Some(sub.clone()),
+                    ErrorCode::Unavailable,
+                    format!("there is nowhere on `{}` you can publish", found.stream),
+                )
+                .frame(),
+            ];
+        };
+        if !self.publish_rate.take(std::time::Instant::now()) {
+            return vec![
+                FrameError::new(
+                    Some(sub),
+                    ErrorCode::RateLimited,
+                    format!(
+                        "this connection may publish at most {} times a second; this one was not \
+                         published",
+                        self.limits.publishes_per_second
+                    ),
+                )
+                .frame(),
+            ];
+        }
+        match self
+            .connection
+            .publish(attached.running(), found.topic.clone(), value)
+        {
+            Ok(_) => Vec::new(),
+            Err(e) => vec![FrameError::invalid(Some(sub), sc_error::format_chain(&e)).frame()],
+        }
+    }
+
+    /// A page's `presence` frame: its state on the subscription's topic.
+    fn set_presence(&mut self, sub: String, state: Json) -> Vec<ServerFrame> {
+        let Some(found) = self.subs.get(&sub) else {
+            return vec![not_subscribed(sub)];
+        };
+        let seated = self
+            .extras
+            .get(&sub)
+            .is_some_and(|extras| extras.seat.is_some());
+        if !seated {
+            return vec![
+                FrameError::invalid(
+                    Some(sub.clone()),
+                    format!("`{}` has no presence", found.stream),
+                )
+                .frame(),
+            ];
+        }
+        let size = state.to_string().len();
+        if size > self.limits.max_presence_state_bytes {
+            return vec![
+                FrameError::new(
+                    Some(sub),
+                    ErrorCode::TooLarge,
+                    format!(
+                        "a presence state may be at most {} bytes of JSON and this one was {size}; \
+                         the state is unchanged",
+                        self.limits.max_presence_state_bytes
+                    ),
+                )
+                .frame(),
+            ];
+        }
+        if !self.presence_rate.take(std::time::Instant::now()) {
+            return vec![
+                FrameError::new(
+                    Some(sub),
+                    ErrorCode::RateLimited,
+                    format!(
+                        "this connection may update its presence at most {} times a second; this \
+                         update was not applied",
+                        self.limits.presence_per_second
+                    ),
+                )
+                .frame(),
+            ];
+        }
+        let Some(extras) = self.extras.get_mut(&sub) else {
+            return Vec::new();
+        };
+        let now = Instant::now();
+        if self.flush_at.is_some_and(|at| at > now) {
+            // Within the window: only the latest is kept, and applied when it
+            // ends.
+            extras.pending_state = Some(state);
+        } else {
+            if let Some(seat) = &extras.seat {
+                seat.set_state(state);
+            }
+            extras.pending_state = None;
+            self.flush_at = Some(now + self.limits.presence_coalesce);
+        }
+        Vec::new()
+    }
+
+    /// The presence window ended: apply the latest state held for each
+    /// subscription, and open another window if anything was.
+    fn flush_presence(&mut self) {
+        self.flush_at = None;
+        let mut applied = false;
+        for extras in self.extras.values_mut() {
+            if let Some(state) = extras.pending_state.take()
+                && let Some(seat) = &extras.seat
+            {
+                seat.set_state(state);
+                applied = true;
+            }
+        }
+        if applied {
+            self.flush_at = Some(Instant::now() + self.limits.presence_coalesce);
+        }
+    }
+
+    /// Rooms this connection is in changed: tell each subscription in them,
+    /// in order — patched with `presence_diff`, or whole with `presence` when
+    /// the hub had to drop the room's changes.
+    fn presence_news(&mut self) -> Vec<ServerFrame> {
+        let news = self.connection.take_presence();
+        if news.events.is_empty() && news.resync.is_empty() {
+            return Vec::new();
+        }
+        let mut by_room: HashMap<RoomKey, Vec<String>> = HashMap::new();
+        for (sub, extras) in &self.extras {
+            if let Some(seat) = &extras.seat {
+                by_room
+                    .entry(seat.room().clone())
+                    .or_default()
+                    .push(sub.clone());
+            }
+        }
+        for subs in by_room.values_mut() {
+            subs.sort();
+        }
+        let mut frames = Vec::new();
+        for room in &news.resync {
+            let Some(subs) = by_room.get(room) else {
+                continue;
+            };
+            let members = self.env.hub.presence_members(room);
+            for sub in subs {
+                frames.push(ServerFrame::Presence {
+                    sub: sub.clone(),
+                    connection: self.connection.tag().to_owned(),
+                    members: members.clone(),
+                });
+            }
+        }
+        for (room, diff) in presence_diffs(news.events) {
+            let Some(subs) = by_room.get(&room) else {
+                // A room this connection has left since.
+                continue;
+            };
+            for sub in subs {
+                frames.push(ServerFrame::PresenceDiff {
+                    sub: sub.clone(),
+                    joined: diff.joined.clone(),
+                    left: diff.left.clone(),
+                    updated: diff.updated.clone(),
+                });
             }
         }
         frames
@@ -706,7 +1069,11 @@ impl Live {
         let mut frames = Vec::new();
         let supervisor = self.env.supervisor.clone();
         let catalog = Arc::clone(&self.env.catalog);
-        for subscription in self.subs.iter_mut() {
+        let mut followed = Vec::new();
+        for name in self.subs.names() {
+            let Some(subscription) = self.subs.get(&name) else {
+                continue;
+            };
             let current = supervisor
                 .as_ref()
                 .and_then(|supervisor| supervisor.by_name(&subscription.stream));
@@ -716,19 +1083,35 @@ impl Live {
                 _ => false,
             };
             if follow {
+                // A restart may have changed the settings publishing and
+                // presence are decided by.
+                let (stream, topic) = (subscription.stream.clone(), subscription.topic.clone());
+                let can_publish = self.publish_right(&stream, topic.as_deref()).await;
+                let echo = self.extras.get(&name).is_some_and(|extras| extras.echo);
+                if let Some(extras) = self.extras.get_mut(&name) {
+                    extras.can_publish = can_publish;
+                }
+                let Some(subscription) = self.subs.get_mut(&name) else {
+                    continue;
+                };
                 frames.extend(
                     start(
                         &self.connection,
                         &mut self.by_attachment,
                         supervisor.as_ref(),
                         &catalog,
-                        self.change_subs.get(&subscription.sub),
+                        self.change_subs.get(&name),
+                        Rights { echo, can_publish },
                         subscription,
                     )
                     .await,
                 );
+                followed.push(name);
                 continue;
             }
+            let Some(subscription) = self.subs.get_mut(&name) else {
+                continue;
+            };
             if let Some(attached) = subscription.attached() {
                 let (status, counters) = status_parts(attached.running());
                 if subscription.last_status.as_ref() != Some(&status) {
@@ -740,6 +1123,9 @@ impl Live {
                     });
                 }
             }
+        }
+        for name in followed {
+            frames.extend(self.seat(&name).await);
         }
         frames
     }
@@ -781,7 +1167,10 @@ impl Live {
             });
         };
         let names = self.subs.names();
-        Ok(self.recheck_subs(&app, names).await)
+        let frames = self.recheck_subs(&app, names).await;
+        let kept = self.subs.names();
+        self.refresh_rights(&kept).await;
+        Ok(frames)
     }
 
     /// Writes this connection watches have happened: re-check every `row`
@@ -804,7 +1193,11 @@ impl Live {
         let Some(app) = self.env.app.current() else {
             return Vec::new();
         };
-        self.recheck_subs(&app, affected).await
+        let frames = self.recheck_subs(&app, affected.clone()).await;
+        // A write that could change who may read a row could change who may
+        // update it.
+        self.refresh_rights(&affected).await;
+        frames
     }
 
     /// Ask access again for each of `names`, and revoke those that no longer
@@ -858,6 +1251,8 @@ impl Live {
         // hub stops observing writes to it.
         self.row_subs.remove(&gone.sub);
         self.change_subs.remove(&gone.sub);
+        // And its seat: the member leaves the room.
+        self.extras.remove(&gone.sub);
     }
 }
 
@@ -871,6 +1266,7 @@ async fn start(
     supervisor: Option<&Arc<StreamSupervisor>>,
     catalog: &Catalog,
     change: Option<&ChangeAccess>,
+    rights: Rights,
     subscription: &mut Subscription<Attached>,
 ) -> Vec<ServerFrame> {
     let running = supervisor.and_then(|supervisor| supervisor.by_name(&subscription.stream));
@@ -892,10 +1288,20 @@ async fn start(
         by_attachment,
         catalog,
         change,
+        rights,
         subscription,
         &running,
     )
     .await
+}
+
+/// What a subscription is attached with besides its stream and topic.
+#[derive(Debug, Clone, Copy)]
+struct Rights {
+    /// Whether this connection's own elements come back to it.
+    echo: bool,
+    /// Whether the page may publish on it — `ready`'s `can_publish`.
+    can_publish: bool,
 }
 
 /// Attach `subscription` to `running`: `ready`, then the replay. A
@@ -906,12 +1312,17 @@ async fn attach(
     by_attachment: &mut HashMap<u64, String>,
     catalog: &Catalog,
     change: Option<&ChangeAccess>,
+    rights: Rights,
     subscription: &mut Subscription<Attached>,
     running: &Arc<RunningStream>,
 ) -> Vec<ServerFrame> {
     let (attached, replay) = match change {
         Some(change) => connection.attach_changes(running, change.clone()).await,
-        None => connection.attach(running, subscription.topic.clone()).await,
+        None => {
+            connection
+                .attach_echo(running, subscription.topic.clone(), rights.echo)
+                .await
+        }
     };
     by_attachment.insert(attached.attachment(), subscription.sub.clone());
     if let Some(previous) = subscription.activate(attached) {
@@ -925,7 +1336,7 @@ async fn attach(
         stream: subscription.stream.clone(),
         element_type: element_type_json_in(running, catalog),
         replayed: replay.len(),
-        can_publish: false,
+        can_publish: rights.can_publish,
         status,
         counters,
     });
@@ -934,6 +1345,107 @@ async fn attach(
         envelope: (*envelope).clone(),
     }));
     frames
+}
+
+/// The `users` columns `shown` of `user`, read now — what a presence member
+/// shows the others (§3 rule 9). Nothing for an anonymous page, and a column
+/// that is not there is left out rather than shown as null.
+async fn shown_fields(
+    catalog: &Catalog,
+    user: Option<&User>,
+    shown: &[String],
+) -> serde_json::Map<String, Json> {
+    let mut fields = serde_json::Map::new();
+    let Some(user) = user else {
+        return fields;
+    };
+    if shown.is_empty() {
+        return fields;
+    }
+    // Read afresh rather than taken from the session's copy, which can be a
+    // minute old: a name changed a moment ago is the name shown.
+    let current = match sc_auth::load_user(catalog, user.id).await {
+        Ok(Some(current)) => current,
+        Ok(None) => return fields,
+        Err(e) => {
+            sc_log::log_warn!(
+                "the live socket could not read the fields a presence member shows: {}",
+                sc_error::format_chain(&e)
+            );
+            user.clone()
+        }
+    };
+    for name in shown {
+        // Never the hash, whatever the settings say (`users` rows never carry
+        // it onto a `User`, and the stream form refuses it).
+        if let Some(value) = current.extra.get(name) {
+            fields.insert(name.clone(), sc_types::value_to_json(value));
+        }
+    }
+    fields
+}
+
+/// One `presence_diff`'s worth of changes to a room.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Diff {
+    joined: Vec<Json>,
+    left: Vec<String>,
+    updated: Vec<Json>,
+}
+
+/// Group a connection's presence changes, in order, into `presence_diff`s per
+/// room. A client applies a diff's `joined`, then `updated`, then `left`, so a
+/// change that would be applied out of order in the current diff — a join, or
+/// an update, of a connection that already left in it — starts the next one.
+/// Updates of one member within a diff keep only the latest.
+fn presence_diffs(events: Vec<(RoomKey, PresenceEvent)>) -> Vec<(RoomKey, Diff)> {
+    let mut out: Vec<(RoomKey, Diff)> = Vec::new();
+    // Per room, the index in `out` of its diff being filled.
+    let mut open: HashMap<RoomKey, usize> = HashMap::new();
+    for (room, event) in events {
+        let connection = match &event {
+            PresenceEvent::Joined(member) => member
+                .get("connection")
+                .and_then(Json::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            PresenceEvent::Left(connection) | PresenceEvent::Updated { connection, .. } => {
+                connection.clone()
+            }
+        };
+        let starts_over = !matches!(event, PresenceEvent::Left(_))
+            && open
+                .get(&room)
+                .is_some_and(|at| out[*at].1.left.contains(&connection));
+        let at = match open.get(&room) {
+            Some(at) if !starts_over => *at,
+            _ => {
+                out.push((room.clone(), Diff::default()));
+                open.insert(room.clone(), out.len() - 1);
+                out.len() - 1
+            }
+        };
+        let diff = &mut out[at].1;
+        match event {
+            PresenceEvent::Joined(member) => diff.joined.push(member),
+            PresenceEvent::Left(connection) => diff.left.push(connection),
+            PresenceEvent::Updated { connection, state } => {
+                diff.updated
+                    .retain(|u| u.get("connection").and_then(Json::as_str) != Some(&connection));
+                diff.updated
+                    .push(json!({ "connection": connection, "state": state }));
+            }
+        }
+    }
+    out
+}
+
+/// Resolves at `at`, or never.
+async fn sleep_until(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The answer to a frame about a subscription this connection does not have.
@@ -976,4 +1488,63 @@ fn ticker(period: Duration) -> Interval {
     let mut interval = tokio::time::interval_at(Instant::now() + period, period);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     interval
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sc_stream::StreamId;
+
+    fn room(topic: &str) -> RoomKey {
+        (StreamId(uuid::Uuid::from_u128(1)), Some(topic.to_owned()))
+    }
+
+    fn joined(connection: &str) -> PresenceEvent {
+        PresenceEvent::Joined(json!({ "connection": connection, "user_id": null, "state": null }))
+    }
+
+    fn updated(connection: &str, state: Json) -> PresenceEvent {
+        PresenceEvent::Updated {
+            connection: connection.to_owned(),
+            state,
+        }
+    }
+
+    #[test]
+    fn changes_to_one_room_are_one_diff_with_the_latest_state() {
+        let diffs = presence_diffs(vec![
+            (room("1"), joined("a")),
+            (room("1"), updated("a", json!(1))),
+            (room("1"), updated("a", json!(2))),
+            (room("2"), joined("b")),
+            (room("1"), PresenceEvent::Left("c".to_owned())),
+        ]);
+        assert_eq!(diffs.len(), 2);
+        assert_eq!(diffs[0].0, room("1"));
+        assert_eq!(diffs[0].1.joined.len(), 1);
+        assert_eq!(
+            diffs[0].1.updated,
+            vec![json!({ "connection": "a", "state": 2 })]
+        );
+        assert_eq!(diffs[0].1.left, vec!["c".to_owned()]);
+        assert_eq!(diffs[1].0, room("2"));
+    }
+
+    #[test]
+    fn a_return_after_a_leave_is_a_second_diff_so_it_is_applied_after_it() {
+        // Applied as one diff — joined, then left — `a` would end up gone.
+        let diffs = presence_diffs(vec![
+            (room("1"), PresenceEvent::Left("a".to_owned())),
+            (room("1"), joined("a")),
+        ]);
+        assert_eq!(diffs.len(), 2);
+        assert_eq!(diffs[0].1.left, vec!["a".to_owned()]);
+        assert_eq!(diffs[1].1.joined.len(), 1);
+        // A join and then a leave in one diff is applied in that order.
+        let diffs = presence_diffs(vec![
+            (room("1"), joined("b")),
+            (room("1"), PresenceEvent::Left("b".to_owned())),
+        ]);
+        assert_eq!(diffs.len(), 1);
+    }
 }

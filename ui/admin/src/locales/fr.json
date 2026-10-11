@@ -946,5 +946,10 @@
   "Topic (user)": "Sujet (utilisateur)",
   "Topic (row)": "Sujet (ligne)",
   "Topic ({table} row)": "Sujet (ligne de {table})",
-  "Show one topic — part of a user id or row key": "Afficher un seul sujet — une partie d’un identifiant d’utilisateur ou d’une clé de ligne"
+  "Show one topic — part of a user id or row key": "Afficher un seul sujet — une partie d’un identifiant d’utilisateur ou d’une clé de ligne",
+  "Present now": "Présents maintenant",
+  "Nobody has this stream open.": "Personne n’a ce flux ouvert.",
+  "User": "Utilisateur",
+  "Shown fields": "Champs affichés",
+  "anonymous": "anonyme"
 }

@@ -983,5 +983,10 @@
   "Topic (user)": "الموضوع (مستخدم)",
   "Topic (row)": "الموضوع (صف)",
   "Topic ({table} row)": "الموضوع (صف من {table})",
-  "Show one topic — part of a user id or row key": "اعرض موضوعًا واحدًا — جزء من معرّف مستخدم أو مفتاح صف"
+  "Show one topic — part of a user id or row key": "اعرض موضوعًا واحدًا — جزء من معرّف مستخدم أو مفتاح صف",
+  "Present now": "الحاضرون الآن",
+  "Nobody has this stream open.": "لا أحد يفتح هذا التدفق.",
+  "User": "المستخدم",
+  "Shown fields": "الحقول المعروضة",
+  "anonymous": "مجهول"
 }

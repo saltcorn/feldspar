@@ -925,5 +925,10 @@
   "Topic (user)": "Thema (Benutzer)",
   "Topic (row)": "Thema (Zeile)",
   "Topic ({table} row)": "Thema (Zeile von {table})",
-  "Show one topic — part of a user id or row key": "Ein Thema anzeigen – Teil einer Benutzer-ID oder eines Zeilenschlüssels"
+  "Show one topic — part of a user id or row key": "Ein Thema anzeigen – Teil einer Benutzer-ID oder eines Zeilenschlüssels",
+  "Present now": "Jetzt anwesend",
+  "Nobody has this stream open.": "Niemand hat diesen Stream geöffnet.",
+  "User": "Benutzer",
+  "Shown fields": "Angezeigte Felder",
+  "anonymous": "anonym"
 }

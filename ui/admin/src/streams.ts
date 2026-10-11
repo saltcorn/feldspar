@@ -532,7 +532,10 @@ export type ObserveFrame =
     }
   | { type: "element"; envelope: unknown }
   | { type: "lagged"; dropped: number }
-  | { type: "status"; status: unknown; counters: unknown };
+  | { type: "status"; status: unknown; counters: unknown }
+  /** Who has each topic open now, for a stream with presence (TODO.md "Live
+   * updates" L4.5) — sent after `ready` and whenever it changes. */
+  | { type: "presence"; topics: unknown };
 
 /** Parse one text frame, or nothing for anything this version does not know.
  *
@@ -543,7 +546,13 @@ export function parseFrame(data: string): ObserveFrame | null {
     const value: unknown = JSON.parse(data);
     if (!value || typeof value !== "object") return null;
     const type = (value as { type?: unknown }).type;
-    if (type === "ready" || type === "element" || type === "lagged" || type === "status") {
+    if (
+      type === "ready" ||
+      type === "element" ||
+      type === "lagged" ||
+      type === "status" ||
+      type === "presence"
+    ) {
       return value as ObserveFrame;
     }
   } catch {
@@ -551,6 +560,48 @@ export function parseFrame(data: string): ObserveFrame | null {
     // nothing the screen can do about it but keep reading the next one.
   }
   return null;
+}
+
+/** One member of a presence room, as the members see each other: the
+ * connection, the user, the `users` fields the stream shows, and the page's
+ * state. */
+export type PresenceMember = {
+  connection: string;
+  user_id: string | null;
+  /** The shown `users` fields, by name. */
+  fields: Record<string, unknown>;
+  state: unknown;
+};
+
+/** One topic with somebody on it. `null` is a `single` stream's one topic. */
+export type PresenceTopic = { topic: string | null; members: PresenceMember[] };
+
+/** Read a `presence` frame's `topics`, leaving out anything malformed. */
+export function readPresence(raw: unknown): PresenceTopic[] {
+  if (!Array.isArray(raw)) return [];
+  const topics: PresenceTopic[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const { topic, members } = entry as { topic?: unknown; members?: unknown };
+    if (!Array.isArray(members)) continue;
+    topics.push({
+      topic: typeof topic === "string" ? topic : null,
+      members: members.flatMap((m): PresenceMember[] => {
+        if (!m || typeof m !== "object") return [];
+        const { connection, user_id, state, ...fields } = m as Record<string, unknown>;
+        if (typeof connection !== "string") return [];
+        return [
+          {
+            connection,
+            user_id: typeof user_id === "string" ? user_id : null,
+            fields,
+            state: state ?? null,
+          },
+        ];
+      }),
+    });
+  }
+  return topics;
 }
 
 /** How many elements the Observe screen keeps. The server's ring is 100 (§9);
@@ -573,6 +624,8 @@ export type ObserveState = {
   lagged: number;
   /** Whether the `ready` frame has arrived. */
   ready: boolean;
+  /** Who is on each topic now, or `null` for a stream without presence. */
+  presence: PresenceTopic[] | null;
   /** A note the screen shows instead of the tail — a closed socket, mostly. */
   error: string | null;
 };
@@ -587,6 +640,7 @@ export function emptyObserve(): ObserveState {
     replayed: 0,
     lagged: 0,
     ready: false,
+    presence: null,
     error: null,
   };
 }
@@ -618,6 +672,8 @@ export function applyFrame(
       };
     case "lagged":
       return { ...state, lagged: state.lagged + frame.dropped };
+    case "presence":
+      return { ...state, presence: readPresence(frame.topics) };
     case "element": {
       const envelope = readEnvelope(frame.envelope);
       if (!envelope) return state;

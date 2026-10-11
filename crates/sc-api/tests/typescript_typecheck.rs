@@ -183,6 +183,7 @@ import {
   type BoilerEnvelope,
   type JobStatusEnvelope,
   type LiveError,
+  type LiveMember,
   type LiveRowStream,
   type LiveStatus,
   type LiveStream,
@@ -256,6 +257,33 @@ export function exercise(): void {
   api.live.syslog.subscribe({ element: (e) => void e.value.line });
   // @ts-expect-error a stream the application does not expose has no accessor
   void api.live.meter;
+
+  // L4.4: a stream with presence is joined; one pages may publish on takes a
+  // value of its element type.
+  const room = api.live.board_presence.join(7, {
+    presence(members: LiveMember[]) {
+      const first: string | null = members[0].user_id;
+      void first;
+    },
+  });
+  const members: LiveMember[] = room.members;
+  const me: string | undefined = room.me;
+  const allowed: boolean = room.canPublish;
+  room.setState({ dragging: 3 });
+  room.publish({ message: "moved", progress: null });
+  room.leave();
+  void members; void me; void allowed;
+  api.live.board_presence.publish(7, { message: "moved", progress: 0.5 });
+  // @ts-expect-error `nope` is not a declared key of the element type
+  api.live.board_presence.publish(7, { nope: 1 });
+  // @ts-expect-error a per-row stream is joined naming the row
+  api.live.board_presence.join({});
+  // @ts-expect-error a stream without presence cannot be joined
+  api.live.board_activity.join(7);
+  // @ts-expect-error a stream pages may not publish on has no `publish`
+  api.live.board_activity.publish(7, { message: "x", progress: null });
+  // @ts-expect-error a per-user stream never takes a page's publish, whatever its settings
+  api.live.job_status.publish({ message: "x", progress: null });
 }
 "#;
 
@@ -286,12 +314,16 @@ fn generated_stream_client_type_checks() -> std::io::Result<()> {
                 ),
             ]),
             topics: StreamTopics::Single,
+            presence: false,
+            client_publish: false,
         },
         StreamExport {
             name: "syslog".to_owned(),
             path: "/api/live".to_owned(),
             value: TypeSchema::text(),
             topics: StreamTopics::Single,
+            presence: false,
+            client_publish: false,
         },
         StreamExport {
             name: "frames".to_owned(),
@@ -299,18 +331,33 @@ fn generated_stream_client_type_checks() -> std::io::Result<()> {
             // Bytes travel as base64, which is a string on the wire.
             value: TypeSchema::value(ValueType::Bytes),
             topics: StreamTopics::Single,
+            presence: false,
+            client_publish: false,
         },
         StreamExport {
             name: "job_status".to_owned(),
             path: "/api/live".to_owned(),
             value: message(),
             topics: StreamTopics::User,
+            presence: false,
+            // Never offered on a user topic, whatever the settings say.
+            client_publish: true,
         },
         StreamExport {
             name: "board_activity".to_owned(),
             path: "/api/live".to_owned(),
             value: message(),
             topics: StreamTopics::Row,
+            presence: false,
+            client_publish: false,
+        },
+        StreamExport {
+            name: "board_presence".to_owned(),
+            path: "/api/live".to_owned(),
+            value: message(),
+            topics: StreamTopics::Row,
+            presence: true,
+            client_publish: true,
         },
     ];
     // An application with no API provider still exposes streams: the client is
@@ -400,6 +447,8 @@ fn generated_changes_client_type_checks() -> std::io::Result<()> {
         topics: StreamTopics::Changes {
             table: "posts".to_owned(),
         },
+        presence: false,
+        client_publish: false,
     }];
     let client_ts =
         sc_api::generate_client_with_streams(ApiProvider::endpoints(&provider), &streams);

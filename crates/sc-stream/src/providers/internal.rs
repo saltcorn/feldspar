@@ -320,6 +320,17 @@ fn retain_ttl(config: &Attrs) -> Result<u64> {
     Ok(seconds)
 }
 
+/// Whether a page may publish to a stream with this configuration (§3 rule
+/// 7) — the setting alone; who may is the live socket's to decide.
+pub fn client_publish(config: &Attrs) -> bool {
+    flag(config, CFG_CLIENT_PUBLISH)
+}
+
+/// Whether a topic's members can see who else is subscribed (L4.3).
+pub fn presence(config: &Attrs) -> bool {
+    flag(config, CFG_PRESENCE)
+}
+
 /// The presence fields, as a list of column names.
 pub fn presence_fields(config: &Attrs) -> Result<Vec<String>> {
     match config.get(CFG_PRESENCE_FIELDS) {
@@ -474,5 +485,24 @@ mod tests {
             })))
             .unwrap();
         Internal.validate(&job_status()).unwrap();
+    }
+
+    #[test]
+    fn client_publishing_and_presence_are_off_unless_switched_on() {
+        let job = job_status();
+        assert!(!client_publish(&job));
+        assert!(!presence(&job));
+        let board = config(json!({
+            "keys": [{ "name": "dragging", "type": "int" }],
+            "topics": "row",
+            "table": "boards",
+            "client_publish": true,
+            "presence": true,
+            "presence_fields": ["name"]
+        }));
+        assert!(client_publish(&board));
+        assert!(presence(&board));
+        assert_eq!(presence_fields(&board).unwrap(), vec!["name".to_owned()]);
+        Internal.validate(&board).unwrap();
     }
 }

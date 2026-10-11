@@ -910,5 +910,10 @@
   "Topic (user)": "主题（用户）",
   "Topic (row)": "主题（行）",
   "Topic ({table} row)": "主题（{table} 的行）",
-  "Show one topic — part of a user id or row key": "只显示一个主题——用户 ID 或行键的一部分"
+  "Show one topic — part of a user id or row key": "只显示一个主题——用户 ID 或行键的一部分",
+  "Present now": "当前在线",
+  "Nobody has this stream open.": "没有人打开此流。",
+  "User": "用户",
+  "Shown fields": "显示的字段",
+  "anonymous": "匿名"
 }

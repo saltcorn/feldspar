@@ -832,6 +832,7 @@ async fn stream_observe(
     stream_observe_upgrade(
         ws,
         state.apps.streams().map(sc_server_stream_supervisor),
+        Arc::clone(state.apps.live().hub()),
         sc_stream::StreamId(id),
     )
     .await

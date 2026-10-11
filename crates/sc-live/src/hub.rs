@@ -93,6 +93,21 @@
 //! and publishes through the sink its subscription was handed
 //! ([`RunningStream::publish_value`]), so a published element takes exactly
 //! the path a provider's would.
+//!
+//! A **page** publishes through its own connection ([`Connection::publish`],
+//! L4.1), on a subscription the socket has already decided it may publish on
+//! ([`crate::may_publish`]). The same path, with one difference: the
+//! envelope's `source` is `{user, connection}`, stamped here from the
+//! connection and never from the page. That stamp is also how the fan-out
+//! leaves the sender out — a subscription attached without `echo` is not
+//! handed an element whose `source.connection` is its own connection's.
+//!
+//! ## Presence
+//!
+//! The rooms of every stream with presence are the hub's ([`crate::presence`]):
+//! a subscription takes a seat with [`Connection::join_presence`] and gives it
+//! back by dropping the [`Seat`]. A change to a room is pushed to the other
+//! members' inboxes and turned into frames by their own connections.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -115,6 +130,7 @@ use uuid::Uuid;
 
 use crate::changes::{CallerCell, ChangeAccess, ChangeCounters, ChangeCounts, Subscriber};
 use crate::limits::LiveLimits;
+use crate::presence::{Member, PresenceInbox, PresenceNews, RoomKey, Rooms};
 use crate::protocol::{ErrorCode, FrameError};
 use crate::topic::TopicIndex;
 
@@ -184,6 +200,8 @@ pub struct LiveHub {
     /// server started (L3.9) — kept here rather than on a fan-out, so a
     /// fan-out that ends with its last subscriber does not take them with it.
     change_counters: Mutex<HashMap<StreamId, Arc<ChangeCounters>>>,
+    /// Who is on each topic of each stream with presence (L4.3).
+    rooms: Mutex<Rooms>,
     /// Itself, for a task that outlives the call that spawned it.
     me: Weak<LiveHub>,
 }
@@ -229,6 +247,7 @@ impl LiveHub {
             watched: Mutex::new(HashMap::new()),
             changes: Mutex::new(HashMap::new()),
             change_counters: Mutex::new(HashMap::new()),
+            rooms: Mutex::new(Rooms::default()),
             me: me.clone(),
         })
     }
@@ -474,12 +493,14 @@ impl LiveHub {
         Ok((
             Connection {
                 id,
+                tag: Uuid::new_v4().simple().to_string(),
                 hub: Arc::clone(self),
                 info,
                 closed,
                 queue,
                 wake: Arc::new(Notify::new()),
                 touches,
+                presence: Arc::new(PresenceInbox::default()),
                 next_attachment: AtomicU64::new(1),
                 caller: CallerCell::default(),
             },
@@ -524,6 +545,19 @@ impl LiveHub {
         lock(&self.change_counters)
             .get(&stream)
             .map(|counters| counters.snapshot())
+    }
+
+    /// Who is on each topic of `stream` now, by topic — what the admin's
+    /// Observe screen shows (L4.5). Empty for a stream without presence, or
+    /// with nobody subscribed.
+    pub fn presence_of(&self, stream: StreamId) -> Vec<(Option<String>, Vec<Json>)> {
+        lock(&self.rooms).of_stream(stream)
+    }
+
+    /// The members of `room` as they stand — what a connection whose list had
+    /// to be rebuilt is sent.
+    pub fn presence_members(&self, room: &RoomKey) -> Vec<Json> {
+        lock(&self.rooms).members(room)
     }
 
     /// The counters a fan-out of `stream` adds to.
@@ -673,15 +707,53 @@ pub fn topic_of(value: &Json) -> Option<String> {
 /// One registered connection. Dropping it deregisters it.
 pub struct Connection {
     id: ConnectionId,
+    /// The id a page and the other members of a room know it by: random, so
+    /// it says nothing about how many connections there are.
+    tag: String,
     hub: Arc<LiveHub>,
     info: ConnectionInfo,
     closed: watch::Receiver<Option<CloseReason>>,
     queue: mpsc::Sender<Delivery>,
     wake: Arc<Notify>,
     touches: Arc<Touches>,
+    /// Presence changes waiting to be sent.
+    presence: Arc<PresenceInbox>,
     next_attachment: AtomicU64,
     /// Who it is now, as a `table_changes` subscription's verdicts read it.
     caller: CallerCell,
+}
+
+/// A connection's place in one presence room, held by the subscription it is
+/// for. Dropping it leaves the room — and, with the connection's last
+/// subscription on the topic gone, takes the member out of the list.
+pub struct Seat {
+    hub: Arc<LiveHub>,
+    room: RoomKey,
+    connection: ConnectionId,
+}
+
+impl Seat {
+    /// The room.
+    pub fn room(&self) -> &RoomKey {
+        &self.room
+    }
+
+    /// Set this connection's state in the room; everybody else is told.
+    pub fn set_state(&self, state: Json) {
+        lock(&self.hub.rooms).set_state(&self.room, self.connection, state);
+    }
+}
+
+impl Drop for Seat {
+    fn drop(&mut self) {
+        lock(&self.hub.rooms).leave(&self.room, self.connection);
+    }
+}
+
+impl std::fmt::Debug for Seat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Seat").field("room", &self.room).finish()
+    }
 }
 
 /// A connection's watch on some tables, held by the subscription it is for.
@@ -756,6 +828,69 @@ impl Connection {
         &self.info
     }
 
+    /// The opaque id a page and a room's members know this connection by —
+    /// what a published element's `source.connection` and a presence
+    /// member's `connection` are.
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    /// Publish `value` on `topic` of `running` as this connection's page
+    /// (L4.1). The socket has decided it may ([`crate::may_publish`]); this is
+    /// the publish itself, through the running stream's own checks — the
+    /// element type, the topic's kind, the stream running here — with the
+    /// envelope's `source` stamped `{user, connection}` from the connection.
+    pub fn publish(
+        &self,
+        running: &RunningStream,
+        topic: Option<String>,
+        value: Json,
+    ) -> Result<Option<String>> {
+        let source = serde_json::json!({
+            "user": self.info.user.map(|id| id.hyphenated().to_string()),
+            "connection": self.tag,
+        });
+        running.publish_value_from(topic, value, Some(source))
+    }
+
+    /// Take a seat in `room` as `user_id` showing `fields` (L4.3), and get the
+    /// members as they stand, this connection included. Changes after this
+    /// arrive in the connection's inbox ([`take_presence`]).
+    ///
+    /// [`take_presence`]: Connection::take_presence
+    pub fn join_presence(
+        &self,
+        room: RoomKey,
+        user_id: Option<Uuid>,
+        fields: serde_json::Map<String, Json>,
+    ) -> (Seat, Vec<Json>) {
+        let member = Member {
+            connection: self.tag.clone(),
+            user_id,
+            fields,
+            state: Json::Null,
+        };
+        let members = lock(&self.hub.rooms).join(&room, self.id, member, &self.presence);
+        (
+            Seat {
+                hub: Arc::clone(&self.hub),
+                room,
+                connection: self.id,
+            },
+            members,
+        )
+    }
+
+    /// Resolves when a room this connection is in changed.
+    pub async fn presence_changed(&self) {
+        self.presence.rang().await;
+    }
+
+    /// The presence changes waiting to be sent, taken.
+    pub fn take_presence(&self) -> PresenceNews {
+        self.presence.take()
+    }
+
     /// Set who the connection's caller is — at the upgrade, and again each
     /// time the socket re-reads its session — so every per-element verdict a
     /// `table_changes` subscription is given after it uses the role and the
@@ -827,7 +962,19 @@ impl Connection {
         running: &Arc<RunningStream>,
         topic: Option<String>,
     ) -> (Attached, Vec<Arc<Envelope>>) {
-        self.attach_with(running, topic, None).await
+        self.attach_with(running, topic, None, false).await
+    }
+
+    /// [`attach`](Connection::attach), saying whether elements this
+    /// connection publishes come back to it (`echo`, L4.1). Without it they
+    /// reach everybody on the topic but this connection.
+    pub async fn attach_echo(
+        &self,
+        running: &Arc<RunningStream>,
+        topic: Option<String>,
+        echo: bool,
+    ) -> (Attached, Vec<Arc<Envelope>>) {
+        self.attach_with(running, topic, None, echo).await
     }
 
     /// Attach a subscription to a `table_changes` stream: like
@@ -844,7 +991,7 @@ impl Connection {
             access,
             caller: self.caller.clone(),
         };
-        self.attach_with(running, None, Some(Arc::new(change)))
+        self.attach_with(running, None, Some(Arc::new(change)), false)
             .await
     }
 
@@ -853,6 +1000,7 @@ impl Connection {
         running: &Arc<RunningStream>,
         topic: Option<String>,
         change: Option<Arc<SinkChange>>,
+        echo: bool,
     ) -> (Attached, Vec<Arc<Envelope>>) {
         let changes = self.hub.watch_changes(running);
         let attachment = self.next_attachment.fetch_add(1, Ordering::Relaxed);
@@ -868,6 +1016,7 @@ impl Connection {
                 lagged: Arc::clone(&lagged),
                 wake: Arc::clone(&self.wake),
                 change,
+                own: (!echo).then(|| Arc::from(self.tag.as_str())),
             },
             reply,
         });
@@ -986,6 +1135,9 @@ struct Sink {
     /// For a subscription to a `table_changes` stream, what each element is
     /// decided by; `None` for every other subscription.
     change: Option<Arc<SinkChange>>,
+    /// Its connection's tag, when the elements that connection publishes are
+    /// not to come back to it — `None` when it asked for them (`echo`).
+    own: Option<Arc<str>>,
 }
 
 /// A `table_changes` subscription's part of its sink.
@@ -995,6 +1147,20 @@ struct SinkChange {
 }
 
 impl Sink {
+    /// Whether `envelope` was published by this sink's own connection, which
+    /// did not ask to be handed its own elements back.
+    fn is_own(&self, envelope: &Envelope) -> bool {
+        let Some(own) = self.own.as_deref() else {
+            return false;
+        };
+        envelope
+            .source
+            .as_ref()
+            .and_then(|source| source.get("connection"))
+            .and_then(Json::as_str)
+            == Some(own)
+    }
+
     /// Queue an element, or count it as dropped. Never waits.
     fn offer(&self, envelope: &Arc<Envelope>) {
         match self.queue.try_send(Delivery {
@@ -1125,7 +1291,9 @@ async fn route(
                         ring.push_back(Arc::clone(&envelope));
                     }
                     for (_, sink) in index.on(envelope.topic.as_deref()) {
-                        sink.offer(&envelope);
+                        if !sink.is_own(&envelope) {
+                            sink.offer(&envelope);
+                        }
                     }
                 }
                 // This fan-out fell behind the stream's channel: every
@@ -1179,7 +1347,7 @@ async fn route_change(
 
 /// A lock, recovered from poisoning: every map here is valid after a panic
 /// elsewhere, because each update is one insert or remove.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),

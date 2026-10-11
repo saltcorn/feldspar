@@ -274,6 +274,81 @@ pub async fn row_readable_as(
     }
 }
 
+/// Whether the caller may **update** the one row of `table` whose key is `key`
+/// — what a page publishing on a live `row` topic needs (TODO.md "Live
+/// updates" §3 rule 7, L4.1): §7.3's rule for an update, *meets
+/// `min_role_write` OR the ownership formula grants `update` on the row as it
+/// stands*.
+///
+/// The row is read as the system (an admin context, so an RLS table's
+/// policies do not hide it), and the formula is then decided **reified**
+/// against it by [`row_allowed`], the single-row check every sub-floor write
+/// takes; an RLS table's policies are specified to give the same verdicts, so
+/// one path serves both. Nothing is written. A missing row, a key that could
+/// not be this table's, and a refusal are all `false`, for
+/// [`row_readable_as`]'s reason.
+pub async fn row_updatable_as(
+    cat: &Catalog,
+    table: &Table,
+    key: &str,
+    role: u8,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+) -> Result<bool> {
+    let pk = rows::single_pk(table)?;
+    let Ok(filter) = rows::pk_filter(table, &pk, key) else {
+        return Ok(false);
+    };
+    let system = caller_context_at(sc_auth::ROLE_ADMIN, None);
+    let context = table.rls_enabled.then_some(&system);
+    let existing = match &table.ownership {
+        // With the formula's Ⱶ-join values, which `row_allowed` would
+        // otherwise fetch link by link.
+        Some(formula) => {
+            let shape = cat.schema_shape()?;
+            fetch_rows_with_joins(
+                cat,
+                table,
+                formula,
+                &shape,
+                FetchShape {
+                    filter: Some(filter),
+                    context,
+                    ..FetchShape::default()
+                },
+            )
+            .await?
+        }
+        None => {
+            let query = rows::RowQuery {
+                filter: Some(filter),
+                limit: Some(1),
+                ..rows::RowQuery::new()
+            };
+            rows::list_row_values(cat, table, &query, context).await?
+        }
+    };
+    let Some(existing) = existing.into_iter().next() else {
+        return Ok(false);
+    };
+    if role <= table.access.min_role_write {
+        return Ok(true);
+    }
+    let Some(formula) = &table.ownership else {
+        return Ok(false);
+    };
+    row_allowed(
+        cat,
+        table,
+        formula,
+        Operation::Update,
+        user,
+        evaluator,
+        &existing,
+    )
+    .await
+}
+
 /// One image of a row — as a write left it, or as it was before — held so its
 /// read access can be decided for any number of callers (TODO.md "Live
 /// updates" §3 rule 5, L3.8).

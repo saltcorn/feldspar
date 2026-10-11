@@ -80,7 +80,7 @@ pub use graphql::{
 };
 pub use ownership::{
     RowImage, caller_context, caller_context_at, delete_row_as, insert_row_as, read_row_values_as,
-    read_rows_as, row_readable_as, update_row_as,
+    read_rows_as, row_readable_as, row_updatable_as, update_row_as,
 };
 pub use provider::{
     ApiProvider, ApiRequest, ApiResponse, AppDirectory, AppLinks, RawBody, SessionAction,

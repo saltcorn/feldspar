@@ -42,6 +42,7 @@ use std::sync::{Arc, RwLock};
 use sc_api::{StreamExport, StreamTopics, StructField, TypeSchema, ValueType};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
+use sc_stream::providers::internal;
 use sc_stream::{ElementField, ElementType, Stream, StreamRegistry, TopicSpec};
 use sc_types::BasicType;
 
@@ -270,8 +271,19 @@ pub fn stream_exports(app: &Application, streams: &[ExposedStream]) -> Vec<Strea
                     table: table.clone(),
                 },
             },
+            // Joining and publishing are offered only where the settings
+            // allow them (L4.4); the socket still decides per subscriber.
+            presence: is_internal(exposed) && internal::presence(&exposed.stream.configuration),
+            client_publish: is_internal(exposed)
+                && internal::client_publish(&exposed.stream.configuration),
         })
         .collect()
+}
+
+/// Whether a stream is Saltcorn's own — the only kind with presence or a
+/// page's publishes.
+fn is_internal(exposed: &ExposedStream) -> bool {
+    exposed.stream.provider == internal::INTERNAL
 }
 
 #[cfg(test)]

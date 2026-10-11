@@ -9651,8 +9651,12 @@ subscribed to to its `table_changes` stream (phase 1); a page subscribes to one 
 the REST read's vocabulary, and each element is decided per subscriber — projected, filtered and
 read-checked — into `insert`, `update`, `enter`, `leave`, `delete` or nothing (phase 2); and the
 generated client types `subscribe({ where }, handlers)` with the table's row and its read's
-`Filters`, and keeps a read current with `LiveRows` / `useLiveRows` (phase 3). The `document`
-provider, client publishing, presence and the bus are the later milestones.
+`Filters`, and keeps a read current with `LiveRows` / `useLiveRows` (phase 3). **L4 is built**:
+a page publishes on an `internal` stream whose settings allow it — on a `row` topic only with
+update access to the row — with `source` stamped by the server, and a stream with `presence` keeps
+each topic's members and their state, rate-limited and coalesced, shown to the members and on the
+admin's Observe screen; the client has `join`, `publish`, `usePresence` and `usePublish`. The
+`document` provider and the bus are the later milestones.
 
 #### Everything is a stream, and a stream has topics
 
@@ -9690,16 +9694,16 @@ is byte-for-byte unchanged. It is not MQTT's topic, which stays in `source`.
 the client's own `sub`:
 
 ```
-client → server   subscribe {sub, stream, topic?, filter?} · unsubscribe {sub} · publish {sub, value}
-                  presence {sub, state} · doc_update {sub, update} · ping
+client → server   subscribe {sub, stream, topic?, filter?, echo?} · unsubscribe {sub}
+                  publish {sub, value} · presence {sub, state} · doc_update {sub, update} · ping
 server → client   ready {sub, stream, element_type, replayed, can_publish, status, counters}
                   element {sub, envelope} · lagged {sub, dropped} · status {sub, status, counters}
+                  presence {sub, connection, members} · presence_diff {sub, joined?, left?, updated?}
                   revoked {sub} · error {sub?, code, message} · pong
 ```
 
-`publish`, `presence` and `doc_update` are part of the protocol now, so a client is written
-against one contract, and are refused until their milestones (`publish` as `unavailable`, the
-others as `invalid`). A frame the server does not understand — malformed, an unknown `type`, a
+`doc_update` is part of the protocol now, so a client is written against one contract, and is
+refused as `invalid` until L5. A frame the server does not understand — malformed, an unknown `type`, a
 field of the wrong shape — is an `error` with `code: "invalid"` and the frame's `sub`, never a
 closed connection: one bad frame must not take every other subscription down with it, and a
 client a version ahead must still be able to use the server.
@@ -9956,6 +9960,56 @@ Three publishers reach it without naming `sc-live`:
 Server-side publishers are trusted configuration (§3 rule 8 of the plan): no caller's role is
 consulted, as none is for an `insert_row`.
 
+#### Client publishing and presence (L4)
+
+**Who may publish** is `sc_live::may_publish(topics, PublishFacts)`, pure like the subscribe
+rules and asked for a subscription that has already passed them: the stream's provider takes
+publishes and its `client_publish` setting is on; then a `single` stream needs nothing more (its
+`min_role` was met), a `row` topic needs **update** access to the row, and a `user` topic or a
+stream of row changes never (the provider already refuses `client_publish` on a `user` stream).
+Update access is `sc_api::row_updatable_as`, the update half of `row_readable_as`: the row is read
+as the system (an admin caller context, so an RLS table's policies do not hide it), then *meets
+`min_role_write` OR the formula grants `update` on the row as it stands*, decided reified by the
+single-row check every sub-floor write takes — an RLS table's policies are specified to agree, so
+one path serves both. A missing row and a refusal are both `false`. The socket decides it when a
+subscription is attached (and again after a restart), sends it as `ready`'s `can_publish`, and
+decides it again whenever the subscription's read access is re-checked — a touched row or
+read-rule table, and the clock — so a share losing `can_edit` stops its publishes at the next
+write to `shares`. A refused publish is `unavailable`, worded like any absence.
+
+**What is published** goes through the hub's `Connection::publish`, which calls
+`RunningStream::publish_value_from` — the same checks as a server-side publish (the element type,
+counted as `malformed` on a mismatch and answered `invalid`; the topic's kind; the stream running
+here) — with the envelope's `source` set to `{user, connection}` from the connection. The frame
+has no `source` and no `received_at`; anything a page sends beside `value` is not read. The
+`connection` is a random id per socket (not the hub's sequential one), so it says nothing about
+how many connections there are. **The sender is left out**: a subscription attached without
+`echo` carries its connection's id in its sink, and the fan-out skips an element whose
+`source.connection` is that id; `subscribe {…, echo: true}` asks for them back.
+
+**Presence** (`sc-live::presence`) is per room, `(stream id, topic)`, on a stream whose
+`presence` setting is on. A subscription takes a **`Seat`** once attached; a member is the
+**connection** (two subscriptions of one page on one topic are one member, counted), shown as
+`{connection, user_id, …presence_fields, state}` — the shown `users` columns read with
+`load_user` at join time, never the password hash, the three fixed keys winning over a column of
+the same name. The joiner is sent `presence {connection, members}` (its own id, and everybody
+including itself) after `ready`; every change after that — a join, a state, a leave — is pushed to
+the **other** members' `PresenceInbox` (a list behind a lock and a bell, never a wait) and leaves
+their connections as `presence_diff {joined, left, updated}`, grouped per room in order: a client
+applies `joined`, then `updated`, then `left`, and a change that would be misapplied in that order
+(a return after a leave) starts the next diff. An inbox past `INBOX_CAP` (1 024) drops that room's
+changes and marks it for a **resync**, sent as a whole `presence` again — a list is patched in
+order or rebuilt, never silently wrong. Dropping the seat leaves: unsubscribing, a `revoked`
+subscription, a closed socket. The only way into a room is a subscription, so only callers who
+passed the topic's read check see or appear in the list.
+
+**State updates** are capped at `max_presence_state_bytes` (2 KB of JSON, `too_large`), counted
+against `presence_per_second` (20, `rate_limited`), and **coalesced** per connection: the first in
+a quiet moment is applied at once and opens a `presence_coalesce` window (50 ms); the ones inside
+it are held, the latest per subscription applied when it closes (which opens the next window if
+anything was). Publishes are counted against `publishes_per_second` (20). Both buckets are
+`limits::RateLimit`, a token bucket with the clock as a parameter.
+
 #### Origin, for every socket
 
 A handshake is a `GET`, so CSRF does not cover it, CORS does not apply, and `SameSite=Strict`
@@ -10014,8 +10068,9 @@ user per application (`too_many_connections`, then closed; anonymous connections
 counted), 64 KB per client frame (`too_large`, not read, connection kept — the transport's own
 cap sits at four times that, at least 1 MB, so a frame over the limit is answered rather than hung
 up on), a WebSocket ping every 30 s and a close with `idle` after 90 s of silence (a browser pongs
-by itself, so only a dead connection is idle). Every clock is a parameter, which is how the tests
-run in milliseconds.
+by itself, so only a dead connection is idle), 20 publishes and 20 presence updates a second per
+connection (`rate_limited`, connection kept), presence coalesced per 50 ms and 2 KB per state
+(`too_large`). Every clock is a parameter, which is how the tests run in milliseconds.
 
 #### The client
 
@@ -10036,6 +10091,23 @@ re-subscribing, returning `{ status, error }`), `useLatest(accessor)` (the lates
 `undefined` — a progress bar) and `useLiveStatus`, named in the scaffold's `AGENTS.md`. It
 imports the client only when the app exposes a stream, so a project with none still builds
 under `noUnusedLocals`.
+
+**Joining and publishing (L4.4).** `StreamExport` carries the stream's `presence` and
+`client_publish` settings, and an accessor's type adds what they allow: `LivePresence<E>` /
+`LiveRowPresence<E>` (`join([topic,] handlers)` → a `LiveRoom` with `members`, `me`,
+`canPublish`, `setState`, `publish`, `leave`) and `LivePublish<E>` / `LiveRowPublish<E>`
+(`publish([topic,] value)`), never publish on a `user` stream. The value type is its own type
+parameter, defaulted to `LiveValue<E>`, so a hook infers it. At runtime every accessor has both
+(the types decide what is offered): `join` is a subscription that keeps the topic's members —
+`presence` replaces them, `presence_diff` patches them through the pure `applyPresence` — and
+hands them to `handlers.presence`; `setState` updates the page's own entry at once and sends at
+most one state per `presenceInterval` (60 ms, the latest wins), and sends it again after a
+reconnect when the fresh list does not carry it; a publish before `ready` waits for it; and
+`publish` without a join uses a subscription the page holds to that topic, or opens one for the
+value and closes it once sent. `LiveHandlers.echo` asks for the page's own elements back. React:
+`usePresence(accessor, topic?)` → `{ members, me, setState, publish, canPublish, status, error }`
+and `usePublish(accessor, topic?)` → a stable function, both in `live-react.ts` and named in the
+scaffold's `AGENTS.md`.
 
 **A table's changes (L3.10–L3.11).** A `table_changes` stream reaches the generator as
 `StreamTopics::Changes { table }`. When the client reads that table, its accessor is a
@@ -10078,7 +10150,11 @@ pages on this server, from the hub — beside the counters, and `listStreams`, `
 internal provider from its declaration (`table` shown only for `row` topics, by `show_if`). The
 Observe screen has a **topic** column for a stream with topics, headed by what a topic is
 (`Topic (user)`, `Topic (boards row)`), and a box that narrows the tail to topics containing what
-is typed. The trigger form's action list offers `publish`, its stream picker filled in.
+is typed. The trigger form's action list offers `publish`, its stream picker filled in. For a
+stream with presence (L4.5) the admin's Observe socket sends `presence {topics: [{topic,
+members}]}` after `ready` and whenever it changed (looked at on its status clock), from
+`LiveHub::presence_of`, and the screen shows it as a **Present now** card: per topic, each
+member's user, shown fields and state.
 
 **Tests.** `sc-live` unit-tests the frame round trips (an unknown `type` is `invalid`), the
 subscription states, the topic index and `may_subscribe` as a table; its `tests/hub.rs` runs the
@@ -10098,6 +10174,24 @@ hour; a workflow started by one user telling only that user; ten `run_js_code` p
 order; the action list's `publish`; and a table trigger still firing while the hub observes its
 table. `tutorial_live.rs` part 2 walks `docs/tutorial-live.md`'s second part, type-checking its
 component against the generated runtime.
+
+L4: `sc-live` tests `may_publish` as a table, the presence rooms (joins, states and leaves reach
+the others and not oneself, two subscriptions are one member, a full inbox rebuilds the room) and
+the rate bucket as units; `tests/publish.rs` publishes through a real running `internal` stream
+(the stamped `source`, the sender left out unless `echo`, a malformed value counted), seats
+connections in a room through the hub, and decides `row_updatable_as` on SQLite with the real
+evaluator (owner, editing share, read-only share, stranger, missing row, write floor).
+`sc-server`'s `live` module tests the diff grouping. `app_live_presence.rs`, four users on a
+board: `can_publish` per the update rule, a read-only share's publish `unavailable` and heard by
+nobody, a forged `source` replaced, `echo`, `invalid` and `unavailable` publishes; the rate limits
+and the size cap answered with the socket kept, quick states coalesced; the member list with the
+shown field, diffs for a join, a state and a leave, a closed tab gone within a second, a revoked
+member gone, and a user refused by the read check never in a list; and the admin's Observe socket
+listing who is present. The client is run under Node (`live_connection`: members kept through
+`presence` and `presence_diff`, states throttled and resent after a reconnect, a publish held
+until `ready`, a publish without a join, `echo`) and type-checked (`typescript_typecheck`, and a
+component using `usePresence` / `usePublish` against the scaffold's runtime). `tutorial_live.rs`
+part 4 walks the fourth part.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

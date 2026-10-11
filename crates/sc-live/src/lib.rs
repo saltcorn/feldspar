@@ -20,6 +20,7 @@
 //! | [`rows`] | Which tables a row topic's read rule reads |
 //! | [`filter`] | A `table_changes` subscription's filter, in the REST read's vocabulary, evaluated in Rust |
 //! | [`changes`] | What each subscriber of a `table_changes` stream is sent: the decision table, the per-element read checks, the counters |
+//! | [`presence`] | Who is on each topic of a stream with presence: the rooms, the members, and each connection's inbox of changes |
 //!
 //! ## Where this sits
 //!
@@ -50,14 +51,15 @@ pub mod changes;
 pub mod filter;
 pub mod hub;
 pub mod limits;
+pub mod presence;
 pub mod protocol;
 pub mod rows;
 pub mod subscription;
 pub mod topic;
 
 pub use access::{
-    Caller, Denied, Grant, Refusal, RowFact, StoredStream, StreamFacts, caller_role, may_open,
-    may_subscribe,
+    Caller, Denied, Grant, PublishFacts, Refusal, RowFact, StoredStream, StreamFacts, caller_role,
+    may_open, may_publish, may_subscribe,
 };
 pub use changes::{
     CallerCell, ChangeAccess, ChangeCounters, ChangeCounts, Delivered, Suppressed, deliver_to,
@@ -66,9 +68,10 @@ pub use changes::{
 pub use filter::{LikeRules, RowFilter};
 pub use hub::{
     Attached, ChangeWatch, CloseReason, CloseSignal, Connection, ConnectionId, ConnectionInfo,
-    Delivery, LiveHub, Touch, Watch, topic_of,
+    Delivery, LiveHub, Seat, Touch, Watch, topic_of,
 };
-pub use limits::LiveLimits;
+pub use limits::{LiveLimits, RateLimit};
+pub use presence::{Member, PresenceEvent, PresenceNews, RoomKey};
 pub use protocol::{ClientFrame, ErrorCode, FrameError, ServerFrame};
 pub use rows::read_rule_tables;
 pub use subscription::{Phase, Subscription, SubscriptionSet};

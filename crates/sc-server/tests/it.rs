@@ -57,6 +57,8 @@ mod app_invite;
 mod app_live;
 #[path = "app_live_changes.rs"]
 mod app_live_changes;
+#[path = "app_live_presence.rs"]
+mod app_live_presence;
 #[path = "app_live_topics.rs"]
 mod app_live_topics;
 #[path = "app_serving.rs"]

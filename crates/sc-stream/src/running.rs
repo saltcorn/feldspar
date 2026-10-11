@@ -589,6 +589,20 @@ impl RunningStream {
     /// Returns the topic as it was published (a user id normalised to its
     /// canonical spelling).
     pub fn publish_value(&self, topic: Option<String>, value: Json) -> Result<Option<String>> {
+        self.publish_value_from(topic, value, None)
+    }
+
+    /// [`publish_value`](RunningStream::publish_value) with the envelope's
+    /// `source` set to `source` — what a page's publish carries (TODO.md "Live
+    /// updates" §3 rule 7, L4.1): `{user, connection}`, stamped by the live
+    /// socket and never taken from the page. Every check `publish_value`
+    /// makes, this makes.
+    pub fn publish_value_from(
+        &self,
+        topic: Option<String>,
+        value: Json,
+        source: Option<Json>,
+    ) -> Result<Option<String>> {
         let name = self.name();
         let Some(provider) = &self.provider else {
             return Err(Error::invalid(format!(
@@ -630,7 +644,7 @@ impl RunningStream {
         };
         sink.deliver(Element {
             value,
-            source: None,
+            source,
             topic: topic.clone(),
         });
         Ok(topic)

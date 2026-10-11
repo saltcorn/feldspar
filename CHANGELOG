@@ -2,6 +2,70 @@
 
 Changes in reverse chronological order.
 
+## Live updates L4: a page publishes, and sees who else is here
+
+A page can now publish on an `internal` stream whose settings let it, and a stream with presence
+shows each topic's members — who has a board open, and what each is dragging. TODO.md L4.1–L4.6.
+**Not run here:** the Postgres-backed tests (`sc-server`'s `app_live_presence` and
+`tutorial_live::part_four_presence_on_the_board`) were written but could not be run on this
+machine; everything else listed under *Tests* was run and passes.
+
+- **Wire contract**: `subscribe` takes `echo` (default off). New server frames: `presence {sub,
+  connection, members}` after `ready` on a stream with presence, and `presence_diff {sub, joined?,
+  left?, updated?}` after it. A page-published envelope's `source` is `{user, connection}`, which
+  the server stamps; a `source` in the frame is ignored. `publish` and `presence` are no longer
+  refused outright.
+- **Publishing (L4.1)**: `sc_live::may_publish` (pure; `client_publish` on, then `single` → the
+  floor already met, `row` → update access, `user` and row changes → never) and
+  `sc_api::row_updatable_as` (the update rule on one row, read as the system so it works on RLS
+  tables, decided reified by `row_allowed`). The socket decides it at attach and again at every
+  access re-check (a touched row or read-rule table, the clock) and sends it as `ready`'s
+  `can_publish`; a refused publish is `unavailable`. `Connection::publish` →
+  `RunningStream::publish_value_from` (same checks as a server-side publish, plus the stamped
+  `source`). The fan-out leaves out the sender's own element unless it subscribed with `echo`.
+  Each socket has a random `Connection::tag`, which is what `connection` is everywhere.
+- **Limits (L4.2)**: `LiveLimits` gains `publishes_per_second` (20), `presence_per_second` (20),
+  `presence_coalesce` (50 ms) and `max_presence_state_bytes` (2 KB). Past a rate the answer is
+  `rate_limited`, and an oversized state is `too_large`. The connection stays up either way. The
+  token bucket is `sc_live::RateLimit`. Presence is coalesced per connection: the first update is
+  applied at once, and the latest one held during the window is applied when it ends.
+- **Presence (L4.3)**: new `sc-live::presence`. Rooms are keyed by `(stream id, topic)`, with one
+  member per connection, shown as `{connection, user_id, …presence_fields, state}`. The fields are
+  read from `users` at join time. A `Seat` is held by the subscription, so unsubscribing, a revoke
+  or a closed socket leaves the room. Changes go to the other members' inboxes and leave as
+  ordered `presence_diff`s; an overfull inbox resends the whole list instead.
+  `sc_stream::providers::internal::{client_publish, presence}` read the settings.
+- **Client (L4.4)**: `StreamExport` gains `presence` and `client_publish`. An accessor's type adds
+  `LivePresence`/`LiveRowPresence` (`join`) and `LivePublish`/`LiveRowPublish` (`publish`) only
+  where the settings allow; a `user` stream never gets `publish`. `LiveConnection` gains `join` (a
+  `LiveRoom`: `members`, `me`, `canPublish`, `setState`, `publish`, `leave`), `publish`,
+  `publishOn` (opens a short-lived subscription when the page holds none) and `setState`
+  (throttled to one per `presenceInterval`, 60 ms by default, and resent after a reconnect). The
+  pure `applyPresence` applies the frames. `LiveHandlers` gains `echo` and `presence`. React:
+  `usePresence(accessor, topic?)` and `usePublish(accessor, topic?)` in `live-react.ts`, both
+  named in the scaffold's `AGENTS.md`. `helper.ts` is regenerated in `ui/admin`, `ui/ide`,
+  `ui/builder` and `ui/analytics`.
+- **Admin (L4.5)**: the Observe socket sends `presence {topics}` for a stream with presence,
+  after `ready` and whenever it changes (`LiveHub::presence_of`). The Observe screen shows it as a
+  **Present now** card. New strings are translated into the five admin locales.
+- **Docs (L4.6)**: `docs/tutorial-live.md` part 4 (presence on the kanban board), and
+  TECHNICAL_DESIGN §14.10 "Client publishing and presence (L4)", plus updates to its protocol
+  block, limits, client, admin and tests paragraphs. Part 3 (L3.12) is still unwritten, so part 4
+  states the two tables it needs from part 3.
+- **Tests**:
+  - Run and passing here:
+    - `sc-live`: units for frames, `may_publish`, `RateLimit` and presence rooms;
+      `tests/publish.rs` (stamped source, echo, malformed value, seats through the hub,
+      `row_updatable_as` on SQLite).
+    - `sc-server`'s `live::tests`, the diff grouping.
+    - `sc-api`: `live_connection::joining_keeps_the_members_and_sends_state_and_publishes` (run
+      under Node) and the extended `typescript_typecheck` stream client.
+    - `sc-app`: `use_presence_type_checks_against_the_generated_runtime`.
+    - `sc-stream`'s internal provider.
+    - `ui/admin`: `streams.test.ts` presence cases, and `tsc` in all four UIs.
+  - Postgres, written but not run: `sc-server/tests/app_live_presence.rs` and
+    `tutorial_live::part_four_presence_on_the_board`.
+
 ## Live updates L3, phases 2–3 run against Postgres; the suite is green again
 
 Phases 2 and 3 of L3 were built where only the database-free tests could run. The whole workspace

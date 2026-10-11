@@ -16,11 +16,11 @@ time, and every part rests on the same two ideas:
 | 1 | The live socket, observing an external stream from React | L1 (this page) |
 | 2 | Notifications and progress from a workflow | L2 (this page) |
 | 3 | A live kanban board | L3 |
-| 4 | Presence: who else has the board open | L4 |
+| 4 | Presence: who else has the board open | L4 (this page) |
 | 5 | A collaborative notes app | L5 |
 | 6 | Two processes behind one proxy | L6 |
 
-Parts 3–6 arrive with their milestones.
+Part 3 and parts 5–6 arrive with their milestones.
 
 ## Part 1 — The live socket
 
@@ -297,4 +297,162 @@ are how a page hears about it.
 - **Keep the latest element** hands a new subscriber the latest element on its topic, for a time.
 
 The definition of done for this part is `part_two_notifications_and_progress` in
+`crates/sc-server/tests/tutorial_live.rs`.
+
+## Part 4 — Presence: who else has the board open
+
+A board that moves by itself is half of working together; the other half is seeing who else is
+looking at it. This part puts the faces of everybody who has a board open above it, and
+highlights a card while somebody drags it — on every other screen, as it happens. It is
+**presence**: a topic's members, each with a little state of its own, that the server keeps and
+tells the others about.
+
+It builds on part 1's `todo` application, its Member role, `member@example.com` and part 2's
+`colleague@example.com`, and on a board of part 3's shape. What this part needs of it
+is two tables — `boards` (`id`, `title`) and `board_members` (`id`, `board` → `boards`, `member`
+a user's id) — with the read rule part 3 gives `boards`, on the **Ownership** tab:
+
+```
+board_membersↃboard.some(m => m.member === user.id)
+```
+
+Put `member@example.com` and `colleague@example.com` on board 1 in `board_members`. Add one more
+Member, `outsider@example.com`, who is on no board. And give people names to be shown by: in
+**Tables → users**, add a field `name` (String), and fill it in for the three of them.
+
+### Step 1 — A stream for who is on a board
+
+Open **Streams → New**, name it `board_presence`, pick **Internal**, and fill in:
+
+- **Declared keys of an element**:
+
+  ```json
+  [{ "name": "dragging", "type": "int" }]
+  ```
+
+- **Topics** — `row`, of the table `boards`. A page joins one board's topic, and only if it may
+  read that board — the same read the REST API makes, so `outsider@example.com` is refused.
+- **Members can see who else is here** — on. **User fields shown to other members** — `["name"]`.
+  A member is shown to the others as their user id, the fields listed here and nothing else.
+- **Pages may publish** — on. A page may publish on a board's topic only if it may **update**
+  that board; here every member may, because the read rule is the board's only rule.
+- **Minimum role to observe** — Member (40).
+
+Then tick `board_presence` in the application's **Streams** and rebuild. The client now has
+`live.board_presence`, typed with `join` and `publish` because the settings allow them.
+
+### Step 2 — Faces, and the card being dragged
+
+```tsx
+import { live, usePresence } from "../feldspar/live-react";
+import { useT } from "../feldspar/i18n";
+
+type Card = { id: number; title: string };
+
+export function BoardPresence({ board, cards }: { board: number; cards: Card[] }) {
+  const { t } = useT();
+  const { members, me, setState } = usePresence(live.board_presence, board);
+  // Somebody else's drag: the card they are holding, and who.
+  const dragged = new Map<number, string>();
+  for (const member of members) {
+    const state = member.state as { dragging?: number | null } | null;
+    if (member.connection !== me && typeof state?.dragging === "number") {
+      dragged.set(state.dragging, String(member["name"] ?? t("Somebody")));
+    }
+  }
+  return (
+    <section>
+      <ul className="faces">
+        {members.map((member) => (
+          <li key={member.connection} title={String(member["name"] ?? "")}>
+            {String(member["name"] ?? "?").slice(0, 1)}
+            {member.connection === me ? ` (${t("you")})` : ""}
+          </li>
+        ))}
+      </ul>
+      <ul>
+        {cards.map((card) => (
+          <li
+            key={card.id}
+            draggable
+            onDragStart={() => setState({ dragging: card.id })}
+            onDragEnd={() => setState({ dragging: null })}
+            className={dragged.has(card.id) ? "being-dragged" : undefined}
+          >
+            {card.title}
+            {dragged.has(card.id) && ` — ${dragged.get(card.id)}`}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+`usePresence(live.board_presence, board)` joins board `board`'s topic while the component is
+mounted and leaves when it unmounts. `members` is everybody with that board open, this page
+included; `me` is which of them is this page. A member is `{ connection, user_id, state }` and
+the fields the stream shows — here `name`. There is one member per open page, not per user: the
+same person with two tabs open is two faces, and each tab can tell which one is itself.
+
+`setState` is this page's state, shown to everybody else as its member's `state`. Call it as
+often as a drag fires: the client sends at most one state every 60 ms (the latest), and the
+server holds the ones that come quicker than every 50 ms and applies the latest. A state is at
+most 2 KB of JSON.
+
+### Step 3 — Two people on one board
+
+Sign in as `member@example.com` in one browser and `colleague@example.com` in another, and open
+board 1 in both. Each sees two faces. Start dragging a card as the member: on the colleague's
+screen it is highlighted with the member's name, and it stops being when the member lets go. In
+the developer tools the colleague's socket shows a `presence` frame after `ready` — the list —
+and then `presence_diff` frames: `joined`, `updated` with the member's `{"dragging":3}`, `left`.
+
+Now sign in as `outsider@example.com` and open board 1. The subscription is refused with the same
+`unavailable` a board that does not exist gets, and the outsider is in nobody's list: presence is
+shown only to members who passed the board's read check, and someone refused is never a member.
+
+### Step 4 — Publishing on a board
+
+A state is what a member *is* doing. An element is something that *happened*. On a stream whose
+settings let pages publish, a page can send one to everybody else on the topic:
+
+```ts
+const { publish } = usePresence(live.board_presence, board);
+publish({ dragging: cardId });
+```
+
+(or `usePublish(live.board_presence, board)` for a component that does not join). The server
+checks the value against the declared keys, and stamps the envelope's `source` with who sent it
+— `{"user": …, "connection": …}` — whatever the page put there, so nobody can publish in someone
+else's name. The sender does not get its own element back unless it subscribed with
+`echo: true`. A page that may read the board but not update it — part 3's read-only share, say —
+gets `can_publish: false` in `ready`, and a publish is answered `unavailable`. Publishing is
+limited to 20 a second per page; past that a publish is answered `rate_limited` and the socket
+stays open.
+
+### Step 5 — Closing the tab
+
+Close the colleague's tab. On the member's screen the colleague's face is gone within a second:
+the socket closed, so the member left the room, and the others were sent `left`. The same happens
+when a page unmounts the component, and when access is revoked — take the colleague off the
+board in `board_members` and their face goes from everybody's list at once.
+
+The admin sees all of it too: **Streams → board_presence → Observe** has a **Present now** card
+listing, per board, who has it open and their state.
+
+### What part 4 is
+
+- **Presence** is a stream setting. A topic's members are the pages subscribed to it — one per
+  connection — each shown as `{connection, user_id, …presence_fields, state}`, and a page is sent
+  the list after `ready` (`presence`) and every change after that (`presence_diff`).
+- **Only members see members.** Joining is subscribing, which the topic's read check decides;
+  unsubscribing, a revoke and a closed socket leave.
+- **Pages may publish** when the stream's settings say so: on a `single` stream under its minimum
+  role, on a `row` topic only with **update** access to the row, on a `user` topic never. The
+  server stamps `source`, and the sender is left out unless it asks for `echo`.
+- **Limits**: 20 publishes and 20 presence updates a second per page (`rate_limited` past them),
+  presence states coalesced every 50 ms, and at most 2 KB each (`too_large`).
+
+The definition of done for this part is `part_four_presence_on_the_board` in
 `crates/sc-server/tests/tutorial_live.rs`.

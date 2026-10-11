@@ -35,6 +35,13 @@
 //!   its table must be in the application's subset, like a row topic's (rule
 //!   3). Naming a topic for it is malformed: its subscriber narrows it with a
 //!   filter.
+//! - **Publishing from a page is opt-in, and narrower than reading** (rule 7,
+//!   L4). [`may_publish`] decides it for a subscription that already passed
+//!   [`may_subscribe`]: only a stream whose provider takes publishes and whose
+//!   settings switch `client_publish` on; on a `single` topic the floor the
+//!   subscription passed is enough; on a `row` topic the caller needs
+//!   **update** access to the row, looked up the way read access is; a `user`
+//!   topic — and a stream of row changes, which only a write makes — never.
 
 use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
 use sc_stream::TopicSpec;
@@ -206,6 +213,36 @@ pub fn may_subscribe(
         }
     };
     Ok(Grant { stored, topic })
+}
+
+/// What the socket knows about a page's right to publish on a subscription
+/// it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishFacts {
+    /// The stream's provider takes publishes (`internal`) and its settings
+    /// switch `client_publish` on.
+    pub client_publish: bool,
+    /// For a `row` topic, whether the caller may **update** the row — the
+    /// write rule, as the read rule is looked up for subscribing. `false`
+    /// when nobody asked.
+    pub row_updatable: bool,
+}
+
+/// Whether a page may publish on a subscription to a stream split by `topics`
+/// that has passed [`may_subscribe`] (§3 rule 7). Pure, so the rule is read
+/// here as a table rather than reconstructed from the socket.
+pub fn may_publish(topics: &TopicSpec, facts: PublishFacts) -> bool {
+    if !facts.client_publish {
+        return false;
+    }
+    match topics {
+        // The stream's `min_role`, which the subscription already met.
+        TopicSpec::Single => true,
+        TopicSpec::Row { .. } => facts.row_updatable,
+        // A page naming somebody's id would be a toast in their name, and a
+        // row change is only ever a write's.
+        TopicSpec::User | TopicSpec::PerElementRow { .. } => false,
+    }
 }
 
 #[cfg(test)]
@@ -500,6 +537,31 @@ mod tests {
         ];
         for (facts, caller, topic) in &cases {
             assert_eq!(may_subscribe(facts, caller, *topic), Err(Refusal::Denied));
+        }
+    }
+
+    #[test]
+    fn publishing_is_opt_in_and_needs_update_on_a_row() {
+        let on = |row_updatable| PublishFacts {
+            client_publish: true,
+            row_updatable,
+        };
+        let off = PublishFacts {
+            client_publish: false,
+            row_updatable: true,
+        };
+        // (case, topics, facts, allowed)
+        let cases: Vec<(&str, TopicSpec, PublishFacts, bool)> = vec![
+            ("single, on", TopicSpec::Single, on(false), true),
+            ("single, off", TopicSpec::Single, off, false),
+            ("row, may update", boards(), on(true), true),
+            ("row, may only read", boards(), on(false), false),
+            ("row, off though updatable", boards(), off, false),
+            ("user, on", TopicSpec::User, on(true), false),
+            ("row changes, on", cards(), on(true), false),
+        ];
+        for (case, topics, facts, allowed) in cases {
+            assert_eq!(may_publish(&topics, facts), allowed, "{case}");
         }
     }
 }

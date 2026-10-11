@@ -8,5 +8,7 @@ mod changes;
 mod filters;
 #[path = "hub.rs"]
 mod hub;
+#[path = "publish.rs"]
+mod publish;
 #[path = "readers.rs"]
 mod readers;
