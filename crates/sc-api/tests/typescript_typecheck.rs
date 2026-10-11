@@ -319,6 +319,93 @@ fn generated_stream_client_type_checks() -> std::io::Result<()> {
     type_check("streams", &client_ts, STREAM_USAGE_TS)
 }
 
+/// A usage module for an application that reads `posts` and exposes its
+/// changes (TODO.md "Live updates" L3.10–L3.11): the subscription's filter is
+/// the read's `Filters`, a change's row is the read's row, the table's object
+/// carries the stream as `changes`, and a `useLiveRows`-shaped function infers
+/// its rows from the `select` the way `list` does.
+const CHANGES_USAGE_TS: &str = r#"
+import {
+  createClient,
+  LiveRows,
+  type LiveChangesStream,
+  type LiveRowsOptions,
+  type LiveTable,
+  type PostsLiveEnvelope,
+  type PostsRow,
+  type PostsSchema,
+  type Selected,
+  type TableSchema,
+} from "./client";
+
+// `useLiveRows`'s signature (the scaffold's `live-react.ts`), without React.
+declare function useLiveRows<Sch extends TableSchema, Key, S extends string = "">(
+  table: LiveTable<Sch, Key>,
+  options?: LiveRowsOptions<Sch["row"], S>,
+): { rows: Array<Selected<Sch, S>> };
+
+export function exercise(): void {
+  const api = createClient({ baseUrl: "https://blog.example.com" });
+
+  const stream: LiveChangesStream<PostsSchema, number> = api.live.posts_live;
+  const same: LiveChangesStream<PostsSchema, number> = api.posts.changes;
+  void same;
+  stream
+    .subscribe(
+      { where: { author: "eq.7", published: "is_null.false" } },
+      {
+        element(envelope: PostsLiveEnvelope) {
+          const change = envelope.value;
+          const key: number = change.key;
+          const row: PostsRow | undefined = change.row;
+          if (change.op === "leave" || change.op === "delete") return void key;
+          const title: string | undefined = change.row?.title;
+          void row; void title;
+        },
+      },
+    )
+    .close();
+
+  const all: PostsRow[] = useLiveRows(api.posts, { where: { author: "eq.7" }, orderBy: "published.desc" }).rows;
+  const titles = useLiveRows(api.posts, { select: "title,author(name)" }).rows;
+  const title: string = titles[0].title;
+  const name: string = titles[0].author!.name;
+  const kept = new LiveRows<PostsRow>(api.posts as unknown as LiveTable);
+  kept.close();
+
+  // @ts-expect-error `nope` is not a column of posts
+  stream.subscribe({ where: { nope: "eq.1" } }, { element() {} });
+  // @ts-expect-error a filter value names a comparison, as in a read
+  useLiveRows(api.posts, { where: { title: "hello" } });
+  // @ts-expect-error a selected row has only what was selected
+  void useLiveRows(api.posts, { select: "id" }).rows[0].title;
+  // @ts-expect-error a row stream has no topic to name
+  stream.subscribe(7, { element() {} });
+  // @ts-expect-error `authors` exposes no changes, so it is not a live table
+  useLiveRows(api.authors);
+
+  void all; void title; void name;
+}
+"#;
+
+#[test]
+fn generated_changes_client_type_checks() -> std::io::Result<()> {
+    use sc_api::{StreamExport, StreamTopics, TypeSchema};
+
+    let provider = RestProvider::project("/api", &blog_tables());
+    let streams = [StreamExport {
+        name: "posts_live".to_owned(),
+        path: "/api/live".to_owned(),
+        value: TypeSchema::json(),
+        topics: StreamTopics::Changes {
+            table: "posts".to_owned(),
+        },
+    }];
+    let client_ts =
+        sc_api::generate_client_with_streams(ApiProvider::endpoints(&provider), &streams);
+    type_check("changes", &client_ts, CHANGES_USAGE_TS)
+}
+
 #[test]
 fn generated_query_parameter_client_type_checks() -> std::io::Result<()> {
     use sc_api::{Endpoint, EndpointSet, Method, PathSpec, QueryParam, TypeSchema, ValueType};

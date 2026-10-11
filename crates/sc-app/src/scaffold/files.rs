@@ -790,7 +790,9 @@ fn runtime_readme(ctx: &ProjectContext<'_>) -> String {
          socket per page that reconnects by itself, and returns its `status` \
          (`connecting`, `open`, `reconnecting`); `useLatest(live.<stream>)` \
          is the latest element, for a progress bar. A stream with a topic per \
-         row is `live.<stream>.topic(rowKey)`. `live` is the client's \
+         row is `live.<stream>.topic(rowKey)`. `useLiveRows(api.<table>, {{ where, \
+         orderBy, select }})` is a read kept current by the table's stream of \
+         changes. `live` is the client's \
          accessors, present once the application exposes a stream.\n\
          - `{RUNTIME_SKILL_FILE}` — for a coding agent: the half of this \
          application that is **not** in this repository, and the administration \
@@ -1082,6 +1084,15 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          `useStream(live.board_activity.topic(boardId), onElement)`. The server \
          lets the subscription in only if the signed-in user may read that row, \
          and ends it (`revoked`) if they stop being able to.\n\
+         - **A table's changes** (`live.cards_live`, also `api.cards.changes`): \
+         use `useLiveRows(api.cards, {{ where: {{ board: `eq.${{boardId}}` }}, orderBy: \
+         \"position\" }})` in place of a read. It reads the rows with the same \
+         `filter`, `order` and `select` vocabulary as `api.cards.list`, subscribes \
+         with the same filter, and keeps `rows` current as rows are inserted, \
+         changed, moved into or out of the filter, or deleted — by anyone — in \
+         the order asked for. It reads again by itself after a reconnect. It \
+         returns `{{ rows, loading, error, status, refresh }}`. A user is only \
+         ever sent changes to rows they may read.\n\
          \n\
          Elements are published by the server — a trigger's `publish` action, \
          `live.publish(stream, topic, value)` in a trigger's code — never by \
@@ -2899,8 +2910,19 @@ fn live_react_ts(streams: &[sc_api::StreamExport]) -> String {
 
 /// The imports every `live-react.ts` has.
 const LIVE_REACT_IMPORTS: &str = r#"
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { LiveConnection, LiveError, LiveHandlers, LiveStatus, LiveStream } from "./helper";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { LiveRows } from "./helper";
+import type {
+  LiveConnection,
+  LiveError,
+  LiveHandlers,
+  LiveRowsOptions,
+  LiveStatus,
+  LiveStream,
+  LiveTable,
+  Selected,
+  TableSchema,
+} from "./helper";
 "#;
 
 /// The body of `live-react.ts` that is the same in every application.
@@ -2971,6 +2993,64 @@ export function useLatest<E>(stream: LiveStream<E>): E | undefined {
   useStream(stream, (envelope) => setLatest({ stream, envelope }));
   // A value from the previous stream is not this one's.
   return latest !== undefined && latest.stream === stream ? latest.envelope : undefined;
+}
+
+/** What `useLiveRows` answers with. */
+export type LiveRowsResult<R> = {
+  /** The rows, in the order asked for, as they are now. */
+  rows: R[];
+  /** A full read is in flight: the first, or one after a reconnect or a lag. */
+  loading: boolean;
+  /** A read that failed, or the server refusing the subscription. */
+  error: Error | LiveError | undefined;
+  /** The connection's status: `connecting`, `open` or `reconnecting`. */
+  status: LiveStatus;
+  /** Read every row again. */
+  refresh(): void;
+};
+
+/**
+ * The rows of `table` that a read with `where`, `orderBy` and `select` answers,
+ * kept current while this component is mounted: inserts, changes, rows moving
+ * into or out of `where`, and deletes — by anyone — are applied in place, in
+ * order. `table` is a table of the client whose changes the application
+ * exposes (`api.cards`, which carries them as `api.cards.changes`).
+ *
+ * The subscription uses the same `where` as the read, so a page is told about
+ * exactly the rows it shows. After a reconnect or a lag it reads again; a
+ * `select` with embeds, or a stream that sends keys only, reads changed rows
+ * again rather than trusting the change.
+ *
+ * Options are compared by value, so an object literal written in the render
+ * does not resubscribe on every render.
+ */
+export function useLiveRows<Sch extends TableSchema, Key, S extends string = "">(
+  table: LiveTable<Sch, Key>,
+  options: LiveRowsOptions<Sch["row"], S> = {},
+): LiveRowsResult<Selected<Sch, S>> {
+  const signature = JSON.stringify([options.where ?? null, options.orderBy ?? null, options.select ?? null]);
+  const rows = useMemo(
+    () =>
+      new LiveRows<Selected<Sch, S>>(
+        table as unknown as LiveTable,
+        options as LiveRowsOptions<object, string>,
+      ),
+    // `options` is read through its signature: a new object with the same
+    // filter is the same read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [table, signature],
+  );
+  useEffect(() => {
+    rows.start();
+    return () => rows.close();
+  }, [rows]);
+  const state = useSyncExternalStore(
+    (onChange) => rows.onChange(onChange),
+    () => rows.current,
+    () => rows.current,
+  );
+  const status = useLiveStatus(table.changes.connection);
+  return { ...state, status, refresh: () => rows.refresh() };
 }
 "#;
 
@@ -3778,6 +3858,133 @@ mod tests {
             "{agents}"
         );
         assert!(file(&with, "src/feldspar/README.md").contains("live-react.ts"));
+    }
+
+    /// L3.10–L3.11: an exposed stream of a table's changes is typed with the
+    /// table's row and its read's filter, the table's object carries it as
+    /// `changes`, and `useLiveRows(api.tasks, …)` infers its rows from the
+    /// `select` — checked by compiling a component against the generated
+    /// runtime, with `ui/admin`'s compiler and React types (skipped without
+    /// them).
+    #[test]
+    fn use_live_rows_type_checks_against_the_generated_runtime() {
+        let tables = [tasks()];
+        let app = todo();
+        let endpoints = endpoints(&tables);
+        let streams = [sc_api::StreamExport {
+            name: "tasks_live".to_owned(),
+            path: "/api/live".to_owned(),
+            value: sc_api::TypeSchema::json(),
+            topics: sc_api::StreamTopics::Changes {
+                table: "tasks".to_owned(),
+            },
+        }];
+        let files = runtime_files(&ProjectContext {
+            streams: &streams,
+            ..ctx(&app, &tables, &endpoints, None)
+        });
+        let client = file(&files, "src/feldspar/client.ts");
+        assert!(
+            client.contains("readonly changes: LiveChangesStream<TasksSchema, number>;"),
+            "{client}"
+        );
+        assert!(
+            client.contains(
+                "tasks_live: connection.changesStream<TasksSchema, number>(\"tasks_live\", \"tasks\", \"id\"),"
+            ),
+            "{client}"
+        );
+        assert!(client.contains("changes: live.tasks_live,"), "{client}");
+        let hooks = file(&files, "src/feldspar/live-react.ts");
+        assert!(hooks.contains("export function useLiveRows<"), "{hooks}");
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let admin_modules = root.join("ui/admin/node_modules");
+        let tsc = std::env::var("SC_TSC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| admin_modules.join(".bin/tsc"));
+        if !tsc.exists() || !admin_modules.join("@types/react").is_dir() {
+            eprintln!("skipping the type check: no tsc or React types (run `npm ci` in ui/admin)");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("sc-app-live-rows-{}", std::process::id()));
+        for generated in &files {
+            let path = dir.join(&generated.path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, &generated.contents).unwrap();
+        }
+        std::fs::create_dir_all(dir.join("src/pages")).unwrap();
+        std::fs::write(
+            dir.join("src/pages/LiveTasks.tsx"),
+            r#"import { api, type TasksRow } from "../feldspar/hooks";
+import { useLiveRows, type LiveRowsResult } from "../feldspar/live-react";
+
+export function LiveTasks() {
+  const all: LiveRowsResult<TasksRow> = useLiveRows(api.tasks, {
+    where: { done: "is_null.false" },
+    orderBy: "title.desc",
+  });
+  const narrow = useLiveRows(api.tasks, { select: "title" });
+  const title: string = narrow.rows[0].title;
+  // @ts-expect-error `done` was selected away
+  void narrow.rows[0].done;
+  // @ts-expect-error `nope` is not a column of tasks
+  useLiveRows(api.tasks, { where: { nope: "eq.1" } });
+  // @ts-expect-error a filter is `op.value`, as in a read
+  useLiveRows(api.tasks, { where: { title: 7 } });
+  // The same stream, by either name.
+  const same: typeof api.live.tasks_live = api.tasks.changes;
+  same.subscribe(
+    { where: { title: "eq.x" } },
+    {
+      element: (envelope) => {
+        const change = envelope.value;
+        const key: number = change.key;
+        if (change.op === "leave" || change.op === "delete") return void key;
+        const row: TasksRow | undefined = change.row;
+        void row;
+      },
+    },
+  );
+  return (
+    <ul data-status={all.status} onClick={all.refresh}>
+      {all.loading ? null : all.rows.map((row) => <li key={row.id}>{row.title}{title}</li>)}
+    </ul>
+  );
+}
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&admin_modules, dir.join("node_modules")).unwrap();
+        let output = std::process::Command::new(&tsc)
+            .current_dir(&dir)
+            .args([
+                "--noEmit",
+                "--strict",
+                "--noUnusedLocals",
+                "--skipLibCheck",
+                "--jsx",
+                "react-jsx",
+                "--target",
+                "es2020",
+                "--lib",
+                "es2020,dom",
+                "--module",
+                "esnext",
+                "--moduleResolution",
+                "bundler",
+                "src/pages/LiveTasks.tsx",
+            ])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            output.status.success(),
+            "useLiveRows does not type-check against the generated runtime:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]

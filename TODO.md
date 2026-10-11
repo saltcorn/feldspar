@@ -292,7 +292,7 @@ backoff and resubscribes:
 
 ```ts
 live.job_status.subscribe(handlers)                       // User: no topic argument
-live.cards_live.subscribe({ where: { board: 7 } }, handlers)   // PerElementRow
+live.cards_live.subscribe({ where: { board: "eq.7" } }, handlers)   // PerElementRow
 live.board_presence.join(boardId, handlers)               // Row + presence
 live.board_presence.publish(boardId, value)               // only if client_publish
 live.doc_body.open(docId)                                 // Document → a Y.Doc + awareness
@@ -303,7 +303,7 @@ The non-React core is framework-neutral, so the Vue plugin and Saltcorn UI can u
 
 ```tsx
 useStream(live.job_status, (env) => toast(env.value.message));              // A, E
-const cards = useLiveRows(client.cards, { where: { board: 7 } });             // B, D
+const cards = useLiveRows(client.cards, { where: { board: "eq.7" } });        // B, D
 const { members, setState } = usePresence(live.board_presence, boardId);      // B, C
 const { doc, awareness, readOnly, status } = useDocument(live.doc_body, docId); // C
 ```
@@ -547,9 +547,9 @@ re-checking. No new providers yet. Everything later builds on this.
   suppressed by filter, and evaluator time. Shown on the stream's row in the admin list.
 
 ### Phase 3: the client
-- [ ] **L3.10** `live.<s>.subscribe({ where }, handlers)` typed with the table's row type and the
+- [x] **L3.10** `live.<s>.subscribe({ where }, handlers)` typed with the table's row type and the
   REST client's filter type (one type, shared).
-- [ ] **L3.11** `useLiveRows(client.<table>, { where, orderBy, select })`: fetch, subscribe with
+- [x] **L3.11** `useLiveRows(client.<table>, { where, orderBy, select })`: fetch, subscribe with
   the same filter, apply the five ops while keeping order, refetch on `resync` and `lagged`, and
   refetch changed keys when `payload: key` or when `select` has joins. Unit-test the reducer in
   TypeScript (vitest, the `ui/admin` setup) without a server.
@@ -559,7 +559,7 @@ re-checking. No new providers yet. Everything later builds on this.
    ownership formula on `cards`: readable if the user is a member of the card's board (an Ↄ over
    `board_members`).
 2. A `table_changes` stream `cards_live` on `cards`, min role Member, exposed on a React kanban
-   app that uses `useLiveRows(client.cards, { where: { board: id }, orderBy: "position" })`.
+   app that uses `useLiveRows(client.cards, { where: { board: `eq.${id}` }, orderBy: "position" })`.
 3. Alice and Bob both open board 1. Alice drags a card to "Done": it moves on Bob's screen.
    Alice moves a card to board 2, where Bob is not a member: it disappears from Bob's board 1
    and nothing about it reaches Bob's socket (check the frames in devtools).

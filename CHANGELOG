@@ -2,6 +2,43 @@
 
 Changes in reverse chronological order.
 
+## Live updates L3, phase 3: the client follows a table's changes
+
+A React page can now show a table's rows and keep them current as anyone writes them:
+`useLiveRows(api.cards, { where: { board: "eq.7" }, orderBy: "position" })` reads, subscribes with
+the same filter, and applies inserts, updates, rows entering or leaving the filter, and deletes in
+place, in order. TODO.md L3.10–L3.11.
+
+- **Typed change subscriptions (L3.10)**: `sc_api::StreamTopics` gains `Changes { table }`
+  (`sc-app` maps `TopicSpec::PerElementRow` to it; it was `Single`), and loses `Copy`. When the
+  client reads the table, `live.<stream>` is a `LiveChangesStream<CardsSchema, Key>`:
+  `subscribe({ where }, handlers)` takes the REST read's own `Filters<CardsRow>` — one filter type
+  for both — and its envelope is `LiveEnvelope<LiveChange<CardsRow, Key>>` (`insert | update |
+  enter` with an optional `row`, `leave | delete` with none). The table's object carries the same
+  accessor as `changes`. The helper lowers `"op.value"` to the socket's filter object
+  (`whereObject`), sent in the `subscribe` frame and again after a reconnect.
+  `LiveConnection.subscribe` takes an optional filter; new `LiveConnection.changesStream`. The
+  generated `createClient` now binds `live` before the tables (a `const live: LiveStreams`).
+- **Live rows (L3.11)**: in the helper, framework-neutral — `liveRowsPlan`, the pure reducer
+  `applyLiveChange`, `mergeLiveRows`, `sortLiveRows`, and `LiveRows`, which reads once the
+  subscription is `ready` (again after a reconnect or `lagged`), applies changes that arrive during
+  a read on top of it, keeps `orderBy`'s order, cuts rows to a plain `select`, and reads changed
+  keys again (batched per tick, `in.(…)`) for a key-only payload or a `select` with embeds or
+  aliases; an overtaken key read is dropped. The read's `select` gains the key and order columns
+  it lacks. React: `useLiveRows(table, { where, orderBy, select })` in the scaffold's
+  `live-react.ts`, returning `{ rows, loading, error, status, refresh }` with `rows` typed like
+  `list`'s for that `select`. Named in the scaffold's `AGENTS.md` and runtime README.
+- **The design's examples** (TODO.md §6) now write the filter as a read does: `{ board: "eq.7" }`.
+- `helper.ts` regenerated in `ui/admin`, `ui/ide`, `ui/builder`, `ui/analytics` (their `client.ts`
+  is unchanged).
+- **Tests**: `ui/admin/src/liveRows.test.ts` (vitest, no server: the filter lowering, the plan,
+  the five ops with ordering, nulls and projection, refetch keys, and `LiveRows` against a fake
+  table — reads after `ready`/`lagged`/reconnect, changes during a read, overtaken reads, batched
+  key reads, refusals); `sc-api` `live_connection` (the filter frame, run under Node);
+  `typescript_typecheck::generated_changes_client_type_checks`; `sc-app`
+  `use_live_rows_type_checks_against_the_generated_runtime` (a component compiled against the
+  generated `client.ts`, `helper.ts` and `live-react.ts`).
+
 ## Live updates L3, phase 2: table change streams, decided per element and per subscriber
 
 A page can now subscribe to a `table_changes` stream and be sent exactly the changes its own REST

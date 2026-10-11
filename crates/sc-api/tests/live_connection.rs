@@ -333,3 +333,126 @@ console.log(JSON.stringify({ first, second: sockets[1].sent, same }));
     assert_eq!(seen["same"], serde_json::json!(true));
     Ok(())
 }
+
+/// A subscription to a table's changes is sent with the read's filter, lowered
+/// to the socket's filter object, and sent again after a reconnect; the
+/// table's own object carries the same stream as `changes` (TODO.md "Live
+/// updates" L3.10).
+#[test]
+fn a_change_subscription_is_sent_with_its_filter_and_again_after_a_reconnect()
+-> std::io::Result<()> {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("skipping: no `node` on PATH to run the generated client");
+        return Ok(());
+    }
+    const DRIVER: &str = r#"
+import { createClient } from "./client.ts";
+const sockets: any[] = [];
+class FakeSocket {
+  readyState = 0; sent: unknown[] = []; closed = false;
+  onopen: any = null; onmessage: any = null; onclose: any = null; onerror: any = null;
+  url: string;
+  constructor(url: string) { this.url = url; sockets.push(this); }
+  send(d: string) { this.sent.push(JSON.parse(d)); }
+  close() { this.closed = true; }
+}
+const api = createClient({ live: { WebSocket: FakeSocket as unknown as typeof WebSocket, minDelay: 1, maxDelay: 2 } });
+const seen: unknown[] = [];
+api.live.posts_live.subscribe(
+  { where: { author: "eq.7", title: "in.(a,\"b,c\")", published: "is_null.false" } },
+  { element: (e) => seen.push(e.value) },
+);
+api.posts.changes.subscribe({}, { element() {} });
+const same = api.posts.changes === api.live.posts_live;
+sockets[0].readyState = 1;
+sockets[0].onopen({});
+sockets[0].onmessage({ data: JSON.stringify({ type: "element", sub: "s1", envelope: { value: { op: "leave", key: 3 } } }) });
+const first = [...sockets[0].sent];
+sockets[0].readyState = 3;
+sockets[0].onclose({});
+await new Promise((r) => setTimeout(r, 30));
+sockets[1].readyState = 1;
+sockets[1].onopen({});
+console.log(JSON.stringify({ first, second: sockets[1].sent, same, seen, key: api.posts.changes.key, table: api.posts.changes.table }));
+"#;
+    let provider = sc_api::RestProvider::project("/api", &[posts()]);
+    let streams = [StreamExport {
+        name: "posts_live".to_owned(),
+        path: "/api/live".to_owned(),
+        value: TypeSchema::json(),
+        topics: sc_api::StreamTopics::Changes {
+            table: "posts".to_owned(),
+        },
+    }];
+    let client_ts = sc_api::generate_client_with_streams(
+        sc_api::ApiProvider::endpoints(&provider),
+        &streams,
+    )
+    .replace("from \"./helper\"", "from \"./helper.ts\"");
+    let dir = std::env::temp_dir().join(format!("sc-api-live-changes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("client.ts"), client_ts)?;
+    std::fs::write(
+        dir.join(sc_api::CLIENT_HELPER_FILE),
+        sc_api::client_helper(),
+    )?;
+    std::fs::write(dir.join("driver.ts"), DRIVER)?;
+    let output = Command::new("node").arg(dir.join("driver.ts")).output()?;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let seen: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let frames = serde_json::json!([
+        {
+            "type": "subscribe", "sub": "s1", "stream": "posts_live",
+            "filter": {
+                "author": { "eq": "7" },
+                "title": { "in": ["a", "b,c"] },
+                "published": { "is_null": false },
+            },
+        },
+        // No `where` is every row: the frame carries no filter.
+        { "type": "subscribe", "sub": "s2", "stream": "posts_live" },
+    ]);
+    assert_eq!(seen["first"], frames);
+    assert_eq!(seen["second"], frames, "the same filters asked for again");
+    assert_eq!(seen["same"], serde_json::json!(true));
+    assert_eq!(seen["seen"], serde_json::json!([{ "op": "leave", "key": 3 }]));
+    assert_eq!(seen["key"], serde_json::json!("id"));
+    assert_eq!(seen["table"], serde_json::json!("posts"));
+    Ok(())
+}
+
+/// A small `posts` table with an identity key, for a client that reads it.
+fn posts() -> sc_catalog::Table {
+    use sc_catalog::{AccessRules, DataField, DbId, Table, TableId, TableSource};
+    use sc_types::{BasicType, TypeRef};
+    Table {
+        id: TableId("posts".to_owned()),
+        name: "posts".to_owned(),
+        database: DbId::primary(),
+        source: TableSource::Database,
+        fields: vec![
+            DataField::plain("id", TypeRef::Basic(BasicType::Int))
+                .primary_key()
+                .required()
+                .generated(sc_db::ColumnGenerator::Identity),
+            DataField::plain("title", TypeRef::Basic(BasicType::Text)).required(),
+            DataField::plain("author", TypeRef::Basic(BasicType::Int)),
+            DataField::plain("published", TypeRef::Basic(BasicType::Date)),
+        ],
+        primary_key: vec!["id".to_owned()],
+        label: "posts".to_owned(),
+        description: String::new(),
+        access: AccessRules::default(),
+        attributes: Default::default(),
+        overlay: None,
+        ownership: None,
+        ownership_error: None,
+        rls_enabled: false,
+        constraints: Vec::new(),
+    }
+}

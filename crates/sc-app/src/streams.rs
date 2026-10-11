@@ -250,13 +250,15 @@ pub fn stream_exports(app: &Application, streams: &[ExposedStream]) -> Vec<Strea
             name: exposed.stream.name.clone(),
             path: live_socket_path(app),
             value: element_value_schema(&exposed.element_type),
-            topics: match exposed.topics {
+            topics: match &exposed.topics {
                 TopicSpec::Single => StreamTopics::Single,
                 TopicSpec::User => StreamTopics::User,
-                // A stream of row changes is subscribed with a filter (L3), not
-                // a topic; until then it is subscribed as a plain stream.
                 TopicSpec::Row { .. } => StreamTopics::Row,
-                TopicSpec::PerElementRow { .. } => StreamTopics::Single,
+                // A stream of row changes is subscribed with the read's filter,
+                // not a topic, and typed with the table's row (L3.10).
+                TopicSpec::PerElementRow { table } => StreamTopics::Changes {
+                    table: table.clone(),
+                },
             },
         })
         .collect()

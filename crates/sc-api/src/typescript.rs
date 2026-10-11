@@ -134,6 +134,7 @@ export function requestHeaders(method: string, hasBody: boolean): Record<string,
     );
     out.push_str(READ_TYPES);
     out.push_str(LIVE_TYPES);
+    out.push_str(LIVE_ROWS);
     out
 }
 
@@ -165,7 +166,7 @@ pub struct StreamExport {
 /// How a page names what it subscribes to on a stream (TODO.md "Live updates"
 /// §6) — `sc-stream`'s `TopicSpec` as the client generator needs it, in a crate
 /// that cannot name that one.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum StreamTopics {
     /// No topic: one flow for every subscriber (`live.boiler.subscribe(h)`).
     #[default]
@@ -174,6 +175,16 @@ pub enum StreamTopics {
     User,
     /// A row's key (`live.board_activity.subscribe(7, h)`).
     Row,
+    /// The changes to `table`'s rows, subscribed with the REST read's filter
+    /// (`live.cards_live.subscribe({ where: { board: "eq.7" } }, h)`, L3.10).
+    /// When the endpoint set reads `table`, the change's row is typed as that
+    /// table's row, the filter as its read's `Filters`, and the table's own
+    /// object on the client carries the stream as `changes` — which is what
+    /// `useLiveRows(api.cards, …)` subscribes through.
+    Changes {
+        /// The table whose changes the stream carries.
+        table: String,
+    },
 }
 
 /// Generate a TypeScript client module from an endpoint set.
@@ -213,6 +224,10 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
         .filter(|e| !owned.contains(e.name.as_str()))
         .collect();
     let tables = table_clients(set, &loose);
+    let changes: Vec<Option<ChangesTyping>> = streams
+        .iter()
+        .map(|stream| ChangesTyping::of(stream, &tables))
+        .collect();
 
     // --- what this client borrows from the helper ---------------------------
     // Exactly what it goes on to name, and nothing more: an import of a helper
@@ -226,11 +241,18 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
         values.extend(["LiveConnection", "liveUrl"]);
     }
     let mut types: Vec<&str> = vec!["ClientOptions"];
-    if streams.iter().any(|s| s.topics != StreamTopics::Row) {
+    if streams
+        .iter()
+        .zip(&changes)
+        .any(|(s, typing)| typing.is_none() && s.topics != StreamTopics::Row)
+    {
         types.push("LiveStream");
     }
     if streams.iter().any(|s| s.topics == StreamTopics::Row) {
         types.push("LiveRowStream");
+    }
+    if changes.iter().any(Option::is_some) {
+        types.extend(["LiveChange", "LiveChangesStream", "LiveEnvelope"]);
     }
     if !tables.is_empty() {
         types.push("Selected");
@@ -270,9 +292,10 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     out.push_str("export type { ClientOptions } from \"./helper\";\n");
     if !streams.is_empty() {
         out.push_str(
-            "export { LiveConnection } from \"./helper\";\n\
-             export type { LiveError, LiveHandlers, LiveOptions, LiveReady, LiveRowStream, LiveStatus, \
-             LiveStream, LiveSubscription, LiveTopic } from \"./helper\";\n",
+            "export { LiveConnection, LiveRows } from \"./helper\";\n\
+             export type { LiveChange, LiveChangesQuery, LiveChangesStream, LiveEnvelope, LiveError, \
+             LiveHandlers, LiveOptions, LiveReady, LiveRowStream, LiveRowsOptions, LiveRowsState, \
+             LiveStatus, LiveStream, LiveSubscription, LiveTable, LiveTopic } from \"./helper\";\n",
         );
     }
     if !tables.is_empty() {
@@ -309,7 +332,25 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     // element type. It is a wire contract, so it is written out rather than
     // referred to: the same JSON the Observe screen renders and a trigger's
     // `only_if` reads.
-    for stream in streams {
+    //
+    // A stream of a table's changes is the exception: its value is one change
+    // to a row, and the row is the table's own row type when the client reads
+    // that table — the same type `list` answers with, so a page cannot hold a
+    // read's rows and a stream's rows as two different things.
+    for (stream, typing) in streams.iter().zip(&changes) {
+        if let Some(typing) = typing {
+            let _ = writeln!(
+                out,
+                "/** One change of the `{}` stream (rows of `{}`), in its envelope. */\n\
+                 export type {}Envelope = LiveEnvelope<LiveChange<{}, {}>>;\n",
+                stream.name,
+                typing.table,
+                stream_type_name(&stream.name),
+                typing.row,
+                typing.key_type,
+            );
+            continue;
+        }
         let _ = writeln!(
             out,
             "/** One element of the `{}` stream, in its envelope. */\n\
@@ -331,9 +372,18 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     if !streams.is_empty() {
         out.push_str("/** The streams this application exposes, one accessor each. */\n");
         out.push_str("export interface LiveStreams {\n");
-        for stream in streams {
+        for (stream, typing) in streams.iter().zip(&changes) {
+            if let Some(typing) = typing {
+                let _ = writeln!(
+                    out,
+                    "  /** The `{}` stream: changes to `{}`, subscribed with a read's filter. */\n  \
+                     readonly {}: LiveChangesStream<{}, {}>;",
+                    stream.name, typing.table, stream.name, typing.schema, typing.key_type,
+                );
+                continue;
+            }
             let (accessor, what) = match stream.topics {
-                StreamTopics::Single => ("LiveStream", "stream"),
+                StreamTopics::Single | StreamTopics::Changes { .. } => ("LiveStream", "stream"),
                 StreamTopics::User => {
                     ("LiveStream", "stream; each subscriber gets their own topic")
                 }
@@ -352,7 +402,7 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
 
     // --- the tables: a row type and an object of methods each ---------------
     for table in &tables {
-        out.push_str(&table.types(set));
+        out.push_str(&table.types(set, table_changes(table, streams, &changes).as_ref()));
     }
 
     // --- ApiClient interface ------------------------------------------------
@@ -399,11 +449,49 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
             stream.path,
         );
     }
+    // The accessors are bound before the tables, because a table whose changes
+    // the application exposes carries its stream as `changes` — the same object
+    // as `live.<stream>`.
+    //
+    // A stream's name is letters, digits and `_`, never starting with a digit
+    // (`check_stream_name`), so it is a property name as it stands.
+    if !streams.is_empty() {
+        out.push_str("  const live: LiveStreams = {\n");
+        for (stream, typing) in streams.iter().zip(&changes) {
+            if let Some(typing) = typing {
+                let _ = writeln!(
+                    out,
+                    "    {}: connection.changesStream<{}, {}>(\"{}\", \"{}\", \"{}\"),",
+                    stream.name,
+                    typing.schema,
+                    typing.key_type,
+                    stream.name,
+                    typing.table,
+                    typing.key_column,
+                );
+                continue;
+            }
+            let accessor = match stream.topics {
+                StreamTopics::Single | StreamTopics::User | StreamTopics::Changes { .. } => {
+                    "stream"
+                }
+                StreamTopics::Row => "rowStream",
+            };
+            let _ = writeln!(
+                out,
+                "    {}: connection.{accessor}<{}Envelope>(\"{}\"),",
+                stream.name,
+                stream_type_name(&stream.name),
+                stream.name,
+            );
+        }
+        out.push_str("  };\n");
+    }
     // Each table is bound to a name before the client is assembled, so `get` can
     // call `list` without going through `this` — a generated method's `this` is
     // whatever the caller destructured it onto, which is nothing worth relying on.
     for table in &tables {
-        out.push_str(&table.implementation(set));
+        out.push_str(&table.implementation(set, table_changes(table, streams, &changes).as_ref()));
     }
     out.push_str("  return {\n");
     for ep in &loose {
@@ -412,24 +500,8 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     for table in &tables {
         let _ = writeln!(out, "    {},", table.property);
     }
-    // A stream's name is letters, digits and `_`, never starting with a digit
-    // (`check_stream_name`), so it is a property name as it stands.
     if !streams.is_empty() {
-        out.push_str("    live: {\n");
-        for stream in streams {
-            let accessor = match stream.topics {
-                StreamTopics::Single | StreamTopics::User => "stream",
-                StreamTopics::Row => "rowStream",
-            };
-            let _ = writeln!(
-                out,
-                "      {}: connection.{accessor}<{}Envelope>(\"{}\"),",
-                stream.name,
-                stream_type_name(&stream.name),
-                stream.name,
-            );
-        }
-        out.push_str("    },\n");
+        out.push_str("    live,\n");
     }
     out.push_str("  };\n");
     out.push_str("}\n");
@@ -764,6 +836,90 @@ fn to_pascal_case(name: &str) -> String {
     }
 }
 
+// --- table changes ----------------------------------------------------------
+
+/// How a stream of a table's changes is typed in the client (L3.10).
+struct ChangesTyping {
+    /// The table the changes are to.
+    table: String,
+    /// The `TableSchema` its filter and rows are read against: `CardsSchema`
+    /// when the client reads the table, else one written inline from the
+    /// element type — a stream exposed by an app with no REST read of the
+    /// table still types its rows; it just has nothing to refetch with.
+    schema: String,
+    /// The row type a change carries.
+    row: String,
+    /// The primary key's TypeScript type, `LiveTopic` when it is not known.
+    key_type: String,
+    /// The primary key's column, which a change's `key` is a value of — empty
+    /// when the client does not read the table. Only `useLiveRows` needs it,
+    /// and that needs the table's read anyway.
+    key_column: String,
+}
+
+impl ChangesTyping {
+    /// The typing of `stream`, or `None` when it is not a stream of changes.
+    fn of(stream: &StreamExport, tables: &[TableClient<'_>]) -> Option<ChangesTyping> {
+        let StreamTopics::Changes { table } = &stream.topics else {
+            return None;
+        };
+        if let Some(client) = tables.iter().find(|t| &t.model.name == table) {
+            return Some(ChangesTyping {
+                table: table.clone(),
+                schema: format!("{}Schema", client.pascal),
+                row: format!("{}Row", client.pascal),
+                key_type: client.key_type().unwrap_or("LiveTopic").to_owned(),
+                key_column: client.model.primary_key.clone().unwrap_or_default(),
+            });
+        }
+        let row = change_row_type(&stream.value);
+        Some(ChangesTyping {
+            table: table.clone(),
+            schema: format!("{{ row: {row}; rels: {{}} }}"),
+            row,
+            key_type: "LiveTopic".to_owned(),
+            key_column: String::new(),
+        })
+    }
+}
+
+/// The row of a change's element type (`{op, key, row}`) as TypeScript: the
+/// table's columns as the provider derived them.
+fn change_row_type(value: &TypeSchema) -> String {
+    let TypeSchema::Struct(fields) = value else {
+        return "Record<string, unknown>".to_owned();
+    };
+    match fields.iter().find(|f| f.name == "row").map(|f| &f.schema) {
+        Some(TypeSchema::Optional(inner)) => element_value_type(inner),
+        Some(row @ TypeSchema::Struct(_)) => element_value_type(row),
+        _ => "Record<string, unknown>".to_owned(),
+    }
+}
+
+/// A table's own stream of changes, which its object on the client carries.
+struct TableChanges<'a> {
+    stream: &'a str,
+    typing: &'a ChangesTyping,
+}
+
+/// The stream `table` carries as `changes`, if the application exposes one:
+/// the first in the order the application lists them, when it exposes more.
+fn table_changes<'a>(
+    table: &TableClient<'_>,
+    streams: &'a [StreamExport],
+    changes: &'a [Option<ChangesTyping>],
+) -> Option<TableChanges<'a>> {
+    streams.iter().zip(changes).find_map(|(stream, typing)| {
+        let typing = typing.as_ref()?;
+        (typing.table == table.model.name && !typing.key_column.is_empty()).then_some(
+            TableChanges {
+                stream: &stream.name,
+                typing,
+            },
+        )
+    })
+}
+
 // --- tables -----------------------------------------------------------------
 
 /// One table's place in the generated client: the model it comes from, the
@@ -825,7 +981,7 @@ fn table_clients<'a>(set: &'a EndpointSet, loose: &[&Endpoint]) -> Vec<TableClie
 
 impl TableClient<'_> {
     /// The row, write-body, schema, query and API types for this table.
-    fn types(&self, set: &EndpointSet) -> String {
+    fn types(&self, set: &EndpointSet, changes: Option<&TableChanges<'_>>) -> String {
         let name = &self.model.name;
         let p = &self.pascal;
         let mut out = format!("// --- {name} ---\n\n");
@@ -915,7 +1071,7 @@ impl TableClient<'_> {
             out.push_str("};\n\n");
         }
 
-        out.push_str(&self.api_interface(set));
+        out.push_str(&self.api_interface(set, changes));
         out
     }
 
@@ -957,7 +1113,7 @@ impl TableClient<'_> {
 
     /// The `TasksApi` interface: one method per operation the projection
     /// actually registered an endpoint for.
-    fn api_interface(&self, set: &EndpointSet) -> String {
+    fn api_interface(&self, set: &EndpointSet, changes: Option<&TableChanges<'_>>) -> String {
         let name = &self.model.name;
         let p = &self.pascal;
         let mut out = format!("/** Reading and writing `{name}`. */\nexport interface {p}Api {{\n");
@@ -1008,12 +1164,24 @@ impl TableClient<'_> {
                 let _ = writeln!(out, "  {}: FileApi<{id_ty}>;", file.field);
             }
         }
+        if let Some(changes) = changes {
+            let _ = writeln!(
+                out,
+                "  /** Changes to `{name}` as they are written, over the `{}` stream — what `useLiveRows` follows. */",
+                changes.stream
+            );
+            let _ = writeln!(
+                out,
+                "  readonly changes: LiveChangesStream<{}, {}>;",
+                changes.typing.schema, changes.typing.key_type
+            );
+        }
         out.push_str("}\n\n");
         out
     }
 
     /// The factory's implementation of this table's object.
-    fn implementation(&self, set: &EndpointSet) -> String {
+    fn implementation(&self, set: &EndpointSet, changes: Option<&TableChanges<'_>>) -> String {
         let p = &self.pascal;
         let mut out = format!("  const {}: {p}Api = {{\n", self.property);
 
@@ -1090,6 +1258,9 @@ impl TableClient<'_> {
                 out.push_str("      },\n");
                 out.push_str("    },\n");
             }
+        }
+        if let Some(changes) = changes {
+            let _ = writeln!(out, "    changes: live.{},", changes.stream);
         }
 
         out.push_str("  };\n");
@@ -1320,14 +1491,23 @@ export function liveUrl(baseUrl: string, path: string): string {
   return url.toString();
 }
 
-/** A `subscribe` frame: the topic only when there is one. */
-function subscribeFrame(sub: string, stream: string, topic: string | undefined): Record<string, unknown> {
-  return topic === undefined ? { type: "subscribe", sub, stream } : { type: "subscribe", sub, stream, topic };
+/** A `subscribe` frame: the topic and the filter only when there is one. */
+function subscribeFrame(
+  sub: string,
+  stream: string,
+  topic: string | undefined,
+  filter: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const frame: Record<string, unknown> = { type: "subscribe", sub, stream };
+  if (topic !== undefined) frame["topic"] = topic;
+  if (filter !== undefined) frame["filter"] = filter;
+  return frame;
 }
 
 type LiveEntry = {
   stream: string;
   topic: string | undefined;
+  filter: Record<string, unknown> | undefined;
   handlers: LiveHandlers<unknown>;
   ready: boolean;
 };
@@ -1398,12 +1578,39 @@ export class LiveConnection {
     };
   }
 
-  /** Subscribe to `stream` (on `topic`, for a row stream), opening the socket if this is the first subscription. */
-  subscribe<E>(stream: string, handlers: LiveHandlers<E>, topic?: string): LiveSubscription {
+  /** The accessor for the stream called `name`, of the changes to `table`, whose primary key is `key`. */
+  changesStream<Sch extends TableSchema, Key = LiveTopic>(
+    name: string,
+    table: string,
+    key: string,
+  ): LiveChangesStream<Sch, Key> {
+    return {
+      name,
+      table,
+      key,
+      connection: this,
+      subscribe: (query, handlers) => {
+        const where = query.where === undefined ? undefined : whereObject(query.where);
+        return this.subscribe(name, handlers, undefined, where);
+      },
+    };
+  }
+
+  /**
+   * Subscribe to `stream` (on `topic`, for a row stream; with `filter`, the
+   * filter object, for a stream of changes), opening the socket if this is the
+   * first subscription.
+   */
+  subscribe<E>(
+    stream: string,
+    handlers: LiveHandlers<E>,
+    topic?: string,
+    filter?: Record<string, unknown>,
+  ): LiveSubscription {
     const sub = `s${this.nextSub++}`;
-    this.entries.set(sub, { stream, topic, handlers: handlers as LiveHandlers<unknown>, ready: false });
+    this.entries.set(sub, { stream, topic, filter, handlers: handlers as LiveHandlers<unknown>, ready: false });
     if (this.socket && this.socket.readyState === 1) {
-      this.send(subscribeFrame(sub, stream, topic));
+      this.send(subscribeFrame(sub, stream, topic, filter));
     } else {
       this.open();
     }
@@ -1449,7 +1656,7 @@ export class LiveConnection {
       this.setStatus("open");
       this.entries.forEach((entry, sub) => {
         entry.ready = false;
-        this.send(subscribeFrame(sub, entry.stream, entry.topic));
+        this.send(subscribeFrame(sub, entry.stream, entry.topic, entry.filter));
         if (reconnect) entry.handlers.resync?.();
       });
     };
@@ -1538,6 +1745,456 @@ export class LiveConnection {
         // A frame this client was generated before: ignored, never thrown on.
         break;
     }
+  }
+}
+
+"#;
+
+/// A table's rows kept current by its stream of changes (TODO.md "Live
+/// updates" §6, L3.10–L3.11), as a client speaks it.
+///
+/// Framework-neutral, so it is in the helper rather than in a React file: the
+/// filter a change subscription is sent with, the pure reducer that applies one
+/// change to a read's rows ([`applyLiveChange`](LIVE_ROWS), unit-tested in
+/// `ui/admin` without a server), and [`LiveRows`](LIVE_ROWS), which reads,
+/// subscribes with the same filter and keeps the two together. React's
+/// `useLiveRows` (the scaffold's `live-react.ts`) is a hook over it, and a Vue
+/// or Saltcorn UI page can use it as it stands.
+///
+/// **One filter type.** A subscription's `where` is the REST read's own
+/// `Filters<Row>` — `{ board: "eq.7" }` — so the read and the subscription
+/// cannot be written in two vocabularies that disagree. The client lowers each
+/// `op.value` to the socket's filter object (`{ board: { eq: "7" } }`) the way
+/// the server lowers a query string, and the server coerces the text against
+/// the column exactly as it does for a REST read.
+///
+/// **What the reducer trusts.** A change with a row stands in for a read of
+/// that row only when the read would answer the same object: whole rows, or a
+/// `select` of plain columns (the row is cut to them). A `select` that embeds
+/// or renames, or a stream whose payload is the key alone, makes the reducer
+/// ask for those keys again instead, batched into one read per tick.
+///
+/// **Order.** The rows stay in `orderBy`'s order, compared in JavaScript:
+/// numbers as numbers, text by code unit (the `C` collation), and nulls as
+/// Postgres places them (last ascending, first descending). With no `orderBy`,
+/// a new row goes at the end. A read's own order is kept as the server gave it
+/// until a change moves something.
+///
+/// **Consistency.** A full read starts once the subscription is `ready` —
+/// first, after every reconnect (`resync`), and after `lagged` — and changes
+/// that arrive while it is in flight are applied on top of it, in order, when
+/// it lands. Delivery is in commit order, so the rows end as the last change
+/// left them. A read of changed keys that a newer change overtook is dropped.
+const LIVE_ROWS: &str = r#"// --- live rows --------------------------------------------------------------
+
+/**
+ * One change to a table's rows, as one subscriber is sent it. `insert`,
+ * `update` and `enter` (a row came into this subscriber's view) carry the row
+ * unless the stream sends keys only; `leave` (a row left the view) and `delete`
+ * never do.
+ */
+export type LiveChange<Row, Key = LiveTopic> =
+  | { op: "insert" | "update" | "enter"; key: Key; row?: Row }
+  | { op: "leave" | "delete"; key: Key; row?: undefined };
+
+/** An element of a stream in its envelope, its `value` typed `V`. */
+export type LiveEnvelope<V> = {
+  stream: string;
+  /** The topic it was published on, for a stream with topics. */
+  topic?: string;
+  value: V;
+  /** When *this server* saw it — not a claim about when it was produced. */
+  received_at: string;
+  source?: unknown;
+};
+
+/** Which rows a subscription to a table's changes is about: the REST read's own filters. */
+export type LiveChangesQuery<Row> = { where?: Filters<Row> };
+
+/** A stream of a table's changes: subscribe with the filter a read of the table would use. */
+export interface LiveChangesStream<Sch extends TableSchema, Key = LiveTopic> {
+  readonly name: string;
+  readonly connection: LiveConnection;
+  /** The table whose changes these are. */
+  readonly table: string;
+  /** Its primary key's column, which every change's `key` is a value of. */
+  readonly key: string;
+  subscribe(
+    query: LiveChangesQuery<Sch["row"]>,
+    handlers: LiveHandlers<LiveEnvelope<LiveChange<Sch["row"], Key>>>,
+  ): LiveSubscription;
+}
+
+/**
+ * A REST read's `Filters` as the socket's filter object: `{ board: "eq.7" }`
+ * is `{ board: { eq: "7" } }`, `in.(1,2)` a list, `is_null.true` a boolean —
+ * the same lowering the server gives a query string, so a read and a
+ * subscription with one filter are about the same rows.
+ */
+export function whereObject(filters: { readonly [column: string]: string | undefined }): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [column, spec] of Object.entries(filters)) {
+    if (spec === undefined) continue;
+    const dot = spec.indexOf(".");
+    if (dot < 0) {
+      throw new Error(`\`${column}: "${spec}"\` is not a filter: a filter is "op.value", e.g. "eq.${spec}"`);
+    }
+    const op = spec.slice(0, dot);
+    out[column] = { [op]: filterOperand(op, spec.slice(dot + 1)) };
+  }
+  return out;
+}
+
+/** One operand as the server reads it: text, except a list for `in`/`nin` and a boolean for `is_null`. */
+function filterOperand(op: string, operand: string): unknown {
+  if (op === "in" || op === "nin") {
+    if (!operand.startsWith("(") || !operand.endsWith(")")) return operand;
+    const items: string[] = [];
+    let current = "";
+    let quoted = false;
+    for (const c of operand.slice(1, -1)) {
+      if (c === '"') quoted = !quoted;
+      else if (c === "," && !quoted) {
+        items.push(current);
+        current = "";
+      } else current += c;
+    }
+    if (current !== "" || items.length > 0) items.push(current);
+    return items;
+  }
+  if (op === "is_null") return operand === "true" ? true : operand === "false" ? false : operand;
+  return operand;
+}
+
+/** How a read's rows are kept: by which key, in which order, cut to which columns. */
+export interface LiveRowsPlan {
+  /** The primary key's column. */
+  key: string;
+  /** The order the rows are kept in, most significant first. */
+  order: Array<{ column: string; desc: boolean }>;
+  /** The columns a change's row is cut to, or `undefined` for whole rows. */
+  columns: string[] | undefined;
+  /** Whether a change's row cannot stand in for a read, so changed rows are read again. */
+  refetch: boolean;
+  /** The `select` the read is made with: the caller's, plus the key and order columns it needs. */
+  select: string | undefined;
+}
+
+/** The top-level items of a `select`: split on the commas outside any `(…)`. */
+function selectItems(select: string): string[] {
+  const items: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const c of select) {
+    if (c === "(") depth += 1;
+    if (c === ")") depth = Math.max(0, depth - 1);
+    if (c === "," && depth === 0) {
+      items.push(current.trim());
+      current = "";
+    } else current += c;
+  }
+  items.push(current.trim());
+  return items.filter((item) => item !== "");
+}
+
+/** Plan how the rows of a read with `orderBy` and `select` are kept, by the key column `key`. */
+export function liveRowsPlan(key: string, options: { orderBy?: string; select?: string } = {}): LiveRowsPlan {
+  const order = (options.orderBy ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item !== "")
+    .map((item) => {
+      const [column, direction] = item.split(".");
+      return { column: column ?? item, desc: direction === "desc" };
+    });
+  const items = selectItems(options.select ?? "");
+  if (items.length === 0) return { key, order, columns: undefined, refetch: false, select: undefined };
+  // An embed or an alias answers something other than the table's row: the
+  // stream's row cannot stand in for it.
+  const refetch = items.some((item) => item.includes("(") || item.includes(":"));
+  const needed = [key, ...order.map((o) => o.column)].filter((column) => !items.includes(column));
+  const all = [...items, ...needed.filter((column, i) => needed.indexOf(column) === i)];
+  return { key, order, columns: refetch ? undefined : all, refetch, select: all.join(",") };
+}
+
+/** Two column values in an order's sense: nulls last (ascending), numbers as numbers, text by code unit. */
+function compareValues(a: unknown, b: unknown): number {
+  const aNull = a === null || a === undefined;
+  const bNull = b === null || b === undefined;
+  if (aNull || bNull) return aNull === bNull ? 0 : aNull ? 1 : -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "boolean" && typeof b === "boolean") return Number(a) - Number(b);
+  const x = typeof a === "string" ? a : JSON.stringify(a);
+  const y = typeof b === "string" ? b : JSON.stringify(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/** `rows` in the plan's order — a stable sort, so ties keep the order they had. */
+export function sortLiveRows<R>(rows: readonly R[], plan: LiveRowsPlan): R[] {
+  if (plan.order.length === 0) return [...rows];
+  return [...rows].sort((a, b) => {
+    for (const { column, desc } of plan.order) {
+      const c = compareValues((a as Record<string, unknown>)[column], (b as Record<string, unknown>)[column]);
+      if (c !== 0) return desc ? -c : c;
+    }
+    return 0;
+  });
+}
+
+/** A row's key, as text: `7` and `"7"` are the same row. */
+function rowKey(row: unknown, plan: LiveRowsPlan): string {
+  return String((row as Record<string, unknown>)[plan.key]);
+}
+
+/** A change's row cut to the plan's columns. */
+function cutRow(row: object, plan: LiveRowsPlan): object {
+  if (plan.columns === undefined) return row;
+  const out: Record<string, unknown> = {};
+  for (const column of plan.columns) out[column] = (row as Record<string, unknown>)[column];
+  return out;
+}
+
+/** `rows` with `row` put in place of the row with its key, or added, and in order. */
+function upsertRow<R>(rows: readonly R[], row: R, plan: LiveRowsPlan): R[] {
+  const key = rowKey(row, plan);
+  const at = rows.findIndex((each) => rowKey(each, plan) === key);
+  const next = [...rows];
+  if (at >= 0) next[at] = row;
+  else next.push(row);
+  return sortLiveRows(next, plan);
+}
+
+/** What applying one change does: the rows after it, and a key to read again if the change could not say. */
+export interface LiveRowsStep<R> {
+  rows: R[];
+  refetch?: unknown;
+}
+
+/**
+ * Apply one change to a read's rows. `leave` and `delete` take the row out;
+ * `insert`, `update` and `enter` put it in, in order — or, when the change has
+ * no row or its row is not what the read answers, leave the rows as they are
+ * and name the key to read again.
+ */
+export function applyLiveChange<R>(
+  rows: readonly R[],
+  change: LiveChange<unknown, unknown>,
+  plan: LiveRowsPlan,
+): LiveRowsStep<R> {
+  const key = String(change.key);
+  switch (change.op) {
+    case "leave":
+    case "delete":
+      return { rows: rows.filter((row) => rowKey(row, plan) !== key) };
+    case "insert":
+    case "update":
+    case "enter":
+      if (change.row === undefined || change.row === null || plan.refetch) {
+        return { rows: [...rows], refetch: change.key };
+      }
+      return { rows: upsertRow(rows, cutRow(change.row as object, plan) as R, plan) };
+    default:
+      // An op this client was generated before: read the row again rather than guess.
+      return { rows: [...rows], refetch: (change as { key: unknown }).key };
+  }
+}
+
+/**
+ * The rows a read of `keys` answered, merged into `rows`: each key the read
+ * answered is put in place, and each it did not — deleted, or no longer
+ * readable — is taken out.
+ */
+export function mergeLiveRows<R>(
+  rows: readonly R[],
+  keys: readonly unknown[],
+  read: readonly R[],
+  plan: LiveRowsPlan,
+): R[] {
+  const answered = new Map(read.map((row) => [rowKey(row, plan), row]));
+  let next = [...rows];
+  for (const key of keys.map(String)) {
+    const row = answered.get(key);
+    next = row === undefined ? next.filter((each) => rowKey(each, plan) !== key) : upsertRow(next, row, plan);
+  }
+  return next;
+}
+
+/** An `in.(…)` list item, quoted when it holds a comma or a quote of its own. */
+function listItem(key: unknown): string {
+  const text = String(key);
+  return /[,"()]/.test(text) ? `"${text.replace(/"/g, "")}"` : text;
+}
+
+/** How rows are read and kept live: the read's filter, order and `select`. */
+export type LiveRowsOptions<Row, S extends string = ""> = {
+  /** The read's filters, and the subscription's — one value for both. */
+  where?: Filters<Row>;
+  orderBy?: Order<Row>;
+  select?: S;
+};
+
+/** A table the client reads and whose changes the application exposes: what `LiveRows` needs. */
+export interface LiveTable<Sch extends TableSchema = TableSchema, Key = LiveTopic> {
+  list(query?: { select?: string; filter?: Filters<Sch["row"]>; order?: Order<Sch["row"]> }): Promise<unknown[]>;
+  readonly changes: LiveChangesStream<Sch, Key>;
+}
+
+/** What `LiveRows` holds: the rows, whether a read is in flight, and the last failure. */
+export interface LiveRowsState<R> {
+  rows: R[];
+  /** A full read is in flight (the first, or one after a reconnect or a lag). */
+  loading: boolean;
+  /** A read that failed, or the server refusing the subscription. */
+  error: Error | LiveError | undefined;
+}
+
+/**
+ * A read of a table kept current by its changes: reads once the subscription
+ * is ready, applies each change, and reads again after a reconnect or a lag.
+ * `current` is a new object after every change and the same object between
+ * them, so it can back `useSyncExternalStore` as it stands.
+ */
+export class LiveRows<R> {
+  private state: LiveRowsState<R> = { rows: [], loading: true, error: undefined };
+  private readonly listeners = new Set<() => void>();
+  private subscription: LiveSubscription | undefined;
+  private generation = 0;
+  private reading = false;
+  private waiting: Array<LiveChange<unknown, unknown>> = [];
+  private readonly versions = new Map<string, number>();
+  private readonly pending = new Map<string, unknown>();
+  private scheduled = false;
+  private readonly table: LiveTable<TableSchema, unknown>;
+  private readonly options: LiveRowsOptions<object, string>;
+  readonly plan: LiveRowsPlan;
+
+  constructor(table: LiveTable<TableSchema, unknown>, options: LiveRowsOptions<object, string> = {}) {
+    this.table = table;
+    this.options = options;
+    this.plan = liveRowsPlan(table.changes.key, {
+      orderBy: options.orderBy as string | undefined,
+      select: options.select,
+    });
+  }
+
+  /** The rows as they are now. */
+  get current(): LiveRowsState<R> {
+    return this.state;
+  }
+
+  /** Be told after every change to `current`. Returns the function that stops it. */
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Subscribe, and read once the subscription is ready. Starting again after `close` is allowed. */
+  start(): void {
+    if (this.subscription) return;
+    this.subscription = this.table.changes.subscribe(
+      { where: this.options.where },
+      {
+        // The first `ready`, and the one after every reconnect (`resync`):
+        // what arrived while the socket was down is gone, so read it all again.
+        ready: () => this.refresh(),
+        element: (envelope) => this.receive(envelope.value),
+        lagged: () => this.refresh(),
+        error: (error) => this.set({ ...this.state, loading: false, error }),
+      },
+    );
+  }
+
+  /** Stop following the table. */
+  close(): void {
+    this.generation += 1;
+    this.reading = false;
+    this.waiting = [];
+    this.pending.clear();
+    this.subscription?.close();
+    this.subscription = undefined;
+  }
+
+  /** Read every row again; changes that arrive meanwhile are applied on top. */
+  refresh(): void {
+    const generation = ++this.generation;
+    this.reading = true;
+    this.waiting = [];
+    this.pending.clear();
+    if (!this.state.loading) this.set({ ...this.state, loading: true });
+    this.table
+      .list({ select: this.plan.select, filter: this.options.where, order: this.options.orderBy })
+      .then(
+        (rows) => {
+          if (generation !== this.generation) return;
+          this.reading = false;
+          let next = rows as R[];
+          const waiting = this.waiting;
+          this.waiting = [];
+          for (const change of waiting) next = this.step(next, change);
+          this.set({ rows: next, loading: false, error: undefined });
+        },
+        (error: unknown) => {
+          if (generation !== this.generation) return;
+          this.reading = false;
+          this.set({ ...this.state, loading: false, error: error instanceof Error ? error : new Error(String(error)) });
+        },
+      );
+  }
+
+  private set(state: LiveRowsState<R>): void {
+    this.state = state;
+    this.listeners.forEach((listener) => listener());
+  }
+
+  private receive(change: LiveChange<unknown, unknown>): void {
+    if (this.reading) {
+      this.waiting.push(change);
+      return;
+    }
+    this.set({ ...this.state, rows: this.step(this.state.rows, change) });
+  }
+
+  /** Apply one change, counting it against its key and asking for the key again if the change could not say. */
+  private step(rows: R[], change: LiveChange<unknown, unknown>): R[] {
+    const key = String(change.key);
+    this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
+    const step = applyLiveChange<R>(rows, change, this.plan);
+    if (step.refetch !== undefined) this.schedule(step.refetch);
+    return step.rows;
+  }
+
+  private schedule(key: unknown): void {
+    this.pending.set(String(key), key);
+    if (this.scheduled) return;
+    this.scheduled = true;
+    queueMicrotask(() => {
+      this.scheduled = false;
+      this.readKeys();
+    });
+  }
+
+  /** Read the keys changes could not say enough about, in one read. */
+  private readKeys(): void {
+    const keys = Array.from(this.pending.values());
+    this.pending.clear();
+    if (keys.length === 0) return;
+    const generation = this.generation;
+    const asked = new Map(keys.map((key) => [String(key), this.versions.get(String(key)) ?? 0]));
+    const filter = { [this.plan.key]: `in.(${keys.map(listItem).join(",")})` } as Filters<object>;
+    this.table.list({ select: this.plan.select, filter }).then(
+      (rows) => {
+        if (generation !== this.generation) return;
+        // A key a newer change has moved on from is that change's to settle.
+        const current = keys.filter((key) => (this.versions.get(String(key)) ?? 0) === asked.get(String(key)));
+        this.set({ ...this.state, rows: mergeLiveRows(this.state.rows, current, rows as R[], this.plan) });
+      },
+      (error: unknown) => {
+        if (generation !== this.generation) return;
+        this.set({ ...this.state, error: error instanceof Error ? error : new Error(String(error)) });
+      },
+    );
   }
 }
 

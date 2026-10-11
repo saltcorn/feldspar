@@ -9645,13 +9645,14 @@ The plan is TODO.md "Live updates" (milestones L1–L6); this section records wh
 **Milestones L1 and L2 are built**: one socket per page, the access rules and their re-checking
 (L1); the built-in `internal` provider, `user` and `row` topics, retaining the latest element,
 re-checking a row topic when a write could change it, and server-side publishing from the
-`publish` action and `live.publish` in a code body (L2). **L3's first two phases are built**:
+`publish` action and `live.publish` in a code body (L2). **L3's three phases are built**:
 writes are announced after their commit, and the hub hands each committed write somebody is
 subscribed to to its `table_changes` stream (phase 1); a page subscribes to one with a filter in
 the REST read's vocabulary, and each element is decided per subscriber — projected, filtered and
-read-checked — into `insert`, `update`, `enter`, `leave`, `delete` or nothing (phase 2). The
-generated client's typed `subscribe({ where })` and `useLiveRows`, the `document` provider,
-client publishing, presence and the bus are the later milestones.
+read-checked — into `insert`, `update`, `enter`, `leave`, `delete` or nothing (phase 2); and the
+generated client types `subscribe({ where }, handlers)` with the table's row and its read's
+`Filters`, and keeps a read current with `LiveRows` / `useLiveRows` (phase 3). The `document`
+provider, client publishing, presence and the bus are the later milestones.
 
 #### Everything is a stream, and a stream has topics
 
@@ -10035,6 +10036,39 @@ re-subscribing, returning `{ status, error }`), `useLatest(accessor)` (the lates
 `undefined` — a progress bar) and `useLiveStatus`, named in the scaffold's `AGENTS.md`. It
 imports the client only when the app exposes a stream, so a project with none still builds
 under `noUnusedLocals`.
+
+**A table's changes (L3.10–L3.11).** A `table_changes` stream reaches the generator as
+`StreamTopics::Changes { table }`. When the client reads that table, its accessor is a
+`LiveChangesStream<CardsSchema, Key>` whose `subscribe({ where }, handlers)` takes the REST
+read's own `Filters<CardsRow>` (`{ board: "eq.7" }`) — **one filter type** for the read and the
+subscription — and whose envelope is `LiveEnvelope<LiveChange<CardsRow, Key>>`, the change's
+`row` typed as the read's row (`leave` and `delete` have none). The client lowers each `op.value`
+to the socket's filter object (`{ board: { eq: "7" } }`, `in.(…)` to a list, `is_null.*` to a
+boolean) as the server lowers a query string, and the filter travels in the `subscribe` frame
+and again after a reconnect. The table's object carries the same accessor as `changes`
+(`api.cards.changes === api.live.cards_live`; with several such streams on one table, the first
+the app lists). A stream on a table the client does not read is still typed, from its element
+type, but has no key column and nothing to refetch with.
+
+`LiveRows` (in the helper, so framework-neutral) is a read kept current: it subscribes with the
+read's `where`, reads with `where`, `orderBy` and `select` once the subscription is `ready` —
+first, after every reconnect, and after `lagged` — and applies changes that arrive while a read
+is in flight on top of it, in order (delivery is in commit order, so the rows end as the last
+change left them). The reducer, `applyLiveChange`, is pure: `leave`/`delete` take the key out;
+`insert`/`update`/`enter` upsert the row, cut to a plain-column `select`, and keep `orderBy`'s
+order (compared in JavaScript: numbers numerically, text by code unit, nulls last ascending as
+Postgres does; ties keep their order; no order appends). A change with no row (`payload: key`),
+or any change when the `select` embeds or aliases, instead names its key to read again, and those
+keys are read together once per tick (`in.(…)`); a key a newer change overtook is left to that
+change, and one the read no longer answers is taken out. The read's `select` gains the key and
+order columns it leaves out, because the rows are matched and ordered by them. React's
+`useLiveRows(api.cards, { where, orderBy, select })` (`live-react.ts`) is a hook over it,
+returning `{ rows, loading, error, status, refresh }` with `rows` typed `Selected<CardsSchema,
+S>` like `list`; options are compared by value, so an inline object does not resubscribe. Tests:
+the reducer and `LiveRows` against a fake table in `ui/admin/src/liveRows.test.ts` (vitest, no
+server); the generated client run under Node (`sc-api` `live_connection`: the filter frame,
+resent after a reconnect); the types under `tsc` (`typescript_typecheck`, and a component using
+`useLiveRows` against the scaffold's generated runtime).
 
 #### Admin
 

@@ -312,14 +312,23 @@ export function liveUrl(baseUrl: string, path: string): string {
   return url.toString();
 }
 
-/** A `subscribe` frame: the topic only when there is one. */
-function subscribeFrame(sub: string, stream: string, topic: string | undefined): Record<string, unknown> {
-  return topic === undefined ? { type: "subscribe", sub, stream } : { type: "subscribe", sub, stream, topic };
+/** A `subscribe` frame: the topic and the filter only when there is one. */
+function subscribeFrame(
+  sub: string,
+  stream: string,
+  topic: string | undefined,
+  filter: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const frame: Record<string, unknown> = { type: "subscribe", sub, stream };
+  if (topic !== undefined) frame["topic"] = topic;
+  if (filter !== undefined) frame["filter"] = filter;
+  return frame;
 }
 
 type LiveEntry = {
   stream: string;
   topic: string | undefined;
+  filter: Record<string, unknown> | undefined;
   handlers: LiveHandlers<unknown>;
   ready: boolean;
 };
@@ -390,12 +399,39 @@ export class LiveConnection {
     };
   }
 
-  /** Subscribe to `stream` (on `topic`, for a row stream), opening the socket if this is the first subscription. */
-  subscribe<E>(stream: string, handlers: LiveHandlers<E>, topic?: string): LiveSubscription {
+  /** The accessor for the stream called `name`, of the changes to `table`, whose primary key is `key`. */
+  changesStream<Sch extends TableSchema, Key = LiveTopic>(
+    name: string,
+    table: string,
+    key: string,
+  ): LiveChangesStream<Sch, Key> {
+    return {
+      name,
+      table,
+      key,
+      connection: this,
+      subscribe: (query, handlers) => {
+        const where = query.where === undefined ? undefined : whereObject(query.where);
+        return this.subscribe(name, handlers, undefined, where);
+      },
+    };
+  }
+
+  /**
+   * Subscribe to `stream` (on `topic`, for a row stream; with `filter`, the
+   * filter object, for a stream of changes), opening the socket if this is the
+   * first subscription.
+   */
+  subscribe<E>(
+    stream: string,
+    handlers: LiveHandlers<E>,
+    topic?: string,
+    filter?: Record<string, unknown>,
+  ): LiveSubscription {
     const sub = `s${this.nextSub++}`;
-    this.entries.set(sub, { stream, topic, handlers: handlers as LiveHandlers<unknown>, ready: false });
+    this.entries.set(sub, { stream, topic, filter, handlers: handlers as LiveHandlers<unknown>, ready: false });
     if (this.socket && this.socket.readyState === 1) {
-      this.send(subscribeFrame(sub, stream, topic));
+      this.send(subscribeFrame(sub, stream, topic, filter));
     } else {
       this.open();
     }
@@ -441,7 +477,7 @@ export class LiveConnection {
       this.setStatus("open");
       this.entries.forEach((entry, sub) => {
         entry.ready = false;
-        this.send(subscribeFrame(sub, entry.stream, entry.topic));
+        this.send(subscribeFrame(sub, entry.stream, entry.topic, entry.filter));
         if (reconnect) entry.handlers.resync?.();
       });
     };
@@ -530,6 +566,419 @@ export class LiveConnection {
         // A frame this client was generated before: ignored, never thrown on.
         break;
     }
+  }
+}
+
+// --- live rows --------------------------------------------------------------
+
+/**
+ * One change to a table's rows, as one subscriber is sent it. `insert`,
+ * `update` and `enter` (a row came into this subscriber's view) carry the row
+ * unless the stream sends keys only; `leave` (a row left the view) and `delete`
+ * never do.
+ */
+export type LiveChange<Row, Key = LiveTopic> =
+  | { op: "insert" | "update" | "enter"; key: Key; row?: Row }
+  | { op: "leave" | "delete"; key: Key; row?: undefined };
+
+/** An element of a stream in its envelope, its `value` typed `V`. */
+export type LiveEnvelope<V> = {
+  stream: string;
+  /** The topic it was published on, for a stream with topics. */
+  topic?: string;
+  value: V;
+  /** When *this server* saw it — not a claim about when it was produced. */
+  received_at: string;
+  source?: unknown;
+};
+
+/** Which rows a subscription to a table's changes is about: the REST read's own filters. */
+export type LiveChangesQuery<Row> = { where?: Filters<Row> };
+
+/** A stream of a table's changes: subscribe with the filter a read of the table would use. */
+export interface LiveChangesStream<Sch extends TableSchema, Key = LiveTopic> {
+  readonly name: string;
+  readonly connection: LiveConnection;
+  /** The table whose changes these are. */
+  readonly table: string;
+  /** Its primary key's column, which every change's `key` is a value of. */
+  readonly key: string;
+  subscribe(
+    query: LiveChangesQuery<Sch["row"]>,
+    handlers: LiveHandlers<LiveEnvelope<LiveChange<Sch["row"], Key>>>,
+  ): LiveSubscription;
+}
+
+/**
+ * A REST read's `Filters` as the socket's filter object: `{ board: "eq.7" }`
+ * is `{ board: { eq: "7" } }`, `in.(1,2)` a list, `is_null.true` a boolean —
+ * the same lowering the server gives a query string, so a read and a
+ * subscription with one filter are about the same rows.
+ */
+export function whereObject(filters: { readonly [column: string]: string | undefined }): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [column, spec] of Object.entries(filters)) {
+    if (spec === undefined) continue;
+    const dot = spec.indexOf(".");
+    if (dot < 0) {
+      throw new Error(`\`${column}: "${spec}"\` is not a filter: a filter is "op.value", e.g. "eq.${spec}"`);
+    }
+    const op = spec.slice(0, dot);
+    out[column] = { [op]: filterOperand(op, spec.slice(dot + 1)) };
+  }
+  return out;
+}
+
+/** One operand as the server reads it: text, except a list for `in`/`nin` and a boolean for `is_null`. */
+function filterOperand(op: string, operand: string): unknown {
+  if (op === "in" || op === "nin") {
+    if (!operand.startsWith("(") || !operand.endsWith(")")) return operand;
+    const items: string[] = [];
+    let current = "";
+    let quoted = false;
+    for (const c of operand.slice(1, -1)) {
+      if (c === '"') quoted = !quoted;
+      else if (c === "," && !quoted) {
+        items.push(current);
+        current = "";
+      } else current += c;
+    }
+    if (current !== "" || items.length > 0) items.push(current);
+    return items;
+  }
+  if (op === "is_null") return operand === "true" ? true : operand === "false" ? false : operand;
+  return operand;
+}
+
+/** How a read's rows are kept: by which key, in which order, cut to which columns. */
+export interface LiveRowsPlan {
+  /** The primary key's column. */
+  key: string;
+  /** The order the rows are kept in, most significant first. */
+  order: Array<{ column: string; desc: boolean }>;
+  /** The columns a change's row is cut to, or `undefined` for whole rows. */
+  columns: string[] | undefined;
+  /** Whether a change's row cannot stand in for a read, so changed rows are read again. */
+  refetch: boolean;
+  /** The `select` the read is made with: the caller's, plus the key and order columns it needs. */
+  select: string | undefined;
+}
+
+/** The top-level items of a `select`: split on the commas outside any `(…)`. */
+function selectItems(select: string): string[] {
+  const items: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const c of select) {
+    if (c === "(") depth += 1;
+    if (c === ")") depth = Math.max(0, depth - 1);
+    if (c === "," && depth === 0) {
+      items.push(current.trim());
+      current = "";
+    } else current += c;
+  }
+  items.push(current.trim());
+  return items.filter((item) => item !== "");
+}
+
+/** Plan how the rows of a read with `orderBy` and `select` are kept, by the key column `key`. */
+export function liveRowsPlan(key: string, options: { orderBy?: string; select?: string } = {}): LiveRowsPlan {
+  const order = (options.orderBy ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item !== "")
+    .map((item) => {
+      const [column, direction] = item.split(".");
+      return { column: column ?? item, desc: direction === "desc" };
+    });
+  const items = selectItems(options.select ?? "");
+  if (items.length === 0) return { key, order, columns: undefined, refetch: false, select: undefined };
+  // An embed or an alias answers something other than the table's row: the
+  // stream's row cannot stand in for it.
+  const refetch = items.some((item) => item.includes("(") || item.includes(":"));
+  const needed = [key, ...order.map((o) => o.column)].filter((column) => !items.includes(column));
+  const all = [...items, ...needed.filter((column, i) => needed.indexOf(column) === i)];
+  return { key, order, columns: refetch ? undefined : all, refetch, select: all.join(",") };
+}
+
+/** Two column values in an order's sense: nulls last (ascending), numbers as numbers, text by code unit. */
+function compareValues(a: unknown, b: unknown): number {
+  const aNull = a === null || a === undefined;
+  const bNull = b === null || b === undefined;
+  if (aNull || bNull) return aNull === bNull ? 0 : aNull ? 1 : -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "boolean" && typeof b === "boolean") return Number(a) - Number(b);
+  const x = typeof a === "string" ? a : JSON.stringify(a);
+  const y = typeof b === "string" ? b : JSON.stringify(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/** `rows` in the plan's order — a stable sort, so ties keep the order they had. */
+export function sortLiveRows<R>(rows: readonly R[], plan: LiveRowsPlan): R[] {
+  if (plan.order.length === 0) return [...rows];
+  return [...rows].sort((a, b) => {
+    for (const { column, desc } of plan.order) {
+      const c = compareValues((a as Record<string, unknown>)[column], (b as Record<string, unknown>)[column]);
+      if (c !== 0) return desc ? -c : c;
+    }
+    return 0;
+  });
+}
+
+/** A row's key, as text: `7` and `"7"` are the same row. */
+function rowKey(row: unknown, plan: LiveRowsPlan): string {
+  return String((row as Record<string, unknown>)[plan.key]);
+}
+
+/** A change's row cut to the plan's columns. */
+function cutRow(row: object, plan: LiveRowsPlan): object {
+  if (plan.columns === undefined) return row;
+  const out: Record<string, unknown> = {};
+  for (const column of plan.columns) out[column] = (row as Record<string, unknown>)[column];
+  return out;
+}
+
+/** `rows` with `row` put in place of the row with its key, or added, and in order. */
+function upsertRow<R>(rows: readonly R[], row: R, plan: LiveRowsPlan): R[] {
+  const key = rowKey(row, plan);
+  const at = rows.findIndex((each) => rowKey(each, plan) === key);
+  const next = [...rows];
+  if (at >= 0) next[at] = row;
+  else next.push(row);
+  return sortLiveRows(next, plan);
+}
+
+/** What applying one change does: the rows after it, and a key to read again if the change could not say. */
+export interface LiveRowsStep<R> {
+  rows: R[];
+  refetch?: unknown;
+}
+
+/**
+ * Apply one change to a read's rows. `leave` and `delete` take the row out;
+ * `insert`, `update` and `enter` put it in, in order — or, when the change has
+ * no row or its row is not what the read answers, leave the rows as they are
+ * and name the key to read again.
+ */
+export function applyLiveChange<R>(
+  rows: readonly R[],
+  change: LiveChange<unknown, unknown>,
+  plan: LiveRowsPlan,
+): LiveRowsStep<R> {
+  const key = String(change.key);
+  switch (change.op) {
+    case "leave":
+    case "delete":
+      return { rows: rows.filter((row) => rowKey(row, plan) !== key) };
+    case "insert":
+    case "update":
+    case "enter":
+      if (change.row === undefined || change.row === null || plan.refetch) {
+        return { rows: [...rows], refetch: change.key };
+      }
+      return { rows: upsertRow(rows, cutRow(change.row as object, plan) as R, plan) };
+    default:
+      // An op this client was generated before: read the row again rather than guess.
+      return { rows: [...rows], refetch: (change as { key: unknown }).key };
+  }
+}
+
+/**
+ * The rows a read of `keys` answered, merged into `rows`: each key the read
+ * answered is put in place, and each it did not — deleted, or no longer
+ * readable — is taken out.
+ */
+export function mergeLiveRows<R>(
+  rows: readonly R[],
+  keys: readonly unknown[],
+  read: readonly R[],
+  plan: LiveRowsPlan,
+): R[] {
+  const answered = new Map(read.map((row) => [rowKey(row, plan), row]));
+  let next = [...rows];
+  for (const key of keys.map(String)) {
+    const row = answered.get(key);
+    next = row === undefined ? next.filter((each) => rowKey(each, plan) !== key) : upsertRow(next, row, plan);
+  }
+  return next;
+}
+
+/** An `in.(…)` list item, quoted when it holds a comma or a quote of its own. */
+function listItem(key: unknown): string {
+  const text = String(key);
+  return /[,"()]/.test(text) ? `"${text.replace(/"/g, "")}"` : text;
+}
+
+/** How rows are read and kept live: the read's filter, order and `select`. */
+export type LiveRowsOptions<Row, S extends string = ""> = {
+  /** The read's filters, and the subscription's — one value for both. */
+  where?: Filters<Row>;
+  orderBy?: Order<Row>;
+  select?: S;
+};
+
+/** A table the client reads and whose changes the application exposes: what `LiveRows` needs. */
+export interface LiveTable<Sch extends TableSchema = TableSchema, Key = LiveTopic> {
+  list(query?: { select?: string; filter?: Filters<Sch["row"]>; order?: Order<Sch["row"]> }): Promise<unknown[]>;
+  readonly changes: LiveChangesStream<Sch, Key>;
+}
+
+/** What `LiveRows` holds: the rows, whether a read is in flight, and the last failure. */
+export interface LiveRowsState<R> {
+  rows: R[];
+  /** A full read is in flight (the first, or one after a reconnect or a lag). */
+  loading: boolean;
+  /** A read that failed, or the server refusing the subscription. */
+  error: Error | LiveError | undefined;
+}
+
+/**
+ * A read of a table kept current by its changes: reads once the subscription
+ * is ready, applies each change, and reads again after a reconnect or a lag.
+ * `current` is a new object after every change and the same object between
+ * them, so it can back `useSyncExternalStore` as it stands.
+ */
+export class LiveRows<R> {
+  private state: LiveRowsState<R> = { rows: [], loading: true, error: undefined };
+  private readonly listeners = new Set<() => void>();
+  private subscription: LiveSubscription | undefined;
+  private generation = 0;
+  private reading = false;
+  private waiting: Array<LiveChange<unknown, unknown>> = [];
+  private readonly versions = new Map<string, number>();
+  private readonly pending = new Map<string, unknown>();
+  private scheduled = false;
+  private readonly table: LiveTable<TableSchema, unknown>;
+  private readonly options: LiveRowsOptions<object, string>;
+  readonly plan: LiveRowsPlan;
+
+  constructor(table: LiveTable<TableSchema, unknown>, options: LiveRowsOptions<object, string> = {}) {
+    this.table = table;
+    this.options = options;
+    this.plan = liveRowsPlan(table.changes.key, {
+      orderBy: options.orderBy as string | undefined,
+      select: options.select,
+    });
+  }
+
+  /** The rows as they are now. */
+  get current(): LiveRowsState<R> {
+    return this.state;
+  }
+
+  /** Be told after every change to `current`. Returns the function that stops it. */
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Subscribe, and read once the subscription is ready. Starting again after `close` is allowed. */
+  start(): void {
+    if (this.subscription) return;
+    this.subscription = this.table.changes.subscribe(
+      { where: this.options.where },
+      {
+        // The first `ready`, and the one after every reconnect (`resync`):
+        // what arrived while the socket was down is gone, so read it all again.
+        ready: () => this.refresh(),
+        element: (envelope) => this.receive(envelope.value),
+        lagged: () => this.refresh(),
+        error: (error) => this.set({ ...this.state, loading: false, error }),
+      },
+    );
+  }
+
+  /** Stop following the table. */
+  close(): void {
+    this.generation += 1;
+    this.reading = false;
+    this.waiting = [];
+    this.pending.clear();
+    this.subscription?.close();
+    this.subscription = undefined;
+  }
+
+  /** Read every row again; changes that arrive meanwhile are applied on top. */
+  refresh(): void {
+    const generation = ++this.generation;
+    this.reading = true;
+    this.waiting = [];
+    this.pending.clear();
+    if (!this.state.loading) this.set({ ...this.state, loading: true });
+    this.table
+      .list({ select: this.plan.select, filter: this.options.where, order: this.options.orderBy })
+      .then(
+        (rows) => {
+          if (generation !== this.generation) return;
+          this.reading = false;
+          let next = rows as R[];
+          const waiting = this.waiting;
+          this.waiting = [];
+          for (const change of waiting) next = this.step(next, change);
+          this.set({ rows: next, loading: false, error: undefined });
+        },
+        (error: unknown) => {
+          if (generation !== this.generation) return;
+          this.reading = false;
+          this.set({ ...this.state, loading: false, error: error instanceof Error ? error : new Error(String(error)) });
+        },
+      );
+  }
+
+  private set(state: LiveRowsState<R>): void {
+    this.state = state;
+    this.listeners.forEach((listener) => listener());
+  }
+
+  private receive(change: LiveChange<unknown, unknown>): void {
+    if (this.reading) {
+      this.waiting.push(change);
+      return;
+    }
+    this.set({ ...this.state, rows: this.step(this.state.rows, change) });
+  }
+
+  /** Apply one change, counting it against its key and asking for the key again if the change could not say. */
+  private step(rows: R[], change: LiveChange<unknown, unknown>): R[] {
+    const key = String(change.key);
+    this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
+    const step = applyLiveChange<R>(rows, change, this.plan);
+    if (step.refetch !== undefined) this.schedule(step.refetch);
+    return step.rows;
+  }
+
+  private schedule(key: unknown): void {
+    this.pending.set(String(key), key);
+    if (this.scheduled) return;
+    this.scheduled = true;
+    queueMicrotask(() => {
+      this.scheduled = false;
+      this.readKeys();
+    });
+  }
+
+  /** Read the keys changes could not say enough about, in one read. */
+  private readKeys(): void {
+    const keys = Array.from(this.pending.values());
+    this.pending.clear();
+    if (keys.length === 0) return;
+    const generation = this.generation;
+    const asked = new Map(keys.map((key) => [String(key), this.versions.get(String(key)) ?? 0]));
+    const filter = { [this.plan.key]: `in.(${keys.map(listItem).join(",")})` } as Filters<object>;
+    this.table.list({ select: this.plan.select, filter }).then(
+      (rows) => {
+        if (generation !== this.generation) return;
+        // A key a newer change has moved on from is that change's to settle.
+        const current = keys.filter((key) => (this.versions.get(String(key)) ?? 0) === asked.get(String(key)));
+        this.set({ ...this.state, rows: mergeLiveRows(this.state.rows, current, rows as R[], this.plan) });
+      },
+      (error: unknown) => {
+        if (generation !== this.generation) return;
+        this.set({ ...this.state, error: error instanceof Error ? error : new Error(String(error)) });
+      },
+    );
   }
 }
 
