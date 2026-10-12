@@ -52,6 +52,8 @@ workaround an agent wrote because the server lacked something small.
 - **F1.7 — the React CSP default** is now `img-src 'self' data: blob:` and
   `media-src 'self' blob:`. `AGENTS.md` gains a CSP section (where the policy is, how to widen
   it with `update_application`'s `csp` section, and that it needs `allow_access_changes`).
+  `sc-server`'s `admin_applications_api` test of a new React app's policy now expects the
+  widened `img-src` and asserts the new `media-src`.
 - **F1.8 — CLI:** `feldspar role list [--json] | add NAME --level N [--description] | delete
   NAME`, `feldspar delete-user EMAIL`, and `modify-user EMAIL --disabled|--enabled` (which
   ends the account's sessions when disabling).

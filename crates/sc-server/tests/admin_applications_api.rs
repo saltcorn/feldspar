@@ -524,7 +524,8 @@ async fn the_react_framework_is_offered_first_and_brings_its_own_defaults() -> s
     // longer picks the bundler is not asked to work out the policy it needs.
     let csp = &created["csp"];
     assert_eq!(csp["default-src"], json!(["'self'"]));
-    assert_eq!(csp["img-src"], json!(["'self'", "data:"]));
+    assert_eq!(csp["img-src"], json!(["'self'", "data:", "blob:"]));
+    assert_eq!(csp["media-src"], json!(["'self'", "blob:"]));
     assert_eq!(csp["connect-src"], json!(["'self'"]));
     // Framable by the admin on the base domain, and by nobody else: that is
     // the preview pane beside the builder agent's chat (TODO "The preview
