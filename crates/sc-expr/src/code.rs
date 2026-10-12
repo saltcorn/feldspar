@@ -107,6 +107,10 @@ use async_trait::async_trait;
 use sc_error::{Error, Result};
 use serde_json::Value as Json;
 
+use crate::code_library::CodeLibraries;
+#[cfg(feature = "eval")]
+use crate::code_library::{LIB, compile_error, library_definition, library_key};
+
 #[cfg(feature = "eval")]
 use std::cell::RefCell;
 #[cfg(feature = "eval")]
@@ -960,6 +964,10 @@ pub struct CodeCall<'a> {
     /// How many module functions this run may call
     /// ([`DEFAULT_MAX_MODULE_CALLS`]).
     pub max_module_calls: u32,
+    /// The code libraries this run's `lib(name)` may import (TODO F3.2),
+    /// already resolved for the body's application. `None` imports nothing:
+    /// `lib` is still in scope, and says there is no such library.
+    pub libraries: Option<Arc<CodeLibraries>>,
 }
 
 impl Default for CodeCall<'_> {
@@ -981,6 +989,7 @@ impl Default for CodeCall<'_> {
             max_file_ops: DEFAULT_MAX_FILE_OPS,
             max_trigger_runs: DEFAULT_MAX_TRIGGER_RUNS,
             max_module_calls: DEFAULT_MAX_MODULE_CALLS,
+            libraries: None,
         }
     }
 }
@@ -1060,6 +1069,13 @@ impl std::fmt::Debug for CodeCall<'_> {
             .field("max_file_ops", &self.max_file_ops)
             .field("max_trigger_runs", &self.max_trigger_runs)
             .field("max_module_calls", &self.max_module_calls)
+            .field(
+                "libraries",
+                &self
+                    .libraries
+                    .as_ref()
+                    .map(|set| set.names().map(str::to_owned).collect::<Vec<_>>()),
+            )
             .finish()
     }
 }
@@ -1178,7 +1194,7 @@ pub(crate) const CONSOLE_METHODS: [&str; 6] = ["log", "info", "warn", "error", "
 /// rather than something that works on one isolate and not another. Lexical, no
 /// deletion, no effect on module code, and escapable through `globalThis` — but
 /// not by accident, which is the whole of what is wanted.
-#[cfg(feature = "eval")]
+#[cfg_attr(not(feature = "eval"), allow(dead_code))]
 pub(crate) const SHADOWED_NODE_GLOBALS: [&str; 7] = [
     "process",
     "Deno",
@@ -3835,13 +3851,74 @@ const SETUP: &str = r#"
   // so a run's script carries the source only the first time and is
   // `__scInvoke(token, key, bindings)` every time after.
   const bodies = new Map();
-  fixed("__scDefine", (key, wantsDb, wantsFetch, wantsFs, wantsTrigger, wantsModFn, wantsLive, wantsV1, wantsConsole, body) => {
+  fixed("__scDefine", (key, wantsDb, wantsFetch, wantsFs, wantsTrigger, wantsModFn, wantsLive, wantsV1, wantsConsole, wantsLib, body) => {
     bodies.set(key, {
       body: body, wantsDb: wantsDb, wantsFetch: wantsFetch, wantsFs: wantsFs,
       wantsTrigger: wantsTrigger, wantsModFn: wantsModFn, wantsLive: wantsLive,
-      wantsV1: wantsV1, wantsConsole: wantsConsole,
+      wantsV1: wantsV1, wantsConsole: wantsConsole, wantsLib: wantsLib,
     });
   });
+  // The code libraries compiled on this isolate (TODO F3.2), by content key:
+  // a function to evaluate, or the reason it does not compile. Compiled once
+  // per isolate; *evaluated* once per run, on that run's handles, because a
+  // handle is bound to its run's token and dies with it.
+  const libraries = new Map();
+  fixed("__scDefineLib", (key, fn) => { libraries.set(key, { fn: fn, broken: null }); });
+  fixed("__scBrokenLib", (key, message) => { libraries.set(key, { fn: null, broken: message }); });
+  fixed("__scForgetLib", (key) => { libraries.delete(key); });
+  // What a save's compile check asks: null, or why the library does not compile.
+  fixed("__scLibraryError", (key) => {
+    const held = libraries.get(key);
+    return held === undefined ? "the library was not compiled" : held.broken;
+  });
+  const own = (object, name) => Object.prototype.hasOwnProperty.call(object, name);
+  // One run's `lib`: what it may import (name → key), the handles it passes on,
+  // and the exports it has already evaluated, so a library two others import
+  // runs once per run. `loading` is the chain being evaluated, which is what a
+  // cycle is reported as.
+  const makeLib = (visible, handles, user) => {
+    const loaded = new Map();
+    const loading = [];
+    const lib = (name) => {
+      if (typeof name !== "string") {
+        throw new TypeError("lib(name) takes the name of a code library, as a string");
+      }
+      if (loaded.has(name)) return loaded.get(name);
+      const at = loading.indexOf(name);
+      if (at >= 0) {
+        throw new Error(
+          "code libraries import each other in a cycle: " +
+          loading.slice(at).concat([name]).join(" → ")
+        );
+      }
+      if (!own(visible, name)) {
+        const names = Object.keys(visible);
+        throw new Error(
+          "there is no code library named `" + name + "`" +
+          (names.length > 0
+            ? " (this code can import: " + names.join(", ") + ")"
+            : " — this code can import none")
+        );
+      }
+      const held = libraries.get(visible[name]);
+      if (held === undefined) {
+        throw new Error("code library `" + name + "` is not compiled on this isolate");
+      }
+      if (held.broken !== null) {
+        throw new SyntaxError("code library `" + name + "` does not compile: " + held.broken);
+      }
+      const module = { exports: {} };
+      loading.push(name);
+      try {
+        held.fn(module.exports, module, lib, user, ...handles);
+      } finally {
+        loading.pop();
+      }
+      loaded.set(name, module.exports);
+      return module.exports;
+    };
+    return Object.freeze(lib);
+  };
   // The schema snapshot this isolate holds, keyed by the catalog generation it
   // was built at (TODO "the v1 `Table` API" §2). One entry: a generation is
   // bumped by a catalog reload, so the previous one is of no use to any run that
@@ -3885,7 +3962,8 @@ const SETUP: &str = r#"
     const what = typeof specifier === "string" ? "`" + specifier + "`" : "a module";
     throw new Error(
       "require(" + what + ") is not available in a code body: a code body is " +
-      "not a module, and this server loads no packages into one" +
+      "not a module, and this server loads no packages into one; code shared " +
+      "between bodies goes in a code library, imported with `lib(\"name\")`" +
       (hasV1
         ? ". Saltcorn 1's `Table` and `Field` are already in scope here — " +
           "delete the line that requires them"
@@ -3926,7 +4004,7 @@ const SETUP: &str = r#"
     }
     fail(token, describe(e));
   };
-  fixed("__scInvoke", (token, key, bindings, stores, triggers, functions, schemaGeneration, consoleMethods) => {
+  fixed("__scInvoke", (token, key, bindings, stores, triggers, functions, schemaGeneration, consoleMethods, libs) => {
     const entry = bodies.get(key);
     if (entry === undefined) {
       // Unreachable while the Rust side and this map agree, which they do
@@ -3994,6 +4072,13 @@ const SETUP: &str = r#"
       // Last in the list, because it is the one handle every body may have:
       // appending it keeps every other parameter where it was.
       if (entry.wantsConsole) handles.push(__scMakeConsole(token, consoleMethods));
+      // `lib` after the console, and built over every handle before it: a
+      // library runs with exactly what the importing run has (TODO F3.2).
+      if (entry.wantsLib) {
+        const user = bindings !== null && typeof bindings === "object" && own(bindings, "user")
+          ? bindings.user : null;
+        handles.push(makeLib(libs || {}, handles.slice(1), user));
+      }
       running = entry.body(...handles);
     } catch (e) {
       failed(token, e);
@@ -5220,6 +5305,8 @@ struct CodeRun {
     max_file_ops: u32,
     max_trigger_runs: u32,
     max_module_calls: u32,
+    /// The libraries `lib(name)` may import ([`CodeCall::libraries`]).
+    libraries: Option<Arc<CodeLibraries>>,
     /// When the wall clock this run is being measured against started — set only
     /// on a run that is being **re-queued** after its isolate was terminated
     /// under it. A second start is not a second timeout: the caller is still
@@ -5621,6 +5708,7 @@ impl CodeRuntime {
                     max_file_ops: call.max_file_ops,
                     max_trigger_runs: call.max_trigger_runs,
                     max_module_calls: call.max_module_calls,
+                    libraries: call.libraries.clone(),
                     started: None,
                 }),
                 reply,
@@ -6302,6 +6390,9 @@ fn start_run(
     // The module functions, on the same terms again: installing or configuring
     // a module reloads the set, and one compiled body serves every run.
     let functions = module_functions_json(&run.module_functions);
+    // The libraries this run may import, compiled here — before the run's own
+    // script, because `lib` is synchronous — and named to the guest by key.
+    let libraries = define_libraries(runtime, &scripts, run.libraries.as_deref(), cache);
     let script = build_script(
         &scripts,
         &token,
@@ -6310,6 +6401,7 @@ fn start_run(
         &stores,
         &triggers,
         &functions,
+        &libraries,
         define_schema,
         generation,
     );
@@ -6403,6 +6495,60 @@ fn start_run(
     }
 }
 
+/// Make sure every library `set` holds is compiled on this isolate for this
+/// run's handle set, and answer the guest's view of the set: a JSON object from
+/// each name to the key its compiled function is held under.
+///
+/// One script per library that is not held yet, and named after the library
+/// (`lib:<name>.js`), so the engine's report of a syntax error names the
+/// library and its line. A library that does not compile is recorded as its
+/// error ([`compile_error`]) rather than failing the run: a body that never
+/// imports it must not be broken by it, and one that does is told why by
+/// `lib()`.
+///
+/// Compiling runs none of the library's code — the definition is a function
+/// expression — so this is outside every run's watchdog slice and needs none.
+#[cfg(feature = "eval")]
+fn define_libraries(
+    runtime: &mut deno_core::JsRuntime,
+    scripts: &RunScripts,
+    set: Option<&CodeLibraries>,
+    cache: &mut IsolateCache,
+) -> String {
+    let mut visible = serde_json::Map::new();
+    let Some(set) = set else {
+        return "{}".to_owned();
+    };
+    for (name, code) in set.iter() {
+        let definition = library_definition(code, &scripts.library_params, scripts.wants_db);
+        let key = library_key(&definition);
+        if !cache.libraries.holds(key, &definition) {
+            let defined = runtime.execute_script(
+                format!("lib:{name}.js"),
+                format!("__scDefineLib(\"{key:016x}\", {definition});"),
+            );
+            if let Err(e) = defined {
+                let message = Json::String(compile_error(name, &e.to_string()));
+                let recorded = runtime.execute_script(
+                    "sc_lib_broken.js",
+                    format!("__scBrokenLib(\"{key:016x}\", {message});"),
+                );
+                if recorded.is_err() {
+                    // Not held: the next run carries it again, and tries again.
+                    visible.insert(name.to_owned(), Json::String(format!("{key:016x}")));
+                    continue;
+                }
+            }
+            for gone in cache.libraries.store(key, definition) {
+                let _ = runtime
+                    .execute_script("sc_forget.js", format!("__scForgetLib(\"{gone:016x}\");"));
+            }
+        }
+        visible.insert(name.to_owned(), Json::String(format!("{key:016x}")));
+    }
+    Json::Object(visible).to_string()
+}
+
 /// Give a job's place in the occupancy count back, for a job that never made it
 /// into the table.
 #[cfg(feature = "eval")]
@@ -6474,6 +6620,13 @@ struct RunScripts {
     /// `console` of its own — the console is not a capability, it is the way a
     /// body says what it is doing.
     wants_console: bool,
+    /// Whether it takes `lib` (TODO F3.2): every body that has not bound a
+    /// `lib` of its own, last of all the handles.
+    wants_lib: bool,
+    /// The handles a library imported by this run is compiled to take, in the
+    /// order the guest passes them (`db` … `console`), followed by the shadowed
+    /// node globals a library may not reach either.
+    library_params: Vec<&'static str>,
 }
 
 /// Build one code body's definition and one run's arguments: the bindings as
@@ -6616,6 +6769,17 @@ fn build_run_scripts(call: &CodeRun) -> Result<RunScripts> {
     if wants_console {
         names.push(CONSOLE);
     }
+    // A library imported by this run takes the handles above — the very ones
+    // the guest passes the body after its bindings — and nothing else of the
+    // body's: not its bindings (but `user`, which the guest passes on its own),
+    // not `lib` (a library is handed its own), and the node globals shadowed
+    // just as they are here.
+    let library_params = crate::code_library::library_params(names[1..].to_vec());
+    // After the console, for the console's reason: appending it moved nothing.
+    let wants_lib = !call.bindings.contains_key(LIB);
+    if wants_lib {
+        names.push(LIB);
+    }
     // §1a: the node globals, shadowed as parameters nobody passes. A binding of
     // the same name wins — it is already a `const` in this function's body, and
     // a parameter beside it would be a redeclaration and so a body that will not
@@ -6647,6 +6811,8 @@ fn build_run_scripts(call: &CodeRun) -> Result<RunScripts> {
         wants_live,
         wants_v1,
         wants_console,
+        wants_lib,
+        library_params,
     })
 }
 
@@ -6809,6 +6975,11 @@ struct CachedBody {
 #[cfg(feature = "eval")]
 struct IsolateCache {
     bodies: BodyCache,
+    /// The code libraries compiled on this isolate (TODO F3.2), keyed exactly
+    /// as bodies are and bounded the same way. A library that did not compile
+    /// is held too — as its error — so a broken library costs one failed
+    /// compile per isolate and not one per run.
+    libraries: BodyCache,
     /// The generation of the snapshot defined on this isolate, or `None` before
     /// any run has carried one.
     ///
@@ -6823,6 +6994,7 @@ impl IsolateCache {
     fn new() -> IsolateCache {
         IsolateCache {
             bodies: BodyCache::new(),
+            libraries: BodyCache::new(),
             schema: None,
         }
     }
@@ -6905,6 +7077,7 @@ fn build_script(
     stores: &str,
     triggers: &str,
     functions: &str,
+    libraries: &str,
     define_schema: Option<&SchemaSnapshot>,
     generation: Option<u64>,
 ) -> String {
@@ -6919,6 +7092,8 @@ fn build_script(
         wants_live,
         wants_v1,
         wants_console,
+        wants_lib,
+        library_params: _,
     } = scripts;
     let mut script = String::new();
     // Before the definition, because a body's very first run is also the run
@@ -6940,7 +7115,7 @@ fn build_script(
         script.push_str(&format!(
             "__scDefine(\"{key:016x}\", {wants_db}, {wants_fetch}, {wants_files}, \
              {wants_triggers}, {wants_module_fns}, {wants_live}, {wants_v1}, {wants_console}, \
-             {definition});\n"
+             {wants_lib}, {definition});\n"
         ));
     }
     // The token is 32 hex characters this crate minted and the key is 16 this
@@ -6955,7 +7130,7 @@ fn build_script(
         serde_json::to_string(&CONSOLE_METHODS).unwrap_or_else(|_| "[]".to_owned());
     script.push_str(&format!(
         "__scInvoke(\"{token}\", \"{key:016x}\", {args}, {stores}, {triggers}, {functions}, \
-         {generation}, {console_methods});"
+         {generation}, {console_methods}, {libraries});"
     ));
     script
 }
@@ -8832,6 +9007,7 @@ mod tests {
             max_file_ops: 10,
             max_trigger_runs: 10,
             max_module_calls: 10,
+            libraries: None,
             schema: None,
             console: None,
             started: None,
@@ -8923,6 +9099,7 @@ mod tests {
             "[]",
             "[]",
             "[]",
+            "{}",
             Some(&fifth),
             Some(5),
         );
@@ -8937,14 +9114,27 @@ mod tests {
 
         // A hit carries one integer and no JSON at all — the whole reason a
         // generation exists rather than a hash of the schema.
-        let hit = build_script(&scripts, "bb", key, true, "[]", "[]", "[]", None, Some(5));
+        let hit = build_script(
+            &scripts,
+            "bb",
+            key,
+            true,
+            "[]",
+            "[]",
+            "[]",
+            "{}",
+            None,
+            Some(5),
+        );
         assert!(!hit.contains("__scDefineSchema"), "{hit}");
         assert!(!hit.contains("books"), "the schema travelled: {hit}");
         assert!(hit.contains(", 5, [\"log\""), "{hit}");
 
         // And a run with no snapshot at all names none, so the guest resolves
         // nothing rather than the last schema some other run left behind.
-        let none = build_script(&scripts, "cc", key, true, "[]", "[]", "[]", None, None);
+        let none = build_script(
+            &scripts, "cc", key, true, "[]", "[]", "[]", "{}", None, None,
+        );
         assert!(none.contains(", null, [\"log\""), "{none}");
     }
 
@@ -8961,7 +9151,9 @@ mod tests {
             "nothing is warm yet"
         );
 
-        let miss = build_script(&scripts, "aa", key, false, "[]", "[]", "[]", None, None);
+        let miss = build_script(
+            &scripts, "aa", key, false, "[]", "[]", "[]", "{}", None, None,
+        );
         assert!(miss.contains("__scDefine"), "{miss}");
         assert!(miss.contains("return secret + 1;"), "{miss}");
         assert!(miss.contains("__scInvoke"), "{miss}");
@@ -8971,7 +9163,9 @@ mod tests {
             cache.holds(key, &scripts.definition),
             "the isolate has it now"
         );
-        let hit = build_script(&scripts, "bb", key, true, "[]", "[]", "[]", None, None);
+        let hit = build_script(
+            &scripts, "bb", key, true, "[]", "[]", "[]", "{}", None, None,
+        );
         assert!(!hit.contains("__scDefine"), "{hit}");
         assert!(
             !hit.contains("return secret + 1;"),
@@ -12613,5 +12807,152 @@ mod tests {
         c.bindings.insert("Table".into(), json!(1));
         c.bindings.insert("Field".into(), json!(2));
         assert_eq!(rt.run(c).await.unwrap(), json!(3));
+    }
+
+    // -----------------------------------------------------------------------
+    // Code libraries (TODO F3.2)
+    // -----------------------------------------------------------------------
+
+    fn libraries(set: &[(&str, &str)]) -> Option<Arc<CodeLibraries>> {
+        Some(Arc::new(CodeLibraries::new(set.iter().copied())))
+    }
+
+    #[tokio::test]
+    async fn two_bodies_share_a_library_and_an_edit_reaches_both() {
+        let rt = CodeRuntime::with_workers(1);
+        let v1 = libraries(&[("greet", "exports.hello = (who) => `hello ${who}`;")]);
+        let mut first = call(r#"return lib("greet").hello("a");"#);
+        first.libraries = v1.clone();
+        let mut second = call(r#"const { hello } = lib("greet"); return hello("b") + "!";"#);
+        second.libraries = v1;
+        assert_eq!(rt.run(first.clone()).await.unwrap(), json!("hello a"));
+        assert_eq!(rt.run(second.clone()).await.unwrap(), json!("hello b!"));
+
+        // An edit is new text and so a new key: the same isolate compiles it
+        // and both bodies answer from it on their next run.
+        let v2 = libraries(&[("greet", "module.exports = { hello: (who) => `hi ${who}` };")]);
+        first.libraries = v2.clone();
+        second.libraries = v2;
+        assert_eq!(rt.run(first).await.unwrap(), json!("hi a"));
+        assert_eq!(rt.run(second).await.unwrap(), json!("hi b!"));
+    }
+
+    #[tokio::test]
+    async fn a_library_is_evaluated_once_per_run_with_the_runs_own_handles() {
+        let host = FakeHost::rows(json!([{ "id": 1 }, { "id": 2 }]));
+        let rt = CodeRuntime::with_workers(1);
+        let set = libraries(&[
+            (
+                "counter",
+                "let n = 0; exports.next = () => ++n; exports.who = () => user && user.email;",
+            ),
+            (
+                "books",
+                "exports.count = async () => (await db.books.rows()).length;",
+            ),
+        ]);
+        let mut c = with_host(
+            r#"
+            const a = lib("counter"), b = lib("counter");
+            a.next(); b.next();
+            return [a === b, a.next(), a.who(), await lib("books").count()];
+            "#,
+            &*host,
+        );
+        c.bindings
+            .insert("user".into(), json!({ "email": "a@b.c" }));
+        c.libraries = set.clone();
+        assert_eq!(
+            rt.run(c.clone()).await.unwrap(),
+            json!([true, 3, "a@b.c", 2])
+        );
+        // The library's `db` call went over this run's host.
+        assert_eq!(host.plans().len(), 1);
+        // A second run starts from a fresh evaluation: module state never
+        // carries from one caller to the next.
+        assert_eq!(rt.run(c).await.unwrap(), json!([true, 3, "a@b.c", 2]));
+    }
+
+    #[tokio::test]
+    async fn a_library_has_no_handle_the_importing_body_lacks() {
+        let rt = CodeRuntime::with_workers(1);
+        let mut c = call(r#"return lib("net").get();"#);
+        c.libraries = libraries(&[(
+            "net",
+            "exports.get = () => typeof db + ' ' + typeof process;",
+        )]);
+        // No host: `db` is no parameter of the library either, and the node
+        // globals are shadowed there as they are in a body.
+        assert_eq!(rt.run(c).await.unwrap(), json!("undefined undefined"));
+    }
+
+    #[tokio::test]
+    async fn a_cycle_names_the_chain() {
+        let rt = CodeRuntime::with_workers(1);
+        let mut c = call(r#"return lib("a");"#);
+        c.libraries = libraries(&[
+            ("a", r#"exports.b = lib("b");"#),
+            ("b", r#"exports.c = lib("c");"#),
+            ("c", r#"exports.a = lib("a");"#),
+        ]);
+        let err = rt.run(c).await.unwrap_err().to_string();
+        assert!(err.contains("cycle: a → b → c → a"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_library_is_named_with_what_could_be_imported() {
+        let rt = CodeRuntime::with_workers(1);
+        let mut c = call(r#"return lib("nope");"#);
+        c.libraries = libraries(&[("auth", ""), ("util", "")]);
+        let err = rt.run(c).await.unwrap_err().to_string();
+        assert!(err.contains("no code library named `nope`"), "{err}");
+        assert!(err.contains("auth, util"), "{err}");
+        // With no set at all, `lib` is still in scope and says so.
+        let err = rt
+            .run(call(r#"return lib("auth");"#))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("can import none"), "{err}");
+        // And `require` now points at it.
+        let err = rt
+            .run(call(r#"return require("./auth");"#))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("lib(\"name\")"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_library_that_does_not_compile_breaks_only_its_importers() {
+        let rt = CodeRuntime::with_workers(1);
+        let set = libraries(&[
+            ("broken", "exports.a = 1;\nexports.b = = 2;"),
+            ("ok", "exports.v = 7;"),
+        ]);
+        let mut fine = call(r#"return lib("ok").v;"#);
+        fine.libraries = set.clone();
+        assert_eq!(rt.run(fine).await.unwrap(), json!(7));
+        let mut importer = call(r#"return lib("broken").a;"#);
+        importer.libraries = set;
+        let err = rt.run(importer).await.unwrap_err().to_string();
+        assert!(err.contains("`broken` does not compile"), "{err}");
+        assert!(err.contains("SyntaxError"), "{err}");
+        assert!(err.contains("(line 2)"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_save_check_names_the_line_and_runs_nothing() {
+        let engine = crate::DenoEvaluator::new();
+        let ran = crate::check_code_library(&engine, "exports.a = 1;\nthrow new Error('ran');")
+            .await
+            .unwrap();
+        assert_eq!(ran, None, "compiling is not running");
+        let err = crate::check_code_library(&engine, "exports.a = 1;\n\nexports.b = (;")
+            .await
+            .unwrap()
+            .expect("a syntax error");
+        assert!(err.starts_with("SyntaxError"), "{err}");
+        assert!(err.contains("(line 3)"), "{err}");
     }
 }

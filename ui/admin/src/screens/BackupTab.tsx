@@ -600,6 +600,26 @@ function IncludeFields({
             }
           />
         )}
+        {contents.code_libraries > 0 && (
+          <Form.Check
+            type="checkbox"
+            id={`${idPrefix}-code-libraries`}
+            className="mb-2"
+            checked={selection.code_libraries}
+            onChange={(e) => onChange({ ...selection, code_libraries: e.target.checked })}
+            label={
+              <>
+                <span className="fw-semibold"><T text="Code libraries" /></span>
+                <div className="text-muted small">
+                  {t(
+                    "{count} code libraries. One that belongs to an application needs that application restored too.",
+                    { count: contents.code_libraries },
+                  )}
+                </div>
+              </>
+            }
+          />
+        )}
         {contents.triggers > 0 && (
           <Form.Check
             type="checkbox"

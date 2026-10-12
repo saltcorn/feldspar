@@ -80,10 +80,14 @@ use serde_json::{Map, Value as Json, json};
 use crate::{ApiConfig, Application};
 
 mod create;
+mod libraries;
 mod translate;
 mod update;
 
 pub use create::{TOOL_CREATE_APP, TOOL_CREATE_STORE};
+pub use libraries::{
+    TOOL_DELETE_CODE_LIBRARY, TOOL_DESCRIBE_CODE_LIBRARIES, TOOL_SAVE_CODE_LIBRARY,
+};
 pub use translate::{TOOL_DESCRIBE_TRANSLATIONS, TOOL_SAVE_TRANSLATIONS};
 pub use update::TOOL_UPDATE_APP;
 
@@ -108,6 +112,7 @@ pub fn app_tools() -> Vec<Arc<dyn AdminTool>> {
     tools.extend(translate::translate_tools());
     tools.push(Arc::new(SaveQuery));
     tools.push(Arc::new(DeleteQuery));
+    tools.extend(libraries::library_tools());
     tools
 }
 

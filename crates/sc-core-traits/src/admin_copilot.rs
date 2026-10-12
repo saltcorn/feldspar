@@ -128,8 +128,9 @@ pub use sc_api::mcp::{
     TOOL_DESCRIBE_TRIGGERS, TOOL_EDIT, TOOL_SAVE_TRIGGER,
 };
 pub use sc_app::mcp::{
-    TOOL_CREATE_APP, TOOL_CREATE_STORE, TOOL_DELETE_QUERY, TOOL_DESCRIBE_APPS,
-    TOOL_DESCRIBE_TRANSLATIONS, TOOL_SAVE_QUERY, TOOL_SAVE_TRANSLATIONS, TOOL_UPDATE_APP,
+    TOOL_CREATE_APP, TOOL_CREATE_STORE, TOOL_DELETE_CODE_LIBRARY, TOOL_DELETE_QUERY,
+    TOOL_DESCRIBE_APPS, TOOL_DESCRIBE_CODE_LIBRARIES, TOOL_DESCRIBE_TRANSLATIONS,
+    TOOL_SAVE_CODE_LIBRARY, TOOL_SAVE_QUERY, TOOL_SAVE_TRANSLATIONS, TOOL_UPDATE_APP,
 };
 
 /// Hands a task to a coding agent as a sub-agent.
@@ -210,14 +211,14 @@ pub struct AdminCopilot;
 
 /// Every tool this trait can offer, under fixed names — the schema's two, the
 /// triggers' four, the code API's reference, the applications' six, the
-/// translations' two and its own two.
+/// translations' two, the code libraries' three and its own two.
 ///
 /// *Can*, not *does*: the two area checkboxes decide whether the trigger and
 /// application halves are offered at all, so a configured instance offers a
 /// subset of these. This is the whole set, which is what the admin UI's "what
 /// will this be called?" and §11.2's collision check want — a name that any
 /// configuration could produce is a name that could collide.
-pub fn tool_names() -> [&'static str; 17] {
+pub fn tool_names() -> [&'static str; 20] {
     [
         TOOL_DESCRIBE,
         TOOL_EDIT,
@@ -234,6 +235,9 @@ pub fn tool_names() -> [&'static str; 17] {
         TOOL_SAVE_TRANSLATIONS,
         TOOL_SAVE_QUERY,
         TOOL_DELETE_QUERY,
+        TOOL_DESCRIBE_CODE_LIBRARIES,
+        TOOL_SAVE_CODE_LIBRARY,
+        TOOL_DELETE_CODE_LIBRARY,
         TOOL_DELEGATE,
         TOOL_PUBLISH,
     ]

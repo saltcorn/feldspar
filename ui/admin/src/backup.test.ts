@@ -46,6 +46,7 @@ const contents: BackupContents = {
   fits: 3,
   llm_providers: 1,
   agents: 1,
+  code_libraries: 2,
   triggers: 4,
   views: 7,
   pages: 1,
@@ -92,6 +93,7 @@ describe("what a backup includes", () => {
       fits: 0,
       llm_providers: 0,
       agents: 0,
+      code_libraries: 0,
       triggers: 0,
       views: 0,
       pages: 0,
@@ -156,16 +158,16 @@ describe("what a backup includes", () => {
 
   it("says what is ticked in a sentence", () => {
     expect(summarise(everything(contents), contents)).toBe(
-      "all 2 tables, 1 application, views, pages, 1 file store, users, modules, database connections, streams, analytics with fits, LLM providers, agents, triggers, SSL settings, other settings.",
+      "all 2 tables, 1 application, views, pages, 1 file store, users, modules, database connections, streams, analytics with fits, LLM providers, agents, code libraries, triggers, SSL settings, other settings.",
     );
 
     const narrowed = withTableData(withTables(everything(contents), ["books"]), []);
     expect(summarise({ ...narrowed, agents: false, ssl: false, pages: false }, contents)).toBe(
-      "1 table, no rows, 1 application, views, 1 file store, users, modules, database connections, streams, analytics with fits, LLM providers, triggers, other settings.",
+      "1 table, no rows, 1 application, views, 1 file store, users, modules, database connections, streams, analytics with fits, LLM providers, code libraries, triggers, other settings.",
     );
     // With no application to carry them, views and pages are not worth a word.
     expect(summarise({ ...narrowed, applications: [], file_stores: [] }, contents)).toBe(
-      "1 table, no rows, users, modules, database connections, streams, analytics with fits, LLM providers, agents, triggers, SSL settings, other settings.",
+      "1 table, no rows, users, modules, database connections, streams, analytics with fits, LLM providers, agents, code libraries, triggers, SSL settings, other settings.",
     );
 
     expect(
@@ -183,6 +185,7 @@ describe("what a backup includes", () => {
           fits: false,
           llm_providers: false,
           agents: false,
+          code_libraries: false,
           triggers: false,
           views: false,
           pages: false,

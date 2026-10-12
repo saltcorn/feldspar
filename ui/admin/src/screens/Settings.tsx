@@ -57,6 +57,7 @@ import {
 import { AdminMove } from "./AdminMove";
 import { BackupTab } from "./BackupTab";
 import { ClearAllPanel } from "./ClearAll";
+import { CodeLibraryPanel } from "./CodeLibraries";
 import { McpTokensPanel } from "./McpTokens";
 import { ModulesTab } from "./ModulesTab";
 import { PythonStatusPanel } from "./PythonStatus";
@@ -420,6 +421,7 @@ function SectionExtra({
       <>
         <PythonStatusPanel />
         <McpTokensPanel enabled={mcpEnabled(stored)} />
+        <CodeLibraryPanel />
         <ClearAllPanel />
       </>
     );

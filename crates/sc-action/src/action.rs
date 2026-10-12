@@ -268,6 +268,11 @@ pub struct ActionContext<'a> {
     /// what `file.url()` answers from. `None` for a trigger with no
     /// application, where every `url()` is `null`.
     file_urls: Option<Arc<dyn FileUrls>>,
+    /// The application a custom query's body belongs to — whose code libraries
+    /// its `lib()` imports over the instance's (TODO F3.2). `None` for a
+    /// trigger, which belongs to no application and imports instance-wide
+    /// libraries only.
+    application: Option<uuid::Uuid>,
 }
 
 impl<'a> ActionContext<'a> {
@@ -298,6 +303,7 @@ impl<'a> ActionContext<'a> {
             in_run: false,
             request: None,
             file_urls: None,
+            application: None,
         }
     }
 
@@ -447,6 +453,17 @@ impl<'a> ActionContext<'a> {
     /// Where the run's application serves store files, if it has one.
     pub fn file_urls(&self) -> Option<&Arc<dyn FileUrls>> {
         self.file_urls.as_ref()
+    }
+
+    /// Run this action as code belonging to `application` (a custom query's).
+    pub fn with_application(mut self, application: Option<uuid::Uuid>) -> ActionContext<'a> {
+        self.application = application;
+        self
+    }
+
+    /// The application this run's code belongs to, if any.
+    pub fn application(&self) -> Option<uuid::Uuid> {
+        self.application
     }
 
     /// Supply the chain this run descends from (`Event::firing`'s result).

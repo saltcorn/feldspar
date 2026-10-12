@@ -264,6 +264,11 @@ pub async fn restore_backup(
     for subdomain in &selection.applications {
         restore_application(catalog, apps, &entries, subdomain, &selection, &mut report).await;
     }
+    // Code libraries after the applications, because one that belongs to an
+    // application is refused unless that application exists here.
+    if selection.code_libraries {
+        restore_code_libraries(catalog, &entries, &mut report).await;
+    }
     if selection.llm_providers {
         restore_llm_providers(catalog, &entries, &mut report).await;
     }
@@ -1838,6 +1843,52 @@ async fn restore_llm_model(
     }
     sc_llm::save_llm_model(catalog, &model).await?;
     Ok(true)
+}
+
+/// Restore the code libraries (TODO F3). One already defined here under the
+/// same name and scope is kept, as a stream is: restore only adds. Each is
+/// compile-checked as an admin's save is.
+async fn restore_code_libraries(catalog: &Catalog, entries: &Entries, report: &mut RestoreReport) {
+    let document = match json_entry(entries, "code-libraries.json") {
+        Ok(document) => document,
+        Err(e) => {
+            report.skipped(format!("code libraries: {}", e.causes()));
+            return;
+        }
+    };
+    for value in array_list(&document) {
+        let name = value
+            .get("name")
+            .and_then(Json::as_str)
+            .unwrap_or("a code library")
+            .to_owned();
+        let result = async {
+            let id = value
+                .get("id")
+                .and_then(Json::as_str)
+                .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+                .unwrap_or_else(uuid::Uuid::new_v4);
+            let library = sc_app::code_library_from_json(id, &value)?;
+            if let Some(here) = sc_catalog::load_code_library_by_name(
+                catalog,
+                &library.name,
+                library.application_id,
+            )
+            .await?
+                && here.id != library.id
+            {
+                // Skipped, not done: the one here is what stays.
+                return Err(Error::invalid(format!(
+                    "{} already has a code library of this name; its code was kept",
+                    library.scope()
+                )));
+            }
+            sc_app::save_code_library_checked(catalog, &library).await?;
+            Ok(String::new())
+        }
+        .await;
+        report.outcome(&format!("code library `{name}`"), result);
+    }
 }
 
 async fn restore_agents(

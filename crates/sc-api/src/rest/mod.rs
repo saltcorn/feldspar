@@ -331,6 +331,9 @@ pub struct RestProvider {
     /// Where the application serves store files — what a code query's
     /// `file.url()` answers from (TODO F2.8).
     file_urls: Option<Arc<dyn sc_action::FileUrls>>,
+    /// The application this provider serves — whose code libraries a code
+    /// query imports (TODO F3.2).
+    application: Option<uuid::Uuid>,
 }
 
 impl RestProvider {
@@ -608,7 +611,15 @@ impl RestProvider {
             evaluator: None,
             row_cap: DEFAULT_ROW_CAP,
             file_urls: None,
+            application: None,
         }
+    }
+
+    /// Say which application this provider serves, so a code query's `lib()`
+    /// imports that application's code libraries (TODO F3.2).
+    pub fn with_application(mut self, application: uuid::Uuid) -> RestProvider {
+        self.application = Some(application);
+        self
     }
 
     /// Say where the application serves store files, so a code query's
@@ -794,6 +805,7 @@ impl RestProvider {
                 &query.code,
                 scope,
                 Some(&caller),
+                self.application,
                 self.file_urls.clone(),
             )
             .await;

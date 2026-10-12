@@ -550,6 +550,8 @@ pub fn app_providers_with(
                 // Where this application serves store files, for a code
                 // query's `file.url()` (TODO F2.8).
                 provider = provider.with_file_urls(Arc::new(crate::AppFileUrls::of(app)));
+                // Whose code libraries its code queries import (TODO F3.2).
+                provider = provider.with_application(app.id.0);
                 if let Some(dispatcher) = dispatcher {
                     provider = provider.with_dispatcher(Arc::clone(dispatcher));
                     // The password links go out through the transport a

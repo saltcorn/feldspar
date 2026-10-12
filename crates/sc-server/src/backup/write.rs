@@ -147,6 +147,11 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
             0
         },
         agents: i64::try_from(sc_agent::list_agents(catalog).await?.len()).unwrap_or(i64::MAX),
+        code_libraries: if has_table(catalog, sc_catalog::CODE_LIBRARIES_TABLE)? {
+            count(sc_catalog::list_code_libraries(catalog).await?.len())
+        } else {
+            0
+        },
         // Bootstrapped by `serve` rather than at connect, so a database no server
         // has run on yet — one a `feldspar backup` can be pointed at — has none.
         triggers: if has_table(catalog, sc_action::TRIGGERS_TABLE)? {
@@ -463,6 +468,19 @@ pub async fn write_backup(catalog: &Catalog, selection: &Selection) -> Result<Ve
             .collect();
         contents.agents = i64::try_from(agents.len()).unwrap_or(i64::MAX);
         zip.json("agents.json", &Json::Array(agents))?;
+    }
+
+    // --- code libraries (TODO F3) ---------------------------------------------
+    // The admin list's own shape, without the "used by" that is recomputed
+    // wherever it is restored.
+    if selection.code_libraries {
+        let libraries: Vec<Json> = sc_catalog::list_code_libraries(catalog)
+            .await?
+            .iter()
+            .map(|library| sc_app::code_library_json(library, None, None))
+            .collect();
+        contents.code_libraries = i64::try_from(libraries.len()).unwrap_or(i64::MAX);
+        zip.json("code-libraries.json", &Json::Array(libraries))?;
     }
 
     // --- triggers ----------------------------------------------------------

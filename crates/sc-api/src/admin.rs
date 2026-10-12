@@ -18,8 +18,8 @@
 //! them to the administration MCP server as tools (§13.6). It is **opt-in and
 //! deliberately sparse**: a coding agent pays for every tool in its context on
 //! every turn, so projecting all of these would be mechanical and wrong. The
-//! thirteen composite tools of `sc_api::mcp` and `sc_app::mcp` plus these seventeen
-//! come to thirty, and the number is a design constraint rather than an outcome —
+//! composite tools of `sc_api::mcp` and `sc_app::mcp` plus these tags are every
+//! tool an agent is offered, and the number is a design constraint rather than an outcome —
 //! `the_tier_two_tags_are_the_ones_that_were_argued_for` is the test that makes
 //! adding one a decision somebody has to write down.
 //!
@@ -1289,6 +1289,58 @@ pub fn admin_endpoints() -> EndpointSet {
                 TypeSchema::int(),
             )]))
             .auth(AuthRequirement::admin()),
+    );
+
+    // --- code libraries (TODO F3) --------------------------------------------
+    // Named, shared JavaScript that code queries and triggers import with
+    // `lib(name)`: instance-wide, or one application's. A save compile-checks
+    // the code (without running it). Not projected to MCP here: MCP has its own
+    // three tools (`describe_code_libraries`, `save_code_library`,
+    // `delete_code_library`), which speak names rather than ids.
+
+    set.register(
+        Endpoint::new(
+            "listCodeLibraries",
+            Method::Get,
+            api().lit("code-libraries"),
+        )
+        .output(TypeSchema::array(code_library_schema()))
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "createCodeLibrary",
+            Method::Post,
+            api().lit("code-libraries"),
+        )
+        .input(code_library_input_schema())
+        .output(code_library_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "updateCodeLibrary",
+            Method::Put,
+            api().lit("code-libraries").param("id", ValueType::Uuid),
+        )
+        .input(code_library_input_schema())
+        .output(code_library_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "deleteCodeLibrary",
+            Method::Delete,
+            api().lit("code-libraries").param("id", ValueType::Uuid),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "deleted",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
     );
 
     // --- agents (configuration) ---------------------------------------------
@@ -4243,6 +4295,7 @@ fn backup_contents_schema() -> TypeSchema {
         StructField::new("fits", TypeSchema::int()),
         StructField::new("llm_providers", TypeSchema::int()),
         StructField::new("agents", TypeSchema::int()),
+        StructField::new("code_libraries", TypeSchema::int()),
         StructField::new("triggers", TypeSchema::int()),
         // The views and pages of every application on offer. They travel with
         // their application: a view restored without the application it belongs
@@ -4277,6 +4330,7 @@ fn backup_selection_schema() -> TypeSchema {
         StructField::new("fits", TypeSchema::bool()),
         StructField::new("llm_providers", TypeSchema::bool()),
         StructField::new("agents", TypeSchema::bool()),
+        StructField::new("code_libraries", TypeSchema::bool()),
         StructField::new("triggers", TypeSchema::bool()),
         StructField::new("views", TypeSchema::bool()),
         StructField::new("pages", TypeSchema::bool()),
@@ -5032,6 +5086,38 @@ fn enabled_trait_schema() -> TypeSchema {
 /// trigger's and a file store's are: an agent naming a provider that was deleted
 /// or a trait configured against a dropped table is **not in the live set** and
 /// will not answer, but it is still stored, still listed and still editable.
+/// A code library's editable fields (TODO F3): what a create or update sends.
+fn code_library_input_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("description", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("code", TypeSchema::text()),
+        // Absent or null: instance-wide.
+        StructField::new("application_id", TypeSchema::optional(TypeSchema::uuid())),
+    ])
+}
+
+/// A code library as listed: its fields, its application's subdomain, and the
+/// queries and triggers whose code imports it by name.
+fn code_library_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("description", TypeSchema::text()),
+        StructField::new("code", TypeSchema::text()),
+        StructField::new("application_id", TypeSchema::optional(TypeSchema::uuid())),
+        StructField::new("application", TypeSchema::optional(TypeSchema::text())),
+        StructField::new(
+            "used_by",
+            TypeSchema::optional(TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("kind", TypeSchema::text()),
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("application", TypeSchema::optional(TypeSchema::text())),
+            ]))),
+        ),
+    ])
+}
+
 fn agent_schema() -> TypeSchema {
     let mut fields = vec![StructField::new("id", TypeSchema::uuid())];
     fields.extend(agent_fields());

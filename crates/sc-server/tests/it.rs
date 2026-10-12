@@ -85,6 +85,8 @@ mod call_api;
 mod clear_all_api;
 #[path = "code_body_tables.rs"]
 mod code_body_tables;
+#[path = "code_libraries.rs"]
+mod code_libraries;
 #[path = "concurrent_code_bodies.rs"]
 mod concurrent_code_bodies;
 #[path = "constraint_api.rs"]
@@ -223,6 +225,8 @@ mod tls_live_domains;
 mod tls_serving;
 #[path = "trigger_admin_api.rs"]
 mod trigger_admin_api;
+#[path = "tutorial_code_library.rs"]
+mod tutorial_code_library;
 #[path = "tutorial_code_queries.rs"]
 mod tutorial_code_queries;
 #[path = "tutorial_live.rs"]

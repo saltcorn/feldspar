@@ -27,6 +27,7 @@ mod admin_host;
 mod calc;
 mod caller;
 mod catalog;
+mod code_libraries;
 mod constraint;
 mod db_connections;
 mod events;
@@ -50,6 +51,11 @@ mod wakeups;
 pub use admin_host::{AdminCall, AdminHost};
 pub use caller::CallerContext;
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
+pub use code_libraries::{
+    CODE_LIBRARIES_TABLE, CodeLibrary, bootstrap_code_libraries, check_code_library_saveable,
+    delete_application_code_libraries, delete_code_library, list_code_libraries, load_code_library,
+    load_code_library_by_name, reload_code_libraries, save_code_library, valid_code_library_name,
+};
 pub use constraint::{
     ConstraintKind, META_KEY as CONSTRAINT_META_KEY, TableConstraint, constrained_fields,
     create_constraint_steps, drop_constraint_steps, formula_fields, full_text_expression,

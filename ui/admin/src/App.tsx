@@ -63,6 +63,7 @@ import { LlmProviderForm } from "./screens/LlmProviderForm";
 import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
 import { Settings } from "./screens/Settings";
+import { CodeLibraries } from "./screens/CodeLibraries";
 import { StreamForm } from "./screens/StreamForm";
 import { StreamObserve } from "./screens/StreamObserve";
 import { Streams } from "./screens/Streams";
@@ -253,7 +254,7 @@ export const NAV: NavItem[] = [
     // Last, and one entry however many sections it grows: settings are about
     // the *installation* rather than about anything in it, and an admin looks
     // for them in one place rather than under whichever thing they configure.
-    matches: ["/settings"],
+    matches: ["/settings", "/code-libraries"],
   },
 ];
 
@@ -770,6 +771,10 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   }
   if (path.startsWith("/settings")) {
     return <Settings />;
+  }
+  // Settings → Development → Code library (TODO F3.3).
+  if (path.startsWith("/code-libraries")) {
+    return <CodeLibraries />;
   }
   return <Tables />;
 }

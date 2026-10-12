@@ -1328,7 +1328,13 @@ expiring share: look the share up, `crypto.password.verify` the password, \
 `throw httpError(403)` or return the file. The check runs on every request.\n\
 - **Large files in code:** `file.read({ offset, length })`, `append`, \
 `dir.file(\"out\").concat([part0, part1])`, `sha256()` and `url()` work \
-host-side; never read a big file whole.\n";
+host-side; never read a big file whole.\n\
+- **Shared code goes in a code library**, never copied into a second query: \
+save it with the MCP tool `save_code_library` (a body assigning to \
+`exports`) and import it with `const { requireUser } = lib(\"auth\")`. It runs \
+with the importing query's own `db`, `fs` and `user`; this app's own library \
+of a name wins over an instance-wide one; `describe_code_libraries` says what \
+exists and who imports it.\n";
 
 /// `AGENTS.md`'s CSP paragraph (TODO F1.7): where the policy is and how to
 /// widen it, because an agent that cannot find it edits `index.html`.

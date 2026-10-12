@@ -36,6 +36,7 @@
 //! streams.json                        [ stream, … ] — secrets included
 //! llm-providers.json                  [ { provider, models: [ model, … ] }, … ] — keys included
 //! agents.json                         [ agent, … ]
+//! code-libraries.json                [ code library, … ]
 //! triggers.json                       [ trigger, … ] — a workflow's current steps inside
 //! settings/<section>.json             one settings section's stored values
 //! ```
@@ -310,6 +311,8 @@ pub struct Available {
     pub llm_providers: i64,
     /// How many agents.
     pub agents: i64,
+    /// How many code libraries (TODO F3).
+    pub code_libraries: i64,
     /// How many triggers.
     pub triggers: i64,
     /// How many Saltcorn UI views, over every application on offer. They travel
@@ -341,6 +344,7 @@ impl Available {
             "fits": self.fits,
             "llm_providers": self.llm_providers,
             "agents": self.agents,
+            "code_libraries": self.code_libraries,
             "triggers": self.triggers,
             "views": self.views,
             "pages": self.pages,
@@ -369,6 +373,7 @@ impl Available {
             fits: count("fits"),
             llm_providers: count("llm_providers"),
             agents: count("agents"),
+            code_libraries: count("code_libraries"),
             triggers: count("triggers"),
             views: count("views"),
             pages: count("pages"),
@@ -443,6 +448,8 @@ pub struct Selection {
     pub llm_providers: bool,
     /// Whether agents are included.
     pub agents: bool,
+    /// Whether code libraries are included (TODO F3).
+    pub code_libraries: bool,
     /// Whether triggers — and a workflow trigger's current steps — are
     /// included. A trigger on a table whose metadata is
     /// *not* included is left out even so — see [`Selection::includes_trigger`].
@@ -493,6 +500,7 @@ impl Selection {
             fits: available.fits > 0 && available.has_analytics(),
             llm_providers: available.llm_providers > 0,
             agents: available.agents > 0,
+            code_libraries: available.code_libraries > 0,
             triggers: available.triggers > 0,
             views: available.views > 0,
             pages: available.pages > 0,
@@ -531,6 +539,7 @@ impl Selection {
             fits: flag(obj, "fits") && flag(obj, "analytics"),
             llm_providers: flag(obj, "llm_providers"),
             agents: flag(obj, "agents"),
+            code_libraries: flag(obj, "code_libraries"),
             triggers: flag(obj, "triggers"),
             views: flag(obj, "views"),
             pages: flag(obj, "pages"),
@@ -554,6 +563,7 @@ impl Selection {
             "fits": self.fits,
             "llm_providers": self.llm_providers,
             "agents": self.agents,
+            "code_libraries": self.code_libraries,
             "triggers": self.triggers,
             "views": self.views,
             "pages": self.pages,
@@ -636,6 +646,7 @@ impl Selection {
             fits: self.fits && self.analytics && available.fits > 0 && available.has_analytics(),
             llm_providers: self.llm_providers && available.llm_providers > 0,
             agents: self.agents && available.agents > 0,
+            code_libraries: self.code_libraries && available.code_libraries > 0,
             triggers: self.triggers && available.triggers > 0,
             views: self.views && available.views > 0,
             pages: self.pages && available.pages > 0,
@@ -682,6 +693,8 @@ pub struct BackupPreferences {
     pub llm_providers: bool,
     /// Whether agents are included.
     pub agents: bool,
+    /// Whether code libraries are included (TODO F3).
+    pub code_libraries: bool,
     /// Whether triggers are included.
     pub triggers: bool,
     /// Whether the chosen applications' views are included.
@@ -711,6 +724,7 @@ impl Default for BackupPreferences {
             fits: false,
             llm_providers: true,
             agents: true,
+            code_libraries: true,
             triggers: true,
             views: true,
             pages: true,
@@ -756,6 +770,7 @@ impl BackupPreferences {
             fits: obj.get("fits").and_then(Json::as_bool).unwrap_or(false),
             llm_providers: on("llm_providers"),
             agents: on("agents"),
+            code_libraries: on("code_libraries"),
             triggers: on("triggers"),
             views: on("views"),
             pages: on("pages"),
@@ -779,6 +794,7 @@ impl BackupPreferences {
             "fits": self.fits,
             "llm_providers": self.llm_providers,
             "agents": self.agents,
+            "code_libraries": self.code_libraries,
             "triggers": self.triggers,
             "views": self.views,
             "pages": self.pages,
@@ -841,6 +857,7 @@ impl BackupPreferences {
             fits: selection.fits,
             llm_providers: selection.llm_providers,
             agents: selection.agents,
+            code_libraries: selection.code_libraries,
             triggers: selection.triggers,
             views: selection.views,
             pages: selection.pages,
@@ -876,6 +893,7 @@ impl BackupPreferences {
             fits: self.fits && self.analytics && available.fits > 0 && available.has_analytics(),
             llm_providers: self.llm_providers && available.llm_providers > 0,
             agents: self.agents && available.agents > 0,
+            code_libraries: self.code_libraries && available.code_libraries > 0,
             triggers: self.triggers && available.triggers > 0,
             views: self.views && available.views > 0,
             pages: self.pages && available.pages > 0,
@@ -929,6 +947,7 @@ mod tests {
             fits: 3,
             llm_providers: 1,
             agents: 1,
+            code_libraries: 1,
             triggers: 4,
             views: 7,
             pages: 1,
@@ -1076,6 +1095,7 @@ mod tests {
             fits: true,
             llm_providers: true,
             agents: true,
+            code_libraries: true,
             triggers: true,
             views: true,
             pages: true,
@@ -1090,6 +1110,7 @@ mod tests {
         // …and against a manifest holding nothing, the flags go off too.
         let empty = asked.intersect(&Available::default());
         assert!(!empty.users && !empty.agents && !empty.triggers && !empty.ssl);
+        assert!(!empty.code_libraries);
         assert!(!empty.views && !empty.pages && !empty.llm_providers);
         assert!(!empty.modules && !empty.db_connections && !empty.streams);
         assert!(!empty.analytics && !empty.fits && !empty.settings);

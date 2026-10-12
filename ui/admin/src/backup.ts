@@ -43,6 +43,7 @@ export const NO_CONTENTS: BackupContents = {
   fits: 0,
   llm_providers: 0,
   agents: 0,
+  code_libraries: 0,
   triggers: 0,
   views: 0,
   pages: 0,
@@ -75,6 +76,7 @@ export function everything(contents: BackupContents): BackupSelection {
     fits: contents.fits > 0 && hasAnalytics(contents),
     llm_providers: contents.llm_providers > 0,
     agents: contents.agents > 0,
+    code_libraries: contents.code_libraries > 0,
     triggers: contents.triggers > 0,
     views: contents.views > 0,
     pages: contents.pages > 0,
@@ -150,6 +152,7 @@ export function isEmpty(selection: BackupSelection): boolean {
     !selection.analytics &&
     !selection.llm_providers &&
     !selection.agents &&
+    !selection.code_libraries &&
     !selection.triggers &&
     !selection.ssl &&
     !selection.settings
@@ -186,6 +189,7 @@ export function summarise(selection: BackupSelection, contents: BackupContents):
   if (selection.analytics) parts.push(selection.fits ? "analytics with fits" : "analytics");
   if (selection.llm_providers) parts.push("LLM providers");
   if (selection.agents) parts.push("agents");
+  if (selection.code_libraries) parts.push("code libraries");
   if (selection.triggers) parts.push("triggers");
   if (selection.ssl) parts.push("SSL settings");
   if (selection.settings) parts.push("other settings");

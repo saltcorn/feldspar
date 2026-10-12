@@ -491,9 +491,9 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
 
 ## F3 — The code library
 
-- [ ] **F3.1** (2.2) `_fd_code_libraries`, its catalog store, and backup/restore as a kind
+- [x] **F3.1** (2.2) `_fd_code_libraries`, its catalog store, and backup/restore as a kind
   (§3.3). Tests: CRUD and the backup round-trip.
-- [ ] **F3.2** (2.2) `lib(name)` in the runtime: resolution (app, then instance), evaluation with
+- [x] **F3.2** (2.2) `lib(name)` in the runtime: resolution (app, then instance), evaluation with
   the caller's handles and authority, the per-isolate cache keyed by generation, cycle errors and
   the `require` message. Tests:
   - two queries share a helper;
@@ -501,9 +501,9 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
   - a library's `fs` under a query running `asUser` cannot read what that user cannot;
   - a cycle names the chain;
   - a trigger with no application cannot see an app library.
-- [ ] **F3.3** (2.2) Admin UI: Settings → Development → Code library (list, editor with the
+- [x] **F3.3** (2.2) Admin UI: Settings → Development → Code library (list, editor with the
   code typings, compile check on save, "used by"). Puppeteer check.
-- [ ] **F3.4** (2.2) MCP: `describe_code_libraries`, `save_code_library` and
+- [x] **F3.4** (2.2) MCP: `describe_code_libraries`, `save_code_library` and
   `delete_code_library` with the grants in §3.3. `describe_code_api` documents `lib()`.
   Tests: the grant refusals, and a save with a syntax error is refused with the line.
 
@@ -513,7 +513,7 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
 2. Use it from two applications' queries. Change `requireUser`'s message once and see both
    change.
 
-- [ ] **F3.5** Tutorial section (in `docs/tutorial-triggers.md` or a new
+- [x] **F3.5** Tutorial section (in `docs/tutorial-triggers.md` or a new
   `docs/tutorial-code-library.md`) and its definition-of-done test. TECHNICAL_DESIGN §10.1.
 
 ---

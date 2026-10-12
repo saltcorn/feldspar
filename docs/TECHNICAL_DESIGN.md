@@ -1372,6 +1372,7 @@ a sparse value goes into `attributes`.**
 | `_fd_pages` | a Saltcorn UI application's pages | the same rules as `_fd_views`: per application, unique by name, a v1-shaped `layout` stored untouched, `min_role`, and `root_page_for_roles`, `no_menu` and `request_fluid_layout` in `attributes` |
 | `_fd_library` | a Saltcorn UI application's library ("shared components" in current v1) | the same rules again: per application, unique by name, deleted with the application. `icon` and a v1-shaped `layout` stored untouched. A layout places an item as `{ type: "library", library_id, slots }`, with `library_id` this table's UUID. Only a `saltcorn-ui` application may write one, and only the admin API writes it; the worker reads it from the view snapshot (§13.3, "The library") |
 | `_fd_translations` | an application's catalogue, for an application with no project tree (§16.1) | the same rules as `_fd_library`: per application, unique by `name` — which is the **locale tag** — and deleted with the application. `messages` is the flat catalogue of §16.1, keyed by the **English source text**. It is the home of a *Saltcorn UI* application's translations, because a Saltcorn UI application's definition is rows; a code application's are files in its repository (`<project>/locales/{locale}.json`), because that is where *its* definition is. Both are behind one `CatalogStore`, so the admin API, the Translations screen and the LLM fill are written once |
+| `_fd_code_libraries` | code libraries (§10.1, "`lib`") | **not an overlay**: named JavaScript that code bodies import with `lib(name)`. `application_id` NULL is instance-wide, otherwise one application's (by value, deleted with the application). `name` is unique per scope, which is checked on save (NULLs are distinct in SQL). Loaded into the catalog at boot and after every change |
 | `_fd_models` | model definitions | **not an overlay** — the row is the model's only definition (§14.2): the provider, the `dataset` (which rows and which derived values, as a list of `sc-expr` formulas), the provider's configuration, the hyperparameter *space* (per key a value or a list to search over) and the split's fractions and seed. `table_name` is derived from the dataset on the way out and checked against it on the way in, so the list can be filtered by table without reading every dataset |
 | `_fd_model_instances` | one fit each | the provider's serialised `state`, its `parameters` (structured for display), the **host's** `metrics` per split, and the `encoding` the fit was made with — which is the load-bearing one: a prediction is encoded the way its fit was, or it fails. `status` is a column because every row has one and it is what the list filters on; the failure **sentence** is in `attributes`, because it is present only on the rows that failed. `active` is a column and at most one row per model carries it |
 | `_fd_streams` | streams: dataflows as an entity | **not an overlay** — there is nothing to introspect a stream from, so the row is its only definition (§14.3): the provider, the `configuration` its `config_spec` declares (secrets stored as given, redacted on the way to a form), `min_role` (the floor for **observing** it through an application; `None` is admin-only, the trigger rule for the trigger reason), and in `attributes` the sparse `enabled` flag. The **element type is not a column**: it is a pure function of `provider` + `configuration`, computed on read, because a stored copy would be a second answer that drifts the day a provider's declaration changes. Nor are the elements — a flow is made durable by a trigger that writes a row, and there is no `_fd_stream_elements` |
@@ -1760,6 +1761,31 @@ erDiagram
     json messages "the flat catalogue: English source text -> translation"
     json attributes
   }
+  UPLOADS["_fd_uploads"] {
+    uuid id PK "the upload's id, in its tus URL"
+    text name "the original filename"
+    text description
+    uuid application "by value"
+    text slot "the application's upload slot"
+    text store
+    text uploader "user id or session"
+    text mime
+    int length
+    int offset "bytes received so far"
+    text temp_path
+    text final_path
+    json meta "what the hook added"
+    bool completed
+    int created "swept after 24 h if not completed"
+    json attributes
+  }
+  CODELIBS["_fd_code_libraries"] {
+    uuid id PK
+    text name "what lib() imports; unique per scope, checked on save"
+    text description
+    text code "assigns to exports"
+    uuid application_id "NULL = instance-wide; by value, deleted with the app"
+  }
   STREAMS["_fd_streams"] {
     uuid id PK
     text name UK "a trigger's channel, an app's StreamRef, a socket path segment"
@@ -1811,6 +1837,8 @@ erDiagram
   APPS ||--o{ PAGES : "application -- by value, deleted with the app"
   APPS ||--o{ LIBRARY : "application -- by value, deleted with the app"
   APPS ||--o{ TRANSLATIONS : "application -- by value, deleted with the app"
+  APPS |o--o{ CODELIBS : "application_id -- by value, deleted with the app"
+  APPS ||--o{ UPLOADS : "application -- by value, the slot's"
   VIEWS }o--o{ LIBRARY : "library_id -- inside configuration JSON"
   PAGES }o--o{ LIBRARY : "library_id -- inside layout JSON"
   VIEWS }o--o| TABLES : "table_name -- by name"
@@ -2440,6 +2468,47 @@ endpoint — chooses its answer:
   trip is a **503** `{ "error": "timeout" }`. The classification (`sc_expr::code_failure`) reads
   the phrases the runtime writes, kept beside the code that writes them. A refusal *before* the
   body runs (a missing required parameter, a role below the floor) keeps its own status.
+
+#### `lib`: code libraries (TODO F3)
+
+A **code library** is named, shared JavaScript that code queries and triggers import:
+`const { requireUser } = lib("auth")`. It is a row of `_fd_code_libraries` (`id`, `name`,
+`description`, `code`, `application_id` — NULL for instance-wide), held in `sc-catalog`
+(`code_libraries.rs`) because every code body runs over a `Catalog`, and loaded into it at boot
+and after every save or delete under a new generation. The admin API (`listCodeLibraries`,
+`createCodeLibrary`, `updateCodeLibrary`, `deleteCodeLibrary`), the screen at Settings →
+Development → Code library, the MCP tools (`describe_code_libraries`, `save_code_library` with
+`allow_edit`, `delete_code_library` with `allow_drop`) and backups (`code-libraries.json`, restored
+after the applications; one already defined here under the same name and scope is kept) all
+go through `sc_app::save_code_library_checked`, which checks the name (identifier-like, unique
+per scope), that the application exists, and that the code **compiles** — compiled on the code
+runtime exactly as a run would compile it, and not run. A syntax error is refused naming its
+line in the library. Deleting an application deletes its libraries.
+
+**Resolution.** A custom query's run carries its application (`ActionContext::with_application`,
+from the REST provider), and imports that application's library of a name over the
+instance's. A trigger belongs to no application and imports instance-wide libraries only —
+however it is fired, so that a trigger body means one thing. `sc_catalog::Catalog::code_libraries_for`
+answers the resolved set (`sc_expr::CodeLibraries`), cached per application and generation.
+
+**Compiled per isolate, evaluated per run.** `lib` is synchronous, so the libraries a run may
+import are compiled onto its isolate *before* its script, each as a function of
+`(exports, module, lib, user, …the run's handles)` under a content key (as bodies are, and in a
+bounded cache of its own): an edit is new text and so a new key, which is what makes an edit
+reach every importer on its next run with nothing to invalidate. A library that does not compile
+is held as its error, so it fails only the runs that import it. A library's top level runs the
+first time a run imports it, **with that run's own handles and `user`** — its `db`, `fs`,
+`fetch` carry the run's authority, so a library can never do more than the body that imported
+it — and the exports are kept for the rest of that run only. The design first said "evaluated
+once per isolate per (library, generation, authority)"; that cannot work, because a handle is
+bound to its run's token and dies with the run, and it would also share module state between
+callers. Compiling is the cost worth caching; evaluating a library is a few function
+definitions. A library imported by a body without a handle does not have that handle either
+(it is no parameter), and the node globals are shadowed in it as in a body.
+
+**Cycles** throw naming the chain (`code libraries import each other in a cycle: a → b → a`).
+An unknown name throws listing what this code can import. `require` still throws, and now
+points at `lib()`. Libraries are JavaScript only: a Python body has no `lib`.
 
 #### `trigger`: another trigger in a code body
 

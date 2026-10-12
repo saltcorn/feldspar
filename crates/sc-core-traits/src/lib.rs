@@ -494,12 +494,13 @@ mod tests {
             ]
         );
         // `admin_copilot`'s names are fixed rather than derived, and say the
-        // same seventeen things every deployment's do — two over the schema,
+        // same twenty things every deployment's do — two over the schema,
         // four over the triggers, one reference for a code body, six over
         // applications (reading, creating one and its store, changing one —
         // its tables, static directories and CSP — and its custom SQL
-        // queries), two over its translations, and its own two: delegating
-        // code to a coding agent and publishing.
+        // queries), two over its translations, three over the code
+        // libraries, and its own two: delegating code to a coding agent and
+        // publishing.
         assert_eq!(
             tool_names::admin_copilot(),
             [
@@ -518,6 +519,9 @@ mod tests {
                 "save_translations",
                 "save_api_query",
                 "delete_api_query",
+                "describe_code_libraries",
+                "save_code_library",
+                "delete_code_library",
                 "delegate_to_coding_agent",
                 "publish_application",
             ]

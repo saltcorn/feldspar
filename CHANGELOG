@@ -2,6 +2,93 @@
 
 Changes in reverse chronological order.
 
+## F3: the code library
+
+TODO.md F3 (field report 2.2): named, shared JavaScript that code queries and triggers
+import with `const { requireUser } = lib("auth")`. Each is instance-wide, or belongs to one
+application.
+
+- **F3.1: storage, catalog and backups.**
+  - `_fd_code_libraries` holds `id`, `name`, `description`, `code` and a nullable
+    `application_id`, in `sc-catalog/src/code_libraries.rs`: `CodeLibrary` and
+    `bootstrap_code_libraries` (called by `connect_catalog`), plus list, load, load by name
+    in a scope, save, delete and `delete_application_code_libraries`.
+  - Names are identifier-like (`-` allowed) and unique per scope. The check is in code,
+    because SQL NULLs are distinct.
+  - The `Catalog` holds the loaded set under a generation. It reloads after every save and
+    delete, and caches the resolved set per application (`code_libraries_for`).
+  - `sc_app::delete_application` deletes the application's libraries.
+  - Backups gain the kind `code-libraries.json`: in `Available`/`Selection`/`BackupPreferences`,
+    the admin backup schemas and the backup screen. Restore runs after the applications. A
+    library already defined under the same name and scope is kept and reported as skipped.
+    One whose application is missing is refused with a reason.
+- **F3.2: `lib()` in the runtime.**
+  - `CodeCall::libraries` carries an `sc_expr::CodeLibraries`, already resolved: the
+    application's own library of a name wins over the instance's.
+  - A custom query's run carries its application, via `RestProvider::with_application`,
+    a new `application` argument to `TriggerDispatcher::run_code`, and
+    `ActionContext::with_application`. A trigger has no application and sees instance
+    libraries only.
+  - Before a run's script, the worker compiles each importable library onto the isolate
+    (`define_libraries`). Each is a function of `(exports, module, lib, user, …the run's
+    handles)`, cached by content key in a bounded per-isolate cache, so an edit is new text and
+    reaches importers on their next run.
+  - A library is **evaluated once per run**, with that run's own handles and `user`, so it has
+    the caller's authority and keeps no state between callers.
+    - This deviates from the design's "evaluated once per isolate per (library, generation,
+      authority)": a handle is bound to its run's token and dies with the run.
+    - TECHNICAL_DESIGN §10.1 records the reason.
+  - A library that does not compile is held as its error, so it fails only the runs that
+    import it.
+  - Cycles throw naming the chain (`a → b → a`). An unknown name lists what the code can
+    import.
+  - `require`'s refusal now points at `lib("name")`.
+  - `sc_expr::check_code_library` compiles without running and reports the error with its
+    line *in the library*. `sc_expr::imported_libraries` scans code for literal `lib("…")`
+    names.
+- **F3.3: admin.**
+  - Admin API: `listCodeLibraries` (with each library's application and `used_by`: the
+    JavaScript queries and `run_js_code` triggers that import it, resolved the way `lib()`
+    resolves), `createCodeLibrary`, `updateCodeLibrary` and `deleteCodeLibrary`.
+  - Every save goes through `sc_app::save_code_library_checked`, which checks the name, the
+    application and that the code compiles.
+  - Settings → Development has a panel linking to the new `#/code-libraries` screen
+    (`screens/CodeLibraries.tsx`, logic in `codeLibraries.ts`). It has the list (scope,
+    used-by count), the code editor with a library's typings (`exports`, `module`, `user`,
+    handles), a scope select, Save, which shows the server's compile error, and Delete,
+    which confirms first when something imports the library.
+  - Every code editor now declares `lib(name)` typed with the existing names
+    (`libDeclarations`, `libraryNames`).
+  - All four UI clients were regenerated.
+- **F3.4: MCP.**
+  - `describe_code_libraries`, `save_code_library` (needs `allow_edit`) and
+    `delete_code_library` (needs `allow_drop`) work by name and application subdomain. A
+    save with a syntax error is refused with the line, and nothing is saved.
+  - The tools are in the **applications** area, so an agent limited to the schema is not
+    offered a way to write code that queries and triggers run.
+  - `admin_copilot`'s tool list is now twenty.
+  - `describe_code_api` has a `lib` section.
+  - The scaffold's `AGENTS.md` and the MCP server's instructions say to put shared code in
+    a library.
+- **F3.5:** `docs/tutorial-code-library.md`, with its definition-of-done test
+  (`tutorial_code_library.rs`), which runs the printed library and queries. TECHNICAL_DESIGN
+  §10.1 gains "`lib`: code libraries".
+- Tests:
+  - `sc-expr`: sharing, edits, per-run evaluation with the run's handles, missing handles, a
+    cycle, unknown names, a broken library, and the save check's line numbers.
+  - `sc-server` `code_libraries.rs`: two apps sharing a library and both seeing an edit, the
+    app override, a library's `fs` under `asUser`, a cycle, a trigger seeing only instance
+    libraries, admin API CRUD and used-by, refusals, the delete cascade, a backup round trip,
+    and MCP grant refusals.
+  - vitest: `codeLibraries.test.ts`, plus the backup summary.
+  - The F3.3 puppeteer check was run by hand: there is no puppeteer in the repository, so
+    `puppeteer-core` drove the system Chromium against `feldspar serve --sqlite` with the
+    rebuilt admin UI. It checked: the Development panel's link opens the screen; saving a new
+    library lists it; a syntax error is refused naming line 2 and nothing is listed; and
+    selecting a library loads it.
+- TECHNICAL_DESIGN §9 lists `_fd_code_libraries`, and the §9.2 ER diagram draws it and also
+  `_fd_uploads` (missing since F2.7, which `repo_hygiene` caught).
+
 ## F2 phases 3 and 4: files in code bodies, binary queries, file responses, the upload client
 
 The rest of TODO.md F2's file work (field report 1.2, 1.3, 1.4, 1.5): a code body can handle

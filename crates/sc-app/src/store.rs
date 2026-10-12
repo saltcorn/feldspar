@@ -229,6 +229,8 @@ pub async fn delete_application(catalog: &Catalog, id: AppId) -> Result<bool> {
     // `_fd_translations.application` is by value (§16.1), so the cascade is
     // ours to perform — the same arrangement views, pages and the library have.
     crate::i18n::delete_application_translations(catalog, id).await?;
+    // Its code libraries go with it, for the same reason (TODO F3.1).
+    sc_catalog::delete_application_code_libraries(catalog, id.0).await?;
     Ok(existed)
 }
 

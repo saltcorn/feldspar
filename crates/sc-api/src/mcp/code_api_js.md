@@ -24,7 +24,8 @@ that can express it:
 4. **A code query or trigger** (this page) only for what the above cannot express: several
    steps, a call out with `fetch`, a password check, a computed status code.
 
-Never hand-write base64, UTF-8 or SHA: the globals below have them.
+Never hand-write base64, UTF-8 or SHA: the globals below have them. And never copy a helper
+into a second query: put it in a **code library** (below) and `lib()` it from both.
 
 ## What is in scope
 
@@ -41,7 +42,7 @@ Never hand-write base64, UTF-8 or SHA: the globals below have them.
   credentials removed). A query saved with `body_type: "bytes"` (JavaScript, POST/PUT/PATCH)
   gets `body` as a `Uint8Array` of the raw request body instead, and its declared params come
   from the query string; its client method takes a `Blob`, `ArrayBuffer` or `Uint8Array`.
-- `db`, `models`, `fetch`, `fs`, `trigger`, `modfn`, `console` — below.
+- `db`, `models`, `fetch`, `fs`, `trigger`, `modfn`, `console`, `lib` — below.
 - `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto`, `httpError`, `response` — below.
 
 ## Bytes, randomness, hashes and passwords
@@ -253,6 +254,41 @@ const html = await modfn.md_to_html(row.notes);       // a function an installed
 console.log("checked", row.id);
 ```
 
+## `lib`: shared code (code libraries)
+
+Code that two queries or triggers need lives once, in a **code library**: a named body that
+assigns to `exports` (or `module.exports`). Save one with `save_code_library` (MCP) or in the
+admin under Settings → Development → Code library; `describe_code_libraries` lists them with
+who imports each.
+
+```js
+// library "auth", instance-wide:
+function requireUser() {
+  if (!user) throw httpError(401, "sign in first");
+  return user;
+}
+async function ownShare(token) {
+  const share = await db.shares.where({ token, owner: requireUser().id }).first();
+  if (!share) throw httpError(404, "no such share");
+  return share;
+}
+module.exports = { requireUser, ownShare };
+
+// any query or trigger:
+const { requireUser, ownShare } = lib("auth");
+const me = requireUser();
+```
+
+- `lib` is synchronous. A library's top level runs once per run however often it is imported,
+  with **the importing run's own** `db`, `fs`, `fetch`, `trigger`, `modfn`, `live`, `console`
+  and `user`, so it can do no more than the code that imported it. Nothing carries over from
+  one run to the next.
+- Names resolve to the application's own library first, then the instance-wide one. A trigger
+  belongs to no application and sees instance-wide libraries only.
+- A library may `lib()` another; a cycle throws naming the chain (`a → b → a`).
+- An edit reaches every importer on its next call. A save is compile-checked, and a syntax error
+  is refused naming its line.
+
 ## Bounds
 
 1000 rows per read (walk more with `.iter()`), 200 database calls, 50 fetches, 100 file
@@ -260,4 +296,5 @@ operations and 20 trigger runs per run, 8 MB per fetch response and per file rea
 (`--code-max-file-bytes`; read larger files in pieces), 256 MB per host-side copy or `concat`
 (`--code-max-copy-bytes`), the trigger's `timeout_ms`,
 and one second of computing without awaiting. Each is a named error, never a silent
-truncation. There are no timers, no `process`, no direct disk access, and `require` throws.
+truncation. There are no timers, no `process`, no direct disk access, and `require` throws
+(use `lib()`).

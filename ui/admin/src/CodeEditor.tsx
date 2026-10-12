@@ -38,7 +38,7 @@
 import { useEffect, useRef, useState } from "react";
 import Form from "react-bootstrap/Form";
 
-import { catalog, codeLibrary, moduleFunctions, type CodeScope } from "./codeTypes";
+import { catalog, codeLibrary, libraryNames, moduleFunctions, type CodeScope } from "./codeTypes";
 
 /** The subset of Monaco this file uses, named so the dynamic import has a type
  * without pulling the package into the main bundle's type graph. */
@@ -190,6 +190,7 @@ export function CodeEditor({
   const event = scope?.event;
   const request = scope?.request;
   const bytes = scope?.bytes;
+  const isLibrary = scope?.library;
   const settings = editorSettings(language);
   const typed = settings.typed;
   useEffect(() => {
@@ -199,16 +200,19 @@ export function CodeEditor({
     let cancelled = false;
     // The tables and the module functions together: both are cached per page,
     // and a body is worth typing into before either arrives.
-    void Promise.all([catalog(), moduleFunctions()])
-      .then(([tables, functions]) => {
-        if (!cancelled) setLibrary(codeLibrary(tables, { table, event, request, bytes }, functions));
+    void Promise.all([catalog(), moduleFunctions(), libraryNames()])
+      .then(([tables, functions, names]) => {
+        if (!cancelled)
+          setLibrary(
+            codeLibrary(tables, { table, event, request, bytes, library: isLibrary }, functions, names),
+          );
       })
       // A catalog that cannot be read costs completions, not the editor.
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [table, event, request, bytes, typed]);
+  }, [table, event, request, bytes, isLibrary, typed]);
 
   useEffect(() => {
     let disposed = false;

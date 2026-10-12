@@ -128,6 +128,10 @@ pub struct Catalog {
     /// all need it, and what implements it is `sc-live`'s hub, which none of
     /// them can name.
     live_host: RwLock<Option<Arc<dyn sc_expr::LiveHost>>>,
+    /// The code libraries a body may import (TODO F3), as last loaded from
+    /// `_fd_code_libraries` — `None` in a process that never loaded them. See
+    /// [`crate::code_libraries`].
+    pub(crate) code_libraries: RwLock<Option<Arc<crate::code_libraries::LoadedLibraries>>>,
     /// The **models** a formula's `predict("…")` and a code body's model handle
     /// reach (milestone 31 §4) — `None` in a process with no model support.
     ///
@@ -287,6 +291,7 @@ impl Catalog {
             schema_observer: RwLock::new(None),
             module_functions: RwLock::new(None),
             live_host: RwLock::new(None),
+            code_libraries: RwLock::new(None),
             model_host: RwLock::new(None),
             admin_host: RwLock::new(None),
             formula_evaluator: RwLock::new(None),

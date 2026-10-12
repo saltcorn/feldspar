@@ -48,6 +48,7 @@ mod applications;
 mod build;
 mod build_cache;
 mod builder_agent;
+mod code_libraries;
 // The frameworks a module declares (§13.3, §15.1): the same registry answers,
 // written down as data instead of compiled.
 mod declared;
@@ -102,6 +103,10 @@ pub use builder_agent::{
     TRAIT_CFG_PREVIEW_RELOAD, TRAIT_CFG_PREVIEW_URL, TRAIT_CFG_ROOT, TRAIT_CFG_STORE,
     TRAIT_CFG_WORKFLOW, TRAIT_CODING, TRAIT_HTTP, TRAIT_PREVIEW_PANE, WORKFLOW_PLANNED,
     builder_agent_in, builder_agent_name, framework_builder_agent, preview_pane_url,
+};
+pub use code_libraries::{
+    LibraryUse, code_library_from_json, code_library_json, code_library_uses,
+    describe_code_libraries, save_code_library_checked,
 };
 pub use declared::{
     BuildTemplate, DeclaredFile, FilePhase, FrameworkDecl, FrameworkHost, FrameworkSet,
