@@ -19,13 +19,15 @@
 // - **Unwrapped literals** are the other half of the same parse: a bare English
 //   sentence nothing wraps can never be translated, so the screen says where it
 //   is.
+// - **Shared strings show through.** A key the instance's shared catalogue
+//   translates (Settings → Translations (shared), TODO F6) and this
+//   application does not is shown greyed, with **override**.
 
 import { useEffect, useMemo, useState } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
 import Form from "react-bootstrap/Form";
 import Spinner from "react-bootstrap/Spinner";
-import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
@@ -35,14 +37,12 @@ import {
   asTranslations,
   liveCoverage,
   missingKeys,
-  placeholderProblem,
   saveBody,
-  singleForm,
-  siteSummary,
   type Translations as Payload,
 } from "../translations";
 import type { AppItem } from "../views";
 import { ApplicationTabs } from "./ApplicationViews";
+import { TranslationGrid } from "./TranslationGrid";
 import { T, useT } from "../i18n";
 
 export function ApplicationTranslations({ appId }: { appId: string }) {
@@ -212,6 +212,10 @@ export function ApplicationTranslations({ appId }: { appId: string }) {
               <T
                 text="The catalogues are kept in {store}, and served to the running application — a fixed translation is live on the next reload, with no rebuild."
                 values={{ store: <code>{data.store}</code> }}
+              />{" "}
+              <T
+                text="Strings this application does not translate are served from the {shared}, shown greyed below."
+                values={{ shared: <a href="#/translations">{t("shared catalogue")}</a> }}
               />
             </p>
             <div className="d-flex flex-wrap gap-2 align-items-center">
@@ -315,68 +319,15 @@ export function ApplicationTranslations({ appId }: { appId: string }) {
                 </Button>
               </span>
             </div>
-            <Table hover responsive className="card-table table-vcenter">
-              <thead>
-                <tr>
-                  <th><T text="English" /></th>
-                  <th><T text="Where" /></th>
-                  <th>{locale}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="text-muted">
-                      <T text="Nothing to translate: this application's source has no t() calls yet." />
-                    </td>
-                  </tr>
-                )}
-                {rows.map((row) => {
-                  const entry = row.translations[locale];
-                  const single = singleForm(entry);
-                  const value = Object.prototype.hasOwnProperty.call(edits, row.key)
-                    ? edits[row.key]
-                    : (single ?? "");
-                  const problem = placeholderProblem(row.key, value);
-                  return (
-                    <tr key={row.key}>
-                      <td>
-                        {row.source}
-                        {row.context && (
-                          <div className="text-muted small">
-                            <T text="context: {context}" args={{ context: row.context }} />
-                          </div>
-                        )}
-                      </td>
-                      <td className="text-muted small">{siteSummary(row.sites)}</td>
-                      <td>
-                        {single === null ? (
-                          // A plural entry has forms per CLDR category; a
-                          // one-line box would save one of them over the rest.
-                          <span className="text-muted">
-                            <T text="Plural forms — edit the catalogue file" />
-                          </span>
-                        ) : (
-                          <>
-                            <Form.Control
-                              size="sm"
-                              value={value}
-                              isInvalid={Boolean(problem)}
-                              dir={current?.direction === "rtl" ? "rtl" : undefined}
-                              aria-label={row.source}
-                              onChange={(event) =>
-                                setEdits({ ...edits, [row.key]: event.target.value })
-                              }
-                            />
-                            {problem && <div className="invalid-feedback d-block">{problem}</div>}
-                          </>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </Table>
+            <TranslationGrid
+              rows={rows}
+              locale={locale}
+              direction={current?.direction}
+              edits={edits}
+              onEdit={(key, value) => setEdits({ ...edits, [key]: value })}
+              showSites
+              empty={<T text="Nothing to translate: this application's source has no t() calls yet." />}
+            />
           </div>
         )}
 

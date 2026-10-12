@@ -192,6 +192,10 @@ export type SetApplicationLocalesResponse = unknown;
 export type SaveTranslationsRequest = { messages: unknown };
 export type SaveTranslationsResponse = unknown;
 export type TranslateMissingResponse = unknown;
+export type GetInstanceTranslationsResponse = unknown;
+export type SaveInstanceTranslationsRequest = { messages: unknown };
+export type SaveInstanceTranslationsResponse = unknown;
+export type TranslateInstanceMissingResponse = unknown;
 export type BuilderFieldPreviewRequest = { table: string; field: string; fieldview: string; configuration?: unknown | null; row_id?: unknown | null };
 export type BuilderFieldPreviewResponse = { html: string };
 export type BuilderFieldviewConfigFormRequest = { table: string; field_name?: string | null; fieldview?: string | null; type?: string | null; join_field?: string | null; join_fieldview?: string | null; agg_outcome_type?: string | null; agg_fieldview?: string | null; agg_field?: string | null; mode?: string | null; _columndef?: string | null };
@@ -508,6 +512,9 @@ export interface ApiClient {
   setApplicationLocales(id: string, body: SetApplicationLocalesRequest): Promise<SetApplicationLocalesResponse>;
   saveTranslations(id: string, locale: string, body: SaveTranslationsRequest): Promise<SaveTranslationsResponse>;
   translateMissing(id: string, locale: string): Promise<TranslateMissingResponse>;
+  getInstanceTranslations(): Promise<GetInstanceTranslationsResponse>;
+  saveInstanceTranslations(locale: string, body: SaveInstanceTranslationsRequest): Promise<SaveInstanceTranslationsResponse>;
+  translateInstanceMissing(locale: string): Promise<TranslateInstanceMissingResponse>;
   builderFieldPreview(id: string, body: BuilderFieldPreviewRequest): Promise<BuilderFieldPreviewResponse>;
   builderFieldviewConfigForm(id: string, body: BuilderFieldviewConfigFormRequest): Promise<BuilderFieldviewConfigFormResponse>;
   builderViewPreview(id: string, body: BuilderViewPreviewRequest): Promise<BuilderViewPreviewResponse>;
@@ -1718,6 +1725,31 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("translateMissing", res);
       return (await res.json()) as TranslateMissingResponse;
+    },
+    async getInstanceTranslations() {
+      const res = await doFetch(`${baseUrl}/api/translations`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getInstanceTranslations", res);
+      return (await res.json()) as GetInstanceTranslationsResponse;
+    },
+    async saveInstanceTranslations(locale, body) {
+      const res = await doFetch(`${baseUrl}/api/translations/${encodeURIComponent(locale)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("saveInstanceTranslations", res);
+      return (await res.json()) as SaveInstanceTranslationsResponse;
+    },
+    async translateInstanceMissing(locale) {
+      const res = await doFetch(`${baseUrl}/api/translations/${encodeURIComponent(locale)}/fill`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("translateInstanceMissing", res);
+      return (await res.json()) as TranslateInstanceMissingResponse;
     },
     async builderFieldPreview(id, body) {
       const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/builder/field-preview`, {

@@ -330,9 +330,10 @@ impl SaltcornUiFramework {
             return found.clone();
         }
         let mut flat = BTreeMap::new();
+        // The app's own catalogue over the instance's (TODO F6), the same
+        // merge the `{mount}/i18n/{locale}.json` route serves.
         if let Ok(parsed) = sc_i18n::Locale::parse(locale)
-            && let Ok(store) = sc_app::app_catalog_store(&self.app)
-            && let Ok(Some(catalogue)) = store.load(cat, &parsed).await
+            && let Ok(Some(catalogue)) = sc_app::merged_app_catalogue(cat, &self.app, &parsed).await
         {
             for (key, message) in catalogue.messages() {
                 if let sc_i18n::Message::Simple(text) = message {

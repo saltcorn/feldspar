@@ -1371,7 +1371,7 @@ a sparse value goes into `attributes`.**
 | `_fd_views` | a Saltcorn UI application's views | **not an overlay**, and **per application** (§13.3): `(application, name)` is unique, so two applications may each have a `List Books` over one table. The pattern name, the table (which must be in the application's subset), `min_role`, `slug`, and a `configuration` that is **v1's shape, stored untouched** — it is what v1's own `list.ts` reads. `application` is by value, so deleting an application deletes its views itself |
 | `_fd_pages` | a Saltcorn UI application's pages | the same rules as `_fd_views`: per application, unique by name, a v1-shaped `layout` stored untouched, `min_role`, and `root_page_for_roles`, `no_menu` and `request_fluid_layout` in `attributes` |
 | `_fd_library` | a Saltcorn UI application's library ("shared components" in current v1) | the same rules again: per application, unique by name, deleted with the application. `icon` and a v1-shaped `layout` stored untouched. A layout places an item as `{ type: "library", library_id, slots }`, with `library_id` this table's UUID. Only a `saltcorn-ui` application may write one, and only the admin API writes it; the worker reads it from the view snapshot (§13.3, "The library") |
-| `_fd_translations` | an application's catalogue, for an application with no project tree (§16.1) | the same rules as `_fd_library`: per application, unique by `name` — which is the **locale tag** — and deleted with the application. `messages` is the flat catalogue of §16.1, keyed by the **English source text**. It is the home of a *Saltcorn UI* application's translations, because a Saltcorn UI application's definition is rows; a code application's are files in its repository (`<project>/locales/{locale}.json`), because that is where *its* definition is. Both are behind one `CatalogStore`, so the admin API, the Translations screen and the LLM fill are written once |
+| `_fd_translations` | an application's catalogue, for an application with no project tree (§16.1) | the same rules as `_fd_library`: per application, unique by `name` — which is the **locale tag** — and deleted with the application. `messages` is the flat catalogue of §16.1, keyed by the **English source text**. It is the home of a *Saltcorn UI* application's translations, because a Saltcorn UI application's definition is rows; a code application's are files in its repository (`<project>/locales/{locale}.json`), because that is where *its* definition is. Both are behind one `CatalogStore`, so the admin API, the Translations screen and the LLM fill are written once. A row with a NULL `application` is the **shared catalogue** every application serves under its own (§16.1); `application` is nullable for it, and since a unique key treats NULLs as distinct, the store updates a shared row in place rather than inserting a second |
 | `_fd_code_libraries` | code libraries (§10.1, "`lib`") | **not an overlay**: named JavaScript that code bodies import with `lib(name)`. `application_id` NULL is instance-wide, otherwise one application's (by value, deleted with the application). `name` is unique per scope, which is checked on save (NULLs are distinct in SQL). Loaded into the catalog at boot and after every change |
 | `_fd_models` | model definitions | **not an overlay** — the row is the model's only definition (§14.2): the provider, the `dataset` (which rows and which derived values, as a list of `sc-expr` formulas), the provider's configuration, the hyperparameter *space* (per key a value or a list to search over) and the split's fractions and seed. `table_name` is derived from the dataset on the way out and checked against it on the way in, so the list can be filtered by table without reading every dataset |
 | `_fd_model_instances` | one fit each | the provider's serialised `state`, its `parameters` (structured for display), the **host's** `metrics` per split, and the `encoding` the fit was made with — which is the load-bearing one: a prediction is encoded the way its fit was, or it fails. `status` is a column because every row has one and it is what the list filters on; the failure **sentence** is in `attributes`, because it is present only on the rows that failed. `active` is a column and at most one row per model carries it |
@@ -1755,7 +1755,7 @@ erDiagram
   }
   TRANSLATIONS["_fd_translations"] {
     uuid id PK
-    uuid application "the app, by value; UNIQUE (application, name)"
+    uuid application "the app, by value; NULL = the shared catalogue; UNIQUE (application, name)"
     text name "the locale tag -- fr, pt-BR"
     text description
     json messages "the flat catalogue: English source text -> translation"
@@ -11551,6 +11551,7 @@ the string with `%s` in it, and nothing else in the system sees that form.
 | `admin` | `ui/admin/src/locales/{locale}.json`, `import()`-ed per locale | ships with the bundle, code-split so one locale is downloaded |
 | `builder` | `ui/builder/src/locales/{locale}.json` | same, separate bundle |
 | per application | **files** for an application with a project tree — `<project>/locales/{locale}.json`; **rows** in `_fd_translations` (§9) for one without | *an application's translations live wherever that application's definition lives* |
+| shared by every application | **rows** in `_fd_translations` with a NULL `application`, one per locale | an installation-wide string ("Sign in") is translated once, not once per application |
 
 The last row is the one worth arguing. A code application's definition is its git repository;
 putting its translations anywhere else means a clone that does not carry them, a coding agent
@@ -11560,6 +11561,18 @@ remember them separately. A Saltcorn UI application's definition is `_fd_views` 
 `_fd_library` is. Both are behind one `CatalogStore` (§2.1), chosen by asking whether the
 framework builds from a source tree — the same question the build already asks — so the admin
 API, the Translations screen and the LLM fill are written once.
+
+**The shared catalogue** (TODO F6). Lookup is **app → instance → key**, merged on the server
+by `sc_app::merged_app_catalogue` in `GET {mount}/i18n/{locale}.json` and in the Saltcorn UI
+renderer, so the generated client and `useT` are unchanged. A key the app translates wins; an
+empty string in the app's catalogue counts as missing. The shared catalogue's locales are the
+installation's `enabled_locales` less the source language, and its keys are the union of what its
+locales hold (there is no source to extract). It has its own screen (Settings → Translations
+(shared): `getInstanceTranslations`, `saveInstanceTranslations`, `translateInstanceMissing`);
+an application's screen shows a key it inherits greyed with **override**, counts it as covered,
+and its **Translate missing** skips it. A shared save drops every mount's cached catalogues. MCP's
+`describe_translations`/`save_translations` take `scope: "instance"`, and `feldspar i18n
+translate --instance` fills it from a terminal.
 
 Which locales an application serves, and which one it falls back to, are **sparse values in
 `Application.attributes`** (§9's column-vs-attributes rule): most applications have neither, and

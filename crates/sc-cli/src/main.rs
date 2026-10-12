@@ -1802,6 +1802,11 @@ async fn i18n_command(args: &[String]) -> Result<()> {
         false => (None, args.to_vec()),
     };
     let parsed = I18nArgs::parse(&rest)?;
+    // The shared catalogue is in the database, not in a checkout.
+    if parsed.instance {
+        let db = db.ok_or_else(|| sc_error::Error::config("no database flags parsed"))?;
+        return i18n_translate_instance(&parsed, db).await;
+    }
     let root = match &parsed.root {
         Some(root) => root.clone(),
         None => find_root(&std::env::current_dir().map_err(|e| {
@@ -2061,25 +2066,7 @@ async fn i18n_translate(
         eprintln!("feldspar: database configured from {source}");
     }
     let catalog_db = connect_catalog(&db).await?;
-
-    // Which model. A named provider, or the installation's default provider,
-    // with its default model. The error says what to configure rather than what
-    // failed.
-    let provider = match &parsed.provider {
-        Some(name) => sc_llm::load_llm_provider_by_name(&catalog_db, name)
-            .await?
-            .ok_or_else(|| sc_error::Error::not_found(format!("no LLM provider named `{name}`")))?,
-        None => sc_llm::default_llm_provider(&catalog_db)
-            .await?
-            .ok_or_else(|| {
-                sc_error::Error::config(
-                    "no LLM provider is configured — add one in Settings → LLM providers, \
-                     or name one with --provider",
-                )
-            })?,
-    };
-    let model = sc_llm::require_llm_model(&catalog_db, &provider, parsed.model.as_deref()).await?;
-    let translator = sc_cli::i18n::LlmTranslator::new(sc_llm::connect_model(&provider, &model)?);
+    let translator = cli_translator(&catalog_db, parsed).await?;
     let source = sc_i18n::Locale::source();
 
     for domain in &parsed.domains {
@@ -2114,6 +2101,72 @@ async fn i18n_translate(
             );
         }
     }
+    Ok(())
+}
+
+/// The translator `--provider`/`--model` name: a named provider, or the
+/// installation's default provider, with its default model. The error says what
+/// to configure rather than what failed.
+async fn cli_translator(
+    catalog_db: &sc_catalog::Catalog,
+    parsed: &sc_cli::i18n::I18nArgs,
+) -> Result<sc_cli::i18n::LlmTranslator> {
+    let provider = match &parsed.provider {
+        Some(name) => sc_llm::load_llm_provider_by_name(catalog_db, name)
+            .await?
+            .ok_or_else(|| sc_error::Error::not_found(format!("no LLM provider named `{name}`")))?,
+        None => sc_llm::default_llm_provider(catalog_db)
+            .await?
+            .ok_or_else(|| {
+                sc_error::Error::config(
+                    "no LLM provider is configured — add one in Settings → LLM providers, \
+                     or name one with --provider",
+                )
+            })?,
+    };
+    let model = sc_llm::require_llm_model(catalog_db, &provider, parsed.model.as_deref()).await?;
+    Ok(sc_cli::i18n::LlmTranslator::new(sc_llm::connect_model(
+        &provider, &model,
+    )?))
+}
+
+/// `feldspar i18n translate --instance --locale L` — fill the instance's shared
+/// catalogue (TODO F6) through the configured LLM: every key another of its
+/// locales has, checked as the screen's **Translate missing** is.
+async fn i18n_translate_instance(parsed: &sc_cli::i18n::I18nArgs, db: DbConfig) -> Result<()> {
+    if parsed.locales.is_empty() {
+        return Err(sc_error::Error::config(
+            "feldspar i18n translate --instance needs a target: --locale de",
+        ));
+    }
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    let catalog_db = connect_catalog(&db).await?;
+    let translator = cli_translator(&catalog_db, parsed).await?;
+    for tag in &parsed.locales {
+        let locale = sc_i18n::Locale::parse(tag)?;
+        eprintln!(
+            "feldspar: shared catalogue → {}: translating with {}",
+            locale.as_str(),
+            translator.describes()
+        );
+        let report =
+            sc_server::translations::fill_instance_missing(&catalog_db, None, &locale, &translator)
+                .await?;
+        for warning in report["warnings"].as_array().into_iter().flatten() {
+            eprintln!("warning: {}", warning.as_str().unwrap_or_default());
+        }
+        eprintln!(
+            "feldspar: filled {}, refused {}, unanswered {}",
+            report["filled"],
+            report["rejected"].as_array().map_or(0, Vec::len),
+            report["unanswered"].as_array().map_or(0, Vec::len),
+        );
+    }
+    eprintln!(
+        "feldspar: a running server serves the change after `pkill -HUP feldspar` (or a restart)"
+    );
     Ok(())
 }
 
@@ -2157,6 +2210,7 @@ fn print_usage() {
     eprintln!(
         "  feldspar i18n translate --domain NAME --locale TAG [--provider NAME] [--model NAME]"
     );
+    eprintln!("  feldspar i18n translate --instance --locale TAG [--provider NAME] [--model NAME]");
     eprintln!("                          [database flags]");
     eprintln!("  feldspar auth token --app SUBDOMAIN (--email EMAIL | --admin | --role NAME)");
     eprintln!("                      [--format playwright|netscape] [--out PATH] [--url ORIGIN]");

@@ -270,6 +270,54 @@ fn the_arguments_parse_and_a_typo_is_refused() {
     assert!(refused.to_string().contains("builder"), "{refused}");
     assert!(I18nArgs::parse(&args(&["extractt"])).is_err());
     assert!(I18nArgs::parse(&args(&["check", "--locale"])).is_err());
+
+    // `--instance` (TODO F6.4): the shared catalogue, no domains.
+    let parsed =
+        I18nArgs::parse(&args(&["translate", "--instance", "--locale", "de"])).expect("ok");
+    assert!(parsed.instance);
+    assert!(parsed.domains.is_empty());
+    let refused = I18nArgs::parse(&args(&["check", "--instance"])).expect_err("not translate");
+    assert!(refused.to_string().contains("translate"), "{refused}");
+    let refused = I18nArgs::parse(&args(&["translate", "--instance", "--domain", "core"]))
+        .expect_err("a domain too");
+    assert!(refused.to_string().contains("--domain"), "{refused}");
+}
+
+/// `feldspar i18n translate --instance` reads the database, not a checkout: run
+/// outside one, it gets as far as asking for an LLM provider (TODO F6.4).
+#[test]
+fn translating_the_shared_catalogue_needs_no_checkout() {
+    let temp = TempDir::new("instance");
+    let db = temp.0.join("f6.db");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_feldspar"))
+        .args([
+            "i18n",
+            "translate",
+            "--instance",
+            "--locale",
+            "de",
+            "--sqlite",
+        ])
+        .arg(&db)
+        .current_dir(&temp.0)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run the feldspar binary");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(!stderr.contains("no Saltcorn checkout"), "{stderr}");
+    assert!(stderr.contains("LLM provider"), "{stderr}");
+
+    // And without a locale it says which flag is missing.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_feldspar"))
+        .args(["i18n", "translate", "--instance", "--sqlite"])
+        .arg(&db)
+        .current_dir(&temp.0)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run the feldspar binary");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--locale"), "{stderr}");
 }
 
 /// Task 2.5: the pipeline runs this command. A guard rather than a nicety —

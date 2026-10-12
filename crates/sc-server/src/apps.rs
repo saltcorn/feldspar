@@ -977,6 +977,15 @@ impl AppMounts {
         }
     }
 
+    /// Drop **every** mounted app's cached catalogues — what saving the
+    /// instance catalogue calls, since each app serves it under its own
+    /// (TODO F6).
+    pub fn invalidate_all_catalogs(&self) {
+        for mounted in self.read().values() {
+            mounted.invalidate_catalogs();
+        }
+    }
+
     /// The catalog the apps' providers run against.
     pub fn catalog(&self) -> Option<&Arc<Catalog>> {
         self.catalog.as_ref()

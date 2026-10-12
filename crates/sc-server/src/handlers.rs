@@ -5862,6 +5862,70 @@ pub fn admin_handlers_with(
         }
     });
 
+    // --- The instance's shared catalogue (TODO F6) ------------------------------
+    //
+    // A save or fill drops every mount's cached catalogues, because every
+    // application serves the shared catalogue under its own.
+
+    reg.register("getInstanceTranslations", {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                Ok(HandlerResponse::ok(
+                    crate::translations::instance_translations_json(&catalog).await?,
+                ))
+            }
+        }
+    });
+
+    reg.register("saveInstanceTranslations", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let locale = sc_i18n::Locale::parse(ctx.path_param("locale")?)?;
+                let obj = require_object(&ctx.body)?;
+                let messages = obj
+                    .get("messages")
+                    .ok_or_else(|| Error::invalid("`messages` is required"))?;
+                Ok(HandlerResponse::ok(
+                    crate::translations::save_instance_catalogue(
+                        &catalog,
+                        Some(&apps),
+                        &locale,
+                        messages,
+                    )
+                    .await?,
+                ))
+            }
+        }
+    });
+
+    reg.register("translateInstanceMissing", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let locale = sc_i18n::Locale::parse(ctx.path_param("locale")?)?;
+                let translator = crate::translations::configured_translator(&catalog, None).await?;
+                Ok(HandlerResponse::ok(
+                    crate::translations::fill_instance_missing(
+                        &catalog,
+                        Some(&apps),
+                        &locale,
+                        &translator,
+                    )
+                    .await?,
+                ))
+            }
+        }
+    });
+
     // The canvas's calls: v1's server routes, run in the worker as the admin by
     // the configuration calls' `Configurer`. What they may name — a table in the
     // subset, a view or page of the application — is checked here first, so a

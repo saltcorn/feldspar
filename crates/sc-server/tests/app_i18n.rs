@@ -25,8 +25,8 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_app::{
-    ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, app_catalog_store,
-    save_application, set_app_locales,
+    ApiConfig, Application, AssetBundle, CatalogStore, CodeFramework, FrameworkRef,
+    app_catalog_store, save_application, set_app_locales,
 };
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
@@ -683,5 +683,420 @@ async fn a_coding_agent_translates_an_application_through_the_mcp_tools() -> Res
         .await?;
     assert!(after["messages"].as_array().unwrap().is_empty(), "{after}");
     assert_eq!(after["locales"][0]["percent"], 100);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The instance catalogue under the app's own (TODO F6.2)
+// ---------------------------------------------------------------------------
+
+/// The shared German strings: two the apps do not translate, one they do.
+fn shared_german() -> MessageCatalog {
+    let mut cat = MessageCatalog::new(Locale::parse("de").unwrap());
+    cat.insert("Sign in", Message::Simple("Anmelden".to_owned()));
+    cat.insert("Password", Message::Simple("Passwort".to_owned()));
+    cat.insert("Copy", Message::Simple("Kopieren".to_owned()));
+    cat
+}
+
+/// An app's own German: `Copy` overridden, `Password` left blank (which counts
+/// as missing), and one string of its own.
+fn own_german() -> MessageCatalog {
+    let mut cat = MessageCatalog::new(Locale::parse("de").unwrap());
+    cat.insert("Copy", Message::Simple("Duplizieren".to_owned()));
+    cat.insert("Password", Message::Simple(String::new()));
+    cat.insert("Add a task", Message::Simple("Aufgabe anlegen".to_owned()));
+    cat
+}
+
+async fn assert_merged(server: &Server, app: &Application) -> Result<()> {
+    sc_app::instance_catalog_store()
+        .save(&server.catalog, &shared_german())
+        .await?;
+    app_catalog_store(app)?
+        .save(&server.catalog, &own_german())
+        .await?;
+    server.apps.invalidate_all_catalogs();
+
+    let answer = server.get("/api/i18n/de.json", None).await;
+    assert_eq!(answer.status, StatusCode::OK);
+    let body = answer.json();
+    // An app key overrides.
+    assert_eq!(body["Copy"], "Duplizieren");
+    // An instance-only key is served.
+    assert_eq!(body["Sign in"], "Anmelden");
+    // An empty app value is missing, so the shared one shows through.
+    assert_eq!(body["Password"], "Passwort");
+    assert_eq!(body["Add a task"], "Aufgabe anlegen");
+
+    // Changing the shared catalogue is live in the app after the sweep.
+    let mut changed = shared_german();
+    changed.insert("Sign in", Message::Simple("Einloggen".to_owned()));
+    sc_app::instance_catalog_store()
+        .save(&server.catalog, &changed)
+        .await?;
+    server.apps.invalidate_all_catalogs();
+    let after = server.get("/api/i18n/de.json", None).await;
+    assert_eq!(after.json()["Sign in"], "Einloggen");
+    assert_ne!(after.etag, answer.etag);
+
+    // A locale the app does not enable is still a 404, even when the instance
+    // has a catalogue for it.
+    let mut french_shared = french();
+    french_shared.insert("Sign in", Message::Simple("Se connecter".to_owned()));
+    sc_app::instance_catalog_store()
+        .save(&server.catalog, &french_shared)
+        .await?;
+    assert_eq!(
+        server.get("/api/i18n/fr.json", None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_file_backed_app_serves_the_instance_catalogue_under_its_own() -> Result<()> {
+    let server = setup(tasks_app(&["de"])).await?;
+    let app = sc_app::list_applications(&server.catalog).await?.remove(0);
+    assert_merged(&server, &app).await?;
+    // The app's own file holds only its own strings: the merge is served, not
+    // written back.
+    let file = std::fs::read_to_string(server.store.path().join("web/locales/de.json"))?;
+    assert!(!file.contains("Anmelden"), "{file}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_row_backed_app_serves_the_instance_catalogue_under_its_own() -> Result<()> {
+    // `none` has no build step, so its catalogue is `_fd_translations` rows —
+    // the Saltcorn UI half of the split.
+    let mut app = Application::new(
+        "Tasks",
+        "tasks",
+        FrameworkRef::new("none").with("store", "apps"),
+    )
+    .with_api(ApiConfig::new("rest", "/api"));
+    set_app_locales(&mut app, &[Locale::parse("de")?], None);
+    let server = setup(app).await?;
+    let app = sc_app::list_applications(&server.catalog).await?.remove(0);
+    assert!(
+        app_catalog_store(&app)?
+            .describe()
+            .contains("_fd_translations")
+    );
+    assert_merged(&server, &app).await
+}
+
+#[tokio::test]
+async fn an_app_with_no_catalogue_of_its_own_serves_the_shared_one() -> Result<()> {
+    let server = setup(tasks_app(&["de"])).await?;
+    sc_app::instance_catalog_store()
+        .save(&server.catalog, &shared_german())
+        .await?;
+    let answer = server.get("/api/i18n/de.json", None).await;
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(answer.json()["Sign in"], "Anmelden");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The shared Translations screen's server half (TODO F6.3)
+// ---------------------------------------------------------------------------
+
+/// Turn on German and French for the installation (Settings → Localisation).
+async fn enable_instance_locales(catalog: &Catalog, list: &str) -> Result<()> {
+    sc_config::bootstrap_config(catalog).await?;
+    sc_config::set_config(catalog, "enabled_locales", serde_json::json!(list)).await
+}
+
+#[tokio::test]
+async fn the_shared_catalogue_is_edited_and_filled_like_an_applications() -> Result<()> {
+    use serde_json::json;
+    let server = setup(tasks_app(&["de"])).await?;
+    write_project(server.store.path())?;
+    let app = sc_app::list_applications(&server.catalog).await?.remove(0);
+    let de = Locale::parse("de")?;
+    let fr = Locale::parse("fr")?;
+    sc_config::bootstrap_config(&server.catalog).await?;
+
+    // Not an enabled language yet: refused, naming where to enable it.
+    let refused = sc_server::translations::save_instance_catalogue(
+        &server.catalog,
+        Some(&server.apps),
+        &de,
+        &json!({ "Tasks": "Aufgaben" }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("Localisation"), "{refused}");
+
+    enable_instance_locales(&server.catalog, "en, de, fr").await?;
+    // The source language is the keys, so it is not a column.
+    let screen = sc_server::translations::instance_translations_json(&server.catalog).await?;
+    let tags: Vec<&str> = screen["locales"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["locale"].as_str().unwrap())
+        .collect();
+    assert_eq!(tags, ["de", "fr"]);
+    assert_eq!(screen["messages"], json!([]));
+
+    // An admin adds two strings in German. The app's first request for German
+    // has already been cached, so this also checks the save sweeps every mount.
+    assert!(
+        server
+            .get("/api/i18n/de.json", None)
+            .await
+            .json()
+            .get("Tasks")
+            .is_none()
+    );
+    sc_server::translations::save_instance_catalogue(
+        &server.catalog,
+        Some(&server.apps),
+        &de,
+        &json!({ "Tasks": "Aufgaben", "Delete {name}?": "{name} löschen?" }),
+    )
+    .await?;
+    assert_eq!(
+        server.get("/api/i18n/de.json", None).await.json()["Tasks"],
+        "Aufgaben"
+    );
+
+    // Placeholders are checked as an application's are.
+    let refused = sc_server::translations::save_instance_catalogue(
+        &server.catalog,
+        Some(&server.apps),
+        &de,
+        &json!({ "Delete {name}?": "{nom} löschen?" }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("Delete {name}?"), "{refused}");
+
+    // The keys are the union of the locales; French has none of them yet.
+    let screen = sc_server::translations::instance_translations_json(&server.catalog).await?;
+    assert_eq!(screen["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(screen["locales"][1]["locale"], "fr");
+    assert_eq!(screen["locales"][1]["translated"], 0);
+
+    // Translate missing fills French from those keys.
+    let translator = Scripted(
+        [
+            ("Tasks".to_owned(), json!("Tâches")),
+            ("Delete {name}?".to_owned(), json!("Supprimer {name} ?")),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let report = sc_server::translations::fill_instance_missing(
+        &server.catalog,
+        Some(&server.apps),
+        &fr,
+        &translator,
+    )
+    .await?;
+    assert_eq!(report["filled"], 2, "{report}");
+
+    // --- The application's screen shows the shared strings it inherits, and
+    // counts them as translated.
+    let app_screen = sc_server::translations::translations_json(&server.catalog, &app).await?;
+    let row = |key: &str| {
+        app_screen["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["key"] == key)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(row("Tasks")["inherited"]["de"], "Aufgaben");
+    assert_eq!(row("Tasks")["translations"], json!({}));
+    assert_eq!(row("Add a task")["inherited"], json!({}));
+    assert_eq!(app_screen["locales"][0]["translated"], 2);
+    assert_eq!(app_screen["locales"][0]["total"], 3);
+
+    // The app's Translate missing asks only for what nothing covers.
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    struct Recording(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl sc_i18n::Translator for Recording {
+        async fn translate_batch(
+            &self,
+            _source: &Locale,
+            _target: &Locale,
+            keys: &[String],
+        ) -> Result<std::collections::BTreeMap<String, Value>> {
+            self.0.lock().unwrap().extend(keys.iter().cloned());
+            Ok(keys
+                .iter()
+                .map(|k| (k.clone(), Value::String(format!("[de] {k}"))))
+                .collect())
+        }
+    }
+    sc_server::translations::fill_missing(
+        &server.catalog,
+        &server.apps,
+        &app,
+        &de,
+        &Recording(asked.clone()),
+    )
+    .await?;
+    assert_eq!(*asked.lock().unwrap(), vec!["Add a task".to_owned()]);
+    let served = server.get("/api/i18n/de.json", None).await.json();
+    assert_eq!(served["Add a task"], "[de] Add a task");
+    assert_eq!(served["Tasks"], "Aufgaben");
+    Ok(())
+}
+
+/// The MCP tools with `scope: "instance"` (TODO F6.4): an agent fills the
+/// shared catalogue once, and an application's description shows the shared
+/// strings as inherited rather than missing.
+#[tokio::test]
+async fn a_coding_agent_fills_the_shared_catalogue_through_the_mcp_tools() -> Result<()> {
+    use sc_api::mcp::{Areas, ToolContext};
+    use sc_api::schema_edit::Grants;
+    use serde_json::json;
+
+    let server = setup(tasks_app(&["de"])).await?;
+    write_project(server.store.path())?;
+    sc_config::bootstrap_config(&server.catalog).await?;
+    enable_instance_locales(&server.catalog, "en, de").await?;
+    let tools = sc_app::mcp::tool_set(Grants::all(), Areas::all());
+    let ctx = ToolContext {
+        catalog: &server.catalog,
+        user: None,
+        role: 1,
+        triggers: None,
+        actor: "the test agent",
+    };
+
+    let empty = tools
+        .call(
+            "describe_translations",
+            &json!({ "scope": "instance" }),
+            &ctx,
+        )
+        .await?;
+    assert_eq!(empty["scope"], "instance");
+    assert!(
+        empty["notes"].to_string().contains("save_translations"),
+        "{empty}"
+    );
+
+    // `scope: instance` with an application is a contradiction, said so.
+    let refused = tools
+        .call(
+            "describe_translations",
+            &json!({ "scope": "instance", "application": "tasks" }),
+            &ctx,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("application"), "{refused}");
+
+    // Any key may be added to the shared catalogue: it has no source.
+    let saved = tools
+        .call(
+            "save_translations",
+            &json!({ "scope": "instance", "locale": "de",
+                     "messages": { "Tasks": "Aufgaben", "Sign in": "Anmelden" } }),
+            &ctx,
+        )
+        .await?;
+    assert_eq!(saved["written"], 2);
+    assert!(saved.get("not_in_source").is_none(), "{saved}");
+    // A save merges here too: one key changes, the other stays.
+    tools
+        .call(
+            "save_translations",
+            &json!({ "scope": "instance", "locale": "de",
+                     "messages": { "Sign in": "Einloggen" } }),
+            &ctx,
+        )
+        .await?;
+    let shared = tools
+        .call(
+            "describe_translations",
+            &json!({ "scope": "instance", "locale": "de" }),
+            &ctx,
+        )
+        .await?;
+    let keys: Vec<(&str, &str)> = shared["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["key"].as_str().unwrap(),
+                m["translation"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(keys, [("Sign in", "Einloggen"), ("Tasks", "Aufgaben")]);
+
+    // A locale the installation does not enable is refused.
+    let refused = tools
+        .call(
+            "save_translations",
+            &json!({ "scope": "instance", "locale": "fr", "messages": { "Tasks": "Tâches" } }),
+            &ctx,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("Localisation"), "{refused}");
+
+    // The application lists `Tasks` as inherited, and not as missing.
+    let app = tools
+        .call(
+            "describe_translations",
+            &json!({ "application": "tasks", "locale": "de" }),
+            &ctx,
+        )
+        .await?;
+    let tasks = app["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["key"] == "Tasks")
+        .unwrap();
+    assert_eq!(tasks["inherited"], "Aufgaben");
+    assert!(tasks["translation"].is_null());
+    let missing = tools
+        .call(
+            "describe_translations",
+            &json!({ "application": "tasks", "locale": "de", "missing_only": true }),
+            &ctx,
+        )
+        .await?;
+    let keys: Vec<&str> = missing["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["Add a task", "Delete {name}?"]);
+    assert_eq!(
+        server.get("/api/i18n/de.json", None).await.json()["Tasks"],
+        "Aufgaben"
+    );
+
+    // Writing without `allow_edit` is refused naming the grant.
+    let read_only = sc_app::mcp::tool_set(Grants::none(), Areas::all());
+    let refused = read_only
+        .call(
+            "save_translations",
+            &json!({ "scope": "instance", "locale": "de", "messages": { "Tasks": "X" } }),
+            &ctx,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("allow_edit"), "{refused}");
     Ok(())
 }

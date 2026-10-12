@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import { CONTEXT_SEPARATOR } from "./i18n";
 import {
   asTranslations,
+  inheritedEntry,
+  isCovered,
   isTranslated,
   liveCoverage,
   missingKeys,
+  newRow,
   placeholderProblem,
   placeholders,
   saveBody,
@@ -21,6 +24,7 @@ const row = (key: string, translations: Record<string, unknown> = {}): MessageRo
   context: key.includes(CONTEXT_SEPARATOR) ? key.split(CONTEXT_SEPARATOR)[0] : null,
   sites: [{ file: "src/App.tsx", line: 12 }],
   translations,
+  inherited: {},
 });
 
 describe("the payload", () => {
@@ -159,5 +163,54 @@ describe("where a message is said", () => {
         { file: "src/pages/Tasks.tsx", line: 4 },
       ]),
     ).toBe("src/App.tsx:12 +1");
+  });
+});
+
+describe("the shared catalogue under an application's (TODO F6)", () => {
+  const withShared = (
+    key: string,
+    translations: Record<string, unknown>,
+    inherited: Record<string, unknown>,
+  ): MessageRow => ({ ...row(key, translations), inherited });
+
+  it("shows the shared translation only where the app has none of its own", () => {
+    expect(inheritedEntry(withShared("Copy", {}, { de: "Kopieren" }), "de")).toBe("Kopieren");
+    expect(inheritedEntry(withShared("Copy", { de: "Duplizieren" }, { de: "Kopieren" }), "de")).toBeUndefined();
+    // A blank own value is missing, so the shared one shows through.
+    expect(inheritedEntry(withShared("Copy", { de: "" }, { de: "Kopieren" }), "de")).toBe("Kopieren");
+    expect(inheritedEntry(withShared("Copy", {}, {}), "de")).toBeUndefined();
+  });
+
+  it("counts an inherited key as covered, so Translate missing skips it", () => {
+    const rows = [
+      withShared("Copy", {}, { de: "Kopieren" }),
+      withShared("Add", {}, {}),
+      withShared("Save", { de: "Speichern" }, {}),
+    ];
+    expect(isCovered(rows[0], "de")).toBe(true);
+    expect(missingKeys(rows, "de")).toEqual(["Add"]);
+    expect(liveCoverage(rows, "de", {}).translated).toBe(2);
+    // Clearing an override falls back to the shared value; clearing an
+    // un-shared one does not.
+    const overridden = [withShared("Copy", { de: "Duplizieren" }, { de: "Kopieren" })];
+    expect(liveCoverage(overridden, "de", { Copy: "" }).translated).toBe(1);
+    expect(liveCoverage([rows[2]], "de", { Save: "" }).translated).toBe(0);
+  });
+
+  it("never saves an inherited value as the app's own", () => {
+    const rows = [withShared("Copy", {}, { de: "Kopieren" })];
+    expect(saveBody(rows, "de", {})).toEqual({});
+  });
+
+  it("adds a shared string once, and not an empty one", () => {
+    const rows = [withShared("Copy", {}, {})];
+    expect(newRow(rows, "  Sign in ")?.key).toBe("Sign in");
+    expect(newRow(rows, "Copy")).toBeNull();
+    expect(newRow(rows, "   ")).toBeNull();
+  });
+
+  it("narrows a payload from before inherited existed", () => {
+    const payload = asTranslations({ messages: [{ key: "A", source: "A", context: null, sites: [], translations: {} }] });
+    expect(payload.messages[0].inherited).toEqual({});
   });
 });

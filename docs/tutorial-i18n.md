@@ -263,6 +263,49 @@ Two differences worth knowing:
 Translate, save, and reload `http://booksdb.localhost:3032/` with the `lang` cookie or
 `?lang=fr`. The header is French. Nothing was rebuilt, because there is nothing to build.
 
+## Step 5 — Strings every application says: the shared catalogue
+
+"Sign in", "Password", "Copy", "Cancel": with three applications in German you would translate
+each of them three times. Translate them once instead, in the **shared catalogue**. Every
+application serves it under its own catalogue, so lookup goes **application → shared → English**.
+
+1. Make sure the languages are enabled for the installation: the shared catalogue's languages are
+   the ones in **Settings → Localisation** (`en, de` for this step). English is the keys, so it is
+   not a column.
+2. Open **Settings → Localisation → Open the shared translations** (`#/translations`), the
+   **Translations (shared)** screen. It uses the same grid as an application's tab. There is no
+   source to extract here, so the strings are the ones the catalogue holds: type `Sign in` into
+   **Add a string**, then `Password` and `Copy`, and type their German beside them.
+3. **Save.** Every application serves the change on its next page load, with no rebuild. A row is
+   kept once it is translated into at least one language, and **Translate missing** fills the
+   other languages from it.
+
+Now open **Applications → Tasks → Translations** again and pick `de`. A string the application
+does not translate itself shows the shared German **greyed**, with a `shared` badge and
+**override**. It counts as translated, and **Translate missing** leaves it alone. To give one
+application different wording, click **override**: the shared text is copied into the cell, and
+what you save there is the application's own. **An application's own translation always wins.**
+An empty one counts as missing, so the shared one shows through again.
+
+The merge happens on the server, in `GET /api/i18n/de.json`. The generated client and `useT` do
+not change, and a locale the application does not serve is still a 404 even when the shared
+catalogue has it:
+
+```sh
+curl -s http://tasks.localhost:3032/api/i18n/de.json
+# {"Add a task":"Aufgabe hinzufügen","Copy":"Kopieren","Password":"Passwort","Sign in":"Anmelden"}
+```
+
+The same from a coding agent or a terminal:
+
+- MCP: `describe_translations` and `save_translations` with `scope: "instance"` (and no
+  `application`). On an application, `describe_translations` lists a shared string as `inherited`.
+- `feldspar i18n translate --instance --locale de` fills the shared catalogue's missing German
+  through the configured LLM. It writes the database, so a running server serves it after
+  `pkill -HUP feldspar`.
+
+The shared catalogue is `_fd_translations` rows whose `application` is NULL, one per language.
+
 ## What stays English, on purpose
 
 - **System errors.** A driver failure, a caught panic, an internal invariant. They go to the error
@@ -285,8 +328,9 @@ Translate, save, and reload `http://booksdb.localhost:3032/` with the `lang` coo
 | `builder` | `ui/builder/src/locales/{locale}.json` | us, with `--domain builder` |
 | an application with a project tree | `<project>/locales/{locale}.json` in its own repository | you, on its Translations tab |
 | an application without one | `_fd_translations` rows | you, on the same tab |
+| shared by every application | `_fd_translations` rows with no application | you, on **Translations (shared)** |
 
-All five are the same flat JSON object keyed by the English, and `crates/sc-i18n/locales/README.md`
+All six are the same flat JSON object keyed by the English, and `crates/sc-i18n/locales/README.md`
 is the reference for the format.
 
 ## Next

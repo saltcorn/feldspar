@@ -1059,6 +1059,13 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          saved translation is live without a build; a string you newly wrap in \
          `t()` needs one before the running app renders it translated.\n\
          \n\
+         Strings many applications say (\"Sign in\", \"Password\", \"Cancel\") \
+         belong in the server's **shared catalogue**, which every application \
+         serves under its own: `describe_translations` and `save_translations` \
+         with `scope: \"instance\"`. A string this application translates itself \
+         wins; one `describe_translations` lists as `inherited` is already \
+         translated and is not missing.\n\
+         \n\
          ## The half of this application that is not in this project\n\
          \n\
          The tables, the access rules, the triggers and the actions they run are \
@@ -5025,6 +5032,8 @@ export function Board({ id }: { id: number }) {
             );
         }
         assert!(agents.contains("<T text="), "{agents}");
+        // The shared catalogue (TODO F6.4).
+        assert!(agents.contains("scope: \"instance\""), "{agents}");
     }
 
     /// Both documents carry the loop between an edit and a screenshot of it:

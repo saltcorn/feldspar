@@ -154,6 +154,10 @@ pub struct I18nArgs {
     /// output stays what somebody reading a terminal wants, which is a
     /// `file:line:` they can click.
     pub json: bool,
+    /// `translate --instance`: fill the instance's shared catalogue (TODO F6)
+    /// in the database rather than a domain's files in this checkout. Its keys
+    /// are the ones it holds, so no source is read.
+    pub instance: bool,
 }
 
 impl I18nArgs {
@@ -185,6 +189,7 @@ impl I18nArgs {
             provider: None,
             model: None,
             json: false,
+            instance: false,
         };
         let mut rest = args[1..].iter();
         while let Some(arg) = rest.next() {
@@ -200,13 +205,28 @@ impl I18nArgs {
                 "--provider" => parsed.provider = Some(value("--provider")?),
                 "--model" => parsed.model = Some(value("--model")?),
                 "--json" => parsed.json = true,
+                "--instance" => parsed.instance = true,
                 other if other.starts_with('-') => {
                     return Err(Error::config(format!("unknown i18n argument `{other}`")));
                 }
                 other => parsed.paths.push(PathBuf::from(other)),
             }
         }
-        if parsed.domains.is_empty() {
+        if parsed.instance {
+            if parsed.command != Command::Translate {
+                return Err(Error::config(
+                    "--instance is for `feldspar i18n translate`: the shared catalogue has \
+                     no source to extract, lint or check",
+                ));
+            }
+            if !parsed.domains.is_empty() || !parsed.paths.is_empty() {
+                return Err(Error::config(
+                    "--instance translates the shared catalogue in the database; it takes no \
+                     --domain or path",
+                ));
+            }
+        }
+        if parsed.domains.is_empty() && !parsed.instance {
             parsed.domains = DOMAINS.iter().collect();
         }
         Ok(parsed)

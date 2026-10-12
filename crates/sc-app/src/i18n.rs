@@ -42,8 +42,8 @@ use sc_catalog::{Catalog, ConstraintKind, DataField, SchemaStep, Table, TableCon
 use sc_db::{Row, SchemaChange};
 use sc_error::{Error, Result};
 use sc_files::FileStore;
-use sc_i18n::{Catalog as MessageCatalog, Catalogs as MessageCatalogs, Locale};
-use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Update, Value};
+use sc_i18n::{Catalog as MessageCatalog, Catalogs as MessageCatalogs, Locale, Message};
+use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, UnOp, Update, Value};
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
@@ -59,7 +59,8 @@ pub const TRANSLATIONS_TABLE: &str = "_fd_translations";
 pub const COL_ID: &str = "id";
 /// The owning application's id. By value, like `_fd_views.application`: deleting
 /// an application deletes its translations, and a foreign key would make that
-/// deletion impossible rather than tidy.
+/// deletion impossible rather than tidy. `NULL` is the **instance** catalogue
+/// (TODO F6): the strings every application shares, read after its own.
 pub const COL_APPLICATION: &str = "application";
 /// The locale tag — a translations row's `name` (§9), unique per application.
 pub const COL_NAME: &str = "name";
@@ -96,7 +97,8 @@ pub(crate) fn translations_fields() -> Vec<DataField> {
         DataField::plain(COL_ID, uuid_type())
             .required()
             .primary_key(),
-        DataField::plain(COL_APPLICATION, uuid_type()).required(),
+        // Nullable: `NULL` is the instance catalogue (TODO F6).
+        DataField::plain(COL_APPLICATION, uuid_type()),
         DataField::plain(COL_NAME, text()).required(),
         DataField::plain(COL_DESCRIPTION, text()),
         DataField::plain(COL_MESSAGES, json_type()).required(),
@@ -106,6 +108,10 @@ pub(crate) fn translations_fields() -> Vec<DataField> {
 
 /// The jointly-unique key (`application`, `name`): one catalogue per locale per
 /// application, exactly as a view's name is unique per application.
+///
+/// A unique key treats `NULL`s as distinct, so it does not stop two instance
+/// rows for one locale; [`InstanceCatalogStore::save`] updates in place rather
+/// than inserting a second, and that is the only writer.
 pub(crate) fn name_key() -> ConstraintKind {
     ConstraintKind::Unique {
         fields: vec![COL_APPLICATION.to_owned(), COL_NAME.to_owned()],
@@ -119,9 +125,24 @@ pub(crate) fn name_key() -> ConstraintKind {
 /// part of what an application is: a deployment that can hold an app can hold
 /// its catalogue.
 pub async fn bootstrap_translations(catalog: &Catalog) -> Result<Table> {
-    let table = catalog
+    let mut table = catalog
         .bootstrap_table(TRANSLATIONS_TABLE, &translations_fields())
         .await?;
+    // A table made before the instance catalogue (TODO F6) has `application`
+    // `NOT NULL`. Loosening a constraint rewrites no data and cannot fail on
+    // the rows already there, so it is the one re-constraining a bootstrap
+    // does; `TABLES_RENAME.sql` §14 has the same change by hand.
+    if table.field(COL_APPLICATION).is_some_and(|f| f.required) {
+        catalog
+            .apply_schema_batch(&[SchemaStep::Change(SchemaChange::SetColumnNullable {
+                table: TRANSLATIONS_TABLE.to_owned(),
+                column: COL_APPLICATION.to_owned(),
+                nullable: true,
+            })])
+            .await?;
+        catalog.reload().await?;
+        table = catalog.require(TRANSLATIONS_TABLE)?;
+    }
     let key = name_key();
     if table.constraints.iter().any(|c| c.kind == key) {
         return Ok(table);
@@ -329,7 +350,7 @@ pub fn app_catalog_store(app: &Application) -> Result<Box<dyn CatalogStore>> {
         // No build step, so no tree: the definition is rows and so is the
         // catalogue. The error is not a failure here — it is the answer.
         Err(_) => Ok(Box::new(RowCatalogStore {
-            application: app.id,
+            application: Some(app.id),
         })),
     }
 }
@@ -448,20 +469,44 @@ impl CatalogStore for FileCatalogStore {
 // ---------------------------------------------------------------------------
 
 /// Catalogues as `_fd_translations` rows — the home for an application whose
-/// definition is rows (Saltcorn UI).
+/// definition is rows (Saltcorn UI), and for the instance catalogue (TODO F6).
 #[derive(Debug, Clone, Copy)]
 pub struct RowCatalogStore {
-    application: AppId,
+    /// `None` is the instance catalogue: the rows whose `application` is `NULL`.
+    application: Option<AppId>,
 }
 
 impl RowCatalogStore {
     /// The catalogues of `application`.
     pub fn new(application: AppId) -> RowCatalogStore {
-        RowCatalogStore { application }
+        RowCatalogStore {
+            application: Some(application),
+        }
+    }
+
+    /// The instance catalogue: strings every application shares, read after the
+    /// application's own (TODO F6, [`merged_app_catalogue`]).
+    pub fn instance() -> RowCatalogStore {
+        RowCatalogStore { application: None }
+    }
+
+    /// Whether this is the instance catalogue rather than one application's.
+    pub fn is_instance(&self) -> bool {
+        self.application.is_none()
     }
 
     fn of_application(&self) -> Expr {
-        Expr::col(COL_APPLICATION).eq(Expr::lit(self.application.0))
+        match self.application {
+            Some(app) => Expr::col(COL_APPLICATION).eq(Expr::lit(app.0)),
+            None => Expr::unary(UnOp::IsNull, Expr::col(COL_APPLICATION)),
+        }
+    }
+
+    fn application_value(&self) -> Expr {
+        match self.application {
+            Some(app) => Expr::lit(app.0),
+            None => Expr::Lit(Value::Null),
+        }
     }
 
     fn for_locale(&self, locale: &Locale) -> Expr {
@@ -473,10 +518,10 @@ impl RowCatalogStore {
 #[async_trait]
 impl CatalogStore for RowCatalogStore {
     fn describe(&self) -> String {
-        format!(
-            "`{TRANSLATIONS_TABLE}` rows of application {}",
-            self.application.0
-        )
+        match self.application {
+            Some(app) => format!("`{TRANSLATIONS_TABLE}` rows of application {}", app.0),
+            None => format!("the instance's shared `{TRANSLATIONS_TABLE}` rows"),
+        }
     }
 
     async fn locales(&self, cat: &Catalog) -> Result<Vec<Locale>> {
@@ -540,7 +585,7 @@ impl CatalogStore for RowCatalogStore {
                 ],
                 vec![
                     Expr::lit(Uuid::new_v4()),
-                    Expr::lit(self.application.0),
+                    self.application_value(),
                     Expr::lit(locale.as_str()),
                     Expr::lit(""),
                     Expr::Lit(Value::Json(body)),
@@ -560,6 +605,77 @@ impl CatalogStore for RowCatalogStore {
         run(cat, Statement::from(delete)).await?;
         Ok(existed)
     }
+}
+
+// ---------------------------------------------------------------------------
+// The instance catalogue, under an application's own (TODO F6)
+// ---------------------------------------------------------------------------
+
+/// The instance catalogue's store: `_fd_translations` rows with a `NULL`
+/// application.
+pub fn instance_catalog_store() -> RowCatalogStore {
+    RowCatalogStore::instance()
+}
+
+/// Whether `message` says nothing — an empty string, or plural forms that are
+/// all empty. An application's catalogue may hold one (a grid cell somebody
+/// cleared), and it counts as **missing**, so the instance's translation shows
+/// through rather than a blank label.
+pub fn message_is_blank(message: &Message) -> bool {
+    message.forms().iter().all(|form| form.trim().is_empty())
+}
+
+/// Lay `shared` under `own`: every key `own` lacks, or holds blank, is taken
+/// from `shared`. A key `own` translates wins, whatever `shared` says.
+pub fn merge_catalogues(
+    locale: &Locale,
+    own: Option<MessageCatalog>,
+    shared: Option<&MessageCatalog>,
+) -> MessageCatalog {
+    let mut merged = own.unwrap_or_else(|| MessageCatalog::new(locale.clone()));
+    let Some(shared) = shared else {
+        return merged;
+    };
+    for (key, message) in shared.messages() {
+        if message_is_blank(message) {
+            continue;
+        }
+        if merged.get(key).is_none_or(message_is_blank) {
+            merged.insert(key.clone(), message.clone());
+        }
+    }
+    merged
+}
+
+/// The instance catalogue for `locale`, or `None` — also for a database whose
+/// translations table was never bootstrapped, which has no shared strings.
+pub async fn load_instance_catalogue(
+    cat: &Catalog,
+    locale: &Locale,
+) -> Result<Option<MessageCatalog>> {
+    if cat.get(TRANSLATIONS_TABLE)?.is_none() {
+        return Ok(None);
+    }
+    instance_catalog_store().load(cat, locale).await
+}
+
+/// What `app` serves for `locale`: its own catalogue over the instance's
+/// (lookup is **app → instance → key**). `None` when neither has one.
+///
+/// This is the one place the merge happens, so the `{mount}/i18n/{locale}.json`
+/// route and a server-rendered framework cannot disagree about which
+/// translation wins.
+pub async fn merged_app_catalogue(
+    cat: &Catalog,
+    app: &Application,
+    locale: &Locale,
+) -> Result<Option<MessageCatalog>> {
+    let own = app_catalog_store(app)?.load(cat, locale).await?;
+    let shared = load_instance_catalogue(cat, locale).await?;
+    if own.is_none() && shared.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(merge_catalogues(locale, own, shared.as_ref())))
 }
 
 /// Delete every translation of an application — what
@@ -749,6 +865,44 @@ mod tests {
         ] {
             assert_eq!(i18n_locale_in_path(&app, not_one), None, "{not_one}");
         }
+    }
+
+    #[test]
+    fn an_apps_key_wins_and_a_blank_one_lets_the_instance_show_through() {
+        let de = Locale::parse("de").unwrap();
+        let mut own = MessageCatalog::new(de.clone());
+        own.insert("Save", Message::Simple("Sichern".to_owned()));
+        own.insert("Copy", Message::Simple("  ".to_owned()));
+        let mut shared = MessageCatalog::new(de.clone());
+        shared.insert("Save", Message::Simple("Speichern".to_owned()));
+        shared.insert("Copy", Message::Simple("Kopieren".to_owned()));
+        shared.insert("Password", Message::Simple("Passwort".to_owned()));
+        shared.insert("Blank", Message::Simple(String::new()));
+
+        let merged = merge_catalogues(&de, Some(own), Some(&shared));
+        let text = |k: &str| merged.get(k).map(|m| m.forms().join("/"));
+        assert_eq!(text("Save").as_deref(), Some("Sichern"));
+        assert_eq!(text("Copy").as_deref(), Some("Kopieren"));
+        assert_eq!(text("Password").as_deref(), Some("Passwort"));
+        // A blank shared value is not a translation either.
+        assert_eq!(text("Blank"), None);
+
+        // No app catalogue at all: the instance's, whole.
+        let only = merge_catalogues(&de, None, Some(&shared));
+        assert_eq!(only.len(), 3);
+        assert!(merge_catalogues(&de, None, None).is_empty());
+    }
+
+    #[test]
+    fn the_instance_store_says_so() {
+        let store = instance_catalog_store();
+        assert!(store.is_instance());
+        assert!(
+            store.describe().contains("instance"),
+            "{}",
+            store.describe()
+        );
+        assert!(!RowCatalogStore::new(AppId::new()).is_instance());
     }
 
     #[test]

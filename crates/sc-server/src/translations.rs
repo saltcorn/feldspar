@@ -33,7 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
-use sc_app::{AppId, Application, app_catalog_store, app_locales};
+use sc_app::{AppId, Application, CatalogStore, app_catalog_store, app_locales};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_files::FileStore;
@@ -297,9 +297,15 @@ pub async fn translations_json(cat: &Catalog, app: &Application) -> Result<Json>
     let store = app_catalog_store(app)?;
 
     let mut catalogues: BTreeMap<String, MessageCatalog> = BTreeMap::new();
+    // The instance's shared catalogue per locale (TODO F6): what a key the app
+    // does not translate is served as, shown greyed with "override".
+    let mut shared: BTreeMap<String, MessageCatalog> = BTreeMap::new();
     for locale in &locales {
         if let Some(loaded) = store.load(cat, locale).await? {
             catalogues.insert(locale.as_str().to_owned(), loaded);
+        }
+        if let Some(loaded) = sc_app::load_instance_catalogue(cat, locale).await? {
+            shared.insert(locale.as_str().to_owned(), loaded);
         }
     }
 
@@ -312,12 +318,21 @@ pub async fn translations_json(cat: &Catalog, app: &Application) -> Result<Json>
                     translations.insert(tag.clone(), message.to_json());
                 }
             }
+            let mut inherited = serde_json::Map::new();
+            // Sent whether or not the app overrides it, so a cleared override
+            // can show what it falls back to.
+            for (tag, catalogue) in &shared {
+                if let Some(message) = catalogue.get(key).filter(|m| !sc_app::message_is_blank(m)) {
+                    inherited.insert(tag.clone(), message.to_json());
+                }
+            }
             json!({
                 "key": key,
                 "source": source_text(key),
                 "context": sc_i18n::key_context(key),
                 "sites": sites_json(&strings.extraction, key),
                 "translations": Json::Object(translations),
+                "inherited": Json::Object(inherited),
             })
         })
         .collect();
@@ -326,14 +341,15 @@ pub async fn translations_json(cat: &Catalog, app: &Application) -> Result<Json>
         .iter()
         .map(|locale| {
             let tag = locale.as_str();
-            let cover = catalogues
+            // Coverage counts what is *served*: a key the shared catalogue
+            // translates is translated in this application too.
+            let effective =
+                sc_app::merge_catalogues(locale, catalogues.get(tag).cloned(), shared.get(tag));
+            let mut cover = coverage(&effective, &keys);
+            cover.orphans = catalogues
                 .get(tag)
-                .map(|c| coverage(c, &keys))
-                .unwrap_or(Coverage {
-                    translated: 0,
-                    total: keys.len(),
-                    orphans: Vec::new(),
-                });
+                .map(|c| coverage(c, &keys).orphans)
+                .unwrap_or_default();
             json!({
                 "locale": tag,
                 "direction": locale.direction().as_str(),
@@ -492,7 +508,12 @@ pub async fn fill_missing(
         .load(cat, locale)
         .await?
         .unwrap_or_else(|| MessageCatalog::new(locale.clone()));
-    let missing = catalogue.missing(keys.iter().map(String::as_str));
+    // A key the instance catalogue already translates is not missing: it is
+    // served, and re-translating it per application is the duplication the
+    // shared catalogue exists to remove (TODO F6).
+    let shared = sc_app::load_instance_catalogue(cat, locale).await?;
+    let effective = sc_app::merge_catalogues(locale, Some(catalogue.clone()), shared.as_ref());
+    let missing = blank_or_missing(&effective, &keys);
     if missing.is_empty() {
         return Ok(json!({
             "locale": locale.as_str(),
@@ -564,6 +585,211 @@ pub async fn set_locales(
     Ok(json!({
         "locales": locales.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
         "default_locale": default.map(|l| l.as_str().to_owned()),
+    }))
+}
+
+/// The keys of `wanted` that `catalogue` has no translation for, counting a
+/// blank one as none (an emptied grid cell, or an app value that defers to the
+/// shared catalogue).
+fn blank_or_missing(catalogue: &MessageCatalog, wanted: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = wanted
+        .iter()
+        .filter(|key| catalogue.get(key).is_none_or(sc_app::message_is_blank))
+        .cloned()
+        .collect();
+    out.dedup();
+    out
+}
+
+// ---------------------------------------------------------------------------
+// The instance catalogue (TODO F6)
+// ---------------------------------------------------------------------------
+//
+// Strings every application shares — "Sign in", "Password", "Copy" — kept once
+// in `_fd_translations` rows with no application and laid under each app's own
+// catalogue when it is served (`sc_app::merged_app_catalogue`). There is no
+// source to extract from, so its keys are the ones it holds: the union across
+// its locales. A key is added by translating it into one locale; **Translate
+// missing** fills the others.
+
+/// The locales the instance catalogue has: the installation's enabled locales
+/// (Settings → Localisation), less the source language, which is the keys.
+pub async fn instance_locales(cat: &Catalog) -> Result<Vec<Locale>> {
+    let settings = sc_config::localisation_settings(cat).await?;
+    let source = Locale::source();
+    Ok(settings
+        .enabled()
+        .iter()
+        .filter(|l| **l != source)
+        .cloned()
+        .collect())
+}
+
+fn require_instance_locale(locales: &[Locale], locale: &Locale) -> Result<()> {
+    if locales.iter().any(|l| l == locale) {
+        return Ok(());
+    }
+    Err(Error::invalid(format!(
+        "`{}` is not one of this installation's enabled languages; add it in Settings → \
+         Localisation before translating the shared catalogue into it",
+        locale.as_str()
+    )))
+}
+
+/// Every catalogue the instance holds, by tag, and the union of their keys.
+async fn instance_catalogues(
+    cat: &Catalog,
+) -> Result<(BTreeMap<String, MessageCatalog>, Vec<String>)> {
+    let mut catalogues = BTreeMap::new();
+    let mut keys = BTreeSet::new();
+    if cat.get(sc_app::TRANSLATIONS_TABLE)?.is_none() {
+        return Ok((catalogues, Vec::new()));
+    }
+    let store = sc_app::instance_catalog_store();
+    for locale in store.locales(cat).await? {
+        if let Some(loaded) = store.load(cat, &locale).await? {
+            keys.extend(loaded.messages().keys().cloned());
+            catalogues.insert(locale.as_str().to_owned(), loaded);
+        }
+    }
+    Ok((catalogues, keys.into_iter().collect()))
+}
+
+/// The shared Translations screen, as JSON: the same shape as an
+/// application's ([`translations_json`]), so one grid renders both.
+pub async fn instance_translations_json(cat: &Catalog) -> Result<Json> {
+    let locales = instance_locales(cat).await?;
+    let (catalogues, keys) = instance_catalogues(cat).await?;
+    let rows: Vec<Json> = keys
+        .iter()
+        .map(|key| {
+            let mut translations = serde_json::Map::new();
+            for (tag, catalogue) in &catalogues {
+                if let Some(message) = catalogue.get(key) {
+                    translations.insert(tag.clone(), message.to_json());
+                }
+            }
+            json!({
+                "key": key,
+                "source": source_text(key),
+                "context": sc_i18n::key_context(key),
+                "sites": [],
+                "translations": Json::Object(translations),
+                "inherited": {},
+            })
+        })
+        .collect();
+    let coverages: Vec<Json> = locales
+        .iter()
+        .map(|locale| {
+            let tag = locale.as_str();
+            let cover = catalogues
+                .get(tag)
+                .map(|c| coverage(c, &keys))
+                .unwrap_or(Coverage {
+                    translated: 0,
+                    total: keys.len(),
+                    orphans: Vec::new(),
+                });
+            json!({
+                "locale": tag,
+                "direction": locale.direction().as_str(),
+                "translated": cover.translated,
+                "total": cover.total,
+                "percent": cover.percent(),
+                "orphans": [],
+            })
+        })
+        .collect();
+    Ok(json!({
+        "store": sc_app::instance_catalog_store().describe(),
+        "scanned": 0,
+        "truncated": false,
+        "default_locale": Json::Null,
+        "locales": coverages,
+        "messages": rows,
+        "problems": [],
+        "unwrapped": [],
+    }))
+}
+
+/// Replace `locale`'s shared catalogue with `messages` (checked as an app's
+/// save is) and drop **every** mount's cached catalogues, since every app
+/// serves it under its own. `apps` is `None` from the command line, which has
+/// no mounts; a running server picks the change up on its next reload of a
+/// mount (a restart or `SIGHUP`).
+///
+/// Unlike an application's save there are no orphans to put back — the keys
+/// *are* what the catalogues hold — so a key the body leaves out is removed.
+pub async fn save_instance_catalogue(
+    cat: &Catalog,
+    apps: Option<&crate::apps::AppMounts>,
+    locale: &Locale,
+    messages: &Json,
+) -> Result<Json> {
+    require_instance_locale(&instance_locales(cat).await?, locale)?;
+    let catalogue = MessageCatalog::from_json(locale.clone(), messages)?;
+    let mut rejected = Vec::new();
+    for (key, message) in catalogue.messages() {
+        if let Err(why) = sc_i18n::check(key, message, locale) {
+            rejected.push(format!("`{key}`: {why}"));
+        }
+    }
+    if !rejected.is_empty() {
+        return Err(Error::invalid(rejected.join("; ")));
+    }
+    sc_app::instance_catalog_store()
+        .save(cat, &catalogue)
+        .await?;
+    if let Some(apps) = apps {
+        apps.invalidate_all_catalogs();
+    }
+    Ok(json!({ "locale": locale.as_str(), "messages": catalogue.len() }))
+}
+
+/// **Translate missing** for the shared catalogue: every key some other locale
+/// of it has, filled into `locale` through `translator`, and saved.
+pub async fn fill_instance_missing(
+    cat: &Catalog,
+    apps: Option<&crate::apps::AppMounts>,
+    locale: &Locale,
+    translator: &dyn Translator,
+) -> Result<Json> {
+    require_instance_locale(&instance_locales(cat).await?, locale)?;
+    let (mut catalogues, keys) = instance_catalogues(cat).await?;
+    let mut catalogue = catalogues
+        .remove(locale.as_str())
+        .unwrap_or_else(|| MessageCatalog::new(locale.clone()));
+    let missing = blank_or_missing(&catalogue, &keys);
+    if missing.is_empty() {
+        return Ok(json!({
+            "locale": locale.as_str(),
+            "filled": 0,
+            "keys": [],
+            "unanswered": [],
+            "rejected": [],
+            "warnings": [],
+        }));
+    }
+    let report =
+        sc_i18n::translate_missing(&mut catalogue, &Locale::source(), translator, &missing).await?;
+    sc_app::instance_catalog_store()
+        .save(cat, &catalogue)
+        .await?;
+    if let Some(apps) = apps {
+        apps.invalidate_all_catalogs();
+    }
+    Ok(json!({
+        "locale": locale.as_str(),
+        "filled": report.filled.len(),
+        "keys": report.filled,
+        "unanswered": report.unanswered,
+        "rejected": report
+            .rejected
+            .iter()
+            .map(|r| json!({ "key": r.key, "reason": r.reason }))
+            .collect::<Vec<_>>(),
+        "warnings": report.warnings(),
     }))
 }
 

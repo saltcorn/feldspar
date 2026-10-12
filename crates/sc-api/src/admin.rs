@@ -2453,6 +2453,51 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // --- The instance's shared catalogue (TODO F6) ----------------------------
+    // Strings every application serves under its own: the same screen payload,
+    // save and fill as an application's, without the application.
+
+    set.register(
+        Endpoint::new(
+            "getInstanceTranslations",
+            Method::Get,
+            api().lit("translations"),
+        )
+        .output(TypeSchema::json())
+        .auth(AuthRequirement::admin()),
+    );
+
+    // Save one locale of the shared catalogue, whole: a key left out is
+    // removed. Placeholders are checked as an application's are.
+    set.register(
+        Endpoint::new(
+            "saveInstanceTranslations",
+            Method::Put,
+            api().lit("translations").param("locale", ValueType::Text),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "messages",
+            TypeSchema::json(),
+        )]))
+        .output(TypeSchema::json())
+        .auth(AuthRequirement::admin()),
+    );
+
+    // **Translate missing** for the shared catalogue: every key another locale
+    // of it has, filled into this one by the configured LLM.
+    set.register(
+        Endpoint::new(
+            "translateInstanceMissing",
+            Method::Post,
+            api()
+                .lit("translations")
+                .param("locale", ValueType::Text)
+                .lit("fill"),
+        )
+        .output(TypeSchema::json())
+        .auth(AuthRequirement::admin()),
+    );
+
     // v1's `/field/preview/:table/:field/:fieldview`: a fieldview rendered over
     // the first row the admin can read, as HTML for the canvas.
     set.register(

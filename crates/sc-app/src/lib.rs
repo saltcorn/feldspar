@@ -131,7 +131,9 @@ pub use i18n::{
     ATTR_DEFAULT_LOCALE, ATTR_LOCALES, CatalogStore, FileCatalogStore, I18N_SEGMENT, LOCALES_DIR,
     RowCatalogStore, TRANSLATIONS_TABLE, app_catalog_store, app_default_locale, app_is_translated,
     app_locales, bootstrap_translations, delete_application_translations, i18n_catalog_path,
-    i18n_catalog_path_template, i18n_locale_in_path, set_app_locales,
+    i18n_catalog_path_template, i18n_locale_in_path, instance_catalog_store,
+    load_instance_catalogue, merge_catalogues, merged_app_catalogue, message_is_blank,
+    set_app_locales,
 };
 pub use location::{app_project_dir, app_source_location, store_dir};
 pub use none::{NONE_FRAMEWORK, NoneFramework, none_config_spec, none_source_dir};

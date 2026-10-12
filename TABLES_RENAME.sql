@@ -660,3 +660,34 @@ WHERE "key" = 'backup_schedules'
 --   WHERE "key" = 'backup_schedules'
 --     AND EXISTS (SELECT 1 FROM json_each("_fd_config"."value") AS s
 --                 WHERE json_type(s.value, '$.destination') = 'text');
+
+-- ---------------------------------------------------------------------------
+-- 14. Postgres and SQLite: `_fd_translations.application` is nullable
+--    (2026-10-12).
+-- ---------------------------------------------------------------------------
+--
+-- A row with a NULL application is the instance's shared catalogue, read after
+-- each application's own (TODO F6). The server's bootstrap makes this change
+-- itself on start (`sc_app::bootstrap_translations`), so this is only for a
+-- database you want migrated before the new binary runs. Re-running it is a
+-- no-op.
+
+ALTER TABLE IF EXISTS "_fd_translations" ALTER COLUMN "application" DROP NOT NULL;
+
+-- SQLite cannot drop a NOT NULL in place; the bootstrap rebuilds the table
+-- (the driver's `SetColumnNullable`). By hand, the same rebuild is:
+--
+--   BEGIN;
+--   CREATE TABLE "_fd_translations_new" (
+--     "id" TEXT NOT NULL PRIMARY KEY,
+--     "application" TEXT,
+--     "name" TEXT NOT NULL,
+--     "description" TEXT,
+--     "messages" TEXT NOT NULL,
+--     "attributes" TEXT NOT NULL,
+--     UNIQUE ("application", "name"));
+--   INSERT INTO "_fd_translations_new" SELECT "id", "application", "name",
+--     "description", "messages", "attributes" FROM "_fd_translations";
+--   DROP TABLE "_fd_translations";
+--   ALTER TABLE "_fd_translations_new" RENAME TO "_fd_translations";
+--   COMMIT;

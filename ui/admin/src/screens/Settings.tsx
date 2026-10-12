@@ -58,6 +58,7 @@ import { AdminMove } from "./AdminMove";
 import { BackupTab } from "./BackupTab";
 import { ClearAllPanel } from "./ClearAll";
 import { CodeLibraryPanel } from "./CodeLibraries";
+import { SharedTranslationsPanel } from "./SharedTranslations";
 import { McpTokensPanel } from "./McpTokens";
 import { ModulesTab } from "./ModulesTab";
 import { PythonStatusPanel } from "./PythonStatus";
@@ -407,7 +408,7 @@ function SectionCard({
  *
  * Kept to a single lookup so it is obvious what the exception costs — a section
  * with nothing here renders its form and nothing else, which is every section
- * but Email and Development. */
+ * but Email, Localisation and Development. */
 function SectionExtra({
   name,
   stored,
@@ -416,6 +417,8 @@ function SectionExtra({
   stored: Record<string, string>;
 }) {
   if (name === "email") return <TestEmail />;
+  // Settings → Localisation → Translations (shared) (TODO F6).
+  if (name === "localisation") return <SharedTranslationsPanel />;
   if (name === "development")
     return (
       <>

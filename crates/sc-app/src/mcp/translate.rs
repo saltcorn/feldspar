@@ -29,6 +29,15 @@
 //! sends the whole grid. An agent fixing one word sends one word, so
 //! `save_translations` reads the catalogue first and lays the agent's messages
 //! over it: a key not named is kept, a key named with `null` is removed.
+//!
+//! ## The shared catalogue
+//!
+//! `scope: "instance"` points both tools at the instance catalogue (TODO F6):
+//! strings every application serves under its own, kept once. Its keys are
+//! the ones it holds, so a save may add any key; its locales are the
+//! installation's enabled languages. On an application, a key the shared
+//! catalogue covers is listed with its `inherited` translation and is not
+//! missing.
 
 use std::sync::Arc;
 
@@ -49,6 +58,9 @@ pub const TOOL_DESCRIBE_TRANSLATIONS: &str = "describe_translations";
 pub const TOOL_SAVE_TRANSLATIONS: &str = "save_translations";
 
 const ARG_LOCALE: &str = "locale";
+const ARG_SCOPE: &str = "scope";
+const SCOPE_INSTANCE: &str = "instance";
+const SCOPE_APPLICATION: &str = "application";
 const ARG_MISSING_ONLY: &str = "missing_only";
 const ARG_MESSAGES: &str = "messages";
 
@@ -87,7 +99,13 @@ impl AdminTool for DescribeTranslations {
              `{ARG_MISSING_ONLY}` for just the untranslated ones, which is what to \
              translate next). A message key is the **English source text**; a key \
              with a context is shown with its `context`. Call this before \
-             `{TOOL_SAVE_TRANSLATIONS}`, and again after it to confirm coverage."
+             `{TOOL_SAVE_TRANSLATIONS}`, and again after it to confirm coverage.\n\n\
+             Strings every application says (\"Sign in\", \"Password\", \"Cancel\") \
+             belong in the **shared catalogue**: `{ARG_SCOPE}: \"{SCOPE_INSTANCE}\"` \
+             (no `{ARG_APPLICATION}`) describes it. Every application serves it under \
+             its own translations, so a key an application lists with an \
+             `inherited` translation is already translated there and is not missing; \
+             translating it for the application overrides the shared one."
         )
     }
 
@@ -95,9 +113,10 @@ impl AdminTool for DescribeTranslations {
         json!({
             "type": "object",
             "properties": {
+                ARG_SCOPE: scope_parameter(),
                 ARG_APPLICATION: {
                     "type": "string",
-                    "description": "The application, by subdomain.",
+                    "description": "The application, by subdomain. Required unless `scope` is `instance`.",
                 },
                 ARG_LOCALE: {
                     "type": "string",
@@ -111,14 +130,16 @@ impl AdminTool for DescribeTranslations {
                         "With `locale`: list only the messages it has no translation for.",
                 },
             },
-            "required": [ARG_APPLICATION],
             "additionalProperties": false,
         })
     }
 
     async fn call(&self, ctx: &ToolContext<'_>, _grants: &Grants, args: &Json) -> Result<Json> {
-        let args = arguments(args, &[ARG_APPLICATION, ARG_LOCALE, ARG_MISSING_ONLY])?;
-        let app = load_app(ctx, &args).await?;
+        let args = arguments(
+            args,
+            &[ARG_SCOPE, ARG_APPLICATION, ARG_LOCALE, ARG_MISSING_ONLY],
+        )?;
+        let target = target(ctx, &args).await?;
         let locale = locale_arg(&args)?;
         let missing_only = optional_bool(&args, ARG_MISSING_ONLY)?.unwrap_or(false);
         if missing_only && locale.is_none() {
@@ -126,14 +147,53 @@ impl AdminTool for DescribeTranslations {
                 "`{ARG_MISSING_ONLY}` needs `{ARG_LOCALE}`: missing is per locale"
             )));
         }
-        let screen = get_translations(ctx, &app).await?;
-        Ok(describe(&app, screen, locale.as_deref(), missing_only))
+        let screen = get_translations(ctx, &target).await?;
+        Ok(describe(&target, screen, locale.as_deref(), missing_only))
+    }
+}
+
+/// Which catalogue a call is about: one application's, or the instance's.
+enum Target {
+    Application(Box<Application>),
+    Instance,
+}
+
+/// The `scope` parameter, as both tools declare it.
+fn scope_parameter() -> Json {
+    json!({
+        "type": "string",
+        "enum": [SCOPE_APPLICATION, SCOPE_INSTANCE],
+        "description":
+            "`application` (the default) for one application's catalogue; \
+             `instance` for the shared catalogue every application serves under \
+             its own.",
+    })
+}
+
+/// The `scope` and `application` arguments, resolved.
+async fn target(ctx: &ToolContext<'_>, args: &Map<String, Json>) -> Result<Target> {
+    match optional_string(args, ARG_SCOPE)?.as_deref().map(str::trim) {
+        None | Some("") | Some(SCOPE_APPLICATION) => {
+            Ok(Target::Application(Box::new(load_app(ctx, args).await?)))
+        }
+        Some(SCOPE_INSTANCE) => {
+            if args.contains_key(ARG_APPLICATION) {
+                return Err(Error::invalid(format!(
+                    "`{ARG_SCOPE}: \"{SCOPE_INSTANCE}\"` is the shared catalogue, which \
+                     belongs to no application: leave out `{ARG_APPLICATION}`"
+                )));
+            }
+            Ok(Target::Instance)
+        }
+        Some(other) => Err(Error::invalid(format!(
+            "`{ARG_SCOPE}` is `{SCOPE_APPLICATION}` or `{SCOPE_INSTANCE}`, not `{other}`"
+        ))),
     }
 }
 
 /// The screen's payload, reshaped for a model: one locale's column when it
 /// asked for one, the unwrapped list capped, and a next step in words.
-fn describe(app: &Application, mut screen: Json, locale: Option<&str>, missing_only: bool) -> Json {
+fn describe(target: &Target, mut screen: Json, locale: Option<&str>, missing_only: bool) -> Json {
     let enabled: Vec<String> = screen["locales"]
         .as_array()
         .map(|ls| {
@@ -143,20 +203,48 @@ fn describe(app: &Application, mut screen: Json, locale: Option<&str>, missing_o
         })
         .unwrap_or_default();
     let mut notes = Vec::new();
-    if enabled.is_empty() {
-        notes.push(format!(
-            "`{}` serves no locales yet: enable one with `{TOOL_UPDATE_APP}`'s `locales` before \
-             saving translations into it.",
-            app.subdomain
-        ));
-    }
-    if let Some(tag) = locale
-        && !enabled.iter().any(|l| l == tag)
-    {
-        notes.push(format!(
-            "`{tag}` is not one of this application's locales; `{TOOL_UPDATE_APP}` \
-             with `locales: {{ add: [\"{tag}\"] }}` enables it."
-        ));
+    match target {
+        Target::Application(app) => {
+            if enabled.is_empty() {
+                notes.push(format!(
+                    "`{}` serves no locales yet: enable one with `{TOOL_UPDATE_APP}`'s \
+                     `locales` before saving translations into it.",
+                    app.subdomain
+                ));
+            }
+            if let Some(tag) = locale
+                && !enabled.iter().any(|l| l == tag)
+            {
+                notes.push(format!(
+                    "`{tag}` is not one of this application's locales; `{TOOL_UPDATE_APP}` \
+                     with `locales: {{ add: [\"{tag}\"] }}` enables it."
+                ));
+            }
+        }
+        Target::Instance => {
+            if let Some(tag) = locale
+                && !enabled.iter().any(|l| l == tag)
+            {
+                notes.push(format!(
+                    "`{tag}` is not one of this installation's enabled languages (Settings → \
+                     Localisation, the `enabled_locales` setting), so the shared catalogue \
+                     cannot hold it yet."
+                ));
+            } else if enabled.is_empty() {
+                notes.push(
+                    "This installation serves one language (Settings → Localisation, the \
+                     `enabled_locales` setting), so the shared catalogue has no locales yet."
+                        .to_owned(),
+                );
+            }
+            if screen["messages"].as_array().is_some_and(Vec::is_empty) {
+                notes.push(format!(
+                    "The shared catalogue is empty. `{TOOL_SAVE_TRANSLATIONS}` with \
+                     `{ARG_SCOPE}: \"{SCOPE_INSTANCE}\"` adds any key: the English text \
+                     exactly as the applications' `t()` calls say it."
+                ));
+            }
+        }
     }
 
     let messages = screen["messages"].take();
@@ -170,12 +258,23 @@ fn describe(app: &Application, mut screen: Json, locale: Option<&str>, missing_o
                 return Some(row);
             };
             let translation = row["translations"].get(tag).cloned().unwrap_or(Json::Null);
-            if missing_only && !translation.is_null() {
+            // What the shared catalogue serves where the app has nothing (or
+            // a blank) of its own: covered, so not missing.
+            let own_blank = translation.is_null() || translation == json!("");
+            let inherited = match own_blank {
+                true => row["inherited"].get(tag).cloned().unwrap_or(Json::Null),
+                false => Json::Null,
+            };
+            if missing_only && !(own_blank && inherited.is_null()) {
                 return None;
             }
             let object = row.as_object_mut()?;
             object.remove("translations");
+            object.remove("inherited");
             object.insert("translation".to_owned(), translation);
+            if !inherited.is_null() {
+                object.insert("inherited".to_owned(), inherited);
+            }
             Some(row)
         })
         .collect();
@@ -191,7 +290,10 @@ fn describe(app: &Application, mut screen: Json, locale: Option<&str>, missing_o
         ));
     }
     let mut out = screen;
-    out["application"] = json!(app.subdomain);
+    match target {
+        Target::Application(app) => out["application"] = json!(app.subdomain),
+        Target::Instance => out[ARG_SCOPE] = json!(SCOPE_INSTANCE),
+    }
     out["messages"] = json!(messages);
     out["unwrapped_count"] = json!(unwrapped.len());
     out["unwrapped"] = json!(
@@ -236,7 +338,12 @@ impl AdminTool for SaveTranslations {
              nothing is written. Translate large applications in batches of about \
              a hundred keys. The running application serves the change on its next \
              page load; no build is needed. The locale must be enabled first \
-             (`{TOOL_UPDATE_APP}`'s `locales`).{edit}"
+             (`{TOOL_UPDATE_APP}`'s `locales`).\n\n\
+             With `{ARG_SCOPE}: \"{SCOPE_INSTANCE}\"` (and no `{ARG_APPLICATION}`) \
+             this writes the **shared catalogue** every application serves under its \
+             own — the place for strings many applications say. Any key may be \
+             added there; its locales are the installation's enabled languages. An \
+             application's own translation of a key still wins.{edit}"
         )
     }
 
@@ -244,9 +351,10 @@ impl AdminTool for SaveTranslations {
         json!({
             "type": "object",
             "properties": {
+                ARG_SCOPE: scope_parameter(),
                 ARG_APPLICATION: {
                     "type": "string",
-                    "description": "The application, by subdomain.",
+                    "description": "The application, by subdomain. Required unless `scope` is `instance`.",
                 },
                 ARG_LOCALE: {
                     "type": "string",
@@ -262,15 +370,18 @@ impl AdminTool for SaveTranslations {
                     },
                 },
             },
-            "required": [ARG_APPLICATION, ARG_LOCALE, ARG_MESSAGES],
+            "required": [ARG_LOCALE, ARG_MESSAGES],
             "additionalProperties": false,
         })
     }
 
     async fn call(&self, ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
-        let args = arguments(args, &[ARG_APPLICATION, ARG_LOCALE, ARG_MESSAGES])?;
+        let args = arguments(
+            args,
+            &[ARG_SCOPE, ARG_APPLICATION, ARG_LOCALE, ARG_MESSAGES],
+        )?;
         require_grant(grants.edit, "translate an application", GRANT_EDIT)?;
-        let app = load_app(ctx, &args).await?;
+        let target = target(ctx, &args).await?;
         let locale = locale_arg(&args)?
             .ok_or_else(|| Error::invalid(format!("`{ARG_LOCALE}` is required")))?;
         let Some(Json::Object(changes)) = args.get(ARG_MESSAGES) else {
@@ -281,7 +392,7 @@ impl AdminTool for SaveTranslations {
 
         // What the locale has now, from the same screen the admin sees. Orphans
         // are not in it, and need not be: the save puts those back itself.
-        let screen = get_translations(ctx, &app).await?;
+        let screen = get_translations(ctx, &target).await?;
         let mut merged = current_translations(&screen, &locale);
         let known: Vec<&str> = screen["messages"]
             .as_array()
@@ -294,17 +405,26 @@ impl AdminTool for SaveTranslations {
                 removed += usize::from(merged.remove(key).is_some());
                 continue;
             }
-            if !known.contains(&key.as_str()) {
+            // The shared catalogue has no source: its keys are whatever it
+            // holds, so a new one is the normal way to add a string.
+            if matches!(target, Target::Application(_)) && !known.contains(&key.as_str()) {
                 unknown.push(key.clone());
             }
             merged.insert(key.clone(), value.clone());
         }
 
-        let mut out = host(ctx)?
-            .call_admin(
+        let call = match &target {
+            Target::Application(app) => {
                 AdminCall::new("saveTranslations", json!({ "messages": merged }))
                     .param("id", app.id.to_string())
-                    .param("locale", locale.clone())
+            }
+            Target::Instance => {
+                AdminCall::new("saveInstanceTranslations", json!({ "messages": merged }))
+            }
+        };
+        let mut out = host(ctx)?
+            .call_admin(
+                call.param("locale", locale.clone())
                     .user(ctx.user.map(|u| u.id)),
             )
             .await?;
@@ -342,13 +462,15 @@ fn current_translations(screen: &Json, locale: &str) -> Map<String, Json> {
         .unwrap_or_default()
 }
 
-async fn get_translations(ctx: &ToolContext<'_>, app: &Application) -> Result<Json> {
+async fn get_translations(ctx: &ToolContext<'_>, target: &Target) -> Result<Json> {
+    let call = match target {
+        Target::Application(app) => {
+            AdminCall::new("getTranslations", Json::Null).param("id", app.id.to_string())
+        }
+        Target::Instance => AdminCall::new("getInstanceTranslations", Json::Null),
+    };
     host(ctx)?
-        .call_admin(
-            AdminCall::new("getTranslations", Json::Null)
-                .param("id", app.id.to_string())
-                .user(ctx.user.map(|u| u.id)),
-        )
+        .call_admin(call.user(ctx.user.map(|u| u.id)))
         .await
 }
 

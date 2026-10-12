@@ -291,3 +291,162 @@ async fn the_store_is_chosen_by_whether_the_framework_has_a_tree() -> Result<()>
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// The instance catalogue (TODO F6.1)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_instance_catalogue_is_rows_with_no_application() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = catalog(&db).await?;
+
+    // CRUD per locale, through the same trait the app stores answer.
+    let shared = sc_app::instance_catalog_store();
+    round_trip(&cat, &shared).await?;
+
+    // Saving twice updates the one row: a unique key does not stop two `NULL`
+    // applications, so the store must not insert a second.
+    shared.save(&cat, &french()).await?;
+    shared.save(&cat, &french()).await?;
+    let rows: Vec<sc_db::Row> = cat
+        .primary()
+        .query(&sc_query::Statement::from(sc_query::Select::from(
+            sc_query::Source::table(TRANSLATIONS_TABLE),
+        )))
+        .await?
+        .try_collect()
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].get("application").is_some_and(|v| v.is_null()));
+
+    // The instance's catalogue is not an application's, and the reverse.
+    let app = RowCatalogStore::new(AppId::new());
+    let fr = Locale::parse("fr")?;
+    assert!(app.load(&cat, &fr).await?.is_none());
+    let mut own = MessageCatalog::new(Locale::parse("de")?);
+    own.insert("Copy", Message::Simple("Kopie".to_owned()));
+    app.save(&cat, &own).await?;
+    assert!(shared.load(&cat, &Locale::parse("de")?).await?.is_none());
+    assert_eq!(
+        shared
+            .locales(&cat)
+            .await?
+            .iter()
+            .map(|l| l.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["fr".to_owned()]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn deleting_an_application_keeps_the_instance_catalogue() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = catalog(&db).await?;
+    let app = save_application(
+        &cat,
+        &Application::new(
+            "Blog",
+            "blog",
+            FrameworkRef::new("code")
+                .with("store", "apps")
+                .with("source", "web")
+                .with("output", "web/dist")
+                .with("command", "npm run build"),
+        ),
+    )
+    .await?;
+    RowCatalogStore::new(app.id).save(&cat, &french()).await?;
+    sc_app::instance_catalog_store()
+        .save(&cat, &french())
+        .await?;
+
+    assert!(delete_application(&cat, app.id).await?);
+    assert!(
+        sc_app::instance_catalog_store()
+            .load(&cat, &Locale::parse("fr")?)
+            .await?
+            .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_app_catalogue_is_served_over_the_instance_one() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = catalog(&db).await?;
+    let tmp = TempDir::new("merge")?;
+    cat.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;
+    // A file-backed app: the merge is the same whichever store the app has.
+    let app = Application::new(
+        "Tasks",
+        "tasks",
+        FrameworkRef::new("react")
+            .with("store", "apps")
+            .with("project", "tasks"),
+    );
+    let de = Locale::parse("de")?;
+
+    // Nothing anywhere: nothing to merge.
+    assert!(
+        sc_app::merged_app_catalogue(&cat, &app, &de)
+            .await?
+            .is_none()
+    );
+
+    let mut shared = MessageCatalog::new(de.clone());
+    shared.insert("Sign in", Message::Simple("Anmelden".to_owned()));
+    shared.insert("Copy", Message::Simple("Kopieren".to_owned()));
+    sc_app::instance_catalog_store().save(&cat, &shared).await?;
+    let mut own = MessageCatalog::new(de.clone());
+    own.insert("Copy", Message::Simple("Duplizieren".to_owned()));
+    app_catalog_store(&app)?.save(&cat, &own).await?;
+
+    let merged = sc_app::merged_app_catalogue(&cat, &app, &de)
+        .await?
+        .expect("both have one");
+    assert_eq!(
+        merged.get("Copy").map(Message::forms),
+        Some(vec!["Duplizieren"])
+    );
+    assert_eq!(
+        merged.get("Sign in").map(Message::forms),
+        Some(vec!["Anmelden"])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_table_from_before_the_instance_catalogue_is_loosened_by_bootstrap() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = catalog(&db).await?;
+    // The shape the table had before F6: `application` NOT NULL.
+    cat.apply_schema_batch(&[sc_catalog::SchemaStep::Change(
+        sc_db::SchemaChange::SetColumnNullable {
+            table: TRANSLATIONS_TABLE.to_owned(),
+            column: "application".to_owned(),
+            nullable: false,
+        },
+    )])
+    .await?;
+    cat.reload().await?;
+    assert!(
+        cat.require(TRANSLATIONS_TABLE)?
+            .field("application")
+            .unwrap()
+            .required
+    );
+
+    sc_app::bootstrap_translations(&cat).await?;
+    assert!(
+        !cat.require(TRANSLATIONS_TABLE)?
+            .field("application")
+            .unwrap()
+            .required
+    );
+    sc_app::instance_catalog_store()
+        .save(&cat, &french())
+        .await?;
+    Ok(())
+}

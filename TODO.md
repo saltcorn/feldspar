@@ -571,23 +571,23 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
 
 ## F6 — Shared translations
 
-- [ ] **F6.1** (5.3) The instance catalogue: `_fd_translations` rows with `application_id`
+- [x] **F6.1** (5.3) The instance catalogue: `_fd_translations` rows with `application_id`
   NULL (migration in `TABLES_RENAME.sql` if the column is `NOT NULL`), and the `CatalogStore`
   for it. Tests: CRUD per locale.
-- [ ] **F6.2** (5.3) Merge app → instance in `GET {mount}/i18n/{locale}.json`, for both file-
+- [x] **F6.2** (5.3) Merge app → instance in `GET {mount}/i18n/{locale}.json`, for both file-
   and row-backed app catalogues. Tests: an app key overrides; an instance-only key is served; a
   locale the app does not enable is still a 404.
-- [ ] **F6.3** (5.3) Admin: Settings → Translations (shared), reusing the app Translations screen,
+- [x] **F6.3** (5.3) Admin: Settings → Translations (shared), reusing the app Translations screen,
   with "Translate missing" (the LLM fill). The app's Translations screen shows inherited keys
   greyed, with "override". Puppeteer check.
-- [ ] **F6.4** (5.3) MCP `describe_translations` and `save_translations` take
+- [x] **F6.4** (5.3) MCP `describe_translations` and `save_translations` take
   `scope: "instance"`. `feldspar i18n translate --instance`. Tests.
 
 ### Try it
 1. Put "Sign in", "Password" and "Copy" in the shared German catalogue once. Two apps show them
   in German with no per-app translation.
 
-- [ ] **F6.5** `docs/I18N.md` and `docs/tutorial-i18n.md` updated, with a definition-of-done test.
+- [x] **F6.5** `docs/I18N.md` and `docs/tutorial-i18n.md` updated, with a definition-of-done test.
 
 ---
 

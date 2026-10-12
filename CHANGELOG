@@ -2,6 +2,89 @@
 
 Changes in reverse chronological order.
 
+## F6: shared translations
+
+TODO.md F6 (field report 5.3): one instance-wide catalogue for the strings every application
+says ("Sign in", "Password", "Copy"), served under each application's own. F4 and F5 were
+skipped for now, as asked.
+
+- **F6.1: the instance catalogue.**
+  - `_fd_translations.application` is nullable. A NULL row is the shared catalogue, one per
+    locale, in the same `messages` shape.
+  - `sc_app::bootstrap_translations` loosens an existing `NOT NULL` itself
+    (`SchemaChange::SetColumnNullable`). `TABLES_RENAME.sql` §14 has the same change by hand
+    for Postgres, and the SQLite rebuild.
+  - `RowCatalogStore` holds an `Option<AppId>`. `RowCatalogStore::instance()` and
+    `sc_app::instance_catalog_store()` are the instance store. A unique key does not stop two
+    NULL applications, so `save` updates the existing row in place.
+  - Deleting an application leaves the shared rows alone.
+- **F6.2: the merge.**
+  - `sc_app::merged_app_catalogue` gives the app's own catalogue over the instance's (app →
+    instance → key). `merge_catalogues` and `message_is_blank` do the work.
+  - A key the app translates wins. A blank app value (empty string, or plural forms that are all
+    empty) counts as missing.
+  - `GET {mount}/i18n/{locale}.json` serves the merge for both file- and row-backed apps, and
+    the Saltcorn UI renderer uses the same function. The locale guard is unchanged: a locale the
+    app does not enable is still a 404.
+  - `AppMounts::invalidate_all_catalogs` drops every mount's cache. Every shared save calls it.
+- **F6.3: admin.**
+  - New admin endpoints: `getInstanceTranslations`, `saveInstanceTranslations` and
+    `translateInstanceMissing` (`sc-server/src/translations.rs`).
+    - The shared catalogue's locales are `enabled_locales` minus the source language.
+    - Its keys are the union across its locales, since there is no source to extract.
+    - Saving into a locale the installation does not enable is refused, naming Settings →
+      Localisation. Placeholders are checked as an app's are.
+  - `getTranslations` rows gain `inherited`: the shared translation per locale.
+    - Coverage counts what is served, so inherited keys count as translated.
+    - An app's **Translate missing** skips keys the shared catalogue covers.
+  - The grid moved into `screens/TranslationGrid.tsx`, which the app tab and the new
+    `screens/SharedTranslations.tsx` (`#/translations`) both use.
+    - Settings → Localisation links to the new screen. It has **Add a string** and
+      **Translate missing**.
+    - On an app's tab, an inherited key is shown greyed with a `shared` badge and
+      **override**. Override copies the shared text into the cell, and an emptied override
+      falls back to the shared text.
+  - `translations.ts` gains `inheritedEntry`, `isCovered` and `newRow`. `missingKeys` and
+    `liveCoverage` count inherited keys. All four `client.ts` copies are regenerated.
+  - The puppeteer check was run by hand (`puppeteer-core` with the system Chromium against
+    `feldspar serve --sqlite`). It checked:
+    - the Localisation link opens the screen, and its columns are `de` and `fr` but not `en`;
+    - adding and saving three strings gives 3/3;
+    - a renamed placeholder goes red as it is typed;
+    - the app tab shows 2 of 3 translated, with two greyed inherited rows and no input for them;
+    - override copies the shared text;
+    - after saving an override, the live `/api/i18n/de.json` served the app's override plus the
+      shared keys.
+- **F6.4: MCP and CLI.**
+  - `describe_translations` and `save_translations` take `scope: "instance"`, with no
+    `application`. A shared save may add any key and merges like an app save.
+  - On an application, `describe_translations` with a `locale` shows `inherited`, and
+    `missing_only` leaves out inherited keys.
+  - The tool descriptions and the scaffold's `AGENTS.md` point to the shared catalogue.
+  - `feldspar i18n translate --instance --locale de` fills the shared catalogue through the
+    configured LLM. It needs no checkout. The provider/model lookup is now one `cli_translator`
+    helper shared with `--domain`.
+- **F6.5: docs.**
+  - `docs/tutorial-i18n.md` has a new step 5 and a row in the catalogue table.
+  - `docs/I18N.md` covers the shared catalogue: the diagram, D4, B, §6 and the limits.
+  - TECHNICAL_DESIGN §9 (table and ER diagram) and §16.1 are updated.
+  - `repo_hygiene`'s i18n tutorial test checks the new step and I18N.md.
+- Tests:
+  - `sc-app` `app_i18n`: instance CRUD per locale and single-row update, isolation from
+    apps, surviving an app's deletion, the merge, and the bootstrap loosening an old `NOT NULL`.
+    Unit tests cover the merge rules.
+  - `sc-server` `app_i18n`:
+    - an app key overrides, an instance-only key is served, and a blank app value falls through,
+      for both file- and row-backed apps;
+    - a locale the app does not enable is still a 404;
+    - the shared screen's save, fill and refusals;
+    - inherited rows and coverage on the app screen, and the app fill asking only for uncovered
+      keys;
+    - the MCP `scope` round-trip, including the `allow_edit` refusal.
+  - `sc-cli` `i18n`: `--instance` parsing and refusals, and the binary run outside a checkout.
+  - Vitest: inherited, coverage, save body and add-string rules.
+- Not done: the shared catalogue is not in backups yet. A restore does not bring it back.
+
 ## F3: the code library
 
 TODO.md F3 (field report 2.2): named, shared JavaScript that code queries and triggers

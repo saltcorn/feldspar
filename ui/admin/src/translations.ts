@@ -42,6 +42,11 @@ export type MessageRow = {
   sites: MessageSite[];
   /** Locale tag → the catalogue entry: a string, or plural forms. */
   translations: Record<string, unknown>;
+  /** Locale tag → the instance's shared translation of this key (TODO F6).
+   * Served where the application has no translation of its own, and shown
+   * greyed with "override" there ({@link inheritedEntry}). Empty on the shared
+   * screen itself. */
+  inherited: Record<string, unknown>;
 };
 
 /** A call site whose message is not a literal, so it can never be extracted. */
@@ -73,7 +78,9 @@ export function asTranslations(value: unknown): Translations {
     truncated: o.truncated === true,
     default_locale: typeof o.default_locale === "string" ? o.default_locale : null,
     locales: Array.isArray(o.locales) ? o.locales : [],
-    messages: Array.isArray(o.messages) ? o.messages : [],
+    messages: Array.isArray(o.messages)
+      ? o.messages.map((m) => ({ ...m, inherited: m.inherited ?? {} }))
+      : [],
     problems: Array.isArray(o.problems) ? o.problems : [],
     unwrapped: Array.isArray(o.unwrapped) ? o.unwrapped : [],
   };
@@ -88,10 +95,24 @@ export function singleForm(entry: unknown): string | null {
   return null;
 }
 
-/** Whether `row` is translated into `locale`. */
+/** Whether `row` is translated into `locale` by its own catalogue. */
 export function isTranslated(row: MessageRow, locale: string): boolean {
   const entry = row.translations[locale];
   return entry !== undefined && entry !== null && entry !== "";
+}
+
+/** What the shared catalogue serves for `row` in `locale`, when the row has no
+ * translation of its own — `undefined` otherwise. */
+export function inheritedEntry(row: MessageRow, locale: string): unknown {
+  if (isTranslated(row, locale)) return undefined;
+  const entry = row.inherited?.[locale];
+  return entry === null || entry === "" ? undefined : entry;
+}
+
+/** Whether `row` is served translated into `locale`: its own translation, or
+ * the shared catalogue's. */
+export function isCovered(row: MessageRow, locale: string): boolean {
+  return isTranslated(row, locale) || inheritedEntry(row, locale) !== undefined;
 }
 
 /** The placeholders a message uses, in the order they first appear.
@@ -137,9 +158,18 @@ export function sourceText(key: string): string {
   return at === -1 ? key : key.slice(at + 1);
 }
 
-/** The keys of `rows` that `locale` has no translation for. */
+/** The keys of `rows` that `locale` has no translation for — neither its own
+ * nor a shared one, which is what **Translate missing** fills. */
 export function missingKeys(rows: MessageRow[], locale: string): string[] {
-  return rows.filter((r) => !isTranslated(r, locale)).map((r) => r.key);
+  return rows.filter((r) => !isCovered(r, locale)).map((r) => r.key);
+}
+
+/** A new, untranslated row for the shared screen's "Add a string" box, or
+ * `null` when the text is empty or already a row. */
+export function newRow(rows: MessageRow[], text: string): MessageRow | null {
+  const key = text.trim();
+  if (!key || rows.some((r) => r.key === key)) return null;
+  return { key, source: sourceText(key), context: null, sites: [], translations: {}, inherited: {} };
 }
 
 /**
@@ -186,7 +216,11 @@ export function liveCoverage(
     const edited = Object.prototype.hasOwnProperty.call(edits, row.key)
       ? edits[row.key]
       : undefined;
-    const has = edited !== undefined ? edited.trim().length > 0 : isTranslated(row, locale);
+    let has: boolean;
+    if (edited === undefined) has = isCovered(row, locale);
+    else if (edited.trim()) has = true;
+    // An emptied cell falls back to the shared translation, if there is one.
+    else has = inheritedEntry({ ...row, translations: {} }, locale) !== undefined;
     if (has) translated += 1;
   }
   const total = rows.length;

@@ -1184,10 +1184,33 @@ fn the_i18n_tutorial_walks_the_definition_of_done() {
         // And what stays English.
         "System errors",
         "negotiated, not routed",
+        // The shared catalogue (TODO F6.5): where it is, how an app inherits
+        // and overrides it, that the app wins, and the agent and CLI routes.
+        "Translations (shared)",
+        "application → shared → English",
+        "**override**",
+        "An application's own translation always wins.",
+        "An empty one counts as missing",
+        "still a 404",
+        "scope: \"instance\"",
+        "feldspar i18n translate --instance --locale de",
+        "`application` is NULL",
     ] {
         assert!(
             tutorial.contains(fragment),
             "the i18n tutorial should cover `{fragment}`"
+        );
+    }
+    // The design document says how the shared catalogue merges (TODO F6.5).
+    let design = read(&root, "docs/I18N.md");
+    for fragment in [
+        "app → instance → key",
+        "merged_app_catalogue",
+        "application` is NULL",
+    ] {
+        assert!(
+            design.contains(fragment),
+            "docs/I18N.md should cover `{fragment}`"
         );
     }
 }

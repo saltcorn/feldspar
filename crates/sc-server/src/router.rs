@@ -1880,6 +1880,8 @@ async fn serve_static_dir(
 /// "translate this application into Spanish" must not be a deploy. The file
 /// still lives in the admin's repository (or, for a Saltcorn UI app, in
 /// `_fd_translations`) — it is just read at request time instead of compiled in.
+/// The instance's shared catalogue is laid under it here (TODO F6), so lookup
+/// is app → instance → key with no change to the generated client.
 ///
 /// Three things make that affordable:
 ///
@@ -1943,17 +1945,10 @@ async fn app_i18n_catalog(
             let Some(catalog) = state.apps.catalog() else {
                 return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
             };
-            let store = match sc_app::app_catalog_store(&app.app) {
-                Ok(store) => store,
-                Err(e) => {
-                    log_failure("resolving an application's catalogue store", &e);
-                    return json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "this application's catalogue store is misconfigured",
-                    );
-                }
-            };
-            let messages = match store.load(catalog, &locale).await {
+            // The app's own catalogue over the instance's (TODO F6): a key the
+            // app translates wins, and one it lacks or left blank is the
+            // shared one. Merged here, so the client and `useT` never know.
+            let messages = match sc_app::merged_app_catalogue(catalog, &app.app, &locale).await {
                 Ok(Some(messages)) => messages,
                 // Enabled but not yet translated is an *empty* catalogue rather
                 // than a 404: the locale is one the application serves, and the
