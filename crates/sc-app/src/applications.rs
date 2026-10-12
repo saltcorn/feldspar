@@ -73,6 +73,12 @@ pub const COL_STREAMS: &str = "streams";
 pub const COL_APIS: &str = "apis";
 /// The statically-served directories (JSON array of `{mount, store, path}`).
 pub const COL_STATIC_DIRS: &str = "static_dirs";
+/// The upload slots (JSON array of `{name, store, folder, …}`, TODO F2 §2.3).
+///
+/// Nullable for [`COL_TRIGGERS`]' reason: it arrived after the table did, so
+/// [`bootstrap`] adds it to tables that already have rows. `NULL` reads back as
+/// "no upload slots".
+pub const COL_UPLOADS: &str = "uploads";
 /// The content-security policy (JSON object of directive → source list).
 pub const COL_CSP: &str = "csp";
 
@@ -103,6 +109,8 @@ fn applications_fields() -> Vec<DataField> {
         DataField::plain(COL_STREAMS, json()),
         DataField::plain(COL_APIS, json()).required(),
         DataField::plain(COL_STATIC_DIRS, json()).required(),
+        // Not `required`, for the reason above it: see [`COL_UPLOADS`].
+        DataField::plain(COL_UPLOADS, json()),
         DataField::plain(COL_CSP, json()).required(),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
     ]
@@ -132,6 +140,8 @@ pub async fn bootstrap(catalog: &Catalog) -> Result<Table> {
     // hold an app can hold its catalogue. So they bootstrap together, rather
     // than leaving every call site to remember a second one.
     crate::i18n::bootstrap_translations(catalog).await?;
+    // …and so are its uploads in progress (TODO F2, §2.3).
+    crate::uploads::bootstrap_uploads(catalog).await?;
     Ok(table)
 }
 

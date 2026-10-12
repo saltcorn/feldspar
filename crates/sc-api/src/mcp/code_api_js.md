@@ -17,6 +17,9 @@ that can express it:
    app's generated client then works with no server code, and the server enforces the rules for
    every caller. Do not make tables admin-only and wrap them in code queries.
 2. **A File field** on that table for uploads: stored, served and access-checked with its row.
+   For a large file (over the 2 MB request limit) or one with no row, give the application an
+   **upload slot** (`update_application`'s `uploads`): resumable, streamed to disk, owned by
+   its uploader. Never accept a file as base64 in a code query.
 3. **A custom SQL query** (`language: sql`) for a read that is one statement.
 4. **A code query or trigger** (this page) only for what the above cannot express: several
    steps, a call out with `fetch`, a password check, a computed status code.
@@ -71,6 +74,17 @@ owns (`set-cookie`, the CSP, framing, `content-type`, …), which it refuses. **
 a 500** `{ "error": "internal error", "id": "…" }` to callers who are not admins — the query
 name and stack go to the server log under that id, and to admin callers. A body stopped by its
 timeout, its slice or the heap is a 503 `{ "error": "timeout" }`.
+
+An upload slot's **hook** is a code query too (a POST is best). It runs before an upload is
+accepted, with `body = { filename, size, mime, slot }` and `user` the uploader; throw
+`httpError(403, …)` (or 413, …) to refuse, or return `{ path, meta, min_role }` — all optional —
+to choose the file's path inside the slot's folder, extra string attributes, and a stricter role
+floor:
+
+```js
+if (body.size > 100e6 && user.role > 40) throw httpError(413, "100 MB at most");
+return { path: `${user.id}/${body.filename}`, meta: { project: "apollo" } };
+```
 
 ## `db`: reading and writing tables
 

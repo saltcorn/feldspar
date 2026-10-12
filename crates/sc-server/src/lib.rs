@@ -58,6 +58,7 @@ pub mod target_builds;
 mod tls;
 pub mod translations;
 mod triggers;
+mod uploads;
 
 pub use admin_host::{AdminHost, HANDOFF_ROUTE, HANDOFF_TTL};
 pub use agents::{AgentServices, install_agents, install_agents_on};
@@ -194,4 +195,8 @@ pub use translations::{LlmTranslator, parse_answer};
 pub use triggers::{
     base_action_registry, fire_startup, install_triggers, install_triggers_with_adapters,
     start_scheduler, start_workflow_engine,
+};
+pub use uploads::{
+    ABANDONED_AFTER_SECS, FILE_PATH_HEADER, FILE_URL_HEADER, TEMP_DIR as UPLOAD_TEMP_DIR,
+    sweep_uploads,
 };

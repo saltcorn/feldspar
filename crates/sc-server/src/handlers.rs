@@ -6992,6 +6992,7 @@ pub(crate) fn application_json(app: &Application) -> Json {
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "apis": app.apis.iter().map(|a| json!({ "provider": a.provider, "mount": a.mount, "config": Json::Object(a.config.clone()) })).collect::<Vec<_>>(),
         "static_dirs": app.static_dirs.iter().map(|d| json!({ "mount": d.mount, "store": d.store.0, "path": d.path })).collect::<Vec<_>>(),
+        "uploads": sc_app::upload_slots_json(&app.uploads),
         "csp": csp_json(&app.csp),
         "attributes": Json::Object(app.attributes.clone()),
         "source": app_source_json(app),
@@ -7551,6 +7552,8 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
             ))
         })
         .collect::<Result<_>>()?;
+    // Absent is "no upload slots", read as the triggers are.
+    let uploads = sc_app::upload_slots_from_json(obj.get("uploads"))?;
     let csp = parse_csp(obj.get("csp"), &framework.name)?;
     let attributes = match obj.get("attributes") {
         None | Some(Json::Null) => Attrs::new(),
@@ -7571,6 +7574,7 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         streams,
         apis,
         static_dirs,
+        uploads,
         csp,
         attributes,
     })

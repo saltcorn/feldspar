@@ -71,6 +71,8 @@ mod app_signup;
 mod app_static_dirs;
 #[path = "app_trigger_api.rs"]
 mod app_trigger_api;
+#[path = "app_uploads.rs"]
+mod app_uploads;
 #[path = "backup_api.rs"]
 mod backup_api;
 #[path = "builder_route.rs"]

@@ -1632,6 +1632,26 @@ impl ApiProvider for RestProvider {
             other => other,
         }
     }
+
+    async fn run_hook(
+        &self,
+        name: &str,
+        body: Json,
+        cat: &Arc<Catalog>,
+        user: Option<&User>,
+    ) -> Option<Result<ApiResponse>> {
+        let query = self.custom_routes.get(name)?;
+        let action = query.language.action()?;
+        let req = ApiRequest {
+            method: Method::Post,
+            path: format!("{}{}", self.mount.trim_end_matches('/'), query.path),
+            query: Vec::new(),
+            body,
+            raw: None,
+            links: None,
+        };
+        Some(self.run_custom_code(query, action, &req, cat, user).await)
+    }
 }
 
 impl RestProvider {

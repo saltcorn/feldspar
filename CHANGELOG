@@ -2,6 +2,70 @@
 
 Changes in reverse chronological order.
 
+## F2 phase 2: large uploads
+
+The second half of TODO.md F2's file work (field report 1.1): request bodies have explicit
+limits, and an application can declare **upload slots** that take a file of any size the
+admin allows, in resumable chunks streamed to disk.
+
+- **F2.5 — body limits are settings.** `--max-request-body` (default 2 MiB, axum's old implicit
+  limit) is set as the router's `DefaultBodyLimit` and is the bound the dispatcher reads every
+  body under. The dispatcher now takes the body as a stream and reads it itself
+  (`router::read_body`), so an upload slot's `PATCH` can bypass that limit. The hard-coded
+  256 MiB for the admin `/upload` route and the backup upload is now `--max-upload-bytes`. Both
+  flags take a `K`/`M`/`G` suffix. A body over either limit is a JSON `413 {error}` naming the
+  limit and the flag. axum's own plain-text 413 (a `Bytes` extractor such as
+  `/backup/create`), and the CSRF form check's, are rewritten to JSON by a middleware.
+- **F2.6 — upload slots.** `sc_app::UploadSlot { name, store, folder, min_role, max_bytes,
+  mime_allow, hook }` and `Application::uploads`, stored in a new nullable
+  `_fd_applications.uploads` column (added by the additive bootstrap; no migration).
+  `max_bytes` 0 means the server's limit, which also caps a larger value. `min_role` defaults
+  to admin. `save_application` runs `validate_upload_slots`: the name must be an identifier
+  and unique, the store must be in the app's subset, the folder must stay inside the store,
+  the role must be 1–100, and the hook must be one of the app's JavaScript/Python custom
+  queries (a SQL query is refused by name). The admin API's application schema carries
+  `uploads` (all four UI clients regenerated), so slots travel in backups with the
+  application. The application form has an "Upload slots" repeating group
+  (`ui/admin/src/uploadSlots.ts`: sizes typed as `1G`, types comma-separated, a blank hook
+  sent as null). MCP: `update_application` has an `uploads { add, remove }` section, which
+  needs `allow_edit`, connects a store the app did not have, and is validated like the form.
+  `describe_applications` lists each slot with its `route`. New table `_fd_uploads`, one
+  row per upload in progress, bootstrapped with the applications.
+- **F2.7 — the tus routes** (`sc-server/src/uploads.rs`) at `{mount}/_upload/{name}`, matched
+  before the body is read. They implement core tus 1.0 plus `creation` and `termination`, and
+  answer `OPTIONS`. `POST` checks the slot's role (401/403), `Upload-Length` against the limit
+  (413 with `Tus-Max-Size`), and the type the filename implies against `mime_allow` (415). It
+  then runs the hook through a new `ApiProvider::run_hook` (the REST provider runs its code
+  query with `body = { filename, size, mime, slot }`). A non-2xx hook answer, such as
+  `httpError(403)`, is the refusal with the hook's own status and body. `{ path, meta,
+  min_role }` picks the path inside the folder, extra attributes and a tighter floor. A
+  destination that already exists is a 409. Otherwise the answer is `201` with `Location`.
+  `PATCH` (`application/offset+octet-stream`, matching `Upload-Offset` or a 409 that says the
+  real one) streams into `FileStore::open_append` on `.feldspar-uploads/<id>.part`, an
+  admin-only folder in the same store. It stops at the declared length without reading
+  further (413), keeps what arrived when the connection drops, and refuses a concurrent
+  second `PATCH`. `HEAD` answers the offset from the temporary file's size. On the last byte
+  the file is renamed into place and owned by the uploader, with `attributes.filename` and
+  the hook's attributes. The response carries `Feldspar-File-Path`, plus
+  `Feldspar-File-Url` when a static directory (or a Saltcorn UI app's `/files/serve`) covers
+  the file. `DELETE` abandons the upload. Only the uploader (`user:<id>`, or a hash of an
+  anonymous browser's cookie, never the cookie itself) may continue, inspect or abandon it.
+  Anyone else gets the 404 an unknown id gets. A ten-minute housekeeping task
+  (`sweep_uploads`) removes uploads begun over 24 hours ago, with their bytes.
+- Agent-facing text: the `update_application` description, `describe_code_api` (upload
+  slots ahead of base64 code queries, and the hook's contract) and TECHNICAL_DESIGN §13.2.
+
+Tests: `sc-server` `app_uploads` on SQLite. It covers a 30 MB upload in 5 MB chunks broken off
+mid-chunk that resumes from `HEAD` and completes, is owned by its uploader with its original
+name, is served to her with Range, and is a 404 to another member and to a stranger. It also
+covers another user's `PATCH`/`HEAD`/`DELETE` being 404s; a stranger and a member being refused
+creation in slots above them; the hook's 403 and its path/meta; the 409 on an existing path; the
+415 on a type; `max_bytes` up front and mid-stream (at most one chunk past the limit is
+read); the server cap over a slot's; the sweep; and both body limits answering JSON 413s on app
+and admin routes. Also: the config flag tests, `uploads` unit tests in `sc-app` and
+`sc-server`, `uploadSlots.test.ts`, and an MCP test in `sc-core-traits`
+(`admin_copilot_apps`), which needs Postgres.
+
 ## F2 phase 1: file owners and file responses
 
 The first half of TODO.md F2 (field report 1.3): a file's owner is now an authority, every

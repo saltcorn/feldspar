@@ -686,3 +686,99 @@ async fn update_application_checks_each_section_s_grant_before_changing_anything
     assert!(nothing.contains("at least one of"), "{nothing}");
     Ok(())
 }
+
+/// `update_application`'s `uploads` section (TODO F2.6): an edit, so it needs
+/// `allow_edit`; a slot naming a store the app was not connected to connects
+/// it; a hook that is not one of the app's code queries is refused by the
+/// form's own validation; and `describe_applications` shows each slot with the
+/// route a client uploads to.
+#[tokio::test]
+async fn upload_slots_are_an_edit_and_are_validated_like_the_form() -> Result<()> {
+    let env = Env::with_schema(SCHEMA).await?;
+    app_with_api(&env).await?;
+    env.with_file_store("media", None).await?;
+    let slot = json!({
+        "name": "drop", "store": "media", "folder": "drops",
+        "min_role": 80, "max_bytes": 1_073_741_824u64, "mime_allow": ["video/mp4"],
+    });
+
+    let no_edit = config(&[("allow_edit", json!(false))]);
+    let refused = call(
+        &env,
+        &no_edit,
+        "update_application",
+        json!({ "application": "blog", "uploads": { "add": [slot.clone()] } }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("allow_edit"), "{refused}");
+
+    let hooked = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({ "application": "blog", "uploads": { "add": [
+            { "name": "drop", "store": "media", "hook": "nothing" }
+        ] } }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(hooked.contains("not one of"), "{hooked}");
+
+    let added = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({ "application": "blog", "uploads": { "add": [slot.clone()] } }),
+    )
+    .await?;
+    assert_eq!(added["connected_file_stores"], json!(["media"]), "{added}");
+    assert_eq!(
+        added["uploads"][0]["max_bytes"],
+        json!(1_073_741_824u64),
+        "{added}"
+    );
+    assert_eq!(added["was"]["uploads"], json!([]), "{added}");
+    let stored = load_application_by_subdomain(&env.catalog, "blog")
+        .await?
+        .unwrap();
+    assert_eq!(stored.uploads.len(), 1);
+    assert_eq!(stored.uploads[0].folder, "drops");
+    assert_eq!(stored.uploads[0].min_role, 80);
+    assert_eq!(stored.uploads[0].mime_allow, vec!["video/mp4".to_owned()]);
+
+    let described = call(&env, &default_grants(), TOOL_DESCRIBE_APPS, json!({})).await?;
+    let blog = described["applications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["subdomain"] == "blog")
+        .unwrap();
+    assert_eq!(
+        blog["uploads"][0]["route"],
+        json!("/api/_upload/drop"),
+        "{blog}"
+    );
+
+    let removed = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({ "application": "blog", "uploads": { "remove": ["drop"] } }),
+    )
+    .await?;
+    assert_eq!(removed["uploads"], json!([]), "{removed}");
+    let unknown = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({ "application": "blog", "uploads": { "remove": ["drop"] } }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(unknown.contains("no upload slot"), "{unknown}");
+    Ok(())
+}

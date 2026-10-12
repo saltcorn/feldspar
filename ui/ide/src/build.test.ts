@@ -32,6 +32,7 @@ function application(
     streams: [],
     apis: [],
     static_dirs: [],
+    uploads: [],
     csp: null,
     attributes: null,
     source,

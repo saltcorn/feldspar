@@ -430,15 +430,15 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
   missing part fails without leaving a partial target.
 
 ### Phase 2: large uploads
-- [ ] **F2.5** (1.1) An explicit `DefaultBodyLimit` on the router from a new
+- [x] **F2.5** (1.1) An explicit `DefaultBodyLimit` on the router from a new
   `--max-request-body` setting (default 2 MiB, as today), and the 256 MiB constant
   (`router.rs:440`) becomes `--max-upload-bytes`. Test: both are honoured, and an oversize body is
   a JSON 413 `{error}` rather than axum's plain text.
-- [ ] **F2.6** (1.1) `UploadSlot` and `Application.uploads` (§2.3): model, validation in
+- [x] **F2.6** (1.1) `UploadSlot` and `Application.uploads` (§2.3): model, validation in
   `save_application`, `_fd_uploads`, the admin form section (a repeating group on the application
   form) and `update_application`'s `uploads { add, remove }` section (needs `allow_edit`).
   Included in backups with the application.
-- [ ] **F2.7** (1.1) The tus routes `{mount}/_upload/{name}` (§2.3): create (with the role, size,
+- [x] **F2.7** (1.1) The tus routes `{mount}/_upload/{name}` (§2.3): create (with the role, size,
   MIME and hook checks), `PATCH` streaming into `open_append`, `HEAD`, `DELETE`, completion
   (rename, meta, path and URL headers) and the 24 h sweep. Tests:
   - a 30 MB upload in 5 MB chunks, interrupted after the second chunk, resumes from `HEAD`'s

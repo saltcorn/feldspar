@@ -22,6 +22,8 @@ use sc_catalog::{Attrs, FileStoreId, TableId};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
+use crate::uploads::UploadSlot;
+
 /// Identifies an application within the server: the UUID primary key of its
 /// `_fd_applications` row (design §9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -505,6 +507,9 @@ pub struct Application {
     pub apis: Vec<ApiConfig>,
     /// Statically-served store subdirectories, each on a sub-path.
     pub static_dirs: Vec<StaticDir>,
+    /// Named places a client may upload a large file to, resumably, at
+    /// `{mount}/_upload/{name}` (TODO F2, §2.3).
+    pub uploads: Vec<UploadSlot>,
     /// The content-security policy (strict by default).
     pub csp: CspPolicy,
     /// Sparse per-app values that do not warrant a column of their own (the §9
@@ -539,6 +544,7 @@ impl Application {
             streams: Vec::new(),
             apis: Vec::new(),
             static_dirs: Vec::new(),
+            uploads: Vec::new(),
             csp: CspPolicy::strict(),
             attributes: Attrs::new(),
         }
@@ -590,6 +596,12 @@ impl Application {
     /// Serve a store subdirectory on a sub-path.
     pub fn with_static_dir(mut self, dir: StaticDir) -> Application {
         self.static_dirs.push(dir);
+        self
+    }
+
+    /// Declare an upload slot.
+    pub fn with_upload(mut self, slot: UploadSlot) -> Application {
+        self.uploads.push(slot);
         self
     }
 

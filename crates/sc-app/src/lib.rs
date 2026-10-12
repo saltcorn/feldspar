@@ -70,6 +70,7 @@ mod skill;
 mod store;
 mod streams;
 mod target_ops;
+mod uploads;
 
 pub use api::{
     ApiProviderInfo, AppGraphql, api_provider_config_spec, app_client, app_client_with,
@@ -84,7 +85,7 @@ pub use application::{
 pub use applications::{
     APPLICATIONS_TABLE, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS,
     COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN,
-    COL_TABLES, COL_TRIGGERS, bootstrap,
+    COL_TABLES, COL_TRIGGERS, COL_UPLOADS, bootstrap,
 };
 pub use build::{
     AppSource, BuildReport, TargetInfo, TargetReadiness, TargetReport, app_output_dir,
@@ -150,3 +151,9 @@ pub use streams::{
     install_stream_registry, is_live_path, live_socket_path, stream_exports, stream_registry,
 };
 pub use target_ops::{OperationOutcome, run_target_operation};
+pub use uploads::{
+    DEFAULT_SLOT_MIN_ROLE, UPLOAD_SEGMENT, UPLOADS_TABLE, UploadRecord, UploadRoute, UploadSlot,
+    bootstrap_uploads, delete_upload, insert_upload, load_upload, set_upload_progress, upload_path,
+    upload_route, upload_slots_from_json, upload_slots_json, uploads_begun_before,
+    validate_upload_slots,
+};

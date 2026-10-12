@@ -54,6 +54,8 @@ pub async fn serve(
     crate::reload::spawn_sighup_reload(apps.clone());
     // Previews a crashed run left behind go when idle (TODO §7b).
     spawn_preview_sweep(apps.clone());
+    // Uploads abandoned for a day go, with their bytes (TODO F2, §2.3).
+    crate::uploads::spawn_upload_sweep(apps.clone());
 
     // The coding agent's headless browser, and the loopback listener it reaches
     // previews through (TODO §7b), where this host has a browser.

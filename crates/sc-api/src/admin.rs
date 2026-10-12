@@ -5433,6 +5433,21 @@ fn static_dir_schema() -> TypeSchema {
     ])
 }
 
+/// An upload slot (TODO F2, §2.3): where a resumable upload lands, who may
+/// start one, how large and of which types, and the code query that decides
+/// the rest. `max_bytes` 0 is the server's own limit; `hook` null is none.
+fn upload_slot_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("store", TypeSchema::text()),
+        StructField::new("folder", TypeSchema::text()),
+        StructField::new("min_role", TypeSchema::int()),
+        StructField::new("max_bytes", TypeSchema::int()),
+        StructField::new("mime_allow", TypeSchema::array(TypeSchema::text())),
+        StructField::new("hook", TypeSchema::optional(TypeSchema::text())),
+    ])
+}
+
 /// The fields common to an application on the wire — everything but its id. The
 /// nested `csp` and `attributes` are opaque JSON (a directive→sources map and a
 /// sparse bag respectively), matching how they are stored (§13.2).
@@ -5456,6 +5471,7 @@ fn application_fields() -> Vec<StructField> {
         StructField::new("streams", TypeSchema::array(TypeSchema::text())),
         StructField::new("apis", TypeSchema::array(api_config_schema())),
         StructField::new("static_dirs", TypeSchema::array(static_dir_schema())),
+        StructField::new("uploads", TypeSchema::array(upload_slot_schema())),
         StructField::new("csp", TypeSchema::json()),
         StructField::new("attributes", TypeSchema::json()),
     ]

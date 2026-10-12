@@ -5078,6 +5078,39 @@ already on the screen, and a typo in a text field is silent until a 404. A store
 no longer offers is still shown and still selected, the pattern the framework picker on the same
 form uses, because a form must never silently discard what it was given to edit.
 
+**Request bodies and upload slots** (TODO F2.5–F2.7). Every body the server reads into memory
+is bounded by `--max-request-body` (default 2 MiB, an explicit `DefaultBodyLimit` plus the
+dispatcher's own bounded read), and a body over it is a JSON `413 {error}` — axum's plain-text
+one is rewritten. The admin file manager's `/upload` and the backup upload are bounded by
+`--max-upload-bytes` (default 256 MiB). A large file from an application's client does not go
+through either: it goes to an **upload slot**, `Application::uploads` (`sc_app::UploadSlot`:
+`name`, `store`, `folder`, `min_role` (default admin), `max_bytes` (0 = the server's limit, which
+also caps a larger value), `mime_allow` (matched on the name's type, as a `File` field's is) and
+an optional `hook`). `save_application` validates slots beside the static directories
+(`validate_upload_slots`: an identifier name, unique; a store in the subset; a folder inside the
+store; a hook that is one of the app's JavaScript or Python queries). They are stored in the
+nullable `_fd_applications.uploads` column, travel with the application in the admin API and in
+backups, and are edited on the application form and by `update_application`'s `uploads` section.
+
+A slot is served at `{mount}/_upload/{name}` (the app's first API mount, like `/live`), matched
+by the dispatcher **before the body is read** (`sc_server::uploads`). It speaks core tus 1.0
+with `creation` and `termination`: `POST` (with `Upload-Length`, `Upload-Metadata` filename and
+filetype) checks the role, size and type, then runs the hook with
+`body = { filename, size, mime, slot }` — a non-2xx answer (`httpError(403, …)`) is the refusal,
+and `{ path?, meta?, min_role? }` chooses the path inside the folder, extra string attributes and
+a tighter floor — and answers `201` with `Location`. `PATCH` streams the body into
+`FileStore::open_append` on a temporary file in the store's admin-only `.feldspar-uploads/`
+folder, stopping at the declared length (a body that runs past it is a `413`, nothing past the
+bound written), and keeps what arrived when the connection drops; `HEAD` answers the offset,
+which is the temporary file's size rather than the row's. When the offset reaches the length the
+file is renamed into place (a destination that exists is a `409`, also checked at creation) and
+given its owner (the uploader), `attributes.filename` and the hook's attributes; the response
+carries `Feldspar-File-Path` and, when a static directory or `/files/serve` covers it,
+`Feldspar-File-Url`. `DELETE` abandons it. The upload's state is a row of `_fd_uploads`, so a
+resume survives a restart; only its uploader (`user:<id>`, or a hash of an anonymous browser's
+cookie) may continue, inspect or abandon it, and anybody else gets the 404 an unknown id gets.
+A sweep every ten minutes removes uploads begun over 24 hours ago, with their bytes.
+
 **The URL is app-root-relative.** The public URL is `//<subdomain>.<host><mount>/<path within the
 directory>`, but what anything *describing* a URL hands out — `list_assets_*`, the coding agent's
 session header — is the `/img/hero.png` half, built by `StaticDir::url_for`, which is

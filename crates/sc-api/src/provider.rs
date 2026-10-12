@@ -372,4 +372,22 @@ pub trait ApiProvider: Send + Sync {
         cat: &Arc<Catalog>,
         user: Option<&User>,
     ) -> Result<ApiResponse>;
+
+    /// Run this provider's JavaScript or Python custom query `name` **for the
+    /// server** rather than for a request to its route — an upload slot's hook
+    /// (TODO F2, §2.3) — with `body` as the body it sees and `user` as the
+    /// caller. The query's own `min_role` is not checked: the slot's is, and
+    /// the hook decides the rest.
+    ///
+    /// `None` when this provider has no code query of that name, which is the
+    /// default for a provider that serves none.
+    async fn run_hook(
+        &self,
+        _name: &str,
+        _body: Json,
+        _cat: &Arc<Catalog>,
+        _user: Option<&User>,
+    ) -> Option<Result<ApiResponse>> {
+        None
+    }
 }

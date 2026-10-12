@@ -174,6 +174,11 @@ pub(crate) struct AppState {
     /// per request rather than at boot precisely so that turning it on is a save
     /// rather than a restart.
     pub(crate) mcp_endpoint_tools: Arc<Vec<Arc<dyn sc_api::mcp::AdminTool>>>,
+    /// The largest body read into memory (`--max-request-body`, TODO F2.5).
+    pub(crate) max_request_body: usize,
+    /// The largest upload (`--max-upload-bytes`): the admin file manager's and
+    /// the backup upload's ceiling, and the cap on every upload slot's own.
+    pub(crate) max_upload_bytes: u64,
 }
 
 /// Build the axum router for an endpoint set, serving no applications.
@@ -281,6 +286,8 @@ pub fn build_router_with_apps(
         extra_base_domains: Arc::new(config.extra_base_domains.clone()),
         lsp_slots: server_slots(),
         mcp_endpoint_tools,
+        max_request_body: config.max_request_body,
+        max_upload_bytes: config.max_upload_bytes,
     };
 
     let app = Router::new()
@@ -360,6 +367,13 @@ pub fn build_router_with_apps(
         // route because its answer is a cookie and a redirect, not JSON.
         .route(HANDOFF_ROUTE, axum::routing::get(admin_handoff))
         .fallback(dispatch)
+        // Explicit rather than axum's implicit 2 MiB (TODO F2.5): every `Bytes`
+        // extractor above reads at most `--max-request-body`. The fallback reads
+        // its body itself, under the same limit, because an application's upload
+        // slot must stream past it (`crate::uploads`).
+        .layer(axum::extract::DefaultBodyLimit::max(
+            config.max_request_body,
+        ))
         .with_state(state.clone())
         // CSRF runs outside dispatch so it guards every route and can mint the
         // double-submit cookie on the way out. It asks the live app registry
@@ -429,15 +443,68 @@ pub fn build_router_with_apps(
         // CSRF and the header layers have had their say. What it prints is the
         // stored log verbosity (Settings → Development): nothing below Info,
         // one line per request at Info (`sc_log::Verbosity`).
+        // axum answers an oversize `Bytes` body with a plain-text 413; every
+        // other refusal this server makes is `{error}` JSON, and a client should
+        // not need a second parser for this one.
+        .layer(axum::middleware::from_fn(json_payload_too_large))
         .layer(axum::middleware::from_fn(crate::logging::log_requests));
 
     Ok(app)
 }
 
-/// Ceiling on a single upload. Generous enough for the assets a code framework's
-/// source tree carries (images, fonts, sample data) while still bounding what one
-/// request can allocate.
-const MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
+/// The `413` every body over a limit gets, as `{error}` JSON.
+fn too_large(limit: impl std::fmt::Display, flag: &str) -> Response {
+    json_error(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!("the request body is over this server's {limit} byte limit ({flag})"),
+    )
+}
+
+/// Rewrite axum's own plain-text `413` (a `Bytes` extractor over the
+/// [`DefaultBodyLimit`](axum::extract::DefaultBodyLimit)) as the JSON one.
+async fn json_payload_too_large(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let response = next.run(request).await;
+    let plain = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_none_or(|ct| ct.starts_with("text/plain"));
+    if response.status() == StatusCode::PAYLOAD_TOO_LARGE && plain {
+        return json_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the request body is over this server's limit (--max-request-body)",
+        );
+    }
+    response
+}
+
+/// Read a whole body into memory, refusing it — as soon as it passes `limit`,
+/// without reading the rest — with the JSON `413`.
+pub(crate) async fn read_body(
+    body: Body,
+    limit: u64,
+    flag: &str,
+) -> std::result::Result<Bytes, Box<Response>> {
+    use futures::StreamExt;
+    let mut stream = body.into_data_stream();
+    let mut out = bytes::BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            Box::new(json_error(
+                StatusCode::BAD_REQUEST,
+                format!("could not read the request body: {e}"),
+            ))
+        })?;
+        if (out.len() + chunk.len()) as u64 > limit {
+            return Err(Box::new(too_large(limit, flag)));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out.freeze())
+}
 
 /// The operational health check. Always `200 {"status":"ok"}`; reaching it at
 /// all is the signal that the server booted and is accepting requests.
@@ -481,17 +548,12 @@ async fn upload(
     };
 
     // Bounded rather than unbounded: the cap is what keeps a single request from
-    // exhausting memory. True streaming to disk would remove the ceiling and is
-    // the next step if it ever binds; this is already far above what
-    // base64-in-JSON could carry.
-    let bytes = match axum::body::to_bytes(body, MAX_UPLOAD_BYTES).await {
+    // exhausting memory. An application's upload slots stream to disk instead
+    // (`crate::uploads`); this is already far above what base64-in-JSON could
+    // carry.
+    let bytes = match read_body(body, state.max_upload_bytes, "--max-upload-bytes").await {
         Ok(bytes) => bytes,
-        Err(_) => {
-            return json_error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("upload exceeds the {MAX_UPLOAD_BYTES} byte limit"),
-            );
-        }
+        Err(response) => return *response,
     };
 
     // Kept for the `error` event, which needs to say where it happened and to
@@ -654,14 +716,9 @@ async fn upload_backup(State(state): State<AppState>, jar: CookieJar, body: Body
             "this server has no backup handler registered",
         );
     };
-    let bytes = match axum::body::to_bytes(body, MAX_UPLOAD_BYTES).await {
+    let bytes = match read_body(body, state.max_upload_bytes, "--max-upload-bytes").await {
         Ok(bytes) => bytes,
-        Err(_) => {
-            return json_error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("the backup exceeds the {MAX_UPLOAD_BYTES} byte limit"),
-            );
-        }
+        Err(response) => return *response,
     };
     let caller = user.clone();
     let ctx = HandlerCtx {
@@ -939,11 +996,31 @@ async fn dispatch(
     // Before `body`, and it has to be: an upgrade lives in the request's
     // extensions and must be taken while the parts are still in hand.
     MaybeUpgrade(ws): MaybeUpgrade,
-    body: Bytes,
+    // Not `Bytes`: an application's upload slot streams its body to disk, so
+    // the body is read here, once the route is known (TODO F2.5, F2.7).
+    body: Body,
 ) -> Response {
+    let resolved = resolve_app(&state, &headers, &jar);
+    // An upload slot's tus route (§2.3), before anything reads the body: a
+    // chunk is streamed into the store, under the slot's own limit rather than
+    // `--max-request-body`.
+    if let Resolved::App(app) = &resolved
+        && let Some(route) = sc_app::upload_route(&app.app, uri.path())
+    {
+        let csp = state.apps.app_csp(&app.app);
+        let anonymous = anonymous.is_some();
+        let response =
+            crate::uploads::handle(&state, app, route, &method, &headers, &jar, anonymous, body)
+                .await;
+        return with_csp(response, &csp);
+    }
+    let body = match read_body(body, state.max_request_body as u64, "--max-request-body").await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
     // An application claims the whole of its subdomain, so this comes first: on
     // `blog.example.com` every path is the blog's, not the admin's.
-    match resolve_app(&state, &headers, &jar) {
+    match resolved {
         Resolved::App(app) => {
             let csrf = csrf.map(|axum::Extension(token)| token.0);
             let anonymous = anonymous.is_some();
@@ -1912,7 +1989,7 @@ async fn app_i18n_catalog(
 /// so the session it may carry lends it no authority. A token that names no
 /// live session is an anonymous caller, and the token is returned anyway (a
 /// REST response may need to clear its cookie).
-async fn app_caller(
+pub(crate) async fn app_caller(
     state: &AppState,
     jar: &CookieJar,
     anonymous: bool,
@@ -2125,7 +2202,7 @@ impl sc_api::AppDirectory for RequestLinks {
 }
 
 /// Stamp an application's own CSP onto its response (design §13.2).
-fn with_csp(mut resp: Response, csp: &str) -> Response {
+pub(crate) fn with_csp(mut resp: Response, csp: &str) -> Response {
     if let Ok(value) = HeaderValue::from_str(csp) {
         resp.headers_mut()
             .insert(header::CONTENT_SECURITY_POLICY, value);
@@ -2232,7 +2309,7 @@ async fn handle_api(
 
 /// Check a user against an [`AuthRequirement`]. Returns `Some(rejection)` when
 /// the request is not authorized, `None` when it may proceed.
-fn enforce_auth(auth: &AuthRequirement, user: Option<&User>) -> Option<Response> {
+pub(crate) fn enforce_auth(auth: &AuthRequirement, user: Option<&User>) -> Option<Response> {
     // A caller who passes is answered before the locale is asked for: the
     // overwhelmingly common call costs what it always did.
     if auth.admits(user) {
@@ -2881,7 +2958,7 @@ fn hex_digit(b: u8) -> Option<u8> {
 }
 
 /// A JSON error body with the given status.
-fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
+pub(crate) fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(serde_json::json!({ "error": message.into() }))).into_response()
 }
 

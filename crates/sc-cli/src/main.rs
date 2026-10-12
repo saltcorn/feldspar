@@ -2311,6 +2311,12 @@ fn print_usage() {
     --preview-idle-minutes N unmount a run's preview after N idle minutes (default 60)"
     );
     eprintln!(
+        "    --max-request-body N     the largest request body read into memory, in bytes or
+                             with K/M/G (default 2M); bigger bodies are a 413
+    --max-upload-bytes N     the largest file one upload may be: the file manager, a
+                             backup, an application's upload slots (default 256M)"
+    );
+    eprintln!(
         "    --file-store NAME=PATH   connect a local directory as a named file store (repeatable)"
     );
     eprintln!(

@@ -70,6 +70,12 @@ import {
   storeOptions,
   type StaticRow,
 } from "../staticDirs";
+import {
+  blankUploadRow,
+  uploadRowsFromApp,
+  uploadRowsToRequest,
+  type UploadRow,
+} from "../uploadSlots";
 import { CustomQueries } from "./CustomQueries";
 import { ApplicationTabs } from "./ApplicationViews";
 import { appTabs, settingsOnOwnTab } from "../views";
@@ -165,6 +171,7 @@ export function ApplicationForm({
     { ...blankApiRow(), provider: "rest", mount: "/api" },
   ]);
   const [staticDirs, setStaticDirs] = useState<StaticRow[]>([]);
+  const [uploads, setUploads] = useState<UploadRow[]>([]);
   // Empty by default: a new app takes its framework's policy (§2.2) unless the
   // admin states one. Editing an app fills this in from what was stored.
   const [csp, setCsp] = useState("");
@@ -229,6 +236,7 @@ export function ApplicationForm({
               path: d.path,
             })),
           );
+          setUploads(uploadRowsFromApp(existing.uploads));
           setCsp(cspToText(existing.csp));
         } else {
           setFrameworkName(fws[0]?.name ?? "");
@@ -315,6 +323,7 @@ export function ApplicationForm({
         streams,
         apis: apiRowsToRequest(apis, allProviders),
         static_dirs: staticDirsToRequest(staticDirs),
+        uploads: uploadRowsToRequest(uploads),
         // An empty box means "no opinion", and is sent as no field at all so the
         // *framework's* default policy applies (§2.2) — a React app gets the one
         // fitted to what Vite emits. Sending `default-src 'self'` because a
@@ -845,6 +854,47 @@ export function ApplicationForm({
             />
             <Form.Text muted className="d-block mb-3">
               <T text="A directory is served at the app's own sub-path — `/docs/guide.png` for the store's `handbook/guide.png`. A file still has to be readable by whoever asks: a mount says where files appear, not that they are public." />
+            </Form.Text>
+
+            <RepeatableRows
+              title={t("Upload slots")}
+              rows={uploads}
+              columns={[
+                { key: "name", label: t("Name"), placeholder: "drop" },
+                {
+                  key: "store",
+                  label: t("Store"),
+                  // The application's own stores, for the static directories'
+                  // reason: the server refuses a slot outside the subset.
+                  options: (value) =>
+                    storeOptions(fileStores, value).map((o) => ({
+                      value: o.value,
+                      label: o.declared
+                        ? o.value
+                        : t("{name} (not a declared store)", { name: o.value }),
+                    })),
+                  emptyText: t("Tick a file store above to upload into it."),
+                },
+                { key: "folder", label: t("Folder"), placeholder: "drops" },
+                { key: "min_role", label: t("Min role"), placeholder: "1" },
+                { key: "max_bytes", label: t("Max size"), placeholder: "1G" },
+                {
+                  key: "mime_allow",
+                  label: t("Types"),
+                  placeholder: "video/mp4, image/png",
+                },
+                { key: "hook", label: t("Hook query"), placeholder: "beforeUpload" },
+              ]}
+              onChange={setUploads}
+              blank={blankUploadRow()}
+            />
+            <Form.Text muted className="d-block mb-3">
+              <T
+                text="A client uploads a large file to {route} in resumable chunks (the tus protocol), with no size cap but the slot's own. It lands in the folder owned by the uploader, so only they (and admins) may read it. An empty size is the server's limit; empty types accept any. The hook is one of this application's code queries, called first with the file's name, size and type: it may refuse, or choose the path."
+                values={{
+                  route: <code>{"{api mount}"}/_upload/{"{name}"}</code>,
+                }}
+              />
             </Form.Text>
 
             <Form.Group className="mb-3" controlId="appCsp">

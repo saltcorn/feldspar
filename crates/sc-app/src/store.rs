@@ -34,7 +34,7 @@ use crate::application::{
 use crate::applications::{
     APPLICATIONS_TABLE, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS,
     COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN,
-    COL_TABLES, COL_TRIGGERS,
+    COL_TABLES, COL_TRIGGERS, COL_UPLOADS,
 };
 use crate::framework::{CFG_STORE, validate_framework_config};
 
@@ -122,6 +122,9 @@ pub async fn save_application(catalog: &Catalog, app: &Application) -> Result<Ap
     // …and the static directories, against the same two things: the store subset
     // this app declares, and the mounts the APIs above have just claimed (§13.2).
     validate_static_dirs(app)?;
+    // …and the upload slots, against the same store subset and the app's own
+    // code queries, which a hook must be one of (TODO F2, §2.3).
+    crate::validate_upload_slots(app)?;
     // …and a stream of a table's changes, against the table subset: a page
     // may only be told about rows of a table its application includes (TODO.md
     // "Live updates" §3 rule 3; the socket checks it again on subscribe).
@@ -286,6 +289,7 @@ fn app_columns() -> Vec<String> {
         COL_STREAMS,
         COL_APIS,
         COL_STATIC_DIRS,
+        COL_UPLOADS,
         COL_CSP,
         COL_ATTRIBUTES,
     ]
@@ -330,6 +334,7 @@ fn app_values(app: &Application) -> Result<Vec<Value>> {
                 .map(|d| json!({ "mount": d.mount, "store": d.store.0, "path": d.path }))
                 .collect(),
         )),
+        Value::Json(crate::upload_slots_json(&app.uploads)),
         Value::Json(csp_to_json(&app.csp)),
         Value::Json(Json::Object(app.attributes.clone())),
     ])
@@ -421,6 +426,14 @@ pub(crate) fn application_from_row(row: &Row) -> Result<Application> {
                 ))
             })
             .collect::<Result<_>>()?,
+        // Read leniently for `NULL`/absent, as the triggers are: the column
+        // arrived after the table did.
+        uploads: match row.get(COL_UPLOADS) {
+            Some(Value::Json(json)) => crate::upload_slots_from_json(Some(json))
+                .map_err(|e| Error::invalid(format!("{APPLICATIONS_TABLE}.{COL_UPLOADS}: {e}")))?,
+            Some(Value::Null) | None => Vec::new(),
+            other => return Err(bad_column(COL_UPLOADS, "json", other)),
+        },
         csp: csp_from_json(json_column(row, COL_CSP)?)?,
         attributes: object(json_column(row, COL_ATTRIBUTES)?, COL_ATTRIBUTES)?,
     })

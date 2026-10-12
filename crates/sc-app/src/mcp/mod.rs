@@ -244,7 +244,8 @@ fn describe_apps_description() -> String {
          directory its source is in on this machine, `null` when that is not on \
          this disk — its `builder_agent`, the coding agent created to build \
          it, the file stores it is connected to, the store folders it serves \
-         (`static_dirs`) and its Content-Security-Policy (`csp`).\n\n\
+         (`static_dirs`), its upload slots (`uploads`, each with the `route` a \
+         client uploads to) and its Content-Security-Policy (`csp`).\n\n\
          Call this before `{TOOL_SAVE_QUERY}`: it tells you the application's \
          subdomain, which API a query goes on, and whether the name you have in \
          mind is already taken. For the tables a query's SQL can read, call \
@@ -314,6 +315,11 @@ fn application_json(app: &Application) -> Result<Json> {
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "file_stores": app.file_stores.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "static_dirs": update::static_dirs_json(&app.static_dirs),
+        "uploads": app.uploads.iter().map(|s| {
+            let mut slot = s.to_json();
+            slot["route"] = json!(crate::upload_path(app, &s.name));
+            slot
+        }).collect::<Vec<_>>(),
         "csp": update::csp_json(&app.csp),
         "apis": apis?,
     }))

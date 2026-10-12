@@ -258,7 +258,29 @@ pub struct ServerConfig {
     /// How long a run's preview mount may go unused before the sweep removes it
     /// (`--preview-idle-minutes`, default an hour).
     pub preview_idle: std::time::Duration,
+    /// The largest request body the server reads into memory
+    /// (`--max-request-body`, default [`DEFAULT_MAX_REQUEST_BODY`], which is
+    /// axum's own default made explicit): every JSON call, a `File` field's
+    /// upload and a code query's raw body. A body over it is a JSON `413`.
+    ///
+    /// A flag rather than a stored setting, for `--model-max-rows`' reason: it
+    /// bounds what one request may make *this process* hold. A large file does
+    /// not need it raised — an application's upload slots stream to disk under
+    /// [`max_upload_bytes`](Self::max_upload_bytes) instead (TODO F2, §2.3).
+    pub max_request_body: usize,
+    /// The largest file one upload may be (`--max-upload-bytes`, default
+    /// [`DEFAULT_MAX_UPLOAD_BYTES`]): the admin file manager's and the backup
+    /// upload's ceiling, and the cap on every application upload slot's own
+    /// `max_bytes` (§2.3).
+    pub max_upload_bytes: u64,
 }
+
+/// The request body limit when `--max-request-body` is not given: 2 MiB, the
+/// limit axum applied implicitly before it was a setting.
+pub const DEFAULT_MAX_REQUEST_BODY: usize = 2 * 1024 * 1024;
+
+/// The upload limit when `--max-upload-bytes` is not given: 256 MiB.
+pub const DEFAULT_MAX_UPLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The port HTTPS is served on when `--https-port` is not given.
 pub const DEFAULT_HTTPS_PORT: u16 = 443;
@@ -303,6 +325,8 @@ impl Default for ServerConfig {
             browser_sandbox: true,
             browser_contexts: DEFAULT_BROWSER_CONTEXTS,
             preview_idle: std::time::Duration::from_secs(DEFAULT_PREVIEW_IDLE_MINUTES * 60),
+            max_request_body: DEFAULT_MAX_REQUEST_BODY,
+            max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
         }
     }
 }
@@ -322,7 +346,9 @@ impl ServerConfig {
     /// `--stan-max-data-values <n>`, `--stan-max-draws-bytes <n>`,
     /// `--stan-max-draws-response <n>`, `--stan-summary-max-elements <n>`,
     /// `--browser <path>`, `--no-browser-sandbox`, `--browser-contexts <n>` and
-    /// `--preview-idle-minutes <n>`. Unknown flags are an
+    /// `--preview-idle-minutes <n>`, `--max-request-body <bytes>` and
+    /// `--max-upload-bytes <bytes>` (both take a `K`, `M` or `G` suffix).
+    /// Unknown flags are an
     /// [`Error::Config`], so a typo fails loudly rather than being ignored.
     pub fn from_args<I, S>(args: I) -> Result<ServerConfig>
     where
@@ -505,6 +531,17 @@ impl ServerConfig {
                     )?;
                     cfg.preview_idle = std::time::Duration::from_secs(minutes as u64 * 60);
                 }
+                "--max-request-body" => {
+                    let raw = next_value(&mut it, "--max-request-body")?;
+                    cfg.max_request_body = usize::try_from(byte_size(&raw, "--max-request-body")?)
+                        .map_err(|_| {
+                            Error::config(format!("--max-request-body `{raw}` is too large"))
+                        })?;
+                }
+                "--max-upload-bytes" => {
+                    let raw = next_value(&mut it, "--max-upload-bytes")?;
+                    cfg.max_upload_bytes = byte_size(&raw, "--max-upload-bytes")?;
+                }
                 "--base-domain" => {
                     cfg.base_domain = Some(next_value(&mut it, "--base-domain")?);
                 }
@@ -532,6 +569,31 @@ fn positive_u64(raw: &str, flag: &str) -> Result<u64> {
         Ok(_) => Err(Error::config(format!("{flag} must be at least 1"))),
         Err(e) => Err(Error::config(format!("invalid {flag} `{raw}`: {e}"))),
     }
+}
+
+/// Parse a size in bytes, with an optional binary `K`, `M` or `G` suffix
+/// (`64M` is 64 MiB). At least one byte: a limit of nothing refuses every
+/// request, which reads as a broken server rather than as a bound.
+fn byte_size(raw: &str, flag: &str) -> Result<u64> {
+    let trimmed = raw.trim();
+    let (digits, unit) = match trimmed.char_indices().last() {
+        Some((i, c)) if c.is_ascii_alphabetic() => (&trimmed[..i], c.to_ascii_uppercase()),
+        _ => (trimmed, 'B'),
+    };
+    let scale: u64 = match unit {
+        'B' => 1,
+        'K' => 1024,
+        'M' => 1024 * 1024,
+        'G' => 1024 * 1024 * 1024,
+        _ => {
+            return Err(Error::config(format!(
+                "invalid {flag} `{raw}`: expected a number of bytes, optionally with K, M or G"
+            )));
+        }
+    };
+    positive_u64(digits.trim(), flag)?
+        .checked_mul(scale)
+        .ok_or_else(|| Error::config(format!("{flag} `{raw}` is too large")))
 }
 
 /// Take the value following a flag, erroring if it is missing.
@@ -772,6 +834,29 @@ mod tests {
         assert_eq!(cfg.preview_idle.as_secs(), 300);
         assert!(ServerConfig::from_args(["--browser-contexts", "0"]).is_err());
         assert!(ServerConfig::from_args(["--preview-idle-minutes", "soon"]).is_err());
+    }
+
+    /// The two body limits of TODO F2.5: unset, they are what the server always
+    /// did (2 MiB, 256 MiB); set, with or without a binary suffix.
+    #[test]
+    fn parses_the_body_limits() {
+        let cfg = ServerConfig::default();
+        assert_eq!(cfg.max_request_body, 2 * 1024 * 1024);
+        assert_eq!(cfg.max_upload_bytes, 256 * 1024 * 1024);
+
+        let cfg =
+            ServerConfig::from_args(["--max-request-body", "64k", "--max-upload-bytes", "2G"])
+                .expect("parse");
+        assert_eq!(cfg.max_request_body, 64 * 1024);
+        assert_eq!(cfg.max_upload_bytes, 2 * 1024 * 1024 * 1024);
+        let cfg = ServerConfig::from_args(["--max-request-body", "1000"]).expect("parse");
+        assert_eq!(cfg.max_request_body, 1000);
+        for bad in ["0", "lots", "5T", "M"] {
+            assert!(
+                ServerConfig::from_args(["--max-upload-bytes", bad]).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     /// The Stan flags of TODO §20: unset, each is the engine's own default and
