@@ -72,8 +72,8 @@ pub use code::{
     console_sink, document_request, set_isolate_prime, take_console,
 };
 pub use code_reply::{
-    CodeFailure, CodeResponse, SERVER_OWNED_HEADERS, allowed_header, code_failure, response_key,
-    take_code_response,
+    CodeFailure, CodeResponse, FileReply, RawReply, SERVER_OWNED_HEADERS, allowed_header,
+    bytes_binding, bytes_key, code_failure, response_key, take_code_response,
 };
 #[cfg(feature = "eval")]
 pub use eval::DenoEvaluator;

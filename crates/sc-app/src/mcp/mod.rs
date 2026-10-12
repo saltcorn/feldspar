@@ -211,10 +211,17 @@ const ARG_MIN_ROLE: &str = "min_role";
 /// `true` is `min_role: 100` said the way people say it (TODO F1.6). Stored
 /// as the role; `min_role` stays the one fact.
 const ARG_PUBLIC: &str = "public";
+/// `json` (default) or `bytes`: what a JavaScript query's `body` is (TODO F2.9).
+const ARG_BODY_TYPE: &str = "body_type";
+/// `json` (default) or `bytes`: what a code query answers with, which types
+/// its client method (TODO F2.9/F2.10).
+const ARG_RESPONSE_TYPE: &str = "response_type";
 
 /// The arguments [`save`] accepts.
-const SAVE_ARGS: [&str; 11] = [
+const SAVE_ARGS: [&str; 13] = [
     ARG_PUBLIC,
+    ARG_BODY_TYPE,
+    ARG_RESPONSE_TYPE,
     ARG_APPLICATION,
     ARG_API,
     ARG_NAME,
@@ -361,6 +368,8 @@ fn query_json(query: &CustomQuery) -> Json {
         // Said, not left to be known: 100 is the public role, and "who can
         // call this?" is the question a reader of this list is asking.
         "public": query.min_role == ROLE_PUBLIC,
+        "body_type": query.body_type.as_str(),
+        "response_type": query.response_type.as_str(),
         // Server-written, never declared: the shape the database said this
         // statement produces when it was last saved. Empty means it has not been
         // described, which types the response as opaque rather than lying.
@@ -508,6 +517,33 @@ fn save_parameters() -> Json {
                      ownership formula, or SQL, to a code body where either can \
                      express it.",
                 "enum": ["sql", "javascript", "python"],
+            },
+            ARG_BODY_TYPE: {
+                "type": "string",
+                "description":
+                    "`javascript` with POST/PUT/PATCH only. `json` — the default — \
+                     makes `body` the parsed JSON object. `bytes` makes `body` a \
+                     `Uint8Array` of the raw request body (an image, a PDF, a CSV) \
+                     up to the server's --max-request-body; the declared params then \
+                     come from the query string, and `request.contentType` says \
+                     what was sent. The client method takes a `Blob`, \
+                     `ArrayBuffer` or `Uint8Array`. For files larger than a request \
+                     body, use an application upload slot instead.",
+                "enum": ["json", "bytes"],
+            },
+            ARG_RESPONSE_TYPE: {
+                "type": "string",
+                "description":
+                    "`javascript` only. `json` — the default — for a body that \
+                     returns JSON. `bytes` for one that returns `response({ body: \
+                     uint8array, headers: { \"content-type\": … } })` or \
+                     `response({ file: fs(store).open(path), filename, download })`: \
+                     the client method then resolves to a `Blob`, and a GET query \
+                     also gets `<name>Url(params)` for `<img src>`, `<video>` and \
+                     download links. A file is streamed with Range support and no \
+                     size limit — this is how to write a custom download rule \
+                     (password-protected or expiring shares).",
+                "enum": ["json", "bytes"],
             },
             ARG_PARAMS: {
                 "type": "array",
@@ -695,6 +731,26 @@ fn build(
             })?
         }
         None => existing.map(|q| q.language).unwrap_or_default(),
+    };
+    query.body_type = match optional_string(args, ARG_BODY_TYPE)? {
+        Some(raw) => {
+            serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
+                Error::invalid(format!(
+                    "`{ARG_BODY_TYPE}` should be `json` or `bytes`, got `{raw}`"
+                ))
+            })?
+        }
+        None => existing.map(|q| q.body_type).unwrap_or_default(),
+    };
+    query.response_type = match optional_string(args, ARG_RESPONSE_TYPE)? {
+        Some(raw) => {
+            serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
+                Error::invalid(format!(
+                    "`{ARG_RESPONSE_TYPE}` should be `json` or `bytes`, got `{raw}`"
+                ))
+            })?
+        }
+        None => existing.map(|q| q.response_type).unwrap_or_default(),
     };
     query.description = match args.contains_key(ARG_DESCRIPTION) {
         true => optional_string(args, ARG_DESCRIPTION)?.unwrap_or_default(),
@@ -1014,6 +1070,59 @@ mod tests {
         // because both go through the same constructor.
         assert_eq!(query.path, "/reports/top-authors");
         assert!(query.columns.is_empty());
+    }
+
+    /// TODO F2.9/F2.10: the body and response types are arguments, kept on
+    /// an edit that does not name them, refused when misspelt, and reported.
+    #[test]
+    fn body_and_response_types_are_set_kept_and_reported() {
+        let query = build(
+            "upload",
+            None,
+            &args(&[
+                (ARG_PATH, json!("/upload")),
+                (ARG_METHOD, json!("POST")),
+                (ARG_LANGUAGE, json!("javascript")),
+                (ARG_CODE, json!("return body.length;")),
+                (ARG_BODY_TYPE, json!("bytes")),
+                (ARG_RESPONSE_TYPE, json!("Bytes")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(query.body_type, sc_api::BodyType::Bytes);
+        assert_eq!(query.response_type, sc_api::ResponseType::Bytes);
+        let edited = build("upload", Some(&query), &args(&[])).unwrap();
+        assert_eq!(edited.body_type, sc_api::BodyType::Bytes);
+        assert_eq!(edited.response_type, sc_api::ResponseType::Bytes);
+        let reported = query_json(&edited);
+        assert_eq!(reported["body_type"], json!("bytes"));
+        assert_eq!(reported["response_type"], json!("bytes"));
+
+        let err = build(
+            "upload",
+            Some(&query),
+            &args(&[(ARG_BODY_TYPE, json!("blob"))]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(ARG_BODY_TYPE), "{err}");
+        // What the type means is checked where every query is validated: a
+        // bytes body on a GET, or from SQL, is refused by name.
+        let get = build("upload", Some(&query), &args(&[(ARG_METHOD, json!("GET"))])).unwrap();
+        let err = sc_api::validate_custom_queries(&[get], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("POST, PUT or PATCH"), "{err}");
+        let sql = build(
+            "upload",
+            Some(&query),
+            &args(&[(ARG_LANGUAGE, json!("sql")), (ARG_CODE, json!("select 1"))]),
+        )
+        .unwrap();
+        let err = sc_api::validate_custom_queries(&[sql], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("JavaScript"), "{err}");
     }
 
     #[test]

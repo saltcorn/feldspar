@@ -27,7 +27,7 @@ use std::fmt::Write as _;
 
 use sc_api::{
     CLIENT_HELPER_FILE, EndpointSet, GRAPHQL_CLIENT_FILE, GRAPHQL_SCHEMA_FILE, StreamExport,
-    client_helper, client_property, generate_client_with_streams, generate_graphql_client, op_name,
+    client_helper, client_property, generate_app_client, generate_graphql_client, op_name,
 };
 use sc_auth::{ROLE_ADMIN, Role};
 use sc_catalog::{PublicOrigin, Table};
@@ -377,7 +377,7 @@ pub fn common_runtime_files(
     let mut files = vec![
         GeneratedFile::new(
             at(client_file),
-            generate_client_with_streams(ctx.endpoints, ctx.streams),
+            generate_app_client(ctx.endpoints, ctx.streams, &crate::upload_exports(ctx.app)),
         ),
         GeneratedFile::new(at(CLIENT_HELPER_FILE), client_helper()),
         GeneratedFile::new(
@@ -1288,7 +1288,10 @@ Reach for these in order, and stop at the first that can express it:\n\
 their own rows. The generated client then reads and writes it with no server \
 code at all, and every rule is enforced by the server for every caller.\n\
 2. **A File field** on that table for uploads: the file is stored, served and \
-access-checked with its row.\n\
+access-checked with its row. For a large file, or one with no row, use an \
+**upload slot**: `api.uploads.<slot>(file, { onProgress, signal })` sends it in \
+resumable chunks (it survives a dropped connection) and resolves to \
+`{ path, url }`; the file is its uploader's.\n\
 3. **A custom SQL query** for a read that is one statement (a report, a join, \
 an aggregate).\n\
 4. **A code query** (`language: javascript`) only for what the above cannot \
@@ -1312,7 +1315,20 @@ are there.\n\
 success with a status and headers (not cookies, CSP or the content type, which \
 the server owns). Any other throw is a 500 `{ \"error\": \"internal \
 error\", \"id\" }` to users — the stack goes to the server log under that \
-id, and only an admin caller sees it.\n";
+id, and only an admin caller sees it.\n\
+- **Bytes and files.** A query saved with `body_type: bytes` gets the raw \
+request body as a `Uint8Array` (its client method takes a `Blob`). One saved \
+with `response_type: bytes` may `return response({ body: uint8array, headers: \
+{ \"content-type\": \"image/png\" } })` or `return response({ file: \
+fs(\"files\").open(path), filename, download: true })`; its client method \
+returns a `Blob`, and a GET also gets `api.<name>Url(params)` for `<img src>`, \
+`<video>` and links. A file is streamed with Range support and no size limit, \
+so this is how to write a **custom download rule** — a password-protected or \
+expiring share: look the share up, `crypto.password.verify` the password, \
+`throw httpError(403)` or return the file. The check runs on every request.\n\
+- **Large files in code:** `file.read({ offset, length })`, `append`, \
+`dir.file(\"out\").concat([part0, part1])`, `sha256()` and `url()` work \
+host-side; never read a big file whole.\n";
 
 /// `AGENTS.md`'s CSP paragraph (TODO F1.7): where the policy is and how to
 /// widen it, because an agent that cannot find it edits `index.html`.
@@ -4944,12 +4960,43 @@ export function Board({ id }: { id: number }) {
             "`update_application` with a `csp` section",
             "allow_access_changes",
             "blob:",
+            // TODO F2.9–F2.11: uploads, bytes, files and the share pattern.
+            "api.uploads.<slot>(file",
+            "body_type: bytes",
+            "response_type: bytes",
+            "api.<name>Url(params)",
+            "crypto.password.verify",
+            "file.read({ offset, length })",
         ] {
             assert!(
                 agents.contains(needle),
                 "AGENTS.md should say `{needle}`: {agents}"
             );
         }
+    }
+
+    /// TODO F2.11: an application's upload slots are methods of its generated
+    /// client, beside its endpoints.
+    #[test]
+    fn the_generated_client_has_a_method_per_upload_slot() {
+        let tables = [tasks()];
+        let app = todo().with_upload(crate::UploadSlot::new("drop", "files", "drops"));
+        let files = project_files(&ctx(&app, &tables, &endpoints(&tables), None));
+        let client = files
+            .iter()
+            .find(|f| f.path.ends_with("client.ts"))
+            .map(|f| f.contents.clone())
+            .expect("a client");
+        assert!(
+            client.contains("drop: (file: Blob, opts?: UploadOptions) => upload(doFetch, `${baseUrl}/api/_upload/drop`"),
+            "{client}"
+        );
+        let helper = files
+            .iter()
+            .find(|f| f.path.ends_with("helper.ts"))
+            .map(|f| f.contents.clone())
+            .expect("a helper");
+        assert!(helper.contains("export async function upload("), "{helper}");
     }
 
     /// Claude Code reads `CLAUDE.md`, not `AGENTS.md`, so the scaffold writes one
@@ -5209,7 +5256,7 @@ export function Board({ id }: { id: number }) {
     fn hooks_are_typed_per_table_over_the_tables_own_client_object() {
         let tables = [tasks()];
         let eps = endpoints(&tables);
-        let client = generate_client_with_streams(&eps, &[]);
+        let client = sc_api::generate_client_with_streams(&eps, &[]);
         let hooks = hooks_ts(&tables, &eps);
 
         // The row type is this app's columns, with nullability from the schema —

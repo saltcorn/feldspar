@@ -6236,6 +6236,7 @@ pub fn admin_handlers_with(
                     body: ctx.body.clone(),
                     raw: None,
                     // The admin's GraphQL explorer builds no emailed links.
+                    headers: Vec::new(),
                     links: None,
                 };
                 let resp = provider.handle(req, &catalog, ctx.user.as_ref()).await?;

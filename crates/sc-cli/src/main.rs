@@ -2314,7 +2314,11 @@ fn print_usage() {
         "    --max-request-body N     the largest request body read into memory, in bytes or
                              with K/M/G (default 2M); bigger bodies are a 413
     --max-upload-bytes N     the largest file one upload may be: the file manager, a
-                             backup, an application's upload slots (default 256M)"
+                             backup, an application's upload slots (default 256M)
+    --code-max-file-bytes N  the most one code-body file read or write may carry
+                             (default 8M); larger files are read in pieces
+    --code-max-copy-bytes N  the most one host-side copy or concat in a code body
+                             may move (default 256M)"
     );
     eprintln!(
         "    --file-store NAME=PATH   connect a local directory as a named file store (repeatable)"

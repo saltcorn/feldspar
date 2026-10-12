@@ -51,6 +51,40 @@ pub struct CodeResponse {
     pub headers: Vec<(String, String)>,
     /// The JSON body.
     pub body: Json,
+    /// Raw bytes to serve in place of `body` (TODO F2.9): `response({ body:
+    /// uint8array })`, base64 as it crossed.
+    pub raw: Option<RawReply>,
+    /// A store file to serve in place of `body` (TODO F2.10): `response({
+    /// file })`. Not yet checked: the transport decides whether this run's
+    /// caller may read it.
+    pub file: Option<FileReply>,
+}
+
+/// The bytes of a `response({ body: bytes })`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawReply {
+    /// The bytes, base64-encoded.
+    pub base64: String,
+    /// The `content-type` the body named, `application/octet-stream` otherwise.
+    pub content_type: String,
+}
+
+/// The file of a `response({ file, filename, download })`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileReply {
+    /// The store's name.
+    pub store: String,
+    /// The store-relative path.
+    pub path: String,
+    /// `admin` or `user`: the authority the handle was opened with. A `user`
+    /// handle is checked against the caller when it is served.
+    pub authority: String,
+    /// The `Content-Disposition` name, in place of the file's own.
+    pub filename: Option<String>,
+    /// An `attachment` rather than `inline`.
+    pub download: bool,
+    /// The `content-type`, in place of the one the path implies.
+    pub content_type: Option<String>,
 }
 
 /// The key a `response(...)` answer is wrapped under on its way out of the
@@ -67,6 +101,30 @@ pub fn response_key() -> &'static str {
         };
         format!("$sc_response${:016x}{:016x}", random(), random())
     })
+}
+
+/// The key a binding of raw bytes is wrapped under on its way into a run
+/// (TODO F2.9): `$sc_bytes$` and 128 random bits, fixed for the process. The
+/// prelude turns a top-level binding `{ <key>: base64 }` into a `Uint8Array`,
+/// and since only the host knows the key, a JSON body cannot pose as one.
+pub fn bytes_key() -> &'static str {
+    static KEY: OnceLock<String> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let random = || {
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        };
+        format!("$sc_bytes${:016x}{:016x}", random(), random())
+    })
+}
+
+/// A binding that reaches a JavaScript body as a `Uint8Array` of the bytes
+/// `base64` encodes.
+pub fn bytes_binding(base64: String) -> Json {
+    let mut out = serde_json::Map::new();
+    out.insert(bytes_key().to_owned(), Json::String(base64));
+    Json::Object(out)
 }
 
 /// Wrap a guest's `response(...)` (the JSON `{status, headers, body}`) for the
@@ -110,10 +168,33 @@ pub fn take_code_response(value: Json) -> std::result::Result<CodeResponse, Json
         })
         .unwrap_or_default();
     let body = spec.get("body").cloned().unwrap_or(Json::Null);
+    let text = |key: &str| spec.get(key).and_then(Json::as_str).map(str::to_owned);
+    let content_type = text("contentType").filter(|v| allowed_value(v));
+    let raw = text("bodyBase64").map(|base64| RawReply {
+        base64,
+        content_type: content_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_owned()),
+    });
+    let file = spec.get("file").and_then(|file| {
+        Some(FileReply {
+            store: file.get("store")?.as_str()?.to_owned(),
+            path: file.get("path")?.as_str()?.to_owned(),
+            authority: file.get("authority")?.as_str()?.to_owned(),
+            filename: text("filename").filter(|v| !v.is_empty()),
+            download: spec
+                .get("download")
+                .and_then(Json::as_bool)
+                .unwrap_or(false),
+            content_type: content_type.clone(),
+        })
+    });
     Ok(CodeResponse {
         status,
         headers,
         body,
+        raw,
+        file,
     })
 }
 
@@ -125,7 +206,12 @@ pub fn allowed_header(name: &str, value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
         && !SERVER_OWNED_HEADERS.contains(&name)
-        && !value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+        && allowed_value(value)
+}
+
+/// Whether a header value has no line break or null in it.
+fn allowed_value(value: &str) -> bool {
+    !value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
 }
 
 /// What kind of code failure an error is, when it is one.
@@ -301,5 +387,63 @@ mod js_tests {
             .await
             .unwrap();
         assert!(take_code_response(plain).is_err());
+    }
+
+    /// TODO F2.9: a body bound as bytes arrives as a `Uint8Array`, and a
+    /// response whose body is bytes carries them out with its content type.
+    #[tokio::test]
+    async fn bytes_in_and_bytes_out() {
+        let rt = CodeRuntime::with_workers(1);
+        let mut c = call(
+            r#"if (!(body instanceof Uint8Array)) throw new Error("not bytes: " + typeof body);
+               const out = new Uint8Array(body.length);
+               for (let i = 0; i < body.length; i++) out[i] = body[body.length - 1 - i];
+               return response({ body: out, headers: { "Content-Type": "image/png", "x-n": String(body.length) } });"#,
+        );
+        c.bindings
+            .insert("body".to_owned(), bytes_binding("AQID/w==".to_owned()));
+        let ok = rt.run(c).await.unwrap();
+        let reply = take_code_response(ok).expect("a response");
+        let raw = reply.raw.expect("raw bytes");
+        assert_eq!(raw.base64, "/wMCAQ==");
+        assert_eq!(raw.content_type, "image/png");
+        assert_eq!(reply.headers, vec![("x-n".to_owned(), "4".to_owned())]);
+
+        // Without a content type the bytes are octet-stream; a JSON body may
+        // still not name one.
+        let ok = rt
+            .run(call(r#"return response({ body: new Uint8Array([1]) });"#))
+            .await
+            .unwrap();
+        let raw = take_code_response(ok).unwrap().raw.unwrap();
+        assert_eq!(raw.content_type, "application/octet-stream");
+        let err = rt
+            .run(call(
+                r#"return response({ body: { a: 1 }, headers: { "content-type": "text/html" } });"#,
+            ))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("may not set content-type"), "{err}");
+
+        // A JSON object shaped like the wrapper, under a guessed key, stays JSON.
+        let mut c = call(r#"return body instanceof Uint8Array;"#);
+        c.bindings
+            .insert("body".to_owned(), json!({ "$sc_bytes$00": "AQID" }));
+        assert_eq!(rt.run(c).await.unwrap(), json!(false));
+
+        // `filename` belongs to a file response, and a misspelt option is named.
+        let err = rt
+            .run(call(r#"return response({ body: {}, filename: "a.txt" });"#))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("serves a file"), "{err}");
+        let err = rt
+            .run(call(r#"return response({ bdy: {} });"#))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`bdy` is not a response option"), "{err}");
     }
 }

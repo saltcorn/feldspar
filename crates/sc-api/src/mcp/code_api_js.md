@@ -37,6 +37,10 @@ Never hand-write base64, UTF-8 or SHA: the globals below have them.
   query string, and the caller. There is no `row` or `payload` there. The app's generated
   client method always sends them (`api.myQuery({ anything: 1 })`), declared params or not;
   a declared param is typed in the client and converted and required before the body runs.
+  `request` is `{ method, contentType, headers }` (headers lower-cased; cookies and
+  credentials removed). A query saved with `body_type: "bytes"` (JavaScript, POST/PUT/PATCH)
+  gets `body` as a `Uint8Array` of the raw request body instead, and its declared params come
+  from the query string; its client method takes a `Blob`, `ArrayBuffer` or `Uint8Array`.
 - `db`, `models`, `fetch`, `fs`, `trigger`, `modfn`, `console` — below.
 - `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto`, `httpError`, `response` — below.
 
@@ -70,10 +74,42 @@ return response({ status: 201, headers: { "x-id": id }, body: { id } });
 ```
 
 `httpError` takes 400–599. `response` takes 200–599 and any header except the ones the server
-owns (`set-cookie`, the CSP, framing, `content-type`, …), which it refuses. **Any other throw is
+owns (`set-cookie`, the CSP, framing, `content-type` on a JSON body, …), which it refuses. **Any other throw is
 a 500** `{ "error": "internal error", "id": "…" }` to callers who are not admins — the query
 name and stack go to the server log under that id, and to admin callers. A body stopped by its
 timeout, its slice or the heap is a 503 `{ "error": "timeout" }`.
+
+**Bytes and files out.** A `Uint8Array` body is served raw under the `content-type` you name.
+A **file handle** is streamed by the server — Range requests, ETag, no size limit, the bytes
+never enter the sandbox — named `filename` (default: the file's own) and saved rather than shown
+with `download: true`. Save such a query with `response_type: "bytes"`: its client method then
+returns a `Blob`, and a GET also gets `<name>Url(params)` for `<img src>`, `<video>` and links.
+
+```js
+return response({ body: pngBytes, headers: { "content-type": "image/png" } });
+return response({ file: fs("files").open(path), filename: "report.pdf", download: true });
+```
+
+This is how to write **any download rule** the store's role + owner rule cannot: a
+password-protected share, an expiring link, a revocable one, a quota, an audit log. The query
+is a GET (so links and `<video>` work), its `min_role` decides who may call it, and its code
+decides the rest — on every request, so each Range request of a video re-checks the share:
+
+```js
+// GET /share, params token (text) and password (text, optional), min_role 100, response_type bytes
+const share = await db.shares.where({ token: query.token }).first();
+if (!share) throw httpError(404, "no such share");
+if (!(await crypto.password.verify(query.password ?? "", share.password_hash))) {
+  throw httpError(403, "wrong password");
+}
+return response({ file: fs("files").open(share.path), filename: share.original_name,
+                  download: true, headers: { "cache-control": "private, no-store" } });
+```
+
+A password in a URL lands in logs and history; where that matters, POST the password to a query
+that stores a short-lived token in a table and have the GET take the token. A handle opened with
+`fs(s).asUser()` is also checked against the caller when served (a file they may not read is a
+404); one opened as the default admin is not — the query's own code is the check.
 
 An upload slot's **hook** is a code query too (a POST is best). It runs before an upload is
 accepted, with `body = { filename, size, mime, slot }` and `user` the uploader; throw
@@ -203,6 +239,14 @@ const entries = await fs("myFileStore").dir("reports").list();
 // each entry is a file or directory handle: name, isDirectory, size, modified (as listed),
 // and JSON.stringify(entries) keeps all four; `await entry.stat()` works on either kind
 
+// Large files: never read one whole. These run host-side; nothing big enters the sandbox.
+const piece = await big.read({ offset: 16 * 1024 * 1024, length: 65536 }); // Uint8Array
+await log.append("one more line\n");                // creates the file if it is not there
+const size = await fs("s").open("out.bin").concat([part0, part1, part2]); // join, same store
+const digest = await big.sha256();                  // hex
+const url = await file.url({ download: true });     // where the app serves it, or null
+await f.write(bytes, { owner: user.id, minRole: 80, filename: "Report.pdf" }); // meta options
+
 await trigger("send_invoice").run({ id: row.id });    // run another trigger by name
 
 const html = await modfn.md_to_html(row.notes);       // a function an installed module supplies
@@ -212,6 +256,8 @@ console.log("checked", row.id);
 ## Bounds
 
 1000 rows per read (walk more with `.iter()`), 200 database calls, 50 fetches, 100 file
-operations and 20 trigger runs per run, 8 MB per response or file, the trigger's `timeout_ms`,
+operations and 20 trigger runs per run, 8 MB per fetch response and per file read or write
+(`--code-max-file-bytes`; read larger files in pieces), 256 MB per host-side copy or `concat`
+(`--code-max-copy-bytes`), the trigger's `timeout_ms`,
 and one second of computing without awaiting. Each is a named error, never a silent
 truncation. There are no timers, no `process`, no direct disk access, and `require` throws.

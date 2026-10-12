@@ -163,6 +163,60 @@ impl QueryLanguage {
     }
 }
 
+/// What a code query's `body` is (TODO F2.9).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BodyType {
+    /// The JSON body, as an object (the default).
+    #[default]
+    Json,
+    /// The raw request body, as a `Uint8Array` — an image, a PDF, a CSV
+    /// upload. The declared parameters then come from the query string.
+    Bytes,
+}
+
+impl BodyType {
+    fn is_json(&self) -> bool {
+        *self == BodyType::Json
+    }
+
+    /// The name as the wire and the stored configuration spell it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BodyType::Json => "json",
+            BodyType::Bytes => "bytes",
+        }
+    }
+}
+
+/// What a code query answers with, as far as its generated client is
+/// concerned (TODO F2.9/F2.10).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResponseType {
+    /// JSON (the default).
+    #[default]
+    Json,
+    /// Bytes or a file — `response({ body: bytes })` or `response({ file })`.
+    /// The client method resolves to a `Blob`, and a `GET` query also gets a
+    /// `<name>Url(params)` helper for `<img src>` and links.
+    Bytes,
+}
+
+impl ResponseType {
+    fn is_json(&self) -> bool {
+        *self == ResponseType::Json
+    }
+
+    /// The name as the wire and the stored configuration spell it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResponseType::Json => "json",
+            ResponseType::Bytes => "bytes",
+        }
+    }
+}
+
 /// An administrator-authored endpoint (§13.4): one SQL statement, or a
 /// JavaScript or Python body.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -198,6 +252,14 @@ pub struct CustomQuery {
     /// JSON rather than lying about a shape.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<QueryColumn>,
+    /// What a JavaScript query's `body` is: the JSON body (the default) or the
+    /// raw bytes (TODO F2.9).
+    #[serde(default, skip_serializing_if = "BodyType::is_json")]
+    pub body_type: BodyType,
+    /// What a code query answers with: JSON (the default), or bytes or a file,
+    /// which types its client method as a `Blob` (TODO F2.9/F2.10).
+    #[serde(default, skip_serializing_if = "ResponseType::is_json")]
+    pub response_type: ResponseType,
 }
 
 fn admin_role() -> u8 {
@@ -222,6 +284,8 @@ impl CustomQuery {
             params: Vec::new(),
             min_role: ROLE_ADMIN,
             columns: Vec::new(),
+            body_type: BodyType::Json,
+            response_type: ResponseType::Json,
         }
     }
 
@@ -249,6 +313,18 @@ impl CustomQuery {
         self
     }
 
+    /// Set what the body is (TODO F2.9).
+    pub fn body_type(mut self, body_type: BodyType) -> CustomQuery {
+        self.body_type = body_type;
+        self
+    }
+
+    /// Set what the query answers with (TODO F2.9/F2.10).
+    pub fn response_type(mut self, response_type: ResponseType) -> CustomQuery {
+        self.response_type = response_type;
+        self
+    }
+
     /// Whether this is a JavaScript or Python body rather than SQL.
     pub fn is_code(&self) -> bool {
         !self.language.is_sql()
@@ -268,9 +344,10 @@ impl CustomQuery {
     }
 
     /// Whether the caller's arguments arrive in the query string rather than in
-    /// a body — `GET` and `DELETE`, the methods that conventionally have none.
+    /// a body — `GET` and `DELETE`, the methods that conventionally have none,
+    /// and a `bytes` query, whose body is the bytes.
     pub fn args_in_query(&self) -> bool {
-        !self.method.has_body()
+        !self.method.has_body() || self.body_type == BodyType::Bytes
     }
 
     /// The parameter declared under `name`.
@@ -440,6 +517,31 @@ fn validate_custom_query(q: &CustomQuery, tables: &[String]) -> Result<()> {
         }
     }
 
+    if q.body_type == BodyType::Bytes {
+        if q.language != QueryLanguage::Javascript {
+            return Err(Error::invalid(format!(
+                "custom query `{}` takes a `bytes` body, which only a JavaScript query \
+                 can read (as a Uint8Array)",
+                q.name
+            )));
+        }
+        if !q.method.has_body() {
+            return Err(Error::invalid(format!(
+                "custom query `{}` takes a `bytes` body, but {} requests have none; \
+                 use POST, PUT or PATCH",
+                q.name,
+                q.method.as_str()
+            )));
+        }
+    }
+    if q.response_type == ResponseType::Bytes && q.language != QueryLanguage::Javascript {
+        return Err(Error::invalid(format!(
+            "custom query `{}` answers with bytes, which only a JavaScript query can \
+             (`return response({{ body: bytes }})` or `response({{ file }})`)",
+            q.name
+        )));
+    }
+
     if q.is_code() {
         check_code(q)
     } else {
@@ -600,7 +702,15 @@ pub fn custom_endpoint(mount: &str, query: &CustomQuery) -> Endpoint {
         .output(output)
         .auth(AuthRequirement::MinRole(query.min_role))
         .handler(HandlerRef::Custom(query.name.clone()));
-    if query.is_code() {
+    if query.body_type == BodyType::Bytes {
+        // The body is the bytes (`Blob | ArrayBuffer | Uint8Array`), and the
+        // declared parameters travel in the query string.
+        endpoint = endpoint.binary_input();
+    }
+    if query.response_type == ResponseType::Bytes {
+        endpoint = endpoint.binary_output();
+    }
+    if query.is_code() && query.body_type == BodyType::Json {
         // A body reads whatever it was sent, declared or not (`code_scope`
         // passes undeclared keys through), so the client must be able to send
         // it: the declared parameters are the typed part of an open object.
@@ -742,6 +852,57 @@ fn bind(query: &CustomQuery, req: &ApiRequest, name: &str) -> Result<Value> {
 /// one is refused before the body runs, with the sentence a SQL query's caller
 /// gets. What was not declared is passed through as it was sent.
 pub(crate) fn code_scope(query: &CustomQuery, req: &ApiRequest) -> Result<Attrs> {
+    let mut scope = json_scope(query, req)?;
+    if query.body_type == BodyType::Bytes {
+        // The bytes as they arrived — a JSON-labelled body included, since the
+        // query asked for bytes — wrapped so the prelude makes a `Uint8Array`
+        // of them (TODO F2.9).
+        use base64::Engine;
+        let bytes: &[u8] = req.raw.as_deref().unwrap_or_default();
+        scope.insert(
+            "body".to_owned(),
+            sc_expr::bytes_binding(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        );
+    }
+    scope.insert("request".to_owned(), request_binding(req));
+    Ok(scope)
+}
+
+/// `request`: what a code query may know of the HTTP request beyond its body
+/// and query string — `{ method, contentType, headers }`, the headers
+/// lower-cased and without the caller's credentials (TODO F2.9).
+fn request_binding(req: &ApiRequest) -> Json {
+    let mut headers = serde_json::Map::new();
+    for (name, value) in &req.headers {
+        headers
+            .entry(name.to_ascii_lowercase())
+            .or_insert_with(|| Json::String(value.clone()));
+    }
+    let content_type = headers.get("content-type").cloned().unwrap_or(Json::Null);
+    serde_json::json!({
+        "method": req.method.as_str(),
+        "contentType": content_type,
+        "headers": headers,
+    })
+}
+
+/// [`code_scope`]'s `body` and `query`.
+fn json_scope(query: &CustomQuery, req: &ApiRequest) -> Result<Attrs> {
+    if query.body_type == BodyType::Bytes {
+        // The body is not JSON to read parameters out of; they are in the
+        // query string, where `bind` looks for them.
+        let mut args = query_object(req);
+        for param in &query.params {
+            let value = bind(query, req, &param.name)?;
+            if !value.is_null() {
+                args.insert(param.name.clone(), crate::convert::value_to_json(&value));
+            }
+        }
+        let mut scope = Attrs::new();
+        scope.insert("body".to_owned(), Json::Null);
+        scope.insert("query".to_owned(), Json::Object(args));
+        return Ok(scope);
+    }
     let mut body = match &req.body {
         Json::Null => serde_json::Map::new(),
         Json::Object(map) => map.clone(),

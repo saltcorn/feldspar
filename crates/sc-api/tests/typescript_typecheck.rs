@@ -189,6 +189,48 @@ export async function exercise(): Promise<void> {
 }
 "#;
 
+/// Bytes in and out of code queries (TODO F2.9/F2.10), and upload slots (TODO
+/// F2.11): a `bytes` query takes a `Blob`, an `ArrayBuffer` or a `Uint8Array`
+/// with its declared parameters as query options; a query that answers bytes
+/// resolves to a `Blob` and, for a GET, has a `<name>Url` for `src`/`href`;
+/// and each upload slot is `api.uploads.<slot>(file, options)` resolving to
+/// `{ path, url }`.
+const BYTES_USAGE_TS: &str = r#"
+import { createClient, type UploadOptions, type UploadResult } from "./client";
+
+export async function exercise(file: File): Promise<void> {
+  const api = createClient({});
+
+  const fromBlob: Record<string, unknown> | unknown = await api.measure(file, { label: "x" });
+  await api.measure(new Uint8Array([1, 2, 3]), { label: "y" });
+  await api.measure(new ArrayBuffer(4), { label: "z" });
+  // @ts-expect-error the declared parameter is required
+  await api.measure(file, {});
+
+  const png: Blob = await api.dot();
+  const src: string = api.dotUrl();
+  const share: Blob = await api.shareFile({ token: "t", password: "p" });
+  const href: string = api.shareFileUrl({ token: "t" });
+  // @ts-expect-error `token` is required
+  api.shareFileUrl({});
+
+  const options: UploadOptions = {
+    onProgress: (sent: number, total: number) => void [sent, total],
+    signal: new AbortController().signal,
+    retries: 3,
+    chunkSize: 1024 * 1024,
+  };
+  const done: UploadResult = await api.uploads.drop(file, options);
+  const path: string = done.path;
+  const url: string | null = done.url;
+  await api.uploads.avatars(file);
+  // @ts-expect-error there is no such slot
+  await api.uploads.nope(file);
+
+  void fromBlob; void png; void src; void share; void href; void path; void url;
+}
+"#;
+
 /// A usage module for an application that exposes three streams — one of each
 /// [`ElementType`](sc_stream::ElementType) shape (TODO "Streams" §10; TODO.md
 /// "Live updates" L1.9).
@@ -530,6 +572,46 @@ fn generated_code_query_client_type_checks() -> std::io::Result<()> {
         .expect("valid queries");
     let client_ts = sc_api::generate_client(ApiProvider::endpoints(&provider));
     type_check("code-query", &client_ts, CODE_QUERY_USAGE_TS)
+}
+
+#[test]
+fn generated_bytes_and_uploads_client_type_checks() -> std::io::Result<()> {
+    use sc_api::{
+        BodyType, CustomParam, CustomQuery, Method, QueryLanguage, ResponseType, UploadExport,
+        ValueType,
+    };
+
+    let js = |name: &str, method: Method, path: &str| {
+        CustomQuery::new(name, method, path, "return body;").language(QueryLanguage::Javascript)
+    };
+    let provider = RestProvider::project("/api", &[])
+        .with_queries(vec![
+            js("measure", Method::Post, "/measure")
+                .body_type(BodyType::Bytes)
+                .params([CustomParam::new("label", ValueType::Text)]),
+            js("dot", Method::Get, "/dot").response_type(ResponseType::Bytes),
+            js("shareFile", Method::Get, "/share")
+                .params([
+                    CustomParam::new("token", ValueType::Text),
+                    CustomParam::new("password", ValueType::Text).optional(),
+                ])
+                .response_type(ResponseType::Bytes),
+        ])
+        .expect("valid queries");
+    let uploads = ["drop", "avatars"].map(|name| UploadExport {
+        name: name.to_owned(),
+        path: format!("/api/_upload/{name}"),
+    });
+    let client_ts = sc_api::generate_app_client(ApiProvider::endpoints(&provider), &[], &uploads);
+    assert!(
+        client_ts.contains("dotUrl(query?: DotQuery): string"),
+        "{client_ts}"
+    );
+    assert!(
+        client_ts.contains("upload(doFetch, `${baseUrl}/api/_upload/drop`, file, opts)"),
+        "{client_ts}"
+    );
+    type_check("bytes-uploads", &client_ts, BYTES_USAGE_TS)
 }
 
 #[test]

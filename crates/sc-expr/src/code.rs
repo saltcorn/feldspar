@@ -2461,6 +2461,93 @@ pub(crate) const FILES_PRELUDE: &str = r##"
         (bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
       );
     }
+    // A piece of the file (TODO F2.8): at most `length` bytes from `offset`,
+    // as a Uint8Array — how a file larger than one read may carry is read at
+    // all. Past the end is a short or empty piece, as a stream read is.
+    read(options) {
+      const opts = options === undefined || options === null ? {} : options;
+      if (typeof opts !== "object" || Array.isArray(opts)) {
+        throw new TypeError("read()'s options are an object: { offset, length }");
+      }
+      const plan = { op: "read", path: this.#path, encoding: "base64" };
+      for (const key of Object.keys(opts)) {
+        const value = opts[key];
+        if (key !== "offset" && key !== "length") {
+          throw new TypeError("`" + key + "` is not a read option; they are: offset, length");
+        }
+        if (value === undefined) continue;
+        if (!Number.isSafeInteger(value) || value < 0) {
+          throw new RangeError("read()'s `" + key + "` is a whole number of bytes, not " + String(value));
+        }
+        plan[key] = value;
+      }
+      if (plan.offset === undefined) plan.offset = 0;
+      return send(this.#handle, plan).then((answer) => codec.fromBase64(answer.base64));
+    }
+    // Add to the end of the file, creating it when it is not there. Answers
+    // the number of bytes appended.
+    append(data, options) {
+      const meta = writeOptions(options);
+      const plan = Object.assign({ op: "append", path: this.#path }, meta);
+      const bytes = codec.asBytes(data);
+      if (typeof data === "string") {
+        plan.text = data;
+      } else if (bytes !== null) {
+        plan.base64 = codec.toBase64(bytes);
+      } else {
+        throw new TypeError("append() takes a string or bytes (a Uint8Array or an ArrayBuffer)");
+      }
+      return send(this.#handle, plan).then((answer) => answer.bytes);
+    }
+    // Join other files of this store into this one, in order, replacing it —
+    // host-side, so the result is bounded by what a copy may move rather than
+    // by what a read may carry. Answers this file's size.
+    concat(parts, options) {
+      if (!Array.isArray(parts) || parts.length === 0) {
+        throw new TypeError("concat() takes a list of the files to join, e.g. [part0, part1]");
+      }
+      const handle = this.#handle;
+      let authority = handle.authority;
+      const paths = parts.map((part, i) => {
+        if (part instanceof SaltcornFile) {
+          const ref = part.__scRef(INTERNAL);
+          if (ref.handle.store !== handle.store) {
+            throw new TypeError(
+              "concat() joins files of one store: part " + i + " is in `" + ref.handle.store +
+              "`, this file in `" + handle.store + "` — copy it across first"
+            );
+          }
+          // The narrower authority of the two wins: a part opened `asUser`
+          // is read as the user even when the target was opened as the admin.
+          if (ref.handle.authority === "user") authority = "user";
+          return ref.path;
+        }
+        if (typeof part === "string") return named(part, "concat()");
+        throw new TypeError("concat()'s parts are files (or paths in this store), not " + typeof part);
+      });
+      const plan = Object.assign(
+        { op: "concat", path: this.#path, parts: paths }, writeOptions(options)
+      );
+      return send({ token: handle.token, store: handle.store, authority: authority }, plan)
+        .then((answer) => answer.bytes);
+    }
+    // The SHA-256 of the file's bytes, as lower-case hex, taken host-side.
+    sha256() {
+      return send(this.#handle, { op: "sha256", path: this.#path }).then((answer) => answer.hex);
+    }
+    // The URL the application serves this file at — a static directory that
+    // covers it, or `/files/serve` — or null when no route does. `{ download:
+    // true }` asks for an attachment. Whether the caller may read it is decided
+    // when the URL is fetched.
+    url(options) {
+      const opts = options === undefined || options === null ? {} : options;
+      for (const key of Object.keys(opts)) {
+        if (key !== "download") {
+          throw new TypeError("`" + key + "` is not a url() option; it has: download");
+        }
+      }
+      return send(this.#handle, { op: "url", path: this.#path, download: !!opts.download });
+    }
 
     // Writing. Both answer the number of bytes written, and both make the
     // parent directories on the way — a body that named a path has said where
@@ -2668,6 +2755,15 @@ pub(crate) const FILES_PRELUDE: &str = r##"
     asUser: () => makeStore({ token: handle.token, store: handle.store, authority: "user" }),
     asAdmin: () => makeStore({ token: handle.token, store: handle.store, authority: "admin" }),
   });
+
+  // What `response({ file })` serves (TODO F2.10): the store, path and
+  // authority of a handle this prelude made, or undefined for anything else.
+  fixed("__scFileRef", (value) => {
+    if (!(value instanceof SaltcornFile)) return undefined;
+    const ref = value.__scRef(INTERNAL);
+    return { store: ref.handle.store, path: ref.path, authority: ref.handle.authority };
+  });
+  fixed("__scIsFsEntry", (value) => value instanceof SaltcornFile || value instanceof SaltcornDir);
 
   // One run's `fs`, over one run's token — the same shape `__scMakeDb` has, and
   // for the same reason.
@@ -3178,6 +3274,19 @@ const SETUP: &str = r#"
   const markOp = Deno.core.ops.op_sc_mark;
   const httpErrorOp = Deno.core.ops.op_sc_http_error;
   const respondOp = Deno.core.ops.op_sc_respond;
+  // The key a binding of raw bytes is wrapped under on its way in (TODO F2.9):
+  // random per process, so a JSON body cannot pose as bytes.
+  const bytesKey = Deno.core.ops.op_sc_bytes_key();
+  const unwrapBytes = (bindings) => {
+    if (bindings === null || typeof bindings !== "object") return;
+    for (const name of Object.keys(bindings)) {
+      const value = bindings[name];
+      if (value !== null && typeof value === "object" && !Array.isArray(value) &&
+          typeof value[bytesKey] === "string" && Object.keys(value).length === 1) {
+        bindings[name] = globalThis.__scCodec.fromBase64(value[bytesKey]);
+      }
+    }
+  };
   Deno.core.setUnhandledPromiseRejectionHandler(() => true);
   const fixed = (name, value) =>
     Object.defineProperty(globalThis, name, {
@@ -3600,30 +3709,91 @@ const SETUP: &str = r#"
     "transfer-encoding", "connection", "keep-alive", "upgrade", "trailer", "te",
   ]);
   const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-z-]+$/;
+  // The parts of a `response(...)` that are not JSON — raw bytes, a file to
+  // serve — kept off the frozen object's own properties so it still reads as
+  // `{ status, headers, body }`, and joined in when the run answers.
+  const RESPONSE_EXTRA = Symbol("sc.response.extra");
+  const RESPONSE_KEYS = ["status", "headers", "body", "file", "filename", "download"];
   fixed("response", (init) => {
     const options = init === undefined || init === null ? {} : init;
+    if (typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("response() takes an object: { status, headers, body } or { file, filename, download }");
+    }
+    for (const key of Object.keys(options)) {
+      if (RESPONSE_KEYS.indexOf(key) < 0) {
+        throw new TypeError(
+          "`" + key + "` is not a response option; they are: " + RESPONSE_KEYS.join(", ")
+        );
+      }
+    }
     const status = options.status === undefined ? 200 : Number(options.status);
     if (!Number.isInteger(status) || status < 200 || status > 599) {
       throw new RangeError("a response status must be a whole number from 200 to 599");
+    }
+    // A file handle — as `file`, or as the body — is served by the host
+    // (TODO F2.10): streamed, with Range, never through this isolate.
+    const fileRef = typeof globalThis.__scFileRef === "function"
+      ? (globalThis.__scFileRef(options.file) || globalThis.__scFileRef(options.body))
+      : undefined;
+    if (options.file !== undefined && fileRef === undefined) {
+      throw new TypeError("response()'s `file` is a file handle, as in fs(store).open(path)");
+    }
+    if (options.file !== undefined && options.body !== undefined) {
+      throw new TypeError("a response has a `file` or a `body`, not both");
+    }
+    if (typeof globalThis.__scIsFsEntry === "function" && fileRef === undefined &&
+        globalThis.__scIsFsEntry(options.body)) {
+      throw new TypeError("a directory cannot be a response body");
+    }
+    // Raw bytes are served as they are, under the content type the headers
+    // name (TODO F2.9).
+    const codec = globalThis.__scCodec;
+    const raw = fileRef === undefined && options.body !== undefined && options.body !== null &&
+      typeof options.body === "object" ? codec.asBytes(options.body) : null;
+    if (fileRef === undefined && (options.filename !== undefined || options.download !== undefined)) {
+      throw new TypeError("`filename` and `download` are for a response that serves a file");
+    }
+    if (options.filename !== undefined && (typeof options.filename !== "string" || options.filename === "")) {
+      throw new TypeError("a response's `filename` is the name to save the file under, a string");
     }
     const given = options.headers === undefined || options.headers === null ? {} : options.headers;
     const pairs = Array.isArray(given)
       ? given
       : typeof given.__scPairs === "function" ? given.__scPairs() : Object.entries(given);
-    const headers = pairs.map((pair) => {
+    let contentType;
+    const headers = [];
+    for (const pair of pairs) {
       const name = String(pair[0]).toLowerCase();
       const value = String(pair[1]);
       if (!HEADER_NAME.test(name)) throw new TypeError("not a header name: " + JSON.stringify(pair[0]));
       if (/[\r\n\0]/.test(value)) throw new TypeError("the " + name + " header's value has a line break in it");
+      if (name === "content-type" && (raw !== null || fileRef !== undefined)) {
+        contentType = value;
+        continue;
+      }
       if (SERVER_OWNED.has(name)) {
         throw new TypeError(
-          "a response may not set " + name + ": the server sets it itself"
+          "a response may not set " + name + ": the server sets it itself" +
+          (name === "content-type" ? " (except on a response whose body is bytes or a file)" : "")
         );
       }
-      return [name, value];
-    });
-    const out = { status: status, headers: headers, body: options.body === undefined ? null : options.body };
+      headers.push([name, value]);
+    }
+    const extra = {};
+    if (raw !== null) {
+      extra.bodyBase64 = codec.toBase64(raw);
+      extra.contentType = contentType === undefined ? "application/octet-stream" : contentType;
+    }
+    if (fileRef !== undefined) {
+      extra.file = fileRef;
+      if (contentType !== undefined) extra.contentType = contentType;
+      if (options.filename !== undefined) extra.filename = options.filename;
+      extra.download = !!options.download;
+    }
+    const body = fileRef !== undefined ? null : (options.body === undefined ? null : options.body);
+    const out = { status: status, headers: headers, body: body };
     Object.defineProperty(out, RESPONSE, { value: true });
+    Object.defineProperty(out, RESPONSE_EXTRA, { value: Object.freeze(extra) });
     return Object.freeze(out);
   });
   // What an admin should be shown: the stack when there is one, because a body
@@ -3775,6 +3945,7 @@ const SETUP: &str = r#"
       // until then, resolving it is what turns a generation this isolate does
       // not hold into a named failure on the run that asked for it.
       const snapshot = schemaFor(schemaGeneration);
+      unwrapBytes(bindings);
       current = token;
       // The handles this body was compiled to take, in the order its parameter
       // list has them. A body with neither is the pure one `run_js_code` began
@@ -3833,7 +4004,12 @@ const SETUP: &str = r#"
         let text;
         if (result !== null && typeof result === "object" && result[RESPONSE] === true) {
           try {
-            text = JSON.stringify({ status: result.status, headers: result.headers, body: result.body });
+            const extra = result[RESPONSE_EXTRA] || {};
+            text = JSON.stringify(Object.assign(
+              { status: result.status, headers: result.headers,
+                body: extra.bodyBase64 === undefined ? result.body : null },
+              extra
+            ));
           } catch (e) {
             fail(token, describe(e));
             return;
@@ -4800,6 +4976,15 @@ fn op_sc_respond(state: &mut OpState, #[string] token: &str, #[string] spec: &st
     finish(state, token, Ok(crate::code_reply::wrap_response(spec)));
 }
 
+/// The key a binding of raw bytes is wrapped under (`code_reply::bytes_key`),
+/// read once by the prelude.
+#[cfg(feature = "eval")]
+#[deno_core::op2]
+#[string]
+fn op_sc_bytes_key() -> String {
+    crate::code_reply::bytes_key().to_owned()
+}
+
 /// End a run: answer its caller and take it out of the table. A token that names
 /// nothing is not an error — a run abandoned at its deadline was taken out
 /// already, and its continuation reporting afterwards is exactly that.
@@ -4835,7 +5020,8 @@ deno_core::extension!(
         op_sc_password_hash,
         op_sc_password_verify,
         op_sc_http_error,
-        op_sc_respond
+        op_sc_respond,
+        op_sc_bytes_key
     ]
 );
 

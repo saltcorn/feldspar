@@ -1377,3 +1377,186 @@ export class LiveRows<R> {
   }
 }
 
+
+/** How {@link upload} sends a file. */
+export interface UploadOptions {
+  /** Called after each chunk: bytes the server has, and the file's size. */
+  onProgress?: (sent: number, total: number) => void;
+  /** Stops the upload (it stays resumable) and rejects with an `AbortError`. */
+  signal?: AbortSignal;
+  /** Failed chunks in a row to retry before giving up (default 5). */
+  retries?: number;
+  /** Bytes per `PATCH` (default 5 MiB). */
+  chunkSize?: number;
+  /** The name to upload under, when the `Blob` is not a `File` with one. */
+  filename?: string;
+}
+
+/** A finished upload: where the file is in its store, and the URL it is served
+ * at (null when no route of the application serves it). */
+export interface UploadResult {
+  path: string;
+  url: string | null;
+}
+
+const TUS_VERSION = "1.0.0";
+
+function uploadAborted(): Error {
+  const e = new Error("the upload was stopped");
+  e.name = "AbortError";
+  return e;
+}
+
+/** UTF-8, then base64 — what tus metadata values are. */
+function tusValue(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function rememberUpload(key: string, location: string | null): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (location === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, location);
+  } catch {
+    // No storage (a private window, a native app): only resuming after a
+    // reload is lost.
+  }
+}
+
+function rememberedUpload(key: string): string | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** `location` against the URL it answered, so a relative `Location` works for
+ * a client with an absolute `baseUrl`. */
+function resolveLocation(location: string, from: string): string {
+  if (/^https?:\/\//.test(location) || !location.startsWith("/")) return location;
+  const origin = /^(https?:\/\/[^/]+)/.exec(from);
+  return origin ? origin[1] + location : location;
+}
+
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(uploadAborted());
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(uploadAborted());
+    }, { once: true });
+  });
+}
+
+/** Upload `file` to the upload slot whose create URL is `slotUrl`, resuming
+ * after dropped connections and reloads. What `api.uploads.<slot>` calls. */
+export async function upload(
+  fetchImpl: typeof fetch,
+  slotUrl: string,
+  file: Blob,
+  options: UploadOptions = {},
+): Promise<UploadResult> {
+  const total = file.size;
+  const chunkSize = Math.max(1, options.chunkSize ?? 5 * 1024 * 1024);
+  const retries = Math.max(0, options.retries ?? 5);
+  const signal = options.signal;
+  const named = file as Blob & { name?: string; lastModified?: number };
+  const filename = options.filename ?? named.name ?? "upload";
+  const fingerprint = `feldspar-upload:${slotUrl}:${filename}:${total}:${named.lastModified ?? ""}`;
+  const headers = (method: string, extra: Record<string, string> = {}) => ({
+    ...requestHeaders(method, false),
+    "tus-resumable": TUS_VERSION,
+    ...extra,
+  });
+  if (signal?.aborted) throw uploadAborted();
+
+  // What the server has of an upload, or null when it no longer knows it.
+  const offsetOf = async (location: string): Promise<number | null> => {
+    const res = await fetchImpl(location, { method: "HEAD", headers: headers("HEAD"), signal });
+    if (!res.ok) return null;
+    const offset = Number(res.headers.get("upload-offset"));
+    return Number.isFinite(offset) ? offset : null;
+  };
+
+  let location = rememberedUpload(fingerprint);
+  let offset = 0;
+  if (location !== null) {
+    const known = await offsetOf(location).catch((e: unknown) => {
+      if (signal?.aborted) throw uploadAborted();
+      throw e;
+    });
+    if (known === null) location = null;
+    else offset = known;
+  }
+  if (location === null) {
+    const res = await fetchImpl(slotUrl, {
+      method: "POST",
+      headers: headers("POST", {
+        "upload-length": String(total),
+        "upload-metadata": `filename ${tusValue(filename)},filetype ${tusValue(file.type || "application/octet-stream")}`,
+      }),
+      signal,
+    });
+    if (res.status !== 201) throw await clientError("upload", res);
+    const given = res.headers.get("location");
+    if (!given) throw new Error("upload failed: the server named no upload URL");
+    location = resolveLocation(given, slotUrl);
+    rememberUpload(fingerprint, location);
+  }
+  options.onProgress?.(offset, total);
+
+  let failures = 0;
+  for (;;) {
+    if (signal?.aborted) throw uploadAborted();
+    const end = Math.min(offset + chunkSize, total);
+    let res: Response | null = null;
+    try {
+      res = await fetchImpl(location, {
+        method: "PATCH",
+        headers: headers("PATCH", {
+          "upload-offset": String(offset),
+          "content-type": "application/offset+octet-stream",
+        }),
+        body: file.slice(offset, end),
+        signal,
+      });
+    } catch {
+      if (signal?.aborted) throw uploadAborted();
+      res = null;
+    }
+    if (res !== null && res.ok) {
+      failures = 0;
+      const now = Number(res.headers.get("upload-offset"));
+      offset = Number.isFinite(now) ? now : end;
+      options.onProgress?.(offset, total);
+      if (offset >= total) {
+        rememberUpload(fingerprint, null);
+        return {
+          path: res.headers.get("feldspar-file-path") ?? "",
+          url: res.headers.get("feldspar-file-url"),
+        };
+      }
+      continue;
+    }
+    // A refusal that another try will not change: the slot, the size, the type.
+    if (res !== null && res.status >= 400 && res.status < 500 && res.status !== 409 && res.status !== 423) {
+      if (res.status === 404) rememberUpload(fingerprint, null);
+      throw await clientError("upload", res);
+    }
+    failures += 1;
+    if (failures > retries) {
+      throw res === null
+        ? new Error("upload failed: the connection kept dropping")
+        : await clientError("upload", res);
+    }
+    await pause(Math.min(500 * 2 ** (failures - 1), 10_000), signal);
+    // What arrived before the failure is kept: ask, and go on from there.
+    const known = await offsetOf(location).catch(() => null);
+    if (known !== null) offset = known;
+  }
+}

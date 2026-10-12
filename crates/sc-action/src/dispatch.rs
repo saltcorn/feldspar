@@ -491,6 +491,7 @@ impl TriggerDispatcher {
     /// the caller, and `name` stands where the trigger's name would — in the
     /// cascade chain and in an error message. What differs is scope: the body
     /// sees `request`'s names (`body`, `query`) and `user`, and no `payload`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_code(
         &self,
         catalog: &Catalog,
@@ -499,6 +500,7 @@ impl TriggerDispatcher {
         code: &str,
         request: Attrs,
         caller: Option<&CallerContext>,
+        file_urls: Option<Arc<dyn crate::FileUrls>>,
     ) -> Result<Json> {
         let mut event = Event::new(EventKind::None);
         if let Some(caller) = caller {
@@ -514,7 +516,8 @@ impl TriggerDispatcher {
         let action = registry.require(action)?;
         let mut ctx = with_services(ActionContext::new(catalog, &event, &config, name), self)
             .with_chain(chain)
-            .with_request(request);
+            .with_request(request)
+            .with_file_urls(file_urls);
         action.run(&mut ctx).await
     }
 

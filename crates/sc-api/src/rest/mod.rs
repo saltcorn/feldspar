@@ -328,6 +328,9 @@ pub struct RestProvider {
     evaluator: Option<Arc<dyn JsEvaluator>>,
     /// The ceiling a list read is bounded by ([`DEFAULT_ROW_CAP`]).
     row_cap: u64,
+    /// Where the application serves store files — what a code query's
+    /// `file.url()` answers from (TODO F2.8).
+    file_urls: Option<Arc<dyn sc_action::FileUrls>>,
 }
 
 impl RestProvider {
@@ -604,7 +607,15 @@ impl RestProvider {
             dispatcher: None,
             evaluator: None,
             row_cap: DEFAULT_ROW_CAP,
+            file_urls: None,
         }
+    }
+
+    /// Say where the application serves store files, so a code query's
+    /// `file.url()` can answer (TODO F2.8).
+    pub fn with_file_urls(mut self, urls: Arc<dyn sc_action::FileUrls>) -> RestProvider {
+        self.file_urls = Some(urls);
+        self
     }
 
     /// Offer sign-up: project `POST {mount}/signup`, which makes an account with
@@ -776,9 +787,17 @@ impl RestProvider {
         let scope = custom::code_scope(query, req)?;
         let caller = ownership::caller_context(user);
         let result = dispatcher
-            .run_code(cat, action, &query.name, &query.code, scope, Some(&caller))
+            .run_code(
+                cat,
+                action,
+                &query.name,
+                &query.code,
+                scope,
+                Some(&caller),
+                self.file_urls.clone(),
+            )
             .await;
-        code_answer(result, user)
+        code_answer(result, cat, user).await
     }
 
     /// Inject the JavaScript evaluator ownership formulas' reified path runs
@@ -827,7 +846,7 @@ impl RestProvider {
         let result = dispatcher
             .run_trigger(cat, trigger, req.body.clone(), Some(&caller))
             .await;
-        code_answer(result, user)
+        code_answer(result, cat, user).await
     }
 
     /// Add a developer-authored custom route as a bare endpoint (§13.4).
@@ -1321,14 +1340,15 @@ fn list_query_params() -> Vec<QueryParam> {
 ///   text, under the same status;
 /// - a refusal before the body ran (a missing trigger, a role that may not run
 ///   it) is left as the error it is.
-fn code_answer(result: Result<Json>, user: Option<&User>) -> Result<ApiResponse> {
+async fn code_answer(
+    result: Result<Json>,
+    cat: &Catalog,
+    user: Option<&User>,
+) -> Result<ApiResponse> {
     let err = match result {
         Ok(value) => {
             return Ok(match sc_expr::take_code_response(value) {
-                Ok(reply) => ApiResponse {
-                    headers: reply.headers,
-                    ..ApiResponse::with_status(reply.status, reply.body)
-                },
+                Ok(reply) => code_response(reply, cat, user).await,
                 Err(value) => ApiResponse::ok(value),
             });
         }
@@ -1370,6 +1390,83 @@ fn code_answer(result: Result<Json>, user: Option<&User>) -> Result<ApiResponse>
         false => public,
     };
     Ok(ApiResponse::with_status(status, body))
+}
+
+/// A body's `response(...)`, as the transport serves it: JSON with a status
+/// and headers (TODO F1.4), raw bytes under their content type (TODO F2.9), or
+/// a store file through the shared file response builder (TODO F2.10).
+///
+/// A file handle opened `asUser` is checked against the caller here, by the
+/// owner rule (§2.1), and one they may not read is the `404` a missing file
+/// is. One opened with the default admin authority is not: the query's own
+/// code was the access check.
+async fn code_response(
+    reply: sc_expr::CodeResponse,
+    cat: &Catalog,
+    user: Option<&User>,
+) -> ApiResponse {
+    let sc_expr::CodeResponse {
+        status,
+        mut headers,
+        body,
+        raw,
+        file,
+    } = reply;
+    if let Some(file) = file {
+        let not_found = || ApiResponse::error(404, "not found");
+        if file.path.split('/').any(|s| s == ".." || s.is_empty()) {
+            return not_found();
+        }
+        let Ok(store) = cat.require_file_store(&file.store) else {
+            return not_found();
+        };
+        if file.authority != "admin" {
+            let floor = match load_file_store_by_name(cat, &file.store).await {
+                Ok(def) => def.and_then(|d| d.min_role),
+                Err(_) => return not_found(),
+            };
+            if check_access(store.as_ref(), floor, &file.path, &file_caller(user))
+                .await
+                .is_err()
+            {
+                return not_found();
+            }
+        }
+        // `cache-control` is the builder's to set, so the body's choice is
+        // handed to it rather than added beside its default.
+        let cache_control = headers
+            .iter()
+            .position(|(name, _)| name == "cache-control")
+            .map(|at| headers.remove(at).1);
+        let serve = ServeFile {
+            store,
+            path: file.path,
+            filename: file.filename,
+            download: file.download,
+            content_type: file.content_type,
+            cache_control,
+        };
+        return ApiResponse {
+            file: Some(Box::new(serve)),
+            headers,
+            ..ApiResponse::ok(Json::Null)
+        };
+    }
+    if let Some(raw) = raw {
+        use base64::Engine;
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&raw.base64) else {
+            return ApiResponse::with_status(500, json!({ "error": "internal error" }));
+        };
+        return ApiResponse {
+            status,
+            headers,
+            ..ApiResponse::file(bytes, raw.content_type)
+        };
+    }
+    ApiResponse {
+        headers,
+        ..ApiResponse::with_status(status, body)
+    }
 }
 
 /// The caller as a file rule sees them: the role (public when anonymous) and the
@@ -1648,6 +1745,7 @@ impl ApiProvider for RestProvider {
             query: Vec::new(),
             body,
             raw: None,
+            headers: Vec::new(),
             links: None,
         };
         Some(self.run_custom_code(query, action, &req, cat, user).await)

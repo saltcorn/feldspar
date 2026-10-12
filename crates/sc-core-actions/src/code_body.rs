@@ -230,7 +230,10 @@ impl<'a> Hosts<'a> {
             // `as_user` is checked against it, and the admin default clears
             // every one.
             files: FileStoreHost::new(ctx.catalog)
-                .caused_by(ctx.event.role, ctx.event.user.as_ref()),
+                .caused_by(ctx.event.role, ctx.event.user.as_ref())
+                // Where the custom query's application serves files, so
+                // `file.url()` can say (TODO F2.8); none for a trigger.
+                .with_urls(ctx.file_urls().cloned()),
             // The other triggers, when this context has a dispatcher — and
             // nothing at all when it does not, so a body that names `trigger`
             // outside a server says so by name. It carries the caller *and* the

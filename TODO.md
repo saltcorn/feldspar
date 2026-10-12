@@ -449,14 +449,14 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
   - the completed file is owned by the uploader and keeps its original name.
 
 ### Phase 3: code bodies
-- [ ] **F2.8** (1.2) `file.read({offset, length})`, `append`, `concat`, `sha256` and `url` in the
+- [x] **F2.8** (1.2) `file.read({offset, length})`, `append`, `concat`, `sha256` and `url` in the
   code `fs` (§2.5), plus the `--code-max-file-bytes` and `--code-max-copy-bytes` settings. Tests:
   joining three parts into a 20 MB file and hashing it works, with no 8 MB error.
-- [ ] **F2.9** (1.4) `body_type: bytes`, the `request` binding, and raw `response` bodies (§2.6),
+- [x] **F2.9** (1.4) `body_type: bytes`, the `request` binding, and raw `response` bodies (§2.6),
   through `code_scope`, the admin editor, `save_api_query` and the generator (`Blob` in and out).
   Tests: a PNG POSTed raw arrives as a `Uint8Array` with the right length; a query returning
   `response({ body: bytes, headers: { "content-type": "image/png" } })` is served as an image.
-- [ ] **F2.10** (1.3) File handles as `response` bodies (§2.6): served by the shared response
+- [x] **F2.10** (1.3) File handles as `response` bodies (§2.6): served by the shared response
   builder, with `filename` and `download`. The generator emits `Blob` and `<name>Url(params)`.
   `describe_code_api` and `AGENTS.md` show the password-protected share pattern. Tests:
   - a GET query that checks a password and returns a 50 MB file serves it with Range (206) and
@@ -466,7 +466,7 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
   - a handle opened `asUser` on a file that user cannot read is a 404.
 
 ### Phase 4: the client
-- [ ] **F2.11** (1.5) `helper.ts` gains `upload(slot, file, { onProgress, signal, retries,
+- [x] **F2.11** (1.5) `helper.ts` gains `upload(slot, file, { onProgress, signal, retries,
   chunkSize })`, a tus client with resume across retries (fingerprint in `localStorage`, wrapped in
   try/catch), and the generator emits `api.uploads.<name>(file, opts)` for each slot, resolving to
   `{ path, url }`. Tests: `typescript_typecheck.rs`, and a puppeteer check that uploads a 20 MB

@@ -189,6 +189,7 @@ export function CodeEditor({
   const table = scope?.table;
   const event = scope?.event;
   const request = scope?.request;
+  const bytes = scope?.bytes;
   const settings = editorSettings(language);
   const typed = settings.typed;
   useEffect(() => {
@@ -200,14 +201,14 @@ export function CodeEditor({
     // and a body is worth typing into before either arrives.
     void Promise.all([catalog(), moduleFunctions()])
       .then(([tables, functions]) => {
-        if (!cancelled) setLibrary(codeLibrary(tables, { table, event, request }, functions));
+        if (!cancelled) setLibrary(codeLibrary(tables, { table, event, request, bytes }, functions));
       })
       // A catalog that cannot be read costs completions, not the editor.
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [table, event, request, typed]);
+  }, [table, event, request, bytes, typed]);
 
   useEffect(() => {
     let disposed = false;

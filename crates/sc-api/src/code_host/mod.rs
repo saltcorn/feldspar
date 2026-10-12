@@ -134,7 +134,7 @@ use crate::convert::value_to_json;
 use crate::ownership;
 use crate::rows;
 
-pub use files::{FileStoreHost, MAX_COPY_BYTES, MAX_FILE_BYTES};
+pub use files::{FileStoreHost, MAX_COPY_BYTES, MAX_FILE_BYTES, set_file_limits};
 pub use models::CODE_MAX_DRAWS;
 pub use plan::{AggSpec, Authority, Dir, Op, OrderKey, Plan, Selection, SqlOp, SqlPlan};
 pub use schema::snapshot as schema_snapshot;

@@ -2331,6 +2331,11 @@ error only to something that was told to read it — `exists` is a question, not
 | `write(data)`, `create(data)` | create-or-replace, and create-or-refuse |
 | `delete()` | whether there was anything to delete |
 | `moveTo(dest)`, `copyTo(dest)` | `dest` may be a file in **another** store; answers the destination |
+| `read({ offset, length })` | a piece of the file as a `Uint8Array`, streamed from the store (TODO F2.8) |
+| `append(data, options?)` | add to the end, creating the file (and recording its owner) when missing |
+| `concat([part, …], options?)` | join files of this store into this one, host-side; answers its size |
+| `sha256()` | the hex digest, taken host-side over the streamed file |
+| `url({ download })` | where the custom query's application serves the file (a static directory, or `/files/serve`), or `null` |
 | `meta()`, `setMeta({ minRole, attributes })` | the store's own per-file metadata |
 
 | on a directory | |
@@ -2351,9 +2356,12 @@ access rule.
 **Bounded**, in three ways of its own: **100 operations per run** (a budget apart from the 200
 database calls and the 50 fetches, because a walk over a directory is a third kind of accident);
 **8 MB across the seam** per read and per write, refused rather than truncated for the reason a
-1000-row read is; and **256 MB per copy**, which is larger precisely because those bytes never
-enter the isolate. Two things a body must not assume: nothing **streams**, and a file write is
-**not rolled back** by a trigger that throws afterwards.
+1000-row read is; and **256 MB per copy or `concat`**, which is larger precisely because those
+bytes never enter the isolate. Both are server settings (`--code-max-file-bytes`,
+`--code-max-copy-bytes`; `sc_api::code_host::set_file_limits`, process-wide like the code
+workers). A file larger than one read is never read whole: `read({ offset, length })`, `append`,
+`concat` and `sha256` keep it on the host (TODO F2.8). A file write is **not rolled back** by a
+trigger that throws afterwards.
 
 The seam is JSON here too — one operation in, one value out (`sc_expr::FileHost`, implemented by
 `sc_api::code_host::FileStoreHost` over the catalog's connected stores) — so §15's other guest
@@ -2364,7 +2372,8 @@ languages inherit `fs` the way they inherit `db`:
   "authority": "admin", "encoding": "text" }
 ```
 
-`op` is `read` | `write` | `stat` | `list` | `mkdir` | `delete` | `copy` | `rename` | `meta` |
+`op` is `read` (with `offset`/`length` for a piece) | `write` | `append` | `concat` (`parts`) |
+`sha256` | `url` (`download`) | `stat` | `list` | `mkdir` | `delete` | `copy` | `rename` | `meta` |
 `setMeta`; bytes travel base64 (`base64`) or as text (`text`); `copy` and `rename` carry
 `toStore`/`toPath`, so a cross-store move is one operation. Nothing in a request is trusted: the
 store is resolved through the catalog, the path is re-checked for the traversal the guest already
@@ -2415,6 +2424,16 @@ endpoint — chooses its answer:
   cannot forge a status or a header. Headers the server owns (`set-cookie`, the CSP headers,
   `x-frame-options`, `content-type`, the hop-by-hop ones; `sc_expr::SERVER_OWNED_HEADERS`) are
   refused in the guest, so the author is told, and dropped again where the router writes them.
+  **Bytes out (TODO F2.9):** a `Uint8Array` (or `ArrayBuffer`) `body` crosses as `bodyBase64`
+  beside the `content-type` the headers name — the one server-owned header a raw body may set —
+  and is served through `ApiResponse::raw`. **A file out (TODO F2.10):** `file: handle` (or a
+  handle as the `body`), with `filename` and `download`, crosses as `{ store, path, authority }`
+  (`sc_expr::FileReply`) — never the bytes — and the REST provider serves it through the shared
+  file response builder (§13.2: streamed, `Range`, ETag, `Content-Disposition`), with a
+  `cache-control` header handed to the builder. A handle opened `asUser` is checked against the
+  caller by the owner rule first, and one they may not read is the 404 a missing file is; an
+  admin-authority handle is not checked, because the query's code was the check. Each request —
+  each `Range` request of a video — reruns the query, so a revoked share is refused at once.
 - **Any other throw or rejection** is a **500** `{ "error": "internal error", "id" }` to a
   caller who is not an admin; the full text (query name, stack) goes to the log under that id,
   and to an admin caller, without the doubled `invalid:` prefix. A watchdog, wall-clock or heap
@@ -5111,6 +5130,16 @@ resume survives a restart; only its uploader (`user:<id>`, or a hash of an anony
 cookie) may continue, inspect or abandon it, and anybody else gets the 404 an unknown id gets.
 A sweep every ten minutes removes uploads begun over 24 hours ago, with their bytes.
 
+**The client side (TODO F2.11).** The generated client has `api.uploads.<slot>(file, { onProgress,
+signal, retries, chunkSize, filename })` for each slot (`sc_api::generate_app_client` with the
+app's `sc_app::upload_exports`), resolving to `{ path, url }` from those two headers. It is the
+helper's `upload()`, a tus client: chunks of 5 MiB by default, `onProgress(sent, total)` after
+each, and after a failed chunk (the network, a 5xx, a 409 offset disagreement) a growing pause, a
+`HEAD`, and on from the offset the server reports — up to `retries` failures in a row. The upload
+URL is remembered in `localStorage` (wrapped in try/catch) under a fingerprint of the slot URL and
+the file's name, size and modification time, so the same file uploaded again after a reload
+resumes too. `signal` stops it without abandoning it; a 4xx refusal is not retried.
+
 **The URL is app-root-relative.** The public URL is `//<subdomain>.<host><mount>/<path within the
 directory>`, but what anything *describing* a URL hands out — `list_assets_*`, the coding agent's
 session header — is the `/img/hero.png` half, built by `StaticDir::url_for`, which is
@@ -6520,6 +6549,19 @@ declared is passed as sent. What the body returns is the response. A body choose
 with `throw httpError(…)` or `return response({ status, headers, body })`, and any other throw is
 a 500 with no stack for a caller who is not an admin (§10.1, "Globals, and the answer a body gives
 an HTTP caller").
+
+**Bytes in and out (TODO F2.9/F2.10).** A JavaScript query has a `body_type` (`json` | `bytes`)
+and a `response_type` (`json` | `bytes`), both stored only when not `json`. With `body_type:
+bytes` (POST/PUT/PATCH only) `body` is a `Uint8Array` of the request's raw bytes — whatever they
+were labelled, up to `--max-request-body` — and the declared parameters come from the query
+string; the router now hands every request's bytes over as `ApiRequest::raw`. The bytes reach
+the isolate wrapped under a per-process random key (`sc_expr::bytes_binding`) that the prelude
+turns into a `Uint8Array`, so a JSON body cannot pose as bytes. Every code query also has
+`request = { method, contentType, headers }`, the headers lower-cased with `cookie`,
+`authorization`, `proxy-authorization` and the CSRF token removed. `response_type: bytes` types
+the generated method as returning a `Blob`; a `GET` also gets `<name>Url(params)`, which builds
+the URL for `<img src>`, `<video>` and links. The generated method of a `bytes` body takes a
+`BodyInit` (`Blob`, `ArrayBuffer`, `Uint8Array`, …).
 
 **The arguments are open (TODO F1.1).** Because a body reads `body` and `query` whole, its
 projected endpoint carries `Endpoint::open_args`: the generated method **always** takes the

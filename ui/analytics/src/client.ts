@@ -199,7 +199,7 @@ export type ListViewPatternsResponse = Array<{ name: string; label: string; desc
 export type BuilderStatusResponse = { available: boolean };
 export type ListFrameworksResponse = Array<{ name: string; label: string; description: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; has_views: boolean; file_store_settings: Array<string>; file_settings: Array<{ name: string; extensions: Array<string> }>; targets: Array<{ name: string; label: string; options: Array<string>; operations: Array<{ name: string; label: string; description: string; show_if: Array<{ name: string; values: Array<unknown> }> }> }> }>;
 export type ListApiProvidersResponse = Array<{ name: string; label: string; description: string; default_mount: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; supports_custom_queries: boolean }>;
-export type DescribeCustomQueryRequest = { name: string; description?: string | null; method: string; path: string; language?: string | null; code: string; params: Array<{ name: string; type: string; required?: boolean | null }>; min_role?: number | null; tables?: Array<string> | null };
+export type DescribeCustomQueryRequest = { name: string; description?: string | null; method: string; path: string; language?: string | null; code: string; params: Array<{ name: string; type: string; required?: boolean | null }>; min_role?: number | null; body_type?: string | null; response_type?: string | null; tables?: Array<string> | null };
 export type DescribeCustomQueryResponse = { columns: Array<{ name: string; type: string }> };
 export type ListUsersResponse = Array<{ id: string; email: string; role: number; disabled: boolean; language?: string | null; extra: unknown }>;
 export type CreateUserRequest = { email: string; password?: string | null; role: number; language?: string | null; extra?: unknown | null };
@@ -600,6 +600,7 @@ export interface ApiClient {
   suggestPlot(body: SuggestPlotRequest): Promise<SuggestPlotResponse>;
   layerData(body: LayerDataRequest): Promise<LayerDataResponse>;
   layerTile(z: number, x: number, y: number, query: LayerTileQuery): Promise<Blob>;
+  layerTileUrl(z: number, x: number, y: number, query: LayerTileQuery): string;
   layerRows(body: LayerRowsRequest): Promise<LayerRowsResponse>;
   selectFeatures(body: SelectFeaturesRequest): Promise<SelectFeaturesResponse>;
   saveSelection(body: SaveSelectionRequest): Promise<SaveSelectionResponse>;
@@ -2575,6 +2576,12 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("layerTile", res);
       return await res.blob();
+    },
+    layerTileUrl(z, x, y, query) {
+      const search = new URLSearchParams();
+      search.append("layer", String(query.layer));
+      const qs = search.toString();
+      return `${baseUrl}/api/layers/tiles/${encodeURIComponent(z)}/${encodeURIComponent(x)}/${encodeURIComponent(y)}${qs ? `?${qs}` : ""}`;
     },
     async layerRows(body) {
       const res = await doFetch(`${baseUrl}/api/layers/rows`, {

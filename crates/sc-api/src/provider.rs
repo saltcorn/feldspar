@@ -49,10 +49,14 @@ pub struct ApiRequest {
     pub query: Vec<(String, String)>,
     /// The parsed JSON request body ([`Json::Null`] when there was none).
     pub body: Json,
-    /// The raw, unparsed request body, set by the transport when the caller sent
-    /// something other than JSON — a file upload's bytes (§4). `None` for every
-    /// JSON request, so a provider that never asks for bytes never sees them.
+    /// The raw, unparsed request body as it arrived — a file upload's bytes
+    /// (§4), a `bytes` code query's body (TODO F2.9). Set by the transport for
+    /// every request with a body; a JSON body is in [`body`](Self::body) too.
     pub raw: Option<Bytes>,
+    /// The request's headers, lower-cased, without the ones that carry
+    /// credentials (`cookie`, `authorization`, the CSRF token): what a code
+    /// query's `request.headers` shows. Empty where there was no HTTP request.
+    pub headers: Vec<(String, String)>,
     /// Where this request arrived and which applications are served beside it —
     /// what an emailed link is built from. Set by the transport for a request
     /// that reached an application; `None` in a test or a tool call, where a
@@ -109,6 +113,7 @@ impl ApiRequest {
             query: Vec::new(),
             body: Json::Null,
             raw: None,
+            headers: Vec::new(),
             links: None,
         }
     }

@@ -70,8 +70,15 @@ export type ModuleFunctionInfo = {
  * nothing at all.
  *
  * `request` says the body is an application's **custom query** (§13.4): it has
- * no event, so no `payload`, and is bound the request as `body` and `query`. */
-export type CodeScope = { table?: string; event?: string; run?: boolean; request?: boolean };
+ * no event, so no `payload`, and is bound the request as `body`, `query` and
+ * `request`. `bytes` says its body is the raw request body (TODO F2.9). */
+export type CodeScope = {
+  table?: string;
+  event?: string;
+  run?: boolean;
+  request?: boolean;
+  bytes?: boolean;
+};
 
 /** The join separator between a key field and a column of the table it points
  * at (`customerⱵemail`) — `sc_expr::JOIN`. */
@@ -479,6 +486,23 @@ declare class ScFile {
   moveTo(dest: ScFile | string): Promise<ScFile>;
   /** Copy it, on the same terms. The bytes never enter the sandbox. */
   copyTo(dest: ScFile | string): Promise<ScFile>;
+  /** A piece of the file: at most \`length\` bytes from \`offset\` (both
+   * default to the whole file). How a file larger than one read may carry
+   * (the server's --code-max-file-bytes, 8 MB by default) is read. */
+  read(options?: { offset?: number; length?: number }): Promise<Uint8Array>;
+  /** Add to the end, creating the file if it is not there. Answers the number
+   * of bytes appended. */
+  append(data: string | Uint8Array | ArrayBuffer, options?: ScWriteOptions): Promise<number>;
+  /** Join files of this store, in order, into this one (replacing it),
+   * host-side — up to --code-max-copy-bytes, 256 MB by default. Answers the
+   * size. */
+  concat(parts: (ScFile | string)[], options?: ScWriteOptions): Promise<number>;
+  /** The SHA-256 of the file, as lower-case hex, taken host-side. */
+  sha256(): Promise<string>;
+  /** The URL the application serves this file at (a static directory, or a
+   * Saltcorn UI app's \`/files/serve\`), or null when no route does. Who may
+   * fetch it is decided then. */
+  url(options?: { download?: boolean }): Promise<string | null>;
   meta(): Promise<ScFileMeta>;
   /** Replace this entry's metadata — read it first if what you want is a change
    * to one attribute. A delegated body may tighten a rule, never loosen one.
@@ -916,11 +940,23 @@ export function scopeDeclarations(
     `/** Whoever caused the event, or null for the server's own events. */\n` +
       `declare const user: ScUser | null;`,
   );
-  if (scope.request) {
+  if (scope.request && scope.bytes) {
+    parts.push(
+      `/** The raw request body (this query's body type is \`bytes\`). Its\n` +
+        ` * declared parameters arrive in \`query\`. */\ndeclare const body: Uint8Array;`,
+    );
+  } else if (scope.request) {
     parts.push(
       `/** The request's JSON body — \`{}\` when there was none. A declared\n` +
         ` * parameter arrives here, converted to its type, for a method with a\n` +
         ` * body. */\ndeclare const body: any;`,
+    );
+  }
+  if (scope.request) {
+    parts.push(
+      `/** The HTTP request: its method, content type and headers (lower-cased;\n` +
+        ` * cookies and credentials removed). */\n` +
+        `declare const request: { method: string; contentType: string | null; headers: Record<string, string> };`,
     );
     parts.push(
       `/** The request's query string, one value per key. A declared parameter\n` +
@@ -1136,12 +1172,25 @@ interface ScHttpAnswer {
 
 /** A success with a status (200–599) and headers of the body's choosing:
  * \`return response({ status: 201, headers: { "x-id": id }, body: { id } })\`.
- * The server's own headers (\`set-cookie\`, the CSP, framing, \`content-type\`)
- * are refused. */
+ * The server's own headers (\`set-cookie\`, the CSP, framing) are refused, and
+ * so is \`content-type\` on a JSON body.
+ *
+ * A \`Uint8Array\` body is served as raw bytes under the \`content-type\` the
+ * headers name. A **file** (\`file: fs(store).open(path)\`) is streamed by the
+ * server with Range support and no size limit, named \`filename\` (default: the
+ * file's own) and saved rather than shown when \`download\` is true — this is
+ * how a query decides who may download a file (a password, an expiry, a
+ * revoked share). Set the query's response type to \`bytes\` so its client
+ * method returns a \`Blob\`. */
 declare function response(init: {
   status?: number;
   headers?: Record<string, string> | [string, string][];
   body?: unknown;
+} | {
+  file: ScFile;
+  filename?: string;
+  download?: boolean;
+  headers?: Record<string, string> | [string, string][];
 }): ScHttpAnswer;
 
 /** Randomness, digests, HMAC and password hashes. Never hand-write SHA or

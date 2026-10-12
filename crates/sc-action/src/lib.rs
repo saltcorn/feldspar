@@ -62,7 +62,7 @@ mod trigger;
 mod triggers;
 mod validate;
 
-pub use action::{Action, ActionContext, ConfigCheck};
+pub use action::{Action, ActionContext, ConfigCheck, FileUrls};
 pub use dispatch::{
     ActionServices, TestRun, TriggerDispatcher, TriggerRun, fire_trigger, fire_trigger_in,
     fire_trigger_with,

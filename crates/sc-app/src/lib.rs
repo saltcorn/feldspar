@@ -79,8 +79,8 @@ pub use api::{
     serves_custom_queries, validate_api_config, validate_api_mounts, validate_static_dirs,
 };
 pub use application::{
-    ApiConfig, AppId, Application, CspPolicy, FRAME_ANCESTORS, FrameworkRef, StaticDir, StreamRef,
-    TriggerRef, allow_admin_framing, follow_admin_host,
+    ApiConfig, AppFileUrls, AppId, Application, CspPolicy, FRAME_ANCESTORS, FrameworkRef,
+    StaticDir, StreamRef, TriggerRef, allow_admin_framing, follow_admin_host,
 };
 pub use applications::{
     APPLICATIONS_TABLE, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS,
@@ -153,7 +153,7 @@ pub use streams::{
 pub use target_ops::{OperationOutcome, run_target_operation};
 pub use uploads::{
     DEFAULT_SLOT_MIN_ROLE, UPLOAD_SEGMENT, UPLOADS_TABLE, UploadRecord, UploadRoute, UploadSlot,
-    bootstrap_uploads, delete_upload, insert_upload, load_upload, set_upload_progress, upload_path,
-    upload_route, upload_slots_from_json, upload_slots_json, uploads_begun_before,
-    validate_upload_slots,
+    bootstrap_uploads, delete_upload, insert_upload, load_upload, set_upload_progress,
+    upload_exports, upload_path, upload_route, upload_slots_from_json, upload_slots_json,
+    uploads_begun_before, validate_upload_slots,
 };

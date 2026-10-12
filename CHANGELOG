@@ -2,6 +2,110 @@
 
 Changes in reverse chronological order.
 
+## F2 phases 3 and 4: files in code bodies, binary queries, file responses, the upload client
+
+The rest of TODO.md F2's file work (field report 1.2, 1.3, 1.4, 1.5): a code body can handle
+files larger than one read, a JavaScript query can take and return raw bytes, it can answer
+with a store file that the server streams (custom download rules such as password-protected
+shares), and an app's generated client uploads to its upload slots with resume.
+
+- **F2.8: large files in a code body.** `fs` files gain `read({ offset, length })` (a
+  `Uint8Array` piece, streamed with `FileStore::open_read`), `append(data, options?)` (creates
+  the file and records its owner the way `write` does), `concat([part, …], options?)` (a
+  host-side join of files in the same store, through `FileStore::concat`; the narrower
+  authority of target and parts wins, a missing part leaves no target), `sha256()` (a hex
+  digest over the streamed file, with no size limit) and `url({ download })`. `url()` answers
+  where the custom query's application serves the file: a static directory that covers it,
+  or a Saltcorn UI app's `/files/serve`, else `null`. It works through a new
+  `sc_action::FileUrls` seam, which `ActionContext::with_file_urls` and
+  `TriggerDispatcher::run_code` carry. `sc_app::AppFileUrls` implements it, and the REST
+  provider is given one per application. The upload route's `Feldspar-File-Url` now uses the
+  same `Application::file_url`. The 8 MB and 256 MB bounds are now `--code-max-file-bytes`
+  and `--code-max-copy-bytes` (with `K`/`M`/`G`), applied process-wide through
+  `sc_api::code_host::set_file_limits`. The refusals name the flag and the piecewise
+  alternative.
+- **F2.9: bytes in and out.** `CustomQuery` gains `body_type` (`json` | `bytes`) and
+  `response_type` (`json` | `bytes`). Both are stored only when not `json`, and both are
+  JavaScript only. A `bytes` body must be on POST/PUT/PATCH. With `body_type: bytes`, `body`
+  is a `Uint8Array` of `ApiRequest::raw`, and the declared parameters come from the query
+  string. The router now hands every body over raw, so a JSON-labelled body counts as bytes
+  too. The bytes cross wrapped under a per-process random key (`sc_expr::bytes_binding`),
+  which `__scInvoke` turns into a `Uint8Array`, so a JSON body cannot pose as bytes. Every
+  code query also gets `request = { method, contentType, headers }` (`ApiRequest::headers`,
+  lower-cased, with `cookie`, `authorization`, `proxy-authorization` and the CSRF header
+  removed). `response({ body: uint8array, headers: { "content-type": … } })` is served raw:
+  `content-type` may be set on a bytes or file response only. `response()` now names a
+  misspelt option. The generator gives a `bytes` body a `BodyInit` argument with the
+  parameters as query options, gives a `bytes` response a `Blob`, and gives a GET with a
+  `Blob` response a `<name>Url(params)` helper. The admin's existing `layerTile` gained
+  `layerTileUrl` this way. Added in `save_api_query` (`body_type`, `response_type`, reported
+  by `describe_applications`), the admin query editor (Body and Response selects for
+  JavaScript queries, with a `Uint8Array` `body` and `request` in the editor's typings), and
+  `describeCustomQuery`'s schema (all four UI clients regenerated).
+- **F2.10: a file handle as the response.** `response({ file: fs(s).open(p), filename,
+  download, headers })`, or a handle as `body`, crosses as `{ store, path, authority }`
+  (`sc_expr::FileReply`) and never as bytes. The REST provider serves it through the shared
+  file response builder, so it is streamed, ranged, ETagged and named with `filename*`, and a
+  `cache-control` header is passed to the builder. A handle opened with `asUser()` is checked
+  against the caller with the owner rule, and a refusal is the same 404 a missing file gets. An
+  admin-authority handle is not checked: the query's code is the check, and it reruns on every
+  request (every `Range` request), so revoking a share takes effect at once. The raw and file
+  branches in the router now carry the body's headers as well (`with_code_headers`).
+  `describe_code_api` and `AGENTS.md` show the password-protected share pattern and the
+  password-in-a-URL caveat.
+- **F2.11: `api.uploads.<slot>(file, options)`.** `helper.ts` gains `upload()`, a tus client:
+  chunks (`chunkSize`, 5 MiB by default), `onProgress(sent, total)`, `signal` (stops without
+  abandoning the upload), and `retries` (failures in a row, with a growing pause and a `HEAD` to
+  pick up from the server's offset). It remembers the upload URL in `localStorage` (inside
+  try/catch) under a fingerprint of the slot and the file, so an upload also resumes after a
+  reload. A 4xx at creation is not retried. `sc_api::generate_app_client(set, streams, uploads)`
+  emits `uploads.<name>` for each slot (`sc_app::upload_exports`), resolving to `{ path, url }`.
+  An app build and the scaffold both use it.
+- Agent-facing text: `describe_code_api` (the new file methods and bounds, `request`, bytes in
+  and out, file responses and the share pattern), `AGENTS.md`'s logic section (upload slots
+  through `api.uploads`, bytes, file responses, large files), the `save_api_query` parameter
+  descriptions, `codeTypes.ts`, and TECHNICAL_DESIGN §10.1, §13.2 and §13.4.
+
+Tests:
+- `sc-server` `app_code_files` (new, SQLite) covers each item:
+  - a body joins three parts into a 21 MB file, hashes it (checked against Rust's SHA-256),
+    reads 4 bytes at 15 MB and the tail, and appends text and bytes;
+  - a whole read of that file is still refused, naming `offset`, and a missing part leaves no
+    partial target;
+  - `url()` is `null` for a file no route serves, and `/media/a%20b.png?download=1` under a
+    static directory;
+  - a raw PNG POSTed to a `bytes` query arrives as a `Uint8Array` of the right length, with
+    its query-string parameter and its headers (no cookie);
+  - an image query is served as `image/png` byte for byte;
+  - a GET share query with a password serves a 50 MB private file to a stranger: a 206 for
+    `bytes=0-99` and for a range at 40 MB, the whole file, `attachment` with
+    `filename*=UTF-8''na%C3%AFve%20%E5%90%8D%E5%89%8D.mp4`, and the body's `cache-control`;
+  - a wrong password is the query's 403, and after the share row is deleted the next range
+    request is refused;
+  - an `asUser` handle serves Alice's file to Alice and is the same 404 as a missing file to
+    Bob.
+- `sc-expr` `bytes_in_and_bytes_out`: a `bytes_binding` arrives as a `Uint8Array` and a
+  lookalike key does not; a raw response carries its content type; `content-type` on a JSON
+  body is refused; misspelt options are named.
+- `sc-api` `typescript_typecheck::generated_bytes_and_uploads_client_type_checks`: a `bytes`
+  query takes a `File`, a `Uint8Array` or an `ArrayBuffer`; a GET returns a `Blob` and has
+  `dotUrl()`; `api.uploads.drop(file, options)` resolves to `UploadResult`; an unknown slot is
+  a compile error.
+- `sc-app`: `AGENTS.md` names the new features, the generated client has a method per upload
+  slot, and `save_api_query`'s types are set, kept, reported and validated.
+- `sc-server` config: the two new flags.
+- `customQueries.test.ts`: the types round-trip, and are dropped when they no longer apply.
+- **Browser check, run by hand and not committed.** Headless Chromium driven by
+  `puppeteer-core` against `feldspar serve --sqlite`, on an app with an upload slot (framework
+  `none`, with the compiled `helper.js` served from a static directory). Upload throughput was
+  throttled to 3 MB/s through CDP. A signed-in member uploaded a 20 MB file in 2 MB chunks, and
+  the network went offline for 3 s once 8 MB had arrived. The client retried, resumed from the
+  server's offset (progress went 8 → 10 → 12 MiB and never back), and finished in 11 s. The
+  file on disk was byte-identical.
+- **Not run here:** the Postgres-backed suites (`code_files` in `sc-core-actions`, the MCP
+  tests in `sc-core-traits`, and most of `sc-server`'s), because no Postgres is reachable in
+  this environment. Their failures are all `connect: error connecting to server`.
+
 ## F2 phase 2: large uploads
 
 The second half of TODO.md F2's file work (field report 1.1): request bodies have explicit

@@ -289,6 +289,9 @@ pub fn build_router_with_apps(
         max_request_body: config.max_request_body,
         max_upload_bytes: config.max_upload_bytes,
     };
+    // The code body's file bounds are process-wide, like the code workers:
+    // every `fs` a run is handed starts from them (TODO F2.8).
+    sc_api::code_host::set_file_limits(config.code_max_file_bytes, config.code_max_copy_bytes);
 
     let app = Router::new()
         // Operational health check: a fixed, unauthenticated route (outside the
@@ -1266,6 +1269,49 @@ async fn admin_handoff(
     }
 }
 
+/// A code query's `response({ headers })` (TODO F1.4), added to `out`.
+/// Checked again here, where they are written: the server's own headers
+/// (cookies, CSP, framing, the content type) are never a body's. A header the
+/// response already has — a file response's `cache-control` — is replaced.
+fn with_code_headers(mut out: Response, extra: Vec<(String, String)>) -> Response {
+    let pairs: Vec<(header::HeaderName, HeaderValue)> = extra
+        .into_iter()
+        .filter(|(name, value)| sc_expr::allowed_header(name, value))
+        .filter_map(|(name, value)| {
+            Some((
+                header::HeaderName::from_bytes(name.as_bytes()).ok()?,
+                HeaderValue::from_str(&value).ok()?,
+            ))
+        })
+        .collect();
+    for (name, _) in &pairs {
+        out.headers_mut().remove(name);
+    }
+    for (name, value) in pairs {
+        out.headers_mut().append(name, value);
+    }
+    out
+}
+
+/// The headers a code query's `request.headers` shows (TODO F2.9): every one,
+/// lower-cased, except those that carry the caller's credentials — a body is
+/// told who is calling through `user`, never handed what would let it act as
+/// them elsewhere.
+fn code_request_headers(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "cookie" | "authorization" | "proxy-authorization"
+            ) && !name.as_str().eq_ignore_ascii_case(CSRF_HEADER)
+        })
+        .filter_map(|(name, value)| {
+            Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
+        })
+        .collect()
+}
+
 /// What a request's `Host` resolves to.
 enum Resolved {
     /// An application, or a run's preview of one.
@@ -1364,9 +1410,11 @@ async fn dispatch_app(
                         );
                     }
                 };
-            } else {
-                raw_body = Some(body.clone());
             }
+            // The bytes as they arrived, whatever they were labelled: a `File`
+            // field's upload and a `bytes` code query's body (TODO F2.9) both
+            // read them, and a clone of `Bytes` shares rather than copies.
+            raw_body = Some(body.clone());
         }
 
         let req = ApiRequest {
@@ -1375,6 +1423,7 @@ async fn dispatch_app(
             query: parse_query(uri),
             body: parsed_body,
             raw: raw_body,
+            headers: code_request_headers(headers),
             // What an emailed password link is built from: this request's own
             // origin, and the applications served beside it.
             links: Some(sc_api::AppLinks(Arc::new(RequestLinks::new(
@@ -1387,18 +1436,24 @@ async fn dispatch_app(
         return match provider.handle(req, catalog, user.as_ref()).await {
             // A store file — a `File` field's download — through the shared
             // builder (TODO F2, §2.2): streamed, ranged, and named.
+            // A code query's `response({ file })` (TODO F2.10) takes this
+            // road too, with the headers it chose.
             Ok(sc_api::ApiResponse {
-                file: Some(file), ..
-            }) => with_csp(
-                crate::file_response::serve(&file, &method, uri, headers).await,
-                &csp,
-            ),
-            // A raw-bytes response — a file download (§4) — goes out as-is under
+                file: Some(file),
+                headers: extra,
+                ..
+            }) => {
+                let out = crate::file_response::serve(&file, &method, uri, headers).await;
+                with_csp(with_code_headers(out, extra), &csp)
+            }
+            // A raw-bytes response — a file download (§4), a code query's
+            // `response({ body: bytes })` (TODO F2.9) — goes out as-is under
             // its own content type; there is no JSON body and no session change
             // a download could carry.
             Ok(sc_api::ApiResponse {
                 raw: Some(raw),
                 status,
+                headers: extra,
                 ..
             }) => {
                 let status = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
@@ -1406,7 +1461,7 @@ async fn dispatch_app(
                 if let Ok(ct) = HeaderValue::from_str(&raw.content_type) {
                     out.headers_mut().insert(header::CONTENT_TYPE, ct);
                 }
-                with_csp(out, &csp)
+                with_csp(with_code_headers(out, extra), &csp)
             }
             // A provider's response is shaped exactly like a handler's — body,
             // status, session change — so it goes out through the same
@@ -1414,7 +1469,7 @@ async fn dispatch_app(
             // same way the admin's does.
             Ok(resp) => {
                 let extra = resp.headers;
-                let mut out = apply_response(
+                let out = apply_response(
                     state,
                     jar,
                     session_token,
@@ -1437,21 +1492,7 @@ async fn dispatch_app(
                     },
                 )
                 .await;
-                // A code query's `response({ headers })` (TODO F1.4). Checked
-                // again here, where they are written: the server's own headers
-                // (cookies, CSP, framing, the content type) are never a body's.
-                for (name, value) in extra {
-                    if !sc_expr::allowed_header(&name, &value) {
-                        continue;
-                    }
-                    if let (Ok(name), Ok(value)) = (
-                        header::HeaderName::from_bytes(name.as_bytes()),
-                        HeaderValue::from_str(&value),
-                    ) {
-                        out.headers_mut().append(name, value);
-                    }
-                }
-                with_csp(out, &csp)
+                with_csp(with_code_headers(out, extra), &csp)
             }
             Err(e) => with_csp(
                 error_out(

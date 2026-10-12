@@ -246,6 +246,18 @@ pub fn upload_path(app: &Application, name: &str) -> String {
     format!("{}/{UPLOAD_SEGMENT}/{name}", mount(app))
 }
 
+/// The application's upload slots as its generated client names them —
+/// `api.uploads.<name>` (TODO F2.11).
+pub fn upload_exports(app: &Application) -> Vec<sc_api::UploadExport> {
+    app.uploads
+        .iter()
+        .map(|slot| sc_api::UploadExport {
+            name: slot.name.clone(),
+            path: upload_path(app, &slot.name),
+        })
+        .collect()
+}
+
 /// A request path that is one of `app`'s upload slots: creating an upload
 /// (`id` is `None`) or one upload in progress.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -27,7 +27,7 @@
 //! the `ApiClient` interface, so a mismatch between a declared endpoint and the
 //! generated call is a compile error — which is what the type-check test asserts.
 
-use crate::endpoint::{Endpoint, EndpointSet, PathSegment};
+use crate::endpoint::{Endpoint, EndpointSet, Method, PathSegment};
 use crate::resource::{ResourceField, ResourceModel};
 use crate::schema::TypeSchema;
 use std::collections::HashSet;
@@ -135,8 +135,213 @@ export function requestHeaders(method: string, hasBody: boolean): Record<string,
     out.push_str(READ_TYPES);
     out.push_str(LIVE_TYPES);
     out.push_str(LIVE_ROWS);
+    out.push_str(UPLOAD_HELPERS);
     out
 }
+
+/// The tus client behind `api.uploads.<slot>(file, options)` (TODO F2.11,
+/// §2.3): an application's upload slots take a file of any size in resumable
+/// chunks, and this is the half of that which runs in the page.
+///
+/// What it does, deliberately:
+///
+/// - **Chunks** of `chunkSize` (5 MiB by default), each one `PATCH`, with
+///   `onProgress(sent, total)` after every one.
+/// - **Resumes across a dropped connection.** A failed chunk — the network, a
+///   5xx, an offset the server disagrees with — is followed by a `HEAD` that
+///   says what arrived, and the upload goes on from there, up to `retries`
+///   failures in a row with a growing pause between them.
+/// - **Resumes across a reload.** The upload's URL is remembered in
+///   `localStorage` under a fingerprint of the slot and the file (name, size,
+///   modification time), so uploading the same file again picks up where the
+///   last attempt stopped. Storage that throws (a private window) only costs
+///   that.
+/// - **Stops on `signal`** without abandoning the upload, so it can be resumed
+///   later; an upload the server refused (a 4xx at creation) is not retried.
+const UPLOAD_HELPERS: &str = r#"
+/** How {@link upload} sends a file. */
+export interface UploadOptions {
+  /** Called after each chunk: bytes the server has, and the file's size. */
+  onProgress?: (sent: number, total: number) => void;
+  /** Stops the upload (it stays resumable) and rejects with an `AbortError`. */
+  signal?: AbortSignal;
+  /** Failed chunks in a row to retry before giving up (default 5). */
+  retries?: number;
+  /** Bytes per `PATCH` (default 5 MiB). */
+  chunkSize?: number;
+  /** The name to upload under, when the `Blob` is not a `File` with one. */
+  filename?: string;
+}
+
+/** A finished upload: where the file is in its store, and the URL it is served
+ * at (null when no route of the application serves it). */
+export interface UploadResult {
+  path: string;
+  url: string | null;
+}
+
+const TUS_VERSION = "1.0.0";
+
+function uploadAborted(): Error {
+  const e = new Error("the upload was stopped");
+  e.name = "AbortError";
+  return e;
+}
+
+/** UTF-8, then base64 — what tus metadata values are. */
+function tusValue(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function rememberUpload(key: string, location: string | null): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (location === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, location);
+  } catch {
+    // No storage (a private window, a native app): only resuming after a
+    // reload is lost.
+  }
+}
+
+function rememberedUpload(key: string): string | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** `location` against the URL it answered, so a relative `Location` works for
+ * a client with an absolute `baseUrl`. */
+function resolveLocation(location: string, from: string): string {
+  if (/^https?:\/\//.test(location) || !location.startsWith("/")) return location;
+  const origin = /^(https?:\/\/[^/]+)/.exec(from);
+  return origin ? origin[1] + location : location;
+}
+
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(uploadAborted());
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(uploadAborted());
+    }, { once: true });
+  });
+}
+
+/** Upload `file` to the upload slot whose create URL is `slotUrl`, resuming
+ * after dropped connections and reloads. What `api.uploads.<slot>` calls. */
+export async function upload(
+  fetchImpl: typeof fetch,
+  slotUrl: string,
+  file: Blob,
+  options: UploadOptions = {},
+): Promise<UploadResult> {
+  const total = file.size;
+  const chunkSize = Math.max(1, options.chunkSize ?? 5 * 1024 * 1024);
+  const retries = Math.max(0, options.retries ?? 5);
+  const signal = options.signal;
+  const named = file as Blob & { name?: string; lastModified?: number };
+  const filename = options.filename ?? named.name ?? "upload";
+  const fingerprint = `feldspar-upload:${slotUrl}:${filename}:${total}:${named.lastModified ?? ""}`;
+  const headers = (method: string, extra: Record<string, string> = {}) => ({
+    ...requestHeaders(method, false),
+    "tus-resumable": TUS_VERSION,
+    ...extra,
+  });
+  if (signal?.aborted) throw uploadAborted();
+
+  // What the server has of an upload, or null when it no longer knows it.
+  const offsetOf = async (location: string): Promise<number | null> => {
+    const res = await fetchImpl(location, { method: "HEAD", headers: headers("HEAD"), signal });
+    if (!res.ok) return null;
+    const offset = Number(res.headers.get("upload-offset"));
+    return Number.isFinite(offset) ? offset : null;
+  };
+
+  let location = rememberedUpload(fingerprint);
+  let offset = 0;
+  if (location !== null) {
+    const known = await offsetOf(location).catch((e: unknown) => {
+      if (signal?.aborted) throw uploadAborted();
+      throw e;
+    });
+    if (known === null) location = null;
+    else offset = known;
+  }
+  if (location === null) {
+    const res = await fetchImpl(slotUrl, {
+      method: "POST",
+      headers: headers("POST", {
+        "upload-length": String(total),
+        "upload-metadata": `filename ${tusValue(filename)},filetype ${tusValue(file.type || "application/octet-stream")}`,
+      }),
+      signal,
+    });
+    if (res.status !== 201) throw await clientError("upload", res);
+    const given = res.headers.get("location");
+    if (!given) throw new Error("upload failed: the server named no upload URL");
+    location = resolveLocation(given, slotUrl);
+    rememberUpload(fingerprint, location);
+  }
+  options.onProgress?.(offset, total);
+
+  let failures = 0;
+  for (;;) {
+    if (signal?.aborted) throw uploadAborted();
+    const end = Math.min(offset + chunkSize, total);
+    let res: Response | null = null;
+    try {
+      res = await fetchImpl(location, {
+        method: "PATCH",
+        headers: headers("PATCH", {
+          "upload-offset": String(offset),
+          "content-type": "application/offset+octet-stream",
+        }),
+        body: file.slice(offset, end),
+        signal,
+      });
+    } catch {
+      if (signal?.aborted) throw uploadAborted();
+      res = null;
+    }
+    if (res !== null && res.ok) {
+      failures = 0;
+      const now = Number(res.headers.get("upload-offset"));
+      offset = Number.isFinite(now) ? now : end;
+      options.onProgress?.(offset, total);
+      if (offset >= total) {
+        rememberUpload(fingerprint, null);
+        return {
+          path: res.headers.get("feldspar-file-path") ?? "",
+          url: res.headers.get("feldspar-file-url"),
+        };
+      }
+      continue;
+    }
+    // A refusal that another try will not change: the slot, the size, the type.
+    if (res !== null && res.status >= 400 && res.status < 500 && res.status !== 409 && res.status !== 423) {
+      if (res.status === 404) rememberUpload(fingerprint, null);
+      throw await clientError("upload", res);
+    }
+    failures += 1;
+    if (failures > retries) {
+      throw res === null
+        ? new Error("upload failed: the connection kept dropping")
+        : await clientError("upload", res);
+    }
+    await pause(Math.min(500 * 2 ** (failures - 1), 10_000), signal);
+    // What arrived before the failure is kept: ask, and go on from there.
+    const known = await offsetOf(location).catch(() => null);
+    if (known !== null) offset = known;
+  }
+}
+"#;
 
 /// One stream an application exposes to its pages (TODO "Streams" §10, TODO.md
 /// "Live updates"), as the client generator needs it: what it is called, where
@@ -264,6 +469,28 @@ pub fn generate_client(set: &EndpointSet) -> String {
 /// one [`LiveConnection`](LIVE_TYPES), so a page that watches three streams
 /// holds one socket.
 pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport]) -> String {
+    generate_app_client(set, streams, &[])
+}
+
+/// One upload slot an application declares (TODO F2.11, §2.3), as the client
+/// generator needs it: the method name and the slot's create URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadExport {
+    /// The slot's name — an identifier, and the method's name under
+    /// `api.uploads`.
+    pub name: String,
+    /// `{mount}/_upload/{name}`, the URL an upload is created at.
+    pub path: String,
+}
+
+/// [`generate_client_with_streams`] plus `uploads.{name}(file, options)` per
+/// upload slot the application declares (TODO F2.11): a resumable tus upload
+/// resolving to the stored file's `{ path, url }`.
+pub fn generate_app_client(
+    set: &EndpointSet,
+    streams: &[StreamExport],
+    uploads: &[UploadExport],
+) -> String {
     let mut out = String::new();
 
     out.push_str("// Code generated by sc-api. DO NOT EDIT.\n");
@@ -292,6 +519,11 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     let mut values: Vec<&str> = Vec::new();
     if !set.is_empty() {
         values.extend(["clientError", "requestHeaders", "trackCsrf"]);
+    } else if !uploads.is_empty() {
+        values.push("trackCsrf");
+    }
+    if !uploads.is_empty() {
+        values.push("upload");
     }
     if !streams.is_empty() {
         values.extend(["LiveConnection", "liveUrl"]);
@@ -335,6 +567,9 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     if changes.iter().any(Option::is_some) {
         types.extend(["LiveChange", "LiveChangesStream", "LiveEnvelope"]);
     }
+    if !uploads.is_empty() {
+        types.extend(["UploadOptions", "UploadResult"]);
+    }
     if !tables.is_empty() {
         types.push("Selected");
         if tables
@@ -371,6 +606,9 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     // caller writes a read in belongs to the client they are calling, whichever
     // file it is declared in.
     out.push_str("export type { ClientOptions } from \"./helper\";\n");
+    if !uploads.is_empty() {
+        out.push_str("export type { UploadOptions, UploadResult } from \"./helper\";\n");
+    }
     if !streams.is_empty() {
         out.push_str(
             "export { LiveConnection, LiveRows } from \"./helper\";\n\
@@ -493,6 +731,9 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     out.push_str("export interface ApiClient {\n");
     for ep in &loose {
         let _ = writeln!(out, "  {};", method_signature(ep));
+        if let Some(sig) = url_helper_signature(ep) {
+            let _ = writeln!(out, "  {sig};");
+        }
     }
     for table in &tables {
         let _ = writeln!(out, "  /** The `{}` table. */", table.model.name);
@@ -504,13 +745,26 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
              \x20 live: LiveStreams;\n",
         );
     }
+    if !uploads.is_empty() {
+        out.push_str(
+            "  /** The application's upload slots: resumable uploads of any size the slot allows. */\n  uploads: {\n",
+        );
+        for slot in uploads {
+            let _ = writeln!(
+                out,
+                "    /** Upload a file to the `{}` slot, resuming after a dropped connection. */\n    {}(file: Blob, options?: UploadOptions): Promise<UploadResult>;",
+                slot.name, slot.name
+            );
+        }
+        out.push_str("  };\n");
+    }
     out.push_str("}\n\n");
 
     // An application that enables no API provider has an empty endpoint set, and
     // a client with nothing to call: the factory is still there, so the code
     // importing it still compiles, and it returns nothing because there is
     // nothing to return.
-    if set.is_empty() && streams.is_empty() {
+    if set.is_empty() && streams.is_empty() && uploads.is_empty() {
         out.push_str(
             "export function createClient(_options: ClientOptions = {}): ApiClient {\n             \x20 // This application enables no API provider, so it has no endpoints.\n             \x20 return {};\n             }\n",
         );
@@ -521,7 +775,7 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     out.push_str("  const baseUrl = options.baseUrl ?? \"\";\n");
     // An application that exposes only streams never calls `fetch`, and an
     // unused binding is a `noUnusedLocals` error in somebody else's project.
-    if !set.is_empty() {
+    if !set.is_empty() || !uploads.is_empty() {
         out.push_str("  const doFetch = trackCsrf(options.fetch ?? fetch);\n");
     }
     // One connection for every stream, opened on the first `subscribe`: a page
@@ -593,12 +847,24 @@ pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport])
     out.push_str("  return {\n");
     for ep in &loose {
         emit_method_impl(&mut out, ep);
+        emit_url_helper_impl(&mut out, ep);
     }
     for table in &tables {
         let _ = writeln!(out, "    {},", table.property);
     }
     if !streams.is_empty() {
         out.push_str("    live,\n");
+    }
+    if !uploads.is_empty() {
+        out.push_str("    uploads: {\n");
+        for slot in uploads {
+            let _ = writeln!(
+                out,
+                "      {}: (file: Blob, opts?: UploadOptions) => upload(doFetch, `${{baseUrl}}{}`, file, opts),",
+                slot.name, slot.path
+            );
+        }
+        out.push_str("    },\n");
     }
     out.push_str("  };\n");
     out.push_str("}\n");
@@ -660,6 +926,58 @@ fn emit_method_impl(out: &mut String, ep: &Endpoint) {
         Returns::Json(format!("{pascal}Response"))
     };
     emit_request(out, ep, &Request::new(&result));
+    out.push_str("    },\n");
+}
+
+/// Whether an endpoint gets a `<name>Url(params)` helper beside its method: a
+/// `GET` that answers with bytes or a file (TODO F2.10), whose URL is what an
+/// `<img src>`, a `<video>` or a download link wants.
+fn has_url_helper(ep: &Endpoint) -> bool {
+    ep.binary_output && ep.method == Method::Get
+}
+
+/// The interface signature of an endpoint's URL helper, e.g.
+/// `shareFileUrl(query?: ShareFileQuery): string`.
+fn url_helper_signature(ep: &Endpoint) -> Option<String> {
+    if !has_url_helper(ep) {
+        return None;
+    }
+    let pascal = to_pascal_case(&ep.name);
+    let mut params: Vec<String> = ep
+        .path
+        .params()
+        .map(|(name, ty)| format!("{name}: {}", ty.ts_type()))
+        .collect();
+    if takes_query(ep) {
+        let opt = if query_arg_optional(ep) { "?" } else { "" };
+        params.push(format!("{QUERY_ARG}{opt}: {pascal}Query"));
+    }
+    Some(format!("{}Url({}): string", ep.name, params.join(", ")))
+}
+
+/// Emit the factory's implementation of an endpoint's URL helper: the URL the
+/// method itself would fetch, built the same way.
+fn emit_url_helper_impl(out: &mut String, ep: &Endpoint) {
+    if !has_url_helper(ep) {
+        return;
+    }
+    let mut param_names: Vec<String> = ep.path.params().map(|(n, _)| n.to_owned()).collect();
+    if takes_query(ep) {
+        param_names.push(QUERY_ARG.to_owned());
+    }
+    let _ = writeln!(out, "    {}Url({}) {{", ep.name, param_names.join(", "));
+    let pad = "      ";
+    emit_query_encoding(out, ep, pad);
+    let suffix = if takes_query(ep) {
+        "${qs ? `?${qs}` : \"\"}"
+    } else {
+        ""
+    };
+    let _ = writeln!(
+        out,
+        "{pad}return `${{baseUrl}}{}{suffix}`;",
+        url_template(ep)
+    );
     out.push_str("    },\n");
 }
 

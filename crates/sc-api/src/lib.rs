@@ -87,9 +87,9 @@ pub use provider::{
 };
 pub use resource::{ResourceField, ResourceFile, ResourceModel, ResourceOps};
 pub use rest::custom::{
-    CFG_QUERIES as REST_CFG_QUERIES, CustomParam, CustomQuery, QueryColumn, QueryLanguage,
-    custom_queries, describe_custom_query, set_custom_queries, undeclared_params_note,
-    validate_custom_queries,
+    BodyType, CFG_QUERIES as REST_CFG_QUERIES, CustomParam, CustomQuery, QueryColumn,
+    QueryLanguage, ResponseType, custom_queries, describe_custom_query, set_custom_queries,
+    undeclared_params_note, validate_custom_queries,
 };
 pub use rest::password::{
     CFG_ALLOW_INVITE as REST_CFG_ALLOW_INVITE, CFG_INVITE_MIN_ROLE as REST_CFG_INVITE_MIN_ROLE,
@@ -103,8 +103,8 @@ pub use rest::{
 };
 pub use schema::{StructField, TypeSchema, ValueType};
 pub use typescript::{
-    CLIENT_HELPER_FILE, StreamExport, StreamTopics, client_helper, client_property,
-    generate_client, generate_client_with_streams,
+    CLIENT_HELPER_FILE, StreamExport, StreamTopics, UploadExport, client_helper, client_property,
+    generate_app_client, generate_client, generate_client_with_streams,
 };
 pub use user_rows::api_row;
 

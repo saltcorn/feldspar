@@ -6132,6 +6132,9 @@ fn custom_query_input_schema() -> TypeSchema {
             ])),
         ),
         StructField::new("min_role", TypeSchema::optional(TypeSchema::int())),
+        // `json` when absent (TODO F2.9/F2.10).
+        StructField::new("body_type", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("response_type", TypeSchema::optional(TypeSchema::text())),
         StructField::new(
             "tables",
             TypeSchema::optional(TypeSchema::array(TypeSchema::text())),

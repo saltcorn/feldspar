@@ -159,6 +159,16 @@ impl ConfigCheck<'_> {
     }
 }
 
+/// Where an application serves its store files, for a code body's
+/// `file.url()` (TODO F2.8): a static directory that covers the file, or a
+/// Saltcorn UI application's `/files/serve`. A trait so this crate need not
+/// know what an application is; the server hands one over with a custom
+/// query's run.
+pub trait FileUrls: Send + Sync {
+    /// The URL `path` in `store` is served at, or `None` when no route serves it.
+    fn file_url(&self, store: &str, path: &str) -> Option<String>;
+}
+
 /// Everything one action run has access to.
 ///
 /// Borrowed rather than owned (hence the lifetime): a run is a single `await` on
@@ -254,6 +264,10 @@ pub struct ActionContext<'a> {
     ///
     /// `None` for every trigger. Only the code-body actions read it.
     request: Option<Attrs>,
+    /// Where the application a custom query belongs to serves store files —
+    /// what `file.url()` answers from. `None` for a trigger with no
+    /// application, where every `url()` is `null`.
+    file_urls: Option<Arc<dyn FileUrls>>,
 }
 
 impl<'a> ActionContext<'a> {
@@ -283,6 +297,7 @@ impl<'a> ActionContext<'a> {
             context: Attrs::new(),
             in_run: false,
             request: None,
+            file_urls: None,
         }
     }
 
@@ -421,6 +436,17 @@ impl<'a> ActionContext<'a> {
     /// The request a custom query's body answers, or `None` for a trigger.
     pub fn request(&self) -> Option<&Attrs> {
         self.request.as_ref()
+    }
+
+    /// Supply where the run's application serves store files (`file.url()`).
+    pub fn with_file_urls(mut self, urls: Option<Arc<dyn FileUrls>>) -> ActionContext<'a> {
+        self.file_urls = urls;
+        self
+    }
+
+    /// Where the run's application serves store files, if it has one.
+    pub fn file_urls(&self) -> Option<&Arc<dyn FileUrls>> {
+        self.file_urls.as_ref()
     }
 
     /// Supply the chain this run descends from (`Event::firing`'s result).

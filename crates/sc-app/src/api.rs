@@ -547,6 +547,9 @@ pub fn app_providers_with(
                 if let Some(evaluator) = &evaluator {
                     provider = provider.with_evaluator(evaluator.clone());
                 }
+                // Where this application serves store files, for a code
+                // query's `file.url()` (TODO F2.8).
+                provider = provider.with_file_urls(Arc::new(crate::AppFileUrls::of(app)));
                 if let Some(dispatcher) = dispatcher {
                     provider = provider.with_dispatcher(Arc::clone(dispatcher));
                     // The password links go out through the transport a

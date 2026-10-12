@@ -68,18 +68,24 @@
 //! may be copied *without* crossing it ([`MAX_COPY_BYTES`]). A read past the cap
 //! is **refused rather than truncated**, because a body handed the first 8 MB of
 //! a larger file would go on to compute a wrong answer out of a right-looking
-//! one — the same rule the row cap follows.
+//! one — the same rule the row cap follows. A larger file is read in pieces
+//! (`file.read({ offset, length })`), built with `append` and `concat`, and
+//! hashed with `sha256()`, none of which carries more than one piece across
+//! (TODO F2.8). Both bounds are server settings (`--code-max-file-bytes`,
+//! `--code-max-copy-bytes`), set once at start-up with [`set_file_limits`].
 //!
 //! [`DEFAULT_MAX_FILE_OPS`]: sc_expr::DEFAULT_MAX_FILE_OPS
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
+use sc_action::FileUrls;
 use sc_catalog::{Catalog, load_file_store_by_name};
 use sc_error::{Error, Result};
 use sc_expr::FileHost;
@@ -89,6 +95,8 @@ use sc_files::{
 };
 use serde::Deserialize;
 use serde_json::Value as Json;
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::Authority;
 
@@ -109,6 +117,21 @@ pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// than what a run may. It is the upload route's own cap, since that is the
 /// other place a file of this size is handled in one piece.
 pub const MAX_COPY_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The server's `--code-max-file-bytes`, which every new [`FileStoreHost`]
+/// starts from.
+static FILE_BYTES: AtomicU64 = AtomicU64::new(MAX_FILE_BYTES);
+/// The server's `--code-max-copy-bytes`, likewise.
+static COPY_BYTES: AtomicU64 = AtomicU64::new(MAX_COPY_BYTES);
+
+/// Set the bounds every code body's `fs` starts from: how many bytes one read
+/// or write may carry across the seam, and how many one host-side copy or
+/// `concat` may move. Process-wide, as the code workers are — the server calls
+/// it once, from its configuration.
+pub fn set_file_limits(max_file_bytes: u64, max_copy_bytes: u64) {
+    FILE_BYTES.store(max_file_bytes, Ordering::Relaxed);
+    COPY_BYTES.store(max_copy_bytes, Ordering::Relaxed);
+}
 
 /// The `fs` handle of one code-body run, on the host's side.
 ///
@@ -135,6 +158,8 @@ pub struct FileStoreHost<'a> {
     /// a run that is measured in milliseconds, and a run that raced an admin
     /// editing the store would be as arbitrary either way.
     floors: Mutex<BTreeMap<String, Option<u8>>>,
+    /// Where the run's application serves store files, for `file.url()`.
+    urls: Option<Arc<dyn FileUrls>>,
 }
 
 impl<'a> FileStoreHost<'a> {
@@ -144,9 +169,10 @@ impl<'a> FileStoreHost<'a> {
         FileStoreHost {
             catalog,
             caller: FileCaller::anonymous(),
-            max_bytes: MAX_FILE_BYTES,
-            max_copy_bytes: MAX_COPY_BYTES,
+            max_bytes: FILE_BYTES.load(Ordering::Relaxed),
+            max_copy_bytes: COPY_BYTES.load(Ordering::Relaxed),
             floors: Mutex::new(BTreeMap::new()),
+            urls: None,
         }
     }
 
@@ -170,7 +196,15 @@ impl<'a> FileStoreHost<'a> {
         self
     }
 
-    /// Set the byte bounds, in place of [`MAX_FILE_BYTES`] / [`MAX_COPY_BYTES`].
+    /// Attach where the run's application serves store files, which is what
+    /// `file.url()` answers from. Without it every `url()` is `null`.
+    #[must_use]
+    pub fn with_urls(mut self, urls: Option<Arc<dyn FileUrls>>) -> FileStoreHost<'a> {
+        self.urls = urls;
+        self
+    }
+
+    /// Set the byte bounds, in place of the server's ([`set_file_limits`]).
     #[must_use]
     pub fn with_limits(mut self, max_bytes: u64, max_copy_bytes: u64) -> FileStoreHost<'a> {
         self.max_bytes = max_bytes;
@@ -399,6 +433,18 @@ struct FileRequest {
     /// (`attributes.filename`), when it is not the path's own.
     #[serde(default)]
     filename: Option<String>,
+    /// `read`: where a partial read starts (TODO F2.8).
+    #[serde(default)]
+    offset: Option<u64>,
+    /// `read`: how many bytes a partial read carries, at most.
+    #[serde(default)]
+    length: Option<u64>,
+    /// `concat`: the files to join, in order, as paths in this store.
+    #[serde(default)]
+    parts: Option<Vec<String>>,
+    /// `url`: whether the URL asks for an `attachment`.
+    #[serde(default)]
+    download: bool,
 }
 
 /// What a write records beside its bytes.
@@ -513,6 +559,10 @@ impl FileStoreHost<'_> {
                 Ok(Json::Bool(store.delete(&path).await?))
             }
             "copy" | "rename" => self.relocate(store.as_ref(), req, &path).await,
+            "append" => self.append(store.as_ref(), req, &path).await,
+            "concat" => self.concat(store.as_ref(), req, &path).await,
+            "sha256" => self.sha256(store.as_ref(), req, &path).await,
+            "url" => Ok(self.url(req, &path)),
             "meta" => self.meta(store.as_ref(), req, &path).await,
             "setMeta" => self.set_meta(store.as_ref(), req, &path).await,
             other => Err(Error::invalid(format!(
@@ -538,6 +588,9 @@ impl FileStoreHost<'_> {
                     "{path:?} in file store {name} is a directory — list it rather than reading it"
                 )));
             }
+            Some(stat) if req.offset.is_some() || req.length.is_some() => {
+                return self.read_part(store, req, path, stat.size).await;
+            }
             Some(stat) => self.within_read_cap(stat.size, path, name)?,
         }
         let bytes = store.read(path).await?;
@@ -562,16 +615,187 @@ impl FileStoreHost<'_> {
         }
     }
 
-    /// A `write`: create or replace, making the parent directories on the way.
-    async fn write(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
+    /// A partial `read` — `file.read({ offset, length })`: at most `length`
+    /// bytes from `offset`, streamed from the store so a file of any size can
+    /// be read a piece at a time. Bytes, always: a piece of a UTF-8 file need
+    /// not end on a character.
+    async fn read_part(
+        &self,
+        store: &dyn FileStore,
+        req: &FileRequest,
+        path: &str,
+        size: u64,
+    ) -> Result<Json> {
+        let start = req.offset.unwrap_or(0).min(size);
+        let end = match req.length {
+            Some(length) => start.saturating_add(length).min(size),
+            None => size,
+        };
+        // The cap is on the piece, so asking for more than may cross is a
+        // refusal naming the limit rather than a short read the body would
+        // mistake for the end of the file.
+        self.within_read_cap(end - start, path, store.name())?;
+        let mut reader = store.open_read(path, Some(start..end)).await?;
+        let mut bytes = Vec::with_capacity(usize::try_from(end - start).unwrap_or(0));
+        reader.read_to_end(&mut bytes).await.map_err(|e| {
+            Error::file(format!(
+                "reading {path:?} in file store {}: {e}",
+                store.name()
+            ))
+        })?;
+        Ok(serde_json::json!({ "base64": BASE64.encode(&bytes) }))
+    }
+
+    /// An `append`: add bytes to the end of a file, creating it (and its
+    /// parents) when it is not there. A new file records its owner and options
+    /// as a `write` would; an existing one keeps what it has.
+    async fn append(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
         self.permit_write(store, &req.store, path, &req.authority)
             .await?;
         let name = store.name();
         if path.is_empty() {
             return Err(Error::invalid(format!(
-                "the root of file store {name} is not a file to write to"
+                "the root of file store {name} is not a file to append to"
             )));
         }
+        let bytes = self.payload(req, path, name)?;
+        let existing = store.stat(path).await?;
+        if existing.as_ref().is_some_and(|s| s.is_dir) {
+            return Err(Error::invalid(format!(
+                "{path:?} in file store {name} is a directory, not a file to append to"
+            )));
+        }
+        let plan = match existing {
+            None => Some(self.planned_meta(store, req, path).await?),
+            Some(_) => None,
+        };
+        let mut writer = store.open_append(path).await?;
+        let io = |e: std::io::Error| {
+            Error::file(format!("appending to {path:?} in file store {name}: {e}"))
+        };
+        writer.write_all(&bytes).await.map_err(io)?;
+        writer.shutdown().await.map_err(io)?;
+        drop(writer);
+        if let Some(plan) = plan {
+            self.apply_meta(store, path, plan).await?;
+        }
+        Ok(serde_json::json!({ "bytes": bytes.len() }))
+    }
+
+    /// A `concat`: join `parts` (files of this store), in order, into this
+    /// file, replacing it — host-side, so the result may be as large as one
+    /// copy may move however small a read is.
+    async fn concat(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
+        let name = store.name();
+        let Some(parts) = &req.parts else {
+            return Err(Error::invalid("a `concat` names the files it joins"));
+        };
+        if parts.is_empty() {
+            return Err(Error::invalid("a `concat` joins at least one file"));
+        }
+        if path.is_empty() {
+            return Err(Error::invalid(format!(
+                "the root of file store {name} is not a file to join into"
+            )));
+        }
+        let parts = parts
+            .iter()
+            .map(|p| clean_path(p))
+            .collect::<Result<Vec<String>>>()?;
+        let mut total = 0u64;
+        for part in &parts {
+            self.permit(store, &req.store, part, &req.authority).await?;
+            match store.stat(part).await? {
+                None => {
+                    return Err(Error::not_found(format!(
+                        "{part:?} does not exist in file store {name}, so it cannot be joined"
+                    )));
+                }
+                Some(FileStat { is_dir: true, .. }) => {
+                    return Err(Error::invalid(format!(
+                        "{part:?} in file store {name} is a directory, not a part to join"
+                    )));
+                }
+                Some(stat) => total = total.saturating_add(stat.size),
+            }
+        }
+        if total > self.max_copy_bytes {
+            return Err(Error::invalid(format!(
+                "joining into {path:?} in file store {name} would make {} MB, and one host-side \
+                 operation may move {} MB (--code-max-copy-bytes)",
+                total / (1024 * 1024),
+                self.max_copy_bytes / (1024 * 1024),
+            )));
+        }
+        self.permit_write(store, &req.store, path, &req.authority)
+            .await?;
+        if parts.iter().any(|p| p == path) {
+            return Err(Error::invalid(format!(
+                "{path:?} cannot be one of the parts joined into it"
+            )));
+        }
+        let plan = self.planned_meta(store, req, path).await?;
+        let size = store.concat(&parts, path).await?;
+        self.apply_meta(store, path, plan).await?;
+        Ok(serde_json::json!({ "bytes": size }))
+    }
+
+    /// A `sha256`: the file's SHA-256, as lower-case hex, taken over the
+    /// streamed file — no size limit, and nothing in the isolate.
+    async fn sha256(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
+        self.permit(store, &req.store, path, &req.authority).await?;
+        let name = store.name();
+        match store.stat(path).await? {
+            None => {
+                return Err(Error::not_found(format!(
+                    "{path:?} does not exist in file store {name}"
+                )));
+            }
+            Some(FileStat { is_dir: true, .. }) => {
+                return Err(Error::invalid(format!(
+                    "{path:?} in file store {name} is a directory, and only a file has a digest"
+                )));
+            }
+            Some(_) => {}
+        }
+        let mut reader = store.open_read(path, None).await?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .await
+                .map_err(|e| Error::file(format!("reading {path:?} in file store {name}: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let hex: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        Ok(serde_json::json!({ "hex": hex }))
+    }
+
+    /// A `url`: where the run's application serves this file, or `null` when
+    /// no route does. It reads nothing from the store — whether the file may
+    /// be read is decided when the URL is fetched.
+    fn url(&self, req: &FileRequest, path: &str) -> Json {
+        let url = self
+            .urls
+            .as_ref()
+            .and_then(|urls| urls.file_url(&req.store, path));
+        match url {
+            Some(url) if req.download => Json::String(format!("{url}?download=1")),
+            Some(url) => Json::String(url),
+            None => Json::Null,
+        }
+    }
+
+    /// The bytes a `write` or an `append` carries, within what may cross.
+    fn payload(&self, req: &FileRequest, path: &str, name: &str) -> Result<Bytes> {
         let bytes = match (&req.text, &req.base64) {
             (Some(text), None) => Bytes::from(text.clone().into_bytes()),
             (None, Some(encoded)) => Bytes::from(BASE64.decode(encoded).map_err(|e| {
@@ -585,11 +809,26 @@ impl FileStoreHost<'_> {
         };
         if bytes.len() as u64 > self.max_bytes {
             return Err(Error::invalid(format!(
-                "writing {path:?} to file store {name} would carry {} MB, and one write may carry {} MB",
+                "writing {path:?} to file store {name} would carry {} MB, and one write may carry \
+                 {} MB (--code-max-file-bytes) — write a large file in pieces with append()",
                 bytes.len() / (1024 * 1024),
                 self.max_bytes / (1024 * 1024),
             )));
         }
+        Ok(bytes)
+    }
+
+    /// A `write`: create or replace, making the parent directories on the way.
+    async fn write(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
+        self.permit_write(store, &req.store, path, &req.authority)
+            .await?;
+        let name = store.name();
+        if path.is_empty() {
+            return Err(Error::invalid(format!(
+                "the root of file store {name} is not a file to write to"
+            )));
+        }
+        let bytes = self.payload(req, path, name)?;
         // The existence check `create()` is: refused here rather than left to the
         // store, so the message says which file and in which store.
         if !req.overwrite {
@@ -793,7 +1032,8 @@ impl FileStoreHost<'_> {
     fn within_read_cap(&self, size: u64, path: &str, store: &str) -> Result<()> {
         if size > self.max_bytes {
             return Err(Error::invalid(format!(
-                "{path:?} in file store {store} is {} MB, and a code body may read {} MB in one go",
+                "{path:?} in file store {store} is {} MB, and a code body may read {} MB in one go \
+                 (--code-max-file-bytes) — read it in pieces with read({{ offset, length }})",
                 size / (1024 * 1024),
                 self.max_bytes / (1024 * 1024),
             )));

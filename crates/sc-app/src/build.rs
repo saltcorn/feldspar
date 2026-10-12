@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
 
 use bytes::Bytes;
-use sc_api::{EndpointSet, generate_client_with_streams};
+use sc_api::{EndpointSet, generate_app_client};
 use sc_catalog::{Attrs, Catalog, FileStoreId};
 use sc_error::{Context, Error, Result};
 use sc_types::FormField;
@@ -571,7 +571,12 @@ pub async fn emit_client(
     // own code, and an app's client is emitted at build time, so keeping them
     // in step costs nothing.
     let streams = crate::app_streams(app, cat).await?;
-    let client = generate_client_with_streams(endpoints, &crate::stream_exports(app, &streams));
+    // …and so do its upload slots (TODO F2.11): `api.uploads.<slot>`.
+    let client = generate_app_client(
+        endpoints,
+        &crate::stream_exports(app, &streams),
+        &crate::upload_exports(app),
+    );
     store.write(path, Bytes::from(client.into_bytes())).await?;
     let helper = sibling(path, sc_api::CLIENT_HELPER_FILE);
     store

@@ -816,17 +816,7 @@ async fn prepare_temp(store: &dyn FileStore, temp_path: &str) -> sc_error::Resul
 /// directory that covers it, or a Saltcorn UI application's `/files/serve`.
 /// `None` when no route serves it.
 pub fn file_url(app: &MountedApp, store: &str, path: &str) -> Option<String> {
-    let covered = app
-        .app
-        .static_dirs
-        .iter()
-        .filter(|d| d.store.0 == store)
-        .filter_map(|d| d.url_for(path))
-        .min_by_key(String::len);
-    covered.or_else(|| {
-        (app.app.framework.name == sc_viewpattern::SALTCORN_UI_FRAMEWORK)
-            .then(|| format!("/files/serve/{store}/{path}"))
-    })
+    app.app.file_url(store, path)
 }
 
 fn offset_response(offset: u64) -> Response {

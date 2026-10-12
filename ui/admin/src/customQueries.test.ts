@@ -104,6 +104,30 @@ describe("writing the queries back", () => {
     expect(out).not.toHaveProperty("columns");
   });
 
+  it("keeps a JavaScript query's body and response types, and drops ones that no longer apply", () => {
+    // TODO F2.9/F2.10: a `bytes` body only means something to a JavaScript
+    // query with a body, a `bytes` response to any JavaScript query.
+    const [read] = queryRowsFromConfig({
+      queries: [{ ...stored, language: "javascript", method: "POST", body_type: "bytes", response_type: "bytes" }],
+    });
+    expect(read.bodyType).toBe("bytes");
+    expect(read.responseType).toBe("bytes");
+    const [out] = queryRowsToConfig([read]);
+    expect(out.body_type).toBe("bytes");
+    expect(out.response_type).toBe("bytes");
+
+    // A GET has no body to be bytes, and SQL answers JSON rows.
+    const [asGet] = queryRowsToConfig([{ ...read, method: "GET" }]);
+    expect(asGet).not.toHaveProperty("body_type");
+    expect(asGet.response_type).toBe("bytes");
+    const [asSql] = queryRowsToConfig([{ ...read, language: "sql" }]);
+    expect(asSql).not.toHaveProperty("body_type");
+    expect(asSql).not.toHaveProperty("response_type");
+    // A stored query that never said is JSON both ways.
+    expect(blankQueryRow().bodyType).toBe("json");
+    expect(queryRowsFromConfig({ queries: [stored] })[0].responseType).toBe("json");
+  });
+
   it("trims the name and path but leaves the code exactly as written", () => {
     const row = { ...blankQueryRow(), name: " r ", path: " /r ", code: "  select 1  " };
     const [out] = queryRowsToConfig([row]);

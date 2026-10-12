@@ -273,6 +273,14 @@ pub struct ServerConfig {
     /// upload's ceiling, and the cap on every application upload slot's own
     /// `max_bytes` (§2.3).
     pub max_upload_bytes: u64,
+    /// The most bytes one code-body file read or write may carry into or out
+    /// of the isolate (`--code-max-file-bytes`, default 8 MiB). A larger file
+    /// is read in pieces with `file.read({ offset, length })` (TODO F2, §2.5).
+    pub code_max_file_bytes: u64,
+    /// The most bytes one host-side file operation of a code body may move
+    /// without entering the isolate — a copy, a `concat` (`--code-max-copy-bytes`,
+    /// default 256 MiB).
+    pub code_max_copy_bytes: u64,
 }
 
 /// The request body limit when `--max-request-body` is not given: 2 MiB, the
@@ -327,6 +335,8 @@ impl Default for ServerConfig {
             preview_idle: std::time::Duration::from_secs(DEFAULT_PREVIEW_IDLE_MINUTES * 60),
             max_request_body: DEFAULT_MAX_REQUEST_BODY,
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
+            code_max_file_bytes: sc_api::code_host::MAX_FILE_BYTES,
+            code_max_copy_bytes: sc_api::code_host::MAX_COPY_BYTES,
         }
     }
 }
@@ -347,7 +357,8 @@ impl ServerConfig {
     /// `--stan-max-draws-response <n>`, `--stan-summary-max-elements <n>`,
     /// `--browser <path>`, `--no-browser-sandbox`, `--browser-contexts <n>` and
     /// `--preview-idle-minutes <n>`, `--max-request-body <bytes>` and
-    /// `--max-upload-bytes <bytes>` (both take a `K`, `M` or `G` suffix).
+    /// `--max-upload-bytes <bytes>`, `--code-max-file-bytes <bytes>` and
+    /// `--code-max-copy-bytes <bytes>` (all take a `K`, `M` or `G` suffix).
     /// Unknown flags are an
     /// [`Error::Config`], so a typo fails loudly rather than being ignored.
     pub fn from_args<I, S>(args: I) -> Result<ServerConfig>
@@ -541,6 +552,14 @@ impl ServerConfig {
                 "--max-upload-bytes" => {
                     let raw = next_value(&mut it, "--max-upload-bytes")?;
                     cfg.max_upload_bytes = byte_size(&raw, "--max-upload-bytes")?;
+                }
+                "--code-max-file-bytes" => {
+                    let raw = next_value(&mut it, "--code-max-file-bytes")?;
+                    cfg.code_max_file_bytes = byte_size(&raw, "--code-max-file-bytes")?;
+                }
+                "--code-max-copy-bytes" => {
+                    let raw = next_value(&mut it, "--code-max-copy-bytes")?;
+                    cfg.code_max_copy_bytes = byte_size(&raw, "--code-max-copy-bytes")?;
                 }
                 "--base-domain" => {
                     cfg.base_domain = Some(next_value(&mut it, "--base-domain")?);
@@ -857,6 +876,21 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// TODO F2.8: the code body's file bounds, defaulting to what they were
+    /// before they were settings.
+    #[test]
+    fn parses_the_code_file_limits() {
+        let cfg = ServerConfig::default();
+        assert_eq!(cfg.code_max_file_bytes, 8 * 1024 * 1024);
+        assert_eq!(cfg.code_max_copy_bytes, 256 * 1024 * 1024);
+        let cfg =
+            ServerConfig::from_args(["--code-max-file-bytes", "1M", "--code-max-copy-bytes", "1G"])
+                .expect("parse");
+        assert_eq!(cfg.code_max_file_bytes, 1024 * 1024);
+        assert_eq!(cfg.code_max_copy_bytes, 1024 * 1024 * 1024);
+        assert!(ServerConfig::from_args(["--code-max-file-bytes", "0"]).is_err());
     }
 
     /// The Stan flags of TODO §20: unset, each is the engine's own default and

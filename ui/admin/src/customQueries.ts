@@ -78,6 +78,25 @@ function languageFrom(value: unknown): QueryLanguage {
   return QUERY_LANGUAGES.includes(value as QueryLanguage) ? (value as QueryLanguage) : "sql";
 }
 
+/** What a JavaScript query's `body` is, and what it answers with (TODO
+ * F2.9/F2.10): JSON, or bytes — a raw body in, a `Blob` (bytes or a file) out. */
+export type PayloadType = "json" | "bytes";
+
+function payloadFrom(value: unknown): PayloadType {
+  return value === "bytes" ? "bytes" : "json";
+}
+
+/** Whether the body-type choice applies: a JavaScript query on a method that
+ * has a body. */
+export function bodyTypeApplies(row: Pick<QueryRow, "language" | "method">): boolean {
+  return row.language === "javascript" && !["GET", "DELETE"].includes(row.method);
+}
+
+/** Whether the response-type choice applies: a JavaScript query. */
+export function responseTypeApplies(row: Pick<QueryRow, "language">): boolean {
+  return row.language === "javascript";
+}
+
 /** One custom query, as the form edits it. */
 export type QueryRow = {
   name: string;
@@ -89,6 +108,10 @@ export type QueryRow = {
   code: string;
   minRole: number;
   params: QueryParamRow[];
+  /** `bytes`: `body` is a Uint8Array of the raw request body. */
+  bodyType: PayloadType;
+  /** `bytes`: the client method resolves to a `Blob`. */
+  responseType: PayloadType;
   /** The columns last described — from the stored query when the form opened,
    * or from the check button. Shown as the preview of what the generated client
    * method will return. */
@@ -147,6 +170,8 @@ export function blankQueryRow(): QueryRow {
     code: "",
     minRole: ADMIN_ROLE,
     params: [],
+    bodyType: "json",
+    responseType: "json",
     columns: [],
   };
 }
@@ -186,6 +211,8 @@ function queryRowFrom(stored: unknown): QueryRow {
     language: languageFrom(q.language),
     code: text(q.code),
     minRole: typeof q.min_role === "number" ? q.min_role : ADMIN_ROLE,
+    bodyType: payloadFrom(q.body_type),
+    responseType: payloadFrom(q.response_type),
     params: params.map((p) => {
       const o = (p ?? {}) as Record<string, unknown>;
       return {
@@ -217,6 +244,9 @@ export type StoredQuery = {
   code: string;
   min_role: number;
   params: { name: string; type: string; required: boolean }[];
+  /** Sent only when not `json`, as the server stores it. */
+  body_type?: PayloadType;
+  response_type?: PayloadType;
 };
 
 /** The rows as the `queries` value of an API's config object.
@@ -226,20 +256,27 @@ export type StoredQuery = {
  * stale copy would be a second source of truth travelling in the same request as
  * the first. */
 export function queryRowsToConfig(rows: QueryRow[]): StoredQuery[] {
-  return rows.map((row) => ({
-    name: row.name.trim(),
-    description: row.description.trim(),
-    method: row.method,
-    path: row.path.trim(),
-    language: row.language,
-    code: row.code,
-    min_role: row.minRole,
-    params: row.params.map((p) => ({
-      name: p.name.trim(),
-      type: p.type,
-      required: p.required,
-    })),
-  }));
+  return rows.map((row) => {
+    const stored: StoredQuery = {
+      name: row.name.trim(),
+      description: row.description.trim(),
+      method: row.method,
+      path: row.path.trim(),
+      language: row.language,
+      code: row.code,
+      min_role: row.minRole,
+      params: row.params.map((p) => ({
+        name: p.name.trim(),
+        type: p.type,
+        required: p.required,
+      })),
+    };
+    // A choice that no longer applies (the language or method changed) is
+    // dropped rather than sent for the server to refuse.
+    if (row.bodyType === "bytes" && bodyTypeApplies(row)) stored.body_type = "bytes";
+    if (row.responseType === "bytes" && responseTypeApplies(row)) stored.response_type = "bytes";
+    return stored;
+  });
 }
 
 /** The body `describeCustomQuery` takes: the row, plus the tables the
