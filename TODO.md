@@ -408,16 +408,16 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
 ## F2 — Files: owners, streaming and resumable uploads
 
 ### Phase 1: owners and responses
-- [ ] **F2.1** (1.3) `check_access` takes the caller (role + user id) and applies the owner rule
+- [x] **F2.1** (1.3) `check_access` takes the caller (role + user id) and applies the owner rule
   (§2.1). Every caller of `check_access`, `filter_visible` and `visible_entries` passes the caller.
   Listings show a user's own files inside a folder they could not otherwise read. Tests:
   - a min_role 1 file owned by user A is served to A and is a 404 to B and to anonymous, on
     static dirs, `/files/serve` and the REST field route;
   - B cannot overwrite or delete A's file through `asUser`.
-- [ ] **F2.2** (1.3) Record the owner on every write path in the table in §2.1, and add the
+- [x] **F2.2** (1.3) Record the owner on every write path in the table in §2.1, and add the
   `write(bytes, { owner, min_role, filename })` options to the code `fs`. `setMeta` rules as in
   §2.1. Tests: one per write path, and that a user cannot take ownership through `setMeta`.
-- [ ] **F2.3** (1.3) The shared file response builder (§2.2) with streaming, Range,
+- [x] **F2.3** (1.3) The shared file response builder (§2.2) with streaming, Range,
   Content-Disposition (`filename*`) and the cheap ETag, used by static dirs, the REST field
   route, `/files/serve` and admin download. Tests:
   - `Range: bytes=0-99` gives 206 with 100 bytes;
@@ -425,7 +425,7 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
   - a `naïve 名前.png` filename survives;
   - a 50 MB file is served without the server's RSS growing by 50 MB (an `open_read` test double
     that counts).
-- [ ] **F2.4** `FileStore::open_read`, `open_append` and `concat` (§2.4), in the local and git
+- [x] **F2.4** `FileStore::open_read`, `open_append` and `concat` (§2.4), in the local and git
   drivers, with default fallbacks. Unit tests per driver, including that `concat` with a
   missing part fails without leaving a partial target.
 

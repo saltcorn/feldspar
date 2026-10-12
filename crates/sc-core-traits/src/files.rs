@@ -32,10 +32,10 @@
 
 use std::sync::Arc;
 
-use sc_agent::{TraitCheck, TraitContext};
+use sc_agent::{RunCaller, TraitCheck, TraitContext};
 use sc_catalog::{Catalog, load_file_store_by_name};
 use sc_error::{Error, Result};
-use sc_files::{FileStore, check_access};
+use sc_files::{FileCaller, FileStore, check_access, check_write};
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Map, Value as Json};
 
@@ -230,8 +230,27 @@ pub async fn open_at(
 ) -> Result<(Arc<dyn FileStore>, String)> {
     let (store, floor) = scope.connect(ctx.catalog).await?;
     let path = scope.resolve(rel)?;
-    check_access(store.as_ref(), floor, &path, ctx.caller.role).await?;
+    check_access(store.as_ref(), floor, &path, &file_caller(ctx.caller)).await?;
     Ok((store, path))
+}
+
+/// [`open_at`] for a tool that **writes** the path: checked by the write rule
+/// (§2.1), so an agent run as a user cannot overwrite a file somebody else owns.
+pub async fn open_to_write(
+    scope: &FileScope,
+    ctx: &TraitContext<'_>,
+    rel: &str,
+) -> Result<(Arc<dyn FileStore>, String)> {
+    let (store, floor) = scope.connect(ctx.catalog).await?;
+    let path = scope.resolve(rel)?;
+    check_write(store.as_ref(), floor, &path, &file_caller(ctx.caller)).await?;
+    Ok((store, path))
+}
+
+/// A run's caller as a file rule sees them: the role every check runs at, and
+/// the user id the owner rule compares with (none for a system run).
+pub fn file_caller(caller: &RunCaller) -> FileCaller {
+    FileCaller::new(caller.role, caller.user.as_ref().map(|u| u.id.to_string()))
 }
 
 /// The save-and-load check the coding trait makes: the store is one this

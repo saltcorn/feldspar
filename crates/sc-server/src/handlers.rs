@@ -61,8 +61,8 @@ use sc_email::Mailer;
 use sc_error::{Context as _, Error, Result};
 use sc_files::{
     Entry, FileMeta, FileStore, FileStoreDef, FileStoreDefId, VisibleEntry, backend_config_spec,
-    backend_operations, check_access, display_config, effective_min_role, registered_backends,
-    run_backend_operation, visible_entries,
+    backend_operations, check_access, check_write, display_config, effective_min_role,
+    list_visible, registered_backends, run_backend_operation,
 };
 use sc_i18n::Locale;
 use sc_i18n::t;
@@ -2334,21 +2334,14 @@ pub fn admin_handlers_with(
                 let obj = require_object(&ctx.body)?;
                 // `dir` is optional-ish: an absent/empty value lists the root.
                 let dir = obj.get("dir").and_then(Json::as_str).unwrap_or("");
-                let role = caller_role(&ctx);
-                check_access(store.as_ref(), floor, dir, role).await?;
-
-                // The directory's own floor covers every child, so it is
-                // computed once here rather than re-walking the ancestors for
-                // each entry.
-                let dir_floor = effective_min_role(store.as_ref(), floor, dir).await?;
-                let entries = store.list(dir).await?;
-                // Filtered, not refused: a readable directory may hold entries
-                // the caller cannot open, and listing their names leaks exactly
-                // what the rule was set to hide. `visible_entries` keeps the
-                // metadata the filter read, which is what the owner and access
-                // columns are drawn from — the alternative is a second
-                // `get_meta` per row, or a request per row from the browser.
-                let visible = visible_entries(store.as_ref(), dir_floor, entries, role).await?;
+                // Owner-aware (§2.1): a caller who may not read `dir` still sees
+                // the entries they own in it, and one who owns nothing there is
+                // refused as before. `list_visible` keeps the metadata the filter
+                // read, which is what the owner and access columns are drawn
+                // from — the alternative is a second `get_meta` per row, or a
+                // request per row from the browser.
+                let caller = file_caller(&ctx);
+                let visible = list_visible(store.as_ref(), floor, dir, &caller).await?;
                 let out = listing_json(&catalog, &visible).await?;
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
@@ -2364,18 +2357,18 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let dir = obj.get("dir").and_then(Json::as_str).unwrap_or("");
-                let role = caller_role(&ctx);
+                let caller = file_caller(&ctx);
                 // The directory a search starts in is reached like any other, so
                 // one rooted where the caller may not go is refused rather than
                 // quietly answering nothing.
-                check_access(store.as_ref(), floor, dir, role).await?;
+                check_access(store.as_ref(), floor, dir, &caller).await?;
                 let query = non_empty_str_field(obj, "query")?.to_owned();
                 let max_results = match obj.get("max_results").and_then(Json::as_i64) {
                     Some(n) if n >= 1 => n as usize,
                     _ => sc_files::DEFAULT_MAX_FOUND,
                 };
                 let found =
-                    sc_files::find_files(store.as_ref(), floor, role, dir, &query, max_results)
+                    sc_files::find_files(store.as_ref(), floor, &caller, dir, &query, max_results)
                         .await?;
                 // The hits arrive as bare entries; the columns beside the name
                 // are the same ones a listing shows, read the same way.
@@ -2396,8 +2389,8 @@ pub fn admin_handlers_with(
             async move {
                 let name = ctx.path_param("store")?.to_owned();
                 let (store, floor) = resolve_store(&catalog, &name).await?;
-                let role = caller_role(&ctx);
-                check_access(store.as_ref(), floor, "", role).await?;
+                let caller = file_caller(&ctx);
+                check_access(store.as_ref(), floor, "", &caller).await?;
                 let extensions: Vec<String> = ctx
                     .query_get("extensions")
                     .unwrap_or("")
@@ -2411,7 +2404,7 @@ pub fn admin_handlers_with(
                     ));
                 }
                 let found =
-                    sc_files::find_by_extension(store.as_ref(), floor, role, "", &extensions)
+                    sc_files::find_by_extension(store.as_ref(), floor, &caller, "", &extensions)
                         .await?;
                 Ok(HandlerResponse::ok(json!({
                     "paths": found.entries.into_iter().map(|e| e.path).collect::<Vec<_>>(),
@@ -2430,11 +2423,11 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let dir = obj.get("dir").and_then(Json::as_str).unwrap_or("");
-                let role = caller_role(&ctx);
+                let caller = file_caller(&ctx);
                 // The directory the search starts in is reached like any other,
                 // so a search rooted somewhere the caller may not go is refused
                 // rather than quietly returning nothing.
-                check_access(store.as_ref(), floor, dir, role).await?;
+                check_access(store.as_ref(), floor, dir, &caller).await?;
 
                 let glob = obj
                     .get("glob")
@@ -2460,7 +2453,7 @@ pub fn admin_handlers_with(
                 // The caller's own role, so the walk skips what a listing would
                 // have hidden: a search must not report a line out of a file the
                 // caller could not open.
-                let found = sc_files::search_store(store.as_ref(), floor, role, &query).await?;
+                let found = sc_files::search_store(store.as_ref(), floor, &caller, &query).await?;
                 let matches: Vec<Json> = found
                     .hits
                     .iter()
@@ -2492,7 +2485,7 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?;
-                check_access(store.as_ref(), floor, path, caller_role(&ctx)).await?;
+                check_access(store.as_ref(), floor, path, &file_caller(&ctx)).await?;
                 let bytes = store.read(path).await?;
                 // Always provide base64 (for binary download); add a decoded
                 // `text` when the bytes are valid UTF-8 (for the text editor).
@@ -2519,7 +2512,7 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, caller_role(&ctx)).await?;
+                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
                 let data = file_body_bytes(obj)?;
                 let size = data.len();
                 store.write(&path, data).await?;
@@ -2538,7 +2531,7 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, caller_role(&ctx)).await?;
+                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
                 store.mkdir(&path).await?;
                 record_owner(store.as_ref(), &path, ctx.user.as_ref()).await;
                 Ok(HandlerResponse::ok(directory_entry_json(&path)).with_status(201))
@@ -2555,7 +2548,7 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, caller_role(&ctx)).await?;
+                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
                 let deleted = store.delete(&path).await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
@@ -2575,9 +2568,9 @@ pub fn admin_handlers_with(
                 // Both ends are checked: reading from a restricted place and
                 // writing into one are each things the rule governs, and a move
                 // does both.
-                let role = caller_role(&ctx);
-                check_access(store.as_ref(), floor, &from, role).await?;
-                check_access(store.as_ref(), floor, &to, role).await?;
+                let caller = file_caller(&ctx);
+                check_write(store.as_ref(), floor, &from, &caller).await?;
+                check_write(store.as_ref(), floor, &to, &caller).await?;
                 store.rename(&from, &to).await?;
                 Ok(HandlerResponse::ok(entry_json(&renamed_entry(&to))))
             }
@@ -2596,7 +2589,7 @@ pub fn admin_handlers_with(
                 let name = ctx.path_param("store")?.to_owned();
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let path = ctx.path_param("path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, caller_role(&ctx)).await?;
+                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
                 let data = ctx.raw_body()?.clone();
                 let size = data.len();
                 store.write(&path, data).await?;
@@ -2616,17 +2609,12 @@ pub fn admin_handlers_with(
                 let name = ctx.path_param("store")?.to_owned();
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let path = ctx.path_param("path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, caller_role(&ctx)).await?;
-                let bytes = store.read(&path).await?;
-                let file_name = path.rsplit('/').next().unwrap_or(&path);
-                Ok(HandlerResponse::download(crate::handler::Download {
-                    bytes,
-                    content_type: sc_files::mime_for_path(&path)
-                        .unwrap_or_else(|| "application/octet-stream".to_owned()),
-                    // Quoted in the header: a quote or backslash in the name
-                    // would end it early.
-                    filename: file_name.replace(['"', '\\'], "_"),
-                }))
+                check_access(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
+                // Streamed by the shared builder, with Range, and saved under
+                // the file's own name (`attributes.filename`, else the basename).
+                Ok(HandlerResponse::serve_file(
+                    sc_files::ServeFile::new(store, path).download(true),
+                ))
             }
         }
     });
@@ -2640,7 +2628,7 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, caller_role(&ctx)).await?;
+                check_access(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
                 let meta = store.get_meta(&path).await?;
                 let effective = effective_min_role(store.as_ref(), floor, &path).await?;
                 Ok(HandlerResponse::ok(file_meta_json(&path, &meta, effective)))
@@ -2657,7 +2645,7 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, caller_role(&ctx)).await?;
+                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
 
                 let min_role = optional_role(obj, "min_role")?;
                 let attributes = match obj.get("attributes") {
@@ -7988,6 +7976,15 @@ fn caller_role(ctx: &crate::handler::HandlerCtx) -> u8 {
         .map_or(sc_files::ROLE_PUBLIC, |user| user.role)
 }
 
+/// The caller as a file rule sees them: their role, and the id the owner rule
+/// (§2.1) compares with. Admin in practice, for the reason [`caller_role`] gives.
+fn file_caller(ctx: &crate::handler::HandlerCtx) -> sc_files::FileCaller {
+    sc_files::FileCaller::new(
+        caller_role(ctx),
+        ctx.user.as_ref().map(|u| u.id.to_string()),
+    )
+}
+
 /// A file's metadata as the API returns it (matching `file_meta_schema`).
 ///
 /// Reports both the rule set on this entry and the `effective_min_role` that
@@ -10844,34 +10841,12 @@ async fn with_meta(
     Ok(out)
 }
 
-/// Record who created a path, if nothing has been recorded for it yet.
-///
-/// Called after every write that can create an entry. Two things it deliberately
-/// does not do:
-///
-/// - **It does not overwrite an existing owner.** The owner is the creator, so
-///   saving somebody else's file does not take it over.
-/// - **It does not fail the write.** The bytes are already there, and a store
-///   whose backend cannot keep metadata (no xattr support on the filesystem) must
-///   still be usable — a 500 after a successful upload would be a lie about what
-///   happened.
+/// Record the signed-in admin as the creator of `path`, unless an owner is
+/// already recorded ([`sc_files::record_owner`]).
 async fn record_owner(store: &dyn FileStore, path: &str, user: Option<&sc_auth::User>) {
-    let Some(user) = user else { return };
-    let Ok(meta) = store.get_meta(path).await else {
-        return;
-    };
-    if meta.owner.is_some() {
-        return;
+    if let Some(user) = user {
+        sc_files::record_owner(store, path, &user.id.to_string()).await;
     }
-    let _ = store
-        .set_meta(
-            path,
-            &FileMeta {
-                owner: Some(user.id.to_string()),
-                ..meta
-            },
-        )
-        .await;
 }
 
 /// The entry JSON returned after a successful `writeFile`: a file (never a

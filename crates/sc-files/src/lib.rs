@@ -23,11 +23,14 @@ mod local;
 mod paths;
 mod reference;
 mod search;
+mod serve;
 mod store;
+mod stream;
 pub mod xattr;
 
 pub use access::{
-    ROLE_PUBLIC, VisibleEntry, check_access, effective_min_role, filter_visible, visible_entries,
+    FileCaller, ROLE_ADMIN, ROLE_PUBLIC, VisibleEntry, check_access, check_write,
+    effective_min_role, filter_visible, list_visible, record_owner, visible_entries,
 };
 pub use backend::{
     OperationOutcome, Relocation, backend_config_spec, backend_operations, connect_from_def,
@@ -54,7 +57,9 @@ pub use search::{
     MAX_FILES_SCANNED, MAX_LINE_CHARS, SearchHit, SearchOutcome, SearchQuery, find_by_extension,
     find_files, glob_matches, search_store, walk_store,
 };
-pub use store::{Entry, FileMeta, FileStat, FileStore};
+pub use serve::ServeFile;
+pub use store::{Entry, FILENAME_ATTRIBUTE, FileMeta, FileStat, FileStore};
+pub use stream::{BoxAsyncRead, BoxAsyncWrite, check_range, read_to_bytes};
 
 #[cfg(test)]
 mod tests {
@@ -431,18 +436,18 @@ mod tests {
         );
         // An admin (role 1) clears it; a public caller (100) does not.
         assert!(
-            check_access(&store, None, "private/secret.txt", 1)
+            check_access(&store, None, "private/secret.txt", &FileCaller::role(1))
                 .await
                 .is_ok()
         );
         assert!(
-            check_access(&store, None, "private/secret.txt", 100)
+            check_access(&store, None, "private/secret.txt", &FileCaller::role(100))
                 .await
                 .is_err()
         );
         // An unrelated path is unaffected.
         assert!(
-            check_access(&store, None, "public/open.txt", ROLE_PUBLIC)
+            check_access(&store, None, "public/open.txt", &FileCaller::anonymous())
                 .await
                 .is_ok()
         );
@@ -532,15 +537,276 @@ mod tests {
 
         // A listing must be filtered rather than merely refused: showing a name
         // the caller cannot open leaks exactly what the rule was set to hide.
-        let visible = filter_visible(&store, None, all.clone(), ROLE_PUBLIC)
+        let visible = filter_visible(&store, None, all.clone(), &FileCaller::anonymous())
             .await
             .unwrap();
         let names: Vec<&str> = visible.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["open.txt"]);
 
         // An admin sees everything.
-        let admin = filter_visible(&store, None, all, 1).await.unwrap();
+        let admin = filter_visible(&store, None, all, &FileCaller::role(1))
+            .await
+            .unwrap();
         assert_eq!(admin.len(), 2);
+    }
+
+    /// The owner rule (TODO F2.1, §2.1): an admin-only file is readable by its
+    /// owner, writable only by its owner, and listed to its owner inside a folder
+    /// they could not otherwise read.
+    #[tokio::test]
+    async fn the_owner_may_read_and_write_what_nobody_else_at_their_role_may() {
+        let (_base, store) = temp_store();
+        store.mkdir("drops").await.unwrap();
+        store
+            .set_meta(
+                "drops",
+                &FileMeta {
+                    min_role: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        for (path, owner) in [("drops/a.png", "user-a"), ("drops/b.png", "user-b")] {
+            store.write(path, Bytes::from_static(b"x")).await.unwrap();
+            record_owner(&store, path, owner).await;
+        }
+        let a = FileCaller::new(80, Some("user-a".into()));
+        let b = FileCaller::new(80, Some("user-b".into()));
+        let anonymous = FileCaller::anonymous();
+
+        assert!(check_access(&store, None, "drops/a.png", &a).await.is_ok());
+        assert!(check_access(&store, None, "drops/a.png", &b).await.is_err());
+        assert!(
+            check_access(&store, None, "drops/a.png", &anonymous)
+                .await
+                .is_err()
+        );
+        // The folder itself is not A's, so reading it is still refused.
+        assert!(check_access(&store, None, "drops", &a).await.is_err());
+
+        // Writing: the owner, and admin authority; not B, though B's role is
+        // the same as A's.
+        assert!(check_write(&store, None, "drops/a.png", &a).await.is_ok());
+        assert!(check_write(&store, None, "drops/a.png", &b).await.is_err());
+        assert!(
+            check_write(&store, None, "drops/a.png", &FileCaller::role(1))
+                .await
+                .is_ok()
+        );
+        // An owned file is the owner's even where the floor is public.
+        store
+            .write("open.txt", Bytes::from_static(b"o"))
+            .await
+            .unwrap();
+        record_owner(&store, "open.txt", "user-a").await;
+        assert!(check_access(&store, None, "open.txt", &b).await.is_ok());
+        assert!(check_write(&store, None, "open.txt", &b).await.is_err());
+        // An unowned file keeps the path rule for writes.
+        store
+            .write("shared.txt", Bytes::from_static(b"s"))
+            .await
+            .unwrap();
+        assert!(check_write(&store, None, "shared.txt", &b).await.is_ok());
+        // A folder holding somebody else's file is theirs to keep: deleting it
+        // would delete the file.
+        store
+            .write("mixed/mine.txt", Bytes::from_static(b"m"))
+            .await
+            .unwrap();
+        store
+            .write("mixed/theirs.txt", Bytes::from_static(b"t"))
+            .await
+            .unwrap();
+        record_owner(&store, "mixed/theirs.txt", "user-a").await;
+        assert!(check_write(&store, None, "mixed", &b).await.is_err());
+        assert!(check_write(&store, None, "mixed", &a).await.is_ok());
+
+        // Listings: each user sees their own upload in the private folder, and
+        // a caller who owns nothing there is refused as before.
+        let names = |v: Vec<VisibleEntry>| v.into_iter().map(|e| e.entry.name).collect::<Vec<_>>();
+        assert_eq!(
+            names(list_visible(&store, None, "drops", &a).await.unwrap()),
+            ["a.png"]
+        );
+        assert_eq!(
+            names(list_visible(&store, None, "drops", &b).await.unwrap()),
+            ["b.png"]
+        );
+        let c = FileCaller::new(80, Some("user-c".into()));
+        assert!(list_visible(&store, None, "drops", &c).await.is_err());
+        assert!(
+            list_visible(&store, None, "drops", &anonymous)
+                .await
+                .is_err()
+        );
+        assert!(list_visible(&store, None, "nowhere", &c).await.is_err());
+        assert_eq!(
+            list_visible(&store, None, "drops", &FileCaller::role(1))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn recording_an_owner_keeps_the_first_one() {
+        let (_base, store) = temp_store();
+        store
+            .write("f.txt", Bytes::from_static(b"x"))
+            .await
+            .unwrap();
+        record_owner(&store, "f.txt", "first").await;
+        record_owner(&store, "f.txt", "second").await;
+        assert_eq!(
+            store.get_meta("f.txt").await.unwrap().owner.as_deref(),
+            Some("first")
+        );
+        // Two callers without accounts do not "own" an unowned file.
+        assert!(!FileCaller::anonymous().owns(&FileMeta::default()));
+    }
+
+    // --- streaming (F2.4) ----------------------------------------------------
+
+    /// A store with only the required methods, so every streaming call takes
+    /// the trait's default — the shape a module driver has.
+    struct MemStore(std::sync::Mutex<std::collections::BTreeMap<String, Bytes>>);
+
+    #[async_trait::async_trait]
+    impl FileStore for MemStore {
+        fn name(&self) -> &str {
+            "mem"
+        }
+        async fn read(&self, path: &str) -> sc_error::Result<Bytes> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| sc_error::Error::not_found(path.to_owned()))
+        }
+        async fn write(&self, path: &str, data: Bytes) -> sc_error::Result<()> {
+            self.0.lock().unwrap().insert(path.to_owned(), data);
+            Ok(())
+        }
+        async fn list(&self, _dir: &str) -> sc_error::Result<Vec<Entry>> {
+            Ok(Vec::new())
+        }
+        async fn mkdir(&self, _path: &str) -> sc_error::Result<()> {
+            Ok(())
+        }
+        async fn delete(&self, path: &str) -> sc_error::Result<bool> {
+            Ok(self.0.lock().unwrap().remove(path).is_some())
+        }
+        async fn rename(&self, _from: &str, _to: &str) -> sc_error::Result<()> {
+            Ok(())
+        }
+        fn is_git_repo(&self) -> bool {
+            false
+        }
+        async fn get_meta(&self, _path: &str) -> sc_error::Result<FileMeta> {
+            Ok(FileMeta::default())
+        }
+        async fn set_meta(&self, _path: &str, _meta: &FileMeta) -> sc_error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// What every driver must do with `open_read`, `open_append` and `concat`,
+    /// asserted the same way for each.
+    async fn streaming_contract(store: &dyn FileStore) {
+        use tokio::io::AsyncWriteExt;
+        store
+            .write("in/a.bin", Bytes::from_static(b"0123456789"))
+            .await
+            .unwrap();
+        // Whole, and ranged (half-open), and the empty range at the end.
+        let all = read_to_bytes(store.open_read("in/a.bin", None).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(&all[..], b"0123456789");
+        let some = read_to_bytes(store.open_read("in/a.bin", Some(2..5)).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(&some[..], b"234");
+        let none = read_to_bytes(store.open_read("in/a.bin", Some(10..10)).await.unwrap())
+            .await
+            .unwrap();
+        assert!(none.is_empty());
+        // Past the end is refused, not truncated; a missing file is not found.
+        assert!(store.open_read("in/a.bin", Some(5..11)).await.is_err());
+        let err = store.open_read("in/nope.bin", None).await.err().unwrap();
+        assert!(matches!(err.repr(), sc_error::Repr::NotFound(_)), "{err}");
+
+        // Append creates, then appends across two openings.
+        for chunk in [&b"abc"[..], b"def"] {
+            let mut out = store.open_append("up/new.bin").await.unwrap();
+            out.write_all(chunk).await.unwrap();
+            out.shutdown().await.unwrap();
+        }
+        assert_eq!(&store.read("up/new.bin").await.unwrap()[..], b"abcdef");
+
+        // Concat joins in order and answers the size.
+        store
+            .write("parts/1", Bytes::from_static(b"one-"))
+            .await
+            .unwrap();
+        store
+            .write("parts/2", Bytes::from_static(b"two"))
+            .await
+            .unwrap();
+        let parts = ["parts/1".to_owned(), "parts/2".to_owned()];
+        assert_eq!(store.concat(&parts, "joined/out.txt").await.unwrap(), 7);
+        assert_eq!(&store.read("joined/out.txt").await.unwrap()[..], b"one-two");
+        // A missing part fails without leaving a partial target: neither a new
+        // one nor a change to one that was there.
+        let broken = ["parts/1".to_owned(), "parts/missing".to_owned()];
+        assert!(store.concat(&broken, "joined/partial.txt").await.is_err());
+        assert!(store.read("joined/partial.txt").await.is_err());
+        assert!(store.concat(&broken, "joined/out.txt").await.is_err());
+        assert_eq!(&store.read("joined/out.txt").await.unwrap()[..], b"one-two");
+    }
+
+    #[tokio::test]
+    async fn the_local_driver_streams_appends_and_joins() {
+        let (base, store) = temp_store();
+        streaming_contract(&store).await;
+        // The join left no temporary beside its target.
+        let leftovers: Vec<_> = std::fs::read_dir(base.join("joined"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers, ["out.txt"]);
+        // A directory is not a file to stream.
+        store.mkdir("adir").await.unwrap();
+        assert!(store.open_read("adir", None).await.is_err());
+        // A replaced join keeps the target's metadata, owner included.
+        record_owner(&store, "joined/out.txt", "user-a").await;
+        let parts = ["parts/2".to_owned()];
+        store.concat(&parts, "joined/out.txt").await.unwrap();
+        assert_eq!(
+            store
+                .get_meta("joined/out.txt")
+                .await
+                .unwrap()
+                .owner
+                .as_deref(),
+            Some("user-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_driver_with_only_read_and_write_gets_working_defaults() {
+        let store = MemStore(Default::default());
+        streaming_contract(&store).await;
+        // The default append writes nothing until it is shut down.
+        use tokio::io::AsyncWriteExt;
+        let mut out = store.open_append("late.bin").await.unwrap();
+        out.write_all(b"x").await.unwrap();
+        assert!(store.read("late.bin").await.is_err());
+        out.shutdown().await.unwrap();
+        assert_eq!(&store.read("late.bin").await.unwrap()[..], b"x");
     }
 
     // --- the store-side search ----------------------------------------------
@@ -574,9 +840,14 @@ mod tests {
     #[tokio::test]
     async fn a_search_walks_the_tree_and_skips_what_it_should() {
         let (_base, store) = searchable().await;
-        let found = search_store(&store, None, 1, &SearchQuery::literal("todo"))
-            .await
-            .unwrap();
+        let found = search_store(
+            &store,
+            None,
+            &FileCaller::role(1),
+            &SearchQuery::literal("todo"),
+        )
+        .await
+        .unwrap();
         let mut paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
         paths.sort();
         // `node_modules` is not descended into and the binary is not scanned, so
@@ -601,13 +872,17 @@ mod tests {
 
         let mut query = SearchQuery::literal("todo");
         query.dir = "src/deep".to_owned();
-        let found = search_store(&store, None, 1, &query).await.unwrap();
+        let found = search_store(&store, None, &FileCaller::role(1), &query)
+            .await
+            .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
         assert_eq!(paths, ["src/deep/list.tsx"]);
 
         let mut query = SearchQuery::literal("todo");
         query.glob = Some("*.ts".to_owned());
-        let found = search_store(&store, None, 1, &query).await.unwrap();
+        let found = search_store(&store, None, &FileCaller::role(1), &query)
+            .await
+            .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
         assert_eq!(paths, ["src/app.ts"]);
     }
@@ -628,16 +903,26 @@ mod tests {
 
         // The restricted directory is not walked for a caller who could not open
         // it — otherwise its contents would leak one matching line at a time.
-        let found = search_store(&store, None, ROLE_PUBLIC, &SearchQuery::literal("todo"))
-            .await
-            .unwrap();
+        let found = search_store(
+            &store,
+            None,
+            &FileCaller::anonymous(),
+            &SearchQuery::literal("todo"),
+        )
+        .await
+        .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
         assert_eq!(paths, ["src/app.ts"]);
 
         // The store's own floor composes the same way: above it, nothing at all.
-        let found = search_store(&store, Some(1), ROLE_PUBLIC, &SearchQuery::literal("todo"))
-            .await
-            .unwrap();
+        let found = search_store(
+            &store,
+            Some(1),
+            &FileCaller::anonymous(),
+            &SearchQuery::literal("todo"),
+        )
+        .await
+        .unwrap();
         assert!(found.hits.is_empty());
     }
 
@@ -652,7 +937,9 @@ mod tests {
         }
         let mut query = SearchQuery::literal("needle");
         query.max_results = 5;
-        let found = search_store(&store, None, 1, &query).await.unwrap();
+        let found = search_store(&store, None, &FileCaller::role(1), &query)
+            .await
+            .unwrap();
         assert_eq!(found.hits.len(), 5);
         assert!(found.truncated);
     }
@@ -662,9 +949,16 @@ mod tests {
     #[tokio::test]
     async fn a_name_search_walks_the_whole_tree_case_insensitively() {
         let (_base, store) = searchable().await;
-        let found = find_files(&store, None, 1, "", "LIST", DEFAULT_MAX_FOUND)
-            .await
-            .unwrap();
+        let found = find_files(
+            &store,
+            None,
+            &FileCaller::role(1),
+            "",
+            "LIST",
+            DEFAULT_MAX_FOUND,
+        )
+        .await
+        .unwrap();
         let paths: Vec<&str> = found.entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, ["src/deep/list.tsx"]);
         assert!(!found.truncated);
@@ -672,9 +966,16 @@ mod tests {
         // Unlike the *content* search, nothing is excluded by default: someone
         // hunting for a file in `node_modules` means it. And a directory is a
         // thing people look for by name, so directories match too.
-        let found = find_files(&store, None, 1, "", "de", DEFAULT_MAX_FOUND)
-            .await
-            .unwrap();
+        let found = find_files(
+            &store,
+            None,
+            &FileCaller::role(1),
+            "",
+            "de",
+            DEFAULT_MAX_FOUND,
+        )
+        .await
+        .unwrap();
         let mut paths: Vec<&str> = found.entries.iter().map(|e| e.path.as_str()).collect();
         paths.sort_unstable();
         assert_eq!(
@@ -684,9 +985,16 @@ mod tests {
 
         // The row the file manager draws comes back whole — a hit with no size
         // is three empty columns and another round trip to fill them.
-        let hit = find_files(&store, None, 1, "", "readme", DEFAULT_MAX_FOUND)
-            .await
-            .unwrap();
+        let hit = find_files(
+            &store,
+            None,
+            &FileCaller::role(1),
+            "",
+            "readme",
+            DEFAULT_MAX_FOUND,
+        )
+        .await
+        .unwrap();
         assert_eq!(hit.entries[0].size, Some(15));
         assert!(hit.entries[0].modified.is_some());
     }
@@ -694,21 +1002,34 @@ mod tests {
     #[tokio::test]
     async fn a_name_search_is_narrowed_by_directory_and_bounded() {
         let (_base, store) = searchable().await;
-        let found = find_files(&store, None, 1, "src", "ts", DEFAULT_MAX_FOUND)
-            .await
-            .unwrap();
+        let found = find_files(
+            &store,
+            None,
+            &FileCaller::role(1),
+            "src",
+            "ts",
+            DEFAULT_MAX_FOUND,
+        )
+        .await
+        .unwrap();
         let mut paths: Vec<&str> = found.entries.iter().map(|e| e.path.as_str()).collect();
         paths.sort_unstable();
         // Rooted at `src`, so `readme.md` and the dependency tree are outside it.
         assert_eq!(paths, ["src/app.ts", "src/deep/list.tsx"]);
 
-        let found = find_files(&store, None, 1, "", "ts", 1).await.unwrap();
+        let found = find_files(&store, None, &FileCaller::role(1), "", "ts", 1)
+            .await
+            .unwrap();
         assert_eq!(found.entries.len(), 1);
         assert!(found.truncated);
 
         // A blank search is not "everything": it is a caller with nothing to
         // look for, and a walk of the whole store is not the answer to it.
-        assert!(find_files(&store, None, 1, "", "  ", 10).await.is_err());
+        assert!(
+            find_files(&store, None, &FileCaller::role(1), "", "  ", 10)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -728,13 +1049,27 @@ mod tests {
         // Neither the restricted directory nor anything under it: a search box
         // that answers "list.tsx" for a caller who cannot enter `src/deep` has
         // leaked the listing the rule was set to hide.
-        let found = find_files(&store, None, ROLE_PUBLIC, "", "list", DEFAULT_MAX_FOUND)
-            .await
-            .unwrap();
+        let found = find_files(
+            &store,
+            None,
+            &FileCaller::anonymous(),
+            "",
+            "list",
+            DEFAULT_MAX_FOUND,
+        )
+        .await
+        .unwrap();
         assert!(found.entries.is_empty());
-        let found = find_files(&store, None, ROLE_PUBLIC, "", "deep", DEFAULT_MAX_FOUND)
-            .await
-            .unwrap();
+        let found = find_files(
+            &store,
+            None,
+            &FileCaller::anonymous(),
+            "",
+            "deep",
+            DEFAULT_MAX_FOUND,
+        )
+        .await
+        .unwrap();
         assert!(found.entries.is_empty());
     }
 }

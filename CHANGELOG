@@ -2,6 +2,72 @@
 
 Changes in reverse chronological order.
 
+## F2 phase 1: file owners and file responses
+
+The first half of TODO.md F2 (field report 1.3): a file's owner is now an authority, every
+write path records one, and every route that serves a store file goes through one builder
+that streams, honours `Range` and names the file properly.
+
+- **F2.1 — the owner rule.** `sc_files::check_access` takes a `FileCaller { role, user_id }`
+  and grants a read to the role that clears the effective floor **or** the file's owner. New
+  `check_write`: admin authority, or the owner of an owned entry (an unowned entry or a new
+  path keeps the path rule), and a directory holding somebody else's file cannot be deleted
+  or moved by a non-admin. New `list_visible`: a listing of a folder the caller may not read
+  shows the entries they own, and is the old refusal when they own nothing there.
+  `filter_visible`, `visible_entries`, `search_store`, `find_files`, `find_by_extension` and
+  `walk_store` take the caller too. Every caller passes it: the admin file handlers (writes
+  now use `check_write`), static directories, `/files/serve`, the REST `File`-field routes,
+  the code host (`FileStoreHost::caused_by(role, user)` now takes the user, like
+  `TableHost`'s) and the coding agent's file tools (`files::file_caller`,
+  `files::open_to_write` for edit/write/patch). Only an entry's **own** owner counts — owning
+  a folder grants nothing inside it. A file the caller may not read through the REST field
+  route is now a 404, as on static dirs and `/files/serve` (it was a 403); the
+  `app_file_access` assertion is updated to match.
+- **F2.2 — owners on every write path.** `sc_files::record_owner(store, path, owner)` (the
+  admin handlers' helper, moved down; keeps the first owner). REST `File`-field upload
+  records the signed-in uploader, and a **new** file needs only the table's write rule — so
+  a min_role 1 folder is a private drop box — while replacing an existing file is
+  `check_write` (another user's upload is refused). Code `fs`: a write, copy-destination or
+  `mkdir` under `asUser()` records the caller; under admin authority nothing, unless
+  `write(bytes, { owner, minRole | min_role, filename })` (also `create`, and a file-to-file
+  copy) says so — `filename` goes to `attributes.filename` (`sc_files::FILENAME_ATTRIBUTE`).
+  Under `asUser()` the owner cannot be chosen, and `minRole` may only tighten. `setMeta`
+  keeps the owner unless given `owner`, which only admin authority may change (`null`
+  clears it); `meta()` reports `owner`. Unknown write options are refused by name.
+  `codeTypes.ts` declares `ScWriteOptions` and `ScFileMeta.owner`. Python bodies do not have
+  the write options yet.
+- **F2.3 — one file response builder** (`sc-server/src/file_response.rs`), fed by a
+  `sc_files::ServeFile` descriptor that `ApiResponse.file`, `AppResponse.file` and
+  `HandlerResponse.serve` carry: it streams through `open_read` in 64 KiB frames, answers
+  `Range` (206 + `Content-Range`, `Accept-Ranges: bytes`, 416 with `bytes */size`; several
+  ranges or a stale `If-Range` get the whole file), sets `Content-Disposition` with
+  `filename*=UTF-8''…` beside an ASCII fallback (name from the descriptor, else
+  `attributes.filename`, else the basename; `?download=1` → `attachment`), and an ETag over
+  path + size + mtime with `Last-Modified` and 304. Default `Cache-Control: private,
+  no-cache`. Used by static dirs, the REST field download, `/files/serve`
+  (`sc_viewpattern::serve_store_file`, factored out so it can be tested without a bundle)
+  and the admin `/download/` route; `file_operations_api`'s exact Content-Disposition
+  assertion now includes the `filename*` part.
+- **F2.4 — streaming in the store trait.** `FileStore::open_read(path, range) ->
+  BoxAsyncRead`, `open_append(path) -> BoxAsyncWrite<'_>` (creates; shut it down when done)
+  and `concat(parts, to) -> u64`. Defaults fall back to `read`/`write` (sliced read,
+  buffer-until-shutdown append, in-memory join). The local driver opens/seeks/`take`s, appends
+  with `O_APPEND`, and joins into a temporary beside the target renamed into place (so a
+  missing part leaves no partial target, and a replaced target keeps its metadata); the git
+  driver delegates to its working tree. A deviation from §2.4's sketch: the append writer
+  borrows the store (`BoxAsyncWrite<'a>`) so the default can write back through it; the
+  reader is `'static` so a response body can outlive the request.
+
+Tests: `sc-files` unit tests (owner rule, listing, `record_owner`, the streaming contract on
+the local driver and on a read/write-only double) and `tests/git_store.rs`;
+`sc-core-actions` `code_files` (B cannot read/overwrite/delete/move/re-own A's file through
+`asUser`, owners per authority, `setMeta` cannot take ownership); `sc-server`
+`app_file_access` (a private-folder upload is served to its uploader, 404 to another user and
+to anonymous, not overwritable), `app_static_dirs` (owner served, others 404, a 206 through the
+router), `file_operations_api` (admin upload owner), and `file_response` unit tests (Range,
+416, `naïve 名前.png`, ETag/304, and a 50 MB file streamed in ≤ 64 KiB frames without the
+store's whole-file `read`); `sc-viewpattern` `files_serve`.
+
 ## F1: quick wins for building apps from a coding agent
 
 The first milestone of the PADDI//GRID field report (TODO.md F1): each item deletes a

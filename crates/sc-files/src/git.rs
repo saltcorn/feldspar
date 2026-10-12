@@ -1121,6 +1121,22 @@ impl FileStore for GitFileStore {
         self.inner.stat(path).await
     }
 
+    async fn open_read(
+        &self,
+        path: &str,
+        range: Option<std::ops::Range<u64>>,
+    ) -> Result<crate::BoxAsyncRead> {
+        self.inner.open_read(path, range).await
+    }
+
+    async fn open_append<'a>(&'a self, path: &str) -> Result<crate::BoxAsyncWrite<'a>> {
+        self.inner.open_append(path).await
+    }
+
+    async fn concat(&self, parts: &[String], to: &str) -> Result<u64> {
+        self.inner.concat(parts, to).await
+    }
+
     async fn get_meta(&self, path: &str) -> Result<FileMeta> {
         self.inner.get_meta(path).await
     }

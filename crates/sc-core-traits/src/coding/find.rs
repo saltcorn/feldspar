@@ -76,15 +76,9 @@ pub async fn call(
 
     let (store, floor) = scope.connect(ctx.catalog).await?;
     let dir = scope.resolve(&rel_dir)?;
-    sc_files::check_access(store.as_ref(), floor, &dir, ctx.caller.role).await?;
-    let walked = walk_store(
-        store.as_ref(),
-        floor,
-        ctx.caller.role,
-        &dir,
-        &DEFAULT_EXCLUDED_DIRS,
-    )
-    .await?;
+    let caller = crate::files::file_caller(ctx.caller);
+    sc_files::check_access(store.as_ref(), floor, &dir, &caller).await?;
+    let walked = walk_store(store.as_ref(), floor, &caller, &dir, &DEFAULT_EXCLUDED_DIRS).await?;
 
     let prefix = match dir.is_empty() {
         true => String::new(),

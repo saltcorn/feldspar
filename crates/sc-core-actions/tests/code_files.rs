@@ -355,6 +355,155 @@ async fn a_delegated_body_obeys_the_stores_own_floor() -> Result<()> {
     Ok(())
 }
 
+/// An event fired by user `id` at role 80 — two of these are two different
+/// people at the same role, which is what the owner rule (F2 §2.1) tells apart.
+fn fired_by(id: &str) -> Event {
+    Event::new(EventKind::None).payload(json!({})).caller(
+        80,
+        Some(json!({ "id": id, "email": format!("{id}@example.com") })),
+    )
+}
+
+#[tokio::test]
+async fn a_delegated_write_is_the_callers_and_nobody_else_may_change_it() -> Result<()> {
+    let db = TestDb::new().await?;
+    let (catalog, dir) = setup(&db, "owner").await?;
+
+    // A saves a private file under their own authority: it is recorded as
+    // theirs, and its rule is tightened to admin-only as it is written.
+    let out = run(
+        &catalog,
+        &fired_by("user-a"),
+        r#"const file = fs("docs").asUser().open("drops/a.txt");
+           await file.write("mine", { minRole: 1, filename: "Ä report.txt" });
+           await fs("docs").asUser().dir("drops/a-dir").create();
+           return { meta: await file.meta(), back: await file.text() };"#,
+    )
+    .await?;
+    assert_eq!(out["meta"]["owner"], json!("user-a"));
+    assert_eq!(out["meta"]["minRole"], json!(1));
+    assert_eq!(out["meta"]["attributes"]["filename"], json!("Ä report.txt"));
+    assert_eq!(
+        out["back"],
+        json!("mine"),
+        "the owner reads it past the rule"
+    );
+    let store = catalog.require_file_store("docs")?;
+    assert_eq!(
+        store.get_meta("drops/a-dir").await?.owner.as_deref(),
+        Some("user-a")
+    );
+
+    // B, at the same role, cannot read, overwrite, delete, move or re-own it,
+    // and does not see it listed.
+    let out = run(
+        &catalog,
+        &fired_by("user-b"),
+        r#"const file = fs("docs").asUser().open("drops/a.txt");
+           const said = {};
+           const attempt = async (name, f) => {
+             try { await f(); said[name] = "done"; } catch (e) { said[name] = "refused"; }
+           };
+           await attempt("read", () => file.text());
+           await attempt("write", () => file.write("theirs"));
+           await attempt("delete", () => file.delete());
+           await attempt("move", () => file.moveTo("drops/b.txt"));
+           await attempt("dirDelete", () => fs("docs").asUser().dir("drops").delete());
+           await attempt("setMeta", () => file.setMeta({ minRole: 1, owner: "user-b" }));
+           // B's own write names somebody else as the owner: refused, too.
+           await attempt("chooseOwner", () =>
+             fs("docs").asUser().open("b.txt").write("x", { owner: "user-a" }));
+           said.listed = (await fs("docs").asUser().root.list()).map((e) => e.name);
+           return said;"#,
+    )
+    .await?;
+    for op in [
+        "read",
+        "write",
+        "delete",
+        "move",
+        "dirDelete",
+        "setMeta",
+        "chooseOwner",
+    ] {
+        assert_eq!(out[op], json!("refused"), "{op}: {out}");
+    }
+    assert!(!out["listed"].as_array().unwrap().contains(&json!("b.txt")));
+    assert_eq!(on_disk(&dir, "drops/a.txt").unwrap(), "mine");
+    assert!(on_disk(&dir, "b.txt").is_none());
+
+    // A lists the private folder's root and sees their own entries, though
+    // the folder `drops` has no rule A could not clear — and A may change it.
+    let out = run(
+        &catalog,
+        &fired_by("user-a"),
+        r#"const file = fs("docs").asUser().open("drops/a.txt");
+           await file.write("still mine");
+           // The owner cannot be changed under user authority, even by its owner.
+           let given = "kept";
+           try { await file.setMeta({ minRole: 1, owner: "user-b" }); given = "given"; }
+           catch (e) { given = "refused"; }
+           return { given, meta: await file.meta() };"#,
+    )
+    .await?;
+    assert_eq!(out["given"], json!("refused"));
+    assert_eq!(out["meta"]["owner"], json!("user-a"));
+    assert_eq!(on_disk(&dir, "drops/a.txt").unwrap(), "still mine");
+
+    std::fs::remove_dir_all(&dir).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_admin_write_records_no_owner_unless_it_names_one() -> Result<()> {
+    let db = TestDb::new().await?;
+    let (catalog, dir) = setup(&db, "admin-owner").await?;
+
+    let out = run(
+        &catalog,
+        &fired_by("user-a"),
+        r#"const plain = fs("docs").open("plain.txt");
+           await plain.write("p");
+           const given = fs("docs").open("given.txt");
+           await given.write("g", { owner: "user-c", min_role: 1 });
+           // A copy carries the options too.
+           await fs("docs").open("copied.txt").write(given, { owner: "user-d" });
+           let typo = "accepted";
+           try { await plain.write("p", { onwer: "x" }); } catch (e) { typo = e.message; }
+           // Admin authority may re-own, and clear, an owner.
+           await plain.setMeta({ owner: "user-e" });
+           const reowned = (await plain.meta()).owner;
+           await plain.setMeta({ owner: null });
+           return {
+             plain: (await plain.meta()).owner, reowned,
+             given: await given.meta(), copied: (await fs("docs").open("copied.txt").meta()).owner,
+             typo,
+           };"#,
+    )
+    .await?;
+    assert_eq!(out["plain"], json!(null), "admin authority records nobody");
+    assert_eq!(out["reowned"], json!("user-e"));
+    assert_eq!(out["given"]["owner"], json!("user-c"));
+    assert_eq!(out["given"]["minRole"], json!(1));
+    assert_eq!(out["copied"], json!("user-d"));
+    assert!(
+        out["typo"].as_str().unwrap().contains("not a write option"),
+        "{out}"
+    );
+
+    // And the owner named is an authority: user-c reads the admin-only file.
+    let out = run(
+        &catalog,
+        &fired_by("user-c"),
+        r#"return await fs("docs").asUser().open("given.txt").text();"#,
+    )
+    .await?;
+    assert_eq!(out, json!("g"));
+
+    std::fs::remove_dir_all(&dir).ok();
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_file_larger_than_one_read_is_refused_rather_than_truncated() -> Result<()> {
     let db = TestDb::new().await?;

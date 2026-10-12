@@ -82,7 +82,7 @@ impl<'a> Configurer<'a> {
                 ..ViewRequest::default()
             },
             table: TableHost::new(catalog).caused_by(caller.role, caller.user.clone()),
-            files: FileStoreHost::new(catalog).caused_by(caller.role),
+            files: FileStoreHost::new(catalog).caused_by(caller.role, caller.user.as_ref()),
         })
     }
 

@@ -40,7 +40,7 @@ pub async fn after_edits(
     scope: &FileScope,
     config: &Attrs,
     catalog: &Catalog,
-    role: u8,
+    caller: &sc_files::FileCaller,
     state_json: &mut Json,
 ) -> Result<Option<String>> {
     let mut state = CodingState::load(state_json);
@@ -58,7 +58,7 @@ pub async fn after_edits(
 
     let script = diagnose_script(config);
     let edited_rel: Vec<String> = edited.iter().map(|p| scope.relative(p)).collect();
-    let project = project(scope, catalog, role).await?;
+    let project = project(scope, catalog, caller).await?;
     // A project that does not declare the script is not type-checked after a
     // turn; `check` is where a missing script is a failure.
     if project.scripts.contains(&script) {

@@ -14,6 +14,8 @@
 //! - **a mount is not a grant**: a file closed to a guest is 404 for a guest and
 //!   served to an admin, through the same `sc_files::check_access` every other
 //!   reader goes through;
+//! - a file is served to its **owner** past its folder's rule, and is the same
+//!   404 to another user and to a guest (F2 §2.1);
 //! - an **API provider** on the same prefix still wins, and the framework's SPA
 //!   fallback still answers a path no directory claims.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -428,6 +430,75 @@ async fn a_static_directory_serves_its_files_and_nothing_else() -> sc_error::Res
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(&assets.read("media/hero.png").await?[..], HERO);
 
+    Ok(())
+}
+
+/// F2.1: an owned file in an admin-only folder is served to its owner and is a
+/// 404 to another user and to a guest.
+#[tokio::test]
+async fn an_owned_file_is_served_to_its_owner_alone() -> sc_error::Result<()> {
+    let tmp = TempDir::new("owner");
+    let (router, catalog, assets, _db) = setup(&tmp).await?;
+    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "Reader")).await?;
+    let ada = create_user(&catalog, "ada@example.com", "ada-pw", 80).await?;
+    create_user(&catalog, "bob@example.com", "bob-pw", 80).await?;
+
+    assets
+        .set_meta(
+            "media/private",
+            &FileMeta {
+                min_role: Some(1),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assets
+        .write("media/private/ada.png", bytes::Bytes::from_static(HERO))
+        .await?;
+    sc_files::record_owner(
+        assets.as_ref(),
+        "media/private/ada.png",
+        &ada.id.to_string(),
+    )
+    .await;
+
+    let mut owner = Client::new(router.clone(), APP_HOST);
+    assert_eq!(
+        owner.login("ada@example.com", "ada-pw").await,
+        StatusCode::OK
+    );
+    let (status, _, body) = owner.get("/img/private/ada.png").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&body[..], HERO);
+    // Through the shared builder (F2.3): a range is a 206 of just those bytes.
+    let (status, headers, body) = owner
+        .raw(
+            "GET",
+            "/img/private/ada.png",
+            &[("range", "bytes=0-3".to_owned())],
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(&body[..], &HERO[..4]);
+    assert_eq!(
+        headers.get(header::CONTENT_RANGE).unwrap(),
+        &format!("bytes 0-3/{}", HERO.len())
+    );
+    // Owning one file in the folder grants nothing else in it.
+    let (status, _, _) = owner.get("/img/private/plans.txt").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let mut other = Client::new(router.clone(), APP_HOST);
+    assert_eq!(
+        other.login("bob@example.com", "bob-pw").await,
+        StatusCode::OK
+    );
+    let (status, _, _) = other.get("/img/private/ada.png").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let mut guest = Client::new(router.clone(), APP_HOST);
+    let (status, _, _) = guest.get("/img/private/ada.png").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     Ok(())
 }
 

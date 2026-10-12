@@ -2349,6 +2349,40 @@ pub(crate) const FILES_PRELUDE: &str = r##"
       Object.assign({ store: handle.store, authority: handle.authority }, plan)
     );
 
+  // The options a write records beside the bytes (§2.1): who owns the file,
+  // its access rule, and the name it is served under. Refused by name when
+  // misspelt, as `setMeta`'s keys are — an option silently dropped is a private
+  // file published.
+  const writeOptions = (options) => {
+    if (options === undefined || options === null) return {};
+    if (typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("write()'s options are an object: { owner, minRole, filename }");
+    }
+    const out = {};
+    for (const key of Object.keys(options)) {
+      const value = options[key];
+      if (value === undefined) continue;
+      if (key === "owner") {
+        out.owner = value;
+      } else if (key === "minRole" || key === "min_role") {
+        if (out.minRole !== undefined && out.minRole !== value) {
+          throw new TypeError("`minRole` and `min_role` disagree; give one");
+        }
+        out.minRole = value;
+      } else if (key === "filename") {
+        if (typeof value !== "string" || value === "") {
+          throw new TypeError("`filename` is the name to serve the file under, a string");
+        }
+        out.filename = value;
+      } else {
+        throw new TypeError(
+          "`" + key + "` is not a write option; they are: owner, minRole, filename"
+        );
+      }
+    }
+    return out;
+  };
+
   // --- a file -------------------------------------------------------------
   // What a listing said about an entry (TODO F1.5): its size and when it was
   // modified, as of the listing. `undefined` on a handle that was opened rather
@@ -2430,25 +2464,27 @@ pub(crate) const FILES_PRELUDE: &str = r##"
 
     // Writing. Both answer the number of bytes written, and both make the
     // parent directories on the way — a body that named a path has said where
-    // it wants the file.
-    write(data) { return this.#put(data, true); }
-    create(data) { return this.#put(data, false); }
-    #put(data, overwrite) {
+    // it wants the file. The options are the metadata to record with it:
+    // `{ owner, minRole, filename }` (`min_role` is accepted too).
+    write(data, options) { return this.#put(data, true, options); }
+    create(data, options) { return this.#put(data, false, options); }
+    #put(data, overwrite, options) {
+      const meta = writeOptions(options);
       // Another file is **copied host-side**: the bytes never enter the sandbox,
       // so `await backup.write(original)` is not bounded by what one read may
       // carry.
       if (data instanceof SaltcornFile) {
         const from = data.__scRef(INTERNAL);
-        return send(from.handle, {
+        return send(from.handle, Object.assign({
           op: "copy", path: from.path,
           toStore: this.#handle.store, toPath: this.#path, overwrite: overwrite,
-        }).then((answer) => answer.bytes);
+        }, meta)).then((answer) => answer.bytes);
       }
       if (data instanceof SaltcornDir) {
         throw new TypeError("a directory cannot be written to a file");
       }
       const handle = this.#handle;
-      const plan = { op: "write", path: this.#path, overwrite: overwrite };
+      const plan = Object.assign({ op: "write", path: this.#path, overwrite: overwrite }, meta);
       const bytes = codec.asBytes(data);
       if (typeof data === "string") {
         plan.text = data;
@@ -2517,22 +2553,25 @@ pub(crate) const FILES_PRELUDE: &str = r##"
     meta() { return send(this.#handle, { op: "meta", path: this.#path }); }
     setMeta(meta) {
       if (meta === null || typeof meta !== "object" || Array.isArray(meta)) {
-        throw new TypeError("setMeta() takes an object: { minRole, attributes }");
+        throw new TypeError("setMeta() takes an object: { minRole, attributes, owner }");
       }
       for (const key of Object.keys(meta)) {
-        if (key !== "minRole" && key !== "attributes") {
+        if (key !== "minRole" && key !== "attributes" && key !== "owner") {
           throw new TypeError(
-            "`" + key + "` is not part of a file's metadata; it holds: minRole, attributes"
+            "`" + key + "` is not part of a file's metadata; it holds: minRole, attributes, owner"
           );
         }
       }
       // Replaces rather than merges, as the store's own metadata does — read it
-      // first when what you want is a change to one attribute.
-      return send(this.#handle, {
+      // first when what you want is a change to one attribute. The owner is
+      // the exception: left out, it is kept (only admin authority may change it).
+      const plan = {
         op: "setMeta", path: this.#path,
         minRole: meta.minRole === undefined ? null : meta.minRole,
         attributes: meta.attributes === undefined ? {} : meta.attributes,
-      }).then(() => this);
+      };
+      if (meta.owner !== undefined) plan.owner = meta.owner;
+      return send(this.#handle, plan).then(() => this);
     }
   }
 

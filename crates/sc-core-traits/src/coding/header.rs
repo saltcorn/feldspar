@@ -59,8 +59,8 @@ pub async fn header(
     config: &Attrs,
     cx: &mut SessionContext<'_>,
 ) -> Option<String> {
-    let role = cx.caller.role;
-    let (files, truncated) = match source_files(scope, cx.catalog, role).await {
+    let caller = crate::files::file_caller(cx.caller);
+    let (files, truncated) = match source_files(scope, cx.catalog, &caller).await {
         Ok(found) => found,
         Err(e) => {
             sc_log::log_warn!("session header for {}: {e}", scope.label());
@@ -79,7 +79,7 @@ pub async fn header(
     {
         parts.push(map);
     }
-    if let Some(mounts) = assets::header(config, cx.catalog, role).await {
+    if let Some(mounts) = assets::header(config, cx.catalog, &caller).await {
         parts.push(mounts);
     }
     if let Some(log) = git_log(scope, cx).await {
@@ -119,7 +119,14 @@ async fn read_notes(scope: &FileScope, cx: &SessionContext<'_>, rel: &str) -> Op
     if !store.stat(&path).await.ok()?.is_some_and(|s| !s.is_dir) {
         return None;
     }
-    if let Err(e) = check_access(store.as_ref(), floor, &path, cx.caller.role).await {
+    if let Err(e) = check_access(
+        store.as_ref(),
+        floor,
+        &path,
+        &crate::files::file_caller(cx.caller),
+    )
+    .await
+    {
         sc_log::log_verbose!("session header: `{path}` is not readable here: {e}");
         return None;
     }

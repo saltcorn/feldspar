@@ -907,3 +907,51 @@ async fn a_non_empty_directory_is_not_offered_a_clone() {
     std::fs::write(dir.join("notes.txt"), "mine\n").unwrap();
     assert!(!repo.status().await.unwrap().can_clone);
 }
+
+/// F2.4: the git driver streams, appends and joins as the local one does —
+/// over its working tree — so an upload into a git store is an ordinary file.
+#[tokio::test]
+async fn a_git_store_streams_appends_and_joins() {
+    use tokio::io::AsyncWriteExt;
+    let origin = origin_with_a_commit("stream");
+    let workspace = temp_dir("stream-clone");
+    let def = git_store_def("app", &origin, &workspace.join("app"));
+    GitRepo::from_def(&def)
+        .unwrap()
+        .ensure_cloned()
+        .await
+        .unwrap();
+    let store = connect_from_def(&def).unwrap();
+
+    let readme = sc_files::read_to_bytes(store.open_read("README.md", Some(2..6)).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(&readme[..], b"from");
+
+    let mut out = store.open_append("uploads/a.bin").await.unwrap();
+    out.write_all(b"part one, ").await.unwrap();
+    out.shutdown().await.unwrap();
+    let mut out = store.open_append("uploads/a.bin").await.unwrap();
+    out.write_all(b"part two").await.unwrap();
+    out.shutdown().await.unwrap();
+    assert_eq!(
+        &store.read("uploads/a.bin").await.unwrap()[..],
+        b"part one, part two"
+    );
+
+    let parts = ["README.md".to_owned(), "uploads/a.bin".to_owned()];
+    let size = store.concat(&parts, "uploads/joined.txt").await.unwrap();
+    assert_eq!(size, 18 + 18);
+    let missing = ["README.md".to_owned(), "nope".to_owned()];
+    assert!(store.concat(&missing, "uploads/never.txt").await.is_err());
+    assert!(store.stat("uploads/never.txt").await.unwrap().is_none());
+    // The join is a file git sees, like any other write.
+    let status = std::process::Command::new("git")
+        .current_dir(workspace.join("app"))
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(status.contains("uploads/joined.txt"), "{status}");
+    assert!(!status.contains("joining"), "no temporary left: {status}");
+}

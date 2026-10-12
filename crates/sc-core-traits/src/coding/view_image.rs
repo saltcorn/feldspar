@@ -184,7 +184,13 @@ async fn open_url(
     }
     let store_path = dir.resolve(rest).ok_or_else(not_served)?;
     let (store, floor) = assets::dir_scope(dir).connect(ctx.catalog).await?;
-    sc_files::check_access(store.as_ref(), floor, &store_path, ctx.caller.role).await?;
+    sc_files::check_access(
+        store.as_ref(),
+        floor,
+        &store_path,
+        &crate::files::file_caller(ctx.caller),
+    )
+    .await?;
     Ok((store, store_path, dir.store.0.clone()))
 }
 

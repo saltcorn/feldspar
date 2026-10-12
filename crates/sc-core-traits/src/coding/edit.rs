@@ -26,7 +26,7 @@ use super::change::{current, edited_region, numbered, write_tracked};
 use super::matching::{self, Level, Search};
 use super::read::as_text;
 use super::state::{CodingState, stale_message};
-use crate::files::{ARG_PATH, FileScope, open_at, optional_bool_arg, string_arg};
+use crate::files::{ARG_PATH, FileScope, open_to_write, optional_bool_arg, string_arg};
 use crate::table::arguments;
 
 /// The text to find.
@@ -87,7 +87,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
         )));
     }
 
-    let (store, path) = open_at(scope, ctx, &rel).await?;
+    let (store, path) = open_to_write(scope, ctx, &rel).await?;
     let Some(bytes) = current(store.as_ref(), &path, &rel).await? else {
         return Err(Error::invalid(format!(
             "`{rel}` does not exist. To create it, use `{}`.",

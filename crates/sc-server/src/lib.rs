@@ -30,6 +30,7 @@ mod builder;
 mod chat;
 mod clear_all;
 mod config;
+mod file_response;
 mod fit_progress;
 mod handler;
 mod handlers;

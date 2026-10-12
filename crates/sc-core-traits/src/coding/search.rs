@@ -116,7 +116,13 @@ pub async fn call(
     let (store, floor) = scope.connect(ctx.catalog).await?;
     // The caller's own role, so a search cannot report a line out of a file
     // the caller could not have opened.
-    let found = search_store(store.as_ref(), floor, ctx.caller.role, &query).await?;
+    let found = search_store(
+        store.as_ref(),
+        floor,
+        &crate::files::file_caller(ctx.caller),
+        &query,
+    )
+    .await?;
     if found.hits.is_empty() {
         return Ok(Json::String(format!(
             "No matches for `{}` in {} files.",

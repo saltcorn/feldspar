@@ -149,6 +149,10 @@ pub struct HandlerResponse {
     /// file. Only the routes outside the typed endpoint set look at this; a typed
     /// endpoint leaves it `None`, because its response is its `TypeSchema`.
     pub download: Option<Download>,
+    /// A store file to serve through the shared response builder (TODO F2,
+    /// §2.2) — streamed, with Range and its own name. Like `download`, only the
+    /// routes outside the typed endpoint set look at it.
+    pub serve: Option<sc_files::ServeFile>,
 }
 
 impl HandlerResponse {
@@ -159,6 +163,7 @@ impl HandlerResponse {
             status: 200,
             session: SessionAction::Keep,
             download: None,
+            serve: None,
         }
     }
 
@@ -169,6 +174,18 @@ impl HandlerResponse {
             status: 200,
             session: SessionAction::Keep,
             download: Some(download),
+            serve: None,
+        }
+    }
+
+    /// A response that is a store file, served by the shared builder.
+    pub fn serve_file(file: sc_files::ServeFile) -> HandlerResponse {
+        HandlerResponse {
+            body: Value::Null,
+            status: 200,
+            session: SessionAction::Keep,
+            download: None,
+            serve: Some(file),
         }
     }
 
@@ -179,6 +196,7 @@ impl HandlerResponse {
             status: 200,
             session: SessionAction::Start(user),
             download: None,
+            serve: None,
         }
     }
 
@@ -189,6 +207,7 @@ impl HandlerResponse {
             status: 200,
             session: SessionAction::End,
             download: None,
+            serve: None,
         }
     }
 
@@ -201,6 +220,7 @@ impl HandlerResponse {
             status: 200,
             session: SessionAction::EndUser(user_id),
             download: None,
+            serve: None,
         }
     }
 
@@ -212,6 +232,7 @@ impl HandlerResponse {
             status: 200,
             session: SessionAction::EndAll,
             download: None,
+            serve: None,
         }
     }
 

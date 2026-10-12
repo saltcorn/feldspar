@@ -142,7 +142,8 @@ pub async fn call(config: &Attrs, args: &Json, ctx: &mut TraitContext<'_>) -> Re
         let Ok(under) = scope.resolve(&rel_dir) else {
             continue;
         };
-        if sc_files::check_access(store.as_ref(), floor, &under, ctx.caller.role)
+        let caller = crate::files::file_caller(ctx.caller);
+        if sc_files::check_access(store.as_ref(), floor, &under, &caller)
             .await
             .is_err()
         {
@@ -151,7 +152,7 @@ pub async fn call(config: &Attrs, args: &Json, ctx: &mut TraitContext<'_>) -> Re
         let Ok(walked) = walk_store(
             store.as_ref(),
             floor,
-            ctx.caller.role,
+            &caller,
             &under,
             &DEFAULT_EXCLUDED_DIRS,
         )
@@ -246,7 +247,11 @@ pub async fn call(config: &Attrs, args: &Json, ctx: &mut TraitContext<'_>) -> Re
 /// beside `AGENTS.md` and the repo map. **Nothing here fails a run**: every step
 /// that can go wrong leaves the section out and is logged, as the rest of the
 /// header does.
-pub async fn header(config: &Attrs, catalog: &Catalog, role: u8) -> Option<String> {
+pub async fn header(
+    config: &Attrs,
+    catalog: &Catalog,
+    caller: &sc_files::FileCaller,
+) -> Option<String> {
     let app = match application(catalog, config).await {
         Ok(app) => app,
         Err(e) => {
@@ -266,14 +271,14 @@ pub async fn header(config: &Attrs, catalog: &Catalog, role: u8) -> Option<Strin
         let Ok(root) = scope.resolve("") else {
             continue;
         };
-        if sc_files::check_access(store.as_ref(), floor, &root, role)
+        if sc_files::check_access(store.as_ref(), floor, &root, caller)
             .await
             .is_err()
         {
             continue;
         }
         let Ok(walked) =
-            walk_store(store.as_ref(), floor, role, &root, &DEFAULT_EXCLUDED_DIRS).await
+            walk_store(store.as_ref(), floor, caller, &root, &DEFAULT_EXCLUDED_DIRS).await
         else {
             continue;
         };

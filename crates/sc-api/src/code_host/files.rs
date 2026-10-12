@@ -50,6 +50,16 @@
 //!   everyone would make a non-admin the author of an access rule, which is not
 //!   what delegating a trigger to its caller was meant to grant.
 //!
+//! # Owners
+//!
+//! §2.1 of the F2 design: a file's owner may read it whatever its rule, and only
+//! its owner (or admin authority) may change it. A **delegated** write records
+//! the caller as the owner of what it creates, so `fs(s).asUser()` is how a body
+//! saves a user's private file. An **admin** write records nobody, unless the
+//! body says who with `write(bytes, { owner, minRole, filename })`. Under user
+//! authority the owner cannot be chosen or changed (not by `write`, not by
+//! `setMeta`); under admin authority it can.
+//!
 //! # Bounds
 //!
 //! The **operation budget** is the runtime's ([`DEFAULT_MAX_FILE_OPS`]), since
@@ -74,8 +84,8 @@ use sc_catalog::{Catalog, load_file_store_by_name};
 use sc_error::{Error, Result};
 use sc_expr::FileHost;
 use sc_files::{
-    Entry, FileMeta, FileStat, FileStore, check_access, effective_min_role, filter_visible,
-    mime_for_path,
+    Entry, FILENAME_ATTRIBUTE, FileCaller, FileMeta, FileStat, FileStore, check_access,
+    check_write, effective_min_role, list_visible, mime_for_path, record_owner,
 };
 use serde::Deserialize;
 use serde_json::Value as Json;
@@ -110,9 +120,10 @@ pub struct FileStoreHost<'a> {
     /// The catalog every store name is resolved through, and the connection the
     /// store definitions are read over.
     catalog: &'a Catalog,
-    /// The role the event was served at — what a delegated operation is checked
-    /// against, and public for an event with no caller at all.
-    role: u8,
+    /// The event's caller — the role a delegated operation is checked against
+    /// (public for an event with no caller at all) and the user id the owner
+    /// rule compares with and a delegated write records.
+    caller: FileCaller,
     /// The most bytes one read or write may carry across the seam.
     max_bytes: u64,
     /// The most bytes one host-side copy may move.
@@ -132,7 +143,7 @@ impl<'a> FileStoreHost<'a> {
     pub fn new(catalog: &'a Catalog) -> FileStoreHost<'a> {
         FileStoreHost {
             catalog,
-            role: sc_auth::ROLE_PUBLIC,
+            caller: FileCaller::anonymous(),
             max_bytes: MAX_FILE_BYTES,
             max_copy_bytes: MAX_COPY_BYTES,
             floors: Mutex::new(BTreeMap::new()),
@@ -140,16 +151,22 @@ impl<'a> FileStoreHost<'a> {
     }
 
     /// Attach the event's caller — the role it was served at, which is what a
-    /// delegated operation is checked against.
+    /// delegated operation is checked against, and the user's fields, of which
+    /// only `id` is read: it is what the owner rule (§2.1) compares with and
+    /// what a delegated write records as the owner.
     ///
-    /// The user's *fields* are not here, unlike [`TableHost::caused_by`]: an
-    /// ownership formula reads them and a file rule does not. A store's access
-    /// rule is a role floor, so the role is the whole of what it takes.
+    /// The same pair [`TableHost::caused_by`] takes, so a call site hands both
+    /// hosts the same thing.
     ///
     /// [`TableHost::caused_by`]: super::TableHost::caused_by
     #[must_use]
-    pub fn caused_by(mut self, role: u8) -> FileStoreHost<'a> {
-        self.role = role;
+    pub fn caused_by(mut self, role: u8, user: Option<&Json>) -> FileStoreHost<'a> {
+        let user_id = user.and_then(|u| u.get("id")).and_then(|id| match id {
+            Json::String(s) => Some(s.clone()),
+            Json::Number(n) => Some(n.to_string()),
+            _ => None,
+        });
+        self.caller = FileCaller::new(role, user_id);
         self
     }
 
@@ -185,7 +202,7 @@ impl<'a> FileStoreHost<'a> {
         Ok(floor)
     }
 
-    /// Check that this operation may reach `path` in `store`.
+    /// Check that this operation may **read** `path` in `store`.
     ///
     /// Admin authority clears every rule that can be written, so the whole
     /// path-cumulative walk — one metadata read per directory, plus the store
@@ -202,7 +219,129 @@ impl<'a> FileStoreHost<'a> {
             return Ok(());
         }
         let floor = self.floor(name).await?;
-        check_access(store, floor, path, self.role).await
+        check_access(store, floor, path, &self.caller).await
+    }
+
+    /// Check that this operation may **write** `path` in `store`: create,
+    /// replace, delete, move or re-rule it. Under user authority somebody
+    /// else's file is refused, however low its rule (§2.1).
+    async fn permit_write(
+        &self,
+        store: &dyn FileStore,
+        name: &str,
+        path: &str,
+        authority: &Authority,
+    ) -> Result<()> {
+        if authority.is_admin() {
+            return Ok(());
+        }
+        let floor = self.floor(name).await?;
+        check_write(store, floor, path, &self.caller).await
+    }
+
+    /// The metadata a write's options (`write(bytes, { owner, minRole,
+    /// filename })`) and its authority ask to be recorded, checked **before**
+    /// the bytes land so a refusal writes nothing.
+    async fn planned_meta(
+        &self,
+        store: &dyn FileStore,
+        req: &FileRequest,
+        path: &str,
+    ) -> Result<PlannedMeta> {
+        let owner = match (&req.authority, owner_option(req)?) {
+            // A delegated write is the caller's file: what it creates is theirs,
+            // and naming somebody else would be handing them a file — or taking
+            // one — which delegation was never meant to grant.
+            (Authority::User, Some(Some(named)))
+                if Some(&named) != self.caller.user_id.as_ref() =>
+            {
+                return Err(Error::auth(format!(
+                    "not permitted to choose the owner of {path:?} in file store {} — a \
+                     delegated body's files are its caller's",
+                    store.name()
+                )));
+            }
+            (Authority::User, Some(None)) => {
+                return Err(Error::auth(format!(
+                    "not permitted to clear the owner of {path:?} in file store {}",
+                    store.name()
+                )));
+            }
+            (Authority::User, _) => self.caller.user_id.clone().map(OwnerPlan::IfUnset),
+            (_, Some(Some(named))) => Some(OwnerPlan::Set(named)),
+            (_, Some(None)) => Some(OwnerPlan::Clear),
+            (_, None) => None,
+        };
+        if let Some(role) = req.min_role {
+            valid_role(role)?;
+            if req.authority == Authority::User {
+                self.only_tightens(store, req, path, Some(role)).await?;
+            }
+        }
+        Ok(PlannedMeta {
+            owner,
+            min_role: req.min_role,
+            filename: req.filename.clone(),
+        })
+    }
+
+    /// Record what [`planned_meta`](Self::planned_meta) decided, once the
+    /// entry exists. Nothing is written when nothing was asked for.
+    async fn apply_meta(&self, store: &dyn FileStore, path: &str, plan: PlannedMeta) -> Result<()> {
+        if let Some(OwnerPlan::IfUnset(owner)) = &plan.owner
+            && plan.min_role.is_none()
+            && plan.filename.is_none()
+        {
+            record_owner(store, path, owner).await;
+            return Ok(());
+        }
+        if plan.owner.is_none() && plan.min_role.is_none() && plan.filename.is_none() {
+            return Ok(());
+        }
+        let mut meta = store.get_meta(path).await.unwrap_or_default();
+        match plan.owner {
+            Some(OwnerPlan::IfUnset(owner)) => {
+                meta.owner.get_or_insert(owner);
+            }
+            Some(OwnerPlan::Set(owner)) => meta.owner = Some(owner),
+            Some(OwnerPlan::Clear) => meta.owner = None,
+            None => {}
+        }
+        if let Some(role) = plan.min_role {
+            meta.min_role = Some(role);
+        }
+        if let Some(filename) = plan.filename {
+            meta.attributes
+                .insert(FILENAME_ATTRIBUTE.to_owned(), filename);
+        }
+        store.set_meta(path, &meta).await
+    }
+
+    /// Refuse a delegated change that would make `path` reachable by anyone it
+    /// is not reachable by now — a delegated body may tighten a rule and never
+    /// loosen one.
+    async fn only_tightens(
+        &self,
+        store: &dyn FileStore,
+        req: &FileRequest,
+        path: &str,
+        min_role: Option<u8>,
+    ) -> Result<()> {
+        let floor = self.floor(&req.store).await?;
+        let before = effective_min_role(store, floor, path).await?;
+        let parent = match path.rsplit_once('/') {
+            Some((parent, _)) => parent,
+            None => "",
+        };
+        let above = effective_min_role(store, floor, parent).await?;
+        let after = tightest(above, min_role);
+        if looser(after, before) {
+            return Err(Error::auth(format!(
+                "not permitted to loosen the access rule on {path:?} in file store {} — a delegated body may only tighten one",
+                store.name()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -251,6 +390,62 @@ struct FileRequest {
     /// `setMeta`: the entry's attributes, which replace what was there.
     #[serde(default)]
     attributes: Option<BTreeMap<String, String>>,
+    /// `write`, `copy`, `setMeta`: the owner to record — a user id, or `null`
+    /// for none. Admin authority only (§2.1). Absent leaves it alone, which is
+    /// why it is read as "present", so `null` is not mistaken for absent.
+    #[serde(default, deserialize_with = "present")]
+    owner: Option<Json>,
+    /// `write`, `copy`: the name to serve the file under
+    /// (`attributes.filename`), when it is not the path's own.
+    #[serde(default)]
+    filename: Option<String>,
+}
+
+/// What a write records beside its bytes.
+struct PlannedMeta {
+    owner: Option<OwnerPlan>,
+    min_role: Option<u8>,
+    filename: Option<String>,
+}
+
+/// How a write treats the owner.
+enum OwnerPlan {
+    /// The delegated caller, unless an owner is already recorded — the creator
+    /// stays the owner when somebody rewrites the bytes.
+    IfUnset(String),
+    /// What an admin-authority body named.
+    Set(String),
+    /// None, as an admin-authority body asked with `owner: null`.
+    Clear,
+}
+
+/// A field that was there, whatever it held — `null` included.
+fn present<'de, D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Option<Json>, D::Error> {
+    Json::deserialize(de).map(Some)
+}
+
+/// The `owner` option: absent (`None`), `null` (`Some(None)`) or a user id.
+fn owner_option(req: &FileRequest) -> Result<Option<Option<String>>> {
+    match &req.owner {
+        None => Ok(None),
+        Some(Json::Null) => Ok(Some(None)),
+        Some(Json::String(id)) if !id.trim().is_empty() => Ok(Some(Some(id.trim().to_owned()))),
+        Some(Json::Number(n)) => Ok(Some(Some(n.to_string()))),
+        Some(other) => Err(Error::invalid(format!(
+            "`owner` is a user id, or null for none — not {other}"
+        ))),
+    }
+}
+
+/// Refuse a role outside the scale.
+fn valid_role(role: u8) -> Result<()> {
+    if !(1..=sc_auth::ROLE_PUBLIC).contains(&role) {
+        return Err(Error::invalid(format!(
+            "`minRole` is a role from 1 (admin) to {} (public), not {role}",
+            sc_auth::ROLE_PUBLIC
+        )));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -301,13 +496,19 @@ impl FileStoreHost<'_> {
             "stat" => self.stat(store.as_ref(), req, &path).await,
             "list" => self.list(store.as_ref(), req, &path).await,
             "mkdir" => {
-                self.permit(store.as_ref(), &req.store, &path, &req.authority)
+                self.permit_write(store.as_ref(), &req.store, &path, &req.authority)
                     .await?;
                 store.mkdir(&path).await?;
+                // A delegated body's directory is its caller's, as its files are.
+                if req.authority == Authority::User
+                    && let Some(owner) = &self.caller.user_id
+                {
+                    record_owner(store.as_ref(), &path, owner).await;
+                }
                 Ok(Json::Null)
             }
             "delete" => {
-                self.permit(store.as_ref(), &req.store, &path, &req.authority)
+                self.permit_write(store.as_ref(), &req.store, &path, &req.authority)
                     .await?;
                 Ok(Json::Bool(store.delete(&path).await?))
             }
@@ -363,7 +564,8 @@ impl FileStoreHost<'_> {
 
     /// A `write`: create or replace, making the parent directories on the way.
     async fn write(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit(store, &req.store, path, &req.authority).await?;
+        self.permit_write(store, &req.store, path, &req.authority)
+            .await?;
         let name = store.name();
         if path.is_empty() {
             return Err(Error::invalid(format!(
@@ -393,8 +595,10 @@ impl FileStoreHost<'_> {
         if !req.overwrite {
             self.refuse_existing(store, path).await?;
         }
+        let plan = self.planned_meta(store, req, path).await?;
         let written = bytes.len();
         store.write(path, bytes).await?;
+        self.apply_meta(store, path, plan).await?;
         Ok(serde_json::json!({ "bytes": written }))
     }
 
@@ -409,16 +613,19 @@ impl FileStoreHost<'_> {
 
     /// A `list`: the direct children, filtered to what the authority may see.
     async fn list(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit(store, &req.store, path, &req.authority).await?;
-        let entries = store.list(path).await?;
         // Filtered rather than refused, exactly as the browse endpoint is: naming
         // an entry the caller cannot open leaks what the rule was set to hide.
-        let visible = if req.authority == Authority::User {
+        // And owner-aware: a delegated listing of a folder the caller may not
+        // read still shows the files they own in it (§2.1).
+        let visible: Vec<Entry> = if req.authority == Authority::User {
             let floor = self.floor(&req.store).await?;
-            let dir_floor = effective_min_role(store, floor, path).await?;
-            filter_visible(store, dir_floor, entries, self.role).await?
+            list_visible(store, floor, path, &self.caller)
+                .await?
+                .into_iter()
+                .map(|v| v.entry)
+                .collect()
         } else {
-            entries
+            store.list(path).await?
         };
         Ok(Json::Array(visible.iter().map(entry_json).collect()))
     }
@@ -450,9 +657,16 @@ impl FileStoreHost<'_> {
             Some(self.store(&to_name)?)
         };
         let dest_store = dest.as_deref().unwrap_or(store);
-        self.permit(store, &req.store, path, &req.authority).await?;
-        self.permit(dest_store, &to_name, &to_path, &req.authority)
+        // A copy reads its source; a move takes it away, which is a write.
+        if req.op == "rename" {
+            self.permit_write(store, &req.store, path, &req.authority)
+                .await?;
+        } else {
+            self.permit(store, &req.store, path, &req.authority).await?;
+        }
+        self.permit_write(dest_store, &to_name, &to_path, &req.authority)
             .await?;
+        let plan = self.planned_meta(dest_store, req, &to_path).await?;
         if !req.overwrite {
             self.refuse_existing(dest_store, &to_path).await?;
         }
@@ -460,6 +674,8 @@ impl FileStoreHost<'_> {
         // backend is, and it does not read the bytes at all.
         if same_store && req.op == "rename" {
             store.rename(path, &to_path).await?;
+            // A moved file keeps its metadata, owner included: moving somebody's
+            // file does not make it the mover's.
             return Ok(Json::Null);
         }
         let name = store.name();
@@ -488,6 +704,7 @@ impl FileStoreHost<'_> {
         let bytes = store.read(path).await?;
         let moved = bytes.len();
         dest_store.write(&to_path, bytes).await?;
+        self.apply_meta(dest_store, &to_path, plan).await?;
         // A cross-store move is a copy and then a delete, and it is **not**
         // atomic: two stores are two filesystems, and there is no rename across
         // them to borrow. The delete comes last, so an interrupted move leaves
@@ -511,27 +728,39 @@ impl FileStoreHost<'_> {
             // reporting only what is set here would let a body believe a file is
             // reachable when its folder has locked it.
             "effectiveMinRole": effective,
+            "owner": meta.owner,
             "attributes": meta.attributes,
         }))
     }
 
     /// A `setMeta`: replace this entry's metadata.
+    ///
+    /// The owner is kept unless an admin-authority body names a new one (or
+    /// `null`); under user authority it cannot be changed at all (§2.1).
     async fn set_meta(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit(store, &req.store, path, &req.authority).await?;
-        if let Some(role) = req.min_role
-            && !(1..=sc_auth::ROLE_PUBLIC).contains(&role)
-        {
-            return Err(Error::invalid(format!(
-                "`minRole` is a role from 1 (admin) to {} (public), not {role}",
-                sc_auth::ROLE_PUBLIC
-            )));
+        self.permit_write(store, &req.store, path, &req.authority)
+            .await?;
+        if let Some(role) = req.min_role {
+            valid_role(role)?;
         }
+        let current = store.get_meta(path).await?.owner;
+        let owner = match owner_option(req)? {
+            None => current,
+            Some(named) if req.authority == Authority::User => {
+                if named != current {
+                    return Err(Error::auth(format!(
+                        "not permitted to change the owner of {path:?} in file store {} — \
+                         only admin authority may",
+                        store.name()
+                    )));
+                }
+                current
+            }
+            Some(named) => named,
+        };
         let meta = FileMeta {
             min_role: req.min_role,
-            // Not part of what this call sets, and not dropped by it either: the
-            // owner is who created the entry, and a body rewriting the access
-            // rule has not made itself that.
-            owner: store.get_meta(path).await?.owner,
+            owner,
             attributes: req.attributes.clone().unwrap_or_default(),
         };
         // A delegated body may **tighten** a rule and never loosen one. The
@@ -540,20 +769,7 @@ impl FileStoreHost<'_> {
         // non-admin the author of an access rule — and delegating a trigger to
         // its caller was never meant to grant that.
         if req.authority == Authority::User {
-            let floor = self.floor(&req.store).await?;
-            let before = effective_min_role(store, floor, path).await?;
-            let parent = match path.rsplit_once('/') {
-                Some((parent, _)) => parent,
-                None => "",
-            };
-            let above = effective_min_role(store, floor, parent).await?;
-            let after = tightest(above, meta.min_role);
-            if looser(after, before) {
-                return Err(Error::auth(format!(
-                    "not permitted to loosen the access rule on {path:?} in file store {} — a delegated body may only tighten one",
-                    store.name()
-                )));
-            }
+            self.only_tightens(store, req, path, meta.min_role).await?;
         }
         store.set_meta(path, &meta).await?;
         Ok(Json::Null)

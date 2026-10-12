@@ -1083,47 +1083,9 @@ impl SaltcornUiFramework {
         }
     }
 
-    /// `/files/serve/*`: a file from one of the application's stores, under the
-    /// store's and the path's access rules. `/files/serve/<store>/<path>` names
-    /// the store; a path whose first segment is not one of the application's
-    /// stores is in its first store, which is where v1's one file area lands.
-    ///
-    /// A file the viewer may not read is not found, as it is to the REST
-    /// provider: "forbidden" would say it exists.
+    /// `/files/serve/*`: [`serve_store_file`] for this application.
     async fn file(&self, req: &AppRequest, cat: &Catalog, rest: &[&str]) -> Result<AppResponse> {
-        let parts: Vec<String> = rest.iter().map(|p| percent_decode(p)).collect();
-        if !confined(&parts) {
-            return Ok(AppResponse::not_found());
-        }
-        let stores = &self.app.file_stores;
-        let (store_name, path) = match stores.iter().find(|s| parts.len() > 1 && s.0 == parts[0]) {
-            Some(store) => (store.0.clone(), parts[1..].join("/")),
-            None => match stores.first() {
-                Some(store) => (store.0.clone(), parts.join("/")),
-                None => return Ok(AppResponse::not_found()),
-            },
-        };
-        let Ok(store) = cat.require_file_store(&store_name) else {
-            return Ok(AppResponse::not_found());
-        };
-        let floor = sc_catalog::load_file_store_by_name(cat, &store_name)
-            .await?
-            .and_then(|def| def.min_role);
-        if sc_files::check_access(store.as_ref(), floor, &path, role_of(req))
-            .await
-            .is_err()
-        {
-            return Ok(AppResponse::not_found());
-        }
-        match store.read(&path).await {
-            Ok(bytes) => Ok(AppResponse::ok(
-                sc_files::mime_for_path(&path)
-                    .unwrap_or_else(|| "application/octet-stream".to_owned()),
-                bytes,
-            )),
-            Err(e) if matches!(e.repr(), Repr::NotFound(_)) => Ok(AppResponse::not_found()),
-            Err(e) => Err(e),
-        }
+        serve_store_file(&self.app, cat, req.user.as_ref(), rest).await
     }
 
     /// v1's `req`, for this request.
@@ -1420,7 +1382,7 @@ impl<'a> ViewerHosts<'a> {
                 .caused_by(caller.role, caller.user.clone())
                 .with_evaluator(evaluator)
                 .viewer_only(),
-            files: FileStoreHost::new(cat).caused_by(caller.role),
+            files: FileStoreHost::new(cat).caused_by(caller.role, caller.user.as_ref()),
             triggers: triggers.map(|d| AppTriggers {
                 inner: TriggerRunHost::new(d, cat).caused_by(caller.role, caller.user.clone()),
                 declared,
@@ -1665,6 +1627,55 @@ fn login_location(req: &AppRequest) -> String {
         );
     }
     format!("/auth/login?dest={}", percent_encode(&dest))
+}
+
+/// `/files/serve/*`: a file from one of `app`'s stores, under the store's and
+/// the path's access rules and the owner rule (TODO F2, §2.1), for `user`.
+/// `/files/serve/<store>/<path>` names the store; a path whose first segment is
+/// not one of the application's stores is in its first store, which is where
+/// v1's one file area lands.
+///
+/// A file the viewer may not read is not found, as it is to the REST provider:
+/// "forbidden" would say it exists. A readable one is answered as a
+/// [`ServeFile`](sc_files::ServeFile), which the router serves through its one
+/// file response builder — streamed, with Range and the file's own name.
+pub async fn serve_store_file(
+    app: &Application,
+    cat: &Catalog,
+    user: Option<&User>,
+    rest: &[&str],
+) -> Result<AppResponse> {
+    let parts: Vec<String> = rest.iter().map(|p| percent_decode(p)).collect();
+    if !confined(&parts) {
+        return Ok(AppResponse::not_found());
+    }
+    let stores = &app.file_stores;
+    let (store_name, path) = match stores.iter().find(|s| parts.len() > 1 && s.0 == parts[0]) {
+        Some(store) => (store.0.clone(), parts[1..].join("/")),
+        None => match stores.first() {
+            Some(store) => (store.0.clone(), parts.join("/")),
+            None => return Ok(AppResponse::not_found()),
+        },
+    };
+    let Ok(store) = cat.require_file_store(&store_name) else {
+        return Ok(AppResponse::not_found());
+    };
+    let floor = sc_catalog::load_file_store_by_name(cat, &store_name)
+        .await?
+        .and_then(|def| def.min_role);
+    let caller = sc_files::FileCaller::new(
+        user.map_or(ROLE_PUBLIC, |u| u.role),
+        user.map(|u| u.id.to_string()),
+    );
+    if sc_files::check_access(store.as_ref(), floor, &path, &caller)
+        .await
+        .is_err()
+    {
+        return Ok(AppResponse::not_found());
+    }
+    Ok(AppResponse::serve_file(sc_files::ServeFile::new(
+        store, path,
+    )))
 }
 
 fn role_of(req: &AppRequest) -> u8 {

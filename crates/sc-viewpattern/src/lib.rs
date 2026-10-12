@@ -66,7 +66,7 @@ pub use configure::{Configurer, check_step_values};
 pub use framework::{
     ASSET_VERSION_TAG, CFG_ROOT_PAGES, CFG_SITE_NAME, DERIVED_CONFIG_KEYS, SaltcornUiFactory,
     SaltcornUiFramework, check_saltcorn_ui_config, install_saltcorn_ui, saltcorn_ui_config_spec,
-    saltcorn_ui_csp, view_sets,
+    saltcorn_ui_csp, serve_store_file, view_sets,
 };
 pub use layout::{
     PAGE_ACTIONS, PageReferences, check_library_placements, check_page_actions, check_page_views,

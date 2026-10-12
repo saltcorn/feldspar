@@ -442,6 +442,9 @@ async fn binary_upload_writes_the_body_and_still_requires_auth() -> sc_error::Re
 
     // The bytes land verbatim — no base64 round-trip, no UTF-8 assumption.
     assert_eq!(&store.read("assets/blob.bin").await?[..], &payload[..]);
+    // And the admin who uploaded it is recorded as its owner (F2 §2.1).
+    let owner = store.get_meta("assets/blob.bin").await?.owner;
+    assert!(owner.is_some_and(|id| uuid::Uuid::parse_str(&id).is_ok()));
 
     // A nested destination arrives whole, because `{*path}` is a greedy capture.
     let (status, entry) = client
@@ -502,7 +505,7 @@ async fn download_serves_the_bytes_as_a_named_file() -> sc_error::Result<()> {
     assert_eq!(body, payload);
     assert_eq!(
         headers[header::CONTENT_DISPOSITION],
-        "attachment; filename=\"app-debug.apk\""
+        "attachment; filename=\"app-debug.apk\"; filename*=UTF-8''app-debug.apk"
     );
     assert_eq!(
         headers[header::CONTENT_TYPE],

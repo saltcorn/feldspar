@@ -535,6 +535,9 @@ async fn upload(
 async fn download(
     State(state): State<AppState>,
     jar: CookieJar,
+    method: axum::http::Method,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
     AxumPath((store_name, path)): AxumPath<(String, String)>,
 ) -> Response {
     let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
@@ -564,6 +567,10 @@ async fn download(
         locale: sc_i18n::active().default_locale().clone(),
     };
     match handler(ctx).await {
+        // The file itself, through the shared builder: streamed, with Range.
+        Ok(HandlerResponse {
+            serve: Some(file), ..
+        }) => crate::file_response::serve(&file, &method, &uri, &headers).await,
         Ok(resp) => {
             apply_response(&state, jar, session_token, SessionClient::default(), resp).await
         }
@@ -1301,6 +1308,14 @@ async fn dispatch_app(
         // The provider enforces the endpoint's auth itself (§7), so unlike the
         // admin path there is no separate check here.
         return match provider.handle(req, catalog, user.as_ref()).await {
+            // A store file — a `File` field's download — through the shared
+            // builder (TODO F2, §2.2): streamed, ranged, and named.
+            Ok(sc_api::ApiResponse {
+                file: Some(file), ..
+            }) => with_csp(
+                crate::file_response::serve(&file, &method, uri, headers).await,
+                &csp,
+            ),
             // A raw-bytes response — a file download (§4) — goes out as-is under
             // its own content type; there is no JSON body and no session change
             // a download could carry.
@@ -1341,6 +1356,7 @@ async fn dispatch_app(
                         // A provider's raw body is served above, before this
                         // point: an application's download never reaches here.
                         download: None,
+                        serve: None,
                     },
                 )
                 .await;
@@ -1381,7 +1397,7 @@ async fn dispatch_app(
     // reached.
     if let Some((dir, rest)) = app.app.static_dir_for(path) {
         return with_csp(
-            serve_static_dir(state, app, dir, rest, &method, headers, &jar).await,
+            serve_static_dir(state, app, dir, rest, &method, uri, headers, &jar).await,
             &csp,
         );
     }
@@ -1445,6 +1461,13 @@ async fn dispatch_app(
         .or_else(|| jar.get(CSRF_COOKIE).map(|c| c.value().to_owned()))
         .unwrap_or_default();
     match app.framework.handle(req, catalog).await {
+        // A store file (`/files/serve/*`) through the shared builder.
+        Ok(sc_app::AppResponse {
+            file: Some(file), ..
+        }) => with_csp(
+            crate::file_response::serve(&file, &method, uri, headers).await,
+            &csp,
+        ),
         Ok(resp) => {
             let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::OK);
             // The same session code an API provider's response goes through, so
@@ -1643,14 +1666,16 @@ async fn dispatch_analytics_api(
 ///
 /// The content type is [`sc_app::asset_content_type`], the code framework's own
 /// answer, so a `.png` in a bundle and a `.png` in a static directory are served
-/// identically. The ETag is over the bytes: these are images, they are requested
-/// on every page load, and they do not change.
+/// identically. The response is the shared builder's ([`crate::file_response`]):
+/// streamed, ranged, and validated by an ETag over size, time and path.
+#[allow(clippy::too_many_arguments)]
 async fn serve_static_dir(
     state: &AppState,
     app: &MountedApp,
     dir: &sc_app::StaticDir,
     rest: &str,
     method: &axum::http::Method,
+    uri: &Uri,
     headers: &axum::http::HeaderMap,
     jar: &CookieJar,
 ) -> Response {
@@ -1699,7 +1724,10 @@ async fn serve_static_dir(
         },
         None => None,
     };
-    let role = user.as_ref().map_or(sc_files::ROLE_PUBLIC, |u| u.role);
+    let caller = sc_files::FileCaller::new(
+        user.as_ref().map_or(sc_files::ROLE_PUBLIC, |u| u.role),
+        user.as_ref().map(|u| u.id.to_string()),
+    );
 
     let floor = match sc_catalog::load_file_store_by_name(catalog, &dir.store.0).await {
         Ok(def) => def.and_then(|def| def.min_role),
@@ -1708,51 +1736,23 @@ async fn serve_static_dir(
             return json_error(StatusCode::INTERNAL_SERVER_ERROR, "file store unreadable");
         }
     };
-    if sc_files::check_access(store.as_ref(), floor, &path, role)
+    if sc_files::check_access(store.as_ref(), floor, &path, &caller)
         .await
         .is_err()
     {
         return missing();
     }
 
-    let bytes = match store.read(&path).await {
-        Ok(bytes) => bytes,
-        Err(e) if matches!(e.repr(), Repr::NotFound(_)) => return missing(),
-        Err(e) => {
-            log_failure("reading a static directory's file", &e);
-            return missing();
-        }
-    };
-
-    let etag = crate::apps::etag_of(&bytes);
-    let matched = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
-
-    let mut response = if matched {
-        StatusCode::NOT_MODIFIED.into_response()
-    } else if method == axum::http::Method::HEAD {
-        StatusCode::OK.into_response()
-    } else {
-        (StatusCode::OK, bytes).into_response()
-    };
-    let out = response.headers_mut();
-    if let Ok(etag) = HeaderValue::from_str(&etag) {
-        out.insert(header::ETAG, etag);
-    }
-    out.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(sc_app::asset_content_type(&path)),
-    );
+    // The shared builder (TODO F2, §2.2): streamed, with Range (so a video
+    // seeks), the cheap ETag and the file's own name. The content type is the
+    // framework's own answer, so a `.png` here and in a bundle are served alike.
     // Revalidated rather than cached blind: an admin who replaces a logo must
     // not have to explain a stale one, and the ETag makes the second request
     // cheap anyway.
-    out.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache, must-revalidate"),
-    );
-    response
+    let file = sc_files::ServeFile::new(store, path.clone())
+        .content_type(sc_app::asset_content_type(&path))
+        .cache_control("private, no-cache, must-revalidate");
+    crate::file_response::serve(&file, method, uri, headers).await
 }
 
 /// An application's catalogue: `GET {mount}/i18n/{locale}.json` (§16.1, D7).
@@ -2977,7 +2977,7 @@ enum Audience {
 
 /// Log a discarded lower-level failure at a call site that only knows "it broke"
 /// (no [`Error`] value to forward). Keeps those paths from failing silently.
-fn log_failure(context: &str, err: &(dyn std::error::Error + 'static)) {
+pub(crate) fn log_failure(context: &str, err: &(dyn std::error::Error + 'static)) {
     eprintln!("feldspar: {context}: {}", sc_error::format_chain(err));
 }
 

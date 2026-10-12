@@ -7,6 +7,8 @@
 
 #[path = "bundle_shape.rs"]
 mod bundle_shape;
+#[path = "files_serve.rs"]
+mod files_serve;
 #[path = "library_store.rs"]
 mod library_store;
 #[path = "view_store.rs"]

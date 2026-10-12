@@ -24,6 +24,25 @@
 //! A [`FileStoreDef::min_role`](crate::FileStoreDef) is the floor for the whole
 //! store, applied before any per-file rule, and it composes the same way: it is
 //! simply the outermost entry on the path.
+//!
+//! ## The owner (Saltcorn 1's rule)
+//!
+//! [`FileMeta::owner`] is an authority too (TODO F2, §2.1). A file is
+//! **readable** if the caller's role clears the effective floor *or* the caller
+//! is the file's owner, and it is **writable** (and deletable) by its owner or by
+//! admin authority. That is what makes "min_role 1, and the uploader may read
+//! it" — a private upload — expressible with no rule per user.
+//!
+//! Only the entry's *own* owner counts. Owning a folder does not grant the
+//! files in it, because a folder's owner is whoever made it and the files are
+//! whoever put them there; "the owner of the parent may read the child" would
+//! hand every upload in a shared drop folder to the person who created it.
+//!
+//! An entry with **no owner** keeps the path rule for writes as well as reads —
+//! it is a file nobody in particular put there (a scaffold, a code body under
+//! admin authority, the disk underneath), and a caller who clears its floor may
+//! change it as they always could. An *owned* entry is the owner's: clearing the
+//! floor is not enough to overwrite or delete somebody else's upload.
 
 use crate::store::{FileMeta, FileStore};
 use sc_error::{Error, Result};
@@ -31,6 +50,64 @@ use sc_error::{Error, Result};
 /// The least-restrictive role: everyone, including anonymous callers. Matches the
 /// `sc-auth` scale where `100` is public.
 pub const ROLE_PUBLIC: u8 = 100;
+
+/// The most-restrictive role: admin authority, which every rule is cleared by.
+pub const ROLE_ADMIN: u8 = 1;
+
+/// Who is asking: the role every floor is checked against, and the user id the
+/// owner rule compares with.
+///
+/// A struct rather than a bare role because the owner rule needs the id, and a
+/// role-only check is how a file came to be unreadable by the person who
+/// uploaded it. `user_id` is the account's id as [`FileMeta::owner`] records it
+/// (a UUID's string form); `None` is a caller with no account — anonymous, or a
+/// system run checked at a role — who owns nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileCaller {
+    /// The caller's role (`1` admin … `100` public).
+    pub role: u8,
+    /// The caller's user id, if they are signed in.
+    pub user_id: Option<String>,
+}
+
+impl FileCaller {
+    /// A caller at `role`, signed in as `user_id` when there is one.
+    pub fn new(role: u8, user_id: Option<String>) -> FileCaller {
+        FileCaller { role, user_id }
+    }
+
+    /// A caller with no account, checked at `role` alone — anonymous at
+    /// [`ROLE_PUBLIC`], or a system run at whatever role it was given.
+    pub fn role(role: u8) -> FileCaller {
+        FileCaller {
+            role,
+            user_id: None,
+        }
+    }
+
+    /// Nobody: the public role and no account.
+    pub fn anonymous() -> FileCaller {
+        FileCaller::role(ROLE_PUBLIC)
+    }
+
+    /// Whether this caller has admin authority, which clears every rule.
+    pub fn is_admin(&self) -> bool {
+        self.role <= ROLE_ADMIN
+    }
+
+    /// Whether this caller is the recorded owner of the entry `meta` describes.
+    ///
+    /// An entry with no owner is owned by nobody, and a caller with no account
+    /// owns nothing — two `None`s are not a match.
+    pub fn owns(&self, meta: &FileMeta) -> bool {
+        matches!((&self.user_id, &meta.owner), (Some(me), Some(owner)) if me == owner)
+    }
+
+    /// Whether the role alone clears `floor`.
+    fn clears(&self, floor: Option<u8>) -> bool {
+        floor.is_none_or(|required| self.role <= required)
+    }
+}
 
 /// Combine two optional rules, keeping the more restrictive (smaller) one.
 ///
@@ -92,11 +169,12 @@ pub async fn effective_min_role(
     Ok(floor)
 }
 
-/// Check that `role` may reach `path`, returning an error if not.
+/// Check that `caller` may **read** `path`, returning an error if not.
 ///
 /// Remember the scale is inverted: a user clears a rule when their role number is
 /// **less than or equal to** the required one (admin `1` clears everything;
-/// public `100` clears only unrestricted paths).
+/// public `100` clears only unrestricted paths). A caller who does not clear the
+/// floor may still read an entry they own (§2.1).
 ///
 /// The error deliberately does not say which component of the path denied
 /// access, nor whether the target exists. Naming the restricted folder would tell
@@ -107,18 +185,145 @@ pub async fn check_access(
     store: &dyn FileStore,
     store_min_role: Option<u8>,
     path: &str,
-    role: u8,
+    caller: &FileCaller,
 ) -> Result<()> {
-    match effective_min_role(store, store_min_role, path).await? {
-        Some(required) if role > required => Err(Error::auth(format!(
-            "not permitted to access {path:?} in file store {}",
-            store.name()
-        ))),
-        _ => Ok(()),
+    if caller.is_admin() {
+        return Ok(());
     }
+    let floor = effective_min_role(store, store_min_role, path).await?;
+    if caller.clears(floor) {
+        return Ok(());
+    }
+    if caller.user_id.is_some() && caller.owns(&store.get_meta(path).await.unwrap_or_default()) {
+        return Ok(());
+    }
+    Err(denied(store, path))
 }
 
-/// Filter a directory listing to the entries `role` may see.
+/// Check that `caller` may **write** `path` — create, replace, delete, rename
+/// or change the metadata of it — returning an error if not.
+///
+/// Admin authority may write anything. An entry with an owner may be written by
+/// that owner and nobody else. An entry with no owner, or a path with nothing
+/// there yet, follows the path rule a read does: a caller who clears the floor
+/// may create or change it.
+///
+/// A **directory** is checked all the way down: deleting or moving a folder is
+/// deleting or moving every file in it, so one that holds somebody else's file
+/// is refused exactly as that file would be.
+pub async fn check_write(
+    store: &dyn FileStore,
+    store_min_role: Option<u8>,
+    path: &str,
+    caller: &FileCaller,
+) -> Result<()> {
+    if caller.is_admin() {
+        return Ok(());
+    }
+    let meta = store.get_meta(path).await.unwrap_or_default();
+    let permitted = match &meta.owner {
+        Some(_) => caller.owns(&meta),
+        None => caller.clears(effective_min_role(store, store_min_role, path).await?),
+    };
+    if !permitted {
+        return Err(denied(store, path));
+    }
+    if matches!(store.stat(path).await, Ok(Some(stat)) if stat.is_dir)
+        && holds_foreign_file(store, path, caller).await?
+    {
+        return Err(denied(store, path));
+    }
+    Ok(())
+}
+
+/// Whether anything beneath the directory `dir` is owned by somebody other than
+/// `caller` — what makes deleting or moving the directory a write to their file.
+async fn holds_foreign_file(store: &dyn FileStore, dir: &str, caller: &FileCaller) -> Result<bool> {
+    let mut stack = vec![dir.to_owned()];
+    while let Some(current) = stack.pop() {
+        for entry in store.list(&current).await? {
+            let meta = store.get_meta(&entry.path).await.unwrap_or_default();
+            if meta.owner.is_some() && !caller.owns(&meta) {
+                return Ok(true);
+            }
+            if entry.is_dir {
+                stack.push(entry.path);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Record `owner` as the creator of `path`, if nothing has been recorded yet.
+///
+/// Called after every write that can create an entry on somebody's behalf. Two
+/// things it deliberately does not do:
+///
+/// - **It does not overwrite an existing owner.** The owner is the creator, so
+///   saving somebody else's file does not take it over.
+/// - **It does not fail the write.** The bytes are already there, and a store
+///   whose backend cannot keep metadata (no xattr support on the filesystem) must
+///   still be usable — an error after a successful upload would be a lie about
+///   what happened.
+pub async fn record_owner(store: &dyn FileStore, path: &str, owner: &str) {
+    let Ok(meta) = store.get_meta(path).await else {
+        return;
+    };
+    if meta.owner.is_some() {
+        return;
+    }
+    let _ = store
+        .set_meta(
+            path,
+            &FileMeta {
+                owner: Some(owner.to_owned()),
+                ..meta
+            },
+        )
+        .await;
+}
+
+/// The one refusal every check answers with.
+fn denied(store: &dyn FileStore, path: &str) -> Error {
+    Error::auth(format!(
+        "not permitted to access {path:?} in file store {}",
+        store.name()
+    ))
+}
+
+/// The entries of the directory `dir` that `caller` may see, with their
+/// metadata — the whole of what a listing needs, in one call.
+///
+/// A caller who may read `dir` sees every child they clear or own. A caller who
+/// may **not** read it still sees the children they own (§2.1: a user's own
+/// uploads in a private drop folder), and nothing else. A caller who owns
+/// nothing there gets the same refusal [`check_access`] gives, so an
+/// unreadable folder still looks like a missing one.
+pub async fn list_visible(
+    store: &dyn FileStore,
+    store_min_role: Option<u8>,
+    dir: &str,
+    caller: &FileCaller,
+) -> Result<Vec<VisibleEntry>> {
+    let readable = check_access(store, store_min_role, dir, caller).await;
+    if readable.is_err() && caller.user_id.is_none() {
+        return Err(denied(store, dir));
+    }
+    let dir_floor = effective_min_role(store, store_min_role, dir).await?;
+    let entries = match store.list(dir).await {
+        Ok(entries) => entries,
+        Err(_) if readable.is_err() => return Err(denied(store, dir)),
+        Err(e) => return Err(e),
+    };
+    let visible = visible_entries(store, dir_floor, entries, caller).await?;
+    if readable.is_err() && visible.is_empty() {
+        return Err(denied(store, dir));
+    }
+    Ok(visible)
+}
+
+/// Filter a directory listing to the entries `caller` may see: those whose rule
+/// they clear, and those they own.
 ///
 /// A listing has to be filtered rather than merely refused: the directory itself
 /// may be readable while individual children are not, and showing names the
@@ -132,9 +337,9 @@ pub async fn filter_visible(
     store: &dyn FileStore,
     dir_floor: Option<u8>,
     entries: Vec<crate::Entry>,
-    role: u8,
+    caller: &FileCaller,
 ) -> Result<Vec<crate::Entry>> {
-    Ok(visible_entries(store, dir_floor, entries, role)
+    Ok(visible_entries(store, dir_floor, entries, caller)
         .await?
         .into_iter()
         .map(|visible| visible.entry)
@@ -164,19 +369,18 @@ pub async fn visible_entries(
     store: &dyn FileStore,
     dir_floor: Option<u8>,
     entries: Vec<crate::Entry>,
-    role: u8,
+    caller: &FileCaller,
 ) -> Result<Vec<VisibleEntry>> {
     let mut visible = Vec::with_capacity(entries.len());
     for entry in entries {
         let meta: FileMeta = store.get_meta(&entry.path).await.unwrap_or_default();
         let effective_min_role = tighten(dir_floor, meta.min_role);
-        match effective_min_role {
-            Some(required) if role > required => continue,
-            _ => visible.push(VisibleEntry {
+        if caller.is_admin() || caller.clears(effective_min_role) || caller.owns(&meta) {
+            visible.push(VisibleEntry {
                 entry,
                 meta,
                 effective_min_role,
-            }),
+            });
         }
     }
     Ok(visible)

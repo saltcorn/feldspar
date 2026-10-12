@@ -95,11 +95,11 @@ pub fn configured_tokens(config: &Attrs) -> Result<u64> {
 pub async fn source_files(
     scope: &FileScope,
     catalog: &Catalog,
-    role: u8,
+    caller: &sc_files::FileCaller,
 ) -> Result<(Vec<SourceFile>, bool)> {
     let (store, floor) = scope.connect(catalog).await?;
     let root = scope.resolve("")?;
-    let walked = walk_store(store.as_ref(), floor, role, &root, &DEFAULT_EXCLUDED_DIRS).await?;
+    let walked = walk_store(store.as_ref(), floor, caller, &root, &DEFAULT_EXCLUDED_DIRS).await?;
     let cache = cache_for(&scope.store);
     let mut files = Vec::new();
     for entry in walked.entries.into_iter().filter(|e| !e.is_dir) {
@@ -169,7 +169,8 @@ pub async fn call(
         }
     };
 
-    let (files, truncated) = source_files(scope, ctx.catalog, ctx.caller.role).await?;
+    let (files, truncated) =
+        source_files(scope, ctx.catalog, &crate::files::file_caller(ctx.caller)).await?;
     let focus = match named.is_empty() {
         false => focus_of(&files, named.iter().map(String::as_str)),
         true => {

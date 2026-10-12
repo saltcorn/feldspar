@@ -61,7 +61,9 @@ use sc_auth::{User, authenticate};
 use sc_catalog::{CallerContext, Catalog, DataFieldKind, Table, load_file_store_by_name};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{JsEvaluator, Operation};
-use sc_files::{ROLE_PUBLIC, check_access, mime_for_path, validate_file_path};
+use sc_files::{
+    FileCaller, ROLE_PUBLIC, ServeFile, check_access, check_write, record_owner, validate_file_path,
+};
 use sc_query::Value;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
@@ -950,9 +952,10 @@ impl RestProvider {
         if table.rls_enabled {
             return self.run_rls(route, &table, params, req, cat, user).await;
         }
-        // The caller's role for the path-cumulative file rule. Anonymous is
-        // public; the table-level gate (floor or formula) runs separately.
-        let role = user.map_or(ROLE_PUBLIC, |u| u.role);
+        // The caller for the path-cumulative file rule and the owner rule
+        // (§2.1). Anonymous is public; the table-level gate (floor or formula)
+        // runs separately.
+        let role = file_caller(user);
         let meets_read = ownership::meets(user, table.access.min_role_read);
         let meets_write = ownership::meets(user, table.access.min_role_write);
         // The formula, for callers below the floor. Its absence there means
@@ -1091,7 +1094,7 @@ impl RestProvider {
                             .await?;
                     }
                 }
-                download(cat, &table, field, id()?, role).await?
+                download(cat, &table, field, id()?, &role).await?
             }
             RestOp::Upload { field } => {
                 let filename = params
@@ -1139,7 +1142,7 @@ impl RestProvider {
                     id()?,
                     filename,
                     req.raw.clone(),
-                    role,
+                    &role,
                     &caller,
                 )
                 .await?
@@ -1230,7 +1233,7 @@ impl RestProvider {
     ) -> Result<ApiResponse> {
         let ctx = ownership::caller_context(user);
         let body = &req.body;
-        let role = user.map_or(ROLE_PUBLIC, |u| u.role);
+        let role = file_caller(user);
         let id = || -> Result<&str> {
             params
                 .get("id")
@@ -1254,7 +1257,7 @@ impl RestProvider {
                 deleted()
             }
             RestOp::Download { field } => {
-                download_ctx(cat, table, field, id()?, role, &ctx).await?
+                download_ctx(cat, table, field, id()?, &role, &ctx).await?
             }
             RestOp::Upload { field } => {
                 let filename = params
@@ -1268,7 +1271,7 @@ impl RestProvider {
                     id()?,
                     filename,
                     req.raw.clone(),
-                    role,
+                    &role,
                     &ctx,
                 )
                 .await?
@@ -1369,6 +1372,15 @@ fn code_answer(result: Result<Json>, user: Option<&User>) -> Result<ApiResponse>
     Ok(ApiResponse::with_status(status, body))
 }
 
+/// The caller as a file rule sees them: the role (public when anonymous) and the
+/// user id the owner rule (§2.1) compares with.
+fn file_caller(user: Option<&User>) -> FileCaller {
+    FileCaller::new(
+        user.map_or(ROLE_PUBLIC, |u| u.role),
+        user.map(|u| u.id.to_string()),
+    )
+}
+
 /// A short id a failure is logged under and its caller is given, so the two
 /// can be matched without the caller seeing the log line.
 fn log_id() -> String {
@@ -1423,9 +1435,9 @@ async fn download(
     table: &Table,
     field: &str,
     id: &str,
-    role: u8,
+    caller: &FileCaller,
 ) -> Result<ApiResponse> {
-    download_inner(cat, table, field, id, role, None).await
+    download_inner(cat, table, field, id, caller, None).await
 }
 
 /// [`download`] resolving the row's file path through an RLS caller context
@@ -1435,10 +1447,10 @@ async fn download_ctx(
     table: &Table,
     field: &str,
     id: &str,
-    role: u8,
+    caller: &FileCaller,
     context: &CallerContext,
 ) -> Result<ApiResponse> {
-    download_inner(cat, table, field, id, role, Some(context)).await
+    download_inner(cat, table, field, id, caller, Some(context)).await
 }
 
 async fn download_inner(
@@ -1446,7 +1458,7 @@ async fn download_inner(
     table: &Table,
     field: &str,
     id: &str,
-    role: u8,
+    caller: &FileCaller,
     context: Option<&CallerContext>,
 ) -> Result<ApiResponse> {
     let (store_name, _, _) = file_field(table, field)?;
@@ -1462,13 +1474,21 @@ async fn download_inner(
     };
     let store = cat.require_file_store(store_name)?;
     let floor = store_floor(cat, store_name).await?;
-    check_access(store.as_ref(), floor, &path, role).await?;
-    let bytes = store.read(&path).await?;
-    // Content type by extension, exactly as the field's MIME allow-list is
-    // enforced — the two must agree on what a path is.
-    let content_type =
-        mime_for_path(&path).unwrap_or_else(|| "application/octet-stream".to_owned());
-    Ok(ApiResponse::file(bytes, content_type))
+    // A file the caller may not read is not found, exactly as a missing one is
+    // (§13.2): "forbidden" would confirm it exists.
+    if check_access(store.as_ref(), floor, &path, caller)
+        .await
+        .is_err()
+    {
+        return Err(Error::not_found(format!(
+            "row {id} has no file in `{field}`"
+        )));
+    }
+    // Served by the transport's file builder (TODO F2, §2.2): streamed, with
+    // Range, and named for the original upload. The content type is the one
+    // the path guesses, exactly as the field's MIME allow-list is enforced —
+    // the two must agree on what a path is.
+    Ok(ApiResponse::serve_file(ServeFile::new(store, path)))
 }
 
 /// Store an upload's bytes behind a row's `File` field (§4).
@@ -1493,10 +1513,10 @@ async fn upload_ctx(
     id: &str,
     filename: &str,
     data: Option<bytes::Bytes>,
-    role: u8,
+    caller: &FileCaller,
     context: &CallerContext,
 ) -> Result<ApiResponse> {
-    upload_inner(cat, table, field, id, filename, data, role, Some(context)).await
+    upload_inner(cat, table, field, id, filename, data, caller, Some(context)).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1507,7 +1527,7 @@ async fn upload_inner(
     id: &str,
     filename: &str,
     data: Option<bytes::Bytes>,
-    role: u8,
+    caller: &FileCaller,
     context: Option<&CallerContext>,
 ) -> Result<ApiResponse> {
     let (store_name, folder, mime_allow) = file_field(table, field)?;
@@ -1523,13 +1543,24 @@ async fn upload_inner(
 
     let store = cat.require_file_store(store_name)?;
     let floor = store_floor(cat, store_name).await?;
-    // Writing into a restricted place is as governed as reading from one.
-    check_access(store.as_ref(), floor, &path, role).await?;
+    // The field's folder is where the admin said uploads land, and the table's
+    // write rule already let this caller upload, so a **new** file needs nothing
+    // more — that is what makes a min_role 1 folder a private drop box (§2.1).
+    // Replacing a file that is there is a write to it: somebody else's upload,
+    // or a file the caller could not otherwise change, is refused.
+    if store.stat(&path).await?.is_some() {
+        check_write(store.as_ref(), floor, &path, caller).await?;
+    }
 
     // The row must exist (and be writable by the caller) before the bytes land:
     // failing afterwards would leave an orphaned file no row references.
     rows::read_field_ctx(cat, table, field, id, context).await?;
     store.write(&path, data).await?;
+    // The uploader owns it (§2.1), so they can read it back however private
+    // the folder is.
+    if let Some(owner) = &caller.user_id {
+        record_owner(store.as_ref(), &path, owner).await;
+    }
     let updated =
         rows::update_row_guarded(cat, table, id, &json!({ field: path }), None, context).await?;
     Ok(ApiResponse::with_status(201, updated))

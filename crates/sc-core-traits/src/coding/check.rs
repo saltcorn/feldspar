@@ -375,7 +375,7 @@ pub async fn record_baseline(
     let timeout = config_count(config, super::CFG_TIMEOUT, super::DEFAULT_TIMEOUT_SECONDS)?;
     // A scope with no runnable project has no script baseline: every script
     // is then undeclared, before and after.
-    if let Ok(project) = project(scope, ctx.catalog, ctx.caller.role).await {
+    if let Ok(project) = project(scope, ctx.catalog, &crate::files::file_caller(ctx.caller)).await {
         for script in scripts {
             let run = run_script(&project, &script, timeout).await?;
             if let Some(baseline) = run.outcome.baseline() {
@@ -565,7 +565,7 @@ pub async fn run_checks(
 
     let mut runs: Vec<CheckRun> = Vec::new();
     if !checks.is_empty() {
-        let project = project(scope, ctx.catalog, ctx.caller.role).await?;
+        let project = project(scope, ctx.catalog, &crate::files::file_caller(ctx.caller)).await?;
         for script in &checks {
             runs.push(run_script(&project, script, timeout).await?);
         }

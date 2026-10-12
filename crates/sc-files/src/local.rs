@@ -24,12 +24,14 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use sc_error::{Context, Error, Result};
 use sc_types::{Attrs, Operation, OperationScope};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::backend::OperationOutcome;
 use crate::def::{CFG_CREATE, CFG_PATH, FileStoreDef};
 use crate::paths::suggest_local_dir;
 use crate::store::{Entry, FileMeta, FileStat, FileStore};
+use crate::stream::{BoxAsyncRead, BoxAsyncWrite, check_range};
 
 /// A modification time as RFC 3339 in UTC, which is how every other timestamp
 /// crosses this server's wire.
@@ -302,6 +304,126 @@ impl FileStore for LocalFileStore {
             is_dir,
             modified: meta.modified().ok().map(rfc3339),
         }))
+    }
+
+    /// The open file itself, seeked and limited to the range: nothing is read
+    /// until the stream is.
+    async fn open_read(&self, path: &str, range: Option<Range<u64>>) -> Result<BoxAsyncRead> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let abs = self.resolve(path)?;
+        let mut file = self.io(tokio::fs::File::open(&abs).await, path, "opening")?;
+        let size = self.io(file.metadata().await, path, "stat")?;
+        if size.is_dir() {
+            return Err(Error::invalid(format!(
+                "{path:?} in store {} is a directory, not a file to read",
+                self.name
+            )));
+        }
+        let Some(range) = range else {
+            return Ok(Box::new(file));
+        };
+        check_range(&range, size.len(), path)?;
+        self.io(
+            file.seek(std::io::SeekFrom::Start(range.start)).await,
+            path,
+            "seeking in",
+        )?;
+        Ok(Box::new(file.take(range.end - range.start)))
+    }
+
+    /// The file opened for appending, created (with its parents) if missing.
+    async fn open_append<'a>(&'a self, path: &str) -> Result<BoxAsyncWrite<'a>> {
+        let abs = self.resolve(path)?;
+        if abs == self.root {
+            return Err(Error::invalid(format!(
+                "the root of file store {} is not a file to append to",
+                self.name
+            )));
+        }
+        if let Some(parent) = abs.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("creating parent dirs for {path:?}"))?;
+        }
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&abs)
+            .await
+            .with_context(|| format!("opening {path:?} to append in store {}", self.name))?;
+        Ok(Box::new(file))
+    }
+
+    /// Streamed into a temporary file beside the target and renamed over it,
+    /// so the target is the whole join or untouched: every part is checked
+    /// before a byte is copied, and a failure part-way removes the temporary.
+    async fn concat(&self, parts: &[String], to: &str) -> Result<u64> {
+        let target = self.resolve(to)?;
+        if target == self.root {
+            return Err(Error::invalid(format!(
+                "the root of file store {} is not a file to join into",
+                self.name
+            )));
+        }
+        let mut sources = Vec::with_capacity(parts.len());
+        for part in parts {
+            let abs = self.resolve(part)?;
+            let meta = self.io(tokio::fs::metadata(&abs).await, part, "stat")?;
+            if meta.is_dir() {
+                return Err(Error::invalid(format!(
+                    "{part:?} in store {} is a directory, not a part to join",
+                    self.name
+                )));
+            }
+            sources.push((part, abs));
+        }
+        let parent = target.parent().unwrap_or(&self.root).to_path_buf();
+        tokio::fs::create_dir_all(&parent)
+            .await
+            .with_context(|| format!("creating parent dirs for {to:?}"))?;
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let temp = parent.join(format!(".{name}.{}.joining", uuid::Uuid::new_v4().simple()));
+        let joined = async {
+            let mut out = tokio::fs::File::create(&temp)
+                .await
+                .with_context(|| format!("creating the join for {to:?}"))?;
+            let mut total = 0u64;
+            for (part, abs) in &sources {
+                let mut input = self.io(tokio::fs::File::open(abs).await, part, "opening")?;
+                total += tokio::io::copy(&mut input, &mut out)
+                    .await
+                    .with_context(|| format!("joining {part:?} into {to:?}"))?;
+            }
+            tokio::io::AsyncWriteExt::flush(&mut out)
+                .await
+                .with_context(|| format!("writing the join for {to:?}"))?;
+            Ok::<u64, Error>(total)
+        }
+        .await;
+        let total = match joined {
+            Ok(total) => total,
+            Err(e) => {
+                tokio::fs::remove_file(&temp).await.ok();
+                return Err(e);
+            }
+        };
+        // A replaced target keeps its metadata — its owner above all — which
+        // the rename would otherwise drop with the old inode's attributes.
+        let kept = match tokio::fs::try_exists(&target).await {
+            Ok(true) => Some(self.get_meta(to).await.unwrap_or_default()),
+            _ => None,
+        };
+        if let Err(e) = tokio::fs::rename(&temp, &target).await {
+            tokio::fs::remove_file(&temp).await.ok();
+            return Err(Error::from(e)).with_context(|| format!("placing the join at {to:?}"));
+        }
+        if let Some(meta) = kept.filter(|m| *m != FileMeta::default()) {
+            self.set_meta(to, &meta).await?;
+        }
+        Ok(total)
     }
 
     async fn get_meta(&self, path: &str) -> Result<FileMeta> {

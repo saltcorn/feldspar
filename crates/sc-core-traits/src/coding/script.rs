@@ -87,7 +87,7 @@ pub async fn call(
     let args = arguments(args, &[ARG_SCRIPT])?;
     let script = string_arg(&args, ARG_SCRIPT)?;
 
-    let project = project(scope, ctx.catalog, ctx.caller.role).await?;
+    let project = project(scope, ctx.catalog, &crate::files::file_caller(ctx.caller)).await?;
     if !project.scripts.iter().any(|s| s == &script) {
         return Err(Error::invalid(match project.scripts.is_empty() {
             true => {
@@ -135,14 +135,18 @@ pub struct Project {
     pub scripts: Vec<String>,
 }
 
-/// The project at the root of `scope`, read at `role`.
-pub async fn project(scope: &FileScope, catalog: &Catalog, role: u8) -> Result<Project> {
+/// The project at the root of `scope`, read as `caller`.
+pub async fn project(
+    scope: &FileScope,
+    catalog: &Catalog,
+    caller: &sc_files::FileCaller,
+) -> Result<Project> {
     let (store, floor) = scope.connect(catalog).await?;
     let manifest_path = scope.resolve("package.json")?;
     // The manifest is a file in the store like any other, so reading it is
     // the caller's read: an agent whose user cannot see the project cannot
     // learn what scripts it declares either.
-    sc_files::check_access(store.as_ref(), floor, &manifest_path, role).await?;
+    sc_files::check_access(store.as_ref(), floor, &manifest_path, caller).await?;
     let manifest = store.read(&manifest_path).await.map_err(|_| {
         Error::invalid(format!(
             "{} has no `package.json`, so it declares no scripts to run",

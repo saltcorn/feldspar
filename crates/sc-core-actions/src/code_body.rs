@@ -229,7 +229,8 @@ impl<'a> Hosts<'a> {
             // role rather than its user, because a file rule is a role floor:
             // `as_user` is checked against it, and the admin default clears
             // every one.
-            files: FileStoreHost::new(ctx.catalog).caused_by(ctx.event.role),
+            files: FileStoreHost::new(ctx.catalog)
+                .caused_by(ctx.event.role, ctx.event.user.as_ref()),
             // The other triggers, when this context has a dispatcher — and
             // nothing at all when it does not, so a body that names `trigger`
             // outside a server says so by name. It carries the caller *and* the

@@ -140,6 +140,10 @@ pub struct AppResponse {
     pub headers: Vec<(String, String)>,
     /// The session change for the router to apply.
     pub session: SessionAction,
+    /// A store file to serve instead of `body` (`/files/serve/*`, TODO F2
+    /// §2.2): the router answers it through its one file response builder —
+    /// streamed, with Range and the file's name. The access check is made.
+    pub file: Option<Box<sc_files::ServeFile>>,
 }
 
 impl AppResponse {
@@ -161,6 +165,15 @@ impl AppResponse {
             body: body.into(),
             headers: Vec::new(),
             session: SessionAction::Keep,
+            file: None,
+        }
+    }
+
+    /// A store file, served by the router's file response builder.
+    pub fn serve_file(file: sc_files::ServeFile) -> AppResponse {
+        AppResponse {
+            file: Some(Box::new(file)),
+            ..AppResponse::with_status(200, "", Bytes::new())
         }
     }
 

@@ -641,7 +641,14 @@ impl AgentTrait for Coding {
         cx: &mut AfterToolsContext<'_>,
     ) -> Result<Option<String>> {
         let scope = configured_scope(config)?;
-        feedback::after_edits(&scope, config, cx.catalog, cx.caller.role, cx.trait_state).await
+        feedback::after_edits(
+            &scope,
+            config,
+            cx.catalog,
+            &crate::files::file_caller(cx.caller),
+            cx.trait_state,
+        )
+        .await
     }
 }
 

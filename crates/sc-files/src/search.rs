@@ -138,13 +138,13 @@ pub struct SearchOutcome {
 
 /// Search `store` under the caller's access rules.
 ///
-/// `store_min_role` is the store definition's own floor and `role` the caller's,
+/// `store_min_role` is the store definition's own floor and `caller` the caller,
 /// exactly as [`check_access`](crate::check_access) takes them: this is the file
 /// manager's rule applied to a walk instead of to a single path.
 pub async fn search_store(
     store: &dyn FileStore,
     store_min_role: Option<u8>,
-    role: u8,
+    caller: &crate::FileCaller,
     query: &SearchQuery,
 ) -> Result<SearchOutcome> {
     let matcher = Matcher::new(query)?;
@@ -160,7 +160,7 @@ pub async fn search_store(
 
     while let Some((dir, floor)) = stack.pop() {
         let entries = store.list(&dir).await?;
-        let visible = filter_visible(store, floor, entries, role).await?;
+        let visible = filter_visible(store, floor, entries, caller).await?;
         // Reversed onto the stack so the pops come back in listing order.
         let mut directories = Vec::new();
         for entry in visible {
@@ -518,7 +518,7 @@ pub struct FoundFiles {
 pub async fn find_files(
     store: &dyn FileStore,
     store_min_role: Option<u8>,
-    role: u8,
+    caller: &crate::FileCaller,
     dir: &str,
     query: &str,
     max_results: usize,
@@ -536,7 +536,7 @@ pub async fn find_files(
 
     while let Some((current, floor)) = stack.pop() {
         let entries = store.list(&current).await?;
-        let visible = filter_visible(store, floor, entries, role).await?;
+        let visible = filter_visible(store, floor, entries, caller).await?;
         let mut directories = Vec::new();
         for entry in visible {
             visited += 1;
@@ -580,7 +580,7 @@ const GENERATED_PROJECT_DIRS: [&str; 2] = ["android", "ios"];
 pub async fn find_by_extension(
     store: &dyn FileStore,
     store_min_role: Option<u8>,
-    role: u8,
+    caller: &crate::FileCaller,
     dir: &str,
     extensions: &[String],
 ) -> Result<FoundFiles> {
@@ -589,7 +589,7 @@ pub async fn find_by_extension(
         .chain(GENERATED_PROJECT_DIRS.iter())
         .copied()
         .collect();
-    let walked = walk_store(store, store_min_role, role, dir, &excluded).await?;
+    let walked = walk_store(store, store_min_role, caller, dir, &excluded).await?;
     let mut entries: Vec<Entry> = walked
         .entries
         .into_iter()
@@ -624,7 +624,7 @@ fn has_extension(name: &str, extensions: &[String]) -> bool {
 pub async fn walk_store(
     store: &dyn FileStore,
     store_min_role: Option<u8>,
-    role: u8,
+    caller: &crate::FileCaller,
     dir: &str,
     exclude_dirs: &[&str],
 ) -> Result<FoundFiles> {
@@ -633,7 +633,7 @@ pub async fn walk_store(
     let mut stack = vec![(dir.to_owned(), root_floor)];
     while let Some((current, floor)) = stack.pop() {
         let entries = store.list(&current).await?;
-        let visible = filter_visible(store, floor, entries, role).await?;
+        let visible = filter_visible(store, floor, entries, caller).await?;
         let mut directories = Vec::new();
         for entry in visible {
             if found.entries.len() >= MAX_FILES_SCANNED {

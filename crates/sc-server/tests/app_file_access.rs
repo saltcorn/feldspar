@@ -13,6 +13,10 @@
 //! - uploads run at the table's `min_role_write`, land in the field's store and
 //!   folder, and the field's MIME restrictions are applied server-side — a
 //!   client-side accept filter is a convenience, not a control;
+//! - a file is **readable by its owner** whatever its folder's rule, and an
+//!   upload records the uploader as the owner (F2 §2.1) — so a min_role 1
+//!   folder is a private drop box: each user reads back their own upload, and
+//!   another user (or anonymous) gets the 404 a missing file gets;
 //! - the file endpoints appear on the **already-mounted** app when the admin
 //!   creates the `File` field, with no restart — the same live re-projection a
 //!   table-settings change gets (§13.2).
@@ -467,9 +471,9 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
     let (status, _, _) = reader.download(&path).await;
     assert_eq!(
         status,
-        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
         "the folder's min_role 40 refuses role 80 even though the table admits it — \
-         a signed-in caller refused is forbidden, as the table's refusal above is"
+         and a file the caller may not read is not found, as a missing one is (F2 §2.1)"
     );
     let (status, _, bytes) = editor.download(&path).await;
     assert_eq!(status, StatusCode::OK, "role 40 clears the folder's rule");
@@ -485,6 +489,132 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
         .download(&format!("/api/posts/{empty_id}/attachment"))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    Ok(())
+}
+
+/// F2.1/F2.2: an upload is its uploader's, and a min_role 1 folder is private to
+/// each uploader — served to them, a 404 to another user and to anonymous, and
+/// not overwritable by another user who may write the row.
+#[tokio::test]
+async fn an_upload_into_a_private_folder_is_its_uploaders_alone() -> sc_error::Result<()> {
+    let tmp = TempDir::new("owner");
+    let (router, catalog, uploads, _db) = setup(&tmp).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
+    save_role(&catalog, &Role::new(80, "Reader")).await?;
+    let ada = create_user(&catalog, "ada@example.com", "ada-pw", 80).await?;
+    create_user(&catalog, "bob@example.com", "bob-pw", 80).await?;
+
+    // Rows are public to read and writable at 80; the folder is admin-only.
+    let mut admin = Client::new(router.clone(), BASE_DOMAIN);
+    assert_eq!(
+        admin.login("admin@example.com", "admin-pw").await,
+        StatusCode::OK
+    );
+    let (status, _) = admin
+        .send(
+            "PUT",
+            "/api/tables/posts",
+            Some(json!({
+                "label": "", "description": "",
+                "min_role_read": 100, "min_role_write": 80,
+                "ownership_formula": "", "rls_enabled": false,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = admin
+        .send(
+            "POST",
+            "/api/tables/posts/fields",
+            Some(json!({
+                "name": "attachment", "type": "text",
+                "kind": { "type": "file", "store": "uploads", "folder": "private",
+                          "mime_allow": ["text/plain"] }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    uploads.mkdir("private").await?;
+    uploads
+        .set_meta(
+            "private",
+            &FileMeta {
+                min_role: Some(1),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    // Ada uploads into the private folder: a new file needs nothing but the
+    // table's write rule, and it is recorded as hers.
+    let mut ada_client = Client::new(router.clone(), APP_HOST);
+    assert_eq!(
+        ada_client.login("ada@example.com", "ada-pw").await,
+        StatusCode::OK
+    );
+    let (status, created) = ada_client
+        .send("POST", "/api/posts", Some(json!({ "title": "mine" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_i64().unwrap();
+    let (status, updated) = ada_client
+        .upload(
+            &format!("/api/posts/{id}/attachment/ada.txt"),
+            "text/plain",
+            b"ada's words",
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{updated}");
+    assert_eq!(
+        uploads.get_meta("private/ada.txt").await?.owner,
+        Some(ada.id.to_string()),
+        "the uploader owns the upload"
+    );
+
+    let path = format!("/api/posts/{id}/attachment");
+    let (status, _, bytes) = ada_client.download(&path).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the owner reads past the folder's rule"
+    );
+    assert_eq!(&bytes[..], b"ada's words");
+    // Through the shared builder (F2.3): ranged, and named for the file.
+    let (status, headers, bytes) = ada_client
+        .raw("GET", &format!("{path}?download=1"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&bytes[..], b"ada's words");
+    assert_eq!(
+        headers.get(header::CONTENT_DISPOSITION).unwrap(),
+        "attachment; filename=\"ada.txt\"; filename*=UTF-8''ada.txt"
+    );
+    assert_eq!(headers.get(header::ACCEPT_RANGES).unwrap(), "bytes");
+
+    let mut bob = Client::new(router.clone(), APP_HOST);
+    assert_eq!(bob.login("bob@example.com", "bob-pw").await, StatusCode::OK);
+    let (status, _, bytes) = bob.download(&path).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "another user at the same role"
+    );
+    assert!(!String::from_utf8_lossy(&bytes).contains("ada's words"));
+    let mut anon = Client::new(router.clone(), APP_HOST);
+    let (status, _, _) = anon.download(&path).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "anonymous");
+
+    // Bob may write the row, but not replace Ada's file under the same name.
+    let (status, _) = bob
+        .upload(
+            &format!("/api/posts/{id}/attachment/ada.txt"),
+            "text/plain",
+            b"bob's",
+        )
+        .await;
+    assert!(!status.is_success(), "{status}");
+    assert_eq!(&uploads.read("private/ada.txt").await?[..], b"ada's words");
 
     Ok(())
 }

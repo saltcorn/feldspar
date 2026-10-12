@@ -157,6 +157,12 @@ use crate::code_body::{self, CFG_CODE, Hosts};
 /// set, and is reported as both what is set on the entry and what actually
 /// applies given every directory above it.
 ///
+/// A file's **owner** is an authority (TODO F2 §2.1): the owner may read it
+/// whatever its rule, and only the owner or admin authority may change it. A
+/// write under `asUser()` records the caller as the owner of what it creates; an
+/// admin write records nobody unless told — `write(bytes, { owner, minRole,
+/// filename })`, where `filename` is the name a download is served under.
+///
 /// Bounded like the other two: 100 file operations per run, 8 MB across the seam
 /// per read and per write — **refused rather than truncated**, since a body
 /// handed the first 8 MB of a larger file would compute a wrong answer out of a

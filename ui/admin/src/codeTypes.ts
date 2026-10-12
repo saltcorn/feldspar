@@ -411,7 +411,25 @@ interface ScFileMeta {
   /** The rule that actually applies, given the store's floor and every
    * directory above this entry — read-only, and the one to believe. */
   effectiveMinRole: number | null;
+  /** Who owns it, as a user id: the owner may read it whatever its rule, and
+   * only the owner (or admin authority) may change it. */
+  owner: string | null;
   attributes: Record<string, string>;
+}
+
+/** What a write records beside the bytes. */
+interface ScWriteOptions {
+  /** The owner to record (a user id, or null for none). Admin authority only:
+   * under \`asUser()\` the file is the caller's, and naming anyone else is
+   * refused. */
+  owner?: string | null;
+  /** The access rule to set on the file. Under \`asUser()\` it may only tighten. */
+  minRole?: number;
+  /** The same as \`minRole\`. */
+  min_role?: number;
+  /** The name to serve it under (\`attributes.filename\`), when that is not
+   * the path's own. */
+  filename?: string;
 }
 
 /** What a file can be written from.
@@ -451,9 +469,9 @@ declare class ScFile {
   arrayBuffer(): Promise<ArrayBuffer>;
   /** Create or replace, making the parent directories on the way. Answers the
    * number of bytes written. */
-  write(data: ScWritable): Promise<number>;
+  write(data: ScWritable, options?: ScWriteOptions): Promise<number>;
   /** The same, but refuses to replace a file that is already there. */
-  create(data: ScWritable): Promise<number>;
+  create(data: ScWritable, options?: ScWriteOptions): Promise<number>;
   /** Whether there was anything to delete. */
   delete(): Promise<boolean>;
   /** Move it, within this store or to a file in another, and answer where it
@@ -463,8 +481,9 @@ declare class ScFile {
   copyTo(dest: ScFile | string): Promise<ScFile>;
   meta(): Promise<ScFileMeta>;
   /** Replace this entry's metadata — read it first if what you want is a change
-   * to one attribute. A delegated body may tighten a rule, never loosen one. */
-  setMeta(meta: { minRole?: number | null; attributes?: Record<string, string> }): Promise<ScFile>;
+   * to one attribute. A delegated body may tighten a rule, never loosen one.
+   * The owner is kept unless given, and only admin authority may change it. */
+  setMeta(meta: { minRole?: number | null; attributes?: Record<string, string>; owner?: string | null }): Promise<ScFile>;
 }
 
 /** One directory in a store — a reference, like a file. */
@@ -492,7 +511,7 @@ declare class ScDir {
   /** It and everything in it. */
   delete(): Promise<boolean>;
   meta(): Promise<ScFileMeta>;
-  setMeta(meta: { minRole?: number | null; attributes?: Record<string, string> }): Promise<ScFile>;
+  setMeta(meta: { minRole?: number | null; attributes?: Record<string, string>; owner?: string | null }): Promise<ScFile>;
 }
 
 /** One file store, as a code body reaches it. */

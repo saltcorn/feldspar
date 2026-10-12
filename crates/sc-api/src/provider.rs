@@ -221,6 +221,11 @@ pub struct ApiResponse {
     /// these bytes with their content type and `body` is ignored. Boxed so the
     /// download case does not widen every response that is not one.
     pub raw: Option<Box<RawBody>>,
+    /// A store file to serve (a `File` field's download, TODO F2 §2.2). When
+    /// set, the transport serves it through its one file response builder —
+    /// streamed, with Range and its name — and `body` is ignored. The access
+    /// check has been made by whoever set it.
+    pub file: Option<Box<sc_files::ServeFile>>,
     /// The session change for the transport to apply, if any.
     pub session: SessionAction,
     /// Extra response headers a code query chose with `response({ headers })`
@@ -236,6 +241,7 @@ impl ApiResponse {
             status: 200,
             body,
             raw: None,
+            file: None,
             session: SessionAction::Keep,
             headers: Vec::new(),
         }
@@ -247,6 +253,7 @@ impl ApiResponse {
             status,
             body,
             raw: None,
+            file: None,
             session: SessionAction::Keep,
             headers: Vec::new(),
         }
@@ -261,8 +268,17 @@ impl ApiResponse {
                 bytes: bytes.into(),
                 content_type: content_type.into(),
             })),
+            file: None,
             session: SessionAction::Keep,
             headers: Vec::new(),
+        }
+    }
+
+    /// A `200 OK` serving a store file through the transport's file builder.
+    pub fn serve_file(file: sc_files::ServeFile) -> ApiResponse {
+        ApiResponse {
+            file: Some(Box::new(file)),
+            ..ApiResponse::ok(Json::Null)
         }
     }
 
@@ -272,6 +288,7 @@ impl ApiResponse {
             status,
             body: serde_json::json!({ "error": message.into() }),
             raw: None,
+            file: None,
             session: SessionAction::Keep,
             headers: Vec::new(),
         }
@@ -283,6 +300,7 @@ impl ApiResponse {
             status: 200,
             body,
             raw: None,
+            file: None,
             session: SessionAction::Start(user),
             headers: Vec::new(),
         }
@@ -294,6 +312,7 @@ impl ApiResponse {
             status: 200,
             body,
             raw: None,
+            file: None,
             session: SessionAction::End,
             headers: Vec::new(),
         }

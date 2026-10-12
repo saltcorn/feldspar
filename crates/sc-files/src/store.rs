@@ -12,6 +12,9 @@ use bytes::Bytes;
 use sc_error::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ops::Range;
+
+use crate::stream::{BoxAsyncRead, BoxAsyncWrite};
 
 /// One entry returned by [`FileStore::list`]: a file or sub-directory directly
 /// inside the listed directory.
@@ -101,16 +104,24 @@ pub struct FileMeta {
     /// before there was a user to record — a file put there by a code body, a
     /// scaffold, or by hand on the disk underneath.
     ///
-    /// It is deliberately *not* an authority over anything: access is the
-    /// path-cumulative [`min_role`](FileMeta::min_role) rule and nothing else.
-    /// This is the "who put this here" a file manager shows in a column, and it
-    /// survives a rewrite of the bytes — the owner is the creator, not the last
-    /// writer.
+    /// It is an **authority** (TODO F2, §2.1): the owner may read the entry
+    /// whatever its [`min_role`](FileMeta::min_role), and only the owner (or
+    /// admin authority) may overwrite or delete it — see
+    /// [`check_access`](crate::check_access) and
+    /// [`check_write`](crate::check_write). It is also the "who put this here" a
+    /// file manager shows in a column, and it survives a rewrite of the bytes —
+    /// the owner is the creator, not the last writer.
     pub owner: Option<String>,
     /// Free-form per-file attributes (e.g. a declared MIME type, origin, or
     /// application-specific tags).
     pub attributes: BTreeMap<String, String>,
 }
+
+/// The [`FileMeta::attributes`] key a file's **original name** is kept under —
+/// what a download's `Content-Disposition` calls it (TODO F2, §2.2) when that is
+/// not the storage basename, as it is not for an upload saved under a generated
+/// path.
+pub const FILENAME_ATTRIBUTE: &str = "filename";
 
 /// A named directory/object store (technical design §14.1).
 ///
@@ -213,6 +224,39 @@ pub trait FileStore: Send + Sync {
                 is_dir: entry.is_dir,
                 modified: entry.modified,
             }))
+    }
+
+    /// A file's bytes as a stream — all of them, or the half-open `range`
+    /// (`start..end`, which the caller has already checked against the size;
+    /// one past the end is refused).
+    ///
+    /// What a download serves from (TODO F2, §2.2), so a 50 MB file is never
+    /// 50 MB in this process. The default reads the whole file and slices it,
+    /// which is correct for any backend and streams nothing; a backend with a
+    /// cheaper answer overrides it, as [`crate::LocalFileStore`] does.
+    async fn open_read(&self, path: &str, range: Option<Range<u64>>) -> Result<BoxAsyncRead> {
+        crate::stream::read_by_slicing(self, path, range).await
+    }
+
+    /// Somewhere to append to a file, creating it (and its parents) if missing.
+    ///
+    /// What a resumable upload writes each chunk through (§2.3). **Shut the
+    /// writer down** when done: the default buffers what is written and writes
+    /// the joined file back only then, so a backend with nothing but
+    /// `read`/`write` can still take an upload.
+    async fn open_append<'a>(&'a self, path: &str) -> Result<BoxAsyncWrite<'a>> {
+        Ok(Box::new(crate::stream::BufferedAppend::new(self, path)))
+    }
+
+    /// Join `parts`, in order, into the file `to` (created or replaced), and
+    /// answer its size — the host-side join a code body's `concat` makes, with
+    /// no bytes in the isolate.
+    ///
+    /// A missing part fails **without leaving a partial target**: the join is
+    /// either all there or not written. The default reads every part before
+    /// writing anything.
+    async fn concat(&self, parts: &[String], to: &str) -> Result<u64> {
+        crate::stream::concat_in_memory(self, parts, to).await
     }
 
     /// Read a file's metadata, returning [`FileMeta::default`] when none has been

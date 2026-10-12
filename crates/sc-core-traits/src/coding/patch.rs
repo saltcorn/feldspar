@@ -49,7 +49,7 @@ use super::change::{current, delete_tracked, edited_region, numbered, write_trac
 use super::matching::{self, Level, Search};
 use super::read::as_text;
 use super::state::{CodingState, stale_message};
-use crate::files::{FileScope, open_at, string_arg};
+use crate::files::{FileScope, open_to_write, string_arg};
 use crate::table::arguments;
 
 /// The patch text.
@@ -567,7 +567,7 @@ async fn plan_view(
     plan: &BTreeMap<String, Planned>,
     rel: &str,
 ) -> Result<(String, Option<Bytes>)> {
-    let (_, path) = open_at(scope, ctx, rel).await?;
+    let (_, path) = open_to_write(scope, ctx, rel).await?;
     if let Some(planned) = plan.get(&path) {
         return Ok((path, planned.after.clone().map(Bytes::from)));
     }
