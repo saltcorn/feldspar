@@ -1386,7 +1386,10 @@ async fn dispatch_app(
     // under a provider's mount and would otherwise be answered by the
     // provider's "no such endpoint" (TODO.md "Live updates" §4).
     if sc_app::is_live_path(&app.app, path) {
-        return with_csp(app_live(state, app, headers, &jar, ws).await, &csp);
+        return with_csp(
+            app_live(state, app, headers, &jar, client_ip, ws).await,
+            &csp,
+        );
     }
 
     // The app's catalogue, in the same place and for the same reason
@@ -2099,6 +2102,7 @@ async fn app_live(
     app: &Arc<MountedApp>,
     headers: &axum::http::HeaderMap,
     jar: &CookieJar,
+    client_ip: Option<std::net::IpAddr>,
     ws: Option<axum::extract::ws::WebSocketUpgrade>,
 ) -> Response {
     let Some(ws) = ws else {
@@ -2140,6 +2144,7 @@ async fn app_live(
         evaluator: state.apps.evaluator(),
         app: handle,
         subdomain,
+        client_ip,
     };
     // A session is held only when it named somebody: an anonymous caller with
     // a dead cookie has no session to be signed out of.

@@ -1251,6 +1251,18 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          `live.document(stream, rowKey)` (`await doc.text()`, `await \
          doc.append(text)`).\n\
          \n\
+         **Share links for people who are not signed in.** The stream decides \
+         who may open a document by role and ownership rule, which a share token \
+         is neither. Write the check as a custom query whose response type is \
+         `stream`, ending in `return live.stream(\"note_body\", link.note, {{ write: \
+         link.mode === \"edit\" }})` (see `describe_code_api`), and open it with \
+         `useQueryDocument(api.openNote, {{ token }})` from the same file: it \
+         returns what `useDocument` does, plus `opened`, and `root` is there \
+         once the server has said which document it is. The query runs again \
+         when a table it read is written, so deleting or downgrading the link \
+         ends or downgrades the page at once (`error.code` is `revoked`). Never \
+         keep a second copy of the document or poll for changes.\n\
+         \n\
          ## When the API you need is missing\n\
          \n\
          Do not hand-write a `fetch`. An untyped call beside a generated client is \
@@ -3207,6 +3219,15 @@ pub fn live_doc_ts(streams: &[sc_api::StreamExport], react: bool) -> String {
             );
         }
         out.push_str("};\n");
+        // The connection a stream query's document is opened over, for its
+        // status: the client has one, shared by every stream.
+        if let Some(first) = streams.iter().find(|s| is_document(s)) {
+            let _ = writeln!(
+                out,
+                "\n/** The client's live connection. */\nconst liveConnection = api.live.{}.connection;",
+                first.name
+            );
+        }
     }
     out
 }
@@ -3219,7 +3240,16 @@ import {
   encodeAwarenessUpdate,
   removeAwarenessStates,
 } from "y-protocols/awareness";
-import type { LiveDocumentSession, LiveDocumentStream, LiveError, LiveTopic } from "./helper";
+import type {
+  LiveConnection,
+  LiveDocumentHandlers,
+  LiveDocumentStream,
+  LiveError,
+  LiveOpened,
+  LiveOpenedSession,
+  LiveOpenHandlers,
+  LiveTopic,
+} from "./helper";
 "#;
 
 /// The framework-neutral half of `live-doc.ts`.
@@ -3277,14 +3307,33 @@ function fromBase64(text: string): Uint8Array {
 /** What `Y` and the awareness are told a change came from, so it is not sent back. */
 const REMOTE = "feldspar-live";
 
-/** Open row `key`'s document on `stream`. Close it when the page is done with it. */
-export function openDocument<K extends "text" | "xml">(
-  stream: LiveDocumentStream<K>,
-  key: LiveTopic,
-): LiveDocument<K> {
+/** What the core below needs of a subscription: the document stream's, or a stream query's. */
+type DocTransport = {
+  readonly me: string | undefined;
+  send(update: string): boolean;
+  setState(state: string): void;
+  close(): void;
+};
+
+/** What a page sees of an open document, whichever way it was opened. */
+type DocCore = {
+  doc: Y.Doc;
+  awareness: Awareness;
+  readonly readOnly: boolean;
+  readonly status: DocumentStatus;
+  readonly error: LiveError | undefined;
+  onChange(listener: () => void): () => void;
+  changed(): void;
+  close(): void;
+};
+
+/** A `Y.Doc` and its awareness, kept in step with the server over `connect`'s subscription. */
+function openCore(
+  connect: (handlers: LiveDocumentHandlers<string>) => DocTransport,
+  connection: LiveConnection | undefined,
+): DocCore {
   const doc = new Y.Doc();
   const awareness = new Awareness(doc);
-  const root = (stream.rootKind === "xml" ? doc.getXmlFragment(stream.root) : doc.getText(stream.root)) as DocRoot<K>;
   const listeners = new Set<() => void>();
   let readOnly = true;
   let status: DocumentStatus = "connecting";
@@ -3296,7 +3345,7 @@ export function openDocument<K extends "text" | "xml">(
   let applyingFor: string | undefined;
   const ownState = () => toBase64(encodeAwarenessUpdate(awareness, [doc.clientID]));
 
-  const session: LiveDocumentSession<string> = stream.connect<string>(key, {
+  const session: DocTransport = connect({
     sync(update, ro) {
       const bytes = fromBase64(update);
       Y.applyUpdate(doc, bytes, REMOTE);
@@ -3346,12 +3395,14 @@ export function openDocument<K extends "text" | "xml">(
   });
 
   // A lost socket is a document out of sync: edits are kept and answered to the next `sync`.
-  const stopStatus = stream.connection.onStatus((connection) => {
-    if (connection === "reconnecting" && status === "synced") {
-      status = "reconnecting";
-      changed();
-    }
-  });
+  const stopStatus = connection
+    ? connection.onStatus((state) => {
+        if (state === "reconnecting" && status === "synced") {
+          status = "reconnecting";
+          changed();
+        }
+      })
+    : () => undefined;
 
   doc.on("update", (update: Uint8Array, origin: unknown) => {
     if (closed || origin === REMOTE || readOnly || status !== "synced") return;
@@ -3375,8 +3426,6 @@ export function openDocument<K extends "text" | "xml">(
   return {
     doc,
     awareness,
-    field: stream.root,
-    root,
     get readOnly() {
       return readOnly;
     },
@@ -3392,6 +3441,7 @@ export function openDocument<K extends "text" | "xml">(
         listeners.delete(listener);
       };
     },
+    changed,
     close() {
       if (closed) return;
       closed = true;
@@ -3401,6 +3451,115 @@ export function openDocument<K extends "text" | "xml">(
       awareness.destroy();
       doc.destroy();
     },
+  };
+}
+
+/** Open row `key`'s document on `stream`. Close it when the page is done with it. */
+export function openDocument<K extends "text" | "xml">(
+  stream: LiveDocumentStream<K>,
+  key: LiveTopic,
+): LiveDocument<K> {
+  const core = openCore((handlers) => stream.connect<string>(key, handlers), stream.connection);
+  const root = (
+    stream.rootKind === "xml" ? core.doc.getXmlFragment(stream.root) : core.doc.getText(stream.root)
+  ) as DocRoot<K>;
+  return {
+    doc: core.doc,
+    awareness: core.awareness,
+    field: stream.root,
+    root,
+    get readOnly() {
+      return core.readOnly;
+    },
+    get status() {
+      return core.status;
+    },
+    get error() {
+      return core.error;
+    },
+    onChange: core.onChange,
+    close: core.close,
+  };
+}
+
+/**
+ * A document a stream query opened (`return live.stream(...)` in its code).
+ * The query decides at run time which document it is, so its root is there
+ * once the server has said (`opened`): render the editor when `root` is.
+ */
+export interface QueryDocument {
+  readonly doc: Y.Doc;
+  readonly awareness: Awareness;
+  /** What the query opened; `undefined` until the server says. */
+  readonly opened: LiveOpened | undefined;
+  /** The root's name, for TipTap's Collaboration `field`. */
+  readonly field: string | undefined;
+  /** The root shared type: a `Y.XmlFragment` for an `xml` root, a `Y.Text` for a `text` one. */
+  readonly root: Y.XmlFragment | Y.Text | undefined;
+  readonly readOnly: boolean;
+  readonly status: DocumentStatus;
+  /** `unavailable` when the query opened nothing (a wrong or expired link), `revoked` when it stops. */
+  readonly error: LiveError | undefined;
+  onChange(listener: () => void): () => void;
+  close(): void;
+}
+
+/**
+ * Open the document a stream query hands out, as in
+ * `openQueryDocument((handlers) => api.openNote({ token }, handlers))`.
+ * A query that opened a row's topic rather than a document is an `error`.
+ */
+export function openQueryDocument(
+  open: (handlers: LiveOpenHandlers<string>) => LiveOpenedSession,
+  connection?: LiveConnection,
+): QueryDocument {
+  let opened: LiveOpened | undefined;
+  let root: Y.XmlFragment | Y.Text | undefined;
+  let wrongKind: LiveError | undefined;
+  // Read by `ready`, which arrives after `openCore` has returned.
+  let core: DocCore | undefined = undefined;
+  core = openCore((handlers) => {
+    const session = open({
+      ...handlers,
+      sync: (update, readOnly) => handlers.sync(update, readOnly),
+      update: (update) => handlers.update(update),
+      ready(info) {
+        opened = info.opened;
+        if (opened && opened.kind !== "document") {
+          wrongKind = { code: "invalid", message: `the query opened a ${opened.kind} stream, not a document` };
+        } else if (opened && core && root === undefined) {
+          const name = opened.root ?? "default";
+          root = opened.root_kind === "text" ? core.doc.getText(name) : core.doc.getXmlFragment(name);
+        }
+        core?.changed();
+      },
+    });
+    return session;
+  }, connection);
+  const opening = core;
+  return {
+    doc: opening.doc,
+    awareness: opening.awareness,
+    get opened() {
+      return opened;
+    },
+    get field() {
+      return opened?.root;
+    },
+    get root() {
+      return root;
+    },
+    get readOnly() {
+      return opening.readOnly;
+    },
+    get status() {
+      return opening.status;
+    },
+    get error() {
+      return wrongKind ?? opening.error;
+    },
+    onChange: opening.onChange,
+    close: opening.close,
   };
 }
 "#;
@@ -3450,6 +3609,55 @@ export function useDocument<K extends "text" | "xml">(
     readOnly: open?.readOnly ?? true,
     status: open?.status ?? "connecting",
     error: open?.error,
+  };
+}
+
+/** What `useQueryDocument` returns: the document once open, and what the query opened. */
+export type QueryDocumentState = {
+  doc: Y.Doc | undefined;
+  awareness: Awareness | undefined;
+  /** The root shared type, once the server has said what was opened. */
+  root: Y.XmlFragment | Y.Text | undefined;
+  field: string | undefined;
+  opened: LiveOpened | undefined;
+  readOnly: boolean;
+  status: DocumentStatus;
+  error: LiveError | undefined;
+};
+
+/**
+ * The document stream query `open` hands out for `params`, open while the
+ * component is mounted (and reopened when `params` change), as in
+ * `useQueryDocument(api.openNote, { token })`. `null` opens nothing.
+ */
+export function useQueryDocument<P>(
+  open: (params: P, handlers: LiveOpenHandlers<string>) => LiveOpenedSession,
+  params: P | null | undefined,
+): QueryDocumentState {
+  const [current, setCurrent] = useState<QueryDocument | undefined>(undefined);
+  const [, setTick] = useState(0);
+  const id = params === null || params === undefined ? undefined : JSON.stringify(params);
+  useEffect(() => {
+    if (id === undefined) return;
+    const given = JSON.parse(id) as P;
+    const opened = openQueryDocument((handlers) => open(given, handlers), liveConnection);
+    setCurrent(opened);
+    const stop = opened.onChange(() => setTick((n) => n + 1));
+    return () => {
+      stop();
+      opened.close();
+      setCurrent(undefined);
+    };
+  }, [open, id]);
+  return {
+    doc: current?.doc,
+    awareness: current?.awareness,
+    root: current?.root,
+    field: current?.field,
+    opened: current?.opened,
+    readOnly: current?.readOnly ?? true,
+    status: current?.status ?? "connecting",
+    error: current?.error,
   };
 }
 "#;
@@ -4572,6 +4780,15 @@ mod tests {
         assert!(doc.contains("export function useDocument<"), "{doc}");
         assert!(
             doc.contains("note_body: documentStream(api.live.note_body),"),
+            "{doc}"
+        );
+        // TODO F7: a document a stream query opens, over the same connection.
+        assert!(
+            doc.contains("export function useQueryDocument<P>("),
+            "{doc}"
+        );
+        assert!(
+            doc.contains("const liveConnection = api.live.note_body.connection;"),
             "{doc}"
         );
         assert!(!doc.contains("boiler"), "only document streams: {doc}");

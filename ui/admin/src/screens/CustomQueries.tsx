@@ -50,6 +50,7 @@ import {
   statusSummary,
   type CheckStatus,
   type PayloadType,
+  type ResponseKind,
   type QueryLanguage,
   type RateLimitMode,
   type QueryRow,
@@ -293,12 +294,18 @@ export function CustomQueries({
                     id={`${idPrefix}-q${index}-response-type`}
                     value={query.responseType}
                     onChange={(e) =>
-                      setQuery(index, { ...query, responseType: e.target.value as PayloadType })
+                      setQuery(index, { ...query, responseType: e.target.value as ResponseKind })
                     }
                   >
                     <option value="json">{t("JSON")}</option>
                     <option value="bytes">{t("Bytes or a file (Blob)")}</option>
+                    <option value="stream">{t("A live stream (live.stream)")}</option>
                   </Form.Select>
+                  {query.responseType === "stream" && (
+                    <Form.Text className="small">
+                      <T text="Opened over the app's live socket: end the code with return live.stream(name, key, { write }). The query is the access check." />
+                    </Form.Text>
+                  )}
                 </Col>
               </Row>
             )}

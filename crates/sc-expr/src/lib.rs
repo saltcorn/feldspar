@@ -74,8 +74,8 @@ pub use code::{
 };
 pub use code_library::{CodeLibraries, check_code_library, imported_libraries};
 pub use code_reply::{
-    CodeFailure, CodeResponse, FileReply, RawReply, SERVER_OWNED_HEADERS, allowed_header,
-    bytes_binding, bytes_key, code_failure, response_key, take_code_response,
+    CodeFailure, CodeResponse, FileReply, RawReply, SERVER_OWNED_HEADERS, StreamReply,
+    allowed_header, bytes_binding, bytes_key, code_failure, response_key, take_code_response,
 };
 #[cfg(feature = "eval")]
 pub use eval::DenoEvaluator;

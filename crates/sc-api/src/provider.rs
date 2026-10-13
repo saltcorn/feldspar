@@ -432,4 +432,45 @@ pub trait ApiProvider: Send + Sync {
     ) -> Option<Result<ApiResponse>> {
         None
     }
+
+    /// Run this provider's custom query `name`, whose `response_type` is
+    /// `stream`, **for the live socket** (TODO F7): `params` is its body,
+    /// `user` the caller, and the query's own `min_role` and rate limit apply
+    /// (counted against `client_ip`, unless `recheck`: running it again for a
+    /// subscription it already opened is the server's doing, not the caller's).
+    /// What it answers decides which stream and topic the caller's
+    /// subscription is attached to.
+    ///
+    /// `None` when this provider has no stream query of that name, which is
+    /// the default for a provider that serves none.
+    async fn open_stream(
+        &self,
+        _name: &str,
+        _params: Json,
+        _client_ip: Option<std::net::IpAddr>,
+        _recheck: bool,
+        _cat: &Arc<Catalog>,
+        _user: Option<&User>,
+    ) -> Option<StreamOpening> {
+        None
+    }
+}
+
+/// What a stream query answered the live socket (TODO F7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamOpening {
+    /// The body returned `live.stream(...)`: the stream and topic to attach
+    /// to, as the code named them. Not yet checked against the application.
+    Granted(sc_expr::StreamReply),
+    /// Anything else: below the query's floor, no handle, a throw, an
+    /// `httpError`. Worded to the page like any absence.
+    Denied,
+    /// Over the query's rate limit.
+    RateLimited {
+        /// Whole seconds until the next call may pass.
+        retry_after: u64,
+    },
+    /// The parameters did not fit the query's declaration — what a REST
+    /// caller is told with a `400`, said here as `invalid`.
+    Invalid(String),
 }

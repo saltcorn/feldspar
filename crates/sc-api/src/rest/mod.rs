@@ -82,7 +82,7 @@ use crate::endpoint::{
     AuthRequirement, Endpoint, EndpointSet, HandlerRef, Method, PathSpec, QueryParam,
 };
 use crate::ownership;
-use crate::provider::{ApiProvider, ApiRequest, ApiResponse};
+use crate::provider::{ApiProvider, ApiRequest, ApiResponse, StreamOpening};
 use crate::resource::{ResourceField, ResourceFile, ResourceModel};
 use crate::rows;
 use crate::schema::{TypeSchema, ValueType};
@@ -762,6 +762,18 @@ impl RestProvider {
         cat: &Catalog,
         user: Option<&User>,
     ) -> Result<ApiResponse> {
+        if query.response_type == custom::ResponseType::Stream {
+            // Opened over the live socket (TODO F7); a fetch of it is a
+            // mistake worth naming.
+            return Ok(ApiResponse::error(
+                400,
+                format!(
+                    "`{}` opens a live stream; open it over the application's live \
+                     socket with the generated client's `{}(params, handlers)`",
+                    query.name, query.name
+                ),
+            ));
+        }
         if let Err(limited) = self.custom_rate_limit(query, req, user) {
             return Ok(ApiResponse::too_many_requests(limited));
         }
@@ -1493,7 +1505,18 @@ async fn code_response(
         body,
         raw,
         file,
+        stream,
     } = reply;
+    if stream.is_some() {
+        // Only a `stream` query, opened over the live socket, may answer with
+        // a handle (TODO F7); over HTTP it is the author's mistake.
+        let id = log_id();
+        eprintln!(
+            "feldspar: code failure {id}: the code returned `live.stream(...)`, which only a \
+             custom query whose response type is `stream` may, opened over the live socket"
+        );
+        return ApiResponse::with_status(500, json!({ "error": "internal error", "id": id }));
+    }
     if let Some(file) = file {
         let not_found = || ApiResponse::error(404, "not found");
         if file.path.split('/').any(|s| s == ".." || s.is_empty()) {
@@ -1850,6 +1873,83 @@ impl ApiProvider for RestProvider {
             preview: false,
         };
         Some(self.run_custom_code(query, action, &req, cat, user).await)
+    }
+
+    async fn open_stream(
+        &self,
+        name: &str,
+        params: Json,
+        client_ip: Option<std::net::IpAddr>,
+        recheck: bool,
+        cat: &Arc<Catalog>,
+        user: Option<&User>,
+    ) -> Option<StreamOpening> {
+        let query = self.custom_routes.get(name)?;
+        if query.response_type != custom::ResponseType::Stream {
+            return None;
+        }
+        let action = query.language.action()?;
+        let endpoint = self.endpoints.find(name)?;
+        if enforce_auth(&endpoint.auth, user).is_some() {
+            return Some(StreamOpening::Denied);
+        }
+        let req = ApiRequest {
+            method: query.method,
+            path: format!("{}{}", self.mount.trim_end_matches('/'), query.path),
+            query: Vec::new(),
+            body: params,
+            raw: None,
+            headers: Vec::new(),
+            links: None,
+            client_ip,
+            preview: false,
+        };
+        if !recheck && let Err(limited) = self.custom_rate_limit(query, &req, user) {
+            return Some(StreamOpening::RateLimited {
+                retry_after: limited.retry_after_secs(),
+            });
+        }
+        let Some(dispatcher) = self.dispatcher.as_ref() else {
+            return Some(StreamOpening::Denied);
+        };
+        let scope = match custom::code_scope(query, &req) {
+            Ok(scope) => scope,
+            Err(e) => return Some(StreamOpening::Invalid(e.to_string())),
+        };
+        let caller = ownership::caller_context(user);
+        let result = dispatcher
+            .run_code(
+                cat,
+                action,
+                &query.name,
+                &query.code,
+                scope,
+                Some(&caller),
+                self.application,
+                self.file_urls.clone(),
+            )
+            .await;
+        Some(match result {
+            Ok(value) => match sc_expr::take_code_response(value) {
+                Ok(sc_expr::CodeResponse {
+                    stream: Some(stream),
+                    ..
+                }) => StreamOpening::Granted(stream),
+                _ => StreamOpening::Denied,
+            },
+            // `httpError(...)` is the body's way of saying no; anything else
+            // thrown is logged for the author, and the page is told the same.
+            Err(e) => {
+                if e.http_reply().is_none() {
+                    eprintln!(
+                        "feldspar: stream query `{}` failed: {}",
+                        query.name,
+                        e.chain()
+                    );
+                }
+                StreamOpening::Denied
+            }
+        })
     }
 }
 

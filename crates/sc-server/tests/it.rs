@@ -61,6 +61,8 @@ mod app_live;
 mod app_live_changes;
 #[path = "app_live_documents.rs"]
 mod app_live_documents;
+#[path = "app_live_query_streams.rs"]
+mod app_live_query_streams;
 #[path = "app_live_presence.rs"]
 mod app_live_presence;
 #[path = "app_live_topics.rs"]

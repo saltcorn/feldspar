@@ -78,7 +78,7 @@ pub use hub::{
 };
 pub use limits::{LiveLimits, RateLimit};
 pub use presence::{Member, PresenceEvent, PresenceNews, RoomKey};
-pub use protocol::{ClientFrame, ErrorCode, FrameError, ServerFrame};
+pub use protocol::{ClientFrame, ErrorCode, FrameError, Opened, ServerFrame};
 pub use rows::read_rule_tables;
 pub use subscription::{Phase, Subscription, SubscriptionSet};
 pub use topic::TopicIndex;

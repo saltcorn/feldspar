@@ -128,6 +128,33 @@ if (body.size > 100e6 && user.role > 40) throw httpError(413, "100 MB at most");
 return { path: `${user.id}/${body.filename}`, meta: { project: "apollo" } };
 ```
 
+**A share link to a live document (or a row's topic).** A query saved with `response_type:
+"stream"` is not fetched: the generated client opens it over the app's live socket, and the
+query ends in `return live.stream(name, key, { write, watch })`. That attaches the caller —
+anonymous too, when the query is public — to row `key` of a `document` stream or an `internal`
+stream with row topics, which the app must expose. The stream's `min_role` and the table's
+ownership rule are **not** applied: the query is the whole access check, as with a file handle.
+`write` lets the page edit the document (or publish on the topic). Return anything else, or
+throw, and the page is told the stream is unavailable.
+
+```js
+// POST /open-pad, params token (text), password (text, optional), min_role 100, response_type stream
+ratelimit.check("pad:" + body.token, { max: 5, window: "15m" });
+const link = await db.share_links.where({ token: body.token }).first();
+if (!link || new Date(link.expires_at) < new Date()) return null;
+if (link.password_hash && !(await crypto.password.verify(body.password ?? "", link.password_hash))) {
+  return null;
+}
+return live.stream("pad_doc", link.pad, { write: link.mode === "edit" });
+```
+
+The query runs again, with the same parameters, whenever a table it read is written (here
+`share_links`; add others with `watch: ["audit"]`), whenever the row itself is, and every
+minute. A run that no longer returns the same stream and key ends the page's subscription
+(`revoked`); a changed `write` makes the page an editor or a reader on the spot. So deleting or
+downgrading a link takes effect at once. In React: `useQueryDocument(api.openPad, { token })`
+from `live-doc.ts`; elsewhere `api.openPad(params, handlers)`.
+
 ## Typed answers and rate limits (custom queries)
 
 **Declare what a query returns.** Save a JSON-answering code query with `returns` (in

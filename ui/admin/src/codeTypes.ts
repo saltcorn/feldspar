@@ -1236,6 +1236,40 @@ declare const ratelimit: {
    * \`{ error, retry_after }\` when over the limit. */
   check(key: string, rate: ScRate): void;
 };
+
+/** A row's collaborative document, as \`live.document(stream, key)\` opens it.
+ * Every method answers the text after it. */
+interface ScLiveDocument {
+  text(): Promise<string>;
+  append(text: string): Promise<string>;
+  insert(index: number, text: string): Promise<string>;
+  delete(index: number, count: number): Promise<string>;
+  edit(index: number, deleteCount: number, insert?: string): Promise<string>;
+}
+
+/** What \`live.stream(...)\` answers: return it from a query whose response is
+ * a stream. */
+interface ScStreamHandle {
+  readonly status: number;
+}
+
+/** Live updates: publish to an internal stream, edit a collaborative document,
+ * or — the answer of a query whose response type is \`stream\` — hand the
+ * caller a row's document or topic:
+ * \`return live.stream("pad_doc", link.pad, { write: link.mode === "edit" })\`.
+ * The query is the access check; it runs again when a table it read (or
+ * named in \`watch\`) is written, and a run that no longer returns the same
+ * handle ends the page's subscription. */
+declare const live: {
+  publish(stream: string, topic: string | number | null, value: unknown): string | null;
+  publish(stream: string, value: unknown): string | null;
+  document(stream: string, key: string | number): ScLiveDocument;
+  stream(
+    stream: string,
+    key: string | number,
+    options?: { write?: boolean; watch?: string[] },
+  ): ScStreamHandle;
+};
 `;
 }
 

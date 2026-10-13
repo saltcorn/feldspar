@@ -578,8 +578,20 @@ fn save_parameters() -> Json {
                      also gets `<name>Url(params)` for `<img src>`, `<video>` and \
                      download links. A file is streamed with Range support and no \
                      size limit — this is how to write a custom download rule \
-                     (password-protected or expiring shares).",
-                "enum": ["json", "bytes"],
+                     (password-protected or expiring shares). `stream` for one \
+                     that ends in `return live.stream(name, key, { write, watch })`: \
+                     it is opened over the app's live socket, not called over HTTP \
+                     (a fetch is a 400), and attaches the caller — anonymous too, \
+                     if the query is public — to that row's document stream or \
+                     internal row stream, with edit/publish rights when `write`. \
+                     The query is the whole access check (the stream's min_role and \
+                     ownership rule are not applied); it runs again when a table \
+                     it read (or named in `watch`) is written, and every minute, \
+                     and a run that no longer returns the same handle revokes the \
+                     page. This is how to write share links for collaborative \
+                     documents. The client method is `name(params, handlers)`; \
+                     with `live-doc.ts`, `useQueryDocument(api.name, params)`.",
+                "enum": ["json", "bytes", "stream"],
             },
             ARG_RETURNS: {
                 "description":
@@ -812,7 +824,7 @@ fn build(
         Some(raw) => {
             serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
                 Error::invalid(format!(
-                    "`{ARG_RESPONSE_TYPE}` should be `json` or `bytes`, got `{raw}`"
+                    "`{ARG_RESPONSE_TYPE}` should be `json`, `bytes` or `stream`, got `{raw}`"
                 ))
             })?
         }
@@ -1246,6 +1258,22 @@ mod tests {
         let reported = query_json(&edited);
         assert_eq!(reported["body_type"], json!("bytes"));
         assert_eq!(reported["response_type"], json!("bytes"));
+
+        // TODO F7: a stream query.
+        let opens = build(
+            "openNote",
+            None,
+            &args(&[
+                (ARG_PATH, json!("/open-note")),
+                (ARG_METHOD, json!("POST")),
+                (ARG_LANGUAGE, json!("javascript")),
+                (ARG_CODE, json!("return live.stream(\"note_body\", 1);")),
+                (ARG_RESPONSE_TYPE, json!("stream")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(opens.response_type, sc_api::ResponseType::Stream);
+        assert_eq!(query_json(&opens)["response_type"], json!("stream"));
 
         let err = build(
             "upload",

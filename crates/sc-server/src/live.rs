@@ -96,12 +96,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
+use sc_api::StreamOpening;
 use sc_auth::{SessionStore, User};
 use sc_catalog::{Catalog, TableId};
 use sc_live::{
     Attached, Caller, ChangeAccess, ClientFrame, CloseReason, Connection, ConnectionInfo, Delivery,
     DocNews, DocRefusal, DocSeat, DocTarget, ErrorCode, FrameError, LikeRules, LiveHub, LiveLimits,
-    PresenceEvent, PublishFacts, RateLimit, Refusal, RoomKey, RowFact, RowFilter, Seat,
+    Opened, PresenceEvent, PublishFacts, RateLimit, Refusal, RoomKey, RowFact, RowFilter, Seat,
     ServerFrame, StoredStream, StreamFacts, Subscription, SubscriptionSet, Touch, Watch, may_open,
     may_publish, may_subscribe, read_rule_tables,
 };
@@ -188,6 +189,9 @@ pub(crate) struct LiveEnv {
     /// The application's subdomain, which the per-user connection limit is
     /// counted within.
     pub subdomain: String,
+    /// The caller's address, as the REST API resolves it — what a stream
+    /// query's per-IP rate limit counts (TODO F7).
+    pub client_ip: Option<std::net::IpAddr>,
 }
 
 /// Upgrade to a live socket. Everything the router had to refuse with a status
@@ -250,6 +254,7 @@ async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
         row_subs: HashMap::new(),
         change_subs: HashMap::new(),
         extras: HashMap::new(),
+        query_subs: HashMap::new(),
         publish_rate: RateLimit::new(limits.publishes_per_second, now),
         presence_rate: RateLimit::new(limits.presence_per_second, now),
         flush_at: None,
@@ -341,6 +346,9 @@ struct Live {
     change_subs: HashMap<String, ChangeAccess>,
     /// Every subscription's publishing and presence, by `sub` (L4).
     extras: HashMap<String, Extras>,
+    /// The subscriptions a stream query opened, by `sub` (TODO F7): the query
+    /// and its parameters, run again at every re-check, and what it granted.
+    query_subs: HashMap<String, QuerySub>,
     /// Publishes this connection may still make this second.
     publish_rate: RateLimit,
     /// Presence updates this connection may still send this second.
@@ -394,6 +402,48 @@ impl RowSub {
         }
         self.deps.contains(&touch.table)
     }
+}
+
+/// A subscription a stream query opened (TODO F7).
+struct QuerySub {
+    /// The custom query's name.
+    query: String,
+    /// What the page sent it — held in memory only, to run it again.
+    params: Json,
+    /// What its last run granted.
+    grant: QueryGrant,
+    /// Held for as long as the subscription is: wakes this connection when a
+    /// table the grant depends on is written.
+    _watch: Watch,
+}
+
+impl QuerySub {
+    /// Whether a write could change what the query answers: a table its run
+    /// read or named in `watch`, or the subscription's own row.
+    fn affected_by(&self, touch: &Touch) -> bool {
+        if self.grant.tables.contains(&touch.table) {
+            return true;
+        }
+        touch.table == self.grant.table
+            && (touch.keys.is_empty() || touch.keys.contains(&self.grant.key))
+    }
+}
+
+/// What a stream query's `live.stream(...)` was found to open.
+#[derive(Debug, Clone)]
+struct QueryGrant {
+    /// The stream.
+    stream: String,
+    /// The row's key: the topic.
+    key: String,
+    /// Whether the page may edit the document or publish on the topic.
+    write: bool,
+    /// The stream's row table.
+    table: String,
+    /// The tables the run read and those it asked to `watch`.
+    tables: BTreeSet<String>,
+    /// What `ready` tells the page.
+    opened: Opened,
 }
 
 impl Live {
@@ -460,6 +510,12 @@ impl Live {
                 filter,
                 echo,
             } => self.subscribe(sub, stream, topic, filter, echo).await,
+            ClientFrame::Open {
+                sub,
+                query,
+                params,
+                echo,
+            } => self.open(sub, query, params, echo).await,
             ClientFrame::Unsubscribe { sub } => match self.subs.remove(&sub) {
                 Ok(gone) => {
                     self.forget(&gone);
@@ -527,7 +583,9 @@ impl Live {
             _ => None,
         };
         let row_sub = self.watch_row(&grant);
-        let can_publish = self.publish_right(&stream, grant.topic.as_deref()).await;
+        let can_publish = self
+            .publish_right(&stream, grant.topic.as_deref(), None)
+            .await;
         let mut subscription = Subscription::waiting(sub.clone(), stream, grant.topic);
         let mut frames = start(
             &self.connection,
@@ -562,11 +620,238 @@ impl Live {
         frames
     }
 
+    /// Open a subscription by running stream query `query` (TODO F7): the
+    /// rules that do not depend on the stream, then the query, then what its
+    /// handle names, then `ready` with what was opened.
+    ///
+    /// The stream's `min_role` and the row's read rule are not asked: the
+    /// query was the access check, as an admin-authority file handle's is.
+    async fn open(
+        &mut self,
+        sub: String,
+        query: String,
+        params: Json,
+        echo: bool,
+    ) -> Vec<ServerFrame> {
+        if let Err(error) = self.subs.check_new(&sub) {
+            return vec![error.frame()];
+        }
+        let Some(app) = self.env.app.current() else {
+            return vec![FrameError::unavailable(&sub, &query).frame()];
+        };
+        let grant = match self
+            .run_query(&app, &sub, &query, params.clone(), false)
+            .await
+        {
+            Ok(grant) => grant,
+            Err(refusal) => return vec![*refusal],
+        };
+        let can_publish = self
+            .publish_right(&grant.stream, Some(&grant.key), Some(grant.write))
+            .await;
+        let mut subscription =
+            Subscription::waiting(sub.clone(), grant.stream.clone(), Some(grant.key.clone()));
+        let mut frames = start(
+            &self.connection,
+            &mut self.by_attachment,
+            self.env.supervisor.as_ref(),
+            &self.env.catalog,
+            None,
+            Rights { echo, can_publish },
+            &mut subscription,
+        )
+        .await;
+        mark_opened(&mut frames, &sub, &grant.opened);
+        if self.subs.insert(subscription).is_ok() {
+            let watch = self.watch_query(&grant);
+            self.query_subs.insert(
+                sub.clone(),
+                QuerySub {
+                    query,
+                    params,
+                    grant,
+                    _watch: watch,
+                },
+            );
+            self.extras.insert(
+                sub.clone(),
+                Extras {
+                    echo,
+                    can_publish,
+                    ..Extras::default()
+                },
+            );
+            frames.extend(self.seat(&sub).await);
+            frames.extend(self.join_doc(&sub).await);
+        }
+        frames
+    }
+
+    /// Run stream query `query` as this connection's caller and check what its
+    /// handle names. `Err` is the frame the page is answered with: anything
+    /// short of a handle this application may open is `unavailable`, worded
+    /// as an absent stream is.
+    async fn run_query(
+        &self,
+        app: &MountedApp,
+        sub: &str,
+        query: &str,
+        params: Json,
+        recheck: bool,
+    ) -> Result<QueryGrant, Box<ServerFrame>> {
+        let unavailable = || Box::new(FrameError::unavailable(sub, query).frame());
+        let user = self.caller.user.as_ref();
+        let mut opening = None;
+        for provider in &app.providers {
+            opening = provider
+                .open_stream(
+                    query,
+                    params.clone(),
+                    self.env.client_ip,
+                    recheck,
+                    &self.env.catalog,
+                    user,
+                )
+                .await;
+            if opening.is_some() {
+                break;
+            }
+        }
+        let reply = match opening {
+            None | Some(StreamOpening::Denied) => return Err(unavailable()),
+            Some(StreamOpening::RateLimited { retry_after }) => {
+                let message =
+                    format!("`{query}` was opened too often; try again in {retry_after} s");
+                let refusal =
+                    FrameError::new(Some(sub.to_owned()), ErrorCode::RateLimited, message);
+                return Err(Box::new(refusal.frame()));
+            }
+            Some(StreamOpening::Invalid(message)) => {
+                let refusal =
+                    FrameError::invalid(Some(sub.to_owned()), format!("`{query}`: {message}"));
+                return Err(Box::new(refusal.frame()));
+            }
+            Some(StreamOpening::Granted(reply)) => reply,
+        };
+        self.check_handle(app, &reply).await.map_err(|why| {
+            sc_log::log_warn!(
+                "stream query `{query}` returned live.stream(\"{}\", …), which cannot be \
+                 opened: {why}",
+                reply.name
+            );
+            unavailable()
+        })
+    }
+
+    /// What a stream query's handle opens, if this application may open it:
+    /// a stream it exposes, a `document` stream or an `internal` one whose
+    /// topics are rows, of a table in the application.
+    async fn check_handle(
+        &self,
+        app: &MountedApp,
+        reply: &sc_expr::StreamReply,
+    ) -> Result<QueryGrant, String> {
+        if !app.app.exposes_stream(&reply.name) {
+            return Err("the application does not expose that stream".to_owned());
+        }
+        let row = match sc_stream::load_stream_by_name(&self.env.catalog, &reply.name).await {
+            Ok(Some(row)) => row,
+            Ok(None) => return Err("there is no such stream".to_owned()),
+            Err(e) => return Err(sc_error::format_chain(&e)),
+        };
+        let Some(TopicSpec::Row { table }) = self.topics_of(&row) else {
+            return Err("its topics are not rows".to_owned());
+        };
+        let document =
+            sc_stream::providers::document::settings_of(&row.provider, &row.configuration);
+        if document.is_none() && row.provider != internal::INTERNAL {
+            return Err("it is neither a document stream nor an internal stream".to_owned());
+        }
+        if !app.app.can_access_table(&TableId(table.clone())) {
+            return Err(format!("its table `{table}` is not in the application"));
+        }
+        Ok(QueryGrant {
+            stream: reply.name.clone(),
+            key: reply.key.clone(),
+            write: reply.write,
+            tables: reply.read.iter().chain(&reply.watch).cloned().collect(),
+            opened: Opened {
+                stream: reply.name.clone(),
+                kind: if document.is_some() {
+                    "document"
+                } else {
+                    "row"
+                }
+                .to_owned(),
+                key: reply.key.clone(),
+                root: document.as_ref().map(|d| d.root.clone()),
+                root_kind: document.as_ref().map(|d| d.root_kind.clone()),
+            },
+            table,
+        })
+    }
+
+    /// Watch what `grant` depends on: its row's table and the tables its run
+    /// read or named.
+    fn watch_query(&self, grant: &QueryGrant) -> Watch {
+        self.connection
+            .watch(std::iter::once(grant.table.clone()).chain(grant.tables.iter().cloned()))
+    }
+
+    /// The `write` a stream query granted `sub`, or `None` for a subscription
+    /// that was not opened by one.
+    fn query_write(&self, sub: &str) -> Option<bool> {
+        self.query_subs.get(sub).map(|q| q.grant.write)
+    }
+
+    /// Run each of `names`' stream queries again, with the parameters they
+    /// were opened with (TODO F7). A query that no longer hands back the same
+    /// stream and row revokes its subscription; one whose `write` changed is
+    /// told by [`refresh_rights`](Live::refresh_rights), which follows.
+    async fn recheck_queries(&mut self, app: &MountedApp, names: Vec<String>) -> Vec<ServerFrame> {
+        let mut frames = Vec::new();
+        for name in names {
+            let Some((query, params, before)) = self
+                .query_subs
+                .get(&name)
+                .map(|q| (q.query.clone(), q.params.clone(), q.grant.clone()))
+            else {
+                continue;
+            };
+            match self.run_query(app, &name, &query, params, true).await {
+                Ok(grant) if grant.stream == before.stream && grant.key == before.key => {
+                    let watch = (grant.tables != before.tables).then(|| self.watch_query(&grant));
+                    if let Some(q) = self.query_subs.get_mut(&name) {
+                        q.grant = grant;
+                        if let Some(watch) = watch {
+                            q._watch = watch;
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(gone) = self.subs.revoke(&name) {
+                        self.forget(&gone);
+                        frames.push(ServerFrame::Revoked { sub: name });
+                    }
+                }
+            }
+        }
+        frames
+    }
+
     /// Whether this connection's page may publish on a subscription to
     /// `stream` on `topic` (§3 rule 7): the running stream's settings, and on
     /// a `row` topic the caller's update access to the row. `false` while the
     /// stream is not running here — there is nothing to publish into.
-    async fn publish_right(&self, stream: &str, topic: Option<&str>) -> bool {
+    ///
+    /// `granted` is a stream query's `write` (TODO F7), which stands in for the
+    /// caller's update access to the row.
+    async fn publish_right(
+        &self,
+        stream: &str,
+        topic: Option<&str>,
+        granted: Option<bool>,
+    ) -> bool {
         let Some(running) = self
             .env
             .supervisor
@@ -583,8 +868,9 @@ impl Live {
         let Ok(spec) = running.topic_spec() else {
             return false;
         };
-        let row_updatable = match (&spec, topic) {
-            (TopicSpec::Row { table }, Some(key)) => self.row_updatable(table, key).await,
+        let row_updatable = match (&spec, topic, granted) {
+            (TopicSpec::Row { .. }, Some(_), Some(write)) => write,
+            (TopicSpec::Row { table }, Some(key), None) => self.row_updatable(table, key).await,
             _ => false,
         };
         may_publish(
@@ -641,7 +927,8 @@ impl Live {
             else {
                 continue;
             };
-            let can_publish = self.publish_right(&stream, topic.as_deref()).await;
+            let granted = self.query_write(name);
+            let can_publish = self.publish_right(&stream, topic.as_deref(), granted).await;
             if let Some(extras) = self.extras.get_mut(name) {
                 extras.can_publish = can_publish;
             }
@@ -651,7 +938,10 @@ impl Live {
                 .and_then(|extras| extras.doc.as_ref())
                 .map(|seat| seat.room().target().table.clone());
             if let (Some(table), Some(key)) = (doc_table, topic) {
-                let can_edit = self.row_updatable(&table, &key).await;
+                let can_edit = match granted {
+                    Some(write) => write,
+                    None => self.row_updatable(&table, &key).await,
+                };
                 let Some(extras) = self.extras.get_mut(name) else {
                     continue;
                 };
@@ -700,7 +990,10 @@ impl Live {
             }
             Some(Ok(target)) => target,
         };
-        let can_edit = self.row_updatable(&target.table, &target.key).await;
+        let can_edit = match self.query_write(sub) {
+            Some(write) => write,
+            None => self.row_updatable(&target.table, &target.key).await,
+        };
         let same_room = self
             .extras
             .get(sub)
@@ -1296,7 +1589,9 @@ impl Live {
                 // A restart may have changed the settings publishing and
                 // presence are decided by.
                 let (stream, topic) = (subscription.stream.clone(), subscription.topic.clone());
-                let can_publish = self.publish_right(&stream, topic.as_deref()).await;
+                let granted = self.query_write(&name);
+                let can_publish = self.publish_right(&stream, topic.as_deref(), granted).await;
+                let opened = self.query_subs.get(&name).map(|q| q.grant.opened.clone());
                 let echo = self.extras.get(&name).is_some_and(|extras| extras.echo);
                 if let Some(extras) = self.extras.get_mut(&name) {
                     extras.can_publish = can_publish;
@@ -1304,18 +1599,20 @@ impl Live {
                 let Some(subscription) = self.subs.get_mut(&name) else {
                     continue;
                 };
-                frames.extend(
-                    start(
-                        &self.connection,
-                        &mut self.by_attachment,
-                        supervisor.as_ref(),
-                        &catalog,
-                        self.change_subs.get(&name),
-                        Rights { echo, can_publish },
-                        subscription,
-                    )
-                    .await,
-                );
+                let mut started = start(
+                    &self.connection,
+                    &mut self.by_attachment,
+                    supervisor.as_ref(),
+                    &catalog,
+                    self.change_subs.get(&name),
+                    Rights { echo, can_publish },
+                    subscription,
+                )
+                .await;
+                if let Some(opened) = &opened {
+                    mark_opened(&mut started, &name, opened);
+                }
+                frames.extend(started);
                 followed.push(name);
                 continue;
             }
@@ -1392,12 +1689,18 @@ impl Live {
         if touches.is_empty() {
             return Vec::new();
         }
-        let affected: Vec<String> = self
+        let mut affected: Vec<String> = self
             .row_subs
             .iter()
             .filter(|(_, row)| touches.iter().any(|touch| row.affected_by(touch)))
             .map(|(sub, _)| sub.clone())
             .collect();
+        affected.extend(
+            self.query_subs
+                .iter()
+                .filter(|(_, q)| touches.iter().any(|touch| q.affected_by(touch)))
+                .map(|(sub, _)| sub.clone()),
+        );
         if affected.is_empty() {
             return Vec::new();
         }
@@ -1422,7 +1725,10 @@ impl Live {
     async fn recheck_subs(&mut self, app: &MountedApp, names: Vec<String>) -> Vec<ServerFrame> {
         let caller = self.caller();
         let mut decided: HashMap<(String, Option<String>), Option<Option<String>>> = HashMap::new();
-        let mut frames = Vec::new();
+        let (queries, names): (Vec<String>, Vec<String>) = names
+            .into_iter()
+            .partition(|name| self.query_subs.contains_key(name));
+        let mut frames = self.recheck_queries(app, queries).await;
         for name in names {
             let Some((stream, topic)) = self
                 .subs
@@ -1466,6 +1772,7 @@ impl Live {
         // hub stops observing writes to it.
         self.row_subs.remove(&gone.sub);
         self.change_subs.remove(&gone.sub);
+        self.query_subs.remove(&gone.sub);
         // And its seat: the member leaves the room.
         self.extras.remove(&gone.sub);
     }
@@ -1496,6 +1803,7 @@ async fn start(
             can_publish: false,
             status,
             counters: Json::Null,
+            opened: None,
         }];
     };
     attach(
@@ -1508,6 +1816,19 @@ async fn start(
         &running,
     )
     .await
+}
+
+/// Say on `sub`'s `ready` what its stream query opened (TODO F7).
+fn mark_opened(frames: &mut [ServerFrame], sub: &str, what: &Opened) {
+    for frame in frames {
+        if let ServerFrame::Ready {
+            sub: ready, opened, ..
+        } = frame
+            && ready == sub
+        {
+            *opened = Some(what.clone());
+        }
+    }
 }
 
 /// The whole document `seat` is in, as `doc_sync` for `sub`.
@@ -1566,6 +1887,7 @@ async fn attach(
         can_publish: rights.can_publish,
         status,
         counters,
+        opened: None,
     });
     frames.extend(replay.into_iter().map(|envelope| ServerFrame::Element {
         sub: subscription.sub.clone(),

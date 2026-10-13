@@ -201,6 +201,11 @@ pub enum ResponseType {
     /// The client method resolves to a `Blob`, and a `GET` query also gets a
     /// `<name>Url(params)` helper for `<img src>` and links.
     Bytes,
+    /// A live subscription (TODO F7): the body ends in `return
+    /// live.stream(name, key, { write })`, and the query is opened over the
+    /// live socket rather than called over HTTP. The generated method opens
+    /// it there.
+    Stream,
 }
 
 impl ResponseType {
@@ -213,6 +218,7 @@ impl ResponseType {
         match self {
             ResponseType::Json => "json",
             ResponseType::Bytes => "bytes",
+            ResponseType::Stream => "stream",
         }
     }
 }
@@ -424,7 +430,13 @@ impl CustomQuery {
     /// Whether the caller's arguments arrive in the query string rather than in
     /// a body — `GET` and `DELETE`, the methods that conventionally have none,
     /// and a `bytes` query, whose body is the bytes.
+    ///
+    /// A `stream` query's arguments are the `params` of the socket frame that
+    /// opens it, so they are always its body, whatever its method.
     pub fn args_in_query(&self) -> bool {
+        if self.response_type == ResponseType::Stream {
+            return false;
+        }
         !self.method.has_body() || self.body_type == BodyType::Bytes
     }
 
@@ -618,6 +630,30 @@ fn validate_custom_query(q: &CustomQuery, tables: &[String]) -> Result<()> {
              (`return response({{ body: bytes }})` or `response({{ file }})`)",
             q.name
         )));
+    }
+
+    if q.response_type == ResponseType::Stream {
+        if q.language != QueryLanguage::Javascript {
+            return Err(Error::invalid(format!(
+                "custom query `{}` opens a stream, which only a JavaScript query can \
+                 (`return live.stream(name, key, {{ write }})`)",
+                q.name
+            )));
+        }
+        if q.body_type == BodyType::Bytes {
+            return Err(Error::invalid(format!(
+                "custom query `{}` opens a stream, so its arguments are the socket \
+                 frame's JSON `params`; it cannot take a `bytes` body",
+                q.name
+            )));
+        }
+        if q.returns.is_some() {
+            return Err(Error::invalid(format!(
+                "custom query `{}` opens a stream, so it has no JSON response to \
+                 declare; remove `returns`",
+                q.name
+            )));
+        }
     }
 
     if let Some(limit) = &q.rate_limit {
@@ -819,6 +855,10 @@ pub fn custom_endpoint(mount: &str, query: &CustomQuery) -> Endpoint {
     }
     if query.response_type == ResponseType::Bytes {
         endpoint = endpoint.binary_output();
+    }
+    if query.response_type == ResponseType::Stream {
+        // Opened over the live socket, not fetched (TODO F7).
+        endpoint = endpoint.stream_output();
     }
     if query.is_code() && query.body_type == BodyType::Json {
         // A body reads whatever it was sent, declared or not (`code_scope`
@@ -1398,6 +1438,52 @@ mod tests {
             !custom_endpoint("api", &query()).open_args,
             "SQL declares what it reads"
         );
+    }
+
+    #[test]
+    fn a_stream_query_takes_its_params_as_a_body_and_is_javascript_only() {
+        // TODO F7: whatever its method, a stream query's arguments are the
+        // socket frame's `params`, and its endpoint is opened, not fetched.
+        let q = js_query().response_type(ResponseType::Stream);
+        validate_custom_queries(std::slice::from_ref(&q), &[]).unwrap();
+        assert!(!q.args_in_query(), "a GET stream query still takes a body");
+        let ep = custom_endpoint("api", &q);
+        assert!(ep.stream_output && !ep.binary_output);
+        assert!(ep.query.is_empty());
+        assert_eq!(
+            ep.input,
+            TypeSchema::struct_of([StructField::new("n", TypeSchema::int())])
+        );
+        let stored = serde_json::to_value(&q).unwrap();
+        assert_eq!(stored["response_type"], json!("stream"));
+        let back: CustomQuery = serde_json::from_value(stored).unwrap();
+        assert_eq!(back.response_type, ResponseType::Stream);
+
+        let cases = [
+            (
+                js_query()
+                    .response_type(ResponseType::Stream)
+                    .language(QueryLanguage::Python),
+                "only a JavaScript query",
+            ),
+            (
+                CustomQuery::new("up", Method::Post, "/up", "return 1;")
+                    .language(QueryLanguage::Javascript)
+                    .body_type(BodyType::Bytes)
+                    .response_type(ResponseType::Stream),
+                "cannot take a `bytes` body",
+            ),
+            (
+                js_query()
+                    .response_type(ResponseType::Stream)
+                    .returns(json!("int")),
+                "no JSON response to declare",
+            ),
+        ];
+        for (q, expected) in cases {
+            let msg = validate_custom_queries(&[q], &[]).unwrap_err().to_string();
+            assert!(msg.contains(expected), "{msg}");
+        }
     }
 
     #[test]

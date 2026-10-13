@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import {
   ADMIN_ROLE,
   blankQueryRow,
+  bodyTypeApplies,
   columnsSummary,
   describeBody,
   isCode,
@@ -128,6 +129,18 @@ describe("writing the queries back", () => {
     // A stored query that never said is JSON both ways.
     expect(blankQueryRow().bodyType).toBe("json");
     expect(queryRowsFromConfig({ queries: [stored] })[0].responseType).toBe("json");
+  });
+
+  it("keeps a stream response, which takes no bytes body (TODO F7)", () => {
+    const [read] = queryRowsFromConfig({
+      queries: [{ ...stored, language: "javascript", method: "POST", response_type: "stream" }],
+    });
+    expect(read.responseType).toBe("stream");
+    expect(bodyTypeApplies(read)).toBe(false);
+    const [out] = queryRowsToConfig([{ ...read, bodyType: "bytes" }]);
+    expect(out.response_type).toBe("stream");
+    expect(out).not.toHaveProperty("body_type");
+    expect(returnsApplies(read)).toBe(false);
   });
 
   it("trims the name and path but leaves the code exactly as written", () => {

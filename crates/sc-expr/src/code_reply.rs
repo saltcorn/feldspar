@@ -58,6 +58,25 @@ pub struct CodeResponse {
     /// file })`. Not yet checked: the transport decides whether this run's
     /// caller may read it.
     pub file: Option<FileReply>,
+    /// A stream handle (TODO F7): `return live.stream(name, key, { write,
+    /// watch })`. Only a query whose `response_type` is `stream`, opened over
+    /// the live socket, may answer with one.
+    pub stream: Option<StreamReply>,
+}
+
+/// The handle of a `live.stream(name, key, { write, watch })`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamReply {
+    /// The stream's name.
+    pub name: String,
+    /// The row's key: the topic.
+    pub key: String,
+    /// Whether the caller may edit the document or publish on the topic.
+    pub write: bool,
+    /// The tables the body asked to be re-checked on, beside those it read.
+    pub watch: Vec<String>,
+    /// The tables the run's database calls named, as the host recorded them.
+    pub read: Vec<String>,
 }
 
 /// The bytes of a `response({ body: bytes })`.
@@ -189,12 +208,34 @@ pub fn take_code_response(value: Json) -> std::result::Result<CodeResponse, Json
             content_type: content_type.clone(),
         })
     });
+    let stream = spec.get("stream").and_then(|stream| {
+        let names = |key: &str| -> Vec<String> {
+            stream
+                .get(key)
+                .and_then(Json::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(Json::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Some(StreamReply {
+            name: stream.get("name")?.as_str()?.to_owned(),
+            key: stream.get("key")?.as_str()?.to_owned(),
+            write: stream.get("write").and_then(Json::as_bool).unwrap_or(false),
+            watch: names("watch"),
+            read: names("read"),
+        })
+    });
     Ok(CodeResponse {
         status,
         headers,
         body,
         raw,
         file,
+        stream,
     })
 }
 

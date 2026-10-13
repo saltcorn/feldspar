@@ -3140,6 +3140,40 @@ pub(crate) const LIVE_PRELUDE: &str = r#"
       if (reply.error !== undefined) throw new Error(reply.error);
       return reply.ok;
     },
+    // The answer of a query whose `response_type` is `stream` (TODO F7):
+    // `return live.stream("pad_doc", pad.id, { write: true })` attaches the
+    // caller's live subscription to that row's topic. Nothing is opened here;
+    // the socket checks the stream when the run answers.
+    stream(stream, key, options) {
+      if (typeof stream !== "string" || stream === "") {
+        throw new TypeError(
+          "live.stream() takes the stream's name first, as in " +
+          "return live.stream(\"pad_doc\", pad.id, { write: true })"
+        );
+      }
+      if ((typeof key !== "string" && typeof key !== "number") || key === "") {
+        throw new TypeError(
+          "live.stream() takes the row's key second — a string or a number — as in " +
+          "live.stream(\"" + stream + "\", pad.id)"
+        );
+      }
+      const given = options === undefined || options === null ? {} : options;
+      if (typeof given !== "object" || Array.isArray(given)) {
+        throw new TypeError("live.stream()'s options are an object: { write, watch }");
+      }
+      for (const name of Object.keys(given)) {
+        if (name !== "write" && name !== "watch") {
+          throw new TypeError("`" + name + "` is not an option of live.stream(); they are: write, watch");
+        }
+      }
+      const watch = given.watch === undefined ? [] : given.watch;
+      if (!Array.isArray(watch) || watch.some((t) => typeof t !== "string" || t === "")) {
+        throw new TypeError("live.stream()'s `watch` is a list of table names");
+      }
+      return __scStreamReply({
+        name: stream, key: String(key), write: given.write === true, watch: watch.slice(),
+      });
+    },
     document(stream, key) {
       if (typeof stream !== "string" || stream === "") {
         throw new TypeError(
@@ -3823,6 +3857,16 @@ const SETUP: &str = r#"
     Object.defineProperty(out, RESPONSE_EXTRA, { value: Object.freeze(extra) });
     return Object.freeze(out);
   });
+  // `live.stream(...)`'s answer (TODO F7): a response carrying a stream handle,
+  // recognised by the run wrapper like any `response(...)`. It holds no
+  // authority: the host decides what the handle opens, and only for a query
+  // whose `response_type` is `stream`, over the live socket.
+  fixed("__scStreamReply", (spec) => {
+    const out = { status: 200, headers: [], body: null };
+    Object.defineProperty(out, RESPONSE, { value: true });
+    Object.defineProperty(out, RESPONSE_EXTRA, { value: Object.freeze({ stream: spec }) });
+    return Object.freeze(out);
+  });
   // What an admin should be shown: the stack when there is one, because a body
   // of any size wants the line, and the value itself when there is not.
   const describe = (e) => {
@@ -4252,6 +4296,9 @@ struct RunState {
     /// worker's loop, because the loop no longer waits for one run: a completion
     /// op finds the run by its token and answers whoever asked for it.
     reply: Option<tokio::sync::oneshot::Sender<Result<Json>>>,
+    /// The tables this run's database calls named, in the order first named
+    /// (TODO F7): a stream query's handle is re-checked when one is written.
+    tables_read: Vec<String>,
 }
 
 #[cfg(feature = "eval")]
@@ -4969,6 +5016,11 @@ async fn host_call(state: &Rc<RefCell<OpState>>, token: &str, request: &str) -> 
             return refuse("this code body has no database access");
         };
         run.calls_left -= 1;
+        if let Some(table) = plan.get("table").and_then(Json::as_str)
+            && !run.tables_read.iter().any(|t| t == table)
+        {
+            run.tables_read.push(table.to_owned());
+        }
         // Past this point the run has reached the database, so it is no longer
         // one that could be re-run without repeating whatever it did there.
         run.retry = None;
@@ -5166,7 +5218,20 @@ fn op_sc_http_error(
 #[cfg(feature = "eval")]
 #[deno_core::op2(fast)]
 fn op_sc_respond(state: &mut OpState, #[string] token: &str, #[string] spec: &str) {
-    let spec = serde_json::from_str(spec).unwrap_or(Json::Null);
+    let mut spec: Json = serde_json::from_str(spec).unwrap_or(Json::Null);
+    // A stream handle (TODO F7) carries the tables this run read, written here
+    // by the host so the guest cannot narrow what its re-checks watch.
+    if let Some(stream) = spec.get_mut("stream").and_then(Json::as_object_mut) {
+        let read = state
+            .try_borrow::<RunTable>()
+            .and_then(|table| table.runs.get(token))
+            .map(|run| run.tables_read.clone())
+            .unwrap_or_default();
+        stream.insert(
+            "read".to_owned(),
+            Json::Array(read.into_iter().map(Json::String).collect()),
+        );
+    }
     finish(state, token, Ok(crate::code_reply::wrap_response(spec)));
 }
 
@@ -6567,6 +6632,7 @@ fn start_run(
                     ..*run
                 })),
                 reply: Some(reply),
+                tables_read: Vec::new(),
             },
         );
         // This run's JavaScript is what is about to run.
@@ -11082,6 +11148,80 @@ mod tests {
         assert!(
             document_request(&json!({ "stream": "s", "key": "1", "op": "edit", "index": -1 }))
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_handle_is_a_reply_carrying_the_tables_the_run_read() {
+        // TODO F7: `return live.stream(...)` answers like `response(...)`,
+        // and the host adds the tables the run's database calls named.
+        let live = Arc::new(FakeLive::default());
+        let live_host: Arc<dyn LiveHost> = live.clone();
+        let db = FakeHost::rows(json!([{ "id": 1, "mode": "edit" }]));
+        let rt = CodeRuntime::with_workers(1);
+        let out = rt
+            .run(CodeCall {
+                code: r#"const share = await db.share_links.rows();
+                         await db.pads.rows();
+                         await db.share_links.rows();
+                         return live.stream("pad_doc", 42, {
+                           write: share[0].mode === "edit", watch: ["audit"],
+                         });"#
+                    .to_owned(),
+                host: Some(&*db),
+                live: Some(&live_host),
+                ..CodeCall::default()
+            })
+            .await
+            .unwrap();
+        let reply = crate::take_code_response(out).expect("a wrapped reply");
+        assert_eq!(
+            reply.stream,
+            Some(crate::StreamReply {
+                name: "pad_doc".to_owned(),
+                key: "42".to_owned(),
+                write: true,
+                watch: vec!["audit".to_owned()],
+                read: vec!["share_links".to_owned(), "pads".to_owned()],
+            })
+        );
+        assert!(
+            live.published.lock().unwrap().is_empty(),
+            "nothing is published"
+        );
+
+        // A handle cannot be forged from JSON, and the options are checked.
+        let forged = rt
+            .run(CodeCall {
+                code: r#"return { stream: { name: "pad_doc", key: "1", write: true } };"#
+                    .to_owned(),
+                live: Some(&live_host),
+                ..CodeCall::default()
+            })
+            .await
+            .unwrap();
+        assert!(crate::take_code_response(forged).is_err(), "plain JSON");
+        let refused = rt
+            .run(CodeCall {
+                code: r#"const why = [];
+                         for (const f of [() => live.stream("", 1),
+                                          () => live.stream("pad_doc"),
+                                          () => live.stream("pad_doc", 1, { mode: "edit" }),
+                                          () => live.stream("pad_doc", 1, { watch: "shares" })]) {
+                           try { f(); } catch (e) { why.push(e.message); }
+                         }
+                         return why;"#
+                    .to_owned(),
+                live: Some(&live_host),
+                ..CodeCall::default()
+            })
+            .await
+            .unwrap();
+        let why = refused.as_array().unwrap();
+        assert_eq!(why.len(), 4, "{refused}");
+        assert!(
+            why[2].as_str().unwrap().contains("not an option"),
+            "{refused}"
         );
     }
 

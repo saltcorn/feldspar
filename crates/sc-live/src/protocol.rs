@@ -96,6 +96,22 @@ pub enum ClientFrame {
         #[serde(default, skip_serializing_if = "is_false")]
         echo: bool,
     },
+    /// Start a subscription named `sub` by running the application's custom
+    /// query `query`, whose `response_type` is `stream` (TODO F7): the query
+    /// decides which stream and row the subscription is attached to, and
+    /// whether the page may write there. `params` is the query's body.
+    Open {
+        /// The client's name for the subscription.
+        sub: String,
+        /// The custom query's name.
+        query: String,
+        /// The query's body. Absent is `{}`.
+        #[serde(default = "empty_object")]
+        params: Json,
+        /// As `subscribe`'s.
+        #[serde(default, skip_serializing_if = "is_false")]
+        echo: bool,
+    },
     /// End the subscription named `sub`.
     Unsubscribe {
         /// The client's name for the subscription.
@@ -131,9 +147,14 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn empty_object() -> Json {
+    Json::Object(serde_json::Map::new())
+}
+
 /// Every `type` a client may send — what an unknown one is told it is not.
-const CLIENT_TYPES: [&str; 6] = [
+const CLIENT_TYPES: [&str; 7] = [
     "subscribe",
+    "open",
     "unsubscribe",
     "publish",
     "presence",
@@ -188,6 +209,7 @@ impl ClientFrame {
     pub fn sub(&self) -> Option<&str> {
         match self {
             ClientFrame::Subscribe { sub, .. }
+            | ClientFrame::Open { sub, .. }
             | ClientFrame::Unsubscribe { sub }
             | ClientFrame::Publish { sub, .. }
             | ClientFrame::Presence { sub, .. }
@@ -293,6 +315,23 @@ impl FrameError {
     }
 }
 
+/// What a stream query opened (TODO F7), as `ready` tells the page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Opened {
+    /// The stream.
+    pub stream: String,
+    /// `document` or `row`.
+    pub kind: String,
+    /// The row's key: the topic.
+    pub key: String,
+    /// A document's root name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// A document's root kind, `text` or `xml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_kind: Option<String>,
+}
+
 /// A frame the server sends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -317,6 +356,11 @@ pub enum ServerFrame {
         status: Json,
         /// The stream's counters.
         counters: Json,
+        /// For a subscription started by `open` (TODO F7): what the query
+        /// opened, so the page learns the stream's kind at run time. Absent
+        /// on a `subscribe`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opened: Option<Opened>,
     },
     /// One element, in the §14.3 envelope.
     Element {
@@ -497,6 +541,53 @@ mod tests {
     }
 
     #[test]
+    fn an_open_frame_names_a_query_and_its_ready_says_what_it_opened() {
+        // TODO F7.
+        assert_eq!(
+            frame(json!({ "type": "open", "sub": "s1", "query": "openPad",
+                          "params": { "token": "t" } }))
+            .unwrap(),
+            ClientFrame::Open {
+                sub: "s1".to_owned(),
+                query: "openPad".to_owned(),
+                params: json!({ "token": "t" }),
+                echo: false,
+            }
+        );
+        let ClientFrame::Open { params, .. } =
+            frame(json!({ "type": "open", "sub": "s1", "query": "openPad" })).unwrap()
+        else {
+            panic!("an open frame");
+        };
+        assert_eq!(params, json!({}), "absent params are an empty body");
+        let error = frame(json!({ "type": "open", "sub": "s1" })).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid);
+
+        let ready = serde_json::to_value(ServerFrame::Ready {
+            sub: "s1".to_owned(),
+            stream: "pad_doc".to_owned(),
+            element_type: json!(null),
+            replayed: 0,
+            can_publish: false,
+            status: json!({ "status": "running" }),
+            counters: json!({}),
+            opened: Some(Opened {
+                stream: "pad_doc".to_owned(),
+                kind: "document".to_owned(),
+                key: "42".to_owned(),
+                root: Some("default".to_owned()),
+                root_kind: Some("xml".to_owned()),
+            }),
+        })
+        .unwrap();
+        assert_eq!(
+            ready["opened"],
+            json!({ "stream": "pad_doc", "kind": "document", "key": "42",
+                    "root": "default", "root_kind": "xml" })
+        );
+    }
+
+    #[test]
     fn an_unknown_frame_type_is_an_invalid_error_and_not_a_hang_up() {
         let error = frame(json!({ "type": "teleport", "sub": "s9" })).unwrap_err();
         assert_eq!(error.code, ErrorCode::Invalid);
@@ -551,6 +642,7 @@ mod tests {
                     can_publish: false,
                     status: json!({ "status": "running" }),
                     counters: json!({}),
+                    opened: None,
                 },
                 "ready",
             ),

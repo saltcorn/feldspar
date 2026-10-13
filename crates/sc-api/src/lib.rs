@@ -85,6 +85,7 @@ pub use ownership::{
 };
 pub use provider::{
     ApiProvider, ApiRequest, ApiResponse, AppDirectory, AppLinks, RawBody, SessionAction,
+    StreamOpening,
 };
 pub use resource::{ResourceField, ResourceFile, ResourceModel, ResourceOps};
 pub use rest::custom::{

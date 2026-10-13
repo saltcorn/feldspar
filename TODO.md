@@ -312,6 +312,38 @@ it shows "used by" (queries and triggers whose code mentions `lib("name")`). MCP
   defines wins; an empty string in the app's catalogue counts as missing.
 - The instance catalogue's locales are the instance's `enabled_locales`.
 
+## 6b. Streams opened by a code query (F7)
+
+Field report (PaddiPad, a collaborative editor built over MCP): a document or row stream decides
+access by role and ownership formula, so an anonymous visitor holding a share link (a token in an
+app table, with a mode, an expiry and a password) cannot open a pad's document. The app kept its
+own Yjs sync in code queries and a polling "pulse" stream as a workaround.
+
+The answer follows F2.10's file handles: **the code decides**. A code query's `response_type`
+gains a third value, `stream`. Such a query is not called over HTTP (a 400 says so) but over the
+live socket, and it ends in `return live.stream(name, key, { write, watch })`:
+
+- The socket's new `open {sub, query, params, echo?}` frame runs the query as the caller
+  (anonymous allowed), with its `min_role` and `rate_limit` (per IP). `params` is its `body`.
+- A returned handle attaches the subscription to stream `name`, topic `key`. The stream is
+  checked when the handle comes back: exposed by the query's own application, a `document`
+  stream or an `internal` stream with `row` topics. The stream's `min_role` and the row's read
+  rule are **not** applied: the query was the access check, as an admin-authority file handle's
+  is. `write` decides `read_only` on a document and `can_publish` on a row stream (with the
+  stream's `client_publish` on).
+- Anything else — no handle, a throw, an `httpError`, a stream that fails the checks — is the
+  same `unavailable` an absent stream is. Over the rate limit is `rate_limited`.
+- `ready` carries `opened: {stream, kind: "document" | "row", key, root?, root_kind?}`, so the
+  client sets up a `Y.Doc` with no stream named at generate time. Elements are `unknown`.
+- **Re-checked by running the query again** with the same params (kept in memory only): on the
+  re-check clock, and at once on a write to the stream's row (that key) or to any table named in
+  `watch` (e.g. `["share_links"]`). No handle, or another stream or key, is `revoked`; a changed
+  `write` sends `doc_sync` with the new `read_only`. *Deviation from the first sketch*: the
+  tables to watch are named by the code rather than recorded from what the run read.
+- JavaScript only (as a `bytes` response is). The generated client gives the query a method
+  `name(body, handlers)` that opens over the socket and returns a `LiveOpenedSession`;
+  `live-doc.ts` adds `openQueryDocument` and React's `useQueryDocument`.
+
 ## 7. Deliberately left out
 
 - **Signed, expiring file URLs.** With owners as an authority (§2.1), an upload hook (§2.3)
@@ -595,6 +627,24 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
   in German with no per-app translation.
 
 - [x] **F6.5** `docs/I18N.md` and `docs/tutorial-i18n.md` updated, with a definition-of-done test.
+
+## F7 — Streams opened by a code query
+
+- [x] **F7.1** `response_type: "stream"` (JavaScript only; no `bytes` body, no `returns`; its
+  arguments always travel as the body) and a 400 over HTTP. `live.stream(name, key, { write,
+  watch })` in a code body, carried out like `response(...)`. `ApiProvider::open_stream` runs
+  the query for the socket with its role floor and rate limit. Tests: validation; a handle is
+  read back; an HTTP call is a 400.
+- [x] **F7.2** The socket's `open` frame, `ready.opened`, rights from `write`, and re-checks by
+  running the query again (clock, the row, `watch` tables). Tests (`app_live_query_streams.rs`):
+  an anonymous link holder edits a document with an edit token and reads with a read token; a
+  wrong or expired token and a stream the app does not expose are `unavailable`; deleting the
+  share revokes at once; switching it to read downgrades; the rate limit; an owner still opens
+  the stream directly; an HTTP call is a 400.
+- [x] **F7.3** The generated client: `LiveConnection.openQuery`, the method for a stream query,
+  `openQueryDocument`/`useQueryDocument` in `live-doc.ts`. MCP `save_api_query`, the admin editor,
+  `describe_code_api`, `codeTypes.ts`, `AGENTS.md` and TECHNICAL_DESIGN §13.4/§14.10. Tests: the
+  generated client type-checks; `live-doc.ts` under Node opens a document through a query.
 
 ---
 

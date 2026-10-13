@@ -86,10 +86,26 @@ function payloadFrom(value: unknown): PayloadType {
   return value === "bytes" ? "bytes" : "json";
 }
 
+/** What a JavaScript query answers with: JSON, bytes or a file, or (TODO F7) a
+ * live stream — `return live.stream(name, key, { write })`, opened over the
+ * app's live socket rather than called over HTTP. */
+export type ResponseKind = PayloadType | "stream";
+
+function responseFrom(value: unknown): ResponseKind {
+  return value === "bytes" || value === "stream" ? value : "json";
+}
+
 /** Whether the body-type choice applies: a JavaScript query on a method that
- * has a body. */
-export function bodyTypeApplies(row: Pick<QueryRow, "language" | "method">): boolean {
-  return row.language === "javascript" && !["GET", "DELETE"].includes(row.method);
+ * has a body, and that is not opened as a stream (whose arguments are the
+ * socket frame's JSON `params`). */
+export function bodyTypeApplies(
+  row: Pick<QueryRow, "language" | "method" | "responseType">,
+): boolean {
+  return (
+    row.language === "javascript" &&
+    !["GET", "DELETE"].includes(row.method) &&
+    row.responseType !== "stream"
+  );
 }
 
 /** Whether the response-type choice applies: a JavaScript query. */
@@ -136,8 +152,9 @@ export type QueryRow = {
   params: QueryParamRow[];
   /** `bytes`: `body` is a Uint8Array of the raw request body. */
   bodyType: PayloadType;
-  /** `bytes`: the client method resolves to a `Blob`. */
-  responseType: PayloadType;
+  /** `bytes`: the client method resolves to a `Blob`; `stream`: it opens a
+   * live subscription. */
+  responseType: ResponseKind;
   /** A code query's declared answer, as JSON text in the `returns` type
    * language; empty for none. */
   returns: string;
@@ -249,7 +266,7 @@ function queryRowFrom(stored: unknown): QueryRow {
     code: text(q.code),
     minRole: typeof q.min_role === "number" ? q.min_role : ADMIN_ROLE,
     bodyType: payloadFrom(q.body_type),
-    responseType: payloadFrom(q.response_type),
+    responseType: responseFrom(q.response_type),
     returns: q.returns === undefined || q.returns === null ? "" : JSON.stringify(q.returns, null, 2),
     ...rateLimitFrom(q.rate_limit),
     params: params.map((p) => {
@@ -297,7 +314,7 @@ export type StoredQuery = {
   params: { name: string; type: string; required: boolean }[];
   /** Sent only when not `json`, as the server stores it. */
   body_type?: PayloadType;
-  response_type?: PayloadType;
+  response_type?: ResponseKind;
   /** Sent only when declared. */
   returns?: unknown;
   /** Absent for the default; `{}` for no limit. */
@@ -329,7 +346,7 @@ export function queryRowsToConfig(rows: QueryRow[]): StoredQuery[] {
     // A choice that no longer applies (the language or method changed) is
     // dropped rather than sent for the server to refuse.
     if (row.bodyType === "bytes" && bodyTypeApplies(row)) stored.body_type = "bytes";
-    if (row.responseType === "bytes" && responseTypeApplies(row)) stored.response_type = "bytes";
+    if (row.responseType !== "json" && responseTypeApplies(row)) stored.response_type = row.responseType;
     if (row.returns.trim() && returnsApplies(row)) {
       // Text that is not JSON goes as it is, and the server's refusal says so.
       stored.returns = returnsError(row.returns) ? row.returns : JSON.parse(row.returns);

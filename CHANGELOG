@@ -2,6 +2,47 @@
 
 Changes in reverse chronological order.
 
+## Streams opened by a code query (TODO F7)
+
+From an external coding agent's feedback (PaddiPad, a collaborative editor): a document or row
+stream decides access by role and ownership rule, so an anonymous visitor holding a share link
+(a token in an app table with a mode, an expiry and a password) could not open a pad's document.
+The app kept its own Yjs sync in code queries plus a polling "pulse" stream. Now the share check
+is a code query that hands out the stream, as F2.10's file handles do for downloads.
+
+- **`response_type: "stream"`** on a JavaScript custom query (no `bytes` body, no `returns`; its
+  arguments are always a JSON body). Over HTTP it is a 400 naming the socket. The body ends in
+  **`return live.stream(name, key, { write, watch })`** — a new `live` method that returns a
+  host-tagged reply, so it cannot be forged from JSON. The host adds the tables the run's `db`
+  calls named (`StreamReply.read`).
+- **The live socket's `open {sub, query, params, echo?}` frame** runs the query as the caller
+  (anonymous allowed) under its `min_role` and per-IP rate limit (`ApiProvider::open_stream`; the
+  socket now knows the client address). The handle must name a `document` stream or an `internal`
+  row stream that the app exposes, on a table in the app. **The stream's `min_role` and the row's
+  ownership rule are not applied** — the query is the access check. `write` decides `read_only`
+  on a document and `can_publish` on a row topic. Every refusal is the usual `unavailable`;
+  over the limit is `rate_limited`; parameters that do not fit are `invalid`.
+- **`ready.opened`** `{stream, kind, key, root?, root_kind?}` tells the page what was opened.
+- **Re-checked by running the query again** with the same params (memory only): on the re-check
+  clock, and at once on a write to a table the run read, a table named in `watch`, or the row
+  itself. Re-runs are not rate-limited. A different answer is `revoked`; a changed `write` sends
+  `doc_sync` with the new `read_only`. So deleting or downgrading a link takes effect at once.
+- **Generated client**: a stream query's method is `name(body, handlers): LiveOpenedSession`
+  (`LiveConnection.openQuery`; the `open` frame is re-sent after a reconnect). `live-doc.ts`
+  shares one core between `openDocument` and the new `openQueryDocument`, and React gets
+  `useQueryDocument(api.openPad, { token })`, whose `root` arrives with `ready.opened`.
+- **Admin and agents**: the custom-query editor's Response select has "A live stream"; MCP
+  `save_api_query` takes `response_type: "stream"`; `describe_code_api`, the editor's ambient
+  types (`live`, now declared with `publish`, `document` and `stream`) and the scaffold's
+  `AGENTS.md` show the share-link pattern. TECHNICAL_DESIGN §13.4 and §14.10 describe it.
+- **Deviation from the proposal**: besides the tables a run read, a query can name more in
+  `watch` (a table its rule depends on that it did not read, e.g. one read through `lib`'s raw
+  SQL). Python stream queries are not supported (as with `bytes` responses).
+- Tests: `sc-expr` (the handle and the tables it carries, no forging, option checks), `sc-api`
+  (validation, endpoint shape), `sc-live` (frames), `sc-app` (`openQueryDocument` under Node
+  with the real `yjs`; `useQueryDocument` type-checked; MCP round trip; the scaffold), admin UI
+  (`customQueries.test.ts`), and `sc-server` `app_live_query_streams.rs` over real sockets.
+
 ## File fields: remove the file with its row, suffix taken names
 
 From an external coding agent's feedback: a deleted row left its file behind (they ran an hourly

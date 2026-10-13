@@ -320,3 +320,225 @@ fn only_live_doc_imports_yjs() {
     assert!(doc.contains("from \"yjs\""));
     assert!(doc.contains("note_body: documentStream(api.live.note_body)"));
 }
+
+/// A client whose API has one stream query, `openNote` (TODO F7), beside the
+/// `note_body` document stream.
+fn query_client(streams: &[StreamExport]) -> String {
+    use sc_api::{Endpoint, EndpointSet, Method, PathSpec, StructField};
+    let mut set = EndpointSet::new();
+    set.register(
+        Endpoint::new(
+            "openNote",
+            Method::Post,
+            PathSpec::root().lit("/api").lit("/open-note"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "token",
+            TypeSchema::text(),
+        )]))
+        .output(TypeSchema::json())
+        .open_args()
+        .stream_output(),
+    );
+    sc_api::generate_client_with_streams(&set, streams)
+}
+
+const QUERY_DRIVER_TS: &str = r#"
+import * as Y from "yjs";
+import { createClient } from "./client.ts";
+import { openQueryDocument } from "./live-doc.ts";
+
+const log: unknown[] = [];
+const say = (...entry: unknown[]) => log.push(entry);
+const b64 = (u: Uint8Array) => Buffer.from(u).toString("base64");
+const unb64 = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
+
+class FakeSocket {
+  static all: FakeSocket[] = [];
+  url: string;
+  readyState = 0;
+  sent: any[] = [];
+  onopen: ((e: unknown) => void) | null = null;
+  onmessage: ((e: { data: unknown }) => void) | null = null;
+  onclose: ((e: unknown) => void) | null = null;
+  onerror: ((e: unknown) => void) | null = null;
+  constructor(url: string) {
+    this.url = url;
+    FakeSocket.all.push(this);
+  }
+  send(data: string) { this.sent.push(JSON.parse(data)); }
+  close() { this.readyState = 3; this.onclose?.({}); }
+  open() { this.readyState = 1; this.onopen?.({}); }
+  frame(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }); }
+  drop() { this.readyState = 3; this.onclose?.({}); }
+  take(type: string) {
+    const found = this.sent.filter((f) => f.type === type);
+    this.sent = this.sent.filter((f) => f.type !== type);
+    return found;
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const server = new Y.Doc();
+server.getText("body").insert(0, "Hello");
+const ready = (socket: FakeSocket, sub: string) => socket.frame({
+  type: "ready", sub, stream: "note_body", replayed: 0, can_publish: false,
+  opened: { stream: "note_body", kind: "document", key: "7", root: "body", root_kind: "text" },
+});
+
+const api = createClient({
+  baseUrl: "https://notes.example.com",
+  live: { WebSocket: FakeSocket as unknown as typeof WebSocket, minDelay: 2, maxDelay: 8, presenceInterval: 0 },
+});
+const page = openQueryDocument((h) => api.openNote({ token: "t1" }, h), api.live.note_body.connection);
+const first = FakeSocket.all[0];
+first.open();
+say("opened with", first.take("open"));
+say("no root before ready", page.root === undefined, page.field === undefined);
+ready(first, "s1");
+say("root after ready", page.field, page.root instanceof Y.Text, page.opened?.key);
+first.frame({ type: "doc_sync", sub: "s1", update: b64(Y.encodeStateAsUpdate(server)), read_only: false });
+say("synced", page.status, page.readOnly, String(page.root));
+(page.root as Y.Text).insert(5, " world");
+const edits = first.take("doc_update");
+for (const u of edits) Y.applyUpdate(server, unb64(u.update));
+say("edit sent", edits.length, server.getText("body").toString());
+
+// A reconnect opens the query again, with the same parameters.
+first.drop();
+await sleep(30);
+const second = FakeSocket.all[1];
+second.open();
+say("reopened", second.take("open"));
+
+// A link that opens nothing is the page's error.
+const refused = openQueryDocument((h) => api.openNote({ token: "nope" }, h));
+second.frame({ type: "error", sub: "s2", code: "unavailable", message: "nothing called `openNote` here" });
+say("refused", refused.error?.code);
+page.close();
+refused.close();
+console.log(JSON.stringify(log));
+"#;
+
+#[test]
+fn a_stream_query_opens_a_document_whose_root_the_server_names() -> std::io::Result<()> {
+    let Some(node_modules) = admin_node_modules() else {
+        eprintln!("skipping: needs `node` and `yjs` in ui/admin/node_modules");
+        return Ok(());
+    };
+    let dir = project("query", &node_modules)?;
+    let streams = [note_body("xml")];
+    let fix = |text: String| text.replace("from \"./helper\"", "from \"./helper.ts\"");
+    std::fs::write(dir.join("client.ts"), fix(query_client(&streams)))?;
+    std::fs::write(dir.join("helper.ts"), sc_api::client_helper())?;
+    std::fs::write(
+        dir.join("live-doc.ts"),
+        fix(sc_app::live_doc_ts(&streams, false)),
+    )?;
+    std::fs::write(dir.join("driver.ts"), QUERY_DRIVER_TS)?;
+    let output = Command::new("node").arg(dir.join("driver.ts")).output()?;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.status.success(),
+        "running live-doc.ts failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("the driver prints its log");
+    let expected: Vec<serde_json::Value> = [
+        r#"["opened with",[{"params":{"token":"t1"},"query":"openNote","sub":"s1","type":"open"}]]"#,
+        r#"["no root before ready",true,true]"#,
+        r#"["root after ready","body",true,"7"]"#,
+        r#"["synced","synced",false,"Hello"]"#,
+        r#"["edit sent",1,"Hello world"]"#,
+        r#"["reopened",[{"params":{"token":"t1"},"query":"openNote","sub":"s1","type":"open"}]]"#,
+        r#"["refused","unavailable"]"#,
+    ]
+    .iter()
+    .map(|entry| serde_json::from_str(entry).expect("an expected entry is JSON"))
+    .collect();
+    assert_eq!(log, expected, "{log:#?}");
+    Ok(())
+}
+
+/// `useQueryDocument(api.openNote, { token })` type-checks against the
+/// generated client, and a stream query's method is typed as a session.
+#[test]
+fn use_query_document_type_checks_with_the_generated_client() -> std::io::Result<()> {
+    let Some(node_modules) = admin_node_modules() else {
+        eprintln!("skipping: needs `node` and `yjs` in ui/admin/node_modules");
+        return Ok(());
+    };
+    let tsc = std::env::var("SC_TSC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| node_modules.join(".bin/tsc"));
+    if !tsc.exists() || !node_modules.join("@types/react").is_dir() {
+        eprintln!("skipping: no tsc or @types/react in ui/admin/node_modules");
+        return Ok(());
+    }
+    let dir = project("query-tsc", &node_modules)?;
+    let streams = [note_body("xml")];
+    let client = query_client(&streams);
+    assert!(client.contains(
+        "openNote(body: OpenNoteRequest, handlers?: LiveOpenHandlers): LiveOpenedSession;"
+    ));
+    std::fs::write(dir.join("client.ts"), client)?;
+    std::fs::write(dir.join("helper.ts"), sc_api::client_helper())?;
+    std::fs::write(
+        dir.join("hooks.ts"),
+        "import { createClient } from \"./client\";\nexport const api = createClient();\n",
+    )?;
+    std::fs::write(dir.join("live-doc.ts"), sc_app::live_doc_ts(&streams, true))?;
+    std::fs::write(
+        dir.join("Shared.tsx"),
+        r#"import * as Y from "yjs";
+import { api } from "./hooks";
+import { useQueryDocument } from "./live-doc";
+
+export function Shared({ token }: { token: string }) {
+  const { doc, root, field, opened, readOnly, status, error } = useQueryDocument(api.openNote, { token });
+  if (error) return <p>{error.code}</p>;
+  if (!doc || !root) return <p>{status}</p>;
+  const fragment: Y.XmlFragment | undefined = root instanceof Y.XmlFragment ? root : undefined;
+  return <div data-field={field} data-readonly={readOnly} data-key={opened?.key}>{fragment?.length}</div>;
+}
+
+export function rowTopic(token: string): () => void {
+  const session = api.openNote({ token }, {
+    ready: (info) => console.log(info.opened.kind),
+    element: (envelope) => console.log(envelope.value),
+  });
+  if (session.canPublish) session.publish({ at: 1 });
+  return () => session.close();
+}
+"#,
+    )?;
+    let output = Command::new(&tsc)
+        .current_dir(&dir)
+        .args([
+            "--noEmit",
+            "--strict",
+            "--noUnusedLocals",
+            "--skipLibCheck",
+            "--jsx",
+            "react-jsx",
+            "--target",
+            "es2020",
+            "--lib",
+            "es2020,dom",
+            "--module",
+            "esnext",
+            "--moduleResolution",
+            "bundler",
+            "Shared.tsx",
+        ])
+        .output()?;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.status.success(),
+        "tsc refused the stream query runtime:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}

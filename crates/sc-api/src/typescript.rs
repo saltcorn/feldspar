@@ -517,7 +517,10 @@ pub fn generate_app_client(
     // this client has no use for is a `noUnusedLocals` failure in generated
     // code, about generated code, in somebody else's project.
     let mut values: Vec<&str> = Vec::new();
-    if !set.is_empty() {
+    // A stream query is opened over the live socket, not fetched (TODO F7):
+    // an API of nothing else needs none of the fetch helpers.
+    let fetches = set.iter().any(|ep| !ep.stream_output);
+    if fetches {
         values.extend(["clientError", "requestHeaders", "trackCsrf"]);
     } else if !uploads.is_empty() {
         values.push("trackCsrf");
@@ -566,6 +569,9 @@ pub fn generate_app_client(
     }
     if changes.iter().any(Option::is_some) {
         types.extend(["LiveChange", "LiveChangesStream", "LiveEnvelope"]);
+    }
+    if loose.iter().any(|ep| ep.stream_output) {
+        types.extend(["LiveOpenHandlers", "LiveOpenedSession"]);
     }
     if !uploads.is_empty() {
         types.extend(["UploadOptions", "UploadResult"]);
@@ -616,7 +622,7 @@ pub fn generate_app_client(
              LiveHandlers, LiveJoinHandlers, LiveMember, LiveOptions, LivePresence, LivePublish, \
              LiveReady, LiveRoom, LiveRowPresence, LiveRowPublish, LiveRowStream, LiveRowsOptions, \
              LiveRowsState, LiveStatus, LiveStream, LiveSubscription, LiveTable, LiveTopic, \
-             LiveValue } from \"./helper\";\n",
+             LiveValue, LiveOpened, LiveOpenHandlers, LiveOpenedSession } from \"./helper\";\n",
         );
     }
     if !tables.is_empty() {
@@ -638,7 +644,7 @@ pub fn generate_app_client(
         if takes_body(ep) && !ep.binary_input {
             let _ = writeln!(out, "export type {pascal}Request = {};", request_type(ep));
         }
-        if !ep.output.is_empty() && !ep.binary_output {
+        if !ep.output.is_empty() && !ep.binary_output && !ep.stream_output {
             let _ = writeln!(
                 out,
                 "export type {pascal}Response = {};",
@@ -775,7 +781,7 @@ pub fn generate_app_client(
     out.push_str("  const baseUrl = options.baseUrl ?? \"\";\n");
     // An application that exposes only streams never calls `fetch`, and an
     // unused binding is a `noUnusedLocals` error in somebody else's project.
-    if !set.is_empty() || !uploads.is_empty() {
+    if fetches || !uploads.is_empty() {
         out.push_str("  const doFetch = trackCsrf(options.fetch ?? fetch);\n");
     }
     // One connection for every stream, opened on the first `subscribe`: a page
@@ -846,6 +852,10 @@ pub fn generate_app_client(
     }
     out.push_str("  return {\n");
     for ep in &loose {
+        if ep.stream_output {
+            emit_stream_method_impl(&mut out, ep, !streams.is_empty());
+            continue;
+        }
         emit_method_impl(&mut out, ep);
         emit_url_helper_impl(&mut out, ep);
     }
@@ -876,6 +886,15 @@ pub fn generate_app_client(
 /// `listRows(table: string): Promise<ListRowsResponse>`.
 fn method_signature(ep: &Endpoint) -> String {
     let pascal = to_pascal_case(&ep.name);
+    if ep.stream_output {
+        // Opened over the live socket (TODO F7): not a promise, a session that
+        // its handlers hear about.
+        let opt = if body_arg_optional(ep) { "?" } else { "" };
+        return format!(
+            "{}(body{opt}: {pascal}Request, handlers?: LiveOpenHandlers): LiveOpenedSession",
+            ep.name
+        );
+    }
     let mut params: Vec<String> = ep
         .path
         .params()
@@ -926,6 +945,27 @@ fn emit_method_impl(out: &mut String, ep: &Endpoint) {
         Returns::Json(format!("{pascal}Response"))
     };
     emit_request(out, ep, &Request::new(&result));
+    out.push_str("    },\n");
+}
+
+/// Emit the factory's implementation of a stream query's method (TODO F7):
+/// the query is opened over the application's live socket. An application
+/// that exposes no stream has no socket, and nothing such a query could open.
+fn emit_stream_method_impl(out: &mut String, ep: &Endpoint, has_connection: bool) {
+    let _ = writeln!(out, "    {}(body, handlers) {{", ep.name);
+    if has_connection {
+        let _ = writeln!(
+            out,
+            "      return connection.openQuery(\"{}\", (body ?? {{}}) as Record<string, unknown>, handlers ?? {{}});",
+            ep.name
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "      void body; void handlers;\n      throw new Error(\"`{}` opens a stream, but this application exposes none\");",
+            ep.name
+        );
+    }
     out.push_str("    },\n");
 }
 
@@ -1928,6 +1968,20 @@ export interface LiveReady {
   can_publish: boolean;
   status: unknown;
   counters: unknown;
+  /** On a subscription a stream query opened: what it opened. */
+  opened?: LiveOpened;
+}
+
+/** What a stream query opened (its `live.stream(name, key)`), as the server says on `ready`. */
+export interface LiveOpened {
+  stream: string;
+  /** A collaborative document (`docs` in `live-doc.ts` opens it as a `Y.Doc`), or a row's topic. */
+  kind: "document" | "row";
+  /** The row's key. */
+  key: string;
+  /** A document's root name and kind. */
+  root?: string;
+  root_kind?: "text" | "xml";
 }
 
 /** Why the server refused, ended or complained about a subscription. */
@@ -2046,6 +2100,47 @@ export interface LiveDocumentHandlers<S = unknown> {
   error?(error: LiveError): void;
 }
 
+/**
+ * What a page that opened a stream query is told. The query decides at run
+ * time what it opens, so a document's handlers (`sync`, `update`) and a row
+ * topic's (`element`) are all here; `ready.opened` says which apply.
+ */
+export interface LiveOpenHandlers<S = unknown> {
+  ready?(info: LiveReady & { opened: LiveOpened }): void;
+  /** On a row topic: an element, its value untyped. */
+  element?(envelope: LiveEnvelope<unknown>): void;
+  /** Ask for this page's own publishes back. */
+  echo?: boolean;
+  /** On a document: the whole document, and whether this page may only read. */
+  sync?(update: string, readOnly: boolean): void;
+  /** On a document: another member's edit. */
+  update?(update: string): void;
+  presence?(members: LiveMember<S>[]): void;
+  lagged?(dropped: number): void;
+  resync?(): void;
+  status?(status: unknown): void;
+  /** `unavailable` when the query opened nothing; `revoked` when a re-run of it no longer does. */
+  error?(error: LiveError): void;
+}
+
+/** A stream query, open. */
+export interface LiveOpenedSession<S = unknown> {
+  /** What the query opened, once `ready` has said. */
+  readonly opened: LiveOpened | undefined;
+  readonly members: LiveMember<S>[];
+  readonly me: string | undefined;
+  /** On a document: whether the last `sync` said this page may only read. */
+  readonly readOnly: boolean;
+  /** On a row topic: whether this page may publish. */
+  readonly canPublish: boolean;
+  /** On a document: send an edit (a Yjs update, base64). */
+  send(update: string): boolean;
+  /** On a row topic: publish a value. */
+  publish(value: unknown): void;
+  setState(state: S): void;
+  close(): void;
+}
+
 /** One row's document, open: send this page's edits and its awareness state. */
 export interface LiveDocumentSession<S = unknown> {
   readonly members: LiveMember<S>[];
@@ -2134,8 +2229,13 @@ export function liveUrl(baseUrl: string, path: string): string {
   return url.toString();
 }
 
-/** A `subscribe` frame: the topic, the filter and `echo` only when there is one. */
+/** A `subscribe` frame: the topic, the filter and `echo` only when there is one — or an `open` frame for a stream query. */
 function subscribeFrame(sub: string, entry: LiveEntry): Record<string, unknown> {
+  if (entry.query !== undefined) {
+    const open: Record<string, unknown> = { type: "open", sub, query: entry.query.name, params: entry.query.params };
+    if (entry.handlers.echo) open["echo"] = true;
+    return open;
+  }
   const frame: Record<string, unknown> = { type: "subscribe", sub, stream: entry.stream };
   if (entry.topic !== undefined) frame["topic"] = entry.topic;
   if (entry.filter !== undefined) frame["filter"] = entry.filter;
@@ -2163,6 +2263,10 @@ type LiveEntry = {
   outbox: unknown[];
   /** On a document stream: whether the last `doc_sync` said read-only. */
   readOnly: boolean;
+  /** For a stream query: its name and parameters, sent again after a reconnect. */
+  query: { name: string; params: Record<string, unknown> } | undefined;
+  /** For a stream query: what `ready` said it opened. */
+  opened: LiveOpened | undefined;
 };
 
 /** One socket, any number of subscriptions, reconnecting by itself. */
@@ -2308,6 +2412,58 @@ export class LiveConnection {
     };
   }
 
+  /**
+   * Open the application's stream query `query` with `params` (TODO F7): the
+   * query decides which stream and row this page is attached to, and whether
+   * it may write there; `ready.opened` says what it opened.
+   */
+  openQuery<S = unknown>(
+    query: string,
+    params: Record<string, unknown>,
+    handlers: LiveOpenHandlers<S>,
+  ): LiveOpenedSession<S> {
+    const { sub, subscription } = this.add(
+      "",
+      {
+        element: (envelope: unknown) => handlers.element?.(envelope as LiveEnvelope<unknown>),
+        echo: handlers.echo,
+        ready: (info: LiveReady) => handlers.ready?.(info as LiveReady & { opened: LiveOpened }),
+        resync: handlers.resync,
+        status: handlers.status,
+        lagged: handlers.lagged,
+        error: handlers.error,
+        presence: (members: LiveMember[]) => handlers.presence?.(members as LiveMember<S>[]),
+        docSync: (update: string, readOnly: boolean) => handlers.sync?.(update, readOnly),
+        docUpdate: (update: string) => handlers.update?.(update),
+      },
+      undefined,
+      undefined,
+      { name: query, params },
+    );
+    const entry = () => this.entries.get(sub);
+    return {
+      get opened() {
+        return entry()?.opened;
+      },
+      get members() {
+        return (entry()?.members ?? []) as LiveMember<S>[];
+      },
+      get me() {
+        return entry()?.me;
+      },
+      get readOnly() {
+        return entry()?.readOnly ?? true;
+      },
+      get canPublish() {
+        return entry()?.canPublish ?? false;
+      },
+      send: (update: string) => this.sendDocUpdate(sub, update),
+      publish: (value: unknown) => this.publish(sub, value),
+      setState: (state: S) => this.setState(sub, state),
+      close: () => subscription.close(),
+    };
+  }
+
   /** Send an edit on the document subscription `sub`, if it is ready and may edit; `false` when it was not sent. */
   sendDocUpdate(sub: string, update: string): boolean {
     const entry = this.entries.get(sub);
@@ -2387,7 +2543,7 @@ export class LiveConnection {
    */
   publishOn(stream: string, topic: string | undefined, value: unknown): void {
     for (const [sub, entry] of this.entries) {
-      if (entry.stream === stream && entry.topic === topic && entry.filter === undefined) {
+      if (entry.stream === stream && entry.topic === topic && entry.filter === undefined && entry.query === undefined) {
         this.publish(sub, value);
         return;
       }
@@ -2447,6 +2603,7 @@ export class LiveConnection {
     handlers: LiveHandlers<unknown>,
     topic: string | undefined,
     filter: Record<string, unknown> | undefined,
+    query?: { name: string; params: Record<string, unknown> },
   ): { sub: string; subscription: LiveSubscription } {
     const sub = `s${this.nextSub++}`;
     const entry: LiveEntry = {
@@ -2463,6 +2620,8 @@ export class LiveConnection {
       stateTimer: undefined,
       outbox: [],
       readOnly: true,
+      query,
+      opened: undefined,
     };
     this.entries.set(sub, entry);
     if (this.socket && this.socket.readyState === 1) {
@@ -2576,6 +2735,10 @@ export class LiveConnection {
         if (entry && sub !== undefined) {
           entry.ready = true;
           entry.canPublish = frame["can_publish"] === true;
+          if (frame["opened"] && typeof frame["opened"] === "object") {
+            entry.opened = frame["opened"] as LiveOpened;
+            entry.stream = entry.opened.stream;
+          }
           entry.handlers.ready?.(frame as unknown as LiveReady);
           for (const value of entry.outbox.splice(0)) this.publish(sub, value);
         }

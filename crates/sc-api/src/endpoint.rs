@@ -452,6 +452,11 @@ pub struct Endpoint {
     /// transport writes the provider's bytes with their own content type.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub binary_output: bool,
+    /// The endpoint is a code query that opens a live subscription (TODO F7)
+    /// rather than answering over HTTP. The generated client opens it over the
+    /// application's live socket; an HTTP call is a `400`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stream_output: bool,
     /// The arguments object is **open**: it carries the declared fields (the
     /// `input` struct, or the `query` parameters) *and any other key*. A
     /// JavaScript or Python custom query reads whatever arrives, so the
@@ -486,6 +491,7 @@ impl Endpoint {
             output: TypeSchema::empty(),
             binary_input: false,
             binary_output: false,
+            stream_output: false,
             open_args: false,
             auth: AuthRequirement::LoggedIn,
             handler,
@@ -527,6 +533,13 @@ impl Endpoint {
     /// Mark the response body as raw bytes (a file download).
     pub fn binary_output(mut self) -> Endpoint {
         self.binary_output = true;
+        self
+    }
+
+    /// Mark the endpoint as opening a live subscription (see
+    /// [`Endpoint::stream_output`]).
+    pub fn stream_output(mut self) -> Endpoint {
+        self.stream_output = true;
         self
     }
 
