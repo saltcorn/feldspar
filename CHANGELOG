@@ -43,6 +43,35 @@ is a code query that hands out the stream, as F2.10's file handles do for downlo
   with the real `yjs`; `useQueryDocument` type-checked; MCP round trip; the scaffold), admin UI
   (`customQueries.test.ts`), and `sc-server` `app_live_query_streams.rs` over real sockets.
 
+## Security: a File field no longer accepts a path that is not the writer's
+
+From a security report: a `File` field stored any path the client sent (inside the field's
+folder), and the download route `GET /api/<table>/<id>/<field>` then served it to whoever could
+read the row. User B could put the path of user A's upload in B's own row and download A's file;
+with `on_delete: remove_file`, deleting that row could also remove the file. The download route
+does apply the file's own path rule, but a folder with no `min_role` (the usual case for an
+upload slot) admits every signed-in role, so nothing stood in the way.
+
+- **`rows::may_attach_file`**, on every insert and update the row layer makes (REST, GraphQL,
+  MCP and delegated code writes alike). A caller below admin may only write the path of a file
+  that exists and that they could replace (`sc_files::check_write`): one they own, or one with no
+  owner whose path floor their role clears. Anything else is a 400 naming the field, in the same
+  words whether the file is missing or somebody else's, so the write cannot probe for names or
+  reserve a path before its owner uploads to it.
+- **Not checked:** admin authority (the admin row editor, triggers, code bodies that are not
+  delegated); an update that sends the path the row already holds, read under the update's own
+  ownership guard (a whole-row save by somebody who did not upload the file); and the field's own
+  upload endpoint (`rows::attach_uploaded_file`), which has already authorised the path and must
+  not depend on the store having recorded an owner.
+- **Behaviour change:** a non-admin can no longer reference another user's upload from a row,
+  nor a path with no file at it. An application that pre-set paths before uploading must upload
+  first.
+- No migration. Rows that already hold another user's path are not rewritten.
+- Docs: TECHNICAL_DESIGN §3 (File kind), `docs/tutorial-file-fields.md`.
+- Test: `app_file_access::a_row_cannot_be_pointed_at_somebody_elses_upload` (the report's repro
+  on insert and update, the missing path, the whole-row save, own and unowned files, a folder
+  rule, admin).
+
 ## File fields: remove the file with its row, suffix taken names
 
 From an external coding agent's feedback: a deleted row left its file behind (they ran an hourly

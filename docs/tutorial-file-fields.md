@@ -86,6 +86,10 @@ What you configured is a contract the server now enforces on every write, whoeve
   climbs out (`..`, an absolute path, another folder) is a 400 naming the field;
 - the path's **extension** must map to an allowed MIME type — `notes.txt` is refused whatever
   `Content-Type` the request claims;
+- a caller who is not an admin may only write the path of a file that **exists and is theirs**:
+  one they uploaded, or one nobody owns that their role can reach. Somebody else's upload, or a
+  path with no file at it, is a 400 naming the field — otherwise a user could put the path of
+  another user's file in their own row and download it through that row;
 - the `uploads` store can no longer be deleted while this field points at it.
 
 ## Step 5 — Rebuild the app
@@ -185,6 +189,10 @@ same file, admitted by one rule and refused by the other: whichever is stricter 
   files sorted into sub-folders, that is the field's folder setting, not the caller's choice.
 - **Uploading over the same filename replaces the bytes.** The path is the identity. Two rows
   that reference `tasks/report.pdf` reference the same file.
+- **A path sent in a row's JSON has to be the caller's own file.** Setting `attachment` by
+  `PUT`/`POST` works for a file the caller uploaded (through this endpoint or an upload slot), and
+  for an admin with any file. Sending back the path a row already holds is always fine, so a
+  whole-row save by somebody other than the uploader still works.
 - **Metadata operations never delete bytes.** Forgetting a field, deleting a row, dropping the
   table: the files stay in the store. Delete them in the file manager when you mean it.
 - **A store with a `File` field pointing at it refuses to be deleted**, naming the field. Forget

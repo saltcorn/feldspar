@@ -783,6 +783,18 @@ model keeps them apart. And **introspection never resolves a column back to a ri
 `_fd_fields` overlay says so (§9) — guessing "this `text` column is an Email" from the database
 is exactly the magic that makes a legacy database behave surprisingly.
 
+**A path written to a `File` field must be the writer's to hand out** (`rows::may_attach_file`).
+The field's download endpoint serves whatever path the row holds to whoever may read the row, so
+a field that stored any path in its folder was a way to read somebody else's upload by naming
+it. On every insert and update the row layer makes, a caller below admin may only write the path
+of a file that **exists** and that they may replace (`sc_files::check_write`, §14.1): one they
+own, or one with no owner whose path floor their role clears. A missing file is refused in the
+same words as somebody else's, so the write is not a probe, and a path cannot be reserved before
+its owner uploads to it. Three writes are not checked: admin authority (the admin row editor, a
+trigger, a code body that is not delegated), an update that sends the path the row already holds
+(a whole-row save), and the field's own upload endpoint, which has already decided the caller
+may put a file at that path.
+
 **Geometry is a basic type** (analytics TODO A5.1, §14.6): `BasicType::Geometry(GeometryKind)`,
 where the kind is any geometry, a point, a line, a polygon or one of the multi variants. Its
 column is PostGIS's `geometry(<Kind>,4326)`, and its value is a **GeoJSON geometry object in a

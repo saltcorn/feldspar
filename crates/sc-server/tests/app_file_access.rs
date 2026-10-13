@@ -739,3 +739,193 @@ async fn a_file_field_can_suffix_taken_names_and_remove_files_with_their_rows()
     assert!(uploads.stat("docs/notes_1.txt").await?.is_none());
     Ok(())
 }
+
+/// The security report this guards against: a `File` field stored whatever path
+/// a caller sent, so a user could put the path of **somebody else's upload** in
+/// their own row and download it through the row. A path is only accepted from
+/// a caller it belongs to — a file that is there, and theirs (or nobody's, and
+/// reachable at their role).
+#[tokio::test]
+async fn a_row_cannot_be_pointed_at_somebody_elses_upload() -> sc_error::Result<()> {
+    let tmp = TempDir::new("attach");
+    let (router, catalog, uploads, _db) = setup(&tmp).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
+    save_role(&catalog, &Role::new(80, "Reader")).await?;
+    create_user(&catalog, "ada@example.com", "ada-pw", 80).await?;
+    create_user(&catalog, "bob@example.com", "bob-pw", 80).await?;
+
+    // Readers read and write the rows, and the folder carries no rule of its
+    // own: nothing but this check stands between Bob and Ada's file.
+    let mut admin = Client::new(router.clone(), BASE_DOMAIN);
+    assert_eq!(
+        admin.login("admin@example.com", "admin-pw").await,
+        StatusCode::OK
+    );
+    let (status, _) = admin
+        .send(
+            "PUT",
+            "/api/tables/posts",
+            Some(json!({
+                "label": "", "description": "",
+                "min_role_read": 80, "min_role_write": 80,
+                "ownership_formula": "", "rls_enabled": false,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = admin
+        .send(
+            "POST",
+            "/api/tables/posts/fields",
+            Some(json!({
+                "name": "attachment", "type": "text",
+                "kind": { "type": "file", "store": "uploads", "folder": "shots",
+                          "on_delete": "remove_file" }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let mut ada = Client::new(router.clone(), APP_HOST);
+    assert_eq!(ada.login("ada@example.com", "ada-pw").await, StatusCode::OK);
+    let (status, created) = ada
+        .send("POST", "/api/posts", Some(json!({ "title": "ada's" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let ada_row = created["id"].as_i64().unwrap();
+    let (status, body) = ada
+        .upload(
+            &format!("/api/posts/{ada_row}/attachment/photo.txt"),
+            "text/plain",
+            b"ada's photo",
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let mut bob = Client::new(router.clone(), APP_HOST);
+    assert_eq!(bob.login("bob@example.com", "bob-pw").await, StatusCode::OK);
+
+    // The report's repro, on insert and on update: both refused, naming the field.
+    let (status, body) = bob
+        .send(
+            "POST",
+            "/api/posts",
+            Some(json!({ "title": "bob's", "attachment": "shots/photo.txt" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("attachment"), "{body}");
+    let (status, created) = bob
+        .send("POST", "/api/posts", Some(json!({ "title": "bob's" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let bob_row = created["id"].as_i64().unwrap();
+    let (status, theirs) = bob
+        .send(
+            "PUT",
+            &format!("/api/posts/{bob_row}"),
+            Some(json!({ "attachment": "shots/photo.txt" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{theirs}");
+    let (status, _, bytes) = bob
+        .download(&format!("/api/posts/{bob_row}/attachment"))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!String::from_utf8_lossy(&bytes).contains("ada's photo"));
+
+    // A path nothing is at yet is refused in the same words, so a write neither
+    // reserves a name somebody will upload to nor says which names are taken.
+    let (status, missing) = bob
+        .send(
+            "PUT",
+            &format!("/api/posts/{bob_row}"),
+            Some(json!({ "attachment": "shots/later.txt" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{missing}");
+    assert_eq!(
+        theirs.to_string().replace("photo.txt", "later.txt"),
+        missing.to_string()
+    );
+
+    // Saving Ada's row back with the path it already holds is not attaching it.
+    let (status, body) = bob
+        .send(
+            "PUT",
+            &format!("/api/posts/{ada_row}"),
+            Some(json!({ "title": "retitled", "attachment": "shots/photo.txt" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Bob's own upload is his to attach to another of his rows…
+    let (status, body) = bob
+        .upload(
+            &format!("/api/posts/{bob_row}/attachment/bob.txt"),
+            "text/plain",
+            b"bob's",
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = bob
+        .send(
+            "POST",
+            "/api/posts",
+            Some(json!({ "title": "again", "attachment": "shots/bob.txt" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    // …and so is a file nobody owns that his role reaches…
+    uploads
+        .write("shots/shared.txt", bytes::Bytes::from_static(b"shared"))
+        .await?;
+    let (status, body) = bob
+        .send(
+            "PUT",
+            &format!("/api/posts/{bob_row}"),
+            Some(json!({ "attachment": "shots/shared.txt" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // …but not one behind a rule it does not clear.
+    uploads.mkdir("shots/staff").await?;
+    uploads
+        .set_meta(
+            "shots/staff",
+            &FileMeta {
+                min_role: Some(1),
+                ..Default::default()
+            },
+        )
+        .await?;
+    uploads
+        .write("shots/staff/memo.txt", bytes::Bytes::from_static(b"memo"))
+        .await?;
+    let (status, body) = bob
+        .send(
+            "PUT",
+            &format!("/api/posts/{bob_row}"),
+            Some(json!({ "attachment": "shots/staff/memo.txt" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // Admin authority attaches any file, as it may read any.
+    let mut app_admin = Client::new(router.clone(), APP_HOST);
+    assert_eq!(
+        app_admin.login("admin@example.com", "admin-pw").await,
+        StatusCode::OK
+    );
+    let (status, body) = app_admin
+        .send(
+            "POST",
+            "/api/posts",
+            Some(json!({ "title": "admin's", "attachment": "shots/photo.txt" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    assert_eq!(&uploads.read("shots/photo.txt").await?[..], b"ada's photo");
+    Ok(())
+}

@@ -1772,8 +1772,7 @@ async fn upload_inner(
     if let Some(owner) = &caller.user_id {
         record_owner(store.as_ref(), &path, owner).await;
     }
-    let updated =
-        rows::update_row_guarded(cat, table, id, &json!({ field: path }), None, context).await?;
+    let updated = rows::attach_uploaded_file(cat, table, id, field, &path, context).await?;
     Ok(ApiResponse::with_status(201, updated))
 }
 

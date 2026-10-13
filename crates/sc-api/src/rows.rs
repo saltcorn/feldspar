@@ -665,6 +665,9 @@ pub async fn create_row_in(
     for (key, json) in obj {
         let value = column_value(table, key, json)?;
         validate_file_write(catalog, table, key, &value)?;
+        if !may_attach_file(catalog, table, key, &value, context).await? {
+            return Err(not_attachable(key, &value));
+        }
         columns.push(key.clone());
         values.push(Expr::lit(value));
     }
@@ -840,7 +843,37 @@ pub(crate) async fn update_row_guarded_in(
 ) -> Result<Json> {
     let obj = require_object(body)?;
     reject_document_writes(table, obj)?;
-    update_row_unchecked_in(catalog, table, id, obj, guard, context, executor).await
+    update_row_unchecked_in(catalog, table, id, obj, guard, context, executor, true).await
+}
+
+/// Point row `id`'s `File` field `field` at `path`, a file the caller has **just
+/// uploaded** through the field's own endpoint.
+///
+/// The one update that skips the [`may_attach_file`] check: the upload already
+/// decided the caller may put a file at that path (a new name, or one they may
+/// replace), and it must not depend on the store having recorded them as its
+/// owner — a backend that keeps no metadata records nobody.
+pub(crate) async fn attach_uploaded_file(
+    catalog: &Catalog,
+    table: &Table,
+    id: &str,
+    field: &str,
+    path: &str,
+    context: Option<&CallerContext>,
+) -> Result<Json> {
+    let mut obj = Map::new();
+    obj.insert(field.to_owned(), Json::String(path.to_owned()));
+    update_row_unchecked_in(
+        catalog,
+        table,
+        id,
+        &obj,
+        None,
+        context,
+        &Executor::Pooled,
+        false,
+    )
+    .await
 }
 
 /// Persist a collaborative document (live updates L5.4): write the
@@ -873,10 +906,12 @@ pub async fn write_document_in(
     if let Some((column, text)) = mirror {
         obj.insert(column.to_owned(), Json::String(text.to_owned()));
     }
-    update_row_unchecked_in(catalog, table, id, &obj, None, None, executor).await
+    update_row_unchecked_in(catalog, table, id, &obj, None, None, executor, true).await
 }
 
 /// The update itself, after the refusals that depend on who is writing.
+/// `check_attach` is false only for [`attach_uploaded_file`].
+#[allow(clippy::too_many_arguments)]
 async fn update_row_unchecked_in(
     catalog: &Catalog,
     table: &Table,
@@ -885,6 +920,7 @@ async fn update_row_unchecked_in(
     guard: Option<Expr>,
     context: Option<&CallerContext>,
     executor: &Executor,
+    check_attach: bool,
 ) -> Result<Json> {
     reject_calc_writes(table, obj)?;
     let guard = user_rows::and_guard(guard, user_rows::update_guard(table, id, obj, context)?);
@@ -896,6 +932,23 @@ async fn update_row_unchecked_in(
         }
         let value = column_value(table, key, json)?;
         validate_file_write(catalog, table, key, &value)?;
+        if check_attach && !may_attach_file(catalog, table, key, &value, context).await? {
+            // A whole-row save sends the path back as it was, and whoever may
+            // write the row may do that whoever put the file there. The stored
+            // path is read under the same guard the update runs under, so a row
+            // the caller may not write answers as the update itself would.
+            let filter = guarded_filter(table, &pk, id, guard.clone())?;
+            let select = Select::from(Source::table(table.name.clone()))
+                .columns(vec![Projection::expr(Expr::col(key.as_str()))])
+                .filter(filter);
+            let stored = run_read_in(catalog, table, &select, context, false, executor).await?;
+            let stored = stored
+                .first()
+                .ok_or_else(|| Error::not_found(format!("no row with {pk} = {id}")))?;
+            if stored.values().first() != Some(&value) {
+                return Err(not_attachable(key, &value));
+            }
+        }
         assignments.push(Assignment::new(key.clone(), Expr::lit(value)));
     }
     if assignments.is_empty() {
@@ -1436,6 +1489,76 @@ fn validate_file_write(
     }
     sc_files::validate_file_path(path, folder.as_deref(), mime_allow)
         .map_err(|e| field_error(column, e))
+}
+
+/// Whether the writer may point the `File` field `column` at the path in `value`
+/// — the check that keeps a File field from being a way to read (or, with
+/// `on_delete: remove_file`, delete) a file by naming its path.
+///
+/// The field's download endpoint serves whatever path the row holds to whoever
+/// may read the row, so the path a caller writes has to be one that is theirs to
+/// hand out. The rule is the one [`sc_files::check_write`] applies to replacing
+/// a file: a file with an **owner** may be attached by that owner alone, and one
+/// with no owner by a caller whose role clears the path's floor. And the file
+/// must **be there**: a caller who could name a path nothing is at yet would
+/// hold a reference to whatever somebody else later uploads to it.
+///
+/// Admin authority — the admin's row editor, a trigger, a code body that was not
+/// delegated — and a write with no caller at all attach any path, as they may
+/// read any file. Not a `File` field, or a null/empty value, is nothing to check.
+async fn may_attach_file(
+    catalog: &Catalog,
+    table: &Table,
+    column: &str,
+    value: &Value,
+    context: Option<&CallerContext>,
+) -> Result<bool> {
+    let Some(context) = context else {
+        return Ok(true);
+    };
+    let Some(DataFieldKind::File { store, .. }) = table.field(column).map(|f| &f.kind) else {
+        return Ok(true);
+    };
+    let path = match value {
+        Value::Text(path) if !path.is_empty() => path.as_str(),
+        _ => return Ok(true),
+    };
+    let caller = sc_files::FileCaller::new(
+        context.role,
+        context
+            .user
+            .as_ref()
+            .and_then(|user| user.get("id"))
+            .and_then(Json::as_str)
+            .map(str::to_owned),
+    );
+    if caller.is_admin() {
+        return Ok(true);
+    }
+    let files = catalog.require_file_store(&store.0)?;
+    if !matches!(files.stat(path).await, Ok(Some(stat)) if !stat.is_dir) {
+        return Ok(false);
+    }
+    let floor = sc_catalog::load_file_store_by_name(catalog, &store.0)
+        .await?
+        .and_then(|def| def.min_role);
+    Ok(sc_files::check_write(files.as_ref(), floor, path, &caller)
+        .await
+        .is_ok())
+}
+
+/// The refusal for a path [`may_attach_file`] turned down. One message whether
+/// the file is missing or somebody else's, so that a write cannot be used to
+/// find out which paths exist.
+fn not_attachable(column: &str, value: &Value) -> Error {
+    let path = match value {
+        Value::Text(path) => path.as_str(),
+        _ => "",
+    };
+    Error::invalid(format!(
+        "`{column}`: `{path}` is not a file you may attach: upload it first, or use one you \
+         uploaded"
+    ))
 }
 
 /// A row the database **returned** — an insert's or a delete's `RETURNING` —
