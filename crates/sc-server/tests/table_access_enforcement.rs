@@ -296,6 +296,7 @@ async fn a_tables_rules_govern_the_app_api_and_an_admin_change_takes_effect_live
                 "min_role_write": 1,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;
@@ -341,6 +342,7 @@ async fn a_tables_rules_govern_the_app_api_and_an_admin_change_takes_effect_live
                 "min_role_write": 40,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;
@@ -396,6 +398,7 @@ async fn forgetting_a_tables_settings_re_closes_the_app_live() -> sc_error::Resu
                 "min_role_write": 80,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;

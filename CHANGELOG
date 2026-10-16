@@ -2,6 +2,52 @@
 
 Changes in reverse chronological order.
 
+## Offline sync: a pull reads one moment
+
+A pull now reads all synced tables in one read-only transaction that sees a single moment, and
+takes its watermark from the same moment. A device never gets a child row without its parent,
+and a change is no longer sent twice when it lands while a pull runs.
+
+- Tests: `crates/sc-catalog/tests/shared_tx.rs` (a snapshot transaction reads one moment and
+  refuses writes) and the existing `crates/sc-api/tests/sync_pull.rs`.
+
+## Offline sync: devices can upload their changes
+
+A new `sync/push` endpoint takes the inserts, updates and deletes a device made offline and
+applies them in order, with the same rules as the REST API. A change that is refused (no
+access, invalid, a missing referenced row, a changed key) is reported with its reason and
+doesn't stop the others. Retrying an upload is safe: changes already handled are skipped.
+Conflicts with changes made on the server meanwhile come next.
+
+- The REST API's create, update and delete rules moved into one place, shared with the upload.
+- Tests: `crates/sc-api/tests/sync_push.rs`.
+
+## Offline sync: devices can pull changes
+
+An application with a synced table gets two endpoints in its REST API, for signed-in users.
+`sync/register` registers a device. `sync/pull` answers what the device needs: on its first
+pull every row the user may read, afterwards only the rows changed since its last pull, and the
+keys of rows that are gone or no longer readable. Access rules and ownership apply as on any
+read. A transaction that commits late is never skipped, and one left open elsewhere does not
+hold up other changes. Devices are kept in the new `_fd_sync_clients` table.
+
+- Tests: `crates/sc-api/tests/sync_pull.rs`.
+
+## Offline sync: tables can record their changes
+
+The first step towards offline-first apps (design §14.11, `TODO-offline-sync.md`). A table's
+settings have an "Offline sync" switch. Switched on, every insert, update and delete on the table
+is recorded in a new change-log, `_fd_changes`, by a database trigger in the same transaction,
+including writes made outside Saltcorn. An update records which columns changed, and changes
+uploaded by a device are marked with the device. User tables gain no columns.
+
+- Needs a primary key of one column, in Saltcorn's own Postgres database. SQLite is not
+  supported yet.
+- Also available to the MCP schema tool as `sync_enabled`.
+- Only the trigger can write the change-log: a writer needs no rights on it, and a changed
+  `search_path` cannot redirect entries.
+- Tests: `crates/sc-api/tests/sync_changes.rs`.
+
 ## Installing modules (Python libraries) from MCP and the coding agent
 
 User request: let MCP clients and the internal coding agent install pip packages that Python code

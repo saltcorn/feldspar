@@ -600,6 +600,7 @@ pub fn admin_handlers_with(
                             "min_role_write": meta.access.min_role_write,
                             "ownership_formula": meta.ownership_formula().unwrap_or(""),
                             "rls_enabled": meta.rls_enabled(),
+                            "sync_enabled": sc_catalog::sync_enabled(&meta.attributes),
                         })
                     })
                     .collect();
@@ -6981,6 +6982,7 @@ pub(crate) fn table_settings_from_body(
         min_role_write: Some(role_field(obj, "min_role_write")?),
         ownership_formula: Some(str_field(obj, "ownership_formula")?.to_owned()),
         rls_enabled: Some(bool_field(obj, "rls_enabled")?),
+        sync_enabled: Some(bool_field(obj, "sync_enabled")?),
     })
 }
 
@@ -11117,6 +11119,9 @@ pub(crate) fn table_json(
             .unwrap_or_default(),
         "ownership_error": table.ownership_error,
         "rls_enabled": table.rls_enabled,
+        "sync_enabled": table.sync_enabled(),
+        // The same rule a save is refused by, so the switch is never a trap.
+        "sync_available": sc_catalog::sync_key(catalog, table).is_ok(),
         // The backend's capability *and* whose database this is: RLS is DDL
         // against the primary driver, so it is never available on a table a
         // connection contributed, nor on a **provided** table, whose rows are

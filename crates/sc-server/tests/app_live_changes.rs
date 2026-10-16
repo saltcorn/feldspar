@@ -363,7 +363,7 @@ async fn setup() -> Result<Server> {
                 Some(json!({
                     "label": "", "description": "",
                     "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
-                    "ownership_formula": formula, "rls_enabled": false,
+                    "ownership_formula": formula, "rls_enabled": false, "sync_enabled": false,
                 })),
             )
             .await;

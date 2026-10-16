@@ -117,6 +117,12 @@ impl Transaction for SqliteTransaction {
             .await
     }
 
+    async fn set_repeatable_read(&mut self) -> Result<()> {
+        // Already so: `BEGIN IMMEDIATE` holds the write lock from the start, so
+        // nothing else commits while this transaction reads.
+        Ok(())
+    }
+
     async fn defer_constraints(&mut self) -> Result<()> {
         // Scoped to the transaction by SQLite itself: `defer_foreign_keys`
         // reverts at commit or rollback, and the keys are all checked then.

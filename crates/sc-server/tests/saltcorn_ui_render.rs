@@ -1093,6 +1093,7 @@ async fn a_search_narrows_a_list_and_a_stranger_is_not_drawn_delete() -> sc_erro
                     "min_role_write": 1,
                     "ownership_formula": "",
                     "rls_enabled": false,
+                    "sync_enabled": false,
                 })),
             )
             .await;
@@ -1427,6 +1428,7 @@ async fn two_viewers_see_their_own_rows_through_one_view() -> sc_error::Result<(
                 "min_role_write": 1,
                 "ownership_formula": "owner === user.email",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;

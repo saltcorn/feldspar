@@ -177,7 +177,7 @@ async fn a_metadata_table_is_listed_configured_and_edited_but_never_reshaped()
     let settings = |rls: bool| {
         json!({
             "label": "File stores", "description": "", "min_role_read": 40,
-            "min_role_write": 1, "ownership_formula": "", "rls_enabled": rls,
+            "min_role_write": 1, "ownership_formula": "", "rls_enabled": rls, "sync_enabled": false,
         })
     };
     let (status, updated) = client

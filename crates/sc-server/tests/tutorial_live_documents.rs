@@ -489,7 +489,7 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
             Some(json!({
                 "label": "", "description": "",
                 "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
-                "ownership_formula": rule.trim(), "rls_enabled": false,
+                "ownership_formula": rule.trim(), "rls_enabled": false, "sync_enabled": false,
             })),
         )
         .await;

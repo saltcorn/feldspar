@@ -227,6 +227,7 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
         // Beside `rls_enabled`, because without it the model proposes RLS to a
         // database that will refuse it, once per conversation.
         "rls_available": rls_available,
+        "sync_enabled": table.sync_enabled(),
         "fields": fields,
         "references": references,
         "referenced_by": referenced_by,
@@ -522,6 +523,13 @@ fn edit_parameters() -> Json {
                                  with row-level-security policies. Turning it off \
                                  removes that enforcement. Needs the access-rules \
                                  permission.",
+                        },
+                        "sync_enabled": {
+                            "type": "boolean",
+                            "description":
+                                "Record the table's changes for offline sync. Needs \
+                                 a primary key of one column; offline inserts need \
+                                 a uuid key.",
                         },
                     },
                     "required": ["op", "table"],
@@ -857,6 +865,7 @@ fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
         min_role_write: optional_role(obj, "min_role_write")?,
         ownership_formula: optional_string(obj, "ownership_formula")?,
         rls_enabled: optional_bool(obj, "rls_enabled")?,
+        sync_enabled: optional_bool(obj, "sync_enabled")?,
     })
 }
 

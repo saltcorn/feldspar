@@ -310,6 +310,7 @@ async fn set_formula(admin: &mut Client, formula: &str) {
                 "min_role_write": 1,
                 "ownership_formula": formula,
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;

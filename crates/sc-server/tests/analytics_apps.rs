@@ -269,7 +269,7 @@ async fn setup() -> sc_error::Result<(Client, Router, TestDb, PathBuf)> {
         json!({
             "label": "", "description": "",
             "min_role_read": read, "min_role_write": 1,
-            "ownership_formula": formula, "rls_enabled": false,
+            "ownership_formula": formula, "rls_enabled": false, "sync_enabled": false,
         })
     };
     admin
@@ -546,7 +546,7 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
             "/api/tables/neighbourhoods",
             Some(json!({
                 "label": "", "description": "", "min_role_read": 1, "min_role_write": 1,
-                "ownership_formula": "", "rls_enabled": false,
+                "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
             })),
         )
         .await;
@@ -560,7 +560,7 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
             "/api/tables/neighbourhoods",
             Some(json!({
                 "label": "", "description": "", "min_role_read": 40, "min_role_write": 1,
-                "ownership_formula": "", "rls_enabled": false,
+                "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
             })),
         )
         .await;
@@ -838,7 +838,7 @@ async fn row_level_security_decides_inside_a_transaction_that_carries_the_caller
             "/api/tables/houses",
             Some(json!({
                 "label": "", "description": "", "min_role_read": 1, "min_role_write": 1,
-                "ownership_formula": "agent === user.email", "rls_enabled": true,
+                "ownership_formula": "agent === user.email", "rls_enabled": true, "sync_enabled": false,
             })),
         )
         .await;

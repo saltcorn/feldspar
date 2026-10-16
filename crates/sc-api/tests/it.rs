@@ -67,6 +67,12 @@ mod rest_query;
 mod rich_type_write_path;
 #[path = "sqlite_rows.rs"]
 mod sqlite_rows;
+#[path = "sync_changes.rs"]
+mod sync_changes;
+#[path = "sync_pull.rs"]
+mod sync_pull;
+#[path = "sync_push.rs"]
+mod sync_push;
 #[path = "typescript_typecheck.rs"]
 mod typescript_typecheck;
 #[path = "v1_table_reads.rs"]

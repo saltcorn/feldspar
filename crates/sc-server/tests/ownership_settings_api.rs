@@ -155,6 +155,7 @@ fn settings(formula: &str, rls: bool) -> Value {
         "min_role_write": 1,
         "ownership_formula": formula,
         "rls_enabled": rls,
+        "sync_enabled": false,
     })
 }
 

@@ -116,7 +116,31 @@ pub async fn read_rows_as(
     user: Option<&User>,
     evaluator: Option<&Arc<dyn JsEvaluator>>,
 ) -> Result<Json> {
-    let granted = read_row_values_as(cat, table, query, role, user, evaluator).await?;
+    read_rows_as_in(
+        cat,
+        table,
+        query,
+        role,
+        user,
+        evaluator,
+        &rows::Executor::Pooled,
+    )
+    .await
+}
+
+/// [`read_rows_as`] on a caller's [`Executor`](rows::Executor): the same rule,
+/// read inside the caller's transaction (offline sync's pull reads every table
+/// from one snapshot).
+pub async fn read_rows_as_in(
+    cat: &Catalog,
+    table: &Table,
+    query: &rows::RowQuery,
+    role: u8,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+    executor: &rows::Executor,
+) -> Result<Json> {
+    let granted = read_row_values_as_in(cat, table, query, role, user, evaluator, executor).await?;
     Ok(Json::Array(
         granted
             .iter()
@@ -144,6 +168,28 @@ pub async fn read_row_values_as(
     user: Option<&User>,
     evaluator: Option<&Arc<dyn JsEvaluator>>,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
+    read_row_values_as_in(
+        cat,
+        table,
+        query,
+        role,
+        user,
+        evaluator,
+        &rows::Executor::Pooled,
+    )
+    .await
+}
+
+/// [`read_row_values_as`] on a caller's [`Executor`](rows::Executor).
+pub async fn read_row_values_as_in(
+    cat: &Catalog,
+    table: &Table,
+    query: &rows::RowQuery,
+    role: u8,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+    executor: &rows::Executor,
+) -> Result<Vec<BTreeMap<String, Value>>> {
     // The database enforces this table's ownership: run the read in a
     // caller-context transaction and let the policies decide, exactly as the
     // REST provider's RLS path does.
@@ -155,10 +201,10 @@ pub async fn read_row_values_as(
     // place that knows them.
     let ctx = (table.rls_enabled || query.in_caller_context).then(|| caller_context_at(role, user));
     if table.rls_enabled {
-        return rows::list_row_values(cat, table, query, ctx.as_ref()).await;
+        return rows::list_row_values_in(cat, table, query, ctx.as_ref(), executor).await;
     }
     if role <= table.access.min_role_read {
-        return rows::list_row_values(cat, table, query, ctx.as_ref()).await;
+        return rows::list_row_values_in(cat, table, query, ctx.as_ref(), executor).await;
     }
     let Some(formula) = &table.ownership else {
         return Err(Error::auth(format!("you may not read `{}`", table.name)));
@@ -177,7 +223,14 @@ pub async fn read_row_values_as(
         // The database filters, and the caller's own filter, ordering and bound
         // ride along in the same statement.
         Ok(pred) => {
-            rows::list_row_values(cat, table, &query.clone().and_filter(pred), ctx.as_ref()).await
+            rows::list_row_values_in(
+                cat,
+                table,
+                &query.clone().and_filter(pred),
+                ctx.as_ref(),
+                executor,
+            )
+            .await
         }
         // The formula needs JavaScript. The filter and the ordering still go to
         // the database — the ordering survives because filtering preserves it —
@@ -197,6 +250,7 @@ pub async fn read_row_values_as(
                     order: &query.order,
                     extra: &query.extra,
                     context: ctx.as_ref(),
+                    executor: executor.clone(),
                 },
             )
             .await?;
@@ -1040,6 +1094,8 @@ struct FetchShape<'a> {
     extra: &'a [Projection],
     /// The caller context, when one of `extra` reaches an RLS-protected table.
     context: Option<&'a CallerContext>,
+    /// Where the statement runs: the pool, or the caller's transaction.
+    executor: rows::Executor,
 }
 
 async fn fetch_rows_with_joins(
@@ -1054,6 +1110,7 @@ async fn fetch_rows_with_joins(
         order,
         extra,
         context,
+        executor,
     } = read;
     let analysis = formula.validate(shape, &table.name)?;
     let mut columns = vec![Projection::all()];
@@ -1074,7 +1131,8 @@ async fn fetch_rows_with_joins(
     // RLS-protected table; the row layer decides what to do with it, so this
     // path cannot disagree with the symbolic one about when a statement is a
     // caller-context statement.
-    let fetched: Vec<Row> = rows::run_read(cat, table, &select, context, context.is_some()).await?;
+    let fetched: Vec<Row> =
+        rows::run_read_in(cat, table, &select, context, context.is_some(), &executor).await?;
     Ok(fetched.iter().map(crate::rows::row_values).collect())
 }
 

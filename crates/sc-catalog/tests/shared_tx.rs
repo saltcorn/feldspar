@@ -281,3 +281,41 @@ async fn rolling_back_to_a_savepoint_drops_the_callbacks_added_since() -> Result
     assert_eq!(committed(&db).await, 3);
     Ok(())
 }
+
+/// A snapshot transaction reads one moment: a row another writer commits after
+/// its first read is not seen by the next one, and it refuses to write.
+#[tokio::test]
+async fn a_snapshot_transaction_reads_one_moment_and_writes_nothing() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = catalog(
+        &db,
+        "CREATE TABLE posts (id bigint primary key, owner text);
+         INSERT INTO posts VALUES (1, 'ada');",
+    )
+    .await?;
+
+    let tx = SharedTx::begin_snapshot(&catalog).await?;
+    assert_eq!(tx.run(None, &select()).await?.len(), 1);
+
+    // Committed elsewhere, after the snapshot was taken.
+    db.client()
+        .await?
+        .batch_execute("INSERT INTO posts VALUES (2, 'bob')")
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    assert_eq!(committed(&db).await, 2);
+    assert_eq!(
+        tx.run(None, &select()).await?.len(),
+        1,
+        "the second read sees the moment of the first"
+    );
+
+    let err = tx
+        .run(None, &insert(3, "cy"))
+        .await
+        .expect_err("a snapshot transaction is read-only");
+    assert!(err.to_string().contains("read-only"), "{err}");
+    tx.rollback().await?;
+    assert_eq!(committed(&db).await, 2);
+    Ok(())
+}

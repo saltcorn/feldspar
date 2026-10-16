@@ -361,6 +361,7 @@ fn convert_table(
             // system's own idea.
             "ownership_formula": "",
             "rls_enabled": false,
+            "sync_enabled": false,
         },
         "fields": fields,
         // v1 keeps its constraints in the pack as `constraints`, but they are

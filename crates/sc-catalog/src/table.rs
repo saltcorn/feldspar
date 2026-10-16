@@ -545,6 +545,12 @@ impl Table {
         self.is_system() && crate::table_meta::is_metadata_flag(&self.attributes)
     }
 
+    /// Whether offline sync records this table's changes (§14.11): its
+    /// overlay's `attributes.sync.enabled`.
+    pub fn sync_enabled(&self) -> bool {
+        crate::sync::sync_enabled(&self.attributes)
+    }
+
     /// Whether this table is kept out of the user-facing lists: a system table
     /// nobody has added as a metadata table. What [`is_system`](Table::is_system)
     /// alone still decides is that the schema is not editable.

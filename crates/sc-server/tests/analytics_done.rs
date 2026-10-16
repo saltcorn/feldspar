@@ -2998,7 +2998,7 @@ impl Client {
             Some(json!({
                 "label": "", "description": "",
                 "min_role_read": min_role_read, "min_role_write": 1,
-                "ownership_formula": formula, "rls_enabled": false,
+                "ownership_formula": formula, "rls_enabled": false, "sync_enabled": false,
             })),
         )
         .await;

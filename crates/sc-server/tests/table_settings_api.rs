@@ -183,6 +183,7 @@ async fn a_table_is_configured_edited_and_forgotten_over_http() -> sc_error::Res
                 "min_role_write": 1,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;
@@ -221,6 +222,7 @@ async fn a_table_is_configured_edited_and_forgotten_over_http() -> sc_error::Res
                 "min_role_write": 40,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;
@@ -280,6 +282,7 @@ async fn a_role_off_the_scale_is_refused_and_nothing_is_written() -> sc_error::R
                     "min_role_write": 1,
                     "ownership_formula": "",
                     "rls_enabled": false,
+                    "sync_enabled": false,
                 })),
             )
             .await;
@@ -307,6 +310,7 @@ async fn a_role_off_the_scale_is_refused_and_nothing_is_written() -> sc_error::R
                 "min_role_write": 1,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;
@@ -335,6 +339,7 @@ async fn settings_outlive_their_table_and_can_be_cleaned_up() -> sc_error::Resul
                 "min_role_write": 1,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;

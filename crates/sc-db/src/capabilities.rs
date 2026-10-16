@@ -55,6 +55,14 @@ pub struct DbCapabilities {
     /// literals it generates, and casts those to `text` on a backend without
     /// them.
     pub native_temporal_types: bool,
+    /// Offline sync can record a table's changes with a database trigger
+    /// (§14.11): one shared `plpgsql` function, so a column added later is
+    /// recorded without regenerating anything.
+    ///
+    /// Postgres can. SQLite triggers cannot read a row generically, so each
+    /// table would need a trigger regenerated with every schema change; that
+    /// is not built yet.
+    pub sync_triggers: bool,
 }
 
 impl DbCapabilities {
@@ -69,6 +77,7 @@ impl DbCapabilities {
             identity_sequences: false,
             unlogged_tables: false,
             native_temporal_types: false,
+            sync_triggers: false,
         }
     }
 }

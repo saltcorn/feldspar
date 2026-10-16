@@ -278,6 +278,7 @@ async fn furnish(server: &mut Server) -> sc_error::Result<()> {
                 "min_role_write": 1,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;
@@ -2732,6 +2733,7 @@ async fn an_ownership_formula_is_restored_after_the_columns_it_reads() -> sc_err
                     "min_role_write": 100,
                     "ownership_formula": formula,
                     "rls_enabled": rls,
+                    "sync_enabled": false,
                 })),
             )
             .await;

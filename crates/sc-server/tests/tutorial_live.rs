@@ -1028,6 +1028,7 @@ async fn part_four_presence_on_the_board() -> Result<()> {
                 "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
                 "ownership_formula": "board_membersↃboard.some(m => m.member === user.id)",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;

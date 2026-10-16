@@ -281,6 +281,8 @@ pub struct TableSettings {
     pub ownership_formula: Option<String>,
     /// Whether the database enforces the formula with policies.
     pub rls_enabled: Option<bool>,
+    /// Whether offline sync records the table's changes (§14.11).
+    pub sync_enabled: Option<bool>,
 }
 
 impl TableSettings {
@@ -294,7 +296,10 @@ impl TableSettings {
     }
 
     fn is_empty(&self) -> bool {
-        self.label.is_none() && self.description.is_none() && !self.touches_access()
+        self.label.is_none()
+            && self.description.is_none()
+            && self.sync_enabled.is_none()
+            && !self.touches_access()
     }
 }
 
@@ -752,6 +757,11 @@ struct Plan {
     was_rls: BTreeMap<String, bool>,
     /// Tables whose policies must be re-emitted or dropped at the end.
     rls_dirty: BTreeSet<String>,
+    /// Which tables offline sync was recording *before* the batch.
+    was_sync: BTreeSet<String>,
+    /// Tables whose sync trigger must be re-created or dropped at the end: sync
+    /// switched on or off, or a synced table's key changed.
+    sync_dirty: BTreeSet<String>,
     /// Tables dropped by this batch, so nothing is emitted for them afterwards.
     dropped: BTreeSet<String>,
     /// Calculated-field expressions to validate against the final schema, as
@@ -788,9 +798,17 @@ impl Plan {
             .iter()
             .map(|t| (t.name.clone(), t.rls_enabled))
             .collect();
+        let was_sync = projection
+            .tables()
+            .iter()
+            .filter(|t| t.sync_enabled())
+            .map(|t| t.name.clone())
+            .collect();
         Ok(Plan {
             projection,
             was_rls,
+            was_sync,
+            sync_dirty: BTreeSet::new(),
             ddl: Vec::new(),
             metas: Vec::new(),
             table_metas: BTreeMap::new(),
@@ -1133,6 +1151,12 @@ impl Plan {
             }
             meta.set_rls_enabled(enabled);
         }
+        if let Some(enabled) = settings.sync_enabled {
+            // Checked at the end of the batch, against the key the table ends
+            // up with.
+            sc_catalog::set_sync_enabled(&mut meta.attributes, enabled);
+            self.sync_dirty.insert(table.to_owned());
+        }
         let meta = meta.clone();
 
         // Mirror the row onto the projection exactly as `Catalog::reload` will,
@@ -1380,6 +1404,10 @@ impl Plan {
                 table: table.to_owned(),
                 columns: projected.primary_key.clone(),
             });
+            // The sync trigger is keyed by the primary-key column.
+            if projected.sync_enabled() {
+                self.sync_dirty.insert(table.to_owned());
+            }
             if generator.is_some() {
                 self.ddl.push(SchemaChange::SetColumnGenerator {
                     table: table.to_owned(),
@@ -1678,6 +1706,8 @@ impl Plan {
         self.projection.remove(table);
         self.dropped.insert(table.to_owned());
         self.rls_dirty.remove(table);
+        // Dropping the table drops its trigger.
+        self.sync_dirty.remove(table);
         self.table_metas.remove(table);
         self.metas.push(MetaWrite {
             index,
@@ -2144,6 +2174,13 @@ impl Plan {
             };
             validate_ownership(catalog, &self.projection, table)?;
         }
+        for name in &self.sync_dirty {
+            if let Some(table) = self.projection.get(name)
+                && table.sync_enabled()
+            {
+                sc_catalog::sync_key(catalog, table)?;
+            }
+        }
         Ok(notes)
     }
 
@@ -2190,6 +2227,18 @@ impl Plan {
                      were dropped, and the database now returns every row of it to any \
                      caller the role floors let through"
                 ));
+            }
+        }
+        // Last, so the trigger is keyed by the column the batch ends with.
+        for name in &self.sync_dirty {
+            let Some(table) = self.projection.get(name) else {
+                continue;
+            };
+            if table.sync_enabled() {
+                let pk = sc_catalog::sync_key(catalog, table)?;
+                steps.push(SchemaStep::Sql(sc_catalog::enable_sync_sql(dialect, name, &pk)));
+            } else if self.was_sync.contains(name) {
+                steps.push(SchemaStep::Sql(sc_catalog::disable_sync_sql(dialect, name)));
             }
         }
         Ok(steps)

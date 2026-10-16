@@ -518,6 +518,8 @@ async fn restore_table(
     let access = schema_edit::TableSettings {
         ownership_formula: settings.ownership_formula.take(),
         rls_enabled: settings.rls_enabled.take(),
+        // Applied later too: sync needs the primary key, added with the columns.
+        sync_enabled: settings.sync_enabled.take(),
         ..Default::default()
     };
     let exists = catalog.get(name)?.is_some();
@@ -551,7 +553,8 @@ async fn restore_table(
             .as_deref()
             .unwrap_or_default()
             .is_empty()
-        && access.rls_enabled != Some(true);
+        && access.rls_enabled != Some(true)
+        && access.sync_enabled != Some(true);
     Ok((line, (!nothing_to_apply).then_some(access)))
 }
 

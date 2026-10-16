@@ -172,6 +172,23 @@ pub trait Transaction: Send {
         ))
     }
 
+    /// Read every statement of this transaction from **one snapshot**: what was
+    /// committed when its first statement ran, and nothing committed after.
+    ///
+    /// What offline sync's pull needs (§14.11): several tables read at one
+    /// moment, so a child row never arrives without its parent, and a watermark
+    /// that names exactly that moment.
+    ///
+    /// Must be issued before the transaction's first statement, like
+    /// [`set_read_only`](Transaction::set_read_only). The default errors: a
+    /// backend that reads each statement fresh must say so rather than return
+    /// a transaction that only looks consistent.
+    async fn set_repeatable_read(&mut self) -> Result<()> {
+        Err(Error::database(
+            "this database backend cannot read a transaction from one snapshot",
+        ))
+    }
+
     /// Put foreign-key checking off to the end of the transaction, so a row may
     /// reference one that arrives later in the same transaction.
     ///

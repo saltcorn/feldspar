@@ -190,6 +190,7 @@ impl PgDriver {
             identity_sequences: true,
             unlogged_tables: true,
             native_temporal_types: true,
+            sync_triggers: true,
         }
     }
 

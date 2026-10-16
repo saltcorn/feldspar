@@ -335,6 +335,7 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
                 "min_role_write": 40,
                 "ownership_formula": "",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;
@@ -518,7 +519,7 @@ async fn an_upload_into_a_private_folder_is_its_uploaders_alone() -> sc_error::R
             Some(json!({
                 "label": "", "description": "",
                 "min_role_read": 100, "min_role_write": 80,
-                "ownership_formula": "", "rls_enabled": false,
+                "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
             })),
         )
         .await;

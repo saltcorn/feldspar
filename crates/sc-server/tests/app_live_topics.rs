@@ -443,7 +443,7 @@ async fn setup() -> Result<Server> {
                 Some(json!({
                     "label": "", "description": "",
                     "min_role_read": read, "min_role_write": 1,
-                    "ownership_formula": formula, "rls_enabled": rls,
+                    "ownership_formula": formula, "rls_enabled": rls, "sync_enabled": false,
                 })),
             )
             .await;

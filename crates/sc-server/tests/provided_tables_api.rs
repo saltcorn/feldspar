@@ -449,6 +449,7 @@ async fn a_provided_table_refuses_a_write_and_a_column_change_by_name() -> sc_er
                 "min_role_write": 1,
                 "ownership_formula": "",
                 "rls_enabled": true,
+                "sync_enabled": false,
             })),
         )
         .await;

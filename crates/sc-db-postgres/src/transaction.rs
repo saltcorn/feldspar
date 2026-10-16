@@ -93,6 +93,12 @@ impl Transaction for PgTransaction {
         self.simple("SET TRANSACTION READ ONLY").await
     }
 
+    async fn set_repeatable_read(&mut self) -> Result<()> {
+        // Postgres takes the snapshot at the first statement and keeps it.
+        self.simple("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .await
+    }
+
     async fn defer_constraints(&mut self) -> Result<()> {
         // Every foreign key this driver creates is `DEFERRABLE INITIALLY
         // IMMEDIATE` (see `crate::ddl`), which is what makes this possible at

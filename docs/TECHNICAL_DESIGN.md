@@ -10761,6 +10761,89 @@ until `ready`, a publish without a join, `echo`) and type-checked (`typescript_t
 component using `usePresence` / `usePublish` against the scaffold's runtime). `tutorial_live.rs`
 part 4 walks the fourth part.
 
+### 14.11 Offline sync (planned, `TODO-offline-sync.md`)
+
+Offline-first applications: a device keeps a local copy of an application's synced tables,
+reads and writes it whether or not it is online, and exchanges changes with the server when it
+can. Saltcorn 1 has an offline mode; this design keeps its field-wise conflict handling and
+replaces the rest.
+
+**No sync columns in user tables.** Tables are introspected (§9), and existing databases must
+keep working, so sync adds nothing to a user table. What it needs is:
+
+- **The table's setting:** `_fd_tables.attributes.sync` (`enabled`). It is sparse, so it is an
+  attribute.
+- **One change-log for every table, `_fd_changes`:** `seq`, `table_name`, `row_key` (the primary
+  key as text), `op` (insert, update, delete), `fields` (the columns an update changed), `txid`,
+  and `client_id` and `mutation` for a change a device uploaded. A delete is an entry in the
+  log, so no table needs a "deleted" flag.
+- **One row per device, `_fd_sync_clients`:** the user, the application, the watermark of its
+  last pull, and the number of the last change it uploaded that the server applied.
+
+**Changes are recorded by database triggers**, not by the row layer: one `AFTER INSERT OR UPDATE
+OR DELETE` row trigger per synced table, all calling one function with the primary-key column as
+its argument. A trigger writes the log entry in the same transaction as the change, and also
+catches writes made outside Feldspar. An update that changes nothing records nothing; a change
+of primary key is recorded as a delete and an insert. The function runs with its owner's rights
+and a fixed `search_path`, so a writer needs no rights on the change-log and cannot forge or
+redirect entries. A device's upload sets who it is in
+transaction-local settings (`sc.sync_client`, `sc.sync_mutation`), the way the caller is
+passed for row-level security, so its own changes come back marked as its own. Switching sync on
+needs a one-column primary key in Saltcorn's own Postgres database; on SQLite it is refused for
+now, because a SQLite trigger cannot read a row generically and would have to be regenerated with
+every schema change.
+
+**Pulls are cut at a watermark, not at a time or a count.** A number or timestamp is taken
+before a transaction commits, so a transaction that started earlier can become visible after a
+later one has already been handed out, and a "since" query would skip it forever. Saltcorn 1's
+time windows have this gap. The watermark is a Postgres snapshot, `txid_current_snapshot()`
+as text (`xmin:xmax:running`): which transactions had finished and which were still running.
+A pull returns the entries of transactions committed at the new snapshot but not at the
+device's (`txid_visible_in_snapshot`), so one that commits late comes with the next pull. A
+transaction left open, even on an unrelated table, holds back only its own changes. On SQLite,
+which runs one write transaction at a time, `seq` is the watermark.
+
+**The pull API** is part of an application's REST API, for signed-in users, when one of its
+tables is synced. `POST {mount}/sync/register` gives a device an id, tied to the user and the
+application. `POST {mount}/sync/pull` takes that id, the watermark of the device's last pull
+and the synced tables it already holds. It answers the new watermark and one entry per table
+the user may read: a whole table (`reset`) when the device does not hold it yet or has no
+watermark, otherwise the current rows of the keys changed since, plus the keys that are gone or
+no longer readable (`removed`). Rows are read like any list read, so access rules and ownership
+apply. A pull reads in one read-only `REPEATABLE READ` transaction and takes its watermark
+there, so all tables come from the same moment (a child row never arrives without its parent)
+and the watermark names exactly what was read: nothing is sent twice, and nothing is skipped.
+The device's watermark is kept in `_fd_sync_clients`, for cleanup.
+
+**Uploads go through the REST API's own write rules** (`POST {mount}/sync/push`), in the
+order the changes were made: access rules, ownership, validation, calculated fields and
+triggers apply as to any write, and parents arrive before their children without sorting tables
+by their foreign keys. Each change runs in its own transaction, so a refused one (access,
+validation, a foreign key, a key change, a row not there) is reported with its reason and the
+others go on. A device numbers its changes; the last number handled is kept per device in the
+same transaction, so a retried upload skips what is done, and each change is handled once and
+in order even when two uploads of one device overlap. A configuration error stops the upload
+rather than refusing the change, so the change is retried once the app is fixed.
+
+**Conflicts are merged field by field.** A field changed only on the device or only on the
+server keeps that change. A field changed on both sides keeps the server's value. "Changed on
+the server" means a log entry for that row at or above the watermark the device's change was
+based on. An update of a row deleted meanwhile loses to the delete.
+
+**Keys:** a device can create rows offline whatever the table's key. A `uuid` key is made by
+the device and kept by the server. An integer key is given out by the server, so offline the
+device uses a temporary key for the new row, also in the rows that point to it. On upload the
+server inserts the row, rewrites the temporary key to the real one in the later changes of the
+same upload, and answers the pairs; the device then replaces the temporary key in its copy and
+its outbox. A pair is found again for a retried upload whose answer was lost. The log stores
+keys as text, so none of this changes the schema.
+
+**What a device gets:** every row of the application's synced tables that the user may read.
+Filtering by more than the access rules (only recent rows, say) is left for later.
+
+**Cleanup:** old entries superseded by a later entry for the same row are removed after a
+retention period. A device whose watermark is older than what is kept reloads its tables.
+
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 
 A `CodeAdapter` maintains an open interpreter for a guest language, inside which the catalog

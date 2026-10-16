@@ -179,6 +179,21 @@ impl SharedTx {
         SharedTx::begin(catalog, catalog.primary_db())
     }
 
+    /// A **read of one moment** on the primary database: begun at once, read-only,
+    /// and every statement reads the same snapshot (`REPEATABLE READ`), so rows
+    /// of several tables agree with each other.
+    pub async fn begin_snapshot(catalog: &Catalog) -> Result<SharedTx> {
+        let tx = SharedTx::begin_primary(catalog)?;
+        {
+            let mut open = tx.inner.lock().await;
+            // Both before the first statement, as `SET TRANSACTION` requires.
+            let handle = open.handle(&tx.driver).await?;
+            handle.set_repeatable_read().await?;
+            handle.set_read_only().await?;
+        }
+        Ok(tx)
+    }
+
     /// One on a driver the caller already holds.
     pub fn begin_on(driver: &Arc<dyn DatabaseDriver>, database: DbId) -> SharedTx {
         SharedTx {

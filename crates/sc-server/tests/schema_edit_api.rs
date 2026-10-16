@@ -350,7 +350,7 @@ async fn a_mounted_app_reprojects_when_the_schema_moves_under_it() -> sc_error::
             Some(json!({
                 "label": "", "description": "",
                 "min_role_read": 80, "min_role_write": 1,
-                "ownership_formula": "", "rls_enabled": false,
+                "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
             })),
         )
         .await;
@@ -404,7 +404,7 @@ async fn a_mounted_app_reprojects_when_the_schema_moves_under_it() -> sc_error::
             Some(json!({
                 "label": "", "description": "",
                 "min_role_read": 1, "min_role_write": 1,
-                "ownership_formula": "", "rls_enabled": false,
+                "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
             })),
         )
         .await;

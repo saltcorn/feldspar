@@ -434,6 +434,7 @@ async fn an_ownership_formula_may_not_predict() -> Result<()> {
                 "min_role_read": 100, "min_role_write": 1,
                 "ownership_formula": "predict(\"House prices\") > 0",
                 "rls_enabled": false,
+                "sync_enabled": false,
             })),
         )
         .await;

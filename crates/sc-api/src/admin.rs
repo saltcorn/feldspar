@@ -4471,6 +4471,9 @@ fn table_schema() -> TypeSchema {
     // renders the RLS toggle only when this is true — a toggle that can only
     // ever be refused is not a setting, it is a trap.
     fields.push(StructField::new("rls_available", TypeSchema::bool()));
+    // Whether offline sync can be switched on: a one-column primary key, in
+    // Saltcorn's own Postgres database. The form shows the switch only then.
+    fields.push(StructField::new("sync_available", TypeSchema::bool()));
     // Which database hosts the table: `primary`, or the name of the connection
     // it came from (§5's Connections). Reported on every table rather than only
     // on foreign ones, so a client never has to read absence as "the primary".
@@ -4544,6 +4547,10 @@ fn table_settings_fields() -> Vec<StructField> {
         // save when the backend cannot do RLS or the formula cannot become a
         // policy.
         StructField::new("rls_enabled", TypeSchema::bool()),
+        // Whether offline sync records the table's changes (§14.11). Refused on
+        // save without a one-column primary key, or on a database that cannot
+        // record changes.
+        StructField::new("sync_enabled", TypeSchema::bool()),
     ]
 }
 

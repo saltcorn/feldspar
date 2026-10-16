@@ -1827,7 +1827,7 @@ fn constraint_message(table: &Table, error: Error) -> Error {
 /// (optionally ` (constraint "…")`) followed by the statement, so the message is
 /// everything before the SQLSTATE. A chain in any other shape is returned whole:
 /// a half-parsed error is worse than a verbose one.
-fn database_message(chain: &str) -> String {
+pub(crate) fn database_message(chain: &str) -> String {
     let start = chain.find(": ").map_or(0, |i| i + 2);
     match chain[start..].find(" [") {
         Some(end) => chain[start..start + end].trim().to_owned(),
