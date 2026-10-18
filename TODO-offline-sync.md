@@ -105,6 +105,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [ ] Embedding a table the user reads through an ownership formula: the server refuses it, the
       copy answers it (it only holds rows the user may read). Decide whether the server should
       take it or the copy refuse it too.
+- [ ] A change the server fails on for its own reasons (a bug, a 500) stops the whole outbox:
+      the device retries it every sync and the changes behind it wait. Nothing is lost, but
+      nothing goes up. Count failures per change and, after a few, report it as stuck in
+      `api.sync.status()` so the app can show it.
+- [ ] A device the server no longer knows (database restored, device deleted) registers again
+      and resends its outbox as a new device, so the server can't skip what it already applied.
+      An insert it had applied comes back refused as a duplicate (the next pull restores the
+      row), leaving a misleading entry in `refused()`. Related to S2.7.
 - [ ] Real local tables for large synced tables, once an app needs it. Today the device keeps
       every row as JSON under its key and loads the whole copy into memory, which is fine up to
       roughly 10–20k rows per table. Beyond that, a SQLite storage could keep each synced table
