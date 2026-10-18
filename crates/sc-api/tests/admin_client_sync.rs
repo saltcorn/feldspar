@@ -19,14 +19,11 @@ fn committed_admin_clients_match_generator() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     // Both halves: the client is this endpoint set's, the helper is every
     // client's, and a stale helper beside a fresh client is the same drift by
-    // another route.
-    let files = [
-        (
-            "client.ts",
-            sc_api::generate_client(&sc_api::admin_endpoints()),
-        ),
-        (sc_api::CLIENT_HELPER_FILE, sc_api::client_helper()),
-    ];
+    // another route. No admin table is synced, so no offline runtime.
+    let endpoints = sc_api::admin_endpoints();
+    assert!(!sc_api::has_offline_sync(&endpoints));
+    let mut files = vec![("client.ts", sc_api::generate_client(&endpoints))];
+    files.extend(sc_api::client_runtime(false));
 
     for ui in ["ui/admin", "ui/ide", "ui/builder", "ui/analytics"] {
         for (name, generated) in &files {

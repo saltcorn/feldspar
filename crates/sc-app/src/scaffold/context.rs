@@ -45,6 +45,9 @@ pub fn context_json(ctx: &ProjectContext<'_>, runtime: &str, client: &str) -> Js
         "runtime": runtime,
         "client": client,
         "auth": has_auth(ctx.endpoints),
+        // A table is synced and the client can keep it offline: the framework
+        // passes the client a storage for its copy.
+        "offline": sc_api::has_offline_sync(ctx.endpoints),
         "app": {
             "name": ctx.app.name,
             "subdomain": ctx.app.subdomain.trim(),
@@ -84,6 +87,8 @@ fn table_json(table: &Table, endpoints: &EndpointSet) -> Json {
         "client": client_object(endpoints, name),
         "pk": single_pk(table),
         "pk_ts_type": key_ts_type(endpoints, name),
+        // Kept on the device by a client created with `offline` (§14.11).
+        "synced": table.sync_enabled(),
         // Whether an optimistic store can be built over it: it has an
         // addressable row and the app exposes the writes.
         "storable": storable(table, endpoints),

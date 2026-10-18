@@ -10830,6 +10830,23 @@ server keeps that change. A field changed on both sides keeps the server's value
 the server" means a log entry for that row at or above the watermark the device's change was
 based on. An update of a row deleted meanwhile loses to the delete.
 
+**The client.** The generated client keeps the copy when it is created with `offline` (a
+storage), and its table objects then read and write the copy: `api.notes.list()` and the rest
+keep their signatures, so app code does not change. The copy is two layers, the rows as the
+server last sent them and the outbox replayed over them; a page reads the second, a pull only
+writes the first, so a pull never overwrites a change that is not uploaded yet, and a change the
+server refuses leaves the outbox and with it the page. Rows are kept as JSON under their key, not
+as tables, so a schema change needs nothing on the device, and every storage is the same small
+key/value interface: SQLite (`expo-sqlite`) on a phone, IndexedDB in a browser, memory in tests.
+Reads apply a list read's filters, ordering, paging and `select` locally, embeds included when the
+embedded table is synced too. Sync runs by itself: at start, shortly after a write, at an
+interval, when the browser comes online, and when a live stream of a synced table's changes
+reports one. `api.sync` gives the status, the refused changes and `now()`. The code is emitted
+beside `helper.ts`, only for a client with a synced table, in three files that are the same for
+every application: `offline-types.ts` (the options,
+`api.sync`'s types and the transport), `offline-backends.ts` (the storages) and
+`offline-copy.ts` (the copy itself).
+
 **Keys:** a device can create rows offline whatever the table's key. A `uuid` key is made by
 the device and kept by the server. An integer key is given out by the server, so offline the
 device uses a temporary key for the new row, also in the rows that point to it. On upload the

@@ -678,6 +678,7 @@ import { Platform } from "react-native";
 import { createClient, type ApiClient } from "./client";
 import { APP_URL } from "./config";
 `;
+  if (ctx.offline) out += `import { syncStorage } from "./storage";\n`;
   if (rowTypes.length)
     out += `import type { ${rowTypes.join(", ")} } from "./client";\n`;
   out += `
@@ -688,7 +689,11 @@ import { APP_URL } from "./config";
  * relative. On a phone there is no page: they go to the application's URL.
  */
 export const api: ApiClient = createClient({
-  baseUrl: Platform.OS === "web" ? "" : APP_URL,
+  baseUrl: Platform.OS === "web" ? "" : APP_URL,${ctx.offline ? `
+  // The synced tables are kept on the device (SQLite on a phone, IndexedDB on
+  // the web), so they can be read and changed offline. \`api.sync\` says how
+  // syncing goes.
+  offline: { storage: syncStorage() },` : ""}
 });
 
 /** The state of one read: data, plus what is happening to it. */
@@ -795,9 +800,36 @@ export function useMutation<A>(table: string, fn: (arg: A) => Promise<unknown>):
   return { run, pending, error };
 }
 `;
+  if (ctx.offline)
+    out += `
+// What a sync changes on this device re-runs the queries over those tables.
+api.sync?.onChange((tables) => tables.forEach(invalidate));
+`;
   for (const table of ctx.tables) out += `\n${tableHooks(table)}`;
   return out;
 }
+
+/** \`storage.ts\`: where the web keeps the offline copy. Metro takes
+ * \`storage.native.ts\` instead on a phone, so \`expo-sqlite\` is never bundled for
+ * the web. */
+const STORAGE_WEB_TS = `import { indexedDbStorage, memoryStorage, type SyncStorage } from "./offline-backends";
+
+/** The browser's IndexedDB, or nothing kept where there is none. */
+export function syncStorage(): SyncStorage {
+  return typeof indexedDB === "undefined" ? memoryStorage() : indexedDbStorage("feldspar-sync");
+}
+`;
+
+/** \`storage.native.ts\`: the offline copy in SQLite on the phone. */
+const STORAGE_NATIVE_TS = `import { openDatabaseSync } from "expo-sqlite";
+
+import { sqliteStorage, type SyncStorage } from "./offline-backends";
+
+/** A SQLite database on the phone, \`feldspar-sync.db\`. */
+export function syncStorage(): SyncStorage {
+  return sqliteStorage(openDatabaseSync("feldspar-sync.db"));
+}
+`;
 
 /** One table's hooks, over that table's own object on the client. The
  * row-addressed ones follow the endpoints: the API projects them only for a
@@ -887,7 +919,9 @@ matching types and hooks exist at the next build.
 |---|---|
 | \`client.ts\` | the typed API client: one method per endpoint this application exposes |
 | \`helper.ts\` | how a request is made and how a failure is reported — the same in every application |
-| \`hooks.ts\` | React hooks over that client, one set per table |
+${ctx.offline ? `| \`offline-types.ts\`, \`offline-backends.ts\`, \`offline-copy.ts\` | offline sync: the options and \`api.sync\`, the storages, and the device's copy of the synced tables |
+` : ""}| \`hooks.ts\` | React hooks over that client, one set per table |${ctx.offline ? `
+| \`storage.ts\`, \`storage.native.ts\` | where the offline copy of the synced tables is kept, on the web and on a phone |` : ""}
 | \`config.ts\` | the application's URL, which a phone sends its requests to |
 | \`native.json\` | the native apps' settings (application and bundle ID, version, icon, build type, provisioning profile), which \`app.config.js\` reads |
 | \`ios/build.cjs\` | the iOS builds: the \`build:ios:*\` scripts |
@@ -902,7 +936,17 @@ matching types and hooks exist at the next build.
 ${list}
 
 A write is a \`Mutation\`: call \`run\`, and every query over that table re-runs.
+${ctx.offline ? `
+## Offline
 
+The synced tables are kept on the device: SQLite on a phone (\`storage.native.ts\`),
+IndexedDB on the web (\`storage.ts\`). Their reads and writes work without a
+connection; writes wait in an outbox and are uploaded when the device is online
+again, and the server's changes are pulled down. \`api.sync\` has the status
+(\`status()\`, \`onStatus\`), the changes the server refused (\`refused()\`), and
+\`now()\` to sync at once. A project made before sync was switched on needs
+\`npx expo install expo-sqlite\` once.
+` : ""}
 ## The API is missing something I need
 
 Add a custom SQL query to the application and it becomes a typed method on
@@ -952,6 +996,7 @@ ${androidScripts()},
   "dependencies": {
     "@expo/metro-runtime": "~57.0.16",
     "expo": "~57.0.25",
+    "expo-sqlite": "~57.0.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
@@ -1977,6 +2022,12 @@ function scaffold(ctx) {
 function runtime(ctx) {
   return [
     { path: at(ctx.runtime, "hooks.ts"), contents: hooksTs(ctx) },
+    ...(ctx.offline
+      ? [
+          { path: at(ctx.runtime, "storage.ts"), contents: GENERATED + STORAGE_WEB_TS },
+          { path: at(ctx.runtime, "storage.native.ts"), contents: GENERATED + STORAGE_NATIVE_TS },
+        ]
+      : []),
     { path: at(ctx.runtime, "config.ts"), contents: configTs(ctx) },
     { path: at(ctx.runtime, "native.json"), contents: nativeJson(ctx) },
     ...IOS_FILES.map(({ name, text }) => ({

@@ -259,7 +259,8 @@ const SET_PASSWORD: &str = "setPassword";
 /// Offline sync's endpoints (§14.11): `POST {mount}/sync/register`, `…/pull`
 /// and `…/push`, projected when one of the app's tables is synced.
 const SYNC_SEGMENT: &str = "sync";
-const SYNC_REGISTER: &str = "syncRegister";
+/// Also how the client generator finds the sync endpoints (`typescript.rs`).
+pub(crate) const SYNC_REGISTER: &str = "syncRegister";
 const SYNC_PULL: &str = "syncPull";
 const SYNC_PUSH: &str = "syncPush";
 
@@ -2071,6 +2072,7 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
         }
         model.fields.push(rf);
     }
+    model.synced = table.sync_enabled();
     model
 }
 

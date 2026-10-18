@@ -35,9 +35,17 @@ use sc_module::{
 use sc_types::Attrs;
 use serde_json::{Value as Json, json};
 
-/// The four files Saltcorn writes into the runtime directory for **every**
+/// The files Saltcorn writes into the runtime directory for **every**
 /// framework, which the module's project may import and must not write.
-const SALTCORN_WRITES: [&str; 4] = ["client.ts", "helper.ts", "schema.sql", "SKILL.md"];
+const SALTCORN_WRITES: [&str; 7] = [
+    "client.ts",
+    "helper.ts",
+    "offline-types.ts",
+    "offline-backends.ts",
+    "offline-copy.ts",
+    "schema.sql",
+    "SKILL.md",
+];
 
 /// The bundled Vue module, installed into a throwaway root from the directory it
 /// ships in — which is what the Modules tab's Install button does, minus the row

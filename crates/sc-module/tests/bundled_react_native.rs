@@ -27,9 +27,17 @@ use serde_json::{Value as Json, json};
 /// The framework's name, as an application row stores it.
 const FRAMEWORK: &str = "react-native";
 
-/// The four files Saltcorn writes into the runtime directory for every
-/// framework, which the module's project may import and must not write.
-const SALTCORN_WRITES: [&str; 4] = ["client.ts", "helper.ts", "schema.sql", "SKILL.md"];
+/// The files Saltcorn writes into the runtime directory for every framework,
+/// which the module's project may import and must not write.
+const SALTCORN_WRITES: [&str; 7] = [
+    "client.ts",
+    "helper.ts",
+    "offline-types.ts",
+    "offline-backends.ts",
+    "offline-copy.ts",
+    "schema.sql",
+    "SKILL.md",
+];
 
 /// The bundled module, installed into a throwaway root and loaded on a worker.
 async fn frameworks(tag: &str) -> ModuleFrameworks {
@@ -424,7 +432,10 @@ async fn the_bundled_react_native_module_declares_a_web_framework() {
     assert_eq!(sim.artifact, "todo/ios-output/app-simulator.zip");
     // Release unless asked: Debug is for the dev menu and warnings.
     assert_eq!(rn.targets[2].options, ["simulator_configuration"]);
-    assert_eq!(field("simulator_configuration").default, Some(json!("release")));
+    assert_eq!(
+        field("simulator_configuration").default,
+        Some(json!("release"))
+    );
     let mut debug_sim = config.clone();
     debug_sim.insert("simulator_configuration".to_owned(), json!("debug"));
     sc_types::validate_attrs(&rn.config_spec, &debug_sim).unwrap();
@@ -606,7 +617,10 @@ async fn the_modules_toolchain_settings_are_the_apk_builds_environment() {
         .iter()
         .filter_map(|f| f.section.as_deref().map(|s| (f.name(), s)))
         .collect();
-    assert_eq!(headed, [("android_home", "Android"), ("use_pod_dir", "iOS")]);
+    assert_eq!(
+        headed,
+        [("android_home", "Android"), ("use_pod_dir", "iOS")]
+    );
     let pod = spec.iter().find(|f| f.name() == "pod_dir").unwrap();
     assert_eq!(
         pod.show_if,
@@ -648,11 +662,26 @@ async fn the_modules_toolchain_settings_are_the_apk_builds_environment() {
     let pem = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkw\nGJ+1/q==\n-----END PRIVATE KEY-----\n";
     api("57246542-96fe-1a63-e053-0824d011072a ", "2X9R4HXF34", pem).unwrap();
     // A key pasted into the one-line field loses its line breaks.
-    api("57246542-96fe-1a63-e053-0824d011072a", " 2X9R4HXF34", &pem.replace('\n', "")).unwrap();
+    api(
+        "57246542-96fe-1a63-e053-0824d011072a",
+        " 2X9R4HXF34",
+        &pem.replace('\n', ""),
+    )
+    .unwrap();
     for (issuer, key_id, key, wanted) in [
         ("issuer-1", "2X9R4HXF34", pem, "UUID"),
-        ("57246542-96fe-1a63-e053-0824d011072a", "2x9r4hxf34", pem, "ten capital"),
-        ("57246542-96fe-1a63-e053-0824d011072a", "2X9R4HXF34", "MIGTAgEAMBMG", "whole .p8"),
+        (
+            "57246542-96fe-1a63-e053-0824d011072a",
+            "2x9r4hxf34",
+            pem,
+            "ten capital",
+        ),
+        (
+            "57246542-96fe-1a63-e053-0824d011072a",
+            "2X9R4HXF34",
+            "MIGTAgEAMBMG",
+            "whole .p8",
+        ),
     ] {
         let err = api(issuer, key_id, key).unwrap_err().to_string();
         assert!(err.contains(wanted), "{err}");
@@ -780,7 +809,10 @@ async fn the_scaffold_is_an_expo_project_whose_every_import_resolves() {
     // `src/feldspar/ios/`.
     let gitignore = file(&files, ".gitignore");
     let ignored: Vec<&str> = gitignore.lines().collect();
-    assert!(ignored.contains(&"/ios") && ignored.contains(&"/android"), "{ignored:?}");
+    assert!(
+        ignored.contains(&"/ios") && ignored.contains(&"/android"),
+        "{ignored:?}"
+    );
     assert!(!ignored.contains(&"ios"), "{ignored:?}");
     assert!(file(&files, "index.ts").contains("registerRootComponent(Root)"));
     let app_config = file(&files, "app.config.js");
@@ -1827,4 +1859,45 @@ async fn the_keystore_operation_makes_a_keystore_and_the_settings_naming_it() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("6 characters"), "{err}");
+}
+
+/// An app with a synced table keeps it on the device: SQLite on a phone,
+/// IndexedDB on the web, chosen by Metro's platform files so `expo-sqlite` is
+/// never bundled for the web.
+#[tokio::test]
+async fn an_app_with_a_synced_table_keeps_it_on_the_device() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let mut ctx = context(true, vec![tasks_table()]);
+    ctx["offline"] = json!(true);
+    let files = frameworks("bundled-rn-offline")
+        .await
+        .framework_files(FRAMEWORK, FilePhase::Scaffold, ctx)
+        .await
+        .expect("the scaffold runs");
+    assert_imports_resolve(&files);
+
+    let hooks = file(&files, "src/feldspar/hooks.ts");
+    assert!(
+        hooks.contains("import { syncStorage } from \"./storage\";"),
+        "{hooks}"
+    );
+    assert!(
+        hooks.contains("offline: { storage: syncStorage() },"),
+        "{hooks}"
+    );
+    assert!(
+        hooks.contains("api.sync?.onChange((tables) => tables.forEach(invalidate));"),
+        "{hooks}"
+    );
+    let web = file(&files, "src/feldspar/storage.ts");
+    assert!(web.contains("indexedDbStorage(\"feldspar-sync\")"), "{web}");
+    assert!(!web.contains("expo-sqlite"), "{web}");
+    let native = file(&files, "src/feldspar/storage.native.ts");
+    assert!(native.contains("from \"expo-sqlite\""), "{native}");
+    assert!(file(&files, "package.json").contains("\"expo-sqlite\": \"~57.0.4\""));
+
+    // Without a synced table there is no copy, and no storage files.
+    let online = scaffold("bundled-rn-online", true, vec![tasks_table()]).await;
+    assert!(!online.iter().any(|f| f.path.contains("storage")));
+    assert!(!file(&online, "src/feldspar/hooks.ts").contains("offline"));
 }

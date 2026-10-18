@@ -327,7 +327,8 @@ anything by hand.
 |---|---|
 | \`client.ts\` | the typed API client: one method per endpoint this application exposes |
 | \`helper.ts\` | how a request is made and how a failure is reported — the same in every application |
-| \`composables.ts\` | Vue composables over that client, one set per table |
+${ctx.offline ? `| \`offline-types.ts\`, \`offline-backends.ts\`, \`offline-copy.ts\` | offline sync: the options and \`api.sync\`, the storages, and the device's copy of the synced tables |
+` : ""}| \`composables.ts\` | Vue composables over that client, one set per table |
 | \`schema.sql\` | a description of this application's tables, for writing SQL against |
 | \`SKILL.md\` | the half of the application that is *not* in this repository |
 

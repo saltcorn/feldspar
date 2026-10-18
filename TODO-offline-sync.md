@@ -65,11 +65,11 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## S4 — The client
 
-- [ ] S4.1 The generated client (`src/feldspar/`) reads and writes a local copy with an outbox:
+- [x] S4.1 The generated client (`src/feldspar/`) reads and writes a local copy with an outbox:
       `expo-sqlite` in React Native, IndexedDB in the browser. A change the upload answers
       `skipped` was handled by an earlier upload whose answer got lost: drop it from the outbox
       and let the next pull bring the server's row.
-- [ ] S4.2 Background sync: pull and push when online, and a pull when a live `table_changes`
+- [x] S4.2 Background sync: pull and push when online, and a pull when a live `table_changes`
       stream says a synced table changed.
 - [ ] S4.3 A pull is applied in one local transaction, foreign-key checks deferred to its end;
       every insert or update entry fetches the current row and overwrites the local one, so a
@@ -96,3 +96,19 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       Changes made outside Saltcorn aren't seen, so these tables also need a way to reload.
       The same approach would work for any database backend added later that has no trigger
       support of its own.
+- [ ] Text ordering on the device follows JavaScript's comparison, not the database's collation:
+      mixed case or accented text can sort differently offline than online. Either document it as
+      a known limit or compare with `localeCompare` to come closer.
+- [ ] The server refuses a filter on a boolean column (`done=eq.true`: "not a valid bool"),
+      because its `Bool` coercion takes no text while `Int` does. The copy accepts it. Fix the
+      server, then add the case to `the_copy_answers_every_read_like_the_server`.
+- [ ] Embedding a table the user reads through an ownership formula: the server refuses it, the
+      copy answers it (it only holds rows the user may read). Decide whether the server should
+      take it or the copy refuse it too.
+- [ ] Real local tables for large synced tables, once an app needs it. Today the device keeps
+      every row as JSON under its key and loads the whole copy into memory, which is fine up to
+      roughly 10–20k rows per table. Beyond that, a SQLite storage could keep each synced table
+      as a real table with indexes and run filters and ordering in SQL. When the server schema
+      changes, the device drops that table and pulls it again instead of migrating. Only the
+      storage and `OfflineCopy` change: app code, `api.<table>` and the sync protocol stay the
+      same. Quick win before that: `get(id)` looks the row up by key instead of scanning.

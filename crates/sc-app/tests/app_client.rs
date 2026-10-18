@@ -298,9 +298,15 @@ async fn the_client_is_emitted_into_the_apps_source_tree_before_the_bundler_runs
     assert_eq!(report.client_path.as_deref(), Some("web/src/client.ts"));
 
     // ...the helper it imports landed beside it, since one without the other
-    // does not compile...
-    let helper = std::fs::read_to_string(web.join("src").join("helper.ts"))?;
-    assert_eq!(helper, sc_api::client_helper());
+    // does not compile, and no offline runtime, since no table is synced...
+    assert!(!web.join("src").join("offline-copy.ts").exists());
+    for (name, text) in sc_api::client_runtime(false) {
+        assert_eq!(
+            std::fs::read_to_string(web.join("src").join(name))?,
+            text,
+            "{name}"
+        );
+    }
 
     // ...the client is really in the app's source tree...
     let emitted = std::fs::read_to_string(web.join("src").join("client.ts"))?;

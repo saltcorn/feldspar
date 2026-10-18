@@ -706,6 +706,59 @@ fn generated_app_rest_client_type_checks() -> std::io::Result<()> {
     type_check("app-rest", &client_ts, APP_USAGE_TS)
 }
 
+/// The client an app with synced tables gets: the same table objects, kept on
+/// the device when the client is created with `offline`, and `api.sync`.
+const OFFLINE_USAGE_TS: &str = r#"
+import { createClient, type PostsRow } from "./client";
+import type { SyncStatus } from "./offline-types";
+import { indexedDbStorage, memoryStorage, sqliteStorage, type SqliteDatabase } from "./offline-backends";
+
+declare const db: SqliteDatabase;
+
+export async function exercise(): Promise<void> {
+  const api = createClient({ offline: { storage: memoryStorage(), auto: false, deviceName: "test" } });
+  const sync = api.sync;
+  if (sync) {
+    await sync.ready;
+    await sync.now();
+    const status: SyncStatus = sync.status();
+    const pending: number = status.pending;
+    const stop = sync.onChange((tables: string[]) => tables.length + pending);
+    stop();
+    for (const refusal of sync.refused()) console.log(refusal.error, refusal.op, refusal.table);
+    await sync.clearRefused();
+    sync.stop();
+  }
+  // The table objects keep their types.
+  const posts: PostsRow[] = await api.posts.list({ order: "title.desc", filter: { title: "ilike.%a%" } });
+  console.log(posts.length);
+  createClient({ offline: { storage: indexedDbStorage("blog") } });
+  createClient({ offline: { storage: sqliteStorage(db), interval: 10_000 } });
+}
+"#;
+
+#[test]
+fn generated_offline_client_type_checks() -> std::io::Result<()> {
+    let tables: Vec<Table> = blog_tables()
+        .into_iter()
+        .map(|mut t| {
+            sc_catalog::set_sync_enabled(&mut t.attributes, true);
+            t
+        })
+        .collect();
+    let provider = RestProvider::project("/api", &tables);
+    let client_ts = sc_api::generate_client(ApiProvider::endpoints(&provider));
+    assert!(
+        client_ts.contains("posts: offline ? offline.table(\"posts\", posts) : posts,"),
+        "{client_ts}"
+    );
+    assert!(
+        client_ts.contains("syncTransport(doFetch, `${baseUrl}/api/sync`)"),
+        "{client_ts}"
+    );
+    type_check("offline", &client_ts, OFFLINE_USAGE_TS)
+}
+
 /// A two-table blog: `posts` keyed into `authors`, with a required column, a
 /// nullable one, a calculated one and a file column — one of everything the
 /// generated row types have to distinguish between.
@@ -796,12 +849,14 @@ fn type_check(tag: &str, client_ts: &str, usage_ts: &str) -> std::io::Result<()>
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("client.ts"), client_ts)?;
     // The generic half of the client, which the client imports: every emitter
-    // writes the pair, so type-checking one without the other would be checking
-    // something nobody ships.
-    std::fs::write(
-        dir.join(sc_api::CLIENT_HELPER_FILE),
-        sc_api::client_helper(),
-    )?;
+    // writes them together, so type-checking one without the others would be
+    // checking something nobody ships.
+    // The offline runtime too, whether or not this client imports it: it
+    // compiles on its own, and so is checked once per client here.
+    let runtime = sc_api::client_runtime(true);
+    for (name, text) in &runtime {
+        std::fs::write(dir.join(name), text)?;
+    }
     std::fs::write(dir.join("usage.ts"), usage_ts)?;
 
     let output = Command::new(&tsc)
@@ -821,7 +876,7 @@ fn type_check(tag: &str, client_ts: &str, usage_ts: &str) -> std::io::Result<()>
             "esnext",
         ])
         .arg(dir.join("client.ts"))
-        .arg(dir.join(sc_api::CLIENT_HELPER_FILE))
+        .args(runtime.iter().map(|(name, _)| dir.join(name)))
         .arg(dir.join("usage.ts"))
         .output()
         .unwrap_or_else(|e| panic!("failed to run tsc at {}: {e}", tsc.display()));

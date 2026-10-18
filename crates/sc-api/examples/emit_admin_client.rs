@@ -23,12 +23,14 @@
 use std::io::Write;
 
 fn main() -> std::io::Result<()> {
-    let client = sc_api::generate_client(&sc_api::admin_endpoints());
+    let endpoints = sc_api::admin_endpoints();
+    let client = sc_api::generate_client(&endpoints);
     match std::env::args().nth(1) {
         Some(path) => {
             let path = std::path::PathBuf::from(path);
-            let helper = path.with_file_name(sc_api::CLIENT_HELPER_FILE);
-            std::fs::write(&helper, sc_api::client_helper())?;
+            for (name, text) in sc_api::client_runtime(sc_api::has_offline_sync(&endpoints)) {
+                std::fs::write(path.with_file_name(name), text)?;
+            }
             std::fs::write(path, client)
         }
         None => std::io::stdout().write_all(client.as_bytes()),

@@ -130,6 +130,10 @@ pub struct ResourceModel {
     pub primary_key: Option<String>,
     /// The endpoints behind each operation.
     pub ops: ResourceOps,
+    /// The table is synced (§14.11): a client created with `offline` keeps it on
+    /// the device.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub synced: bool,
 }
 
 impl ResourceModel {
@@ -140,6 +144,7 @@ impl ResourceModel {
             fields: Vec::new(),
             primary_key: None,
             ops: ResourceOps::default(),
+            synced: false,
         }
     }
 

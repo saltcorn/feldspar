@@ -69,6 +69,8 @@ mod rich_type_write_path;
 mod sqlite_rows;
 #[path = "sync_changes.rs"]
 mod sync_changes;
+#[path = "sync_client.rs"]
+mod sync_client;
 #[path = "sync_pull.rs"]
 mod sync_pull;
 #[path = "sync_push.rs"]

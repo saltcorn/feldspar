@@ -1148,7 +1148,7 @@ export function whereObject(filters: { readonly [column: string]: string | undef
 }
 
 /** One operand as the server reads it: text, except a list for `in`/`nin` and a boolean for `is_null`. */
-function filterOperand(op: string, operand: string): unknown {
+export function filterOperand(op: string, operand: string): unknown {
   if (op === "in" || op === "nin") {
     if (!operand.startsWith("(") || !operand.endsWith(")")) return operand;
     const items: string[] = [];
@@ -1220,7 +1220,7 @@ export function liveRowsPlan(key: string, options: { orderBy?: string; select?: 
 }
 
 /** Two column values in an order's sense: nulls last (ascending), numbers as numbers, text by code unit. */
-function compareValues(a: unknown, b: unknown): number {
+export function compareValues(a: unknown, b: unknown): number {
   const aNull = a === null || a === undefined;
   const bNull = b === null || b === undefined;
   if (aNull || bNull) return aNull === bNull ? 0 : aNull ? 1 : -1;

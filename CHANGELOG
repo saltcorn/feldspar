@@ -2,6 +2,31 @@
 
 Changes in reverse chronological order.
 
+## Offline sync: apps work offline
+
+The generated client can keep an application's synced tables on the device. Reads and writes of
+those tables then work without a connection, and app code doesn't change: `api.notes.list()`,
+`create`, `update` and `delete` keep their signatures. Writes wait in an outbox and are uploaded
+when the device is online again; the server's changes are pulled down. A change the server
+refuses is dropped from the device and listed in `api.sync.refused()`.
+
+- Sync runs by itself: at start, shortly after a write, every 30 seconds, when the browser comes
+  online, and when a live stream says a synced table changed. `api.sync.now()` syncs at once.
+- Reads on the device apply filters, ordering, paging and `select`, with embeds of other synced
+  tables.
+- React apps keep the copy in IndexedDB. React Native apps keep it in SQLite on a phone
+  (`expo-sqlite`, added to new projects) and in IndexedDB on the web.
+- Reads on the device refuse what the server refuses (an unknown column, a broken `select` or
+  filter) instead of quietly answering something else. A test runs every read against the server
+  and against the copy and checks both give the same answer.
+- A table with an integer key still needs the server to create a row, since the server gives out
+  the key. Offline, such a create fails with a message saying this is not supported yet.
+- The offline code has its own files beside `helper.ts`, written only when a table is synced:
+  `offline-types.ts` (options, `api.sync`, transport), `offline-backends.ts` (the storages) and
+  `offline-copy.ts` (the device's copy).
+- Tests: `crates/sc-api/tests/sync_client.rs` runs the generated client under Node against a real
+  server, offline and online.
+
 ## Offline sync: a pull reads one moment
 
 A pull now reads all synced tables in one read-only transaction that sees a single moment, and

@@ -27,7 +27,7 @@ use std::fmt::Write as _;
 
 use sc_api::{
     CLIENT_HELPER_FILE, EndpointSet, GRAPHQL_CLIENT_FILE, GRAPHQL_SCHEMA_FILE, StreamExport,
-    client_helper, client_property, generate_app_client, generate_graphql_client, op_name,
+    client_property, client_runtime, generate_app_client, generate_graphql_client, op_name,
 };
 use sc_auth::{ROLE_ADMIN, Role};
 use sc_catalog::{PublicOrigin, Table};
@@ -374,19 +374,25 @@ pub fn common_runtime_files(
             format!("{runtime}/{name}")
         }
     };
-    let mut files = vec![
-        GeneratedFile::new(
-            at(client_file),
-            generate_app_client(ctx.endpoints, ctx.streams, &crate::upload_exports(ctx.app)),
-        ),
-        GeneratedFile::new(at(CLIENT_HELPER_FILE), client_helper()),
+    let mut files = vec![GeneratedFile::new(
+        at(client_file),
+        generate_app_client(ctx.endpoints, ctx.streams, &crate::upload_exports(ctx.app)),
+    )];
+    // `helper.ts`, and the offline runtime for a synced table: what the client
+    // imports.
+    files.extend(
+        client_runtime(sc_api::has_offline_sync(ctx.endpoints))
+            .into_iter()
+            .map(|(name, text)| GeneratedFile::new(at(name), text)),
+    );
+    files.extend([
         GeneratedFile::new(
             at(RUNTIME_SCHEMA_FILE),
             format!("{GENERATED_SQL_HEADER}{}", ctx.schema_sql),
         ),
         GeneratedFile::new(at(RUNTIME_MESSAGES_FILE), messages_ts(ctx)),
         GeneratedFile::new(at(RUNTIME_SKILL_FILE), ctx.skill.to_owned()),
-    ];
+    ]);
     if let Some(graphql) = ctx.graphql {
         files.push(GeneratedFile::new(
             at(GRAPHQL_CLIENT_FILE),
@@ -789,6 +795,10 @@ fn runtime_readme(ctx: &ProjectContext<'_>) -> String {
          - `{CLIENT_HELPER_FILE}` — the half of the client that is the same in every \
          application: how a request is made, how a failure is reported, and the \
          types a read's `select`, `filter` and `order` are expressed in.\n\
+         - `offline-types.ts`, `offline-backends.ts`, `offline-copy.ts` — offline sync: \
+         the options and `api.sync`, the storages a device keeps its copy in \
+         (IndexedDB, SQLite, memory), and the copy itself. Written only when a \
+         table is synced.\n\
          - `{RUNTIME_SCHEMA_FILE}` — the `CREATE TABLE` definitions of the tables \
          this application declares. A description, not a migration.\n\
          - `{RUNTIME_MESSAGES_FILE}` — the message runtime: the format, the \
@@ -823,6 +833,16 @@ fn runtime_readme(ctx: &ProjectContext<'_>) -> String {
              `useDocument(docs.<stream>, rowKey)` opens one row's document as a `Y.Doc` \
              with its `awareness`, for an editor binding (see AGENTS.md). The only \
              generated file that imports `yjs`."
+        );
+    }
+    if sc_api::has_offline_sync(ctx.endpoints) {
+        files.push_str(
+            "- **Offline:** the synced tables are kept in this browser (IndexedDB). \
+             Their reads and writes work without a connection; writes wait in an \
+             outbox and are uploaded when the browser is online again, and the \
+             server's changes are pulled down. `api.sync` has the status \
+             (`status()`, `onStatus`), the changes the server refused \
+             (`refused()`), and `now()` to sync at once.\n",
         );
     }
     if ctx.graphql.is_some() {
@@ -3963,10 +3983,36 @@ fn hooks_ts(tables: &[Table], endpoints: &EndpointSet) -> String {
             row_types.join(", ")
         );
     }
-    out.push_str(
-        r#"
+    let offline = sc_api::has_offline_sync(endpoints);
+    if offline {
+        out.push_str("import { indexedDbStorage, memoryStorage } from \"./offline-backends\";\n");
+    }
+    if offline {
+        out.push_str(
+            r#"
+/**
+ * The app's typed API client. Endpoint paths already include the API mount.
+ *
+ * The synced tables are kept in this browser (IndexedDB), so they can be read
+ * and changed offline; `api.sync` says how syncing goes.
+ */
+export const api: ApiClient = createClient({
+  offline: {
+    storage: typeof indexedDB === "undefined" ? memoryStorage() : indexedDbStorage("feldspar-sync"),
+  },
+});
+"#,
+        );
+    } else {
+        out.push_str(
+            r#"
 /** The app's typed API client. Endpoint paths already include the API mount. */
 export const api: ApiClient = createClient();
+"#,
+        );
+    }
+    out.push_str(
+        r#"
 
 /** The state of one read: data, plus what is happening to it. */
 export type Query<T> = {
@@ -4078,6 +4124,12 @@ export function useMutation<A>(table: string, fn: (arg: A) => Promise<unknown>):
 }
 "#,
     );
+    if offline {
+        out.push_str(
+            "\n// What a sync changes on this device re-runs the queries over those tables.\n\
+             api.sync?.onChange((tables) => tables.forEach(invalidate));\n",
+        );
+    }
 
     for table in tables {
         out.push('\n');
@@ -5126,6 +5178,8 @@ export function Board({ id }: { id: number }) {
         assert!(file(&files, "src/feldspar/store.ts").contains("DO NOT EDIT"));
         assert!(file(&files, "src/feldspar/client.ts").contains("DO NOT EDIT"));
         assert!(file(&files, "src/feldspar/helper.ts").contains("DO NOT EDIT"));
+        // No table is synced, so no offline runtime.
+        assert!(!files.iter().any(|f| f.path.contains("offline-")));
         assert!(file(&files, "src/feldspar/messages.ts").contains("DO NOT EDIT"));
         assert!(file(&files, "src/feldspar/i18n.tsx").contains("DO NOT EDIT"));
         assert!(file(&files, "src/feldspar/live-react.ts").contains("DO NOT EDIT"));
@@ -5646,6 +5700,39 @@ export function Board({ id }: { id: number }) {
         ] {
             assert!(file(&files, path).contains(needle), "{path}");
         }
+    }
+
+    /// A synced table is kept in the browser: the client gets an IndexedDB
+    /// storage, and what a sync changes re-runs the queries over it.
+    #[test]
+    fn a_synced_table_is_kept_in_the_browser() {
+        let mut synced = tasks();
+        sc_catalog::set_sync_enabled(&mut synced.attributes, true);
+        let tables = vec![synced];
+        let hooks = hooks_ts(&tables, &endpoints(&tables));
+        assert!(
+            hooks.contains(
+                "import { indexedDbStorage, memoryStorage } from \"./offline-backends\";"
+            ),
+            "{hooks}"
+        );
+        assert!(
+            hooks.contains("indexedDbStorage(\"feldspar-sync\")"),
+            "{hooks}"
+        );
+        assert!(
+            hooks.contains("api.sync?.onChange((tables) => tables.forEach(invalidate));"),
+            "{hooks}"
+        );
+        // The offline runtime is written beside the client, marked generated.
+        let app = todo();
+        let files = runtime_files(&ctx(&app, &tables, &endpoints(&tables), None));
+        for name in ["offline-types.ts", "offline-backends.ts", "offline-copy.ts"] {
+            assert!(file(&files, &format!("src/feldspar/{name}")).contains("DO NOT EDIT"));
+        }
+        let online = hooks_ts(&[tasks()], &endpoints(&[tasks()]));
+        assert!(online.contains("createClient();"), "{online}");
+        assert!(!online.contains("indexedDb"), "{online}");
     }
 
     #[test]

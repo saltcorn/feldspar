@@ -182,7 +182,9 @@ fn a_document_syncs_edits_reconnects_and_carries_awareness() -> std::io::Result<
     let doc =
         sc_app::live_doc_ts(&streams, false).replace("from \"./helper\"", "from \"./helper.ts\"");
     std::fs::write(dir.join("client.ts"), client)?;
-    std::fs::write(dir.join("helper.ts"), sc_api::client_helper())?;
+    for (name, text) in sc_api::client_runtime(false) {
+        std::fs::write(dir.join(name), text)?;
+    }
     std::fs::write(dir.join("live-doc.ts"), doc)?;
     std::fs::write(dir.join("driver.ts"), DRIVER_TS)?;
     let output = Command::new("node").arg(dir.join("driver.ts")).output()?;
@@ -241,7 +243,9 @@ fn use_document_type_checks_with_the_generated_client() -> std::io::Result<()> {
         dir.join("client.ts"),
         sc_api::generate_client_with_streams(&sc_api::EndpointSet::new(), &streams),
     )?;
-    std::fs::write(dir.join("helper.ts"), sc_api::client_helper())?;
+    for (name, text) in sc_api::client_runtime(false) {
+        std::fs::write(dir.join(name), text)?;
+    }
     std::fs::write(
         dir.join("hooks.ts"),
         "import { createClient } from \"./client\";\nexport const api = createClient();\n",
@@ -430,7 +434,9 @@ fn a_stream_query_opens_a_document_whose_root_the_server_names() -> std::io::Res
     let streams = [note_body("xml")];
     let fix = |text: String| text.replace("from \"./helper\"", "from \"./helper.ts\"");
     std::fs::write(dir.join("client.ts"), fix(query_client(&streams)))?;
-    std::fs::write(dir.join("helper.ts"), sc_api::client_helper())?;
+    for (name, text) in sc_api::client_runtime(false) {
+        std::fs::write(dir.join(name), text)?;
+    }
     std::fs::write(
         dir.join("live-doc.ts"),
         fix(sc_app::live_doc_ts(&streams, false)),
@@ -483,7 +489,9 @@ fn use_query_document_type_checks_with_the_generated_client() -> std::io::Result
         "openNote(body: OpenNoteRequest, handlers?: LiveOpenHandlers): LiveOpenedSession;"
     ));
     std::fs::write(dir.join("client.ts"), client)?;
-    std::fs::write(dir.join("helper.ts"), sc_api::client_helper())?;
+    for (name, text) in sc_api::client_runtime(false) {
+        std::fs::write(dir.join(name), text)?;
+    }
     std::fs::write(
         dir.join("hooks.ts"),
         "import { createClient } from \"./client\";\nexport const api = createClient();\n",

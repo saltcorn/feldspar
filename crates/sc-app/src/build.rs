@@ -541,8 +541,9 @@ async fn emit_generated(
 /// Three files. The client is this application's endpoints and tables, and it
 /// imports the half that is the same in every application (how a request is
 /// made, how a failure is reported, the types a read is expressed in) from a
-/// `helper.ts` in the same directory. One without the other does not compile, so
-/// nothing writes one without the other.
+/// `helper.ts` and the offline runtime files (`offline*.ts`) in the same
+/// directory. One without the others does not compile, so nothing writes one
+/// without the others.
 ///
 /// The third is [`SKILL_FILE`](crate::SKILL_FILE): what a coding agent reading
 /// this repository has to know about the half of the application that is *not*
@@ -578,10 +579,12 @@ pub async fn emit_client(
         &crate::upload_exports(app),
     );
     store.write(path, Bytes::from(client.into_bytes())).await?;
-    let helper = sibling(path, sc_api::CLIENT_HELPER_FILE);
-    store
-        .write(&helper, Bytes::from(sc_api::client_helper().into_bytes()))
-        .await?;
+    let mut written = vec![path.clone()];
+    for (name, text) in sc_api::client_runtime(sc_api::has_offline_sync(endpoints)) {
+        let at = sibling(path, name);
+        store.write(&at, Bytes::from(text.into_bytes())).await?;
+        written.push(at);
+    }
     let skill = sibling(path, crate::SKILL_FILE);
     let client_file = path.rsplit('/').next().unwrap_or(path.as_str()).to_owned();
     store
@@ -590,7 +593,8 @@ pub async fn emit_client(
             Bytes::from(crate::generate_skill(cat, app, &client_file).into_bytes()),
         )
         .await?;
-    Ok(vec![path.clone(), helper, skill])
+    written.push(skill);
+    Ok(written)
 }
 
 /// A path beside `path`: same directory, given file name.
