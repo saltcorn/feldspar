@@ -392,6 +392,84 @@ read-only.
 `feldspar-module.json` as `tables`, and names each one in a `supplies` line. The catalog card then
 says "Installing creates the tables …" before the click.
 
+## Step 8 — A module that runs in the background
+
+An action runs when a trigger fires it. Some modules have to run all the time: the mail module
+keeps IDLE connections open and writes each new mail as a row the moment it arrives. Such a module
+exports **`services`**:
+
+```js
+module.exports = {
+  tables: [
+    { name: "tk_ticks", fields: [{ name: "at", type: "timestamp" }, { name: "note", type: "text" }] },
+    { name: "tk_settings", fields: [{ name: "every_s", type: "int" }] },
+  ],
+  services: {
+    ticker: {
+      description: "Writes a row on a timer",
+      start: async (ctx) => {
+        const settings = await ctx.db.tk_settings.first();
+        const every = ((settings && settings.every_s) || 60) * 1000;
+        const timer = setInterval(() => {
+          ctx.db.tk_ticks.insert({ at: new Date().toISOString() }).catch((e) => ctx.log.error(e.message));
+        }, every);
+        // Restart when an admin changes the settings row. `own` is true for this
+        // module's own writes, so it does not react to itself.
+        await ctx.onTableChange("tk_settings", (change) => {
+          if (!change.own) ctx.fail(new Error("the settings changed"));
+        });
+        // What `start` returns is the stop. It is awaited before the module is
+        // reloaded or uninstalled.
+        return async () => {
+          clearInterval(timer);
+          await ctx.db.tk_ticks.insert({ at: new Date().toISOString(), note: "stopped" });
+        };
+      },
+    },
+  },
+};
+```
+
+`services` can also be a function of the module's configuration, and a service can be a bare
+`start` function.
+
+**What `ctx` has.**
+
+| | |
+|---|---|
+| `ctx.db` | the module's own tables, with the same chain a code body's `db` has: `ctx.db.tk_ticks.where({ note: null }).orderBy("at", "desc").limit(10).rows()`, `.insert(row)`, `.where(…).update(values)`, `.where(…).delete()` |
+| `ctx.onTableChange(table, cb)` | calls `cb({ table, op, row, old, own })` after every committed insert, update or delete on one of the module's tables |
+| `ctx.runTrigger(name, payload)` | runs a trigger, as `trigger.run` does in a code body |
+| `ctx.log(…)` | the server's log, tagged with the module; also `ctx.log.warn`, `.error`, `.debug` |
+| `ctx.fail(error)` | gives up: the stop is called, and the service is started again after a delay |
+| `ctx.signal` | an `AbortSignal`, aborted when the service is being stopped |
+| `ctx.configuration` | the module's settings |
+
+**What it may touch.** A service runs as **the module**, not as a user: nobody called it. It may
+read and write **only the tables its module declared** (Step 7). Any other table, `ctx.db.sql()`,
+`asUser()` and a key path out of the module's tables are refused, naming the reason. Its writes
+are ordinary writes, so triggers fire and live pages update. A trigger fired by one sees
+`{ module, service }` as its `user`. Secret fields come back decrypted, because they are the
+module's own.
+
+**When it fails.** If `start` throws, the service calls `ctx.fail`, or its worker stops (a loop
+that never yields, the heap, `process.exit()`), the failure is logged and the service is started
+again after 1 s, then 2 s, 4 s … up to 5 minutes. A service that ran for a minute before failing
+starts again after 1 s. The card lists each service as **Running**, **Restarting** (with the
+error) or **Stopped**, and how many times it has been restarted.
+
+**When it stops.** Installing, configuring, reloading and removing a module all stop its services
+first, wait for each stop (up to 10 s), and then start them again on the new code. Use the stop to
+close connections. Do not rely on it to save state: a worker that dies does not run it.
+
+**Its own worker.** A module that runs a service gets a worker of its own, so a busy service does
+not hold up any other module's actions. Its module-level variables survive a restart of the
+service, but not a restart of the worker. A module that runs a service cannot also supply view
+patterns.
+
+**On a bundled card**, list the services in `feldspar-module.json` as `services: ["ticker"]`. The
+card then says the module runs in the background and writes to its own tables.
+
 ## Developing a module against a running server
 
 Point the **local directory** source at your checkout. The package is copied into the modules
@@ -446,8 +524,9 @@ ordinary tables from then on, and yours to drop.
 
 ## What this is not, yet
 
-- **Only actions, functions, table providers and view patterns.** Types, field views and event
-  types are named in the tab and not loaded.
+- **Only actions, functions, table providers, view patterns, tables and services.** Types, field
+  views and event types are named in the tab and not loaded. A service cannot write files yet
+  (TODO-imap M6).
 - **Not only JavaScript any more.** The Type dropdown now offers four pairs, because a module can
   also be a `pip`-installable **Python** distribution supplying the same three things — see
   [tutorial-python.md](tutorial-python.md), whose step 7 writes one from an empty directory. What

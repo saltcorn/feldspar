@@ -107,6 +107,10 @@ pub struct BundledModule {
     /// that adds tables to the schema is one an admin should know about first.
     /// Each must also be named in [`supplies`](Self::supplies).
     pub tables: Vec<String>,
+    /// The services it runs in the background (TODO-imap M5) — said on the card
+    /// before the click, because a module that is always running is one an
+    /// admin should know about first.
+    pub services: Vec<String>,
     /// What it asks to be allowed to reach. Granted by the install, printed by
     /// the tab beside the button that does it.
     pub permissions: ModulePermissions,
@@ -319,6 +323,7 @@ fn read_manifest(dir: &Path) -> Result<BundledModule> {
         supplies,
         installs: lines("installs")?,
         tables,
+        services: lines("services")?,
         permissions,
         directory: dir.to_path_buf(),
     })
@@ -452,6 +457,20 @@ mod tests {
         assert!(issues.contains("`_fd_tables`, which is not a table name"), "{issues}");
         // A whole word: `mail_account` is not named by `mail_accounts`.
         assert!(issues.contains("`mail_account`, but no line"), "{issues}");
+    }
+
+    /// TODO-imap M5: the services a module runs are listed for the card, and a
+    /// manifest without them has none.
+    #[test]
+    fn a_manifest_lists_the_services_it_runs() {
+        let mail = r#"{
+            "name": "@feldspar/imap", "language": "javascript", "title": "Mail",
+            "description": "Mail.", "supplies": ["A service"], "services": ["sync"]
+        }"#;
+        let (_dir, catalog) = catalog_of(&[("imap", mail), ("rss", RSS)]);
+        assert!(catalog.issues().is_empty(), "{:?}", catalog.issues());
+        assert_eq!(catalog.get("imap").unwrap().services, ["sync"]);
+        assert!(catalog.get("rss").unwrap().services.is_empty());
     }
 
     #[test]

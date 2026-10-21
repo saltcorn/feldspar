@@ -2,6 +2,60 @@
 
 Changes in reverse chronological order.
 
+## Mail module M5: module services
+
+A module can run **services** in the background (TODO-imap.md M5): code that keeps going after
+the module has loaded, such as IDLE connections that write a row whenever mail arrives. The
+design is in TECHNICAL_DESIGN §15.1c; the tutorial is Step 8 of `docs/tutorial-modules.md`.
+
+- **M5.1** A plugin object's new `services` key: `{ name: { description, start(ctx) } }`, or a
+  function of the configuration that returns one. A bare function is its own `start`. `start`
+  returns the stop function, which is awaited on reload and uninstall.
+  - `ctx.db` is the code body's fluent `db` (`sc_expr::DB_PRELUDE`, now public and no longer
+    behind `eval`), limited to the tables the module declared. Any other table, `db.sql()`,
+    models, `asUser()` and a Ⱶ-path that leaves the module's tables are refused by name. Writes
+    go through the row layer, so triggers and live streams fire.
+  - The authority is the module: the admin role, with `{ module, service }` as the write's user.
+  - Secret values come back decrypted, because the row layer reveals them to server-side readers
+    (M2). So there is no separate `ctx.secrets`.
+  - Also `ctx.runTrigger`, `ctx.onTableChange(table, cb)` (a catalog `TableEvents` listener,
+    after commit, with `own` set for the module's own writes), `ctx.log`, `ctx.fail(error)`,
+    `ctx.signal` and `ctx.configuration`.
+  - `ctx.files` is not there yet: that is M6.
+  - The bundled manifest may list `services`. The bundled card and the installed card say the
+    module "runs in the background and writes to its own tables". No new permission key.
+- **M5.2** A service is one module call (`service_start`) that is answered when the service
+  stops. Its asks travel the existing ask channel, named by call id (`askFor`), so a library
+  callback outside the async context still asks as the service. That call has no wall clock and no
+  call budget (`Bounds::UNBOUNDED` in `deno/mod.rs`); the JS slice and the heap bound still apply.
+  - New `sc_module::ServiceSupervisor`. It runs each service on a task and restarts it with
+    exponential backoff (1 s doubling to 5 min, reset after a run of a minute) when `start` throws,
+    `ctx.fail` is called or the worker dies. Each failure is logged.
+  - `ModuleServices::reload` stops every service before it reloads the modules, and starts them
+    after the catalog and the triggers are reloaded. The host script also stops a module's
+    services before it reloads or unloads that module.
+  - `listModules` returns `services: [{ name, description, state, restarts, last_error }]`, and
+    the card shows each one as Running, Restarting (with the error) or Stopped.
+- **M5.3** A module whose manifest has services gets a **worker of its own**, so its work does
+  not delay other modules' calls, and its slice and heap are not theirs. The first load moves
+  it, as a permission change does, and the pool remembers the name. Such a module's view patterns
+  are an issue on its card. Module-level state survives a service restart on a live worker
+  (tested); sockets surviving between calls was shown by the M1.4 spike.
+- **M5.4** `sc-module/tests/module_services.rs` with a `service-module` fixture that inserts a
+  row every 100 ms. It checks that:
+  - the rows arrive, and a `TableEvents` listener (the seam the live hub uses) sees them, caused
+    by the module;
+  - an undeclared table, `db.sql()` and watching an undeclared table are refused;
+  - `own` is false for another's write;
+  - `ctx.fail` restarts the service on the same worker with the same module state, and
+    `process.exit` restarts it on a fresh worker;
+  - unloading stops it for good, after its stop has written its last row;
+  - `stop_all` awaits the stop.
+
+  There are also unit tests for the bundled `services` list, for Ⱶ-path extraction and, in the
+  admin UI, for the service state badges.
+- **M5.5** "Step 8 — A module that runs in the background" in `docs/tutorial-modules.md`.
+
 ## Mail module M4: modules declare tables
 
 A module can declare tables of its own (TODO-imap.md M4), and the server creates them when the

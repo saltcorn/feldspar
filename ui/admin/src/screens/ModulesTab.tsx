@@ -61,6 +61,7 @@ import {
   permissionProblems,
   permissionSummary,
   permissionText,
+  serviceState,
   suppliedSummary,
   toolchainSentence,
   unsupportedSentence,
@@ -501,6 +502,18 @@ function BundledCard({
               . <T text="Uninstalling keeps them." />
             </div>
           )}
+          {entry.services.length > 0 && (
+            <div className="text-secondary mb-1">
+              <T text="Runs in the background and writes to its own tables" /> (
+              {entry.services.map((service, i) => (
+                <span key={service}>
+                  {i > 0 && ", "}
+                  <code>{service}</code>
+                </span>
+              ))}
+              ).
+            </div>
+          )}
           {grant && <div className="text-secondary mb-1">{grant}</div>}
           {blocked && <div className="text-secondary mb-1">{blocked}</div>}
         </div>
@@ -651,6 +664,30 @@ function ModuleCard({
             </ul>
             <div className="text-secondary mb-2">
               <T text="Created by the module, and kept if it is uninstalled. You can add fields, edit rows and set triggers on them; the fields the module declared cannot be deleted while it is installed." />
+            </div>
+          </>
+        )}
+
+        {module.services.length > 0 && (
+          <>
+            <div className="text-secondary mb-1"><T text="Services" /></div>
+            <ul className="list-unstyled mb-2">
+              {module.services.map((service) => {
+                const state = serviceState(service);
+                return (
+                  <li key={service.name}>
+                    <code>{service.name}</code>{" "}
+                    <StatusBadge tone={state.tone}><T text={state.label} /></StatusBadge>
+                    {service.description && (
+                      <span className="text-secondary"> — {service.description}</span>
+                    )}
+                    {state.detail && <div className="text-secondary small">{state.detail}</div>}
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="text-secondary mb-2">
+              <T text="Runs in the background and writes to its own tables. A service that fails is restarted, waiting longer each time." />
             </div>
           </>
         )}

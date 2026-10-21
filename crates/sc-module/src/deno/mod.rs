@@ -223,6 +223,10 @@ struct WorkerHandle {
     /// which is what makes an admin editing a module's permissions cost one
     /// worker rather than one worker per edit.
     modules: usize,
+    /// Whether this worker belongs to **one** module that runs a service
+    /// (TODO-imap M5.3), so no other module is ever pinned beside it. See
+    /// [`DenoModuleHost::on_a_worker_of_its_own`].
+    dedicated: bool,
 }
 
 /// The pool's mutable half: the workers, and which one each module is on.
@@ -240,6 +244,11 @@ struct Pool {
     /// carrying the runtime's name is pinned as the module it is and neither
     /// displaces the other.
     view_worker: Option<usize>,
+    /// The modules that run a service, and so get a worker of their own
+    /// whenever they are pinned (TODO-imap M5.3). Remembered for the pool's
+    /// life, so a reload, a permission change or a restart goes straight to a
+    /// dedicated worker rather than loading beside other modules first.
+    own: BTreeSet<String>,
 }
 
 /// The module pool: Deno workers over one modules root, one permission set each.
@@ -404,12 +413,104 @@ impl DenoModuleHost {
             )
             .await
             .map_err(|e| denial(name, e))?;
-        let manifest = read_manifest(name, value)?;
+        let mut manifest = read_manifest(name, value)?;
+        if !manifest.services.is_empty() {
+            if !manifest.view_patterns.is_empty() {
+                let names: Vec<String> = manifest
+                    .view_patterns
+                    .iter()
+                    .map(|p| format!("`{}`", p.name))
+                    .collect();
+                manifest.issues.push(format!(
+                    "its view patterns ({}) are not available: a view pattern runs beside \
+                     Saltcorn UI's view runtime, and a module that runs a service runs on a \
+                     worker of its own",
+                    names.join(", ")
+                ));
+                manifest.view_patterns.clear();
+            }
+            return self
+                .on_a_worker_of_its_own(name, index, dir, configuration, manifest)
+                .await;
+        }
         if manifest.view_patterns.is_empty() || self.view_runtime.is_none() {
             return Ok(manifest);
         }
         self.beside_the_view_runtime(name, index, dir, configuration, permissions, manifest)
             .await
+    }
+
+    /// A module that runs a **service** gets a worker of its own (TODO-imap
+    /// M5.3).
+    ///
+    /// The reason is the one the pool exists for, at a larger scale: a worker
+    /// runs one JavaScript thread, and a service is the module that is *always*
+    /// doing something — a hundred IDLE connections, and a 20 MB mail being
+    /// parsed whenever one arrives. Sharing a worker with it would make every
+    /// other module's action wait behind that parse, and put them all inside
+    /// the blast radius of its JS slice and its heap. So the first load that
+    /// reveals a service moves the module, exactly as a permission change does,
+    /// and the pool remembers it so later loads go straight there.
+    ///
+    /// A worker that already holds this module alone is kept.
+    async fn on_a_worker_of_its_own(
+        &self,
+        name: &str,
+        index: usize,
+        dir: &Path,
+        configuration: &Json,
+        manifest: ModuleManifest,
+    ) -> Result<ModuleManifest> {
+        let own = {
+            let mut pool = self.pool.lock().await;
+            pool.own.insert(name.to_owned());
+            let alone = pool
+                .workers
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|w| w.dedicated && w.modules == 1)
+                && pool.view_worker != Some(index);
+            if alone {
+                return Ok(manifest);
+            }
+            let permissions = pool
+                .permissions_of(index)
+                .cloned()
+                .unwrap_or_else(ModulePermissions::closed);
+            pool.release(index);
+            let own = self.spawn_dedicated(&mut pool, &permissions);
+            pool.pinned.insert(name.to_owned(), own);
+            own
+        };
+        self.evict(index, name).await;
+        let value = self
+            .send(
+                own,
+                json!({
+                    "op": "load",
+                    "module": name,
+                    "dir": dir.display().to_string(),
+                    "configuration": configuration,
+                }),
+                Some((
+                    name.to_owned(),
+                    LoadRequest {
+                        dir: dir.to_path_buf(),
+                        configuration: configuration.clone(),
+                    },
+                )),
+            )
+            .await
+            .map_err(|e| denial(name, e))?;
+        let mut moved = read_manifest(name, value)?;
+        // What the first load found wrong with the view patterns is still true.
+        for issue in manifest.issues {
+            if !moved.issues.contains(&issue) {
+                moved.issues.push(issue);
+            }
+        }
+        moved.view_patterns.clear();
+        Ok(moved)
     }
 
     /// A module's view patterns run **in the view runtime's registry**, and a
@@ -550,6 +651,67 @@ impl DenoModuleHost {
             }),
             None,
             call,
+        )
+        .await
+        .map_err(|e| denial(module, e))
+    }
+
+    /// Run one service of one module for as long as it runs (TODO-imap M5).
+    ///
+    /// Routed like [`run`](DenoModuleHost::run), and bounded differently: no
+    /// wall clock and no call budget, because the call *is* the service's life
+    /// and its asks are everything it does. What bounds a service is what bounds
+    /// its worker — the JS slice and the heap.
+    pub async fn run_service(
+        &self,
+        module: &str,
+        service: &str,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        let index = self.worker_for(module).await;
+        self.send_bounded(
+            index,
+            json!({
+                "op": "service_start",
+                "module": module,
+                "service": service,
+            }),
+            None,
+            call,
+            Bounds::UNBOUNDED,
+        )
+        .await
+        .map_err(|e| denial(module, e))
+    }
+
+    /// Stop one running service, and answer once its `stop` has finished.
+    pub async fn stop_service(&self, module: &str, service: &str) -> Result<Json> {
+        let index = self.worker_for(module).await;
+        self.send(
+            index,
+            json!({
+                "op": "service_stop",
+                "module": module,
+                "service": service,
+            }),
+            None,
+        )
+        .await
+        .map_err(|e| denial(module, e))
+    }
+
+    /// Hand one table change to a running service's callbacks.
+    pub async fn service_event(&self, module: &str, service: &str, event: Json) -> Result<Json> {
+        let index = self.worker_for(module).await;
+        self.send(
+            index,
+            json!({
+                "op": "service_event",
+                "module": module,
+                "service": service,
+                "event": event,
+            }),
+            None,
         )
         .await
         .map_err(|e| denial(module, e))
@@ -998,7 +1160,11 @@ impl DenoModuleHost {
             pool.release(index);
             moved_from = Some(index);
         }
-        let index = self.choose(&mut pool, permissions);
+        let index = if pool.own.contains(name) {
+            self.spawn_dedicated(&mut pool, permissions)
+        } else {
+            self.choose(&mut pool, permissions)
+        };
         pool.pinned.insert(name.to_owned(), index);
         (index, moved_from)
     }
@@ -1085,11 +1251,22 @@ impl DenoModuleHost {
             thread,
             permissions: permissions.clone(),
             modules: 0,
+            dedicated: false,
         };
         if index == pool.workers.len() {
             pool.workers.push(Some(handle));
         } else {
             pool.workers[index] = Some(handle);
+        }
+        index
+    }
+
+    /// Start a worker for one module alone, counted onto it (TODO-imap M5.3).
+    fn spawn_dedicated(&self, pool: &mut Pool, permissions: &ModulePermissions) -> usize {
+        let index = self.spawn(pool, permissions);
+        if let Some(worker) = pool.workers.get_mut(index).and_then(Option::as_mut) {
+            worker.dedicated = true;
+            worker.modules = 1;
         }
         index
     }
@@ -1168,9 +1345,28 @@ impl DenoModuleHost {
     async fn send_with(
         &self,
         index: usize,
+        request: Json,
+        remember: Option<(String, LoadRequest)>,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        let bounds = Bounds {
+            clock: Some(self.bounds.timeout),
+            budget: Some(sc_expr::DEFAULT_MAX_HOST_CALLS),
+        };
+        self.send_bounded(index, request, remember, call, bounds)
+            .await
+    }
+
+    /// [`send_with`](DenoModuleHost::send_with) under `bounds` — which is
+    /// where a service's call, with neither a clock nor a budget, differs from
+    /// every other.
+    async fn send_bounded(
+        &self,
+        index: usize,
         mut request: Json,
         remember: Option<(String, LoadRequest)>,
         call: CallHosts<'_>,
+        bounds: Bounds,
     ) -> Result<Json> {
         let control = self
             .sender(index)
@@ -1183,7 +1379,8 @@ impl DenoModuleHost {
         let can_ask = call.hosts.host.is_some()
             || call.hosts.triggers.is_some()
             || call.hosts.module_fns.is_some()
-            || call.hosts.files.is_some();
+            || call.hosts.files.is_some()
+            || call.service.is_some();
         if let Json::Object(map) = &mut request {
             map.insert("asks".to_owned(), Json::Bool(can_ask));
             // The functions this call's modules supply, by name, for v1's
@@ -1222,17 +1419,24 @@ impl DenoModuleHost {
         let triggers = call.hosts.triggers;
         let module_fns = call.hosts.module_fns;
         let files = call.hosts.files;
+        let service = call.service;
         // The run's budget, and the same one a code body's run gets: a module's
         // N+1 costs what a body's N+1 costs, because it is the same bound on the
-        // same server doing the same work.
-        let mut left = sc_expr::DEFAULT_MAX_HOST_CALLS;
+        // same server doing the same work. A service has none (`None`).
+        let mut left = bounds.budget;
         let mut serving = FuturesUnordered::new();
         // The asks this caller has taken on and not yet answered. Kept so that a
         // caller which stops waiting — its worker died, or its wall clock ran out
         // — can fail them **by name** on the way out, rather than leaving a
         // module awaiting a promise that will never settle.
         let mut outstanding: BTreeSet<u64> = BTreeSet::new();
-        let clock = tokio::time::sleep(self.bounds.timeout);
+        let limit = bounds.clock;
+        let clock = async move {
+            match limit {
+                Some(limit) => tokio::time::sleep(limit).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::pin!(clock, answer);
         let outcome = loop {
             tokio::select! {
@@ -1252,11 +1456,11 @@ impl DenoModuleHost {
                 () = &mut clock => {
                     break Err(Error::config(format!(
                         "a module call took longer than {:?} and was given up on",
-                        self.bounds.timeout
+                        limit.unwrap_or_default()
                     )));
                 }
                 Some(ask) = asked.recv() => {
-                    if left == 0 {
+                    if left == Some(0) {
                         let _ = control.send(Control::Answer {
                             ask: ask.id,
                             ok: false,
@@ -1264,11 +1468,13 @@ impl DenoModuleHost {
                         });
                         continue;
                     }
-                    left -= 1;
+                    if let Some(left) = left.as_mut() {
+                        *left -= 1;
+                    }
                     outstanding.insert(ask.id);
                     let control = control.clone();
                     serving.push(async move {
-                        let surfaces = Surfaces { host, triggers, module_fns, files };
+                        let surfaces = Surfaces { host, triggers, module_fns, files, service };
                         let (ok, text) = match serve(surfaces, ask.request).await {
                             Ok(value) => (
                                 true,
@@ -1317,6 +1523,23 @@ fn over_budget() -> String {
     )
 }
 
+/// What one call may spend: a wall clock and a budget of asks, either of which
+/// may be absent — and both are, for a service.
+#[derive(Debug, Clone, Copy)]
+struct Bounds {
+    clock: Option<Duration>,
+    budget: Option<u32>,
+}
+
+impl Bounds {
+    /// A service's call: it lasts as long as the service, and asks as often as
+    /// it needs to.
+    const UNBOUNDED: Bounds = Bounds {
+        clock: None,
+        budget: None,
+    };
+}
+
 /// The surfaces one call's asks are served from.
 #[derive(Clone, Copy, Default)]
 struct Surfaces<'a> {
@@ -1324,6 +1547,7 @@ struct Surfaces<'a> {
     triggers: Option<&'a dyn TriggerHost>,
     module_fns: Option<&'a dyn sc_expr::ModuleFnHost>,
     files: Option<&'a dyn sc_expr::FileHost>,
+    service: Option<&'a dyn crate::host::ServiceAsks>,
 }
 
 /// One ask, on the surface it names.
@@ -1361,10 +1585,17 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
             Some(files) => files.files(plan).await,
             None => Err(Error::config("this module call has no file store access")),
         },
+        "service" => match surfaces.service {
+            Some(service) => service.ask(plan).await,
+            None => Err(Error::config(
+                "only a module's running service can ask for this (`ctx.onTableChange`)",
+            )),
+        },
         other => Err(Error::config(format!(
             "`{other}` is not something a module can ask this server for; what a module may \
              reach is the database (`db`), this server's triggers (`trigger`), its modules' \
-             functions (`function`) and the file stores it was given (`files`)"
+             functions (`function`), the file stores it was given (`files`) and, from a \
+             service, its supervisor (`service`)"
         ))),
     }
 }
@@ -1377,7 +1608,7 @@ impl Pool {
             .enumerate()
             .filter_map(|(index, slot)| {
                 slot.as_ref()
-                    .filter(|worker| worker.permissions == *permissions)
+                    .filter(|worker| worker.permissions == *permissions && !worker.dedicated)
                     .map(|_| index)
             })
             .collect()

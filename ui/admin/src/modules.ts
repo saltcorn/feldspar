@@ -245,6 +245,11 @@ export function moduleStatus(module: Module): {
 } {
   if (!module.loaded) return { label: "Not loaded", tone: "red" };
   if (module.issues.length > 0) return { label: "Loaded with issues", tone: "yellow" };
+  // A service that is not running is the one thing on a loaded module that can
+  // go wrong after it loaded (TODO-imap M5.2), so it wins over the counts.
+  if (module.services.some((service) => service.state !== "running")) {
+    return { label: "A service is not running", tone: "yellow" };
+  }
   const parts: string[] = [];
   const actions = module.actions.length;
   const providers = module.table_providers.length;
@@ -282,6 +287,7 @@ export function suppliedSummary(module: Module): string {
     [module.functions.length, "function", "functions"],
     [module.table_providers.length, "table provider", "table providers"],
     [module.tables.length, "table", "tables"],
+    [module.services.length, "service", "services"],
     [module.model_providers.length, "model provider", "model providers"],
     [module.stream_providers.length, "stream provider", "stream providers"],
     [module.view_patterns.length, "view pattern", "view patterns"],
@@ -292,6 +298,37 @@ export function suppliedSummary(module: Module): string {
   if (parts.length === 0) return "nothing this version of Saltcorn loads";
   if (parts.length === 1) return parts[0];
   return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+/** One of a module's services, as its card shows it: running, restarting after
+ * a failure (how many times, and why), or stopped (TODO-imap M5.2). */
+export function serviceState(service: Module["services"][number]): {
+  label: string;
+  tone: "green" | "yellow" | "red";
+  detail: string | null;
+} {
+  const restarts =
+    service.restarts === 0
+      ? null
+      : service.restarts === 1
+        ? "restarted once"
+        : `restarted ${service.restarts} times`;
+  switch (service.state) {
+    case "running":
+      return {
+        label: "Running",
+        tone: "green",
+        detail: restarts && service.last_error ? `${restarts}; last: ${service.last_error}` : restarts,
+      };
+    case "restarting":
+      return {
+        label: "Restarting",
+        tone: "yellow",
+        detail: service.last_error ? `it failed: ${service.last_error}` : restarts,
+      };
+    default:
+      return { label: "Stopped", tone: "red", detail: service.last_error ?? null };
+  }
 }
 
 /** Whether a module has settings of its own to configure. */

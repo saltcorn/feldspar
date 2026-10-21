@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/service",
+  "version": "0.1.0",
+  "description": "A module that runs a background service over its own tables, for the module-services tests (TODO-imap M5).",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

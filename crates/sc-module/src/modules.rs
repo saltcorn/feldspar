@@ -116,6 +116,15 @@ impl LoadedModule {
             .collect()
     }
 
+    /// The services this module runs in the background (TODO-imap M5) — what
+    /// the Modules tab lists, with each one's state beside it.
+    pub fn service_names(&self) -> Vec<String> {
+        self.manifest
+            .as_ref()
+            .map(|m| m.services.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// Whether the module is loaded and contributing.
     pub fn is_loaded(&self) -> bool {
         self.manifest.is_some()
@@ -507,6 +516,7 @@ mod tests {
             stream_providers: Vec::new(),
             map_tools: Vec::new(),
             tables: Vec::new(),
+            services: Vec::new(),
             frameworks: Vec::new(),
             view_patterns: Vec::new(),
             headers: Vec::new(),

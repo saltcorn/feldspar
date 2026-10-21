@@ -44,6 +44,8 @@
 //! - [`table_providers`] — a module's table providers, as `sc-catalog`'s seam.
 //! - [`tables`] — the tables a module declares, created through the schema
 //!   editor when it loads (TODO-imap M4).
+//! - [`services`] — what a module runs in the background, over its own tables,
+//!   and the supervisor that restarts it (TODO-imap M5).
 //! - [`frameworks`] — a module's application frameworks, as `sc-app`'s seam.
 //! - [`modules`] — the loaded set: every stored module, its actions, its issues.
 //! - [`view_runtime`] — Saltcorn UI's view runtime, the built-in
@@ -69,6 +71,7 @@ pub mod module;
 pub mod modules;
 pub mod paths;
 pub mod permissions;
+pub mod services;
 pub mod spec;
 pub mod store;
 pub mod stream_providers;
@@ -87,8 +90,8 @@ pub use frameworks::ModuleFrameworks;
 pub use functions::ModuleFunctions;
 pub use host::{
     ActionManifest, CallHosts, FrameworkManifest, FunctionArg, FunctionManifest,
-    ModelProviderManifest, ModuleHost, ModuleManifest, TableProviderManifest, UnsupportedEntity,
-    prime_v8,
+    ModelProviderManifest, ModuleHost, ModuleManifest, ServiceAsks, ServiceManifest,
+    TableProviderManifest, UnsupportedEntity, prime_v8,
 };
 pub use install::{
     InstalledPackage, Installer, MIN_NPM_VERSION, have_node, have_npm, npm_too_old, npm_version,
@@ -100,6 +103,7 @@ pub use module::{
 pub use modules::{LoadedModule, ModuleIssue, ModuleSet, redacted_configuration, unsupported_json};
 pub use paths::default_modules_root;
 pub use permissions::{ANY_HOST, ModulePermissions, PERM_ENV, PERM_NET, PERM_READ, PERM_WRITE};
+pub use services::{Backoff, SERVICE_EVENTS, ServiceState, ServiceStatus, ServiceSupervisor};
 pub use spec::config_fields_to_form_fields;
 pub use store::{
     COL_LANGUAGE, COL_PERMISSIONS, MODULES_TABLE, bootstrap_modules, delete_module, list_modules,

@@ -5117,6 +5117,19 @@ fn module_schema() -> TypeSchema {
         StructField::new("table_providers", TypeSchema::array(TypeSchema::text())),
         // The tables it declares (TODO-imap M4), created when it loaded.
         StructField::new("tables", TypeSchema::array(TypeSchema::text())),
+        // The services it runs in the background (TODO-imap M5), each with its
+        // state: `running`, `restarting` (after a failure, with `last_error`)
+        // or `stopped`.
+        StructField::new(
+            "services",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("description", TypeSchema::text()),
+                StructField::new("state", TypeSchema::text()),
+                StructField::new("restarts", TypeSchema::int()),
+                StructField::new("last_error", TypeSchema::optional(TypeSchema::text())),
+            ])),
+        ),
         // The model providers it supplies — names only, for the same reason:
         // what a provider *asks for* belongs to the model being fitted and is
         // on `listModelProviders`.
@@ -5175,6 +5188,9 @@ fn bundled_module_schema() -> TypeSchema {
         // The tables installing it creates (TODO-imap M4.6) and uninstalling
         // keeps — each also named in `supplies`.
         StructField::new("tables", TypeSchema::array(TypeSchema::text())),
+        // The services it runs in the background (TODO-imap M5): the card says
+        // so before the click.
+        StructField::new("services", TypeSchema::array(TypeSchema::text())),
         // What it will be granted: the same `{ net, read, write, env }` shape a
         // module's own permissions have, so one renderer draws both. Always
         // closed for a Python module — there is nothing to enforce it (§10).

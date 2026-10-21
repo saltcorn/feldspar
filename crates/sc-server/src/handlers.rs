@@ -1985,7 +1985,8 @@ pub fn admin_handlers_with(
                 let loaded = set
                     .get(&module.name)
                     .ok_or_else(|| Error::msg("the saved module is not in the loaded set"))?;
-                Ok(HandlerResponse::ok(module_json(loaded, &ctx.locale)))
+                let statuses = services.service_statuses(&module.name);
+                Ok(HandlerResponse::ok(module_json(loaded, &statuses, &ctx.locale)))
             }
         }
     });
@@ -8839,7 +8840,7 @@ pub(crate) async fn list_modules_json(services: &crate::ModuleServices, locale: 
     let modules: Vec<Json> = set
         .modules()
         .iter()
-        .map(|m| module_json(m, locale))
+        .map(|m| module_json(m, &services.service_statuses(&m.module.name), locale))
         .collect();
     // Installed is by **package name**, which is what the row is
     // keyed by: a bundled module installed from a checkout, from a
@@ -8978,7 +8979,11 @@ pub(crate) async fn install_module_json(
     let loaded = set
         .get(&module.name)
         .ok_or_else(|| Error::msg("the installed module is not in the loaded set"))?;
-    Ok(module_json(loaded, locale))
+    Ok(module_json(
+        loaded,
+        &services.service_statuses(&module.name),
+        locale,
+    ))
 }
 
 /// One loaded module as JSON (matching `module_schema`): the row, what the
@@ -8989,7 +8994,11 @@ pub(crate) async fn install_module_json(
 /// [`sc_module::config_fields_to_form_fields`] — and a module that failed to
 /// register an action (a name clash) still has settings the tab should show
 /// beside the reason it is not available.
-fn module_json(loaded: &sc_module::LoadedModule, locale: &Locale) -> Json {
+fn module_json(
+    loaded: &sc_module::LoadedModule,
+    statuses: &[sc_module::ServiceStatus],
+    locale: &Locale,
+) -> Json {
     let module = &loaded.module;
     let actions: Vec<Json> = loaded
         .manifest
@@ -9061,6 +9070,30 @@ fn module_json(loaded: &sc_module::LoadedModule, locale: &Locale) -> Json {
         // The tables it declares (TODO-imap M4): created when it loaded, and
         // kept when it is uninstalled.
         "tables": loaded.table_names(),
+        // The services it runs in the background (TODO-imap M5), each with
+        // where it is: running, restarting after a failure (and why), or
+        // stopped. A module that declares one whose task has not been started
+        // — a load that failed — lists it as stopped.
+        "services": loaded
+            .manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest
+                    .services
+                    .iter()
+                    .map(|service| {
+                        let status = statuses.iter().find(|s| s.service == service.name);
+                        json!({
+                            "name": service.name,
+                            "description": service.description,
+                            "state": status.map_or(json!("stopped"), |s| json!(s.state)),
+                            "restarts": status.map_or(0, |s| s.restarts),
+                            "last_error": status.and_then(|s| s.last_error.clone()),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
         // And the model providers, for the same reason: installing
         // `feldspar-sklearn` gets an admin five estimators on the model form,
         // and the tab is where they find that out.
@@ -9094,6 +9127,9 @@ fn bundled_json(entry: &sc_module::BundledModule, installed: bool) -> Json {
         // The tables installing it creates (TODO-imap M4.6), said before the
         // click.
         "tables": entry.tables,
+        // And the services it runs (TODO-imap M5): the card says it runs in
+        // the background and writes to its own tables.
+        "services": entry.services,
         "supplies": entry.supplies,
         "installs": entry.installs,
         // What installing it grants, in the same shape a module's own

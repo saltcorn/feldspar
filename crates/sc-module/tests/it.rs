@@ -43,6 +43,8 @@ mod map_tools;
 mod model_providers;
 #[path = "module_actions.rs"]
 mod module_actions;
+#[path = "module_services.rs"]
+mod module_services;
 #[path = "module_store.rs"]
 mod module_store;
 #[path = "module_tables.rs"]

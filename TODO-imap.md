@@ -598,7 +598,7 @@ and do not commit.
 
 ## M5 — Module services (core)
 
-- [ ] **M5.1** Design (TECHNICAL_DESIGN §11, next to "a module call is request/response").
+- [x] **M5.1** Design (TECHNICAL_DESIGN §11, next to "a module call is request/response").
   - **Shape:** `services: { name: { start: async (ctx) => stop } }`. Started after `onLoad` and
     after every settings change or worker restart. `stop` is awaited on uninstall or reload.
   - **`ctx.db`:** reads and writes **only the tables the module declared itself** (M4). Any other
@@ -612,20 +612,50 @@ and do not commit.
   - The admin sees "runs in the background and writes to its own tables" next to the Install
     button. No new permission key is needed, because the authority is limited to the module's own
     tables.
-- [ ] **M5.2** The host: a service's calls into the host come through the same ask channel as
+- [x] **M5.2** The host: a service's calls into the host come through the same ask channel as
   actions, with their own call context and no 120 s call bound. The JS slice bound (10 s) and the
   heap bound (256 MB) still apply.
   - Look at `module-host.mjs` `ask`/`running` and `deno/worker.rs` (around lines 1026–1052).
   - **A crash** (an exception escaping `start`, or the worker dying) is logged. The service is
     restarted with backoff, and its status is shown on the module card.
-- [ ] **M5.3** Check that a module's sockets survive between calls and through service restarts,
+- [x] **M5.3** Check that a module's sockets survive between calls and through service restarts,
   as the mqtt design claims (`deno/mod.rs` 17–24). Find out whether a module **has its own
   worker** or shares one: with 100 accounts' IDLE connections, other modules' calls must not wait
   behind mail parsing. If they would, run modules that have services on their own worker.
-- [ ] **M5.4** Tests: a fixture module whose service inserts a row every 100 ms. Check that the
+- [x] **M5.4** Tests: a fixture module whose service inserts a row every 100 ms. Check that the
   rows arrive, that a live subscriber sees them, that writing to an undeclared table is refused,
   and that the service is restarted after a crash and stopped on uninstall.
-- [ ] **M5.5** Docs in `docs/tutorial-modules.md`.
+- [x] **M5.5** Docs in `docs/tutorial-modules.md`.
+
+  **Done (2026-10-21).** Decisions worth knowing for M6–M9 (TECHNICAL_DESIGN §15.1c, tutorial
+  Step 8):
+  - **A service is one module call** (`service_start`), answered when it stops. Its `ctx.db`,
+    `ctx.runTrigger` and `ctx.onTableChange` are asks on that call, named by call id, so a socket
+    callback outside the async context still asks as the service. That call has no wall clock and
+    no call budget.
+  - **`ctx.db` is the code body's `db` chain** (`ctx.db.mail_messages.where({…}).rows()`,
+    `.insert`, `.where(…).update`), over the module's declared tables only. `db.sql()`,
+    `asUser()` and Ⱶ-paths out of the module's tables are refused.
+  - **The authority is the module**: admin role, user `{ module, service }`. An Insert trigger on
+    `mail_messages` (M8.8) therefore sees that as `user`, and an `onTableChange` event has
+    `own: true` for the module's own writes. Use it to ignore the service's own status writes to
+    `mail_accounts` (§5.5).
+  - **`ctx.secrets` is not a separate API.** Reads reveal Secret values, as M2 predicted.
+    `onTableChange` rows are revealed too.
+  - **§5.5 is the preferred route:** `ctx.onTableChange("mail_accounts", cb)` is cheap. It is
+    delivered after commit and in order, and costs nothing while no service subscribes.
+  - **`ctx.fail(e)`** stops the service (its stop runs) and has it restarted with backoff (1 s
+    doubling to 5 min, reset after a run of 60 s). The status is on the card. M8.2's per-account
+    reconnect backoff is the module's own and lives inside the service. `ctx.fail` is for "the
+    whole service is broken".
+  - **M5.3: a module with a service has a worker of its own**, so other modules never wait behind
+    mail parsing. All accounts share that one worker (one JS thread). If 100 accounts' parsing
+    becomes the bottleneck, that is a later split, not something the pool can do now.
+  - **Stop is awaited** (up to 10 s) before every module reload. `ctx.signal` aborts at the same
+    moment. A dying worker does not run the stop, so the IMAP state must be durable in the
+    tables (`last_uid`), which §5.2 already requires.
+  - **Not done here:** `ctx.files` (M6), and Python modules (the `services` key is
+    JavaScript-only).
 
 ## M6 — File writes from JS modules (core)
 

@@ -292,6 +292,11 @@ async fn a_table_another_module_declared_is_left_alone() -> Result<()> {
 /// A host acting for `user` — `asUser()`, the authority a module action reads
 /// an account with — with the formula engine behind it for the writes.
 fn as_user<'a>(cat: &'a Catalog, user: &sc_auth::User) -> TableHost<'a> {
+    // A formula isolate in a binary that also runs module workers: primed, as a
+    // server is (`tests/two_pools.rs`), or the next module worker any other test
+    // starts aborts the whole binary.
+    #[cfg(feature = "deno-host")]
+    sc_expr::set_isolate_prime(sc_module::prime_v8);
     TableHost::new(cat)
         .caused_by(
             user.role,

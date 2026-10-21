@@ -8692,7 +8692,8 @@ streamproviders: {
 
 **Poll, not push**, and this is the one place a module provider is shaped differently from a Rust
 one. A module call is request/response on a Deno worker (`ModuleHost::call`); there is no channel
-from a worker back into the host, and building one is a milestone of its own. So `sc-stream`
+from a worker back into the host, and building one is a milestone of its own (a module *service*,
+§15.1c, is a long-lived call rather than such a channel). So `sc-stream`
 supplies the loop: `PollingProvider` wraps a poll-shaped kind, calls it every `interval_s`, carries
 the opaque `cursor` between calls, validates what comes back against the declared element type, and
 lets a poll that throws leave the supervisor to back off rather than spinning. Everything else is
@@ -11358,6 +11359,90 @@ overwriting a client's write to them on its next sync.
 which the card prints before the click ("Installing creates the tables …"). The catalog reader
 refuses a listed table that no `supplies` line names as a whole word, so the sentence an admin
 reads cannot omit one; `bundled_catalog.rs` asserts it for every shipped module.
+
+### 15.1c Module services (`sc-module::services`, TODO-imap M5)
+
+A module call is request/response: an action runs under its caller's authority, asks the server
+for what it needs while the caller waits, and answers. A mail module needs the other shape — IDLE
+connections held open for hours, writing rows as mail arrives, with nobody waiting. That is a
+**service**:
+
+```js
+services: {                                  // or (configuration) => ({ ... })
+  sync: {
+    description: "Keeps the mailboxes in step",
+    start: async (ctx) => { /* ... */ return async () => { /* stop */ }; },
+  },                                         // a bare function is its own start
+}
+```
+
+**A service is one call that lasts as long as the service.** The supervisor
+(`ServiceSupervisor`, held by `sc-server`'s `ModuleServices`) makes a `service_start` call; the
+host script calls `start(ctx)` and answers that call only when the service stops. Everything else
+follows from the call having an id: each `ctx.db` plan, `ctx.runTrigger` and `ctx.onTableChange`
+is an **ask on that call**, routed by the worker to the future awaiting it (§3's ask channel,
+unchanged), and served there. The asks name the call explicitly (`askFor(callId, …)`) rather than
+reading the async context, because a library's socket callback may run outside it. The call has
+**no wall clock and no call budget** (`Bounds::UNBOUNDED`); the JS slice (10 s) and the heap
+(256 MB) are the worker's and still apply.
+
+`ctx` is:
+
+| | |
+|---|---|
+| `ctx.db` | `sc_expr::DB_PRELUDE`'s fluent `db` — the code body's surface, evaluated once per worker, with `__scDbCall(token, plan)` answered as an ask on the service's call |
+| `ctx.runTrigger(name, payload)` | the `trigger` surface, when the server has a dispatcher |
+| `ctx.onTableChange(table, cb)` | a subscription through the `service` ask surface; `cb({table, op, row, old, own})` after each committed write |
+| `ctx.log(...)`, `.info/.warn/.error/.debug` | the server's log, tagged with the module |
+| `ctx.fail(error)` | stop the service (its `stop` is called) and have it restarted |
+| `ctx.signal` | an `AbortSignal`, aborted when the service is being stopped |
+| `ctx.configuration`, `ctx.module`, `ctx.service` | |
+
+**Authority: the module, over the module's tables.** There is no caller, so a service runs as
+the admin role with `{ "module": <name>, "service": <name> }` as the write's user — which is what a
+trigger fired by its insert sees as `user`, what an RLS policy reads, and what `own` in an
+`onTableChange` event is decided by. What makes that safe without a permission key is
+`ScopedTables`, a `CodeHost` in front of the service's `TableHost`: a plan's table must be one the
+module declared (§15.1b); `db.sql()` (which can name any table), models, `asUser()` (there is no
+user) and a Ⱶ-path whose key leaves the module's tables are refused by name. Writes go through the
+row layer, so triggers and live streams fire. The admin sees "Runs in the background and writes
+to its own tables" on the bundled card (`feldspar-module.json` `services: [names]`) and on the
+installed card.
+
+**Secrets need no second API.** The row layer reveals `Secret` values to server-side readers
+(TODO-imap M2.3), so a service's reads of its own tables return plaintext — which is everything
+`ctx.secrets` was to be. `onTableChange` rows are revealed the same way.
+
+**Lifecycle.** `ModuleServices::reload` stops every service and awaits each (`stop` called, its
+call answered, up to 10 s apiece) *before* it reloads the modules, and starts the new set *after*
+the catalog and the triggers have been reloaded, so a service's first row fires what it should.
+Install, configure, uninstall and Reload are therefore all a stop and a start. The host script
+also stops a module's services itself before it reloads or unloads that module, so a service never
+outlives the module object it closes over. A service whose `start` throws, that calls `ctx.fail`,
+or whose worker dies (a slice or heap trip, `process.exit()`) is logged and restarted with
+exponential backoff — 1 s doubling to 5 min, back to 1 s after a run of a minute or more — on the
+same worker if it is alive (so module-level state survives) or on a fresh one with every load
+replayed. Its state (`running`, `restarting` with the last error, `stopped`) and restart count are
+`module_json`'s `services`, shown on the card.
+
+**Table changes.** `ChangeRouter` is a catalog `TableEvents` listener (key `module-services`)
+that observes only tables a running service subscribed to, so an unwatched table costs a write
+nothing. A write is announced after it commits (a shared transaction's after-commit hook, as the
+live hub does), queued per service, and delivered in order by a task of its own as a short
+`service_event` call; the host script runs each callback in the service's async context and logs
+a failure without stopping the service. Subscriptions are dropped when a run ends, and `start`
+subscribes again.
+
+**Each module with a service has a worker of its own** (M5.3). A worker is one JavaScript thread:
+a module holding a hundred IDLE connections and parsing a 20 MB mail would make every other
+module on its worker wait, and put them inside its slice and heap. So the first load whose
+manifest has `services` moves the module onto a dedicated worker (`WorkerHandle::dedicated`, never
+chosen for another module), as a permission change moves one, and the pool remembers the name so
+later loads go straight there. A module that runs a service cannot also have view patterns (they
+must live on the view runtime's worker); they are an issue on its card. Sockets surviving between
+calls was shown by the spike (TODO-imap M1.4); that they survive a *service* restart on a live
+worker follows from the module not being reloaded, and `tests/module_services.rs` asserts the
+module-level state does.
 
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 
