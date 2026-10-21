@@ -52,6 +52,8 @@ New mail must appear **within seconds**, using IMAP IDLE, not every 5 minutes. T
    - The JS module works on the static build, and it gets the `net` permission sandbox.
    - Python's `email` package is better than mailparser at broken MIME. The corpus tests (M1, M7)
      are what close that gap.
+   - **M7 changed this:** the parser uses mailparser's parts (its splitter `@zone-eu/mailsplit`,
+     `libmime`, `iconv-lite`, `html-to-text`), not mailparser itself. See M7's notes.
 2. **The module owns its tables** (§3), declared by the module and created by the host (M4).
 3. **A background service** holds the IDLE connections and writes rows (M5). Today a module can
    only reach `db` from inside a call that has a caller (`module-host.mjs` `ask`/`noCaller`).
@@ -692,7 +694,7 @@ and do not commit.
 
 ## M7 — The parser (module, no core dependencies)
 
-- [ ] **M7.1** Scaffold `plugins/imap/`:
+- [x] **M7.1** Scaffold `plugins/imap/`:
   - `package.json` with name `@feldspar/imap` and dependencies `imapflow`, `mailparser`,
     `nodemailer`, all pinned;
   - `feldspar-module.json`: language `javascript`, `installs` matching the dependencies,
@@ -701,17 +703,17 @@ and do not commit.
   - `index.js`.
 
   `cargo test -p sc-module --test bundled_catalog` must pass. Add a row to `plugins/README.md`.
-- [ ] **M7.2** `parse.js`: `parse(source: Buffer, { internalDate, flags, size }) → { message,
+- [x] **M7.2** `parse.js`: `parse(source: Buffer, { internalDate, flags, size }) → { message,
   attachments }`, implementing §5.4. A pure function, with no IMAP and no host.
-- [ ] **M7.3** `parse-large.js`: the over-the-cap path, given `BODYSTRUCTURE` and a part fetcher
+- [x] **M7.3** `parse-large.js`: the over-the-cap path, given `BODYSTRUCTURE` and a part fetcher
   (`(part) => Buffer`), so it can be tested with a fake fetcher.
-- [ ] **M7.4** `tnef.js`: decode a TNEF stream into `{ body_text, body_rtf, attachments: [{name,
+- [x] **M7.4** `tnef.js`: decode a TNEF stream into `{ body_text, body_rtf, attachments: [{name,
   type, data}] }`, with compressed RTF (MELA/LZFu) and a simple RTF-to-text conversion.
   - Evaluate npm `node-tnef` or a similar package against the GPL TNEF samples first. Port from
     `tnef.py` only if none works.
   - Accept it when every `.tnef` sample in the corpus yields the attachment names listed in its
     `.list`.
-- [ ] **M7.5** The corpus test, `npm test` in `plugins/imap`, runs on every message in M1.1 and M1.2:
+- [x] **M7.5** The corpus test, `npm test` in `plugins/imap`, runs on every message in M1.1 and M1.2:
   - **(a)** It never throws.
   - **(b)** Every message ends up with a non-empty `body_text`, `body_html` or placeholder.
   - **(c)** No NUL byte in any value.
@@ -722,8 +724,34 @@ and do not commit.
 
   Every disagreement in (d) or (e) is either fixed or listed in `test/known-differences.md`
   with a reason. It then becomes an assertion.
-- [ ] **M7.6** Performance: the whole corpus parses in under a minute. A 25 MB mail stays within
+- [x] **M7.6** Performance: the whole corpus parses in under a minute. A 25 MB mail stays within
   the heap bound.
+
+  **Done (2026-10-21).** Decisions worth knowing for M8–M9 (CHANGELOG has the full list):
+  - **No mailparser.** `simpleParser` got six generated mails wrong, in ways no option fixes:
+    latin-1 headers, unknown charsets, invalid dates, journal reports, TNEF, and no part
+    numbers. The dependencies are imapflow, nodemailer, `@zone-eu/mailsplit`, libmime, iconv-lite
+    and html-to-text, pinned. Use nodemailer's `addressparser` for addresses, as `parse.js` does.
+  - **The row shape.** `parse` returns `message`, a `mail_messages` row without `account`,
+    `folder` and `uid`, and `attachments`, rows without `message` and `file`, each with
+    `content` (a Buffer: pass it to `files.write` as it is). `to_addrs`, `cc_addrs` and
+    `reply_to` are `[{ name, address }]`, `references` a list, `sent_at` and `internal_date`
+    ISO strings. Message-IDs keep their angle brackets. `thread_key` is already filled (M9.4's
+    rule); M9.4 only needs the index.
+  - **Part numbers.** `part` is IMAP's (`1.2.2`; a single-part mail's body is `1`). Two kinds
+    cannot be downloaded by part: `<part>:tnef:<n>` (unpacked from a `winmail.dat`) and
+    `<part>:eml:<n>` (inside a base64-encoded message). Store their bytes on import, or re-fetch
+    the container and parse it again.
+  - **Above 25 MB** (`SIZE_CAP`), call `parseLarge(bodyStructure, fetchPart, { headers,
+    internalDate, flags, size })`. `fetchPart(part, { maxBytes })` must resolve to the part's
+    body *still transfer-encoded*: `BODY.PEEK[<part>]`, partial when `maxBytes` is given. Not
+    imapflow's `download()`, which decodes.
+  - **`import_error`** is set when parsing failed, or (over the cap) a part could not be
+    downloaded. The row is complete enough to store either way, so the cursor moves on (§5.2).
+  - **Placeholders** are in `body_text` (`PLACEHOLDERS` in `parse.js`), including a fourth,
+    `empty`, for a mail with no text and no attachments.
+  - **The corpus** is the regression test: `npm test` in `plugins/imap` with the corpus fetched.
+    A parser change that moves a Stalwart field fails until `test/known-differences.md` agrees.
 
 ## M8 — Sync engine, ingest mode (use case A)
 

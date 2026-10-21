@@ -2,6 +2,74 @@
 
 Changes in reverse chronological order.
 
+## Mail module M7: the parser
+
+The bundled mail module exists (`plugins/imap/`, `@feldspar/imap`), with its tables declared and
+its parser done (TODO-imap.md M7). The parser turns a mail's source into a `mail_messages` row and
+its `mail_attachments` rows, as a pure function, and is tested on the whole fetched corpus: 6,831
+mails, none of which throws, fails, lacks a body or keeps a NUL, in about 4 s.
+
+- **M7.1** `plugins/imap/`: `package.json` (dependencies pinned), `feldspar-module.json` (four
+  tables, a `sync` service, the actions, `net: ["*"]`), and `index.js`, which declares §3's tables
+  in M4's shape: ownership through `accountⱵowner`, `mail_accounts`' passwords as Secret fields,
+  `mail_attachments.file` in the store `mail_files` under `attachments/`, and `highestmodseq` as
+  text, because a 63-bit MODSEQ is more than a JSON number holds exactly. The service and the
+  actions are M8 and M9. A row in `plugins/README.md`.
+  - **mailparser is not a dependency after all** (§2.1 named it). Its `simpleParser` got six of
+    the generated mails wrong, and none of the six is an option it has: a latin-1 subject read as
+    UTF-8, likewise an unknown charset, an invalid `Date` replaced by the current time, an
+    Exchange journal report's inline message left as an attachment, `winmail.dat` left packed,
+    and no IMAP part numbers. `parse.js` is built from mailparser's own parts instead: its
+    splitter (`@zone-eu/mailsplit`), `libmime`, `iconv-lite` and `html-to-text`, pinned to the
+    versions mailparser 3.9.36 pins.
+  - `bundled_catalog.rs`: a test that the card lists the four tables, and that `index.js`,
+    evaluated with node, declares exactly those in a shape `tables::parse_declarations` reads
+    without an issue.
+  - `scripts/build-static.sh` `stage_plugins` no longer ships a fetched `test/corpus/` (GPL TNEF
+    files and other people's mail) or a `node_modules` deeper than two levels (the spike's).
+- **M7.2** `parse.js`: `parse(source, { internalDate, flags, size }) → { message, attachments }`,
+  every rule of §5.4. It never throws: a failure is a row with `import_error`. Beyond §5.4:
+  - **Body choice is RFC 8621's `parseStructure`** (JMAP's, and Stalwart's). A
+    multipart/alternative gives each view one branch, and a text part beside HTML in a
+    multipart/mixed appears in the HTML view as preformatted text.
+  - **Charsets.** A declared UTF-8 that is not valid UTF-8 falls back as an unknown charset
+    does. Latin-1 is read as windows-1252, as browsers read it. An HTML part with no charset uses
+    its `<meta charset>`. A raw 8-bit header that is not UTF-8 is read in the charset the body
+    declares, which recovers the Korean, Chinese and Turkish subjects of the SpamAssassin corpus.
+    A Q-encoded word with raw 8-bit inside it (Outlook Express) is decoded once, not twice.
+  - **Structure.** A boundary line with transport padding (`--b  `, RFC 2046) is still a
+    boundary; only lines of a declared boundary are touched. A base64-encoded inline
+    `message/rfc822` is opened, its parts numbered `<part>:eml:<n>`. Base64 ignores junk after a
+    line's padding.
+  - **Values.** Line endings are `\n`, lone surrogates are replaced, `format=flowed` is
+    unwrapped, and a nameless part of a type libmime does not know (`audio/mp3`) gets its subtype
+    as the extension. Addresses are `[{ name, address }]` lists. A part unpacked from TNEF is
+    numbered `<part>:tnef:<n>`.
+- **M7.3** `parse-large.js`: `parseLarge(bodyStructure, fetchPart, { headers, … })` builds the
+  same tree from imapflow's `bodyStructure` and runs the same assembly. It downloads only the
+  body parts (at most 4 MB each) and TNEF containers at or below the cap, lists the attachments
+  with `content: null`, and sets `body_state: "too_large"`. A failed download is named in
+  `import_error`. It corrects imapflow's numbering of an embedded single-part message's body
+  (`2`, where IMAP says `2.1`).
+- **M7.4** `tnef.js`: TNEF with compressed RTF (LZFu and MELA), RTF to text, and HTML-in-RTF
+  (`\fromhtml1`) de-encapsulated into `body_html`. Ported from feldspar-mailbridge's `tnef.py`,
+  plus attachments stored as `PR_ATTACH_DATA_OBJ` objects, empty attachments kept as `tnef(1)`
+  keeps them, and multi-valued and unicode MAPI properties. npm's `node-tnef` 1.4.0 was tried
+  first: it misses the names of 4 of the 15 samples, has no RTF body, and depends on `bunyan` and
+  `yargs`. All 15 verdammelt/tnef samples now give the names their `.list` names.
+- **M7.5** `npm test` in `plugins/imap` (113 tests): `parse.test.mjs` asserts every `expect` of
+  the generated mails' `expected.json`; `corpus.test.mjs` runs the fetched corpus and the
+  generated mails (`test/corpus.mjs`, which also prints a report: `node test/corpus.mjs
+  [--python] [--verbose]`). (a)–(c) hold for every mail, with no `import_error` either. (d): the
+  67 field disagreements with Stalwart's expected output are listed one by one in
+  `test/known-differences.md` with their reasons, and the test asserts the set is exactly that.
+  (e): Python's `email` package answers different questions (its first plain part, its idea of
+  an attachment), so its disagreements were sampled by category, and their counts are a ratchet
+  in the same file. Both directions were checked by hand: where they disagree on decoding, ours
+  is the readable one. `tnef.test.mjs` and `parse-large.test.mjs` cover M7.3 and M7.4.
+- **M7.6** The 6,831 mails parse in about 4 s. A 25 MB mail parses in 0.5 s in a child with V8's
+  `--max-heap-size=256`, the worker's bound, and its attachment comes out byte for byte.
+
 ## Mail module M6: file writes from JavaScript modules
 
 A JavaScript module can store files, in the places its declared file fields name and nowhere

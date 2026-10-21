@@ -1,0 +1,19 @@
+{
+  "name": "@feldspar/imap",
+  "version": "0.1.0",
+  "description": "IMAP mailboxes synced into tables, and mail sent through an account's SMTP server.",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@zone-eu/mailsplit": "5.4.20",
+    "html-to-text": "10.0.1",
+    "iconv-lite": "0.7.3",
+    "imapflow": "2.2.6",
+    "libmime": "5.4.7",
+    "nodemailer": "10.0.15"
+  }
+}

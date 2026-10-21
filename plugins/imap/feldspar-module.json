@@ -1,0 +1,33 @@
+{
+  "name": "@feldspar/imap",
+  "language": "javascript",
+  "title": "Mail (IMAP and SMTP)",
+  "description": "Keep IMAP mailboxes in tables, with new mail arriving within seconds, and send mail through an account's own SMTP server.",
+  "supplies": [
+    "Four tables: mail_accounts (IMAP and SMTP accounts, shared or personal), mail_folders, mail_messages (one row per mail, with its text and HTML) and mail_attachments (each stored as a file).",
+    "A background service that keeps each enabled account connected, and writes new mail and flag changes into the tables as they happen.",
+    "Actions to test an account, sync it now, set flags, move and delete mail, fetch an attachment, and send or reply from an account."
+  ],
+  "installs": [
+    "@zone-eu/mailsplit",
+    "html-to-text",
+    "iconv-lite",
+    "imapflow",
+    "libmime",
+    "nodemailer"
+  ],
+  "permissions": {
+    "net": [
+      "*"
+    ]
+  },
+  "services": [
+    "sync"
+  ],
+  "tables": [
+    "mail_accounts",
+    "mail_folders",
+    "mail_messages",
+    "mail_attachments"
+  ]
+}

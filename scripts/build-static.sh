@@ -601,6 +601,9 @@ stage_plugins() {
     # tree this design does not ship.
     find "${STAGE}/plugins" -maxdepth 2 \( -name node_modules -o -name __pycache__ -o -name '*.egg-info' -o -name dist -o -name build \) \
         -exec rm -rf {} + 2>/dev/null || true
+    # Nor does a fetched test corpus (`plugins/imap/test/corpus/`, git-ignored: GPL files and
+    # other people's mail that must not be redistributed), or a `node_modules` deeper down.
+    find "${STAGE}/plugins" \( -name node_modules -o -path '*/test/corpus' \) -prune -exec rm -rf {} + 2>/dev/null || true
 }
 
 # Build the selected variant (`select_variant`) into ${STAGE}.

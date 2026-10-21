@@ -222,6 +222,52 @@ fn the_sklearn_module_ships_and_promises_the_download_it_makes() {
     );
 }
 
+#[test]
+fn the_mail_module_ships_and_declares_the_tables_its_card_lists() {
+    // TODO-imap M7.1. The card promises four tables; the plugin object is what
+    // the server creates them from, so it must declare exactly those, and in a
+    // shape the table facility reads without an issue.
+    let catalog = catalog();
+    let imap = catalog.get("imap").expect("the mail module ships");
+    assert_eq!(imap.name, "@feldspar/imap");
+    assert_eq!(imap.language, ModuleLanguage::JavaScript);
+    assert!(imap.permissions.any_host(), "{:?}", imap.permissions);
+    for package in ["imapflow", "nodemailer", "@zone-eu/mailsplit"] {
+        assert!(imap.installs.iter().any(|p| p == package), "{:?}", imap.installs);
+    }
+    assert_eq!(
+        imap.tables,
+        ["mail_accounts", "mail_folders", "mail_messages", "mail_attachments"]
+    );
+
+    // `index.js` is JavaScript; node evaluates it (it requires nothing that
+    // `npm install` would have to fetch first).
+    let script = "console.log(JSON.stringify(require(process.argv[1]).tables))";
+    let output = match std::process::Command::new("node")
+        .args(["-e", script])
+        .arg(imap.directory.join("index.js"))
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("the mail module's tables: skipped, there is no `node` to evaluate index.js");
+            return;
+        }
+        Err(e) => panic!("could not run node: {e}"),
+    };
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let declared: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("`tables` is JSON");
+    let (decls, issues) = sc_module::tables::parse_declarations(&declared);
+    assert!(issues.is_empty(), "{issues:?}");
+    let names: Vec<&str> = decls.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, imap.tables);
+}
+
 /// The names in a `package.json`'s `dependencies`.
 fn package_json_dependencies(dir: &Path) -> Vec<String> {
     let text = read(&dir.join("package.json"));
