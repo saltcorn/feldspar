@@ -46,6 +46,11 @@ pub const SYNC_MUTATION_GUC: &str = "sc.sync_mutation";
 /// watermark of the last pull it confirmed having applied.
 pub const SYNC_CLIENTS_TABLE: &str = "_fd_sync_clients";
 
+/// The real key of each row a device created with a temporary one (a table whose
+/// key the server issues), by the device's change number: a retried upload gets
+/// the key again, and a later change still naming the temporary key is translated.
+pub const SYNC_KEYS_TABLE: &str = "_fd_sync_keys";
+
 /// `_fd_tables.attributes` key holding a table's sync settings, an object
 /// (`{ "enabled": true }`) so later settings have somewhere to go.
 pub const ATTR_SYNC: &str = "sync";
@@ -97,8 +102,24 @@ fn clients_fields() -> Vec<DataField> {
     ]
 }
 
-/// Ensure the change-log, its indexes, the trigger function and the device
-/// table exist.
+/// The key table's columns: one row per device change that created a row with a
+/// temporary key.
+fn keys_fields() -> Vec<DataField> {
+    let text = || TypeRef::Basic(BasicType::Text);
+    vec![
+        DataField::plain("client_id", TypeRef::Basic(BasicType::Uuid))
+            .required()
+            .primary_key(),
+        DataField::plain("mutation", TypeRef::Basic(BasicType::Int))
+            .required()
+            .primary_key(),
+        DataField::plain("table_name", text()).required(),
+        DataField::plain("row_key", text()).required(),
+    ]
+}
+
+/// Ensure the change-log, its indexes, the trigger function, the device table
+/// and the key table exist.
 ///
 /// Idempotent, and a no-op on a backend that cannot record changes with a
 /// trigger: there is nothing to sync there yet, and switching a table's sync
@@ -112,6 +133,9 @@ pub async fn bootstrap_sync(catalog: &Catalog) -> Result<()> {
         .await?;
     catalog
         .bootstrap_table(SYNC_CLIENTS_TABLE, &clients_fields())
+        .await?;
+    catalog
+        .bootstrap_table(SYNC_KEYS_TABLE, &keys_fields())
         .await?;
     let dialect = catalog.primary().dialect();
     let table = dialect.quote_ident(CHANGES_TABLE);

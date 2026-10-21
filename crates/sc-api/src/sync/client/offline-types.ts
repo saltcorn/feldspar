@@ -26,6 +26,8 @@ export interface SyncTableSpec {
   key: string;
   /** `uuid` when the device may make keys itself. */
   keyKind: "uuid" | "number" | "text";
+  /** The server issues the key (an integer with a default): a row made offline gets a temporary one. */
+  serverKey?: boolean;
   /** Each column's kind, for comparing a filter's text with its values. */
   columns: Record<string, "number" | "boolean" | "text" | "json">;
   /** Columns that are keys into another synced table, for a `select` that embeds. */
@@ -53,6 +55,8 @@ export interface SyncChange {
   op: "insert" | "update" | "delete";
   key: string;
   row?: Record<string, unknown>;
+  /** An insert under a temporary key (`-mutation`); the upload's answer has the real one. */
+  temp?: boolean;
 }
 
 /** A local change the server refused, and why. Its row is back to the server's. */

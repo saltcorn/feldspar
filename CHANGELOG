@@ -2,6 +2,30 @@
 
 Changes in reverse chronological order.
 
+## Offline sync: rows with integer keys can be created offline
+
+Tables whose integer key the server hands out (`serial`, identity) can now get new rows on a
+device without a connection, like tables with a `uuid` key. Before, such a create went straight
+to the server and failed offline.
+
+- The device gives the new row a temporary key, its change number negated (`-17`). The row
+  shows at once and other rows can point at it.
+- On upload the server inserts the row, answers its real key, and translates `-17` in the
+  upload's later changes: an update, a delete, or a foreign key of a row made in it. The pair is
+  kept in a new system table, `_fd_sync_keys`, so a retried upload gets the key again and a
+  later upload that still names `-17` is translated too.
+- The device then renames the row everywhere in its copy and in the changes still waiting. An id
+  the app still holds keeps working: `api.lists.get(-17)` finds the row under its real key.
+- If the server refuses the new row, the changes that need it are refused with it, with a
+  reason saying so, instead of failing on a foreign key.
+- A change made while an upload is on its way waits for the answer, so it never keeps a key that
+  was just renamed.
+- Every create on a synced table now goes through the device's outbox, online too. Only a key
+  the server makes that is not an integer (a text key with a default) still needs a connection.
+- Tests: `sync_push.rs` (one upload with a list and its entries, a retry, a refused list) and
+  `sync_client.rs` (the generated client under Node: offline creates, renaming, the change made
+  during an upload, and the refusal of rows that need a refused one).
+
 ## Backups and restores stream, in backup format 2
 
 A nightly `feldspar backup` was killed at its 2 GB memory limit. By hand it peaked at 3.4 GB to

@@ -57,11 +57,11 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [~] S3.5 Tests: each conflict case; a child inserted offline with its parent; a delete made
       offline; a refused write (access, validation, foreign key) reported without stopping the
       others.
-- [ ] S3.6 Rows created offline in a table with an integer key: the device sends a temporary
-      key, the server inserts the row and rewrites that temporary key to the real one in the
-      later changes of the same upload (a child's foreign key, an update, a delete). The answer
-      pairs each temporary key with its real key. A retried upload whose answer was lost gets
-      the pairs again (from the change-log's device and change number).
+- [x] S3.6 Rows created offline in a table with an integer key: the device sends a temporary
+      key (its change number, negated), the server inserts the row and translates that key in
+      later changes (a child's foreign key, an update, a delete). The answer has the real key.
+      The pairs are kept in `_fd_sync_keys`, so a retried upload gets them again and a later
+      upload still naming a temporary key is translated.
 
 ## S4 — The client
 
@@ -75,14 +75,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       every insert or update entry fetches the current row and overwrites the local one, so a
       local cascade or a key change cannot lose a row.
 - [ ] S4.4 A React Native example app that works offline. Tests with the client under Node.
-- [ ] S4.5 Creating rows offline in a table with an integer key: the client makes a temporary
+- [x] S4.5 Creating rows offline in a table with an integer key: the client makes a temporary
       key, and when the upload answers the real one it replaces it in the local row, in every
-      local row that points to it, and in the changes still waiting in the outbox (S3.6).
+      local row that points to it, and in the changes still waiting in the outbox (S3.6). An id
+      the app still holds is translated; changes that need a refused row are refused with it.
 
 ## S5 — Cleanup and documentation
 
 - [ ] S5.1 Removing superseded log entries after a retention period; a device older than that
-      reloads its tables.
+      reloads its tables. The same for `_fd_sync_keys`: a pair is only needed until the device
+      has the upload's answer, so it can go with the same retention.
 - [ ] S5.2 A tutorial for an offline-first app; TECHNICAL_DESIGN §14.11 brought up to date.
 
 ## Later
@@ -113,6 +115,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       and resends its outbox as a new device, so the server can't skip what it already applied.
       An insert it had applied comes back refused as a duplicate (the next pull restores the
       row), leaving a misleading entry in `refused()`. Related to S2.7.
+- [ ] A table that is not synced, pointing at a row created offline: its write goes to the
+      server with the temporary key and fails on the foreign key. Translate it, or refuse it on
+      the device with a clear message.
+- [ ] A row created and deleted offline before an upload is still sent twice (insert, then
+      delete). Drop both from the outbox instead.
+- [ ] Sync for tables with a composite primary key (join tables such as
+      `project_members(project, user)`). Today turning sync on is refused for them. The
+      change-log, push and pull, and the device's copy all address a row by one key; they would
+      need one key made from the parts, for example a JSON array. Workaround: give the table a
+      single key column and a unique constraint on the parts.
 - [ ] Real local tables for large synced tables, once an app needs it. Today the device keeps
       every row as JSON under its key and loads the whole copy into memory, which is fine up to
       roughly 10–20k rows per table. Beyond that, a SQLite storage could keep each synced table

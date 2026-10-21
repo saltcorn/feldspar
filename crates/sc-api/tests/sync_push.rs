@@ -28,7 +28,8 @@ struct Fixture {
 }
 
 /// `notes` belong to their `owner`; `items` hang off a note. Both synced.
-/// `drafts` is in the application but not synced.
+/// `drafts` is in the application but not synced. `lists` and their `entries`
+/// are synced, with integer keys the server issues.
 async fn fixture(db: &TestDb) -> Result<Fixture> {
     sql(
         db,
@@ -42,7 +43,9 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
                              title text NOT NULL, owner uuid);
          CREATE TABLE items (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
                              note uuid REFERENCES notes(id), label text);
-         CREATE TABLE drafts (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), body text);",
+         CREATE TABLE drafts (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), body text);
+         CREATE TABLE lists (id serial PRIMARY KEY, name text NOT NULL);
+         CREATE TABLE entries (id serial PRIMARY KEY, list int REFERENCES lists(id), text text);",
     )
     .await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
@@ -57,6 +60,12 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
         min_role_read: Some(1),
         min_role_write: Some(1),
         ownership_formula: Some(formula.into()),
+        sync_enabled: Some(sync),
+        ..Default::default()
+    };
+    let anyone = |sync: bool| schema_edit::TableSettings {
+        min_role_read: Some(80),
+        min_role_write: Some(80),
         sync_enabled: Some(sync),
         ..Default::default()
     };
@@ -78,6 +87,8 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
                     ..Default::default()
                 },
             ),
+            alter("lists", anyone(true)),
+            alter("entries", anyone(true)),
             alter(
                 "drafts",
                 schema_edit::TableSettings {
@@ -100,6 +111,8 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
             cat.require("notes")?,
             cat.require("items")?,
             cat.require("drafts")?,
+            cat.require("lists")?,
+            cat.require("entries")?,
         ],
     )
     .with_application(APP)
@@ -335,5 +348,100 @@ async fn a_retried_upload_is_applied_once() -> Result<()> {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("must increase"), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn rows_created_offline_get_their_keys_from_the_server() -> Result<()> {
+    let db = TestDb::new().await?;
+    let f = fixture(&db).await?;
+    let device = register(&f, &f.ann).await?;
+    let temp = |mutation: i64| (-mutation).to_string();
+    // A list and two entries in it, made offline; one entry deleted again.
+    let made = json!([
+        { "mutation": 1, "table": "lists", "op": "insert", "key": temp(1), "temp": true,
+          "row": { "id": -1, "name": "groceries" } },
+        { "mutation": 2, "table": "entries", "op": "insert", "key": temp(2), "temp": true,
+          "row": { "list": -1, "text": "milk" } },
+        { "mutation": 3, "table": "lists", "op": "update", "key": temp(1),
+          "row": { "name": "shopping" } },
+        { "mutation": 4, "table": "entries", "op": "insert", "key": temp(4), "temp": true,
+          "row": { "list": -1, "text": "eggs" } },
+        { "mutation": 5, "table": "entries", "op": "delete", "key": temp(4) },
+    ]);
+    let results = push(&f, &f.ann, &device, made.clone()).await?;
+    assert_eq!(statuses(&results), vec!["applied"; 5]);
+    let list = results[0]["key"].as_str().unwrap().to_owned();
+    let entry = results[1]["key"].as_str().unwrap().to_owned();
+    assert!(results[2].get("key").is_none());
+    assert_eq!(
+        query(&db, "SELECT id || ':' || name FROM lists").await?,
+        vec![format!("{list}:shopping")]
+    );
+    assert_eq!(
+        query(&db, "SELECT id || ':' || list || ':' || text FROM entries").await?,
+        vec![format!("{entry}:{list}:milk")]
+    );
+
+    // The answer was lost: the retry is skipped and still answers the keys.
+    let retried = push(&f, &f.ann, &device, made).await?;
+    assert_eq!(statuses(&retried), vec!["skipped"; 5]);
+    assert_eq!(retried[0]["key"], json!(list));
+    assert_eq!(retried[1]["key"], json!(entry));
+
+    // A later upload still naming the temporary key is translated.
+    let later = push(&f, &f.ann, &device, json!([
+        { "mutation": 6, "table": "lists", "op": "update", "key": temp(1), "row": { "name": "food" } },
+    ]))
+    .await?;
+    assert_eq!(statuses(&later), vec!["applied"]);
+    assert_eq!(query(&db, "SELECT name FROM lists").await?, vec!["food"]);
+
+    // A refused list takes the entry made in it along, and a key never made is refused.
+    let refused = push(&f, &f.ann, &device, json!([
+        { "mutation": 7, "table": "lists", "op": "insert", "key": temp(7), "temp": true, "row": {} },
+        { "mutation": 8, "table": "entries", "op": "insert", "key": temp(8), "temp": true,
+          "row": { "list": -7, "text": "bread" } },
+        { "mutation": 9, "table": "entries", "op": "update", "key": "-99", "row": { "text": "x" } },
+    ]))
+    .await?;
+    assert_eq!(statuses(&refused), vec!["refused"; 3]);
+    assert!(refused[0].get("key").is_none());
+    assert!(
+        refused[1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("whose creation was refused"),
+        "{}",
+        refused[1]
+    );
+    assert!(
+        refused[2]["error"]
+            .as_str()
+            .unwrap()
+            .contains("temporary key -99"),
+        "{}",
+        refused[2]
+    );
+    assert_eq!(
+        query(&db, "SELECT count(*)::text FROM entries").await?,
+        vec!["1"]
+    );
+
+    // A temporary key is the change's number, negated.
+    let err = f
+        .api
+        .handle(
+            ApiRequest::new(Method::Post, "/api/sync/push").body(json!({
+                "client_id": device,
+                "changes": [{ "mutation": 10, "table": "lists", "op": "insert", "key": "-3",
+                              "temp": true, "row": { "name": "x" } }],
+            })),
+            &f.cat,
+            Some(&f.ann),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("negated"), "{err}");
     Ok(())
 }
