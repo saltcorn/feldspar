@@ -375,6 +375,41 @@ pub fn reveal_json(catalog: &Catalog, table: &Table, row: &mut Json) -> Result<(
     Ok(())
 }
 
+/// Decrypt the value a Ⱶ-join path fetched, when the field the path ends on is
+/// a secret — for a **template** in a trigger's settings (TODO-imap M3.4),
+/// where `{{ accountⱵsmtp_password }}` is read by server-side code.
+///
+/// A prefetch reads the column, which holds the envelope; this is the explicit
+/// step that turns it into the plaintext, so a path that ends anywhere else is
+/// left exactly as fetched. `segments` are the path's, starting at `table`:
+/// every one but the last a Key field, the last a field of the final target.
+pub fn reveal_join_value(
+    catalog: &Catalog,
+    table: &Table,
+    segments: &[String],
+    value: &mut Value,
+) -> Result<()> {
+    let Some((last, links)) = segments.split_last() else {
+        return Ok(());
+    };
+    let mut current = table.clone();
+    for link in links {
+        let Some(crate::DataFieldKind::Key { target_table, .. }) =
+            current.field(link).map(|f| &f.kind)
+        else {
+            return Ok(());
+        };
+        current = catalog.require(&target_table.0)?;
+    }
+    if !is_secret_column(&current, last) {
+        return Ok(());
+    }
+    if let Value::Text(envelope) = value {
+        *value = Value::Text(open_field(catalog, &current, last, envelope)?);
+    }
+    Ok(())
+}
+
 /// Open one stored value of `table.column`, naming the field when it fails.
 fn open_field(catalog: &Catalog, table: &Table, column: &str, envelope: &str) -> Result<String> {
     if envelope == SECRET_SENTINEL {

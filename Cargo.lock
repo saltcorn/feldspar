@@ -9197,6 +9197,7 @@ dependencies = [
  "sc-core-actions",
  "sc-db",
  "sc-db-postgres",
+ "sc-email",
  "sc-error",
  "sc-expr",
  "sc-files",

@@ -150,7 +150,10 @@ impl ConfigCheck<'_> {
 
     /// [`formula`](ConfigCheck::formula), for a template: every token.
     pub async fn template(&self, scope: &str, template: &Template, what: &str) -> Result<()> {
-        for analysis in crate::scope::check_template(self.shape, scope, template, what)? {
+        // The template scope, which sees Secret fields (`template_shape`): the
+        // scope `render_event_template` renders in, so what saves is what runs.
+        let shape = crate::scope::template_shape(self.catalog, self.shape)?;
+        for analysis in crate::scope::check_template(&shape, scope, template, what)? {
             sc_catalog::check_model_calls(self.catalog, scope, &analysis)
                 .await
                 .map_err(|e| Error::invalid(format!("{what}: {e}")))?;

@@ -5,7 +5,10 @@ use sc_action::{
     required_template, template_scope,
 };
 use sc_catalog::{Catalog, DataField, DataFieldKind, Table};
-use sc_email::{Attachment, Email, Mailbox, parse_mailbox, parse_recipients, render_mjml};
+use sc_email::{
+    Attachment, Email, EmailSettings, Mailbox, SUBMISSION_STARTTLS_PORT, SUBMISSION_TLS_PORT,
+    SmtpSecurity, is_public, parse_mailbox, parse_recipients, render_mjml, security_for_port,
+};
 use sc_error::{Error, Result};
 use sc_expr::{RenderMode, Template};
 use sc_types::{Attrs, BasicType, FormField};
@@ -27,6 +30,20 @@ const CFG_HTML: &str = "html";
 const CFG_MJML: &str = "mjml";
 /// The `text/plain` body.
 const CFG_TEXT: &str = "text";
+/// The SMTP override (TODO-imap M3): send through this server instead of the
+/// installation's own. Empty — or rendering empty — means "the installation's".
+const CFG_SMTP_HOST: &str = "smtp_host";
+/// The override's port: 465 or 587. Empty means the port `smtp_security`
+/// implies, or 587.
+const CFG_SMTP_PORT: &str = "smtp_port";
+/// The override's encryption, `tls` or `starttls`. Empty means the one the
+/// port implies.
+const CFG_SMTP_SECURITY: &str = "smtp_security";
+/// The override's login. Also the from-address when `from` is empty.
+const CFG_SMTP_USER: &str = "smtp_user";
+/// The override's password — a [`secret`](FormField::secret) setting, so the
+/// trigger editor shows the sentinel and a save that sends it back keeps it.
+const CFG_SMTP_PASSWORD: &str = "smtp_password";
 /// The prefix of the per-File-field attachment settings: `attach_invoice` means
 /// "attach the file the row's `invoice` field points at".
 ///
@@ -75,6 +92,16 @@ const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 /// path attaches nothing and is not an error; anything else that goes wrong is,
 /// named with the field.
 ///
+/// **A trigger can send through a server of its own** (TODO-imap M3, use case
+/// C: "your order has shipped", from orders@ through orders@'s server). The
+/// five `smtp_*` settings are templates like the rest, so they can be read
+/// from the row — `{{ accountⱵsmtp_host }}`, `{{ accountⱵsmtp_password }}` —
+/// and when the host renders non-empty the message goes through that server
+/// ([`Mailer::send_via`](sc_email::Mailer::send_via)), held to the relay
+/// rules: ports 465 and 587 only, public addresses only, and a connection to
+/// the address that was checked. An empty host is the installation's own
+/// transport, as before.
+///
 /// **The transport is handed in**, through [`ActionContext::mailer`] exactly as
 /// the evaluator is. That is what lets this action's tests assert *what would
 /// have been sent* against a recording mailer, and it is why the from-address is
@@ -114,6 +141,15 @@ impl Action for SendEmail {
             FormField::new(CFG_TEXT, BasicType::Text)
                 .label("Text body")
                 .multiline(),
+            FormField::new(CFG_SMTP_HOST, BasicType::Text)
+                .label("SMTP server (leave empty to use Settings → Email)"),
+            FormField::new(CFG_SMTP_PORT, BasicType::Text).label("SMTP port (465 or 587)"),
+            FormField::new(CFG_SMTP_SECURITY, BasicType::Text)
+                .label("SMTP security (tls or starttls)"),
+            FormField::new(CFG_SMTP_USER, BasicType::Text).label("SMTP user"),
+            FormField::new(CFG_SMTP_PASSWORD, BasicType::Text)
+                .label("SMTP password")
+                .secret(),
         ]
     }
 
@@ -188,6 +224,7 @@ impl Action for SendEmail {
             parse_mailbox(from.source())
                 .map_err(|e| Error::invalid(format!("`{CFG_FROM}`: {e}")))?;
         }
+        templates.check_relay_literals()?;
         // And a static MJML body is compiled now, for the same reason: a missing
         // `</mj-section>` is a save-time error, not a Tuesday-night one.
         if templates.mjml
@@ -205,6 +242,7 @@ impl Action for SendEmail {
         // no transport has nothing to do with a rendered body, and this is the
         // error that names Settings → Email.
         let mailer = ctx.mailer()?;
+        let relay = relay_settings(ctx, &templates).await?;
         let from = match &templates.from {
             Some(template) => {
                 let rendered = render_event_template(
@@ -216,6 +254,22 @@ impl Action for SendEmail {
                 .await?;
                 parse_mailbox(&rendered)
                     .map_err(|e| named(ctx.trigger, CFG_FROM, &e.to_string()))?
+            }
+            // An override's login is its address on every submission server
+            // anyone uses, and a server that authenticates `orders@` refuses
+            // mail claiming to be from anybody else — so it is the default.
+            None if relay.is_some() => {
+                let user = relay.as_ref().map_or("", |r| r.username.as_str());
+                parse_mailbox(user).map_err(|e| {
+                    named(
+                        ctx.trigger,
+                        CFG_FROM,
+                        &format!(
+                            "`{CFG_FROM}` is empty, and `{CFG_SMTP_USER}` (`{user}`) is not an \
+                             address to send from: {e}"
+                        ),
+                    )
+                })?
             }
             // The transport's own answer, with the trigger named: "this
             // installation sends no mail" is about the installation, but *which*
@@ -277,14 +331,21 @@ impl Action for SendEmail {
         email
             .check()
             .map_err(|e| Error::invalid(format!("trigger `{}`: {e}", ctx.trigger)))?;
-        mailer
-            .send(&email)
-            .await
-            .map_err(|e| Error::invalid(format!("trigger `{}`: {e}", ctx.trigger)))?;
+        let via = relay.as_ref().map(|relay| relay.host.clone());
+        let sent = match relay {
+            Some(mut relay) => {
+                relay.from = email.from.clone();
+                mailer.send_via(&relay, &email).await
+            }
+            None => mailer.send(&email).await,
+        };
+        sent.map_err(|e| Error::invalid(format!("trigger `{}`: {e}", ctx.trigger)))?;
 
         // What was sent, so a button that ran this trigger can say so — and so a
         // workflow step downstream has the addresses without re-rendering them.
+        // `smtp_host` is the override's server, or null for the installation's.
         Ok(json!({
+            "smtp_host": via,
             "to": addresses(&email.to),
             "cc": addresses(&email.cc),
             "bcc": addresses(&email.bcc),
@@ -313,6 +374,11 @@ struct Templates {
     html: Option<Template>,
     text: Option<Template>,
     mjml: bool,
+    smtp_host: Option<Template>,
+    smtp_port: Option<Template>,
+    smtp_security: Option<Template>,
+    smtp_user: Option<Template>,
+    smtp_password: Option<Template>,
 }
 
 impl Templates {
@@ -326,7 +392,85 @@ impl Templates {
             html: optional_template(config, CFG_HTML)?,
             text: optional_template(config, CFG_TEXT)?,
             mjml: config_flag(config, CFG_MJML)?,
+            smtp_host: optional_template(config, CFG_SMTP_HOST)?,
+            smtp_port: optional_template(config, CFG_SMTP_PORT)?,
+            smtp_security: optional_template(config, CFG_SMTP_SECURITY)?,
+            smtp_user: optional_template(config, CFG_SMTP_USER)?,
+            smtp_password: optional_template(config, CFG_SMTP_PASSWORD)?,
         })
+    }
+
+    /// The override settings that were configured, with their names — the
+    /// host first.
+    fn relay(&self) -> impl Iterator<Item = (&'static str, &Template)> {
+        [
+            (CFG_SMTP_HOST, &self.smtp_host),
+            (CFG_SMTP_PORT, &self.smtp_port),
+            (CFG_SMTP_SECURITY, &self.smtp_security),
+            (CFG_SMTP_USER, &self.smtp_user),
+            (CFG_SMTP_PASSWORD, &self.smtp_password),
+        ]
+        .into_iter()
+        .filter_map(|(what, template)| template.as_ref().map(|t| (what, t)))
+    }
+
+    /// What can be said about the override while the admin is looking at the
+    /// form: that there is a host for the other settings to belong to, and
+    /// that a port, an encryption or an address **typed in** is one the relay
+    /// rules allow. A template that interpolates a column is checked when it
+    /// has been rendered, by the same rules.
+    fn check_relay_literals(&self) -> Result<()> {
+        if self.smtp_host.is_none()
+            && let Some((what, _)) = self.relay().next()
+        {
+            return Err(Error::invalid(format!(
+                "`{what}` is set, but `{CFG_SMTP_HOST}` is not: the SMTP settings are an \
+                 override, and the host is what turns it on"
+            )));
+        }
+        let literal = |t: &Option<Template>| {
+            t.as_ref()
+                .filter(|t| t.is_literal())
+                .map(|t| t.source().trim().to_owned())
+        };
+        let port = literal(&self.smtp_port)
+            .map(|raw| {
+                parse_port(&raw).map_err(|e| Error::invalid(format!("`{CFG_SMTP_PORT}`: {e}")))
+            })
+            .transpose()?;
+        let security = literal(&self.smtp_security)
+            .filter(|raw| !raw.is_empty())
+            .map(|raw| {
+                parse_security(&raw)
+                    .map_err(|e| Error::invalid(format!("`{CFG_SMTP_SECURITY}`: {e}")))
+            })
+            .transpose()?;
+        if let Some(Some(port)) = port
+            && security_for_port(port).is_none()
+        {
+            return Err(Error::invalid(format!(
+                "`{CFG_SMTP_PORT}` {port} is not allowed: use 465 (tls) or 587 (starttls)"
+            )));
+        }
+        if let (Some(Some(port)), Some(security)) = (port, security)
+            && security_for_port(port) != Some(security)
+        {
+            return Err(Error::invalid(format!(
+                "`{CFG_SMTP_PORT}` {port} does not speak `{CFG_SMTP_SECURITY}` `{}`: 465 is \
+                 `tls` and 587 is `starttls`",
+                security.as_str()
+            )));
+        }
+        if let Some(host) = literal(&self.smtp_host)
+            && let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse()
+            && !is_public(ip)
+        {
+            return Err(Error::invalid(format!(
+                "`{CFG_SMTP_HOST}`: `{host}` is a private or reserved address; a trigger may \
+                 only send through a server on the public internet"
+            )));
+        }
+        Ok(())
     }
 
     /// The three recipient settings that were configured, with their names.
@@ -348,8 +492,120 @@ impl Templates {
             ]
             .into_iter()
             .filter_map(|(what, template)| template.as_ref().map(|t| (what, t)))
-            .chain(std::iter::once((CFG_SUBJECT, &self.subject))),
+            .chain(std::iter::once((CFG_SUBJECT, &self.subject)))
+            .chain(self.relay()),
         )
+    }
+}
+
+/// The override's server, rendered — or `None` when there is no override
+/// (no `smtp_host`, or one that rendered empty: an account with no server of
+/// its own sends through the installation's, which is the reading a null
+/// column gets everywhere here).
+///
+/// The from-address is filled in by the caller once it is known. Whether the
+/// result is a server the relay rules allow is
+/// [`send_via`](sc_email::Mailer::send_via)'s to say, so that the one check
+/// runs on what is actually sent.
+async fn relay_settings(
+    ctx: &ActionContext<'_>,
+    templates: &Templates,
+) -> Result<Option<EmailSettings>> {
+    let Some(host) = &templates.smtp_host else {
+        return Ok(None);
+    };
+    let render = |template: &Option<Template>, what: &'static str| {
+        let template = template.clone();
+        async move {
+            match template {
+                Some(template) => {
+                    render_event_template(ctx, &template, &format!("`{what}`"), RenderMode::Text)
+                        .await
+                }
+                None => Ok(String::new()),
+            }
+        }
+    };
+    let host = render(&Some(host.clone()), CFG_SMTP_HOST)
+        .await?
+        .trim()
+        .to_owned();
+    if host.is_empty() {
+        return Ok(None);
+    }
+    // Errors from here name the host, so "which account's server" is in the
+    // message — and never a rendered value of `smtp_password`.
+    let at_host = |what: &str, e: Error| {
+        Error::invalid(format!(
+            "trigger `{}`: SMTP server `{host}`: `{what}`: {e}",
+            ctx.trigger
+        ))
+    };
+    let port = parse_port(render(&templates.smtp_port, CFG_SMTP_PORT).await?.trim())
+        .map_err(|e| at_host(CFG_SMTP_PORT, e))?;
+    let security = render(&templates.smtp_security, CFG_SMTP_SECURITY).await?;
+    let security = match security.trim() {
+        "" => None,
+        raw => Some(parse_security(raw).map_err(|e| at_host(CFG_SMTP_SECURITY, e))?),
+    };
+    // Each one implies the other; neither given is submission over STARTTLS,
+    // which is what the installation's own settings default to as well.
+    let (port, security) = match (port, security) {
+        (Some(port), Some(security)) => (port, security),
+        (Some(port), None) => (
+            port,
+            security_for_port(port).unwrap_or(SmtpSecurity::StartTls),
+        ),
+        (None, Some(SmtpSecurity::Tls)) => (SUBMISSION_TLS_PORT, SmtpSecurity::Tls),
+        (None, security) => (
+            SUBMISSION_STARTTLS_PORT,
+            security.unwrap_or(SmtpSecurity::StartTls),
+        ),
+    };
+    let username = render(&templates.smtp_user, CFG_SMTP_USER)
+        .await?
+        .trim()
+        .to_owned();
+    // Not trimmed: a space is legal in a password (as in `EmailSettings`).
+    let password = render(&templates.smtp_password, CFG_SMTP_PASSWORD).await?;
+    Ok(Some(EmailSettings {
+        host,
+        port,
+        security,
+        username,
+        password,
+        // Replaced by the message's own from-address before it is sent.
+        from: Mailbox {
+            name: None,
+            address: String::new(),
+        },
+    }))
+}
+
+/// A rendered port: empty is "not given", anything else must be a TCP port.
+/// Whether it is one the relay rules allow is
+/// [`check_relay`](sc_email::check_relay)'s question.
+fn parse_port(raw: &str) -> Result<Option<u16>> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    match raw.parse::<u16>() {
+        Ok(port) if port > 0 => Ok(Some(port)),
+        _ => Err(Error::invalid(format!(
+            "`{raw}` is not a TCP port; use 465 or 587"
+        ))),
+    }
+}
+
+/// A rendered encryption: `tls` or `starttls`. `none` is a word the
+/// installation's own settings accept and an override does not, because an
+/// override always authenticates somewhere the admin does not run.
+fn parse_security(raw: &str) -> Result<SmtpSecurity> {
+    match SmtpSecurity::parse(raw)? {
+        SmtpSecurity::None => Err(Error::invalid(
+            "`none` is not allowed for an SMTP override; use `tls` or `starttls`",
+        )),
+        security => Ok(security),
     }
 }
 
@@ -499,8 +755,26 @@ mod tests {
         let names: Vec<&str> = spec.iter().map(|f| f.name()).collect();
         assert_eq!(
             names,
-            vec!["to", "cc", "bcc", "from", "subject", "html", "mjml", "text"]
+            vec![
+                "to",
+                "cc",
+                "bcc",
+                "from",
+                "subject",
+                "html",
+                "mjml",
+                "text",
+                "smtp_host",
+                "smtp_port",
+                "smtp_security",
+                "smtp_user",
+                "smtp_password"
+            ]
         );
+        // The password is the one secret: the trigger editor shows the
+        // sentinel, and a save that sends it back keeps the stored value.
+        let secret: Vec<&str> = spec.iter().filter(|f| f.secret).map(|f| f.name()).collect();
+        assert_eq!(secret, vec!["smtp_password"]);
         // `to` is *not* required: a `bcc`-only message is a message, and which
         // headers are needed is `validate_config`'s question.
         let required: Vec<&str> = spec

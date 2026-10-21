@@ -2,6 +2,64 @@
 
 Changes in reverse chronological order.
 
+## Mail module M3: SMTP override settings on `send_email`
+
+`send_email` can send through a server other than the installation's (TODO-imap.md M3, use
+case C), for example from orders@ through orders@'s own SMTP server, with the password read
+from a Secret field.
+
+- **M3.1** Five new optional settings: `smtp_host`, `smtp_port`, `smtp_security`, `smtp_user`
+  and `smtp_password`. All are `{{ }}` templates, parsed and validated like the rest.
+  `smtp_password` is declared `secret()`.
+  - Save-time checks: the other settings need a host. A typed port must be 465 or 587, and must
+    match a typed encryption. `none` is refused, and so is a typed private or loopback address.
+- **M3.2** When `smtp_host` renders non-empty, the message goes through
+  `Mailer::send_via(server, email)`, a new trait method; otherwise it goes through `ctx.mailer`
+  as before.
+  - An empty port or encryption is implied by the other one; if both are empty, 587/STARTTLS.
+  - `from` defaults to `smtp_user` when an override is used.
+  - The result carries `smtp_host` (null for the installation's server).
+  - Errors name the trigger and the host, never the password. `EmailSettings`'s `Debug` now
+    redacts the password, and `SmtpMailer`'s send error names its server.
+- **M3.3** The relay rules (`sc_email::relay`): ports 465/587 only, each with its own
+  encryption, and public addresses only. A name with any private address is refused.
+  - The host is resolved once, and the transport connects to the checked IP
+    (`SmtpMailer::pinned`). The name is kept for SNI and the certificate check, and the EHLO
+    name is the sender's domain.
+  - `is_public` moved from the agent fetch guard (`sc-core-traits`) to `sc-email`, and the
+    guard re-exports it.
+  - The installation's own server (Settings → Email) is not checked.
+- **M3.4** `{{ }}` templates in trigger settings can name Secret fields, in their own row and at
+  the end of a Ⱶ-join: `{{ accountⱵsmtp_password }}`.
+  - `sc_action::template_shape` adds Secret fields to the shape templates are validated in, and
+    only those. `render_event_template` decrypts the envelope a join prefetched
+    (`sc_catalog::secrets::reveal_join_value`).
+  - Filters, `only_if`, assignments, ownership rules and calculated fields still cannot name a
+    secret.
+- **Trigger secrets are masked in the admin REST API.** `listTriggers`, `createTrigger` and
+  `updateTrigger` show `••••••••` for every `secret()` setting, and an update that sends it back
+  keeps the stored value (`ActionRegistry::redact_trigger`, `merge_trigger_secrets`). Until now
+  only the MCP trigger tools masked them. The MCP tools now use the same helper. Backups still
+  write the real value.
+- **M3.5** Tests:
+  - `sc-email`: unit tests for ports, encryption and private, loopback and link-local hosts
+    (`relay.rs`). Two wire tests in `smtp_conversation.rs`: a pinned transport whose host is
+    `smtp.example.invalid` still delivers to the checked IP, with EHLO the sender's domain; and
+    `send_via` refuses a loopback server even though one is listening.
+  - `sc-core-actions/tests/send_email_relay.rs`:
+    - the account's server and its Secret password come through a join;
+    - an account with no server sends through the installation's;
+    - `localhost` and port 25 are refused at send time, naming the host and not the password;
+    - typed-in overrides are checked on save;
+    - a trigger on the account table reads its own secret;
+    - the password is masked and kept.
+  - `sc-server/tests/app_trigger_api.rs`: create, list and update through the admin API never
+    return the password, and the stored value survives a save of the mask.
+- **M3.6** Docs: a `send_email` section in `docs/tutorial-triggers.md` covering the override
+  settings, the relay rules and the note that a copy in Sent depends on the provider. A note in
+  `docs/tutorial-ownership.md` Step 8 on templates reading a secret through a join, and a
+  paragraph in TECHNICAL_DESIGN §10.1.
+
 ## Mail module M2: the `Secret` field kind
 
 A new field kind for passwords and tokens (TODO-imap.md M2), which the mail module's

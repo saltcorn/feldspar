@@ -249,7 +249,11 @@ fn check_address(address: &str, whole: &str) -> Result<()> {
 /// Constructed only through [`EmailSettings::load`] or
 /// [`EmailSettings::from_config`], both of which run [`EmailSettings::check`],
 /// so holding one of these means the settings were coherent when they were read.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is written by hand so the password never reaches a log line or a
+/// test failure: an override's settings are rendered from a row, and an
+/// error that prints them would print the account's password.
+#[derive(Clone)]
 pub struct EmailSettings {
     /// The SMTP server's hostname.
     pub host: String,
@@ -263,6 +267,26 @@ pub struct EmailSettings {
     pub password: String,
     /// What messages say they are from.
     pub from: Mailbox,
+}
+
+impl std::fmt::Debug for EmailSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailSettings")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("security", &self.security)
+            .field("username", &self.username)
+            .field(
+                "password",
+                &if self.password.is_empty() {
+                    ""
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("from", &self.from)
+            .finish()
+    }
 }
 
 impl EmailSettings {

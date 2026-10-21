@@ -2079,7 +2079,13 @@ means something for one provider is a cost paid by everybody.
   *declaration* depends on the channel (`Action::config_spec_for`), which is also what the
   configuration is validated against. The transport is handed in through `ActionContext`,
   exactly as the JavaScript engine is, which is what lets its tests assert *what would have
-  been sent*.
+  been sent*. Five optional `smtp_*` settings (TODO-imap M3) send through **another server**:
+  `Mailer::send_via`, whose default holds the server to the relay rules in `sc_email::relay`
+  (ports 465/587, public addresses only, the host resolved once and the transport pointed at
+  the checked IP with the name kept for TLS). `smtp_password` is a `secret()` setting, masked
+  wherever a trigger is shown (`ActionRegistry::redact_trigger`). Templates, and only templates,
+  are validated in `template_shape`, which adds Secret fields, so `{{ accountⱵsmtp_password }}`
+  is prefetched and then opened (`secrets::reveal_join_value`).
 - `publish` puts one element on an internal stream (§14.10): a stream, a topic formula (blank is
   `user.id` on a stream with a topic per user — the event's user, so a workflow step tells the
   person who started the run) and a formula per declared key. A per-user publish with no user is

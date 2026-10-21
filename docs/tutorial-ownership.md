@@ -255,7 +255,11 @@ That is all any client ever gets back:
 
 The server's own code sees the plaintext: a trigger's `{{ row.api_token }}` template and its
 action formulas, a JavaScript or Python code body's `db.tasks` reads, a module's actions and
-services. A view rendered for somebody looking (Saltcorn UI) does not.
+services. A view rendered for somebody looking (Saltcorn UI) does not. A `{{ }}` template in a
+trigger's settings also reads a secret **through a join**: `{{ taskⱵapi_token }}` on a trigger
+whose table refers to `tasks`, which is how `send_email` sends through an account's own SMTP
+server ([tutorial-triggers.md](tutorial-triggers.md), "`send_email`, and sending from an
+account's own server"). No other formula can name a secret.
 
 In the database the column holds only an envelope, `v1:<nonce>:<ciphertext>`, encrypted with
 AES-256-GCM under the instance's key in `<data dir>/secrets.key`. `psql` shows the envelope, and

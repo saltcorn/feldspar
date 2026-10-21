@@ -2683,7 +2683,10 @@ pub fn admin_handlers_with(
                     } else {
                         None
                     };
-                    out.push(trigger_json_with(t, problem, workflow));
+                    // Masked (§11.1): `send_email`'s `smtp_password` is a
+                    // secret setting, and this list is what the editor reads.
+                    let shown = dispatcher.registry().redact_trigger(&catalog, t);
+                    out.push(trigger_json_with(&shown, problem, workflow));
                 }
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
@@ -2698,7 +2701,12 @@ pub fn admin_handlers_with(
             let apps = apps.clone();
             async move {
                 let dispatcher = triggers_of(&apps)?;
-                let trigger = trigger_from_body(TriggerId::new(), &ctx.body)?;
+                let mut trigger = trigger_from_body(TriggerId::new(), &ctx.body)?;
+                // A sentinel with nothing stored under it is dropped, never
+                // saved as the password.
+                dispatcher
+                    .registry()
+                    .merge_trigger_secrets(&catalog, None, &mut trigger)?;
                 check_stream_channel(&catalog, &apps, &trigger).await?;
                 save_trigger(&catalog, &dispatcher.registry(), &trigger).await?;
                 // A workflow body gets **version 1** here, not on the editor's
@@ -2717,7 +2725,8 @@ pub fn admin_handlers_with(
                     .await?;
                 }
                 dispatcher.reload(&catalog).await?;
-                Ok(HandlerResponse::ok(trigger_json(&trigger, None)).with_status(201))
+                let shown = dispatcher.registry().redact_trigger(&catalog, &trigger);
+                Ok(HandlerResponse::ok(trigger_json(&shown, None)).with_status(201))
             }
         }
     });
@@ -2731,12 +2740,19 @@ pub fn admin_handlers_with(
             async move {
                 let dispatcher = triggers_of(&apps)?;
                 let id = parse_trigger_id(ctx.path_param("id")?)?;
-                if load_trigger(&catalog, id).await?.is_none() {
+                let Some(stored) = load_trigger(&catalog, id).await? else {
                     return Err(Error::not_found(format!("no trigger with id {id}")));
-                }
+                };
                 // The id is the path's, not the body's — the row's identity is
                 // not something a payload gets to reassign.
-                let trigger = trigger_from_body(id, &ctx.body)?;
+                let mut trigger = trigger_from_body(id, &ctx.body)?;
+                // The editor was shown the sentinel for a secret setting, and
+                // sends it back for "unchanged": keep the stored value.
+                dispatcher.registry().merge_trigger_secrets(
+                    &catalog,
+                    Some(&stored),
+                    &mut trigger,
+                )?;
                 check_stream_channel(&catalog, &apps, &trigger).await?;
                 save_trigger(&catalog, &dispatcher.registry(), &trigger).await?;
                 // Switching an action body to a workflow one is the other way a
@@ -2756,7 +2772,8 @@ pub fn admin_handlers_with(
                     .await?;
                 }
                 dispatcher.reload(&catalog).await?;
-                Ok(HandlerResponse::ok(trigger_json(&trigger, None)))
+                let shown = dispatcher.registry().redact_trigger(&catalog, &trigger);
+                Ok(HandlerResponse::ok(trigger_json(&shown, None)))
             }
         }
     });

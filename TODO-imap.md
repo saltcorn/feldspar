@@ -484,32 +484,57 @@ and do not commit.
 
 ## M3 — SMTP override settings on `send_email` (core)
 
-- [ ] **M3.1** New optional settings in `SendEmail::config_spec`:
+- [x] **M3.1** New optional settings in `SendEmail::config_spec`:
   - `smtp_host`, `smtp_port`, `smtp_security` (`tls` or `starttls`), `smtp_user`;
   - `smtp_password`, declared with `.secret()` so the trigger editor redacts it.
 
   All of them are `{{ }}` templates, parsed and checked like the other settings.
-- [ ] **M3.2** In `run`:
+- [x] **M3.2** In `run`:
   - when the host renders non-empty, build `EmailSettings` from the rendered settings, call
     `EmailSettings::check`, and send with a one-off `SmtpMailer::new`;
   - otherwise use `ctx.mailer` as now;
   - `from` defaults to `smtp_user` when an override is used and `from` is empty;
   - errors name the host and never the password.
-- [ ] **M3.3** The connection rules of §5.1 for the override: ports 465 and 587 only; the host
+- [x] **M3.3** The connection rules of §5.1 for the override: ports 465 and 587 only; the host
   must resolve to public addresses only, and the connection goes to the address that was checked.
   - lettre resolves names itself. Either resolve first and connect by IP while keeping the name
     for SNI and the certificate check, or check before and accept the small window. Pick one and
     write it down.
   - Server email settings are left alone: the admin's own SMTP may be on localhost.
-- [ ] **M3.4** Check whether templates can follow joins. In use case C the password is
+- [x] **M3.4** Check whether templates can follow joins. In use case C the password is
   `{{ accountⱵsmtp_password }}` on a trigger whose table refers to `mail_accounts`.
   - If they can't, either make templates able to, or document copying the account id into the
     template scope through a code-body step.
   - Templates must see the decrypted Secret value (M2.3).
-- [ ] **M3.5** Tests with the recording mailer and a fake SMTP: override used, override absent,
+- [x] **M3.5** Tests with the recording mailer and a fake SMTP: override used, override absent,
   password redacted in the stored trigger, private address refused.
-- [ ] **M3.6** Docs: `docs/tutorial-triggers.md` `send_email` section. Note that a copy in Sent
+- [x] **M3.6** Docs: `docs/tutorial-triggers.md` `send_email` section. Note that a copy in Sent
   depends on the server (Gmail and Microsoft 365 file it themselves, others don't).
+
+  **Done (2026-10-21).** Decisions worth knowing for M8–M9:
+  - **M3.3: resolve first, connect by IP.** `sc_email::relay_mailer` resolves the host once,
+    refuses it unless every address is public (`sc_email::is_public`, now shared with the agent
+    fetch guard), and builds the transport with `SmtpMailer::pinned`: lettre's
+    `builder_dangerous(<ip>)` plus `TlsParameters::new(<host>)`, so SNI and the certificate check
+    still use the name and the certificate is always verified. The EHLO name is the sender's
+    domain. Ports are 465 (`tls`) and 587 (`starttls`), and a mismatch or `none` is refused.
+  - **The seam is `Mailer::send_via(server, email)`.** Its default is the real, checked path,
+    and `RecordingMailer` records the server instead (`servers()`), checking only port and
+    encryption. M9's `mail_send` is JS and nodemailer, so it does not use this. But §5.1's rules
+    are the same, and `connect.js` (M8.1) should match `relay.rs` case for case.
+  - **M3.4: templates can follow joins, and now see secrets.** Template validation uses
+    `sc_action::template_shape`, which is the action shape plus every Secret field.
+    `render_event_template` opens a join path that ends on a secret
+    (`secrets::reveal_join_value`). Other formulas (`only_if`, `where`, assignments, ownership,
+    calculated fields) still cannot name a secret. Use case C is therefore a plain
+    `send_email` trigger on the table that refers to `mail_accounts`, with no code-body step.
+  - **Trigger settings marked `secret()` are now masked in the admin REST API too.** This
+    covers list, create and update (`ActionRegistry::redact_trigger` / `merge_trigger_secrets`),
+    not only the MCP tools. Backups still write the stored value.
+  - **Follow-ups:** a `send_email` *workflow step*'s `smtp_password` is not masked in the
+    workflow editor (steps are versioned JSON, with no per-action redaction yet). A literal
+    password containing `{{` cannot be typed, because the setting is a template; put it in a
+    Secret field instead.
 
 ## M4 — Modules declare tables (core)
 

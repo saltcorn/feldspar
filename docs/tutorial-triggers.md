@@ -762,6 +762,45 @@ question of what you do with the answer: the action is one configured request wh
 for when the answer has to be branched on, looped over, combined with a query or written to a
 table.
 
+### `send_email`, and sending from an account's own server
+
+`send_email` sends through the server configured in **Settings → Email** unless its five
+**SMTP override** settings name another one. Like every other setting they are `{{ }}` templates,
+so a shipping notice can go out from the order's own mailbox, through that mailbox's server:
+
+| Setting | Example | Notes |
+|---|---|---|
+| `smtp_host` | `{{ accountⱵsmtp_host }}` | the switch: empty, or rendering empty, means Settings → Email |
+| `smtp_port` | `{{ accountⱵsmtp_port }}` | `465` or `587`; empty means the one `smtp_security` implies, else `587` |
+| `smtp_security` | `tls` | `tls` (465) or `starttls` (587); empty means the one the port implies |
+| `smtp_user` | `{{ accountⱵsmtp_user }}` | also the From address when `from` is empty |
+| `smtp_password` | `{{ accountⱵsmtp_password }}` | a secret setting: the trigger editor shows `••••••••`, and saving that back keeps it |
+
+The password can live in a **Secret** field of the account's table
+([tutorial-ownership.md](tutorial-ownership.md#step-8--keep-a-password-in-a-secret-field), Step 8). A `{{ }}` template in a trigger's
+settings is the one kind of formula that sees Secret fields: in its own row (`{{ smtp_password }}`
+on a trigger on the accounts table) and at the end of a Ⱶ-join (`{{ accountⱵsmtp_password }}`),
+decrypted for the send. A filter, an `only_if`, an ownership rule or a calculated field still
+cannot name one.
+
+An override is held to stricter rules than the installation's own server, because its host can
+come from a row a user wrote:
+
+- **ports 465 and 587 only**, each with its own encryption, so never an unencrypted connection;
+- **public addresses only.** A host that resolves to a loopback, private or link-local address, or
+  to a mix of public and private ones, is refused. The connection goes to the address that was
+  checked, so a DNS server cannot answer differently the second time. The certificate is
+  still verified against the host's name.
+- a host, port or encryption **typed into the form** is checked when you save. A templated one is
+  checked when it renders. Either way the error names the host and never the password.
+
+The server in Settings → Email is not held to these rules: your own relay can be on `localhost`.
+
+**A copy in Sent depends on the server.** `send_email` only submits the message. Gmail and
+Microsoft 365 file whatever you send through their SMTP into the account's Sent folder
+themselves. Most other providers (GMX, IONOS, Fastmail, a plain Dovecot/Postfix) do not, and the
+mail will not appear there.
+
 ## Things that trip people up
 
 - **A trigger fires *after* the write, and cannot veto it.** The row is already committed when

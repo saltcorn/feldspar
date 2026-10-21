@@ -27,6 +27,9 @@ sc-catalog.workspace = true
 # dispatcher every other event fires on, so an agent is one more thing that can
 # ask rather than a second way to fire (§11.3).
 sc-action.workspace = true
+# `is_public`: the one definition of a public address, shared with the SMTP
+# override check so the fetch guard and a trigger's mail agree on it.
+sc-email.workspace = true
 # `User` and the role scale a caller is checked on.
 sc-auth.workspace = true
 # `Expr`/`OrderBy`/`Value`: what a tool's `where` and ordering are translated

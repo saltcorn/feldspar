@@ -42,7 +42,7 @@ use sc_action::{
 };
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
-use sc_types::{Attrs, FormField, merge_secrets, redact_attrs};
+use sc_types::{Attrs, FormField, merge_secrets};
 use serde_json::{Map, Value as Json, json};
 
 use crate::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
@@ -329,19 +329,14 @@ fn trigger_json(
 /// back when the mask is sent in again, which is what makes the masking safe.
 fn visible_config(catalog: &Catalog, registry: &ActionRegistry, trigger: &Trigger) -> Attrs {
     // A workflow body has no configuration at all: its steps carry their own.
-    let Some(configuration) = trigger.configuration() else {
-        return Attrs::new();
-    };
-    match trigger.action().and_then(|a| registry.get(a)) {
-        Some(action) => redact_attrs(
-            &action.config_spec_for(catalog, trigger.channel.as_deref()),
-            configuration,
-        ),
-        // An action nothing implements has no spec to mask against. The
-        // configuration is shown as stored, because the agent's job here is to
-        // fix a trigger naming an action that is gone.
-        None => configuration.clone(),
-    }
+    // An action nothing implements has no spec to mask against, and is shown
+    // as stored, because the agent's job here is to fix a trigger naming an
+    // action that is gone.
+    registry
+        .redact_trigger(catalog, trigger)
+        .configuration()
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Every registered action's name and one line — the cheap index level, included
