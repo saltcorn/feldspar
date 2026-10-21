@@ -444,6 +444,7 @@ module.exports = {
 | `ctx.fail(error)` | gives up: the stop is called, and the service is started again after a delay |
 | `ctx.signal` | an `AbortSignal`, aborted when the service is being stopped |
 | `ctx.configuration` | the module's settings |
+| `ctx.files` | files in the module's own file areas: see below |
 
 **What it may touch.** A service runs as **the module**, not as a user: nobody called it. It may
 read and write **only the tables its module declared** (Step 7). Any other table, `ctx.db.sql()`,
@@ -466,6 +467,33 @@ close connections. Do not rely on it to save state: a worker that dies does not 
 not hold up any other module's actions. Its module-level variables survive a restart of the
 service, but not a restart of the worker. A module that runs a service cannot also supply view
 patterns.
+
+**Files.** A module keeps files where its declared file fields say, and nowhere else. A field
+`{ name: "file", file_store: "mail_files", file_folder: "attachments" }` lets the module write
+under `attachments/` in the store `mail_files`. A service has `ctx.files`, and an action gets the
+same object as `files` in its argument:
+
+```js
+// `data` is a string, a Buffer/Uint8Array/ArrayBuffer, or a stream of them
+// (a Node Readable, a web ReadableStream, an async generator).
+const path = await ctx.files.write("mail_files", `attachments/${id}/${name}`, data, {
+  contentType: "application/pdf", // served as this type, whatever the name
+  filename: name,                  // the name a download is saved as
+});
+await ctx.db.mail_attachments.insert({ message: id, file: path });
+
+const bytes = await ctx.files.read("mail_files", path);              // a Buffer
+const text = await ctx.files.read("mail_files", path, { encoding: "utf8" });
+await ctx.files.stat("mail_files", path);                            // { size, … } or null
+await ctx.files.remove("mail_files", path);                          // true if it was there
+```
+
+Paths are relative to the store and must lie inside the folder; `write` replaces what is there
+and answers the normalised path, which is what a File field holds. A large file is sent in 1 MB
+pieces to a temporary name and renamed into place at the end, so it never has to be one string,
+and a reader never sees half of it. Another store, another folder or `..` is refused, naming the
+places the module may write. Files are written as the module, also from an action: the action's
+own table reads decide what its caller may reach.
 
 **On a bundled card**, list the services in `feldspar-module.json` as `services: ["ticker"]`. The
 card then says the module runs in the background and writes to its own tables.
@@ -525,8 +553,8 @@ ordinary tables from then on, and yours to drop.
 ## What this is not, yet
 
 - **Only actions, functions, table providers, view patterns, tables and services.** Types, field
-  views and event types are named in the tab and not loaded. A service cannot write files yet
-  (TODO-imap M6).
+  views and event types are named in the tab and not loaded. Only JavaScript modules have
+  `files` (TODO-imap M6); a Python module cannot declare tables yet, so it has no file area.
 - **Not only JavaScript any more.** The Type dropdown now offers four pairs, because a module can
   also be a `pip`-installable **Python** distribution supplying the same three things — see
   [tutorial-python.md](tutorial-python.md), whose step 7 writes one from an empty directory. What

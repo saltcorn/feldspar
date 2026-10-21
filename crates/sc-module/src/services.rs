@@ -73,6 +73,7 @@ use serde::Serialize;
 use serde_json::{Value as Json, json};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::files::{FileArea, ModuleFiles, file_areas};
 use crate::host::{CallHosts, ModuleHost, ServiceAsks};
 use crate::module::ModuleLanguage;
 use crate::modules::ModuleSet;
@@ -216,7 +217,9 @@ impl ServiceSupervisor {
             if manifest.services.is_empty() {
                 continue;
             }
-            let tables: Arc<BTreeSet<String>> = Arc::new(loaded.table_names().into_iter().collect());
+            let tables: Arc<BTreeSet<String>> =
+                Arc::new(loaded.table_names().into_iter().collect());
+            let areas: Arc<Vec<FileArea>> = Arc::new(file_areas(&loaded.table_declarations()));
             for service in &manifest.services {
                 let module = loaded.module.name.clone();
                 self.shared.set_status(ServiceStatus {
@@ -233,6 +236,7 @@ impl ServiceSupervisor {
                     module,
                     service.name.clone(),
                     Arc::clone(&tables),
+                    Arc::clone(&areas),
                     stopped,
                 ));
                 running.push(Running {
@@ -315,6 +319,7 @@ async fn supervise(
     module: String,
     service: String,
     tables: Arc<BTreeSet<String>>,
+    areas: Arc<Vec<FileArea>>,
     mut stop: oneshot::Receiver<()>,
 ) {
     let backoff = shared.backoff;
@@ -322,7 +327,7 @@ async fn supervise(
     loop {
         shared.update_status(&module, &service, |s| s.state = ServiceState::Running);
         let began = Instant::now();
-        let ended = run_once(&shared, &module, &service, &tables, &mut stop).await;
+        let ended = run_once(&shared, &module, &service, &tables, &areas, &mut stop).await;
         shared.router.forget(&module, &service);
         let error = match ended {
             Ended::Asked | Ended::ByItself => {
@@ -362,9 +367,10 @@ async fn run_once(
     module: &str,
     service: &str,
     tables: &BTreeSet<String>,
+    areas: &[FileArea],
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
-    let ended = serve_once(shared, module, service, tables, stop).await;
+    let ended = serve_once(shared, module, service, tables, areas, stop).await;
     shared.router.forget(module, service);
     ended
 }
@@ -377,6 +383,7 @@ async fn serve_once(
     module: &str,
     service: &str,
     tables: &BTreeSet<String>,
+    areas: &[FileArea],
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
     let catalog = &*shared.catalog;
@@ -416,6 +423,7 @@ async fn serve_once(
         service.to_owned(),
         received,
     ));
+    let files = ModuleFiles::new(catalog, module, areas);
     let schema = schema_snapshot(catalog).ok();
     let call = CallHosts {
         hosts: CodeHosts {
@@ -426,6 +434,7 @@ async fn serve_once(
         schema: schema.as_deref(),
         views: None,
         service: Some(&asks),
+        module_files: Some(&files),
     };
     let run = shared.host.run_service(module, service, call);
     tokio::pin!(run);

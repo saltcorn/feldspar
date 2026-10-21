@@ -65,6 +65,11 @@ pub struct CallHosts<'a> {
     /// What a module's **service** asks of its supervisor (TODO-imap M5): the
     /// `service` surface, which only a service's own call carries.
     pub service: Option<&'a dyn ServiceAsks>,
+    /// The module's own file areas (TODO-imap M6): the `module_files` surface,
+    /// which `ctx.files` in a service and `files` in an action speak — a
+    /// [`crate::files::ModuleFiles`], confined to the stores and folders its
+    /// declared file fields name.
+    pub module_files: Option<&'a dyn sc_expr::FileHost>,
 }
 
 /// The `service` ask surface: what a running service asks of the supervisor
@@ -91,7 +96,15 @@ impl<'a> CallHosts<'a> {
             schema,
             views: None,
             service: None,
+            module_files: None,
         }
+    }
+
+    /// The same, with the module's own file surface.
+    #[must_use]
+    pub fn with_module_files(mut self, files: &'a dyn sc_expr::FileHost) -> CallHosts<'a> {
+        self.module_files = Some(files);
+        self
     }
 
     /// The same, carrying an application's view snapshot.

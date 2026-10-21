@@ -659,7 +659,7 @@ and do not commit.
 
 ## M6 — File writes from JS modules (core)
 
-- [ ] **M6.1** `ctx.files` (services) and the action context's equivalent:
+- [x] **M6.1** `ctx.files` (services) and the action context's equivalent:
   - `write(store, path, bytes | stream, { contentType }) → path`, streaming, so a 20 MB attachment
     is not one JS string;
   - `read(store, path)`;
@@ -667,8 +667,28 @@ and do not commit.
 
   Limit it to the module's declared store or folder (M4.5). Python's `sc.fs` is the model
   (`docs/TODO-post-mvp-19.md` §180–198).
-- [ ] **M6.2** Tests, including refusal outside the allowed store or folder, and a 20 MB write
+- [x] **M6.2** Tests, including refusal outside the allowed store or folder, and a 20 MB write
   within the heap bound.
+
+  **Done (2026-10-21).** Decisions worth knowing for M8–M9 (TECHNICAL_DESIGN §15.1d, tutorial
+  Step 8):
+  - **The area is the declared file field's store and folder.** Paths are store-relative and must
+    lie under the folder: the mail module writes `attachments/<message>/<name>` in `mail_files`,
+    and `write` answers that path, which is what `mail_attachments.file` holds.
+  - **Actions get it too**, as `files` in v1's argument object, so `mail_attachment` (M8.6, M9.2)
+    can store a file when it is first opened. Files are written **as the module** in both cases.
+    The action must still load the message as the caller first (§5.6), because the file surface
+    does not check rows.
+  - **Pass the stream, not a string.** `write` takes a `Buffer` or anything async-iterable, such
+    as imapflow's `download()` content stream, and sends it in 1 MB pieces to a temporary name,
+    renamed into place at the end. mailparser's `attachment.content` is already a `Buffer`, so it
+    can be passed as it is.
+  - **`contentType` is kept and served** (`content_type` in the file's metadata), so an
+    attachment named `winmail.dat` or with no extension downloads with the mail's type. Pass
+    `filename` for the download name when the stored path is not the original name.
+  - **Not done:** a crash in the middle of a large write leaves a `.part-*` file next to the
+    target. M8 can sweep `attachments/` for them, or ignore them. Python modules have no
+    `files`.
 
 ## M7 — The parser (module, no core dependencies)
 

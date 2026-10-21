@@ -90,6 +90,7 @@ import Module from "node:module";
 import * as path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format } from "node:util";
+import { Buffer } from "node:buffer";
 
 const require = createRequire(import.meta.url);
 
@@ -1254,6 +1255,9 @@ function serviceContext(record, configuration) {
      * chain (`ctx.db.mail_messages.where({ … }).rows()`), over this service's
      * call. A table the module did not declare is refused by the server. */
     db: globalThis.__scMakeDb(callId),
+    /** The module's own file areas (TODO-imap M6): `write`, `read`, `remove`,
+     * `stat`, in the stores and folders its declared file fields name. */
+    files: moduleFiles((plan) => askFor(callId, "module_files", plan)),
     /** Run another trigger, as `trigger.run(name, payload)` does in a body. */
     runTrigger: (trigger, payload) =>
       askFor(callId, "trigger", {
@@ -2211,6 +2215,160 @@ async function loadModule({ module: name, dir, configuration }) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The module's own files (TODO-imap M6)
+// ---------------------------------------------------------------------------
+
+/** How many bytes one ask carries when a module writes or reads a file. The
+ * seam is JSON, so they travel base64: a megabyte is a 1.4 MB string, and a
+ * 20 MB attachment twenty of them rather than one 27 MB string. */
+const FILE_CHUNK = 1024 * 1024;
+
+/** One piece of what `write` was given, as bytes — without a copy when it
+ * already is bytes. */
+function bytesOf(piece) {
+  if (typeof piece === "string") return Buffer.from(piece, "utf8");
+  if (piece instanceof Uint8Array) return piece;
+  if (piece instanceof ArrayBuffer) return new Uint8Array(piece);
+  if (ArrayBuffer.isView(piece)) return new Uint8Array(piece.buffer, piece.byteOffset, piece.byteLength);
+  throw new TypeError(
+    `files.write takes a string, bytes (a Buffer, a Uint8Array, an ArrayBuffer) or a stream of them, not ${
+      piece === null ? "null" : typeof piece
+    }`,
+  );
+}
+
+/** What `write` was given, as pieces of at most `FILE_CHUNK` bytes: a value is
+ * sliced (`subarray`, no copy), and a stream — anything async-iterable, which a
+ * Node `Readable` and a web `ReadableStream` both are — is gathered into pieces
+ * of that size, so a stream of 64 kB chunks is not one ask per chunk. */
+async function* piecesOf(data) {
+  const isStream =
+    data !== null &&
+    typeof data === "object" &&
+    !ArrayBuffer.isView(data) &&
+    !(data instanceof ArrayBuffer) &&
+    (typeof data[Symbol.asyncIterator] === "function" || typeof data[Symbol.iterator] === "function");
+  if (!isStream) {
+    const bytes = bytesOf(data);
+    for (let at = 0; at < bytes.length; at += FILE_CHUNK) yield bytes.subarray(at, at + FILE_CHUNK);
+    return;
+  }
+  let held = [];
+  let size = 0;
+  for await (const chunk of data) {
+    let bytes = bytesOf(chunk);
+    while (size + bytes.length >= FILE_CHUNK) {
+      const take = FILE_CHUNK - size;
+      held.push(bytes.subarray(0, take));
+      yield Buffer.concat(held, FILE_CHUNK);
+      held = [];
+      size = 0;
+      bytes = bytes.subarray(take);
+    }
+    if (bytes.length > 0) {
+      held.push(bytes);
+      size += bytes.length;
+    }
+  }
+  if (size > 0) yield Buffer.concat(held, size);
+}
+
+/** A store-relative path as the server normalises it — what `write` answers,
+ * and what a File field holds. */
+const storePath = (path) =>
+  String(path)
+    .split("/")
+    .filter((s) => s !== "" && s !== ".")
+    .join("/");
+
+/** `ctx.files` of a service and `files` of an action: the module's own file
+ * areas — the stores and folders its declared file fields name — over `send`,
+ * one ask on the `module_files` surface. Paths are store-relative and must lie
+ * in such a folder; the server refuses any other.
+ *
+ *   const path = await files.write("mail_files", `attachments/${id}/a.pdf`,
+ *                                  stream, { contentType: "application/pdf" });
+ *   const bytes = await files.read("mail_files", path);
+ *   await files.remove("mail_files", path);
+ */
+function moduleFiles(send) {
+  const base64 = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+  return {
+    /** Store `data` — a string, bytes, or a stream of either — at `path`,
+     * replacing what is there, and answer the path. A file larger than one
+     * piece is written to a temporary name beside it and renamed into place,
+     * so a reader never sees half of it. */
+    async write(store, path, data, options = {}) {
+      const { contentType, filename } = options || {};
+      const target = storePath(path);
+      const labels = {};
+      if (contentType != null) labels.contentType = String(contentType);
+      if (filename != null) labels.filename = String(filename);
+      const pieces = piecesOf(data)[Symbol.asyncIterator]();
+      const first = await pieces.next();
+      const second = first.done ? first : await pieces.next();
+      if (second.done) {
+        await send({
+          op: "write",
+          store,
+          path: target,
+          base64: first.done ? "" : base64(first.value),
+          overwrite: true,
+          ...labels,
+        });
+        return target;
+      }
+      const temp = `${target}.part-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        await send({ op: "write", store, path: temp, base64: base64(first.value), overwrite: true });
+        await send({ op: "append", store, path: temp, base64: base64(second.value) });
+        for (let next = await pieces.next(); !next.done; next = await pieces.next()) {
+          await send({ op: "append", store, path: temp, base64: base64(next.value) });
+        }
+        await send({ op: "rename", store, path: temp, toPath: target, overwrite: true, ...labels });
+      } catch (e) {
+        try {
+          await send({ op: "delete", store, path: temp });
+        } catch (_) {
+          // The failure that matters is the write's.
+        }
+        throw e;
+      }
+      return target;
+    },
+    /** The file's bytes, as a `Buffer` — or a string, with `{ encoding:
+     * "utf8" }`. Read in pieces, so any size the heap can hold is readable. */
+    async read(store, path, options = {}) {
+      const target = storePath(path);
+      const stat = await send({ op: "stat", store, path: target });
+      if (!stat) throw new Error(`${JSON.stringify(target)} does not exist in file store ${store}`);
+      if (stat.isDirectory) throw new Error(`${JSON.stringify(target)} in file store ${store} is a directory`);
+      const parts = [];
+      let got = 0;
+      for (let offset = 0; offset < stat.size; ) {
+        const answer = await send({ op: "read", store, path: target, offset, length: 4 * FILE_CHUNK });
+        const bytes = Buffer.from(answer.base64, "base64");
+        if (bytes.length === 0) break;
+        parts.push(bytes);
+        got += bytes.length;
+        offset += bytes.length;
+      }
+      const all = Buffer.concat(parts, got);
+      const encoding = options && options.encoding;
+      return encoding ? all.toString(encoding) : all;
+    },
+    /** Delete the file; answers whether there was one. */
+    remove(store, path) {
+      return send({ op: "delete", store, path: storePath(path) });
+    },
+    /** `{ size, modified, … }`, or `null` when nothing is there. */
+    stat(store, path) {
+      return send({ op: "stat", store, path: storePath(path) });
+    },
+  };
+}
+
 /** Run one action of one module, with v1's argument object. */
 async function runAction({ module: name, action: actionName, args }) {
   const entry = loaded.get(name);
@@ -2220,7 +2378,15 @@ async function runAction({ module: name, action: actionName, args }) {
   const impl = typeof action === "function" ? { run: action } : action;
   if (typeof impl.run !== "function")
     throw new Error(`the action ${actionName} of module ${name} has no run function`);
-  const result = await impl.run(args || {});
+  const argument = args || {};
+  // The module's own files (TODO-imap M6), asked as this call — captured here
+  // rather than read from the async context, for `askFor`'s reason.
+  const store = running.getStore();
+  if (store && store.asks) {
+    const callId = store.call;
+    argument.files = moduleFiles((plan) => askFor(callId, "module_files", plan));
+  }
+  const result = await impl.run(argument);
   return result === undefined ? null : result;
 }
 

@@ -11444,6 +11444,46 @@ calls was shown by the spike (TODO-imap M1.4); that they survive a *service* res
 worker follows from the module not being reloaded, and `tests/module_services.rs` asserts the
 module-level state does.
 
+### 15.1d Module files (`sc-module::files`, TODO-imap M6)
+
+A module keeps files **only where its declared file fields say** (M4.5). Every declared field with
+a `file_store` names an **area**: the store, and its `file_folder` within it (the whole store when
+there is none). `sc_module::files::file_areas` reads them from the declarations, and
+`ModuleFiles` is the module's file host: `FileStoreHost`, at admin authority, behind a check that
+the store is one of the areas' and the normalised path lies under the area's folder (`docs/a.txt`
+is in `docs`; `docs-x/a.txt` and `docs` itself are not). Anything else is refused naming the areas
+there are. No permission key, for `ctx.db`'s reason: the module reaches only what it declared.
+
+**One surface for services and actions.** `ModuleFiles` is served as a sixth ask surface,
+`module_files` (`CallHosts::module_files`), beside the code body's `files`, which a v1 plugin's
+builder image list still uses unchanged. A service's call carries it (`ctx.files`), and so does
+every module action (`files` in v1's argument object, added by the host script when the call can
+ask). Both run as the module: an action's caller decides which rows it may reach, through its
+`Table` reads; the module decides which of its own files those rows need. Who may download a
+stored file is the File field's business.
+
+**The vocabulary** is four functions, store-relative paths throughout:
+`write(store, path, data, { contentType, filename }) → path`, `read(store, path, { encoding }) →
+Buffer | string`, `remove(store, path) → bool`, `stat(store, path) → {size, …} | null`. The
+operations underneath are `FileStoreHost`'s own (`write`, `append`, `read` with `offset`/`length`,
+`stat`, `delete`, `rename`); any other operation, the `owner`/`minRole` options and a cross-store
+`toStore` are refused.
+
+**Streaming over a JSON seam.** Bytes cross base64, and one operation carries at most
+`--code-max-file-bytes` (8 MB). So the host script cuts what it is given — a string, a
+`Uint8Array`/`Buffer`/`ArrayBuffer`, or anything async-iterable such as a Node `Readable` or a web
+`ReadableStream` — into **1 MB pieces** (slices of a buffer, without copying; a stream's small
+chunks gathered up to 1 MB). One piece is a single `write`. More are written to
+`<path>.part-<random>` with `write` then `append`s, and **renamed** over the target at the end, so
+a reader never sees half a file; a failure deletes the temporary. A 20 MB attachment is twenty
+asks of a 1.4 MB string each, and the test writes 20 MB from a stream and 20 MB from a buffer and
+reads one back inside the worker's 256 MB heap. `read` reads in 4 MB pieces by `offset`.
+
+**Content type.** A file's declared type is kept in its metadata as
+`sc_files::CONTENT_TYPE_ATTRIBUTE` (`content_type`), and `file_response::serve` uses it before
+guessing from the path (a descriptor's own type still wins). `filename` is the existing
+`FILENAME_ATTRIBUTE`. Both are set by `ModuleFiles` after the `write` or the final `rename`.
+
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 
 The second adapter. It is small for a reason that is structural rather than lucky: the JavaScript

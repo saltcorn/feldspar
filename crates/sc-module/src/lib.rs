@@ -62,6 +62,7 @@ pub mod bounds;
 pub mod bundled;
 #[cfg(feature = "deno-host")]
 pub mod deno;
+pub mod files;
 pub mod frameworks;
 pub mod functions;
 pub mod host;

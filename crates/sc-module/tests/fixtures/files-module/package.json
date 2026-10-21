@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/files",
+  "version": "0.1.0",
+  "description": "A module that keeps files in its declared file area, for the module-files tests (TODO-imap M6).",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

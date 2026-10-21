@@ -1380,7 +1380,8 @@ impl DenoModuleHost {
             || call.hosts.triggers.is_some()
             || call.hosts.module_fns.is_some()
             || call.hosts.files.is_some()
-            || call.service.is_some();
+            || call.service.is_some()
+            || call.module_files.is_some();
         if let Json::Object(map) = &mut request {
             map.insert("asks".to_owned(), Json::Bool(can_ask));
             // The functions this call's modules supply, by name, for v1's
@@ -1420,6 +1421,7 @@ impl DenoModuleHost {
         let module_fns = call.hosts.module_fns;
         let files = call.hosts.files;
         let service = call.service;
+        let module_files = call.module_files;
         // The run's budget, and the same one a code body's run gets: a module's
         // N+1 costs what a body's N+1 costs, because it is the same bound on the
         // same server doing the same work. A service has none (`None`).
@@ -1474,7 +1476,14 @@ impl DenoModuleHost {
                     outstanding.insert(ask.id);
                     let control = control.clone();
                     serving.push(async move {
-                        let surfaces = Surfaces { host, triggers, module_fns, files, service };
+                        let surfaces = Surfaces {
+                            host,
+                            triggers,
+                            module_fns,
+                            files,
+                            service,
+                            module_files,
+                        };
                         let (ok, text) = match serve(surfaces, ask.request).await {
                             Ok(value) => (
                                 true,
@@ -1548,6 +1557,7 @@ struct Surfaces<'a> {
     module_fns: Option<&'a dyn sc_expr::ModuleFnHost>,
     files: Option<&'a dyn sc_expr::FileHost>,
     service: Option<&'a dyn crate::host::ServiceAsks>,
+    module_files: Option<&'a dyn sc_expr::FileHost>,
 }
 
 /// One ask, on the surface it names.
@@ -1585,6 +1595,14 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
             Some(files) => files.files(plan).await,
             None => Err(Error::config("this module call has no file store access")),
         },
+        "module_files" => match surfaces.module_files {
+            Some(files) => files.files(plan).await,
+            None => Err(Error::config(
+                "this module call has no file area of its own: a module keeps files only \
+                 where its declared file fields say (TODO-imap M4.5), from an action or a \
+                 service",
+            )),
+        },
         "service" => match surfaces.service {
             Some(service) => service.ask(plan).await,
             None => Err(Error::config(
@@ -1594,8 +1612,8 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
         other => Err(Error::config(format!(
             "`{other}` is not something a module can ask this server for; what a module may \
              reach is the database (`db`), this server's triggers (`trigger`), its modules' \
-             functions (`function`), the file stores it was given (`files`) and, from a \
-             service, its supervisor (`service`)"
+             functions (`function`), the file stores it was given (`files`), its own \
+             file areas (`module_files`) and, from a service, its supervisor (`service`)"
         ))),
     }
 }

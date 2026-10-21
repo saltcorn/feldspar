@@ -362,6 +362,9 @@ async fn load_one(
         config_fields_to_form_fields(&manifest.config_fields, "this module");
     issues.extend(spec_issues);
 
+    let areas = Arc::new(crate::files::file_areas(
+        &crate::tables::parse_declarations(&manifest.tables).0,
+    ));
     for action in &manifest.actions {
         let (spec, action_issues) = config_fields_to_form_fields(
             &action.config_fields,
@@ -375,7 +378,8 @@ async fn load_one(
             spec,
             Arc::clone(host),
             Arc::clone(surfaces),
-        );
+        )
+        .with_file_areas(Arc::clone(&areas));
         if let Err(e) = registry.register(Arc::new(registered)) {
             // The built-in — or the module that got there first — keeps the
             // name. Which implementation answers to `insert_row` must not

@@ -2,6 +2,38 @@
 
 Changes in reverse chronological order.
 
+## Mail module M6: file writes from JavaScript modules
+
+A JavaScript module can store files, in the places its declared file fields name and nowhere
+else (TODO-imap.md M6). The design is in TECHNICAL_DESIGN §15.1d; the tutorial is under Step 8 of
+`docs/tutorial-modules.md`.
+
+- **M6.1** `ctx.files` in a service, and `files` in a module action's argument object:
+  `write(store, path, data, { contentType, filename }) → path`, `read(store, path, { encoding })`,
+  `remove(store, path)` and `stat(store, path)`.
+  - **Scope.** New `sc_module::files`: `file_areas` reads `(store, folder)` from the module's
+    declared file fields, and `ModuleFiles` wraps `FileStoreHost` at admin authority and refuses
+    any other store, any path outside the folder (`docs-x/` is not in `docs/`), `..`, the
+    `owner`/`minRole` options, a cross-store rename and every operation but `write`, `append`,
+    `read`, `stat`, `delete` and `rename`. Refusals name the areas the module has.
+  - **A new ask surface, `module_files`** (`CallHosts::module_files`, served in
+    `deno/mod.rs`). The service supervisor and `ModuleAction` (`with_file_areas`, set by
+    `ModuleSet::load`) both pass one. The existing `files` surface is unchanged.
+  - **Streaming.** `data` may be a string, bytes, or anything async-iterable (a Node `Readable`,
+    a web `ReadableStream`, a generator). The host script sends it in 1 MB pieces: one piece is
+    one `write`; more go to `<path>.part-<random>` by `write` and `append`, then `rename` over the
+    target, and a failure deletes the temporary. `read` reads in 4 MB pieces by offset.
+  - **Content type.** New `sc_files::CONTENT_TYPE_ATTRIBUTE` (`content_type`) in a file's
+    metadata. `file_response::serve` now serves it before guessing from the path, and reads the
+    metadata once for the type and the name.
+- **M6.2** Tests: `sc-module/tests/module_files.rs` with a new `files-module` fixture. Its
+  service writes a small file with a type and a name, 20 MB from a stream and 20 MB from one
+  buffer, reads 20 MB back intact (inside the worker's 256 MB heap), and is refused another
+  folder, a sibling folder with the same prefix, another store, `..` and the folder itself. The
+  store holds the type and the name and no temporary. Its action writes through `files` and is
+  refused outside the folder. Unit tests in `files.rs` for area containment, path normalisation
+  and reading the areas from declarations; one in `file_response.rs` for the declared type.
+
 ## Mail module M5: module services
 
 A module can run **services** in the background (TODO-imap.md M5): code that keeps going after

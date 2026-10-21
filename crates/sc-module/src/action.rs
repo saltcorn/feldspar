@@ -26,6 +26,7 @@ use sc_error::Result;
 use sc_types::{Attrs, FormField};
 use serde_json::{Map, Value as Json, json};
 
+use crate::files::{FileArea, ModuleFiles};
 use crate::host::{CallHosts, ModuleHost};
 
 /// One action supplied by one module.
@@ -47,6 +48,9 @@ pub struct ModuleAction {
     /// and a TLS configuration, and one per firing would pay for a handshake
     /// every time a trigger runs.
     surfaces: Arc<CodeSurfaces>,
+    /// Where the module may keep files (TODO-imap M6): what its declared file
+    /// fields name, and what `files` in the argument object reaches.
+    areas: Arc<Vec<FileArea>>,
 }
 
 impl ModuleAction {
@@ -74,7 +78,15 @@ impl ModuleAction {
             config_spec,
             host,
             surfaces,
+            areas: Arc::new(Vec::new()),
         }
+    }
+
+    /// The same action, able to keep files in its module's `areas`.
+    #[must_use]
+    pub fn with_file_areas(mut self, areas: Arc<Vec<FileArea>>) -> ModuleAction {
+        self.areas = areas;
+        self
     }
 
     /// The package this action came from.
@@ -103,12 +115,13 @@ impl Action for ModuleAction {
         // borrow lives exactly as long as the run — which is also what lets the
         // host serve the module's asks while it waits for the answer.
         let hosts = self.surfaces.build(ctx);
+        let files = ModuleFiles::new(ctx.catalog, &self.module, &self.areas);
         self.host
             .run(
                 &self.module,
                 &self.name,
                 args,
-                CallHosts::new(hosts.surfaces(), hosts.schema()),
+                CallHosts::new(hosts.surfaces(), hosts.schema()).with_module_files(&files),
             )
             .await
     }
