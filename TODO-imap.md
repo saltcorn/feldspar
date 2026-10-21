@@ -755,29 +755,29 @@ and do not commit.
 
 ## M8 — Sync engine, ingest mode (use case A)
 
-- [ ] **M8.1** `connect.js`: the connection rules (§5.1), as one function used by IMAP, SMTP and
+- [x] **M8.1** `connect.js`: the connection rules (§5.1), as one function used by IMAP, SMTP and
   `mail_test_account`.
   - Unit tests: allowed and refused ports; a private, loopback or link-local address refused;
     a name that resolves to a public and a private address refused.
-- [ ] **M8.2** `account.js`: one account's lifecycle:
+- [x] **M8.2** `account.js`: one account's lifecycle:
   - connect, then discover folders (SPECIAL-USE flags first, then common names, §7);
   - upsert `mail_folders`;
   - IDLE on the first watched folder; other watched folders polled every 2 min;
   - reconnect with backoff; `auth_failed` handling; status fields.
-- [ ] **M8.3** `sync.js`: one folder's new mail (§5.2), in batches of 50:
+- [x] **M8.3** `sync.js`: one folder's new mail (§5.2), in batches of 50:
   - parse (M7); insert the messages and attachments, storing the files through M6;
   - move to `processed_folder` or `error_folder` after the batch;
   - advance `last_uid`;
   - `uidvalidity` change handling (ingest: match by `message_id`, never delete);
   - `start_from` handling (`UID SEARCH SINCE`).
-- [ ] **M8.4** Flags and expunges (§5.3). In ingest mode, flags are updated and expunges recorded,
+- [x] **M8.4** Flags and expunges (§5.3). In ingest mode, flags are updated and expunges recorded,
   never deleted.
-- [ ] **M8.5** `service.js`: the module's service (M5).
+- [x] **M8.5** `service.js`: the module's service (M5).
   - Load the enabled accounts and run one `account.js` per account.
   - React to account changes (§5.5). Stop cleanly.
-- [ ] **M8.6** Actions for ingest mode: `mail_test_account`, `mail_sync_now`, `mail_set_flags`,
+- [x] **M8.6** Actions for ingest mode: `mail_test_account`, `mail_sync_now`, `mail_set_flags`,
   `mail_attachment` (a no-op when the file is already stored).
-- [ ] **M8.7** Integration tests against Dovecot in Docker:
+- [x] **M8.7** Integration tests against Dovecot in Docker:
   - **ingest:** an existing mailbox of 1,000 mails; new mail during IDLE appears within 5 s;
   - **reconnects:** a server restart during a batch loses and duplicates nothing;
   - **uidvalidity:** a reset (recreate the mailbox);
@@ -788,8 +788,47 @@ and do not commit.
     - it is not visible to a user below `min_role`;
     - it is never visible through another user's personal account;
     - `imap_password` never appears in REST output.
-- [ ] **M8.8** The order example as a test and a tutorial section: an Insert trigger on
+- [x] **M8.8** The order example as a test and a tutorial section: an Insert trigger on
   `mail_messages` filtered to one account creates an `orders` row.
+
+  **Done (2026-10-21).** Decisions worth knowing for M9 (CHANGELOG has the full list):
+  - **One connection per ingest account**, not two. It IDLEs on the first watched folder; passes
+    (new mail, the 2-minute poll, `mail_sync_now`) take it out of IDLE, select the other watched
+    folders in turn and come back. Actions queue on it (`AccountRunner.withFolder`), and open a
+    connection of their own only when the service is not running the account. M9.6's budget
+    holds trivially; mirror mode's polled folders can use the same queue.
+  - **imapflow's auto-IDLE waits 15 s by default**, and new mail in that window waited for it.
+    `autoIdleDelay` is 500 ms; mail is a row about 0.5 s after delivery (Node and the worker).
+  - **A message is stored in two steps**: inserted with `body_state = "importing"`, attachments
+    stored and inserted, then `body_state` set to the parser's value. The attachment rows refer
+    to the message, so an Insert trigger cannot see them. **M8.8's order example is therefore an
+    Update trigger** with `old.body_state === "importing"`; an Insert trigger sees the whole mail
+    but no attachments (both are tested). A row left at `importing` by a crash is finished on the
+    next pass.
+  - **Ingest never deletes.** An expunge clears `uid`; a UIDVALIDITY change clears every `uid` of
+    the folder, and mail found again is matched by `message_id` (any folder row with a null `uid`
+    and that Message-ID gets the new UID). Moves to `processed_folder`/`error_folder` update
+    `folder` and `uid` (UIDPLUS's `uidMap`).
+  - **Status values:** `connecting`, `syncing`, `idle`, `error` (retrying), `auth_failed`,
+    `refused` (a §5.1 refusal, not retried), `disabled`, `stopped`, and `unsupported` for mirror
+    accounts until M9.
+  - **Module settings:** `trusted_servers` (`host[:port]` lines that may be private and use that
+    port) and `ca_certificates`. **Extra CAs apply to trusted servers only**, in place of the
+    public roots: adding them to the roots needs `tls.rootCertificates`, which is `sys: ca` in
+    the worker, and a module is not granted it.
+  - **The module's settings reach an action through `actions(configuration)`** (v1's form); the
+    argument's own `configuration` is the trigger's. `index.js` passes them on as `settings`.
+  - **`index.js` requires nothing at load.** The service and actions are required on first use,
+    so `bundled_catalog` can evaluate it without `npm install`.
+  - **Tests:** `npm test` in `plugins/imap` (`test/connect.test.mjs`, and `test/ingest.test.mjs`
+    against `test/servers/dovecot.sh`, a user-level Dovecot with no Docker, as in M1.4), and
+    `crates/sc-module/tests/imap_ingest.rs` (`#[ignore]`: npm and Dovecot) on the real host.
+    `IMAP_LONG_IDLE=1` adds the 30-minute IDLE hold.
+  - **Not done:** the QRESYNC path (§5.3 VANISHED). Expunges are found by `UID SEARCH ALL`
+    against the stored UIDs on each poll and on an EXPUNGE notification, which reads every stored
+    UID of the folder: fine for an ingest INBOX that is emptied into `processed_folder`, worth
+    QRESYNC for M9's large mirror folders. Mail without a Message-ID cannot be matched after a
+    UIDVALIDITY reset and is imported again.
 
 ## M9 — Mirror mode and the client actions (use cases B and D)
 

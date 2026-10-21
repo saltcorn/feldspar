@@ -2,6 +2,89 @@
 
 Changes in reverse chronological order.
 
+## Mail module M8: ingest mode
+
+The bundled mail module now keeps a shared mailbox in its tables (TODO-imap.md M8, use case A).
+Each enabled `ingest` account has a background connection that IDLEs, so new mail is a
+`mail_messages` row about half a second after delivery, with its attachments stored as files and
+its flags kept in step. A trigger on `mail_messages` turns mail into an application's own rows,
+and actions let the app sync, set flags and fetch attachments. New tutorial:
+[docs/tutorial-mail.md](docs/tutorial-mail.md).
+
+- **M8.1** `plugins/imap/connect.js`: where a connection may go (§5.1), for IMAP, SMTP and
+  `mail_test_account`. IMAP 993/tls or 143/starttls, SMTP 465/587, nothing without TLS. The host
+  is resolved once and every address must be public (`isPublic` is `sc_email::is_public` case for
+  case, IPv4-mapped and NAT64 included). The connection goes to the checked IP, with the name kept
+  for SNI and the certificate. Errors have the passwords taken out (`redact`). Two module settings
+  (a `configuration_workflow`) for admins: **trusted servers** (`host[:port]`, may be private and
+  use that port) and **extra CA certificates**, which apply to the trusted servers only. Adding
+  them to Node's roots would need `tls.rootCertificates`, which is `sys: ca` in the worker.
+- **M8.2** `account.js`: `AccountRunner`, one account's life. LIST with roles by SPECIAL-USE, then
+  by common names in eight languages, upserted into `mail_folders` (`sync` marks the watched
+  ones). **One connection**: IDLE on the first watched folder, passes for new mail, the 2-minute
+  poll and `mail_sync_now`, and actions queued on the same connection (`withFolder`). Reconnect
+  with backoff and jitter (5 s doubling to 10 min). Three login failures in a row set
+  `auth_failed` and stop. A refused server sets `refused` and stops. Status, `last_error` and
+  `last_sync_at` are written as it goes. imapflow's auto-IDLE delay is 500 ms instead of 15 s,
+  which otherwise held new mail back for up to 15 s.
+- **M8.3** `sync.js`: one folder's new mail (§5.2). `UID SEARCH UID last+1:*` (with `SINCE
+  start_from`), filtered to `uid > last`, in batches of 50, each source fetched alone. Above
+  25 MB, `parseLarge` with `BODY.PEEK[part]` and attachments streamed by `download()`. Each
+  message has its own try: a mail that cannot be fetched or parsed, or whose file cannot be
+  written, is stored with `import_error`. **Two-step storage**: inserted as `importing`, files
+  and attachment rows, then the final `body_state`, so a trigger can wait for the attachments.
+  Moves to `processed_folder`/`error_folder` happen after the batch, by UID, and the rows record
+  the new folder and UID. The cursor moves last. Nothing is stored twice after a crash. A
+  UIDVALIDITY change clears the folder's UIDs, and mail is matched to its rows again by
+  Message-ID.
+- **M8.4** Flags (CONDSTORE `CHANGEDSINCE`, else the newest 2,000) and expunges (`UID SEARCH ALL`
+  against the stored UIDs) on each poll and on the server's notifications. A pushed FETCH FLAGS
+  is written at once. Ingest records an expunge by clearing `uid`, and never deletes.
+  `highestmodseq`, `total` and `unread` are kept on the folder.
+- **M8.5** `service.js`: one runner per enabled ingest account. `onTableChange("mail_accounts")`
+  starts, stops and restarts runners (own writes ignored; any change restarts an `auth_failed` or
+  `refused` account). Mirror accounts get `unsupported` until M9. Stop logs out every connection.
+- **M8.6** `actions.js`: `mail_test_account` (unsaved settings, or the saved password via
+  `account_id`; five a minute per user), `mail_sync_now` (`wait` for the pass), `mail_set_flags`
+  (`\Seen`/`\Flagged` by UID, then the rows) and `mail_attachment` (a no-op when stored; else
+  downloaded, or re-parsed for TNEF and `.eml` parts). Each reads as the caller first (v1 `Table`
+  with `forUser`). The module's settings reach the actions through v1's `actions(configuration)`.
+  `index.js` requires the service and the actions only when first used, so it still loads with no
+  `node_modules`.
+- **M8.7** Tests.
+  - `npm test` in `plugins/imap`: `test/connect.test.mjs` (ports, private, loopback, link-local
+    and mixed answers, trusted servers, CAs, redaction), and `test/ingest.test.mjs` against a
+    real Dovecot over an in-memory `ctx` (`test/fake-host.mjs`, which keeps the unique
+    constraints). Covered:
+    - 1,000 existing mails stored once each (about 3 s);
+    - new mail during IDLE in about 0.5 s;
+    - a server restart mid-batch that loses and duplicates nothing;
+    - a UIDVALIDITY reset;
+    - a broken mail moved to the error folder without blocking the batch;
+    - the processed folder;
+    - flags and expunges from another client;
+    - `start_from`;
+    - `auth_failed` after three logins;
+    - an untrusted private server refused;
+    - the service following account changes;
+    - with `IMAP_LONG_IDLE=1`, an IDLE held for 30 minutes.
+  - `test/servers/dovecot.sh` runs a user-level Dovecot 2.4 (no Docker) on 11143/11993 with two
+    users. It can `clean`, `deliver` and `restart`, and stopping now ends the open sessions too.
+    `scripts/build-static.sh` leaves its `run/` out of the artifact, and the spike's `run/` too,
+    which it shipped until now.
+  - `crates/sc-module/tests/imap_ingest.rs` (`#[ignore]`: npm and Dovecot) runs the module on the
+    real host with Postgres. Checked:
+    - staff see the shared mail, a user below `min_role` sees none, and ann sees her personal
+      account only, through the row layer and REST;
+    - no password appears in any REST answer, and the column holds an envelope;
+    - IDLE inside the worker delivers in about 0.6 s;
+    - each action, including its refusals for users who may not see the row, and the rate limit;
+    - disabling an account.
+- **M8.8** The order example: an Update trigger on `mail_messages` with `old.body_state ===
+  "importing" && account === …` makes one `orders` row per mail, with the PDF's file. An Insert
+  trigger fires earlier, before the attachments exist (tested, and explained in
+  `docs/tutorial-mail.md`).
+
 ## Mail module M7: the parser
 
 The bundled mail module exists (`plugins/imap/`, `@feldspar/imap`), with its tables declared and

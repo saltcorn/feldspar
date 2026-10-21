@@ -4,3 +4,5 @@ test/corpus/
 spike/node_modules/
 spike/run/
 node_modules/
+# The test servers (test/servers/dovecot.sh) run from here.
+test/servers/run/

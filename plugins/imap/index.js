@@ -6,12 +6,39 @@
 // and an application's own data refers to them: an `orders.message` key filled by an Insert
 // trigger on `mail_messages`, say. Nobody maps mail fields onto columns of their own.
 //
-// What is here so far is the parser (M7): `parse.js` for a whole source, `parse-large.js` for a
-// mail above the size cap, `tnef.js` for Outlook's `winmail.dat`. The sync service (M8.5) and the
-// actions (M8.6, M9) come next and will use them; until then, installing the module creates the
-// tables and nothing writes to them.
+// The parts:
+// - `parse.js`, `parse-large.js`, `tnef.js`: one mail's source into a row and its attachments (M7);
+// - `connect.js`: where a connection may go (§5.1);
+// - `sync.js`: one folder's new mail, flags and expunges into the tables (§5.2, §5.3);
+// - `account.js`: one account's connection, IDLE, polling and reconnects;
+// - `service.js`: the background service, one runner per enabled account (§5.5);
+// - `actions.js`: the actions an application calls (§5.6).
+//
+// Ingest mode (use case A) is here. Mirror mode and sending (B, D) are M9.
 
 "use strict";
+
+// The service and the actions are required when first used, not here: `index.js` itself needs no
+// installed package, so the server (and `bundled_catalog`'s test) can read its tables without
+// `npm install` having run.
+
+/** The actions (`actions.js`), by name, with what the trigger editor says of each. */
+const ACTIONS = {
+  mail_test_account: "Log in to an account's IMAP and SMTP servers with the settings given (saved or not). Answers { imap, smtp, error }.",
+  mail_sync_now: "Sync an account now. Payload: { account_id, wait }.",
+  mail_set_flags: "Mark messages read or unread, flagged or not, on the server and in the table. Payload: { message_ids, seen, flagged }.",
+  mail_attachment: "Store an attachment's file if it is not stored yet, and answer its File path. Payload: { attachment_id }.",
+};
+
+/** v1's `actions(configuration)`: the module's settings reach an action this way, because the
+ * `configuration` in an action's argument is its trigger's, not the module's. */
+const actions = (configuration) =>
+  Object.fromEntries(
+    Object.entries(ACTIONS).map(([name, description]) => [
+      name,
+      { description, run: (args) => require("./actions.js").actions[name]({ ...args, settings: configuration || {} }) },
+    ]),
+  );
 
 /** Who may see a row of a table that belongs to an account: the account's owner, or, for a
  * shared account (no owner), every user at or above its `min_role` (§3). */
@@ -133,7 +160,44 @@ const tables = [
   },
 ];
 
+/** The module's settings: what only an admin decides, for every account (`connect.js`). */
+const configuration_workflow = () => ({
+  steps: [
+    {
+      name: "Servers",
+      form: {
+        fields: [
+          {
+            name: "trusted_servers",
+            label: "Trusted servers",
+            type: "String",
+            fieldview: "textarea",
+            sublabel:
+              "Mail servers inside your own network, one per line, as host or host:port. Only these may " +
+              "resolve to a private address, and a port given here is allowed besides 993/143 and 465/587.",
+          },
+          {
+            name: "ca_certificates",
+            label: "Extra CA certificates",
+            type: "String",
+            fieldview: "textarea",
+            sublabel: "PEM certificates of your internal CA, used to check the trusted servers above instead of the public ones. Certificates are always checked.",
+          },
+        ],
+      },
+    },
+  ],
+});
+
 module.exports = {
   sc_plugin_api_version: 1,
   tables,
+  configuration_workflow,
+  services: {
+    sync: {
+      description: "Keeps each enabled account connected, and writes new mail and flag changes into the tables",
+      start: (ctx) => require("./service.js").start(ctx),
+    },
+  },
+  actions,
 };
