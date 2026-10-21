@@ -2,6 +2,59 @@
 
 Changes in reverse chronological order.
 
+## Mail module M1: test corpus, generated mails and the IMAP spike
+
+The groundwork for `@feldspar/imap` (TODO-imap.md M1). `plugins/imap/` has no module yet, only
+`test/` and `spike/`, and it has no `feldspar-module.json`, so the bundled catalog does not list it.
+
+- **M1.1** `plugins/imap/test/fetch-corpus.sh` fetches about 7,400 public test mails into
+  `test/corpus/`, which is git-ignored:
+  - ten repositories, each a sparse, shallow clone: Stalwart, zbateson, mikel/mail, mime4j,
+    cpython, php-mime-mail-parser, flanker, SpamScope, mailparser, and the GPL tnef samples;
+  - the SpamAssassin 2003 corpus.
+
+  `test/corpus.lock` pins every commit and every tarball's sha256. A later run fetches exactly
+  those, and `--update` moves them to the newest.
+- **M1.2** `test/fixtures/generate.mjs` writes 40 awkward mails into `test/fixtures/generated/`,
+  covering every §6 lesson and §5.4 rule the public sets miss. Among them:
+  - charsets: windows-1252 in base64, an unknown charset, raw 8-bit headers;
+  - body choice: single-part HTML; missing From, Date and every other header;
+  - inline next to attached `message/rfc822`; `cid:` references in both quote styles;
+  - NUL bytes; filenames in RFC 2231 and encoded-word form; encrypted, calendar-only and
+    attachments-only mails;
+  - TNEF with RTF only, and TNEF with HTML-in-RTF plus a file. The generator includes a TNEF
+    writer and an LZFu compressor, and the Debian `tnef` tool and Python's `compressed_rtf` both
+    read the output back.
+
+  `expected.json` records, for each mail, the MIME tree and what `parse.js` (M7) must make of it.
+  `test/fixtures/README.md` describes the format.
+- **M1.3** `test/MANUAL-SAMPLES.md` lists 49 mails to send by hand from seven clients (Outlook
+  desktop, Microsoft 365, Outlook web, Gmail, Apple Mail, iOS Mail, Thunderbird), with a file name
+  for each. They go into `test/fixtures/manual/`.
+- **M1.4** The spike, in `plugins/imap/spike/` (throwaway). It installs a scratch module with
+  `net: ["*"]` and runs it on the Deno worker against a local Dovecot 2.4 and an SMTP sink. There
+  is no Docker on the dev host, so `servers/dovecot.sh` runs Debian's Dovecot as an ordinary user.
+  - Results: imapflow logs in with a UTF-8 password over TLS and STARTTLS; IDLE receives
+    `exists` between calls (about 0.5 s after delivery); mailparser parses 20 and 25 MB inside
+    the 256 MB heap; nodemailer sends through 465 and 587; certificates are verified, against
+    `tls.servername` when connecting by IP.
+  - One blocker was found and fixed in the core. imapflow's logger, pino, calls `os.hostname()`
+    when it loads, and the module host refused all of `sys`, so the module would not load at all.
+    The host now grants every module `sys: hostname`, and nothing else of `sys`
+    (`crates/sc-module/src/deno/wiring.rs`); `os.hostname()` returns the real name. Test:
+    `deno_host::a_module_reads_the_hostname_and_nothing_else_of_sys` (the real name comes back,
+    and `os.networkInterfaces()` is still denied). `docs/tutorial-modules.md` Step 3 says so.
+  - The findings, and what M7–M9 must do about them, are in TODO-imap.md under M1.4.
+  - Harness: `crates/sc-module/tests/imap_spike.rs`, `#[ignore]` and skipped without
+    `IMAP_SPIKE_DIR`; `plugins/imap/spike/run-spike.sh` runs it.
+- Tests: `node --test plugins/imap/test/` (6 tests).
+  - The committed mails are byte-for-byte what the generator writes.
+  - Every lesson has a mail.
+  - Python's `email` package parses each mail into the intended tree.
+  - An independent TNEF/LZFu reader (checksums and CRC) finds the RTF and the files.
+  - `corpus.lock` pins every source.
+  - Manual samples are listed.
+
 ## Fix: document edits refused `rate_limited` were lost
 
 Bug report: with TipTap's Collaboration, every keystroke was its own `doc_update`, so a fast

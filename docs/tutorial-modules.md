@@ -170,9 +170,12 @@ Four things worth knowing before you use this in anger:
   @saltcorn/mqtt → Permissions
   ```
 
-  With one exception: an environment variable nobody granted reads as `undefined` rather than
-  failing, because half of npm reads `process.env.NODE_ENV` on the way in and a module that
-  cannot be loaded is not a module you can grant anything to.
+  With two exceptions, for the same reason: half of npm does these on the way in, and a
+  module that cannot be loaded is not a module you can grant anything to. An environment
+  variable nobody granted reads as `undefined` rather than failing (`process.env.NODE_ENV`).
+  And every module may read the machine's name, `os.hostname()`, which loggers such as pino
+  record. Nothing else about the machine is readable: `os.networkInterfaces()`,
+  `os.release()`, `os.userInfo()` and the rest are denied, and no list grants them.
 
 And the honest limit, which is the same sentence the tab carries: **`npm install` is not
 sandboxed.** The fence is around a module that is *running*. The install that put it there ran

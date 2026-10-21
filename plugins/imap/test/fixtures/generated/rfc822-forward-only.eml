@@ -1,0 +1,22 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Fwd: Attached inner
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="fwd-only"
+
+--fwd-only
+Content-Type: message/rfc822
+Content-Disposition: attachment; filename="original.eml"
+
+From: Bo Inner <bo@feldspar.test>
+To: ada@feldspar.test
+Subject: Attached inner
+Date: Mon, 13 Oct 2025 08:00:00 +0000
+Message-ID: <attached-inner@feldspar.test>
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+The forwarded body.
+
+--fwd-only--

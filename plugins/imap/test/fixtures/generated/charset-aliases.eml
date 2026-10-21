@@ -1,0 +1,20 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Aliases
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alias-b"
+
+--alias-b
+Content-Type: text/plain; charset=utf8
+Content-Transfer-Encoding: 8bit
+
+Stra√üe in utf8.
+
+--alias-b
+Content-Type: text/html; charset=latin1
+Content-Transfer-Encoding: 8bit
+
+<p>Straﬂe in latin1.</p>
+
+--alias-b--

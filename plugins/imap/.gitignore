@@ -1,0 +1,6 @@
+# The fetched mail corpus (test/fetch-corpus.sh): never committed.
+test/corpus/
+# The M1.4 spike installs its own servers and packages.
+spike/node_modules/
+spike/run/
+node_modules/

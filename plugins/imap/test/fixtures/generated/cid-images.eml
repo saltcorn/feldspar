@@ -1,0 +1,39 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Logos
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="cid-rel"
+
+--cid-rel
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<p><img src='cid:logo@feldspar.test'> and again <img src="cid:logo@feldspar.test"> and <img src="cid:chart@feldspar.test"></p>
+
+--cid-rel
+Content-ID: <logo@feldspar.test>
+Content-Type: image/png; name=logo.png
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+A8AAAEBAQBbjWoa
+AAAAAElFTkSuQmCC
+
+--cid-rel
+Content-ID: <chart@feldspar.test>
+Content-Type: image/png
+Content-Disposition: inline
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+A8AAAEBAQBbjWoa
+AAAAAElFTkSuQmCC
+
+--cid-rel
+Content-ID: <unused@feldspar.test>
+Content-Type: image/png; name=unused.png
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+A8AAAEBAQBbjWoa
+AAAAAElFTkSuQmCC
+
+--cid-rel--

@@ -1,0 +1,27 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Nameless parts
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="nameless"
+
+--nameless
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+See the parts.
+
+--nameless
+Content-Disposition: attachment
+Content-Transfer-Encoding: base64
+
+bm8gbmFtZSwgbm8gdHlwZQo=
+
+--nameless
+Content-Type: application/octet-stream
+Content-Disposition: attachment
+Content-Transfer-Encoding: base64
+
+AAECAwQFBgcICQoLDA0ODw==
+
+--nameless--

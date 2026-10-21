@@ -1,0 +1,11 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Single-part HTML
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><h1>Order 4711</h1><p>Two <b>blue</b> widgets.</p></body></html=
+>
+

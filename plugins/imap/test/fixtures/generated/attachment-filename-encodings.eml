@@ -1,0 +1,36 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: File names
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="names"
+
+--names
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Three files.
+
+--names
+Content-Type: application/pdf
+Content-Disposition: attachment; filename*=UTF-8''%E2%82%AC-Rechnung%20M%C3%A4rz.pdf
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+
+--names
+Content-Type: image/png; name="=?UTF-8?B?QmlsZCBHcsO2w59lLnBuZw==?="
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+A8AAAEBAQBbjWoa
+AAAAAElFTkSuQmCC
+
+--names
+Content-Type: text/plain
+Content-Disposition: attachment; filename*0="very-long-file"; filename*1="name.txt"
+Content-Transfer-Encoding: base64
+
+UXVhcnRlcmx5IG51bWJlcnM6IDEsIDIsIDMuDQo=
+
+--names--

@@ -1,0 +1,21 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Bare LF
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="lf-alt"
+
+--lf-alt
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Line one.
+Line two.
+
+--lf-alt
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<p>Line one.<br>Line two.</p>
+
+--lf-alt--

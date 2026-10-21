@@ -325,7 +325,7 @@ and do not commit.
 
 ## M1 — Test corpus and the spike
 
-- [ ] **M1.1** `plugins/imap/test/fetch-corpus.sh`. It shallow-clones these into
+- [x] **M1.1** `plugins/imap/test/fetch-corpus.sh`. It shallow-clones these into
   `plugins/imap/test/corpus/<source>/`, which is git-ignored, and records the commit hashes in
   `corpus.lock`:
   - [stalwartlabs/mail-parser](https://github.com/stalwartlabs/mail-parser), Apache-2/MIT:
@@ -353,7 +353,7 @@ and do not commit.
   The corpus is fetched, not committed. A permissive subset can be committed later under
   `test/fixtures/` with an `ATTRIBUTION.md`, but never the GPL TNEF files or the SpamAssassin
   mails.
-- [ ] **M1.2** `plugins/imap/test/fixtures/generated/`: generated mails for every lesson in §6
+- [x] **M1.2** `plugins/imap/test/fixtures/generated/`: generated mails for every lesson in §6
   and every rule in §5.4 that the public sets don't cover. Examples:
   - base64 body in windows-1252;
   - an unknown charset;
@@ -365,7 +365,7 @@ and do not commit.
   - a TNEF mail with RTF only.
 
   Committed, with the generator script.
-- [ ] **M1.3** A list of mails to send by hand from the clients the corpus lacks, written to
+- [x] **M1.3** A list of mails to send by hand from the clients the corpus lacks, written to
   `plugins/imap/test/MANUAL-SAMPLES.md`:
   - clients: Outlook desktop and Microsoft 365 (internal to Exchange, so TNEF), Outlook on the
     web, Gmail web, Apple Mail, iOS Mail, Thunderbird;
@@ -373,7 +373,7 @@ and do not commit.
     a calendar invite.
 
   Raw sources go into `test/fixtures/manual/` once someone has sent them.
-- [ ] **M1.4** **Spike** (throwaway code, in `plugins/imap/spike/`). Install a scratch module
+- [x] **M1.4** **Spike** (throwaway code, in `plugins/imap/spike/`). Install a scratch module
   with `net: ["*"]` and check, inside feldspar's Deno worker:
   - imapflow connects over `node:tls` and logs in with a UTF-8 password;
   - **IDLE stays open across module calls** and receives `exists`;
@@ -383,6 +383,49 @@ and do not commit.
   Test against a local Dovecot and a local SMTP sink, in Docker. Write the findings into this
   file under M1.4, including anything Deno's node-compatibility needed. If imapflow or nodemailer
   cannot be made to work, **stop and reconsider §2.1** before going further.
+
+  **Findings (2026-10-21).** imapflow 2.2.6, mailparser 3.9.36 and nodemailer 10.0.15 all work
+  inside the Deno worker. §2.1 stands. Everything in the list was checked except Docker, which this
+  host does not have. `spike/servers/dovecot.sh` runs Debian's own Dovecot 2.4.1 instead,
+  unpacked as an ordinary user; `spike/servers/smtp-sink.mjs` is nodemailer's `smtp-server` on 465
+  and 587. `spike/run-spike.sh` runs it all; the harness is
+  `crates/sc-module/tests/imap_spike.rs` (`#[ignore]`, and it skips without `IMAP_SPIKE_DIR`).
+  Delete both with the spike.
+
+  | claim | result |
+  |---|---|
+  | imapflow over `node:tls` (993) and STARTTLS (143), UTF-8 password | works: AUTHENTICATE PLAIN (imapflow's default) and LOGIN both log in with `Grüße-€-pässwort`. Login takes 60–160 ms |
+  | IDLE stays open across module calls and receives `exists` | works. A mail delivered by `doveadm save` while **no call was running** raised `exists` 530–550 ms after delivery, so the worker's event loop runs between calls. A second delivery during a 20 MB parse arrived too, and the IDLE connection was still `usable` after every other call in the run |
+  | mailparser on a 20 MB mail within the 256 MB heap | works: 20 MB parses in 0.55 s and 25 MB (the cap) in 0.69 s, the attachment bytes intact. `heap_size_limit` reads 256 MB inside the worker. The heap seen was 60 → 77 MB for 20 MB and 68 → 88 MB for 25 MB, but that sample cannot run during the synchronous part of the parse. What is proven is that it did not hit the bound. No call came near the 10 s JS slice |
+  | nodemailer through 587 and 465 | works: 465 with TLS and AUTH PLAIN, 587 with `requireTLS` and AUTH LOGIN, both with the UTF-8 password, and the sink saw an authenticated, TLS session for each |
+
+  What Deno's node compatibility needed, and other things M7–M9 must know:
+
+  1. **`os.hostname()` was refused, and is now granted.** Feldspar granted a module no `sys`
+     at all, and imapflow could not be required: its logger, `pino`, calls `os.hostname()` at
+     load time, and the load failed with "denied sys access to \"hostname\"". The host now
+     grants every module `sys: hostname` and nothing else of `sys` (`deno/wiring.rs`
+     `container`), so `os.hostname()` returns the machine's real name. The spike loads without
+     a workaround. nodemailer also uses the hostname as its EHLO name, so `mail_send` and M3's
+     override still pass `name: <the account's domain>`: the EHLO name should be the sending
+     domain, not the machine.
+  2. **Certificate checks work as in Node.** Without the CA, imapflow fails with
+     `UNABLE_TO_VERIFY_LEAF_SIGNATURE` and nodemailer with "unable to verify the first
+     certificate". Connecting to `127.0.0.1` with `tls.servername: "wrong.example"` fails with
+     `ERR_TLS_CERT_ALTNAME_INVALID`, so §5.1's "connect to the checked IP, verify the name" is
+     `host: <ip>` plus `tls.servername: <name>`, for both libraries.
+  3. **Always attach an `error` listener to an ImapFlow.** Without one, a refused login
+     emits `error` after `connect()` has already rejected, and in Node that is an uncaught
+     exception that ends the process (seen in the Node pre-check). In the worker it would end
+     the worker and every module on it.
+  4. **A failed login slows the next ones.** After one wrong password, Dovecot's per-IP auth
+     penalty delayed the next *successful* login from the same address by about 4 s, and the
+     failure itself took 1.5–2 s. `mail_test_account` and the `auth_failed` rule (§5.1) should
+     expect this, and the per-user rate limit on `mail_test_account` matters for that reason too.
+  5. imapflow restarts IDLE every 25 minutes by itself (§5.1). That was not checked here; the
+     run was 20 s long. M8.7's tests should hold an IDLE for 30 minutes once.
+  6. Dovecot 2.4 advertises CONDSTORE, QRESYNC, MOVE, UIDPLUS, SPECIAL-USE and IDLE, so M8.4's
+     QRESYNC path can be tested locally. The fallback path needs a server without them.
 
 ## M2 — `Secret` field kind (core)
 

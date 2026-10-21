@@ -33,6 +33,8 @@ mod deno_host;
 mod frameworks;
 #[path = "host.rs"]
 mod host;
+#[path = "imap_spike.rs"]
+mod imap_spike;
 #[path = "install.rs"]
 mod install;
 #[path = "map_tools.rs"]

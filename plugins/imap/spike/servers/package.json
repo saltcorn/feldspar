@@ -1,0 +1,9 @@
+{
+  "name": "imap-spike-servers",
+  "private": true,
+  "description": "The SMTP sink of the M1.4 spike (TODO-imap.md). Throwaway.",
+  "type": "module",
+  "dependencies": {
+    "smtp-server": "3.19.17"
+  }
+}

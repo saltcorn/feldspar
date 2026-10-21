@@ -561,6 +561,40 @@ async fn modules_with_different_permissions_do_not_share_a_worker() {
     let _ = std::fs::remove_dir_all(installer.root());
 }
 
+/// `os.hostname()` answers with the machine's name, granted to every module
+/// even with nothing else granted; the rest of `sys` stays denied.
+///
+/// imapflow's logger, pino, calls `os.hostname()` when it is required, so
+/// without this the IMAP module could not load at all (TODO-imap.md M1.4).
+#[tokio::test]
+async fn a_module_reads_the_hostname_and_nothing_else_of_sys() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let (installer, host, names) =
+        installed_on_deno("deno-sys", &["echo-module"], 1, default_bounds()).await;
+    let name = &names[0];
+    host.load(name, &installer.package_dir(name), &json!({}), &closed())
+        .await
+        .unwrap();
+
+    let value = host
+        .run(name, "echo_os", json!({}), CallHosts::default())
+        .await
+        .unwrap();
+    let expected = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|h| h.trim().to_owned())
+        .ok();
+    let hostname = value["hostname"].as_str().unwrap();
+    assert!(!hostname.is_empty(), "{value}");
+    if let Some(expected) = expected {
+        assert_eq!(hostname, expected, "the real name, not a stand-in");
+    }
+    let interfaces = value["interfaces"].as_str().unwrap();
+    assert!(interfaces.contains("sys access"), "{value}");
+
+    host.shutdown().await;
+    let _ = std::fs::remove_dir_all(installer.root());
+}
+
 /// Phase 2: a module's `console.*` is the server's log, not a forwarded stderr.
 ///
 /// What is asserted here is the **seam**, which is what a test can see from

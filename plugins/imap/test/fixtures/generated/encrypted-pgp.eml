@@ -1,0 +1,24 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Secret
+MIME-Version: 1.0
+Content-Type: multipart/encrypted; protocol="application/pgp-encrypted"; boundary="pgp"
+
+--pgp
+Content-Type: application/pgp-encrypted
+Content-Transfer-Encoding: 7bit
+
+Version: 1
+
+--pgp
+Content-Type: application/octet-stream; name="encrypted.asc"
+Content-Transfer-Encoding: 7bit
+
+-----BEGIN PGP MESSAGE-----
+
+hQEMA0xxxxxxxxxxAQf/not-really-ciphertext
+=abcd
+-----END PGP MESSAGE-----
+
+--pgp--

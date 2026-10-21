@@ -65,6 +65,20 @@ module.exports = {
       configFields: async () => [{ name: "template", label: "Template", type: "String" }],
       run: async ({ row, configuration }) => interpolate(configuration.template, row),
     },
+    echo_os: {
+      description: "What node:os answers: the hostname, and whether anything else is refused",
+      run: async () => {
+        const os = require("node:os");
+        let interfaces;
+        try {
+          os.networkInterfaces();
+          interfaces = "allowed";
+        } catch (e) {
+          interfaces = String(e.message);
+        }
+        return { hostname: os.hostname(), interfaces };
+      },
+    },
     echo_missing_api: {
       description: "Call an API this version does not have",
       // `File.findOne`, and not `Table`: the v1 `Table` is real now, and what a
