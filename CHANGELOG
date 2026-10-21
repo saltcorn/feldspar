@@ -2,6 +2,67 @@
 
 Changes in reverse chronological order.
 
+## Mail module M2: the `Secret` field kind
+
+A new field kind for passwords and tokens (TODO-imap.md M2), which the mail module's
+`imap_password` and `smtp_password` need. A Secret is a text column that holds
+`v1:<nonce>:<ciphertext>` envelopes: AES-256-GCM, through `aes-gcm` 0.10, which `deno_crypto`
+already brings, so no crate is added to the tree. Every client reads `null` or `••••••••`, and
+server-side code reads the plaintext.
+
+- **M2.1** `DataFieldKind::Secret` (`sc-catalog`), stored in `_fd_fields` as kind `secret`. The
+  overlay applies only to a text column.
+  - The schema editor refuses a secret that is a primary key, unique, typed other than text,
+    defaulted, or on `users`. It also refuses indexing or constraining one, and turning a field
+    into a secret or back.
+  - Secrets are left out of the formula shape, so ownership rules, calculated fields, defaults and
+    constraints cannot read them. They are also left out of datasets and agents' table tools.
+  - REST, GraphQL and query-string filters and orderings refuse them, as do a code body's
+    `where`, `orderBy` and aggregates.
+- **M2.2** The instance key is `<data dir>/secrets.key`: 32 bytes, mode 0600, created the first
+  time a value is sealed, and hard-linked into place so two processes cannot write different keys
+  (`sc_catalog::secrets`, `Catalog::secret_key`). `serve` refuses to start when the key file is
+  missing and a table holds Secret values, naming the file and the tables.
+  - Hosted: `SC_DATA_DIR` is `/srv/feldspar/<instance>/data`, and `backup-instance.sh` tars the
+    instance's whole home, so the key is already in host backups.
+- **M2.3** The row layer seals a value in `create_row_in` and `update_row_unchecked_in`.
+  - On write: the sentinel is left out, so the stored value is kept; an envelope that opens with
+    the key is kept as it is; anything else is sealed.
+  - Reads return envelopes. Server-side readers reveal the plaintext: trigger events (so
+    templates and action formulas see it), code bodies, module actions and services (`TableHost`),
+    and the row actions.
+  - Client surfaces redact: REST (lists, `select`, write answers; a secret cannot be selected
+    through an embed), GraphQL (`secret_field` resolver), live rows (`api_row`), the admin
+    `listRows`, `createRow`, `updateRow` and `testRunTrigger`, CSV export, `read_rows_as` (agents
+    and offline sync), and Saltcorn UI views (`viewer_only`).
+  - The design is fail-safe: a surface that is missed shows a client ciphertext, never plaintext.
+- **M2.4** The table designer offers `secret` in `listFieldTypes`.
+  - The data grid edits a secret through an empty password input, and leaves the value alone when
+    nothing is typed. So does the row form.
+  - The generated client types a secret as `string | null`, with a write-only doc comment
+    (`ResourceField::write_only`).
+- **M2.5** A backup whose rows hold a Secret field carries `keys/secrets.key`, and its manifest
+  says `secrets_key`.
+  - A restore opens each envelope with the backup's key and seals it again with the target's key,
+    which is never replaced.
+  - A missing or wrong key leaves those values null, with one warning per table.
+  - OPERATIONS §8.2 documents that such a backup can decrypt its secrets, including customer S3
+    backups on hosted.
+- **M2.6** Docs: Step 8 of `docs/tutorial-ownership.md`, "Secret fields" in TECHNICAL_DESIGN §6.2,
+  and `SC_DATA_DIR` in OPERATIONS §5.1.
+- Tests:
+  - `sc-api` `tests/secret_fields.rs` (SQLite): every client surface returns the sentinel and
+    never the plaintext; the column holds an envelope; the sentinel keeps the value; code bodies
+    read the plaintext and views do not; every refusal; the generated type; the start-up check.
+  - `sc-server` `backup_api::secret_fields_are_write_only_and_a_backup_reseals_them_under_the_target_key`:
+    the data editor, a trigger seeing the plaintext, a backup restored into a server with another
+    key, and a backup without its key.
+  - `sc-catalog` unit tests for the envelope and the key file; a UI test for the field form.
+- Known gap: a **workflow** run stores the event that started it in `_fd_runs`, revealed, so a
+  workflow on a table with secrets keeps their plaintext in its run record (and `getRun` shows
+  it). A `fetch` action's default body sends the revealed row, as it would any other server-side
+  value. Both are documented in the tutorial; the first is a follow-up.
+
 ## Mail module M1: test corpus, generated mails and the IMAP spike
 
 The groundwork for `@feldspar/imap` (TODO-imap.md M1). `plugins/imap/` has no module yet, only

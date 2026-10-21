@@ -219,6 +219,10 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // it stays listed and editable so the admin can repoint it.
     connect_stored_file_stores(&catalog).await?;
     connect_stored_databases(&catalog).await?;
+    // Secret fields' values open only with the data directory's key: a server
+    // that holds some and has lost the key stops here, naming the file
+    // (TODO-imap M2.2), rather than making a new key that opens none of them.
+    sc_catalog::secrets::check_key_on_start(&catalog).await?;
     // Then any requested with `--file-store NAME=PATH`, which are ephemeral and
     // must not silently shadow a configured store of the same name.
     connect_file_stores(&catalog, &file_store_specs)?;

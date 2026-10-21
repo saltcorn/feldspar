@@ -117,6 +117,7 @@ const FILE: FieldTypeItem = {
   ],
 };
 const KEY: FieldTypeItem = { name: "key", label: "Key", category: "kind", config_spec: [] };
+const SECRET: FieldTypeItem = { name: "secret", label: "Secret", category: "kind", config_spec: [] };
 
 describe("reading a field into the form", () => {
   it("keeps a rich type and its attributes", () => {
@@ -463,5 +464,17 @@ describe("a default value", () => {
     expect(updateFieldBody({ ...form, nullable: false }, TEXT)).toMatchObject({
       default_expression: "user.id",
     });
+  });
+});
+
+describe("a secret field (TODO-imap M2)", () => {
+  it("is named by its kind, and created and saved as that kind with no parameters", () => {
+    const stored = field({ name: "imap_password", kind: { type: "secret" } });
+    const form = fieldForm(stored);
+    expect(form.typeName).toBe("secret");
+    expect(updateFieldBody(form, SECRET)).toMatchObject({ kind: { type: "secret" } });
+
+    const created = createFieldBody({ ...newFieldForm("secret"), name: "smtp_password" }, SECRET);
+    expect(created).toMatchObject({ name: "smtp_password", kind: { type: "secret" } });
   });
 });

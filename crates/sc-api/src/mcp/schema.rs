@@ -281,6 +281,9 @@ fn describe_field(field: &sc_catalog::DataField) -> Json {
             out.insert(ARG_FILE_ON_DELETE.to_owned(), json!(on_delete.as_str()));
             out.insert(ARG_FILE_ON_CONFLICT.to_owned(), json!(on_conflict.as_str()));
         }
+        DataFieldKind::Secret => {
+            out.insert("secret".to_owned(), json!(true));
+        }
         DataFieldKind::Plain => {}
     }
     Json::Object(out)

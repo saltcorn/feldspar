@@ -144,7 +144,13 @@ pub async fn read_rows_as_in(
     Ok(Json::Array(
         granted
             .iter()
-            .map(|values| table_row_json(table, values))
+            .map(|values| {
+                // What this renders is read by a client — an agent's tools, a
+                // device's offline pull — so a secret is its sentinel.
+                let mut values = values.clone();
+                sc_catalog::secrets::redact_values(table, &mut values);
+                table_row_json(table, &values)
+            })
             .collect(),
     ))
 }

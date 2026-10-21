@@ -84,6 +84,9 @@ pub const KIND_KEY: &str = "key";
 pub const KIND_FILE: &str = "file";
 /// The `kind` discriminant for a non-stored calculated field (Phase 8).
 pub const KIND_CALC: &str = "calc";
+/// The `kind` discriminant for a secret field (TODO-imap M2): a text column
+/// holding encrypted values. It has no parameters.
+pub const KIND_SECRET: &str = "secret";
 
 // Reserved keys a kind's parameters occupy within the `attributes` bag.
 const KEY_TARGET_TABLE: &str = "target_table";
@@ -500,6 +503,7 @@ fn kind_discriminant(kind: &DataFieldKind) -> &'static str {
         DataFieldKind::Key { .. } => KIND_KEY,
         DataFieldKind::File { .. } => KIND_FILE,
         DataFieldKind::Calc { .. } => KIND_CALC,
+        DataFieldKind::Secret => KIND_SECRET,
     }
 }
 
@@ -515,7 +519,7 @@ fn attributes_for_storage(meta: &FieldMeta) -> Attrs {
         );
     }
     match &meta.kind {
-        DataFieldKind::Plain => {}
+        DataFieldKind::Plain | DataFieldKind::Secret => {}
         DataFieldKind::Key {
             target_table,
             target_field,
@@ -630,10 +634,11 @@ fn kind_and_attributes(
         KIND_CALC => DataFieldKind::Calc {
             expression: take_text(&mut attrs, KEY_EXPRESSION, table, field)?,
         },
+        KIND_SECRET => DataFieldKind::Secret,
         other => {
             return Err(Error::invalid(format!(
                 "{FIELD_META_TABLE} row for `{table}.{field}`: `{other}` is not a known field \
-                 kind (expected {KIND_PLAIN}, {KIND_KEY}, {KIND_FILE} or {KIND_CALC})"
+                 kind (expected {KIND_PLAIN}, {KIND_KEY}, {KIND_FILE}, {KIND_CALC} or {KIND_SECRET})"
             )));
         }
     };

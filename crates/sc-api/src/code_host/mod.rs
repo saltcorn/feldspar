@@ -471,6 +471,23 @@ impl<'a> TableHost<'a> {
         }
     }
 
+    /// A read row's secrets as this host hands them out (TODO-imap M2): their
+    /// plaintext to a code body, a module action or a service, which are
+    /// server-side code; their sentinel to a view, which is rendered for
+    /// somebody looking.
+    fn secrets_of(
+        &self,
+        table: &Table,
+        row: &mut std::collections::BTreeMap<String, sc_query::Value>,
+    ) -> Result<()> {
+        if self.viewer_only {
+            sc_catalog::secrets::redact_values(table, row);
+            Ok(())
+        } else {
+            sc_catalog::secrets::reveal_values(self.catalog, table, row)
+        }
+    }
+
     /// A `select`: the rows, as the REST wire shape.
     ///
     /// One batch of an `.iter()` is the same read with two differences, both of
@@ -518,6 +535,10 @@ impl<'a> TableHost<'a> {
             &format!("reading `{}` returned", read.table.name),
             "add a `.limit()` or narrow the `.where()`",
         )?;
+        let mut values = values;
+        for row in &mut values {
+            self.secrets_of(&read.table, row)?;
+        }
         let rows = Json::Array(values.iter().map(|v| read.row(v)).collect());
         let Some(cursor) = &read.cursor else {
             return Ok(rows);
@@ -675,6 +696,13 @@ impl<'a> TableHost<'a> {
                     .await?
                 }
             });
+        }
+        for row in &mut written {
+            if self.viewer_only {
+                sc_catalog::secrets::redact_json(&insertion.table, row);
+            } else {
+                sc_catalog::secrets::reveal_json(self.catalog, &insertion.table, row)?;
+            }
         }
         Ok(match insertion.many {
             true => Json::Array(written),

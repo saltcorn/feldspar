@@ -841,6 +841,10 @@ pub enum DataFieldKind {
     /// File reference: a relative path within a named file store, optionally restricted to
     /// a folder and/or file types.
     File { store: FileStoreId, folder: Option<String>, mime_allow: Vec<String> },
+    /// A password or token: a text column holding `v1:<nonce>:<ciphertext>` envelopes
+    /// (AES-256-GCM under the instance key, `<data dir>/secrets.key`). Write-only to every
+    /// client surface (TODO-imap M2): see "Secret fields" below.
+    Secret,
 }
 
 /// A field in a form (may derive from a DataField or be standalone).
@@ -857,6 +861,23 @@ pub struct FormField {
 impl DataField { pub fn to_form_field(&self) -> FormField { /* … */ } }
 impl FormField { pub fn to_data_field(&self) -> Option<DataField> { /* … */ } }
 ```
+
+**Secret fields** (`DataFieldKind::Secret`, TODO-imap M2). The row layer stores and reads
+envelopes and nothing else, so a row read from a table carries its secrets sealed. The plaintext
+is produced only where server-side code asks for it (`sc_catalog::secrets::reveal_*`): a trigger's
+event (so `{{ }}` templates and action formulas read `row.password`), a code body's or module's
+`db` reads (`TableHost`, unless it renders a view), and the row actions' own reads. Every client
+surface replaces a value with `SECRET_SENTINEL` and leaves `null` as `null`
+(`secrets::redact_*`): REST (lists, `select`, a write's answer), GraphQL (its own resolver), a
+live change's row (`api_row`), the admin data editor, CSV export, agents' and offline sync's reads
+(`read_rows_as`), and a view. That direction is chosen so a surface that forgets fails safe: it
+shows an envelope, which is useless without the key, never the plaintext. On write, the sentinel
+is dropped (so a client that sends back what it was shown keeps the stored value), an envelope
+that opens with the instance key is kept as it is, and anything else is sealed. A secret is never
+part of a key, a unique constraint, an index, a filter, an ordering, a dataset or a formula (it is
+not in the formula shape), never a default, never on `users`, and a field cannot change into or
+out of being one. A backup carries the envelopes plus `keys/secrets.key`; a restore re-seals each
+value under the target's key.
 
 **`FormField` is also how every configurable extension point declares its settings**, and
 there is deliberately **no separate `AttrSpec` type**. A `Framework` (§13.3), `Action`
@@ -1585,7 +1606,7 @@ erDiagram
     text label
     text description
     text type "rich type name"
-    text kind "Plain | Key | File"
+    text kind "Plain | Key | File | Calc | Secret"
     json attributes "kind parameters, incl. target_table"
   }
   TRIGGERS["_fd_triggers"] {

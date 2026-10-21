@@ -457,6 +457,11 @@ pub fn queryable_field<'a>(
              ordered on (filter on its text mirror instead, if its stream keeps one)"
         )));
     }
+    if field.is_secret() {
+        return Err(Error::invalid(format!(
+            "`{what}`: `{name}` is a secret; it cannot be filtered or ordered on"
+        )));
+    }
     Ok(field)
 }
 

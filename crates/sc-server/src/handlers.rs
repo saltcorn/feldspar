@@ -916,6 +916,8 @@ pub fn admin_handlers_with(
                 for (name, spec) in [
                     ("key", key_kind_config_spec()),
                     ("file", file_kind_config_spec()),
+                    // A secret takes no parameters (TODO-imap M2).
+                    ("secret", Vec::new()),
                 ] {
                     // Resolve any `server_query` (the File store pick-list) to a
                     // static list before the spec leaves the server.
@@ -941,15 +943,17 @@ pub fn admin_handlers_with(
                 let table = catalog.require(ctx.path_param("table")?)?;
                 let query =
                     sc_api::query_string::row_query(&table, &ctx.query, sc_api::ROW_PAGE_CAP)?;
-                Ok(HandlerResponse::ok(
-                    rows::list_rows_query(
-                        &catalog,
-                        &table,
-                        &query,
-                        Some(&admin_caller(ctx.user.as_ref())),
-                    )
-                    .await?,
-                ))
+                let mut rows = rows::list_rows_query(
+                    &catalog,
+                    &table,
+                    &query,
+                    Some(&admin_caller(ctx.user.as_ref())),
+                )
+                .await?;
+                // The data editor is a client like any other: it may write a
+                // secret, and never reads one back (TODO-imap M2).
+                sc_catalog::secrets::redact_json(&table, &mut rows);
+                Ok(HandlerResponse::ok(rows))
             }
         }
     });
@@ -991,6 +995,8 @@ pub fn admin_handlers_with(
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
+                let mut row = row;
+                sc_catalog::secrets::redact_json(&table, &mut row);
                 Ok(HandlerResponse::ok(row).with_status(201))
             }
         }
@@ -1012,6 +1018,8 @@ pub fn admin_handlers_with(
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
+                let mut row = row;
+                sc_catalog::secrets::redact_json(&table, &mut row);
                 Ok(HandlerResponse::ok(row))
             }
         }
@@ -2839,6 +2847,17 @@ pub fn admin_handlers_with(
                 // testing a trigger is asking what happens, and "it failed, with
                 // this message, having printed this" is a complete answer that a
                 // 400 would have thrown half of away.
+                // The row is shown with its secrets as their sentinel; the run
+                // itself was handed the stored row, which it reveals as any
+                // trigger does.
+                let mut shown_row = row.unwrap_or(Json::Null);
+                if let Some(table) = trigger
+                    .channel
+                    .as_deref()
+                    .and_then(|t| catalog.get(t).ok().flatten())
+                {
+                    sc_catalog::secrets::redact_json(&table, &mut shown_row);
+                }
                 let console: Vec<Json> = run
                     .console
                     .iter()
@@ -2853,7 +2872,7 @@ pub fn admin_handlers_with(
                     "result": result,
                     "error": error,
                     "console": console,
-                    "row": row.unwrap_or(Json::Null),
+                    "row": shown_row,
                 })))
             }
         }
@@ -6991,6 +7010,7 @@ fn field_kind_json(kind: &DataFieldKind) -> Json {
             "type": "calc",
             "expression": expression,
         }),
+        DataFieldKind::Secret => json!({ "type": "secret" }),
     }
 }
 
@@ -7015,6 +7035,8 @@ fn parse_field_kind(obj: &Map<String, Json>) -> Result<DataFieldKind> {
         .ok_or_else(|| Error::invalid("`kind` must be an object"))?;
     match str_field(kind, "type")? {
         "plain" => Ok(DataFieldKind::Plain),
+        // A secret (TODO-imap M2): a text column holding encrypted values.
+        "secret" => Ok(DataFieldKind::Secret),
         "file" => Ok(DataFieldKind::File {
             store: FileStoreId(non_empty_str_field(kind, "store")?.to_owned()),
             folder: optional_present_str(kind, "folder"),

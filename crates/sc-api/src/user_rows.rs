@@ -80,7 +80,7 @@ pub(crate) fn projection(table: &Table) -> Vec<Projection> {
 /// what to leave out. A column the row does not carry stays absent rather than
 /// becoming null — a delete's row, read back by its `RETURNING`, has no
 /// calculated fields, and saying they are null would be saying something
-/// false.
+/// false. A secret reads as its sentinel.
 pub fn api_row(table: &Table, row: &Json) -> Json {
     let Json::Object(obj) = row else {
         return Json::Null;
@@ -95,7 +95,11 @@ pub fn api_row(table: &Table, row: &Json) -> Json {
             out.insert(name.clone(), value.clone());
         }
     }
-    Json::Object(out)
+    // A secret is sent as its sentinel, like every other read a client makes
+    // (TODO-imap M2).
+    let mut out = Json::Object(out);
+    sc_catalog::secrets::redact_json(table, &mut out);
+    out
 }
 
 /// The caller the role rule applies to, or `None` when it does not (not the

@@ -184,6 +184,11 @@ pub async fn restore_backup(
     }
     restore_calc_fields(catalog, &archive, &restored_tables, &mut report).await;
 
+    // The key the backup's Secret values were sealed with, to open each one and
+    // seal it again under this server's own key — which is never replaced, so a
+    // backup restores into a different instance as well as into its own.
+    let backup_key = backup_secrets_key(&archive, &manifest);
+
     // Rows in dependency order, so a row holding a foreign key is inserted after
     // the row it points at.
     for name in order_by_references(catalog, &restored_tables) {
@@ -214,7 +219,10 @@ pub async fn restore_backup(
             archive.rows(&path),
             &path,
             expected,
-            &user_ids,
+            &RowFixups {
+                user_ids: &user_ids,
+                backup_key: &backup_key,
+            },
             &mut report,
         )
         .await;
@@ -950,12 +958,17 @@ async fn restore_table_rows(
     mut reader: RowReader,
     path: &str,
     expected: Option<i64>,
-    user_ids: &BTreeMap<String, String>,
+    fixups: &RowFixups<'_>,
     report: &mut RestoreReport,
 ) {
+    let RowFixups {
+        user_ids,
+        backup_key,
+    } = fixups;
     let name = &table.name;
     let mut inserted = 0;
     let mut lines = 0;
+    let mut lost_secrets = 0;
     while let Some(batch) = reader.next_batch().await {
         let batch = match batch {
             Ok(batch) => batch,
@@ -968,7 +981,14 @@ async fn restore_table_rows(
         for bad in &batch.bad {
             report.skipped(format!("a row of `{name}` in `{path}`, {bad}"));
         }
-        let rows = repoint_users(table, batch.rows, user_ids);
+        let mut rows = repoint_users(table, batch.rows, user_ids);
+        match reseal_secrets(catalog, table, &mut rows, backup_key) {
+            Ok(lost) => lost_secrets += lost,
+            Err(e) => {
+                report.skipped(format!("rows of `{name}`: {}", e.causes()));
+                break;
+            }
+        }
         let (count, problems) = insert_rows(catalog, table, &rows).await;
         inserted += count;
         for (_, problem) in problems {
@@ -976,7 +996,103 @@ async fn restore_table_rows(
         }
     }
     report.did(format!("{inserted} rows into `{name}`"));
+    if lost_secrets > 0 {
+        report.skipped(format!(
+            "{lost_secrets} secret value(s) of `{name}` were left empty: {}",
+            backup_key.why_not()
+        ));
+    }
     check_count(report, path, &format!("`{name}`"), expected, lines);
+}
+
+/// What a backed-up row is changed by on its way in: its references to
+/// accounts that have another id here, and its Secret values, sealed again
+/// under this server's key.
+struct RowFixups<'a> {
+    user_ids: &'a BTreeMap<String, String>,
+    backup_key: &'a BackupKey,
+}
+
+/// The backup's Secret-field key (TODO-imap M2.5), or why there is none.
+pub(super) enum BackupKey {
+    /// The key the backup carries.
+    Key(sc_catalog::SecretKey),
+    /// The backup carries no key, or one that cannot be read: why, for the
+    /// report.
+    Missing(String),
+}
+
+impl BackupKey {
+    /// What the report says of a secret that could not be restored.
+    fn why_not(&self) -> String {
+        match self {
+            BackupKey::Key(_) => "the backup's key does not open them — the key in the \
+                                  backup is not the one they were sealed with"
+                .to_owned(),
+            BackupKey::Missing(why) => why.clone(),
+        }
+    }
+}
+
+/// The key `archive` carries for its Secret values, read once per restore.
+fn backup_secrets_key(archive: &Archive, manifest: &Map<String, Json>) -> BackupKey {
+    let path = manifest
+        .get(super::MANIFEST_SECRETS_KEY)
+        .and_then(Json::as_str)
+        .unwrap_or(super::SECRETS_KEY_FILE);
+    if !archive.contains(path) {
+        return BackupKey::Missing(format!(
+            "the backup has no `{}` to open them with",
+            super::SECRETS_KEY_FILE
+        ));
+    }
+    match archive
+        .bytes(path)
+        .and_then(|bytes| sc_catalog::SecretKey::from_bytes(&bytes))
+    {
+        Ok(key) => BackupKey::Key(key),
+        Err(e) => BackupKey::Missing(format!("the backup's `{path}` is unusable: {}", e.causes())),
+    }
+}
+
+/// Open each Secret value of `rows` with the backup's key and seal it again
+/// with this server's, in place; a value that will not open becomes `null`.
+/// Returns how many did not open.
+///
+/// The values are never seen by anything else: they go from envelope to
+/// envelope here, and on into the column.
+fn reseal_secrets(
+    catalog: &Catalog,
+    table: &Table,
+    rows: &mut [Json],
+    backup_key: &BackupKey,
+) -> Result<usize> {
+    if !sc_catalog::secrets::has_secrets(table) {
+        return Ok(0);
+    }
+    let mut lost = 0;
+    for row in rows.iter_mut() {
+        let Json::Object(obj) = row else {
+            continue;
+        };
+        for (name, value) in obj.iter_mut() {
+            if !sc_catalog::secrets::is_secret_column(table, name) || value.is_null() {
+                continue;
+            }
+            let opened = match (&backup_key, value.as_str()) {
+                (BackupKey::Key(key), Some(envelope)) => key.open(envelope).ok(),
+                _ => None,
+            };
+            *value = match opened {
+                Some(plain) => Json::String(catalog.secret_key()?.seal(&plain)?),
+                None => {
+                    lost += 1;
+                    Json::Null
+                }
+            };
+        }
+    }
+    Ok(lost)
 }
 
 /// Say so when an entry holds a different number of rows from the number the

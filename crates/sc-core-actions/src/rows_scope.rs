@@ -273,14 +273,20 @@ impl<'a> Scope<'a> {
         table: &Table,
         filter: Option<Expr>,
     ) -> Result<Vec<BTreeMap<String, Value>>> {
-        rows::select_values_in(
+        let mut rows = rows::select_values_in(
             self.catalog,
             table,
             filter,
             Some(&self.authority()),
             &self.executor,
         )
-        .await
+        .await?;
+        // An action is server-side code: its formulas read a secret's plaintext
+        // (TODO-imap M2), and a value written back is sealed again on the way.
+        for row in &mut rows {
+            sc_catalog::secrets::reveal_values(self.catalog, table, row)?;
+        }
+        Ok(rows)
     }
 
     /// An action failure attributed to the trigger and the setting that caused it.

@@ -21,7 +21,7 @@ import Modal from "react-bootstrap/Modal";
 
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
-import { DataGrid, fileStoreOf, isCalc, isDocument, type FieldInfo } from "./DataGrid";
+import { DataGrid, fileStoreOf, isCalc, isDocument, isSecret, type FieldInfo } from "./DataGrid";
 import { display, type RowRecord } from "../grid/gridValues";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader } from "../layout";
@@ -173,7 +173,9 @@ function RowForm({
 
   const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
-    if (row !== null) for (const f of editable) initial[f.name] = display(row[f.name]);
+    // A secret's box opens empty: what the row holds is its sentinel, not its value.
+    if (row !== null)
+      for (const f of editable) initial[f.name] = isSecret(f) ? "" : display(row[f.name]);
     return initial;
   });
   const [busy, setBusy] = useState(false);
@@ -188,6 +190,8 @@ function RowForm({
     setError(null);
     const body: RowRecord = {};
     for (const f of editable) {
+      // An empty secret box means "keep what is there" (or nothing, on a new row).
+      if (isSecret(f) && (values[f.name] ?? "") === "") continue;
       const value = parseInput(values[f.name] ?? "");
       // A blank box on a column that fills itself in means "let it" — an identity
       // key numbers itself, a UUID key generates itself — and sending an explicit
@@ -233,6 +237,18 @@ function RowForm({
                     store={store}
                     value={values[f.name] ?? ""}
                     onChange={(v) => setValues({ ...values, [f.name]: v })}
+                  />
+                ) : isSecret(f) ? (
+                  <Form.Control
+                    type="password"
+                    autoComplete="new-password"
+                    value={values[f.name] ?? ""}
+                    placeholder={
+                      row !== null && row[f.name] !== null && row[f.name] !== undefined
+                        ? "set — leave blank to keep it"
+                        : "not set"
+                    }
+                    onChange={(e) => setValues({ ...values, [f.name]: e.target.value })}
                   />
                 ) : (
                   <Form.Control

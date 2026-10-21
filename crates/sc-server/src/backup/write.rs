@@ -45,7 +45,9 @@ use tokio::io::AsyncReadExt;
 use zip::write::SimpleFileOptions;
 
 use super::values;
-use super::{Available, Item, MANIFEST_FILE, SSL_SECTION, Selection};
+use super::{
+    Available, Item, MANIFEST_FILE, MANIFEST_SECRETS_KEY, SECRETS_KEY_FILE, SSL_SECTION, Selection,
+};
 use crate::handlers::{
     agent_json, application_json, backup_db_connection_json, backup_file_meta_json,
     backup_llm_provider_json, backup_model_json, backup_module_json, backup_store_def_json,
@@ -251,6 +253,9 @@ async fn write_entries<W: Write + Seek>(
     zip: &mut ZipBuilder<W>,
 ) -> Result<()> {
     let mut contents = Available::default();
+    // Whether a table's rows went in with Secret values in them, which is
+    // what decides whether the key goes in too.
+    let mut sealed_rows = false;
 
     // --- tables: the overlay, the columns, and the rows ---------------------
     let rls = catalog.primary().capabilities().row_level_security;
@@ -295,6 +300,7 @@ async fn write_entries<W: Write + Seek>(
 
         let mut count = None;
         if selection.includes_data(name) {
+            sealed_rows |= sc_catalog::secrets::has_secrets(&table);
             count = Some(
                 write_table_rows(
                     source,
@@ -620,12 +626,23 @@ async fn write_entries<W: Write + Seek>(
         contents.settings = true;
     }
 
+    // The key the Secret values were sealed with, so a restore — onto this
+    // server after a disaster, or onto another — opens them without anyone
+    // typing a password in again. Which means **this file can decrypt them**:
+    // a backup holding Secret fields is as sensitive as the secrets are.
+    if sealed_rows {
+        let key = catalog.secret_key()?;
+        zip.start_file(SECRETS_KEY_FILE, "secrets.key", Some(32))?;
+        zip.write_chunk(SECRETS_KEY_FILE, &key.to_bytes())?;
+    }
+
     // The manifest goes in last so it can describe what was actually written —
     // a store that turned out to be unreachable, a table whose rows were left
     // out — rather than what was asked for.
     zip.json(
         MANIFEST_FILE,
         &json!({
+            MANIFEST_SECRETS_KEY: sealed_rows.then_some(SECRETS_KEY_FILE),
             "format": super::FORMAT,
             "version": super::FORMAT_VERSION,
             // What wrote it, as Saltcorn 1 records `saltcorn_version` in its own

@@ -1132,10 +1132,10 @@ impl RestProvider {
                 let outcome = match &route.op {
                     RestOp::Create => write_as::create(cat, &table, body, &writer)
                         .await?
-                        .map(|row| ApiResponse::with_status(201, row)),
+                        .map(|row| ApiResponse::with_status(201, client_row(&table, row))),
                     RestOp::Update => write_as::update(cat, &table, id()?, body, &writer)
                         .await?
-                        .map(ApiResponse::ok),
+                        .map(|row| ApiResponse::ok(client_row(&table, row))),
                     _ => write_as::delete(cat, &table, id()?, &writer)
                         .await?
                         .map(|()| deleted()),
@@ -1290,11 +1290,15 @@ impl RestProvider {
             RestOp::List => self.list(cat, table, req, user).await?,
             RestOp::Create => ApiResponse::with_status(
                 201,
-                rows::create_row_ctx(cat, table, body, Some(&ctx)).await?,
+                client_row(
+                    table,
+                    rows::create_row_ctx(cat, table, body, Some(&ctx)).await?,
+                ),
             ),
-            RestOp::Update => ApiResponse::ok(
+            RestOp::Update => ApiResponse::ok(client_row(
+                table,
                 rows::update_row_guarded(cat, table, id()?, body, None, Some(&ctx)).await?,
-            ),
+            )),
             RestOp::Delete => {
                 rows::delete_row_guarded(cat, table, id()?, None, Some(&ctx)).await?;
                 deleted()
@@ -1321,6 +1325,13 @@ impl RestProvider {
             }
         })
     }
+}
+
+/// A written row as the caller gets it back: its secrets as their sentinel
+/// (TODO-imap M2), so a value written through REST is never read back by it.
+fn client_row(table: &Table, mut row: Json) -> Json {
+    sc_catalog::secrets::redact_json(table, &mut row);
+    row
 }
 
 /// The query-string parameters every list endpoint accepts (§13.4), in the order
@@ -2065,6 +2076,7 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
         // A calculated field is read on the way out and refused on the way in
         // (`rows::reject_calc_writes`), so it belongs in a row and in no write.
         rf.read_only = matches!(field.kind, DataFieldKind::Calc { .. });
+        rf.write_only = field.is_secret();
         if let DataFieldKind::Key { target_table, .. } = &field.kind
             && exposed.contains(target_table.0.as_str())
         {

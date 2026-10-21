@@ -110,7 +110,7 @@ pub fn visible_fields(table: &Table, config: &Attrs) -> Result<Vec<String>> {
     Ok(table
         .fields
         .iter()
-        .filter(|f| !f.is_collab_doc())
+        .filter(|f| !f.is_collab_doc() && !f.is_secret())
         .map(|f| f.base.name.clone())
         .filter(|name| allowed.is_empty() || allowed.contains(name))
         .collect())
@@ -122,7 +122,7 @@ pub fn all_fields(table: &Table) -> Vec<String> {
     table
         .fields
         .iter()
-        .filter(|f| !f.is_collab_doc())
+        .filter(|f| !f.is_collab_doc() && !f.is_secret())
         .map(|f| f.base.name.clone())
         .collect()
 }
@@ -206,6 +206,9 @@ pub fn field_note(field: &DataField) -> String {
         // being told that up front is cheaper than a failed call that says it.
         DataFieldKind::Calc { .. } => note.push_str(", computed; not filterable"),
         DataFieldKind::File { .. } => note.push_str(", a file path"),
+        // Never offered (`visible_fields` leaves secrets out); named for
+        // exhaustiveness.
+        DataFieldKind::Secret => note.push_str(", a secret; never read"),
         DataFieldKind::Plain => {}
     }
     note

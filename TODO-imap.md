@@ -429,19 +429,19 @@ and do not commit.
 
 ## M2 — `Secret` field kind (core)
 
-- [ ] **M2.1** `DataFieldKind::Secret` (`crates/sc-catalog/src/field.rs`) on a `Text` column.
+- [x] **M2.1** `DataFieldKind::Secret` (`crates/sc-catalog/src/field.rs`) on a `Text` column.
   - The column holds an envelope: `v1:<nonce>:<ciphertext>`, base64, AES-256-GCM or
     XChaCha20-Poly1305 (whichever crypto crate the workspace already has).
   - **Postgres and SQLite** (`sc-db-postgres`, `sc-db-sqlite`) are the same, since it is text.
   - It cannot be part of a key, an index, a unique constraint, a filter or a sort. Refuse those when
     the field is created.
-- [ ] **M2.2** The instance key.
+- [x] **M2.2** The instance key.
   - 32 random bytes in `<data dir>/secrets.key`, mode 0600, created the first time it is needed.
   - Restarting a server whose data dir is missing that file refuses to start if any Secret
     value exists, with a message naming the file.
   - Hosted: the key lives in the instance user's home with the rest of `SC_DATA_DIR`, so the
     host's own backup already includes it. Check `scripts/` in feldspar-hosted.
-- [ ] **M2.3** The row layer encrypts on write and decrypts on read **for server-side callers
+- [x] **M2.3** The row layer encrypts on write and decrypts on read **for server-side callers
   only**: actions, `{{ }}` templates, code bodies (JS and Python), module actions and services.
   - **REST, GraphQL, `useLiveRows`/live streams and the admin data editor** never return the
     value.
@@ -450,10 +450,10 @@ and do not commit.
     that saving a row that sends the sentinel back keeps the stored value.
   - Writing a new value through REST works: write-only.
   - Tests: one per surface, asserting the plaintext never appears in its output.
-- [ ] **M2.4** Admin UI and generated client.
+- [x] **M2.4** Admin UI and generated client.
   - A password input in the data editor and the table designer.
   - The generated TS type is `string | null` with a doc comment saying it is write-only.
-- [ ] **M2.5** **Backup and restore** (`crates/sc-server/src/backup/`).
+- [x] **M2.5** **Backup and restore** (`crates/sc-server/src/backup/`).
   - Secret columns are written as their envelopes, and the backup gets a `keys/secrets.key`
     entry, flagged in the manifest.
   - On restore, each envelope is decrypted with the backup's key and **re-encrypted with the
@@ -463,8 +463,24 @@ and do not commit.
     values null instead of failing the restore.
   - Document in OPERATIONS that a backup holding Secret fields can decrypt them, which applies to
     customer S3 backups on hosted too.
-- [ ] **M2.6** Docs: a "Secret fields" section in `docs/tutorial-ownership.md`, or a new tutorial,
+- [x] **M2.6** Docs: a "Secret fields" section in `docs/tutorial-ownership.md`, or a new tutorial,
   and the field-type list.
+
+  **Done (2026-10-21).** Decisions worth knowing for M3–M9:
+  - **The row layer reads envelopes, and the plaintext is produced explicitly.** Server-side
+    readers reveal (`sc_catalog::secrets::reveal_values` / `reveal_json`): trigger events, so
+    `{{ row.smtp_password }}` works; `TableHost`, i.e. code bodies, module actions and services;
+    and the row actions. Client surfaces redact. A surface nobody thought of shows ciphertext, not
+    plaintext.
+  - **A secret is not in the formula shape**, so `{{ accountⱵsmtp_password }}` (M3.4) does not
+    validate today. M3.4 has to add a join-aware reveal for templates, or use the code-body route.
+    A REST `select` through an embed refuses a secret, and so does a code-host Ⱶ path, which reads
+    through the formula shape.
+  - **Module services (M5) read through `TableHost`** and get the plaintext. That is what
+    `ctx.secrets` needs, so M5 may not need a separate API.
+  - **Follow-up:** a workflow run's stored event (`sc-workflow` `StoredEvent::of`) keeps the
+    revealed row in `_fd_runs`. Redacting or re-sealing it there needs the catalog, which
+    `new_run` has not got.
 
 ## M3 — SMTP override settings on `send_email` (core)
 

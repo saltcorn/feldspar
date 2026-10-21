@@ -9057,8 +9057,11 @@ dependencies = [
 name = "sc-catalog"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
+ "getrandom 0.3.4",
  "sc-db",
  "sc-db-postgres",
  "sc-db-sqlite",

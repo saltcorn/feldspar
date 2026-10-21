@@ -490,6 +490,19 @@ impl Table {
             // this is unreachable — named for exhaustiveness.
             DataFieldKind::Calc { .. } => {}
             DataFieldKind::File { .. } => self.fields[idx].kind = meta.kind.clone(),
+            // A secret holds envelopes, which are text: on any other column the
+            // overlay is refused rather than applied, so a value is never read
+            // as a secret that could not have been written as one.
+            DataFieldKind::Secret => {
+                if self.fields[idx].base.type_.as_basic() == Some(&sc_types::BasicType::Text) {
+                    self.fields[idx].kind = DataFieldKind::Secret;
+                } else {
+                    issues.push(self.field_issue(
+                        meta,
+                        "is configured as a secret, which applies only to a text column",
+                    ));
+                }
+            }
             DataFieldKind::Key { summary_field, .. } => {
                 // Read the database's target first, so the assignment below does
                 // not borrow the field it writes.

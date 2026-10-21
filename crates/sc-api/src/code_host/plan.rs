@@ -1231,6 +1231,13 @@ impl<'a> Lowering<'a> {
     fn value_expr(&self, source: &str) -> Result<Expr> {
         match self.table.field(source) {
             Some(field) if field.is_collab_doc() => Err(not_a_value(&self.table.name, source)),
+            // A secret's column holds envelopes: ordering by one, or computing
+            // over one, could only compare ciphertext (TODO-imap M2).
+            Some(field) if field.is_secret() => Err(Error::invalid(format!(
+                "`{source}` of `{}` is a secret: it is selected, but not ordered, grouped or \
+                 computed on",
+                self.table.name
+            ))),
             Some(field) if !field.is_calc() => Ok(Expr::col(source)),
             // A calculated field has no column; its own expression is what the
             // database computes, inlined by the translator's calc environment.

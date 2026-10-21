@@ -55,6 +55,11 @@ pub struct ResourceField {
     /// typed as anything but unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub references: Option<String>,
+    /// The column is **write-only**: a secret (TODO-imap M2), which a read
+    /// answers as `null` or the redaction sentinel and never as its value, so
+    /// its row type is `string | null` whatever the column's nullability.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub write_only: bool,
 }
 
 impl ResourceField {
@@ -68,6 +73,7 @@ impl ResourceField {
             primary_key: false,
             read_only: false,
             references: None,
+            write_only: false,
         }
     }
 

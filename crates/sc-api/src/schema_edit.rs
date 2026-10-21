@@ -1315,10 +1315,35 @@ impl Plan {
             };
         }
         if let Some(kind) = &settings.kind {
+            let becomes_secret = matches!(kind, DataFieldKind::Secret);
+            if becomes_secret != existing.is_secret() {
+                return Err(Error::invalid(format!(
+                    "`{table}.{field}` cannot {} a secret: the values already in its column \
+                     were stored {}. Add a new field instead, and copy the values across",
+                    if becomes_secret {
+                        "become"
+                    } else {
+                        "stop being"
+                    },
+                    if becomes_secret {
+                        "in plain text"
+                    } else {
+                        "encrypted"
+                    },
+                )));
+            }
             meta.kind = self.resolve_kind(table, field, kind)?;
             if !existing.is_calc() {
                 self.repoint_reference(table, &existing, &meta.kind)?;
             }
+        }
+        if matches!(meta.kind, DataFieldKind::Secret) {
+            let spec = FieldSpec {
+                primary_key: settings.primary_key.unwrap_or(existing.primary_key),
+                default_expression: settings.default_expression.clone(),
+                ..FieldSpec::default()
+            };
+            refuse_secret_field(field, &spec, &existing.base.type_)?;
         }
         if let Some(attributes) = &settings.attributes {
             meta.attributes = attributes.clone();
@@ -1780,6 +1805,12 @@ impl Plan {
                          constrain or index"
                     )));
                 }
+                Some(f) if f.is_secret() => {
+                    return Err(Error::invalid(format!(
+                        "`{table}.{field}` is a secret: its column holds encrypted values, \
+                         which cannot be compared, so it cannot be constrained or indexed"
+                    )));
+                }
                 Some(_) => {}
                 None => {
                     return Err(Error::not_found(format!(
@@ -1979,8 +2010,11 @@ impl Plan {
                     ..
                 } => (self.key_storage_type(target_table, target_field)?, None),
                 DataFieldKind::Calc { .. } => (TypeRef::Basic(BasicType::Text), None),
-                // A file field stores the file's path within its store.
-                DataFieldKind::File { .. } => (TypeRef::Basic(BasicType::Text), None),
+                // A file field stores the file's path within its store, and a
+                // secret its encrypted envelope.
+                DataFieldKind::File { .. } | DataFieldKind::Secret => {
+                    (TypeRef::Basic(BasicType::Text), None)
+                }
                 DataFieldKind::Plain => {
                     return Err(Error::invalid(format!(
                         "field `{name}` needs a type; it is only optional for a \
@@ -1993,6 +2027,19 @@ impl Plan {
             resolve_field_type(type_name)?
         };
 
+        if matches!(kind, DataFieldKind::Secret) {
+            // A user's fields travel with their session — into `user` in a
+            // formula, the `sc.user` setting, the account listing — and none
+            // of those know a secret from any other text.
+            if table == sc_auth::USERS_TABLE {
+                return Err(Error::invalid(format!(
+                    "field `{name}` cannot be a secret on `{table}`: a user's fields travel \
+                     with their session. Keep the secret in a table of its own that refers \
+                     to the user"
+                )));
+            }
+            refuse_secret_field(name, spec, &storage)?;
+        }
         if spec.primary_key && matches!(kind, DataFieldKind::Calc { .. }) {
             return Err(Error::invalid(format!(
                 "field `{name}` cannot be both calculated and part of the primary key: \
@@ -2625,6 +2672,36 @@ fn check_role(role: u8, key: &str) -> Result<u8> {
             "`{key}` must be a role between 1 and 100, got {role}"
         )))
     }
+}
+
+/// Refuse what a [`Secret`](DataFieldKind::Secret) field cannot be: a key, unique, a
+/// type other than text, or filled in by a default. Each value is encrypted
+/// with a fresh nonce, so two equal secrets are two different column values,
+/// and nothing that compares values — a key, a unique constraint — can work.
+fn refuse_secret_field(name: &str, spec: &FieldSpec, storage: &TypeRef) -> Result<()> {
+    let refuse = |what: &str| {
+        Err(Error::invalid(format!(
+            "field `{name}` is a secret, so it cannot {what}: its column holds encrypted \
+             values, which cannot be compared or computed"
+        )))
+    };
+    if spec.primary_key {
+        return refuse("be part of the primary key");
+    }
+    if spec.unique {
+        return refuse("be unique");
+    }
+    if storage.as_basic() != Some(&BasicType::Text) {
+        return refuse("have a type other than text");
+    }
+    if spec
+        .default_expression
+        .as_deref()
+        .is_some_and(|e| !e.trim().is_empty())
+    {
+        return refuse("have a default value");
+    }
+    Ok(())
 }
 
 /// The calculated fields of `table` whose expression names `field`.

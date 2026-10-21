@@ -129,6 +129,13 @@ export function isDocument(field: FieldInfo): boolean {
   return field.type === "collab_doc";
 }
 
+/** Whether a field is a secret: write-only, read back as `null` or a redaction
+ * sentinel and never as its value, so it is edited through a password input that
+ * opens empty — and left as it is when nothing is typed. */
+export function isSecret(field: FieldInfo): boolean {
+  return (field.kind as FieldKind)?.type === "secret";
+}
+
 /** The store a `File` field points at, or `null` for any other kind. */
 export function fileStoreOf(field: FieldInfo): string | null {
   const kind = field.kind as FieldKind;
@@ -195,6 +202,7 @@ export function DataGrid({
   const fieldNames = useMemo(() => fields.map((f) => f.name), [fields]);
   const byName = useMemo(() => new Map(fields.map((f) => [f.name, f])), [fields]);
   const types = useMemo(() => Object.fromEntries(fields.map((f) => [f.name, f.type])), [fields]);
+  const secrets = useMemo(() => new Set(fields.filter(isSecret).map((f) => f.name)), [fields]);
 
   // The column a row is addressed by. A composite key has no single value to put
   // in a URL, so it is "not addressable" here for the same reason no key is — the
@@ -462,9 +470,11 @@ export function DataGrid({
   const beginEdit = useCallback(
     (row: number, column: string, text: string) => {
       if (readOnly(column)) return;
-      setEditing({ row, column, text });
+      // A secret's cell shows its sentinel, which is not the value: its editor
+      // opens empty, for a new one.
+      setEditing({ row, column, text: secrets.has(column) ? "" : text });
     },
-    [readOnly],
+    [readOnly, secrets],
   );
 
   const commitEdit = useCallback(
@@ -472,13 +482,18 @@ export function DataGrid({
       const current = editingRef.current;
       setEditing(null);
       if (current === null) return;
+      // Nothing typed into a secret's editor leaves the stored value alone.
+      if (secrets.has(current.column) && current.text === "") {
+        if (move !== null) tableApi.moveCellSelection(move);
+        return;
+      }
       const type = types[current.column] ?? "text";
       void applyEdits([
         { row: current.row, column: current.column, value: parseCell(type, current.text) },
       ]);
       if (move !== null) tableApi.moveCellSelection(move);
     },
-    [applyEdits, types, tableApi],
+    [applyEdits, types, secrets, tableApi],
   );
 
   // --- the selection, as rows and columns ------------------------------------
@@ -845,6 +860,7 @@ export function DataGrid({
                         {isEditing ? (
                           <CellEditor
                             text={editing.text}
+                            secret={secrets.has(cell.column.id)}
                             onChange={(text) => setEditing((e) => (e === null ? e : { ...e, text }))}
                             onCommit={commitEdit}
                             onCancel={() => setEditing(null)}
@@ -890,11 +906,13 @@ function GridCell({ value, type, loaded }: { value: unknown; type: string; loade
  * end, and every way out of it says what to do next. */
 function CellEditor({
   text,
+  secret = false,
   onChange,
   onCommit,
   onCancel,
 }: {
   text: string;
+  secret?: boolean;
   onChange: (text: string) => void;
   onCommit: (move: "down" | "right" | null) => void;
   onCancel: () => void;
@@ -910,6 +928,8 @@ function CellEditor({
     <input
       ref={input}
       className="grid-editor"
+      type={secret ? "password" : "text"}
+      autoComplete={secret ? "new-password" : undefined}
       value={text}
       onChange={(e) => onChange(e.target.value)}
       onBlur={() => onCommit(null)}

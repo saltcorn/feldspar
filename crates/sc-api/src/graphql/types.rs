@@ -107,6 +107,10 @@ pub fn field_type(field: &DataField, names: &SchemaNames) -> TypeRef {
         // A calculated field has no column behind it, so `required` is whatever
         // the overlay happened to say; it is nullable on the wire regardless.
         DataFieldKind::Calc { .. } => TypeRef::named(column_scalar(field)),
+        // A secret reads as the redaction sentinel or `null` (TODO-imap M2),
+        // and a `NOT NULL` one is still nullable on the wire: what a client
+        // reads is never the value, so it promises nothing about it.
+        DataFieldKind::Secret => TypeRef::named(TypeRef::STRING),
         DataFieldKind::Plain => named(column_scalar(field)),
     }
 }

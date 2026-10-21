@@ -817,7 +817,7 @@ report the provider as missing until the admin points them at another one.
 | `FELDSPAR_SQLITE` | every command | use this SQLite file as the primary database |
 | `FELDSPAR_CONFIG` | every command | read this configuration file instead of searching. The file must exist |
 | `FELDSPAR_ENV` | every command | which `[environments.NAME]` section to use. As explicit as `--environment` |
-| `SC_DATA_DIR` | the server | base directory for data the server owns: git clones for git-backed file stores, suggested local-store directories, the Python virtual environment, installed modules. Overrides the platform default |
+| `SC_DATA_DIR` | the server | base directory for data the server owns: git clones for git-backed file stores, suggested local-store directories, the Python virtual environment, installed modules, and `secrets.key`, the key Secret fields are encrypted with (§8.2). Overrides the platform default |
 | `HOME` | the server | used to derive the data directory when `SC_DATA_DIR` is unset. On Linux: `$XDG_DATA_HOME/feldspar`, else `~/.local/share/feldspar` |
 | `XDG_CONFIG_HOME` | every command | where the user configuration directory is, for the `feldspar.toml` search |
 | `XDG_DATA_HOME` | the server | where the user data directory is, when `SC_DATA_DIR` is unset |
@@ -1521,6 +1521,34 @@ HTTPS to the endpoint.
 - Each backup is built in memory and sent whole. Over SFTP it is written under a
   temporary `.partial` name and renamed into place. An S3 upload is a single
   `PUT`, which limits one backup to 5 GB on Amazon S3.
+
+#### Secret fields, their key, and backups
+
+A **Secret** field (an IMAP password, an API token) is stored encrypted with
+AES-256-GCM under one key per instance: 32 random bytes in
+`<data dir>/secrets.key`, mode 0600, created the first time a value is written.
+The key is not in the database, so a database dump alone opens nothing.
+
+- **Keep the key with the data directory.** A server that holds Secret values
+  and finds no `secrets.key` **refuses to start**, naming the file and the tables
+  that need it. Put the file back (from the old data directory, or from a
+  backup's `keys/secrets.key`) rather than deleting the values: a new key opens
+  none of them. A server with no Secret values starts without one.
+- **A backup that holds Secret fields can decrypt them.** When a backed-up
+  table's rows include a Secret field, the zip carries the key as
+  `keys/secrets.key` (the manifest says so under `secrets_key`), so a restore
+  after a disaster needs no password typed in again. Treat such a backup as
+  being as sensitive as the passwords themselves. That holds for automated
+  backups to SFTP and S3 too, and on the hosted service for a customer's own S3
+  backups.
+- **A restore re-seals.** Each value is decrypted with the backup's key and
+  encrypted again with *this* server's key, which is never replaced; restoring
+  into a different instance works the same way. A backup with no key entry, or
+  with the wrong one, restores the rows with those values left empty, and the
+  restore report says so per table.
+- **Hosted:** the key lives in `/srv/feldspar/<instance>/data/` with the rest of
+  `SC_DATA_DIR`, so `backup-instance.sh`'s archive of the instance's home
+  already includes it.
 
 ### 8.3 The bound on a model dataset
 

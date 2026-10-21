@@ -84,12 +84,18 @@ impl ListQuery {
     /// with. With one it is exactly what was asked for, in the caller's own keys
     /// and nesting — the join values are columns of the same statement, so the
     /// nesting happens here rather than in the database.
+    ///
+    /// A secret answers as its sentinel (TODO-imap M2): a client never reads one.
     pub(crate) fn render(&self, table: &Table, rows: &[BTreeMap<String, Value>]) -> Json {
         Json::Array(
             rows.iter()
-                .map(|values| match &self.shape {
-                    None => ownership::table_row_json(table, values),
-                    Some(nodes) => render_row(nodes, values),
+                .map(|values| {
+                    let mut values = values.clone();
+                    sc_catalog::secrets::redact_values(table, &mut values);
+                    match &self.shape {
+                        None => ownership::table_row_json(table, &values),
+                        Some(nodes) => render_row(nodes, &values),
+                    }
                 })
                 .collect(),
         )
@@ -349,6 +355,15 @@ fn resolve(
                 table.name
             )));
         };
+        // A secret answers as its sentinel at the root; through an embed it
+        // is not offered at all, since a joined value is a path and not a
+        // field the redaction can recognise.
+        if prefix.is_some() && field.is_secret() {
+            return Err(Error::invalid(format!(
+                "`select`: `{}`.`{name}` is a secret, which an embed does not select",
+                table.name
+            )));
+        }
         let ident = match prefix {
             Some(prefix) => format!("{prefix}{JOIN}{name}"),
             None => name.to_owned(),

@@ -42,6 +42,7 @@ mod prefetch;
 mod projection;
 mod provider;
 mod rls;
+pub mod secrets;
 mod spatial;
 mod sync;
 mod table;
@@ -76,9 +77,9 @@ pub use field::{
 };
 pub use field_meta::{
     FIELD_META_TABLE, FieldMeta, FieldMetaId, KIND_CALC, KIND_FILE, KIND_KEY, KIND_PLAIN,
-    bootstrap_field_meta, delete_field_meta, file_kind_config_spec, key_kind_config_spec,
-    list_field_meta, list_field_meta_for_table, load_field_meta, load_field_meta_by_field,
-    save_field_meta, save_field_meta_row,
+    KIND_SECRET, bootstrap_field_meta, delete_field_meta, file_kind_config_spec,
+    key_kind_config_spec, list_field_meta, list_field_meta_for_table, load_field_meta,
+    load_field_meta_by_field, save_field_meta, save_field_meta_row,
 };
 pub use file_stores::{
     FILE_STORES_TABLE, FileStoreConnections, NEW_LOCAL_FILE_STORE, QUERY_FILE_STORES,
@@ -101,6 +102,7 @@ pub use rls::{
     Access, ROLE_GUC, clear_caller_context, disable_rls, disable_rls_sql, enable_rls,
     enable_rls_sql, run_in_context, run_in_context_read_only, set_caller_context,
 };
+pub use secrets::SecretKey;
 pub use spatial::bootstrap_spatial;
 pub use sync::{
     SYNC_CLIENTS_TABLE, SyncWatermark, bootstrap_sync, changed_keys, disable_sync_sql,
