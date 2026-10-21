@@ -517,6 +517,7 @@ pub async fn apply(
     let mut plan = Plan::new(catalog).await?;
     for (index, op) in operations.iter().enumerate() {
         refuse_on_provided(catalog, op).map_err(|e| at(index, op, e))?;
+        refuse_on_module_table(catalog, op).map_err(|e| at(index, op, e))?;
         plan.push(catalog, index, op, &options.grants)
             .await
             .map_err(|e| at(index, op, e))?;
@@ -632,6 +633,18 @@ fn refuse_on_provided(catalog: &Catalog, op: &Operation) -> Result<()> {
             _ => "constrain",
         }
     )))
+}
+
+/// Refuse dropping a table a module declared, or one of the fields it declared
+/// (TODO-imap M4.3): the module's code reads and writes them, so they stay
+/// while it is installed. Fields an admin added to such a table are theirs.
+fn refuse_on_module_table(catalog: &Catalog, op: &Operation) -> Result<()> {
+    let tables = catalog.module_tables();
+    match op {
+        Operation::DropTable { table } => tables.refuse_drop(table, None),
+        Operation::DropField { table, field } => tables.refuse_drop(table, Some(field)),
+        _ => Ok(()),
+    }
 }
 
 /// Forget a table's stored settings: delete its `_fd_tables` row, drop the

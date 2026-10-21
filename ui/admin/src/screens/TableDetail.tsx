@@ -270,6 +270,8 @@ export function TableDetail({ table }: { table: string }) {
           inbound={inbound}
           provided={Boolean(settings?.provider)}
           metadata={settings?.metadata ?? false}
+          module={settings?.module ?? null}
+          moduleFields={settings?.module_fields ?? []}
           onChange={load}
         />
 
@@ -1415,6 +1417,8 @@ function Fields({
   inbound,
   provided,
   metadata,
+  module = null,
+  moduleFields = [],
   onChange,
 }: {
   table: string;
@@ -1431,6 +1435,11 @@ function Fields({
   /** Whether this is one of Saltcorn's own metadata tables. Its columns are
    * shown and are not editable: the schema is the server's. */
   metadata?: boolean;
+  /** The installed module that declared this table (TODO-imap M4.3), and the
+   * fields it declared: those cannot be deleted while it is installed. Fields
+   * an admin added are theirs. */
+  module?: string | null;
+  moduleFields?: string[];
   onChange: () => void;
 }) {
   const { t } = useT();
@@ -1662,7 +1671,12 @@ function Fields({
                       <Button
                         size="sm"
                         variant="outline-danger"
-                        disabled={busy}
+                        disabled={busy || moduleFields.includes(f.name)}
+                        title={
+                          moduleFields.includes(f.name)
+                            ? t("Declared by the module {module}; it cannot be deleted while the module is installed.", { module: module ?? "" })
+                            : undefined
+                        }
                         onClick={() => void drop(f.name)}
                       >
                         <T text="Delete" />

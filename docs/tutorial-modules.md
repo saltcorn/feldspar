@@ -295,6 +295,103 @@ Three things are worth knowing here that are not true in a code body:
   the method and why. A plugin whose `onLoad` reads rows still installs and still loads: the
   throw is an issue on its card, and every action it supplies goes on working.
 
+## Step 7 — A module that keeps its own tables
+
+Step 6's plugin works on a table the admin made. A module that has **state of its own** — a mail
+module's accounts, folders and messages — declares its tables instead, and the server creates
+them when the module loads. Nobody maps the module's fields onto columns of their own:
+
+```js
+module.exports = {
+  sc_plugin_api_version: 1,
+  tables: [
+    {
+      name: "tm_notebooks",
+      label: "Notebooks",
+      fields: [
+        { name: "owner", references: "users" },
+        { name: "title", type: "text", required: true },
+      ],
+      ownership: "owner === user.id",
+    },
+    {
+      name: "tm_notes",
+      fields: [
+        { name: "notebook", references: "tm_notebooks", required: true },
+        { name: "body", type: "text" },
+        { name: "pinned", type: "bool", required: true, default: false },
+        { name: "attachment", file_store: "tm_files", file_folder: "notes" },
+      ],
+      unique: [["notebook", "body"]],
+      ownership: "notebookⱵowner === user.id",
+      min_role_read: 1,
+      min_role_write: 1,
+    },
+  ],
+};
+```
+
+`tables` can also be a function of the module's configuration that returns the list.
+
+**What each field may say.**
+
+| key | meaning |
+|---|---|
+| `name` | the column (required) |
+| `type` | `text`, `int`, `float`, `decimal`, `bool`, `uuid`, `date`, `time`, `timestamp`, `json`, `bytes`, or a rich type's name. Not given for the next three |
+| `references` | a key to that table's primary key: another of the module's tables, or `users` |
+| `secret: true` | a [Secret field](tutorial-ownership.md): stored encrypted, write-only to clients |
+| `file_store`, `file_folder` | a file field, in that store, under that folder |
+| `required`, `unique` | `NOT NULL`, and `UNIQUE` |
+| `default` | the value an insert that leaves the field out gets: a JSON value, or `"=<expression>"`. Only on a `required` field |
+| `label`, `description` | the admin's words for it |
+
+The table itself may give a `label`, a `description`, jointly-`unique` field lists, an
+`ownership` formula and the two minimum roles.
+
+**What the server does with it.** The tables are created through the same schema editor the
+admin's **Tables** screen uses, so they are ordinary tables: triggers, live streams, REST,
+GraphQL, ownership, RLS and backups treat them like any other.
+
+- **Every module table gets an `id` primary key**, a number that fills itself in. A declaration
+  does not mention it, so a `references` between two module tables never has to say which column.
+- **It happens on every load:** at install, on a reinstall with a newer version, after a
+  configuration change and at every restart. Missing tables are created and missing fields and
+  unique constraints added. When nothing is missing, nothing happens.
+- **Nothing is ever dropped or changed**, on upgrade or on uninstall. A field the admin added to
+  a module table stays theirs.
+  - If a declared field's type no longer matches the column, that is reported on the module's
+    card and the column is left as it is.
+  - A field that a newer version adds is added **nullable**, whatever it declares. The table
+    has rows already, and nothing says what they should hold.
+- **The settings belong to the creation.** The label, the ownership formula and the minimum roles
+  are applied when a table is created. After that they are the admin's, and an upgrade does not
+  put them back.
+- **A file field's store** is used if one of that name exists. Otherwise a local store is created
+  for it in the data directory, named after it. To keep the files somewhere else (S3, another
+  disk), create a store of that name before installing, or change the one that was created.
+- **While the module is installed**, the tables carry its name as a badge on **Data → Tables**.
+  The tables and the fields the module declared cannot be dropped. You can still add fields,
+  edit rows and set triggers. Uninstalling keeps the tables, which are then ordinary tables.
+- A table name is global, so prefix it with what the module is about (`mail_`, `tm_`). A table
+  another module already declared is refused on the second module's card.
+
+**Ownership across the module's tables.** A formula may follow keys through the module's own
+tables (`notebookⱵowner === user.id`, `messageⱵaccountⱵowner === user.id`). It decides reads and
+writes alike: a user can insert a note only into a notebook they own. Use the operation flags to
+make a table readable more widely than it is writable:
+`owner === user.id || (_read && owner === null && user.role <= min_role)` lets everyone at or
+above `min_role` read a shared row, and only its owner write it.
+
+**A formula grants rows, not fields.** A user who may update a row may update every field of it.
+If some fields should only be written by the module (a sync status, a cursor), its actions must
+re-check them, or its code must overwrite them, because the ownership model cannot make them
+read-only.
+
+**Listing them on a bundled card.** A module that ships in `plugins/` adds the table names to its
+`feldspar-module.json` as `tables`, and names each one in a `supplies` line. The catalog card then
+says "Installing creates the tables …" before the click.
+
 ## Developing a module against a running server
 
 Point the **local directory** source at your checkout. The package is copied into the modules
@@ -344,7 +441,8 @@ gets a fresh worker with every module reloaded into it, and nothing else on the 
 
 **Remove** on the card unloads the module, uninstalls the package and deletes the row, and the
 actions it supplied leave the picker immediately. A trigger still naming one says so rather than
-quietly doing nothing.
+quietly doing nothing. Tables the module declared (Step 7) stay, with their rows: they are
+ordinary tables from then on, and yours to drop.
 
 ## What this is not, yet
 

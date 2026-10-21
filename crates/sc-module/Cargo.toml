@@ -49,6 +49,13 @@ sc-types.workspace = true
 # reads rows back out of the driver, exactly as `_fd_llm_providers` does (§9's
 # storage pattern). Needing a `Catalog` is what fixes this crate above layer 4.
 sc-catalog.workspace = true
+# A module's **declared tables** (TODO-imap M4) are created through the schema
+# editor — the rule the admin API and an agent change a schema by — so they are
+# ordinary tables. `sc-api` is already below this crate (`sc-core-actions`
+# depends on it); this names the edge. `sc-files` for the local store a declared
+# file field gets when none of its name exists.
+sc-api.workspace = true
+sc-files.workspace = true
 sc-query.workspace = true
 sc-db.workspace = true
 # A module supplies **actions**, so it implements `sc_action::Action` and
@@ -141,6 +148,8 @@ sc-db-postgres.workspace = true
 # bundled Vue module's end-to-end test.
 sc-files.workspace = true
 sc-test-harness.workspace = true
+# Users and roles, for the ownership rules a module's declared tables carry.
+sc-auth.workspace = true
 # `sc-stream::testing`'s `Collector` — the `Vec` a stream's elements are
 # asserted against, which is exactly what a seam test wants and what the
 # feature exists to let another crate reach.

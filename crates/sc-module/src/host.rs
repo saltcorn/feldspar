@@ -458,6 +458,11 @@ pub struct ModuleManifest {
     /// patterns wants (11.2).
     #[serde(default)]
     pub headers: Vec<sc_viewpattern::PluginHeader>,
+    /// The tables it declares (TODO-imap M4) — data, read into
+    /// [`TableDecl`](crate::TableDecl)s by [`crate::tables`] and created by the
+    /// server when the module loads.
+    #[serde(default)]
+    pub tables: Vec<Json>,
     /// The fields of its `configuration_workflow`'s forms, flattened (§5).
     #[serde(default)]
     pub config_fields: Vec<Json>,

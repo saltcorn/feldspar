@@ -36,6 +36,7 @@ mod field_meta;
 mod file_stores;
 pub mod inmem;
 mod model_host;
+mod module_tables;
 mod observer;
 mod origin;
 mod prefetch;
@@ -89,6 +90,7 @@ pub use file_stores::{
     load_file_store_by_name, resolve_options, save_file_store, store_file_settings,
     unique_file_store_name,
 };
+pub use module_tables::{ModuleTableClaim, ModuleTables};
 pub use model_host::{ModelHost, ModelSummary, PredictRows, check_model_calls};
 pub use observer::{ReprojectedApp, SchemaChanged, SchemaObserver};
 pub use origin::PublicOrigin;

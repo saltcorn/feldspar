@@ -161,6 +161,11 @@ pub struct Catalog {
     /// [`provider`](Catalog::provider) (layer 4), so the trait is declared here
     /// and installed from above.
     table_providers: RwLock<Option<Arc<dyn crate::provider::TableProviderHost>>>,
+    /// Which tables the installed modules **declared** (TODO-imap M4.3), and
+    /// which of their fields — what refuses dropping them, and what the table
+    /// list badges. Installed whole on every module reload, like the table
+    /// providers; empty in a process with no such module.
+    module_tables: RwLock<Arc<crate::module_tables::ModuleTables>>,
     /// Why a stored provided table is not the table an admin expected, keyed by
     /// table name: a module that is not installed, a provider it does not
     /// supply, a `fields(cfg)` that threw.
@@ -301,6 +306,7 @@ impl Catalog {
             admin_host: RwLock::new(None),
             formula_evaluator: RwLock::new(None),
             table_providers: RwLock::new(None),
+            module_tables: RwLock::new(Arc::new(crate::module_tables::ModuleTables::new())),
             provided_table_issues: RwLock::new(Vec::new()),
             public_origin: RwLock::new(None),
             host_config: RwLock::new(sc_types::Attrs::new()),
@@ -1665,6 +1671,28 @@ impl Catalog {
     /// is a formula that fails naming its call rather than every query failing.
     pub fn module_functions(&self) -> Option<Arc<dyn sc_expr::ModuleFnHost>> {
         self.module_functions.read().ok()?.clone()
+    }
+
+    /// Install the tables the modules declare (TODO-imap M4.3) — `sc-server`'s
+    /// `ModuleServices`, after every module reload. Replaces the previous set
+    /// whole, so an uninstalled module's tables stop being claimed at once.
+    pub fn set_module_tables(&self, tables: crate::module_tables::ModuleTables) -> Result<()> {
+        let mut guard = self
+            .module_tables
+            .write()
+            .map_err(|_| Error::msg("catalog module-tables lock poisoned"))?;
+        *guard = Arc::new(tables);
+        Ok(())
+    }
+
+    /// The tables the installed modules declare. Empty where none do; a
+    /// poisoned lock reads as empty too, which costs only the protection
+    /// against dropping a module's table, never a read.
+    pub fn module_tables(&self) -> Arc<crate::module_tables::ModuleTables> {
+        self.module_tables
+            .read()
+            .map(|g| Arc::clone(&g))
+            .unwrap_or_default()
     }
 
     /// Install live updates' publishing side — `sc-server`'s live hub, at boot.

@@ -87,6 +87,7 @@ function module_(overrides: Partial<Module> = {}): Module {
     actions: [{ name: "mqtt_publish", description: "Publish a message", config_spec: [] }],
     functions: [],
     table_providers: [],
+    tables: [],
     model_providers: [],
     stream_providers: [],
     view_patterns: [],
@@ -120,6 +121,7 @@ function bundled(overrides: Partial<BundledModule> = {}): BundledModule {
     description: "Read an RSS or Atom feed as a table.",
     supplies: ['A table provider, "RSS feed".'],
     installs: ["rss-parser"],
+    tables: [],
     permissions: { net: ["*"], read: [], write: [], env: [] },
     installed: false,
     ...overrides,
@@ -352,6 +354,12 @@ describe("how an installed module reads", () => {
     expect(suppliedSummary(module_({ view_patterns: ["Mind map"] }))).toBe(
       "1 action and 1 view pattern",
     );
+  });
+
+  it("counts the tables it declares (TODO-imap M4)", () => {
+    expect(
+      suppliedSummary(module_({ tables: ["mail_accounts", "mail_messages"] })),
+    ).toBe("1 action and 2 tables");
   });
 
   it("marks a module that did not load, and one that loaded with a complaint", () => {

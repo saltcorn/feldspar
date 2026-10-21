@@ -9058,6 +9058,9 @@ fn module_json(loaded: &sc_module::LoadedModule, locale: &Locale) -> Json {
         // offers, listed here too because the Modules tab is where an admin
         // finds out what installing a module got them.
         "table_providers": loaded.table_provider_names(),
+        // The tables it declares (TODO-imap M4): created when it loaded, and
+        // kept when it is uninstalled.
+        "tables": loaded.table_names(),
         // And the model providers, for the same reason: installing
         // `feldspar-sklearn` gets an admin five estimators on the model form,
         // and the tab is where they find that out.
@@ -9088,6 +9091,9 @@ fn bundled_json(entry: &sc_module::BundledModule, installed: bool) -> Json {
         "language": entry.language.as_str(),
         "title": entry.title,
         "description": entry.description,
+        // The tables installing it creates (TODO-imap M4.6), said before the
+        // click.
+        "tables": entry.tables,
         "supplies": entry.supplies,
         "installs": entry.installs,
         // What installing it grants, in the same shape a module's own
@@ -11330,6 +11336,11 @@ pub(crate) fn table_json(
         // admin could act on wrongly.
         "database": table.database.0,
         "metadata": table.is_metadata(),
+        // The module that declared it and the fields it declared (TODO-imap
+        // M4.3): a badge on the list, and fields the editor will not delete.
+        "module": catalog.module_tables().module_of(&table.name),
+        "module_fields": catalog.module_tables().get(&table.name)
+            .map(|c| c.fields.clone()).unwrap_or_default(),
         // The table provider serving its rows, or null (§8.3).
         "provider": provided_json(catalog, table, locale),
     })

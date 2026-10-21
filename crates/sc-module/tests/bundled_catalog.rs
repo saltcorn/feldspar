@@ -52,6 +52,27 @@ fn every_bundled_manifest_reads() {
     }
 }
 
+/// TODO-imap M4.6: a module that creates tables lists them, and its card's
+/// `supplies` names each one — the reader refuses a manifest that does not, so
+/// here it is enough that every entry read, and that each listed table is a
+/// whole word of some `supplies` line.
+#[test]
+fn a_manifests_tables_are_listed_in_what_it_supplies() {
+    let catalog = catalog();
+    assert!(catalog.issues().is_empty(), "{:?}", catalog.issues());
+    for module in catalog.modules() {
+        for table in &module.tables {
+            assert!(
+                module.supplies.iter().any(|line| line
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .any(|w| w == table)),
+                "{}: the table `{table}` is not named in `supplies`",
+                module.id
+            );
+        }
+    }
+}
+
 #[test]
 fn a_manifests_name_is_the_package_s_own() {
     // The one that silently breaks everything: the row, the loaded set and the

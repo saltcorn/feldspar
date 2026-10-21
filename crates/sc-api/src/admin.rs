@@ -4548,6 +4548,17 @@ fn table_schema() -> TypeSchema {
     // Whether this is one of Saltcorn's own metadata tables, added to the list:
     // its rows and settings are editable, its fields and constraints are not.
     fields.push(StructField::new("metadata", TypeSchema::bool()));
+    // The installed module that declared this table (TODO-imap M4.3), or null,
+    // and the fields it declared: the list badges the table, and the field
+    // list refuses to delete those fields while the module is installed.
+    fields.push(StructField::new(
+        "module",
+        TypeSchema::optional(TypeSchema::text()),
+    ));
+    fields.push(StructField::new(
+        "module_fields",
+        TypeSchema::array(TypeSchema::text()),
+    ));
     // The table provider serving its rows, or null for a table in a database
     // (§8.3). Present on every table rather than only on provided ones, so a
     // client never has to read absence as "it is in a database".
@@ -5104,6 +5115,8 @@ fn module_schema() -> TypeSchema {
         // provider *asks for* belongs to the table being created and is on
         // `listTableProviders`.
         StructField::new("table_providers", TypeSchema::array(TypeSchema::text())),
+        // The tables it declares (TODO-imap M4), created when it loaded.
+        StructField::new("tables", TypeSchema::array(TypeSchema::text())),
         // The model providers it supplies — names only, for the same reason:
         // what a provider *asks for* belongs to the model being fitted and is
         // on `listModelProviders`.
@@ -5159,6 +5172,9 @@ fn bundled_module_schema() -> TypeSchema {
         // What installing it downloads — the dependencies that are deliberately
         // not in the release, so an admin knows the click reaches a registry.
         StructField::new("installs", TypeSchema::array(TypeSchema::text())),
+        // The tables installing it creates (TODO-imap M4.6) and uninstalling
+        // keeps — each also named in `supplies`.
+        StructField::new("tables", TypeSchema::array(TypeSchema::text())),
         // What it will be granted: the same `{ net, read, write, env }` shape a
         // module's own permissions have, so one renderer draws both. Always
         // closed for a Python module — there is nothing to enforce it (§10).

@@ -42,6 +42,8 @@
 //! - [`action`] — a module's action as an `Action`.
 //! - [`functions`] — a module's functions, as `sc-expr`'s fifth host surface.
 //! - [`table_providers`] — a module's table providers, as `sc-catalog`'s seam.
+//! - [`tables`] — the tables a module declares, created through the schema
+//!   editor when it loads (TODO-imap M4).
 //! - [`frameworks`] — a module's application frameworks, as `sc-app`'s seam.
 //! - [`modules`] — the loaded set: every stored module, its actions, its issues.
 //! - [`view_runtime`] — Saltcorn UI's view runtime, the built-in
@@ -71,6 +73,7 @@ pub mod spec;
 pub mod store;
 pub mod stream_providers;
 pub mod table_providers;
+pub mod tables;
 pub mod view_runtime;
 
 pub use action::ModuleAction;
@@ -104,4 +107,5 @@ pub use store::{
 };
 pub use stream_providers::ModuleStreamProviders;
 pub use table_providers::ModuleTableProviders;
+pub use tables::{FieldDecl, MODULE_TABLE_KEY, SyncReport, TableDecl};
 pub use view_runtime::{BUILTIN_VIEW_RUNTIME, ModuleViewRuntime};

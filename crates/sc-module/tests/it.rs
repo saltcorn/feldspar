@@ -45,6 +45,8 @@ mod model_providers;
 mod module_actions;
 #[path = "module_store.rs"]
 mod module_store;
+#[path = "module_tables.rs"]
+mod module_tables;
 #[path = "pg_provider.rs"]
 mod pg_provider;
 #[path = "rss_provider.rs"]

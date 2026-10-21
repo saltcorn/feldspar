@@ -114,18 +114,19 @@ the first time it is opened, or straight away in ingest mode).
 **Ownership** (`docs/tutorial-ownership.md`), on every table except `mail_accounts`:
 
 ```
-accountⱵowner === user.id || (accountⱵowner == null && user.role_id <= accountⱵmin_role)
+accountⱵowner === user.id || (accountⱵowner === null && user.role <= accountⱵmin_role)
 ```
 
 (`mail_attachments` reaches the account through `messageⱵaccount`.) On `mail_accounts` itself:
 - **read:** the same rule, minus the join;
 - **insert and update:** only rows with `owner === user.id`, or by an admin. That stops a
-  non-admin making a shared account or taking over someone else's.
+  non-admin making a shared account or taking over someone else's. As one formula (M4.4):
+  `owner === user.id || (_read && owner === null && user.role <= min_role)`.
 
 Writes to `status`, `last_error`, `last_sync_at`, the folder state and every message flag go
-through the service or the module's actions, not REST. Whether the ownership model can make some
-fields read-only for owners is a question for M4. If it can't, the actions re-check, and the
-service overwrites any client write to those fields on the next sync.
+through the service or the module's actions, not REST. The ownership model cannot make some
+fields read-only for owners (M4.4: a formula grants rows, not fields), so the actions re-check,
+and the service overwrites any client write to those fields on the next sync.
 
 **An application's own data refers to these tables.** Mail is not copied into it. For example,
 `orders.message` is a Key → `mail_messages`, filled by an **Insert trigger on `mail_messages`**
@@ -245,7 +246,7 @@ A user saves an account; the service has to start, restart or stop its connectio
   ticked in the application.
 - **Authorization:** each action loads the account **as the caller** (`asUser()`), so the
   ownership rule decides. Only then does it read the secrets. Sending from a shared account also
-  needs `user.role_id <= send_role`.
+  needs `user.role <= send_role`.
 
 | action | payload | does |
 |---|---|---|
@@ -538,28 +539,62 @@ and do not commit.
 
 ## M4 — Modules declare tables (core)
 
-- [ ] **M4.1** Design: a `tables` facility in the plugin object.
+- [x] **M4.1** Design: a `tables` facility in the plugin object.
   - **Shape:** `tables: [{ name, label, fields: [{ name, type, label, required, unique, references,
     secret, file_store, default }], unique: [[…]], ownership: "<formula>",
     min_role_read, min_role_write }]`.
   - Python can wait. Write the shape into TECHNICAL_DESIGN §11 before building it.
-- [ ] **M4.2** Install and upgrade: create the tables that are missing and add the fields that are
+- [x] **M4.2** Install and upgrade: create the tables that are missing and add the fields that are
   missing, idempotently, through the catalog (not raw SQL), so the tables are ordinary tables:
   triggers, live streams, REST, ownership.
   - **Never drop** a table or field on upgrade or uninstall. Fields an admin added are left alone.
   - A declared field whose type no longer matches is reported on the module card, not changed.
-- [ ] **M4.3** The tables are marked as the module's: a badge in the table list, and the declared
+- [x] **M4.3** The tables are marked as the module's: a badge in the table list, and the declared
   fields can't be deleted while the module is installed. The admin can still add fields, edit
   rows and set triggers.
-- [ ] **M4.4** Ownership formulas that join through other module tables. Check that
+- [x] **M4.4** Ownership formulas that join through other module tables. Check that
   `accountⱵowner` and `messageⱵaccountⱵowner` work as read rules and write rules.
   - Answer the question from §3: can some fields be written by server-side code only? If the
     ownership model can't do it cheaply, write down that the module re-checks them.
-- [ ] **M4.5** The module needs a file store for `mail_attachments.file`. Either it declares one
+- [x] **M4.5** The module needs a file store for `mail_attachments.file`. Either it declares one
   in the facility, or it uses the default store under a `mail/` folder. Decide and document.
-- [ ] **M4.6** `bundled_catalog` test: a manifest's `supplies` lists the tables.
+- [x] **M4.6** `bundled_catalog` test: a manifest's `supplies` lists the tables.
   `crates/sc-module/tests/` gets an install-twice-is-a-no-op test and an upgrade-adds-a-field
   test.
+
+  **Done (2026-10-21).** Decisions worth knowing for M5–M9 (TECHNICAL_DESIGN §15.1b):
+  - **M4.1: the shape** is as above, plus `description`, `file_folder`, and `tables` may be a
+    function of the configuration. `type` is a feldspar type name (`text`, `int`, `bool`,
+    `timestamp`, `json`, …), not v1's. `default` is a JSON value, or an expression as
+    `"=<expr>"`, and needs `required`. Unknown keys are refused, so a typo is an issue on the card.
+  - **M4.2: every module table gets an `id` int primary key** that numbers itself, and a
+    declaration may not name one. `ModuleSet::load` syncs on **every** load (install, upgrade,
+    configuration change, restart), in one `schema_edit` batch per module.
+    - Nothing is dropped or altered. A changed type is an issue on the card.
+    - A field that an upgrade adds is added **nullable**, with no default.
+    - `label`, `ownership` and the roles are applied only when the table is created; after that
+      they belong to the admin.
+  - **M4.3: the claim is in memory, not stored.** `Catalog::set_module_tables` gets the loaded
+    set's claims after each reload. `schema_edit::apply` refuses dropping a claimed table or a
+    declared field, naming the module. Admin-added fields are not claimed. Uninstalling releases
+    the claim and keeps the tables. `table_json` has `module`/`module_fields`; the list shows a
+    badge, the field list disables Delete, and the module card lists `tables`. Changing a declared
+    field's label is allowed; changing its type is not blocked (the edit form sends the whole
+    field, so it can't be told apart cheaply). The upgrade then reports the mismatch.
+  - **M4.4: joined rules work for reads and writes** (`sc-module/tests/module_tables.rs`), with
+    `user.role` (the user object has no `role_id`). The accounts rule uses `_read` to be readable
+    more widely than writable. **No field-level write rules:** M8/M9's actions re-check, and the
+    service overwrites its own columns.
+  - **M4.5: a file field names a store.** If no store of that name exists, a local one is created
+    at `sc_files::suggest_local_dir(name)`. To use S3, the admin creates a store of that name
+    first, or edits the created one. M6's `ctx.files` should accept only stores that the module's
+    declared file fields name. The mail module should declare `file_store: "mail_files"` (or
+    similar) with `file_folder: "attachments"`.
+  - **M4.6: `feldspar-module.json` gets `tables: [names]`.** The card shows it ("Installing creates
+    the tables …"). The reader refuses a listed table that no `supplies` line names as a whole
+    word. M7.1's manifest must list all four mail tables.
+  - **Python modules** can't declare tables yet. The declaration is plain data, so a
+    `PyModuleSet` only needs to pass it to `tables::sync`.
 
 ## M5 — Module services (core)
 

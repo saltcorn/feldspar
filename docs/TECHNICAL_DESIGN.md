@@ -11265,6 +11265,100 @@ has the excuse this one has. Python modules request nothing at all, and the mani
 refuses one that tries — there is no sandbox in the interpreter to enforce it (§15.2), and a
 grant nothing enforces is worse than no grant.
 
+### 15.1b Tables a module declares (`sc-module::tables`, TODO-imap M4)
+
+A module with state of its own — the mail module's accounts, folders and messages — needs tables,
+and neither "build these by hand from the README" nor v1's "map each of my fields onto a column of
+yours" is an answer an admin should get. So a plugin object may carry a **`tables`** key, data
+like `maptools`, and the server creates what it declares:
+
+```js
+tables: [{                                   // or (configuration) => [...]
+  name, label, description,
+  fields: [{ name, type, label, description, required, unique,
+             references, secret, file_store, file_folder, default }],
+  unique: [["account", "path"]],             // jointly-unique field lists
+  ownership: "<formula>",                    // §7.3
+  min_role_read, min_role_write,
+}]
+```
+
+`type` is a basic or rich type name, omitted for the three kinds that decide their own storage:
+`references` (a `Key` to that table's primary key — another module table, or `users`), `secret`
+(a `Secret`, M2) and `file_store` (a `File` field). `default` is a JSON value or an `=`-prefixed
+expression, and becomes the field's `default_expression`, so it needs `required`. Python modules
+get the same key later; the declaration is language-neutral data, and everything below is Rust.
+
+**The module's code ships the declaration; the server applies it.** The host script passes
+`tables` on in the load's manifest (`ModuleManifest::tables`, JSON), `sc_module::tables` reads it
+into `TableDecl`s with `deny_unknown_fields` — a typo is an issue on the card, not a silently
+missing column — and `ModuleSet::load` calls `tables::sync` for each loaded module, in the set's
+order, after the actions are registered. `sync` builds **one `schema_edit` batch**: a
+`CreateTable` per missing table, an `AddField` per missing field, an `AddConstraint` per missing
+unique list. It goes through the same planner, validation and transaction as an admin's edit or
+an agent's, so a module table is an ordinary table — triggers, live streams, REST, GraphQL,
+ownership, RLS and backups need no knowledge of modules — and a refused batch applies nothing.
+
+The rules, each chosen so that "on every load" is safe:
+
+- **Every module table gets an `id` int primary key** that numbers itself, and a declaration may
+  not name one. One convention means a `references` between module tables never names a column,
+  and a module's code can always address a row as `id`.
+- **Create and add; never drop, never alter.** Not on upgrade, not on uninstall — data outlives
+  the code that wrote it, and an admin's own field on a module table (`mail_messages.handled`) is
+  theirs. A declared field whose type or reference the database disagrees with is reported as an
+  issue on the module's card and left alone: retyping a column with rows in it is a migration, and
+  there is no migration framework (§3.3).
+- **A field an upgrade adds is nullable**, whatever it declares, with no default: the table has
+  rows, and `NOT NULL` on them needs a value nobody declared.
+- **Table settings belong to the creation.** `label`, `ownership` and the minimum roles go into
+  the `CreateTable`; after that they are the admin's, and a reload does not reassert them.
+- **Running it twice is a no-op.** That is what lets it run on every load — install, a reinstall
+  of a newer package (which is how a module is upgraded), a configuration change, a restart — so
+  "install" and "upgrade" are one code path rather than two that drift.
+- A table another loaded module already declared is refused on the later module's card. A name
+  that is a provided or metadata table, `users`, or `_fd_*` is refused.
+
+**The tables are claimed while the module is installed, and nothing is stored to say so.**
+`ModuleSet::module_tables()` is installed on the catalog after every reload
+(`Catalog::set_module_tables`, the same whole-set swap as the module functions), as
+`sc_catalog::ModuleTables`: table → module and declared field names. `schema_edit::apply`
+refuses `DropTable` of a claimed table and `DropField` of a declared field, naming the module —
+so the admin API, the MCP schema tool and an agent are all refused by the one check. Fields the
+admin added are not claimed. `table_json` carries `module` and `module_fields`, which the tables
+list badges and the field list's Delete button reads. Uninstalling removes the module from the
+next set, which releases the claim; the tables become ordinary tables, rows and all.
+
+**File fields name a store; a missing store is created** (M4.5). A declared `file_store` is a
+store *name*. When none of that name exists, `sync` saves and connects a `local` store for it at
+`sc_files::suggest_local_dir(name)` with `create: true` — the data directory, named after the
+store. An admin who wants the files on S3 or another disk creates a store of that name before
+installing, or edits the created one afterwards; a store that is defined but failing to connect is
+left for its own page to explain rather than replaced. That is what M6's `ctx.files` limits a
+module's writes to: the stores its declared file fields name.
+
+**Ownership through the module's own tables works as read and write rules** (M4.4, tested in
+`sc-module/tests/module_tables.rs`). `accountⱵowner === user.id || (accountⱵowner === null &&
+user.role <= accountⱵmin_role)` on `mail_messages`, and its two-hop form on `mail_attachments`,
+translate to correlated sub-selects for reads and are checked against the proposed row for writes
+(a message cannot be inserted into an account the writer does not own). The operation flags make
+a table readable more widely than it is writable: `mail_accounts`' `owner === user.id || (_read &&
+owner === null && user.role <= min_role)` lets staff read a shared account and only its owner
+change it, and refuses a non-admin creating a shared account or one owned by somebody else. The
+user object's field is `role`, not v1's `role_id`.
+
+**A formula grants rows, never fields** — there is no old-row/new-row comparison in the formula
+language, and adding one for this would put a second evaluation per updated row on every
+write path. So "only the service writes `status`, the cursor and the flags" is not something
+ownership can say. The module **re-checks** in its actions (which load rows `asUser()` and then
+write with the module's own authority), and the service treats its own columns as authoritative,
+overwriting a client's write to them on its next sync.
+
+**A bundled manifest lists the tables too.** `feldspar-module.json` may carry `tables: [names]`,
+which the card prints before the click ("Installing creates the tables …"). The catalog reader
+refuses a listed table that no `supplies` line names as a whole word, so the sentence an admin
+reads cannot omit one; `bundled_catalog.rs` asserts it for every shipped module.
+
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 
 The second adapter. It is small for a reason that is structural rather than lucky: the JavaScript

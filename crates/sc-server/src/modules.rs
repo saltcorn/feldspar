@@ -212,6 +212,10 @@ impl ModuleServices {
         )
         .await?;
         self.dispatcher.set_registry(Arc::new(registry))?;
+        // The tables the modules declared (TODO-imap M4.3), which the load has
+        // just created or brought up to date: claimed on the catalog, so the
+        // schema editor refuses to drop them while their module is installed.
+        self.catalog.set_module_tables(set.module_tables())?;
         // The functions the modules supply, on the catalog (§4a). Installed here
         // rather than beside the registry because they are not actions and their
         // callers are not the dispatcher: a formula hoists one through

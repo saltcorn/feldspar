@@ -489,6 +489,18 @@ function BundledCard({
             </ul>
           )}
           {downloads && <div className="text-secondary mb-1">{downloads}</div>}
+          {entry.tables.length > 0 && (
+            <div className="text-secondary mb-1">
+              <T text="Installing creates the tables" />{" "}
+              {entry.tables.map((table, i) => (
+                <span key={table}>
+                  {i > 0 && ", "}
+                  <code>{table}</code>
+                </span>
+              ))}
+              . <T text="Uninstalling keeps them." />
+            </div>
+          )}
           {grant && <div className="text-secondary mb-1">{grant}</div>}
           {blocked && <div className="text-secondary mb-1">{blocked}</div>}
         </div>
@@ -623,6 +635,22 @@ function ModuleCard({
             </ul>
             <div className="text-secondary mb-2">
               <T text="A code body calls these with" /> <code>await</code><T text=", including the ones this module wrote synchronously; a formula calls them by name, and the call is resolved before the formula runs." />
+            </div>
+          </>
+        )}
+
+        {module.tables.length > 0 && (
+          <>
+            <div className="text-secondary mb-1"><T text="Tables" /></div>
+            <ul className="list-unstyled mb-2">
+              {module.tables.map((table) => (
+                <li key={table}>
+                  <code>{table}</code>
+                </li>
+              ))}
+            </ul>
+            <div className="text-secondary mb-2">
+              <T text="Created by the module, and kept if it is uninstalled. You can add fields, edit rows and set triggers on them; the fields the module declared cannot be deleted while it is installed." />
             </div>
           </>
         )}

@@ -281,6 +281,7 @@ export function suppliedSummary(module: Module): string {
     [module.actions.length, "action", "actions"],
     [module.functions.length, "function", "functions"],
     [module.table_providers.length, "table provider", "table providers"],
+    [module.tables.length, "table", "tables"],
     [module.model_providers.length, "model provider", "model providers"],
     [module.stream_providers.length, "stream provider", "stream providers"],
     [module.view_patterns.length, "view pattern", "view patterns"],

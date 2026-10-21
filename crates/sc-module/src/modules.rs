@@ -97,6 +97,25 @@ impl LoadedModule {
             .unwrap_or_default()
     }
 
+    /// The tables this module declares (TODO-imap M4), as read from its
+    /// manifest. A declaration that does not read is left out here and was an
+    /// issue on the card when the module loaded.
+    pub fn table_declarations(&self) -> Vec<crate::tables::TableDecl> {
+        self.manifest
+            .as_ref()
+            .map(|m| crate::tables::parse_declarations(&m.tables).0)
+            .unwrap_or_default()
+    }
+
+    /// The names of the tables this module declares — what the Modules tab
+    /// lists beside its actions.
+    pub fn table_names(&self) -> Vec<String> {
+        self.table_declarations()
+            .into_iter()
+            .map(|d| d.name.trim().to_owned())
+            .collect()
+    }
+
     /// Whether the module is loaded and contributing.
     pub fn is_loaded(&self) -> bool {
         self.manifest.is_some()
@@ -148,7 +167,24 @@ impl ModuleSet {
             modules.push(load_one(&module, host, installer, surfaces, registry).await);
         }
         resolve_view_patterns(&mut modules);
+        sync_tables(catalog, &mut modules).await;
         Ok(ModuleSet { modules })
+    }
+
+    /// Which tables the loaded modules declare, and which fields — what
+    /// [`Catalog::set_module_tables`] is installed with after every reload, so
+    /// a declared field cannot be dropped while its module is installed.
+    pub fn module_tables(&self) -> sc_catalog::ModuleTables {
+        let declared: Vec<(String, Vec<crate::tables::TableDecl>)> = self
+            .modules
+            .iter()
+            .map(|m| (m.module.name.clone(), m.table_declarations()))
+            .collect();
+        crate::tables::claims(
+            declared
+                .iter()
+                .map(|(module, decls)| (module.as_str(), decls.as_slice())),
+        )
     }
 
     /// Every map tool the modules declare, as `(module, declaration)`: what
@@ -350,6 +386,31 @@ async fn load_one(
     }
 }
 
+/// Create and bring up to date every loaded module's declared tables (TODO-imap
+/// M4.2), in the set's order, each module's problems on its own card.
+///
+/// On **every** load rather than on install alone: it is a no-op when nothing
+/// is missing, and it makes install, upgrade (a reinstall with a newer
+/// package), a configuration change and a restart one path.
+async fn sync_tables(catalog: &Catalog, modules: &mut [LoadedModule]) {
+    let mut claimed = sc_catalog::ModuleTables::new();
+    for loaded in modules.iter_mut() {
+        let Some(manifest) = loaded.manifest.as_ref() else {
+            continue;
+        };
+        if manifest.tables.is_empty() {
+            continue;
+        }
+        let (decls, issues) = crate::tables::parse_declarations(&manifest.tables);
+        loaded.issues.extend(issues);
+        let report = crate::tables::sync(catalog, &loaded.module.name, &decls, &claimed).await;
+        loaded.issues.extend(report.issues);
+        for decl in &decls {
+            claimed.claim(decl.name.trim(), &loaded.module.name, Vec::new());
+        }
+    }
+}
+
 /// One namespace of view pattern names, as a view stores its pattern by name
 /// (TODO "Saltcorn UI" §6): v1's built-in patterns first, then each module's in
 /// the set's order. A name already taken costs **that pattern** — removed from
@@ -445,6 +506,7 @@ mod tests {
             model_providers: Vec::new(),
             stream_providers: Vec::new(),
             map_tools: Vec::new(),
+            tables: Vec::new(),
             frameworks: Vec::new(),
             view_patterns: Vec::new(),
             headers: Vec::new(),

@@ -2,6 +2,68 @@
 
 Changes in reverse chronological order.
 
+## Mail module M4: modules declare tables
+
+A module can declare tables of its own (TODO-imap.md M4), and the server creates them when the
+module loads. They are ordinary tables: triggers, live streams, REST, GraphQL, ownership and
+backups work on them as on any other. The design is in TECHNICAL_DESIGN §15.1b; modules are
+§15, not §11 as the TODO said.
+
+- **M4.1** A plugin object's new `tables` key: a list, or a function of the configuration that
+  returns one.
+  - Each table has `name`, `label`, `description` and `fields`. It may also have jointly-`unique`
+    field lists, an `ownership` formula, `min_role_read` and `min_role_write`.
+  - Each field has `name` and `type`, and may have `label`, `description`, `required`, `unique`,
+    `references`, `secret`, `file_store`, `file_folder` and `default` (a JSON value, or
+    `"=<expression>"`).
+  - `module-host.mjs` passes it through as `ModuleManifest::tables`.
+  - `sc_module::tables` reads it into `TableDecl`/`FieldDecl`. Unknown keys are refused, and so are
+    contradictions: two kinds at once, a missing type, a default on a nullable field, a declared
+    `id`, `_fd_*` or `users`, a name declared twice. A broken table is an issue on the card and
+    costs only that table.
+- **M4.2** `ModuleSet::load` runs `tables::sync` for each loaded module on every load, as one
+  `schema_edit` batch.
+  - It creates missing tables, each with an `id` int primary key that numbers itself, and adds
+    missing fields and unique constraints.
+  - It never drops or alters anything. A declared field whose type or reference disagrees with the
+    database is reported on the module's card.
+  - A field that an upgrade adds is nullable.
+  - Table settings are applied only when the table is created.
+  - Running it again changes nothing.
+  - A table that another module already declared is refused.
+- **M4.3** New `sc_catalog::ModuleTables` (`Catalog::set_module_tables` / `module_tables`). It is
+  installed from `ModuleSet::module_tables()` after every reload.
+  - `schema_edit::apply` refuses dropping a claimed table, or a field the module declared, while
+    the module is installed. This covers the admin API, MCP and agents.
+  - `listTables` etc. return `module` and `module_fields`. `listModules` returns `tables` per
+    module, and per bundled entry.
+  - Admin UI: a module badge in the tables list, and a disabled Delete button on declared fields.
+    The module card lists its tables. A bundled card says "Installing creates the tables …".
+    Generated clients are regenerated.
+- **M4.4** Tested: ownership formulas that join through module tables work as read rules and as
+  write rules.
+  - Shared vs personal accounts, one and two hops (`accountⱵowner`, `messageⱵaccountⱵowner`).
+  - `_read` makes a table readable more widely than it is writable.
+  - Answer to §3's question: a formula grants rows, not fields. The module re-checks its own
+    fields. §3 and §5.6 now say `user.role` (there is no `role_id`).
+- **M4.5** A declared `file_store` names a store. If none of that name exists, a local store is
+  created and connected at `sc_files::suggest_local_dir(name)`. An existing store of that name is
+  used as it is.
+- **M4.6** `feldspar-module.json` may list `tables`. `BundledModules` refuses a listed table that
+  no `supplies` line names. There is a unit test, and the `bundled_catalog` test checks it for
+  every shipped module.
+- Tests:
+  - `crates/sc-module/tests/module_tables.rs` (7 tests): create once then no-op; upgrade adds a
+    field, keeps the admin's field and reports a changed type; drop refused while claimed and
+    allowed after; another module's table left alone; file store reused; ownership through
+    joins; and, on a Deno worker, the `tables-module` fixture installed twice and then upgraded
+    to `tables-module-v2`.
+  - Unit tests in `tables.rs`, `module_tables.rs` and `bundled.rs`.
+  - `modules.test.ts` covers the summary count.
+- Docs: `docs/tutorial-modules.md` Step 7, and `plugins/README.md` (`tables` in the manifest).
+- Not done: Python modules can't declare tables yet. The new UI strings are not translated yet
+  (run `feldspar i18n translate`).
+
 ## Mail module M3: SMTP override settings on `send_email`
 
 `send_email` can send through a server other than the installation's (TODO-imap.md M3, use

@@ -747,6 +747,8 @@ const supportedKeys = new Set([
   "streamproviders",
   "maptools",
   "frameworks",
+  // The tables a module declares (TODO-imap M4): data, created by the server.
+  "tables",
   // Saltcorn UI (TODO "Saltcorn UI" §6): view patterns, and the scripts and
   // stylesheets a document rendering them wants.
   "viewtemplates",
@@ -1116,6 +1118,53 @@ async function evalMapTools(plugin, configuration) {
     }
   }
   return { tools, issues };
+}
+
+/** This system's `tables` key (TODO-imap M4): the tables a module keeps its
+ * state in, declared as data and created by the server when the module loads.
+ *
+ * ```js
+ * tables: [{
+ *   name: "mail_folders",
+ *   fields: [{ name: "account", references: "mail_accounts", required: true },
+ *            { name: "path", type: "text", required: true }],
+ *   unique: [["account", "path"]],
+ *   ownership: "accountⱵowner === user.id",
+ * }]
+ * ```
+ *
+ * A list, or a function of the module's configuration returning one. Each
+ * declaration is passed on as JSON and checked by the server
+ * (`sc_module::tables`); one that is not plain data is reported and skipped. */
+async function evalTables(plugin, configuration) {
+  const exported = plugin.tables;
+  let raw = [];
+  const issues = [];
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(configuration || {})) || [];
+    } catch (e) {
+      issues.push(`its tables could not be built: ${e.message}`);
+      raw = [];
+    }
+  } else if (exported) {
+    raw = exported;
+  }
+  if (!Array.isArray(raw)) {
+    issues.push("its `tables` is not a list of table declarations");
+    return { tables: [], issues };
+  }
+  const tables = [];
+  for (const value of raw) {
+    const name = value && typeof value === "object" ? value.name : value;
+    try {
+      if (!value || typeof value !== "object") throw new Error("it is not an object");
+      tables.push(JSON.parse(JSON.stringify(value)));
+    } catch (e) {
+      issues.push(`its table "${name}" is not plain data: ${e.message}`);
+    }
+  }
+  return { tables, issues };
 }
 
 /** The loaded stream provider, or a sentence naming what is missing. */
@@ -1839,6 +1888,9 @@ async function loadModule({ module: name, dir, configuration }) {
   const { tools: mapTools, issues: mapToolIssues } = await evalMapTools(plugin, configuration);
   issues.push(...mapToolIssues);
 
+  const { tables, issues: tableIssues } = await evalTables(plugin, configuration);
+  issues.push(...tableIssues);
+
   const {
     frameworks,
     set: frameworkSet,
@@ -1886,6 +1938,7 @@ async function loadModule({ module: name, dir, configuration }) {
     model_providers: modelProviders,
     stream_providers: streamProviders,
     map_tools: mapTools,
+    tables,
     frameworks,
     view_patterns: viewPatterns,
     headers,

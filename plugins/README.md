@@ -42,9 +42,15 @@ file that puts it in the catalog:
   "description": "One sentence, in the admin's words rather than the author's.",
   "supplies": ["A table provider, \"RSS feed\": …"],
   "installs": ["rss-parser"],       // downloaded at install time, not shipped
-  "permissions": { "net": ["*"] }   // what it needs to work, granted by the click
+  "permissions": { "net": ["*"] },  // what it needs to work, granted by the click
+  "tables": ["rss_items"]            // optional: the tables its package declares
 }
 ```
+
+`tables` is only for a module whose plugin object declares tables of its own
+(`tables: [...]`, see [docs/tutorial-modules.md](../docs/tutorial-modules.md)
+Step 7). It is what the card says installing creates, so each name must also
+appear in a `supplies` line; the reader refuses a manifest where it does not.
 
 `name` must be what the package calls itself — `package.json`'s `name`, or the
 distribution's `name` in `pyproject.toml` — because that is what the installed
