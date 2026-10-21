@@ -404,7 +404,11 @@ async fn a_boolean_literal_is_a_default_for_a_bool_field() -> Result<()> {
     .await?;
     let flags = catalog.require("flags")?;
     assert_eq!(
-        flags.field("archived").unwrap().default_expression.as_deref(),
+        flags
+            .field("archived")
+            .unwrap()
+            .default_expression
+            .as_deref(),
         Some("false")
     );
 
