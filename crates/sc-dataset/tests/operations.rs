@@ -577,7 +577,14 @@ async fn stack_and_split_turn_columns_into_rows_and_back() -> Result<()> {
         // The split's columns are read from the data once, then fixed.
         let base = DatasetDef::over_table("sales", "sales");
         let compiled = compile(&schema, &Library::default(), &base, Options::default());
-        let values = column_values(&fx.cat, &sc_dataset::Caller::admin(), compiled.last().expect("reads"), "quarter", 10).await?;
+        let values = column_values(
+            &fx.cat,
+            &sc_dataset::Caller::admin(),
+            compiled.last().expect("reads"),
+            "quarter",
+            10,
+        )
+        .await?;
         let values: Vec<String> = values
             .iter()
             .filter_map(|v| v.as_text().map(str::to_owned))
@@ -1036,11 +1043,23 @@ async fn paging_is_stable_under_the_order_and_the_count_matches() -> Result<()> 
         let schema = Schema::of_catalog(&fx.cat)?;
         let compiled = compile(&schema, &Library::default(), &def, Options::default());
         let stage = compiled.last().expect("reads");
-        let whole = read_page(&fx.cat, &sc_dataset::Caller::admin(), stage, Page::first(100)).await?;
+        let whole = read_page(
+            &fx.cat,
+            &sc_dataset::Caller::admin(),
+            stage,
+            Page::first(100),
+        )
+        .await?;
         assert_eq!(whole.total, 5);
         let mut paged = Vec::new();
         for offset in [0, 2, 4] {
-            let page = read_page(&fx.cat, &sc_dataset::Caller::admin(), stage, Page { offset, limit: 2 }).await?;
+            let page = read_page(
+                &fx.cat,
+                &sc_dataset::Caller::admin(),
+                stage,
+                Page { offset, limit: 2 },
+            )
+            .await?;
             assert_eq!(page.total, 5);
             paged.extend(page.rows);
         }

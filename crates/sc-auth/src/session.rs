@@ -349,8 +349,15 @@ impl SessionStore {
 
     /// Start a session for `user` and return its token (to be set as a cookie).
     pub async fn login(&self, user: User) -> Result<String> {
+        self.login_for(user, self.ttl).await
+    }
+
+    /// Start a session for `user` that lasts `ttl` rather than the store's own
+    /// lifetime: what the server does with the stored Settings →
+    /// Authentication → Session lifetime, which can change while it runs.
+    pub async fn login_for(&self, user: User, ttl: Duration) -> Result<String> {
         let token = new_token();
-        let expires_at = Utc::now() + self.ttl;
+        let expires_at = Utc::now() + ttl;
         match &self.backend {
             Backend::Memory(entries) => {
                 entries
@@ -756,6 +763,15 @@ mod tests {
         let token = store.login(user.clone()).await.unwrap();
         assert_eq!(token.len(), 64); // two hex UUIDs
         assert_eq!(store.user_for(&token).await.unwrap(), Some(user));
+    }
+
+    #[tokio::test]
+    async fn a_session_can_be_given_its_own_lifetime() {
+        let store = SessionStore::default();
+        let token = store.login_for(admin(), Duration::zero()).await.unwrap();
+        assert_eq!(store.user_for(&token).await.unwrap(), None);
+        let token = store.login_for(admin(), Duration::hours(1)).await.unwrap();
+        assert!(store.user_for(&token).await.unwrap().is_some());
     }
 
     #[tokio::test]

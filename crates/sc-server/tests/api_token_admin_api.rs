@@ -161,14 +161,16 @@ async fn a_token_is_minted_once_listed_without_its_secret_and_revoked_in_place()
     // rather than in it: the token object is the same shape the list is made of.
     assert!(!minted["token"].to_string().contains(secret));
 
-    // The six flags, all of them, whatever the body left out. A stored `grants`
+    // The seven flags, all of them, whatever the body left out. A stored `grants`
     // records what was agreed to; a sparse one would re-read itself against
     // tomorrow's defaults.
     let grants = minted["token"]["grants"].as_object().unwrap();
-    assert_eq!(grants.len(), 6, "{grants:?}");
+    assert_eq!(grants.len(), 7, "{grants:?}");
     assert_eq!(grants["allow_create"], json!(true)); // the default, written down
     assert_eq!(grants["allow_drop"], json!(false));
-    assert_eq!(grants["allow_access_changes"], json!(false)); // off unless asked
+    // A token is granted what the mint did not mention.
+    assert_eq!(grants["allow_access_changes"], json!(true));
+    assert_eq!(grants["allow_modules"], json!(true));
     assert_eq!(grants["allow_triggers"], json!(true));
 
     assert!(minted["token"]["expires_at"].is_string());

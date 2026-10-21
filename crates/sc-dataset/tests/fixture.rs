@@ -241,7 +241,14 @@ pub async fn both() -> Result<Vec<Fixture>> {
 /// Every row of the stage after `upto` operations (all when `None`), as
 /// JSON, with its column names.
 pub async fn read(fx: &Fixture, def: &DatasetDef, upto: Option<usize>) -> Result<StagePage> {
-    read_stage(&fx.cat, &sc_dataset::Caller::admin(), def, upto, Page::first(1000)).await
+    read_stage(
+        &fx.cat,
+        &sc_dataset::Caller::admin(),
+        def,
+        upto,
+        Page::first(1000),
+    )
+    .await
 }
 
 /// The rows of a page, as JSON.

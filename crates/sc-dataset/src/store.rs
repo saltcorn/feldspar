@@ -310,8 +310,8 @@ pub async fn clone_dataset(
 /// Who owns the dataset with this id and whom it is shared with, or `None`
 /// when there is no such dataset (A9.1).
 pub async fn dataset_sharing(catalog: &Catalog, id: DatasetId) -> Result<Option<Sharing>> {
-    let select = Select::from(Source::table(DATASETS_TABLE))
-        .filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
+    let select =
+        Select::from(Source::table(DATASETS_TABLE)).filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
     Ok(rows(catalog, select).await?.first().map(sharing_from_row))
 }
 

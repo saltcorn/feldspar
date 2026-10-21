@@ -50,7 +50,10 @@ fn table(fx: &Fixture, rows: Vec<FieldDef>, columns: Vec<FieldDef>, cells: Vec<C
 }
 
 async fn tabulate(fx: &Fixture, spec: &TableSpec) -> TableData {
-    match render_table(&fx.cat, &sc_dataset::Caller::admin(), spec).await.expect("renders") {
+    match render_table(&fx.cat, &sc_dataset::Caller::admin(), spec)
+        .await
+        .expect("renders")
+    {
         RenderedTable::Table(data) => *data,
         RenderedTable::Refused { problems, .. } => {
             panic!("on {}: refused: {problems:?}", fx.backend)
@@ -59,7 +62,10 @@ async fn tabulate(fx: &Fixture, spec: &TableSpec) -> TableData {
 }
 
 async fn table_refused(fx: &Fixture, spec: &TableSpec) -> String {
-    match render_table(&fx.cat, &sc_dataset::Caller::admin(), spec).await.expect("answers") {
+    match render_table(&fx.cat, &sc_dataset::Caller::admin(), spec)
+        .await
+        .expect("answers")
+    {
         RenderedTable::Refused { error, .. } => error,
         RenderedTable::Table(_) => panic!("on {}: made {spec:?}", fx.backend),
     }

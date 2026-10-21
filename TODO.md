@@ -646,6 +646,31 @@ None of these needs a design beyond Part I. Each one deletes a workaround from t
   `describe_code_api`, `codeTypes.ts`, `AGENTS.md` and TECHNICAL_DESIGN §13.4/§14.10. Tests: the
   generated client type-checks; `live-doc.ts` under Node opens a document through a query.
 
+## F8 — Authentication settings and external identity providers
+
+User request: a new Authentication tab in Settings holding **Share sign-in between
+applications** (moved from Development) and a new **session lifetime**, and a list of OAuth 2.0
+identity providers (create, edit, delete) that the admin UI and every React application can
+sign in with. The shared cookie and the lifetime apply to those sign-ins too.
+
+- [x] **F8.1** `sc_config::authentication`: the `authentication` section (`shared_session_cookie`
+  moved from Development, `session_ttl_hours`), the provider record spec with presets (Google,
+  Microsoft, GitHub, GitLab, custom), stored under the internal key `oauth_providers`. Live
+  session lifetime through `AppMounts::session_ttl` and `SessionStore::login_for`; read at boot
+  and on save, reset by Clear all. Tests: unit tests in `sc-config` and `sc-auth`.
+- [x] **F8.2** Admin API `listOAuthProviders`, `getOAuthProviderSpec`, `createOAuthProvider`,
+  `updateOAuthProvider`, `deleteOAuthProvider` (secret redacted and merged back).
+- [x] **F8.3** The flow (`sc-server/src/oauth.rs`): `/_feldspar/oauth/{providers,{name}/start,
+  callback,complete}`, authorization code + PKCE, one callback on the admin UI's host, a binding
+  cookie, admin-only on the admin host, optional account creation for applications. Test:
+  `oauth_sign_in.rs` against a fake provider (PKCE, secret, account creation, unverified email,
+  another browser refused, replay refused, admin-only, lifetime, shared cookie, delete).
+- [x] **F8.4** Admin UI: the Authentication tab's provider list and form, the callback URL to
+  register, buttons on the sign-in page and `?oauth_error=`. Tests: `oauthProviders.test.ts`.
+- [x] **F8.5** Applications: `oauthProviders()` / `oauthSignInUrl()` in the generated client,
+  buttons on the scaffold's `Login.tsx`, the runtime README. Tests: the generated client and the
+  scaffold's login screen type-check.
+
 ---
 
 ## Open questions

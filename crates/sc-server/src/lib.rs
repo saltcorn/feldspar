@@ -43,6 +43,7 @@ mod lsp;
 mod mcp;
 mod models;
 mod modules;
+mod oauth;
 mod observe;
 mod posterior;
 mod reload;
@@ -67,6 +68,10 @@ pub use backup::{
     Available as BackupContents, BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE, BackupPreferences,
     BackupScheduler, RestoreReport, Selection as BackupSelection, available as backup_available,
     inspect as inspect_backup, restore_backup, start_backup_scheduler, write_backup_to,
+};
+pub use oauth::{
+    BINDING_COOKIE as OAUTH_BINDING_COOKIE, CALLBACK_ROUTE as OAUTH_CALLBACK_ROUTE,
+    COMPLETE_ROUTE as OAUTH_COMPLETE_ROUTE, PROVIDERS_ROUTE as OAUTH_PROVIDERS_ROUTE,
 };
 // The S3 request signer, for the fake S3 server the automated-backup tests
 // check every request's signature against.

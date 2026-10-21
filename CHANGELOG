@@ -26,6 +26,140 @@ to the server and failed offline.
   `sync_client.rs` (the generated client under Node: offline creates, renaming, the change made
   during an upload, and the refusal of rows that need a refused one).
 
+## Fix: document edits refused `rate_limited` were lost
+
+Bug report: with TipTap's Collaboration, every keystroke was its own `doc_update`, so a fast
+(or scripted) typist passed the server's 20 edits a second; the server answered
+`rate_limited … send it again`, and the generated `live-doc.ts` never did — the text stayed in
+the typist's browser only, and was gone after a reload. The `rate_limited` also stayed on the
+document as its `error`, which looked like lost access. (Presence was never counted against the
+edit rate — it has its own bucket — but it was close to its own.) The server is unchanged.
+
+- `live-doc.ts` (`openCore`): local edits are **coalesced** — one `doc_update` per
+  `editInterval` (100 ms), merged with `Y.mergeUpdates`; edits made out of sync are left to the
+  next `doc_sync`'s diff, as before.
+- Its awareness goes out at most every `presenceInterval` (150 ms), the latest winning.
+- On `rate_limited` it waits (`retryDelay` 1 s, doubling to 8 s while refusals keep coming) and
+  sends everything sent in the last 5 s and everything pending, merged, as one frame (Yjs
+  ignores duplicates), plus its awareness. `rate_limited` is no longer the page's `error`;
+  every other refusal still is.
+- `openDocument(stream, key, options?)`, `docs.<stream>.open(key, options?)` and
+  `openQueryDocument(open, connection?, options?)` take `DocumentOptions`
+  `{ editInterval, presenceInterval, retryDelay }`.
+- Design doc (L5.6 client) and tutorial part 5's limits say so.
+- Test: `live_doc::quick_edits_are_coalesced_and_rate_limited_ones_are_sent_again` — 200
+  keystrokes are at most two frames, 20 cursor moves at most three presences, a refused edit
+  is sent again after the delay (twice refused: after a longer one) and all 251 characters
+  arrive, and `too_large` is still the page's error. The existing drivers wait for the
+  coalesced frame.
+
+: formatting, clippy 1.99 lints, and drifted tests
+
+- `cargo fmt --all` over the files recent work left unformatted.
+- **Clippy 1.99:** `async-trait` 0.1.89 → 0.1.92 (the old expansion tripped
+  `double_must_use` on every `#[async_trait]` trait); `map_err(&f)` → `map_err(f)` for
+  `Copy` closures; `items_after_test_module` in `sc-server::modules`; a `type` alias for a
+  complex tuple in a test; `map_or(.., |r| r)` → `unwrap_or`; `result_large_err` allowed on
+  `builder::document`, whose `Err` is the response itself (as in `sc-api`'s `resolve`).
+- **`admin_copilot::tool_names()` lacked `edit_streams`**, which the shared tool set already
+  publishes, so the name collision check missed it. Added.
+- Regenerated `ui/{ide,builder,analytics}/src/client.ts` (they predated the sync endpoints).
+- Two `sc-server` tests' `PUT /api/tables/…` bodies now send the required `sync_enabled`.
+- Design doc: `sc-ratelimit` added to §2's crate tree, diagram and dependency table (with
+  `sc-api`'s `sc-log` edge); `_fd_changes` and `_fd_sync_clients` added to §9.2's ER diagram.
+- `sc-stream` builds warning-free without its `mqtt` feature (an unused `mut`).
+
+## Test: a boolean literal is a default for a required bool field
+
+User question: are `true` / `false` accepted as default expressions on a `NOT NULL` field?
+They are — no code change needed. A default is filled only when the field is left out or
+sent as `null`, so a `false` result is kept and a given `false` is never overwritten.
+
+- Test: `default_values::a_boolean_literal_is_a_default_for_a_bool_field`.
+
+## `new Date()` is accepted in formulas, so a date field can default to today
+
+User request: a date field's default value `new Date()` was refused, because the formula
+parser refused every `new`.
+
+- **`Ast::NewDate`** (`sc-expr`). `new Date(…)` is lowered to its own node and rendered back
+  as `new Date(…)` for the JavaScript evaluator. Every other `new` is still refused by name.
+  The SQL translator reports it as untranslatable, so a formula that uses it runs in JavaScript.
+  Dataset type inference treats it as a timestamp.
+- **A `date` column accepts a full instant** (`sc-types::json_to_value`). It takes the UTC
+  calendar date, which is what a JavaScript `Date` serialises to
+  (`"2026-10-20T17:21:37.641Z"` → `2026-10-20`). A `timestamp` column already accepted it.
+- Tests: `default_values::new_date_is_a_default_for_date_and_timestamp_fields` (date and
+  timestamp defaults on insert, and a fixed `new Date('…')`), together with parse, render and
+  date-coercion unit tests.
+
+## Settings → Authentication: session lifetime and sign-in with external identity providers
+
+User request: a new Authentication tab in the main Settings screen, holding **Share sign-in
+between applications** (moved from Development) and a new **session lifetime**, plus a list of
+OAuth 2.0 identity providers that can be created, edited and deleted. Each provider can be used
+to sign in to the admin UI and to the React applications. The shared cookie and the lifetime
+apply to those sign-ins too.
+
+- **The Authentication section** (`sc_config::authentication`). `shared_session_cookie` moved
+  here from Development, with the same key, so nothing stored needs migrating.
+  `session_ttl_hours` (default 24, from 1 to 8760) is live: the router starts every session with
+  `SessionStore::login_for(user, AppMounts::session_ttl())`, whether it is a password sign-in,
+  a provider sign-in or the admin handoff. A native client's cookie `Max-Age` uses the same
+  value. The setting is read at boot, applied on save and reset by Clear all. Sessions that
+  already exist keep their expiry.
+- **Identity providers** are stored as a list under the internal key `oauth_providers`. Each
+  record is checked against `oauth_provider_spec`. The presets (Google, Microsoft, GitHub,
+  GitLab) supply their endpoints and scopes. A custom provider needs its authorization, token
+  and userinfo URLs. Each provider has switches for enabled, offered on the admin UI, offered to
+  applications, and "create accounts for new addresses" with a role from 2 to 100 (never the
+  admin role). New admin endpoints: `listOAuthProviders`, `getOAuthProviderSpec`,
+  `createOAuthProvider`, `updateOAuthProvider`, `deleteOAuthProvider`. The client secret is
+  redacted when sent out and merged back when saved, the same way as an LLM provider key.
+- **The flow** (`sc-server/src/oauth.rs`) is the authorization code grant with PKCE. It uses
+  four routes under `/_feldspar/oauth` that answer on every host: `providers`,
+  `{name}/start?return_to=`, `callback` and `complete`. The callback is always on the admin UI's
+  host, so each provider is registered with a single redirect URL; the tab shows it. A
+  `SameSite=Lax` binding cookie on the starting host means the sign-in must finish in the
+  browser that started it, and the state can be used only once. Accounts are matched by email.
+  An address the provider marks `email_verified: false` is refused. For GitHub, the verified
+  primary address is read from `/user/emails`. On the admin UI's host only administrators can
+  sign in and no account is ever created. The session is started through `apply_session`, so
+  the shared cookie, the lifetime and the `login` event all behave as they do for a password.
+  `complete` returns a page that refreshes to `return_to` rather than a redirect, because the
+  strict session cookie is not sent at the end of a redirect chain that began at the provider.
+  Failures come back as `?oauth_error=<message>`. Flows are held in process memory, like the
+  admin handoff.
+- **Admin UI.** The Authentication tab adds a provider panel with a list, a generic form in a
+  dialog (choosing a preset fills in the name and label) and a delete confirmation. The sign-in
+  page shows a "Sign in with …" button for each provider and displays a returned error.
+- **Applications.** A generated client that has `login` now also has `oauthProviders()` and
+  `oauthSignInUrl(provider, returnTo)`. The scaffold's `Login.tsx` shows a button for each
+  provider and displays `oauth_error`. The runtime README tells an agent how to use them and
+  that providers are configured in the admin UI. Existing projects keep their `Login.tsx`
+  (it is written once), but their regenerated client gains the two methods.
+- Tests: `sc-config` unit tests (section, lifetime, presets, refused records); `sc-auth`
+  (`login_for`); `sc-server` unit tests for the flow helpers (return path, PKCE per RFC 7636,
+  single use); `oauth_sign_in.rs` end to end against a fake provider on a real port; the app
+  client type-check and the scaffold login type-check; `oauthProviders.test.ts` in the admin
+  UI. TECHNICAL_DESIGN §7.2 and OPERATIONS were updated.
+
+## MCP tokens get every permission by default
+
+User request: every permission should be on by default on MCP tokens, including listing and
+installing modules, dropping tables and changing access rules.
+
+- **New `sc_api::mcp::token_flags_from_submitted`:** at mint time, any flag the request leaves out
+  is granted. The admin API (`POST /api/api-tokens`) and `feldspar mcp-token create` both use it.
+  A stored token's `grants` stays explicit, with all seven keys.
+- **The admin panel's mint form now starts with all seven boxes ticked** (`defaultGrants`).
+- **The `admin_copilot` agent keeps its cautious defaults:** `allow_drop`,
+  `allow_access_changes` and `allow_modules` stay off unless ticked. Only tokens changed.
+- Tests: a new unit test in `sc-api`. The CLI unit test, the CLI and server integration tests, and
+  the admin UI test were updated. Server tests that need a token without some flags now mint it
+  with those flags set to `false`. OPERATIONS.md, TECHNICAL_DESIGN.md and tutorial-python.md were
+  updated to match.
+
 ## Backups and restores stream, in backup format 2
 
 A nightly `feldspar backup` was killed at its 2 GB memory limit. By hand it peaked at 3.4 GB to

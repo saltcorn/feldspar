@@ -842,7 +842,10 @@ mod tests {
         let err = validate_attrs(&spec, &bag(true, "2X9R4HXF34", "ABC"))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("`secret` must match the pattern `[a-z]+`"), "{err}");
+        assert!(
+            err.contains("`secret` must match the pattern `[a-z]+`"),
+            "{err}"
+        );
 
         // Not judged: an empty value, a stored secret handed back, a hidden field.
         assert!(validate_patterns(&spec, &bag(true, "", SECRET_SENTINEL)).is_ok());

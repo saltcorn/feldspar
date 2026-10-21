@@ -146,7 +146,9 @@ pub fn origin_of(url: &str) -> std::result::Result<String, String> {
             return Err(format!("`{url}` has an unclosed `[` in its host"));
         };
         if addr.is_empty() || !addr.chars().all(|c| c.is_ascii_hexdigit() || c == ':') {
-            return Err(format!("`{url}` does not have an IPv6 address in its brackets"));
+            return Err(format!(
+                "`{url}` does not have an IPv6 address in its brackets"
+            ));
         }
         let port = match after {
             "" => None,
@@ -178,7 +180,11 @@ pub fn origin_of(url: &str) -> std::result::Result<String, String> {
         Some(p) if !p.is_empty() && p.len() <= 5 && p.chars().all(|c| c.is_ascii_digit()) => {
             format!(":{p}")
         }
-        Some(p) => return Err(format!("`{url}` has `{p}` for a port, which is not a number")),
+        Some(p) => {
+            return Err(format!(
+                "`{url}` has `{p}` for a port, which is not a number"
+            ));
+        }
     };
     Ok(format!("{scheme}://{}{port}", host.to_ascii_lowercase()))
 }
@@ -264,20 +270,26 @@ mod tests {
 
     #[test]
     fn a_host_is_added_once_as_its_origin() {
-        let settings = map_settings_from(&attrs(&[(MAP_HOSTS, json!("https://a.example.com"))]))
-            .unwrap();
+        let settings =
+            map_settings_from(&attrs(&[(MAP_HOSTS, json!("https://a.example.com"))])).unwrap();
         assert_eq!(
             hosts_with(&settings, "https://Tiles.Example.org:8443/{z}/{x}/{y}.png").unwrap(),
             Some("https://a.example.com, https://tiles.example.org:8443".to_owned())
         );
         // Already allowed: a further host, or a base map's own.
-        assert_eq!(hosts_with(&settings, "https://a.example.com/wms").unwrap(), None);
+        assert_eq!(
+            hosts_with(&settings, "https://a.example.com/wms").unwrap(),
+            None
+        );
         assert_eq!(
             hosts_with(&settings, "https://tiles.openfreemap.org/x/{z}/{x}/{y}").unwrap(),
             None
         );
         let err = hosts_with(&settings, "javascript:alert(1)").unwrap_err();
-        assert!(err.to_string().contains("not an http or https URL"), "{err}");
+        assert!(
+            err.to_string().contains("not an http or https URL"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -329,7 +341,10 @@ mod tests {
                 "http://10.0.0.5:8080"
             ]
         );
-        assert_eq!(origin_of("http://[::1]:3000/x").unwrap(), "http://[::1]:3000");
+        assert_eq!(
+            origin_of("http://[::1]:3000/x").unwrap(),
+            "http://[::1]:3000"
+        );
     }
 
     #[test]
@@ -348,9 +363,12 @@ mod tests {
             assert!(err.contains(says), "{bad}: {err}");
             assert!(err.contains("base map style"), "{err}");
         }
-        let err = map_settings_from(&attrs(&[(MAP_HOSTS, json!("https://ok.com, 'unsafe-eval'"))]))
-            .unwrap_err()
-            .to_string();
+        let err = map_settings_from(&attrs(&[(
+            MAP_HOSTS,
+            json!("https://ok.com, 'unsafe-eval'"),
+        )]))
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("map host"), "{err}");
     }
 

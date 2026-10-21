@@ -300,6 +300,13 @@ export type StreamStatusResponse = { id: string; name: string; running: boolean;
 export type GetSettingsResponse = { sections: Array<{ name: string; label: string; description: string; fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }>; help: string }> }>; values: unknown; host_keys: Array<string> };
 export type UpdateSettingsRequest = { values: unknown };
 export type UpdateSettingsResponse = { sections: Array<{ name: string; label: string; description: string; fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }>; help: string }> }>; values: unknown; host_keys: Array<string> };
+export type ListOAuthProvidersResponse = Array<{ name: string; label: string; preset: string; enabled: boolean; config: unknown }>;
+export type GetOAuthProviderSpecResponse = { fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; callback_path: string };
+export type CreateOAuthProviderRequest = { config: unknown };
+export type CreateOAuthProviderResponse = { name: string; label: string; preset: string; enabled: boolean; config: unknown };
+export type UpdateOAuthProviderRequest = { config: unknown };
+export type UpdateOAuthProviderResponse = { name: string; label: string; preset: string; enabled: boolean; config: unknown };
+export type DeleteOAuthProviderResponse = { deleted: boolean };
 export type GetAdminAddressResponse = { base_domain?: string | null; admin_subdomain?: string | null; admin_host?: string | null; ready: boolean; certificate?: { state: string; message?: string | null } | null };
 export type CreateAdminHandoffResponse = { host: string; path: string };
 export type SendTestEmailRequest = { to?: string | null };
@@ -385,7 +392,18 @@ export type ShareWorkspaceResponse = { id: string; name: string; kind: string; s
 export type SaveWorkspaceStateRequest = { state: unknown };
 export type SaveWorkspaceStateResponse = { id: string; name: string; kind: string; state: unknown; created_by?: string | null; updated_at: string; share_role?: number | null; application?: string | null; may_change: boolean };
 
+/** An external identity provider this application offers (Settings →
+ * Authentication). */
+export type OAuthProvider = { name: string; label: string; url: string };
+
 export interface ApiClient {
+  /** The external identity providers this application offers people to sign in with. */
+  oauthProviders(): Promise<OAuthProvider[]>;
+  /** The address that signs in with `provider` and comes back to `returnTo`, a
+   * path on this application (`/` by default), signed in. Send the browser
+   * there: `location.href = api.oauthSignInUrl(provider)`. A failed sign-in
+   * comes back with `?oauth_error=<message>`. */
+  oauthSignInUrl(provider: OAuthProvider, returnTo?: string): string;
   authStatus(): Promise<AuthStatusResponse>;
   createFirstUser(body: CreateFirstUserRequest): Promise<CreateFirstUserResponse>;
   login(body: LoginRequest): Promise<LoginResponse>;
@@ -582,6 +600,11 @@ export interface ApiClient {
   streamStatus(id: string): Promise<StreamStatusResponse>;
   getSettings(): Promise<GetSettingsResponse>;
   updateSettings(body: UpdateSettingsRequest): Promise<UpdateSettingsResponse>;
+  listOAuthProviders(): Promise<ListOAuthProvidersResponse>;
+  getOAuthProviderSpec(): Promise<GetOAuthProviderSpecResponse>;
+  createOAuthProvider(body: CreateOAuthProviderRequest): Promise<CreateOAuthProviderResponse>;
+  updateOAuthProvider(name: string, body: UpdateOAuthProviderRequest): Promise<UpdateOAuthProviderResponse>;
+  deleteOAuthProvider(name: string): Promise<DeleteOAuthProviderResponse>;
   getAdminAddress(): Promise<GetAdminAddressResponse>;
   createAdminHandoff(): Promise<CreateAdminHandoffResponse>;
   sendTestEmail(body: SendTestEmailRequest): Promise<SendTestEmailResponse>;
@@ -644,6 +667,17 @@ export function createClient(options: ClientOptions = {}): ApiClient {
   const baseUrl = options.baseUrl ?? "";
   const doFetch = trackCsrf(options.fetch ?? fetch);
   return {
+    async oauthProviders() {
+      const res = await doFetch(`${baseUrl}/_feldspar/oauth/providers`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("oauthProviders", res);
+      return (await res.json()) as OAuthProvider[];
+    },
+    oauthSignInUrl(provider: OAuthProvider, returnTo = "/") {
+      return `${baseUrl}${provider.url}?return_to=${encodeURIComponent(returnTo)}`;
+    },
     async authStatus() {
       const res = await doFetch(`${baseUrl}/api/auth/status`, {
         method: "GET",
@@ -2351,6 +2385,48 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("updateSettings", res);
       return (await res.json()) as UpdateSettingsResponse;
+    },
+    async listOAuthProviders() {
+      const res = await doFetch(`${baseUrl}/api/oauth-providers`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listOAuthProviders", res);
+      return (await res.json()) as ListOAuthProvidersResponse;
+    },
+    async getOAuthProviderSpec() {
+      const res = await doFetch(`${baseUrl}/api/oauth-provider-spec`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getOAuthProviderSpec", res);
+      return (await res.json()) as GetOAuthProviderSpecResponse;
+    },
+    async createOAuthProvider(body) {
+      const res = await doFetch(`${baseUrl}/api/oauth-providers`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createOAuthProvider", res);
+      return (await res.json()) as CreateOAuthProviderResponse;
+    },
+    async updateOAuthProvider(name, body) {
+      const res = await doFetch(`${baseUrl}/api/oauth-providers/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateOAuthProvider", res);
+      return (await res.json()) as UpdateOAuthProviderResponse;
+    },
+    async deleteOAuthProvider(name) {
+      const res = await doFetch(`${baseUrl}/api/oauth-providers/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteOAuthProvider", res);
+      return (await res.json()) as DeleteOAuthProviderResponse;
     },
     async getAdminAddress() {
       const res = await doFetch(`${baseUrl}/api/settings/admin-address`, {

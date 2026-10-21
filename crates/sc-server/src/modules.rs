@@ -577,22 +577,6 @@ fn python_source(source: sc_module::ModuleSource) -> Result<sc_python::PythonSou
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_services_are_shareable_and_name_their_root() {
-        // Nothing is spawned or read here — the host is lazy and the installer
-        // is a path — so this is the one thing worth asserting without a
-        // database: that the two handles point where the caller said.
-        let installer = Installer::new("/srv/modules");
-        assert_eq!(installer.root(), std::path::Path::new("/srv/modules"));
-        let host = ModuleHost::new("/srv/modules");
-        assert_eq!(host.root(), std::path::Path::new("/srv/modules"));
-    }
-}
-
 /// Listing and installing modules for an **agent** (`sc_agent::ModuleManager`):
 /// the admin API's own two answers, `listModules`'s and `installModule`'s, so a
 /// coding agent's `install_module` is the same act as the Modules tab's Install
@@ -618,5 +602,21 @@ impl sc_agent::ModuleManager for crate::AppMounts {
         });
         crate::handlers::install_module_json(catalog, &services, &body, &sc_i18n::Locale::source())
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_services_are_shareable_and_name_their_root() {
+        // Nothing is spawned or read here — the host is lazy and the installer
+        // is a path — so this is the one thing worth asserting without a
+        // database: that the two handles point where the caller said.
+        let installer = Installer::new("/srv/modules");
+        assert_eq!(installer.root(), std::path::Path::new("/srv/modules"));
+        let host = ModuleHost::new("/srv/modules");
+        assert_eq!(host.root(), std::path::Path::new("/srv/modules"));
     }
 }

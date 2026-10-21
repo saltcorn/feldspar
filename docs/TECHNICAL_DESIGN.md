@@ -67,6 +67,8 @@ feldspar/
 │  ├─ sc-dns/                     # 0. the process's resolver: a hickory-backed getaddrinfo
 │  │                              #    linked in front of glibc's, so no NSS module is
 │  │                              #    dlopened into the static binary (§13.5)
+│  ├─ sc-ratelimit/               # 0. in-memory token-bucket rate limiter keyed by string,
+│  │                              #    and the client-IP rule (queries, logins, code bodies)
 │  ├─ sc-i18n/                    # 0. Locale, negotiation, the Catalog, the message format,
 │  │                              #    CLDR plurals, `t!`/`tc!`, the `Translator` seam, and the
 │  │                              #    `core` catalogues. Layer 0 because sc-auth and sc-types
@@ -256,6 +258,9 @@ graph TD
   sqlite --> db
   db --> query["sc-query"]
   expr --> query
+  expr --> ratelimit["sc-ratelimit"]
+  api --> ratelimit
+  server --> ratelimit
   python --> expr
   files --> types["sc-types"]
   types --> query
@@ -274,6 +279,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-log` | `sc-error` |
 | `sc-config-file` | `sc-error` |
 | `sc-dns` | `sc-error` |
+| `sc-ratelimit` | — (nothing in the workspace) |
 | `sc-query` | `sc-error` |
 | `sc-repomap` | — (nothing in the workspace) |
 | `sc-i18n` | `sc-error` |
@@ -281,7 +287,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-db` | `sc-error` `sc-query` |
 | `sc-db-postgres` | `sc-db` `sc-error` `sc-log` `sc-query` |
 | `sc-db-sqlite` | `sc-db` `sc-error` `sc-log` `sc-query` |
-| `sc-expr` | `sc-error` `sc-query` |
+| `sc-expr` | `sc-error` `sc-query` `sc-ratelimit` |
 | `sc-files` | `sc-error` `sc-types` |
 | `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
@@ -296,7 +302,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-model` `sc-query` `sc-types` |
+| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-app` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
 | `sc-live` | `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
 | `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
@@ -304,7 +310,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-module` | `sc-action` `sc-app` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
@@ -1025,7 +1031,42 @@ pub struct User {
   new-device login.
 - **OAuth2 server option**: Saltcorn can act as an identity provider (`sc-auth` exposes the
   authorization-code/PKCE endpoints when enabled).
-- Additional providers (OAuth clients, SSO) via an `AuthMethod` extension.
+- **Session lifetime** (`session_ttl_hours`, Settings → Authentication, default 24, 1 to 8760).
+  Live: `AppMounts::session_ttl` is read where the router starts a session
+  (`SessionStore::login_for`), so the next sign-in after a save gets it — a password's, an
+  identity provider's, an admin handoff's — and a native client's cookie `Max-Age` matches it.
+  A session already started keeps the expiry it was given.
+- **External identity providers (OAuth 2.0 clients)**, Settings → Authentication. A list of
+  records under the internal key `oauth_providers`, each declared field by field
+  (`sc_config::oauth_provider_spec`) so the tab's form is generic, its `client_secret`
+  redacted on the way out and merged back on save. A provider has a preset (`google`,
+  `microsoft`, `github`, `gitlab`, which supply the endpoints and scopes) or is `custom`
+  (authorization, token and userinfo URLs given), and flags for whether it is enabled, offered
+  on the admin UI's sign-in, offered to applications, and whether an application sign-in by an
+  unknown address creates an account (with a role from 2 to 100, never the admin's).
+
+  The flow is the authorization-code grant with PKCE (S256), over four routes under
+  `/_feldspar/oauth` that answer on every host (`sc-server/src/oauth.rs`): `providers` lists
+  what this host offers; `{name}/start?return_to=` remembers the flow, sets a `SameSite=Lax`
+  binding cookie on the starting host and redirects to the provider; **`callback` is always on
+  the admin UI's host**, so a provider is registered with one redirect URL however many
+  applications use it; it exchanges the code (client secret and verifier), reads `email` from
+  userinfo (refusing `email_verified: false`; GitHub's verified primary address comes from
+  `/user/emails`), resolves the account, and redirects to `complete?token=` on the starting
+  host. `complete` checks that the binding cookie matches — the flow must finish in the
+  browser that started it, which defeats login CSRF — and starts the session through
+  `apply_session`, so **the shared cookie and the session lifetime apply exactly as they do to
+  a password**. It answers a page that refreshes to `return_to` rather than a redirect, because
+  the `SameSite=Strict` session cookie is not sent on a redirect at the end of a chain that
+  began at the provider. Accounts match by email. On the admin UI's host only an administrator
+  is signed in and no account is created. A failure comes back to `return_to` with
+  `?oauth_error=<message>`. Flows and completion tokens are in the process's memory, like the
+  admin handoff's, so a callback must reach the node that started it.
+
+  An application's generated client has `oauthProviders()` and
+  `oauthSignInUrl(provider, returnTo)` whenever it has `login`, and the scaffold's
+  `Login.tsx` renders a button per provider.
+- Further providers (SAML, SSO) via an `AuthMethod` extension.
 
 ### 7.3 Authorization
 
@@ -1827,6 +1868,27 @@ erDiagram
     text key PK "digest of domains + CA directory URL"
     text data
   }
+  CHANGES["_fd_changes"] {
+    int seq PK "identity; the log's order"
+    text table_name "the synced table, by name"
+    text row_key "the primary key as text"
+    text op "insert | update | delete"
+    json fields "an update's changed columns; null otherwise"
+    int txid "the writing transaction, checked against pull watermarks"
+    uuid client_id "the uploading device; null for any other writer"
+    int mutation "the device's own number for the change"
+    timestamp at
+  }
+  SYNCCLIENTS["_fd_sync_clients"] {
+    uuid id PK "the device"
+    uuid user_id "deliberately NOT a foreign key"
+    uuid application "by value"
+    text name
+    text watermark "what the device last said it has"
+    int last_mutation "highest upload already handled"
+    timestamp created_at
+    timestamp last_seen
+  }
 
   ROLES ||--o{ USERS : "role -- enforced FK"
   USERS ||--o{ SESSIONS : "user_id -- by value"
@@ -1867,6 +1929,10 @@ erDiagram
   USERS |o--o{ WORKSPACES : "created_by -- by value"
   APPS }o--o{ STREAMS : "streams[] -- by name"
   MODULES |o--o{ STREAMS : "provider -- by name, a stream provider the module supplies"
+  TABLES ||--o{ CHANGES : "table_name -- by name, when attributes.sync is enabled"
+  SYNCCLIENTS |o--o{ CHANGES : "client_id -- by value, an uploaded change"
+  USERS ||--o{ SYNCCLIENTS : "user_id -- by value"
+  APPS ||--o{ SYNCCLIENTS : "application -- by value"
 ```
 
 Exactly **one** relationship above is an enforced `REFERENCES`: `users.role → _fd_roles.role`
@@ -7031,8 +7097,8 @@ domain when it was created, is widened for the admin host as it is served
 preview of the `@` application is `<label>.<base domain>`, having no subdomain to put after
 the `--`.
 
-**Sharing the sign-in between applications** (`shared_session_cookie`, Settings → Development,
-off by default). Users and sessions are already the instance's, not an application's: what keeps
+**Sharing the sign-in between applications** (`shared_session_cookie`, Settings →
+Authentication, off by default; it applies to identity-provider sign-ins too, §7.2). Users and sessions are already the instance's, not an application's: what keeps
 a sign-in on one host is only that `sc_session` is host-only. Ticking this gives the session
 cookie `Domain=<base domain>` — the base domain or extra base domain the request's `Host` is
 under; a host under none, an IP address, still gets a host-only one — so one sign-in reaches the
@@ -10618,7 +10684,14 @@ document stream: `openDocument(stream, key)` → `{doc, awareness, field, root, 
 error, onChange, close}`, `docs.<stream>.open(key)`, and React's `useDocument(docs.<stream>, key)`.
 It applies `doc_sync` and answers it with what the server lacks
 (`encodeStateAsUpdate(doc, encodeStateVectorFromUpdate(sync))`), so edits made while disconnected
-arrive; sends local edits while synced and allowed; reports `reconnecting` as soon as the socket
+arrive; sends local edits while synced and allowed — **coalesced**, the edits of one
+`editInterval` (100 ms) merged with `Y.mergeUpdates` into one `doc_update`, and its own awareness
+throttled to one presence per `presenceInterval` (150 ms, the latest winning), so a fast typist
+stays well under the 20-a-second rates; answers a `rate_limited` refusal (which does not say which
+frame it refused) by sending again, after a backoff from `retryDelay` (1 s, doubling to 8 s while
+refusals keep coming), everything it sent in the last 5 s and everything pending, merged — Yjs
+ignores what the server has — and its awareness, and never shows `rate_limited` as the page's
+`error` (the options are `openDocument(stream, key, options)`'s third argument); reports `reconnecting` as soon as the socket
 drops; and carries the awareness as the page's presence state — `encodeAwarenessUpdate` in
 base64, applied with `applyAwarenessUpdate`, dropped with `removeAwarenessStates` when a member
 leaves — so the server never looks inside it. **Deviation:** the plan's `live.<doc>.open(key)` is

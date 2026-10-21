@@ -217,7 +217,7 @@ fn walk(ast: &Ast, locals: &mut Vec<String>, out: &mut FreeVars) {
             walk(cons, locals, out);
             walk(alt, locals, out);
         }
-        Ast::Array(elems) => {
+        Ast::Array(elems) | Ast::NewDate(elems) => {
             for e in elems {
                 walk(e, locals, out);
             }
@@ -849,7 +849,7 @@ pub(crate) fn child_nodes(ast: &Ast) -> Vec<&Ast> {
         Ast::Unary { expr, .. } => vec![expr],
         Ast::Binary { l, r, .. } => vec![l, r],
         Ast::Cond { test, cons, alt } => vec![test, cons, alt],
-        Ast::Array(elems) => elems.iter().collect(),
+        Ast::Array(elems) | Ast::NewDate(elems) => elems.iter().collect(),
         Ast::Template { exprs, .. } => exprs.iter().collect(),
         Ast::Arrow { body, .. } => vec![body],
     }

@@ -61,10 +61,10 @@ mod app_live;
 mod app_live_changes;
 #[path = "app_live_documents.rs"]
 mod app_live_documents;
-#[path = "app_live_query_streams.rs"]
-mod app_live_query_streams;
 #[path = "app_live_presence.rs"]
 mod app_live_presence;
+#[path = "app_live_query_streams.rs"]
+mod app_live_query_streams;
 #[path = "app_live_topics.rs"]
 mod app_live_topics;
 #[path = "app_serving.rs"]
@@ -191,6 +191,8 @@ mod app_none_framework;
 mod app_preview;
 #[path = "app_public_endpoints.rs"]
 mod app_public_endpoints;
+#[path = "oauth_sign_in.rs"]
+mod oauth_sign_in;
 #[path = "saltcorn_ui_admin_api.rs"]
 mod saltcorn_ui_admin_api;
 #[path = "saltcorn_ui_configure.rs"]

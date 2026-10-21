@@ -142,13 +142,13 @@ impl Action for RunAgent {
         // somewhere inside the loop.
         let agents = sc_agent::Agents::load(ctx.catalog, &self.traits)
             .await
-            .map_err(&named)?;
-        let agent = agents.require(&name).map_err(&named)?;
+            .map_err(named)?;
+        let agent = agents.require(&name).map_err(named)?;
         let executor = self
             .providers
             .connect(ctx.catalog, agent, sc_agent::ModelRole::Executor)
             .await
-            .map_err(&named)?;
+            .map_err(named)?;
 
         let mut runner = Runner::new(
             ctx.catalog,
@@ -179,9 +179,9 @@ impl Action for RunAgent {
         // chat panel's history.
         let mut run = runner
             .new_run(&prompt)
-            .map_err(&named)?
+            .map_err(named)?
             .description(format!("trigger `{}`", ctx.trigger));
-        save_run(ctx.catalog, &run).await.map_err(&named)?;
+        save_run(ctx.catalog, &run).await.map_err(named)?;
 
         // A failure of the *loop* — the provider refused, the key is wrong — is
         // this action's failure, reported like any other action's. The run row

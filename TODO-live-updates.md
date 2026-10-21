@@ -710,6 +710,11 @@ re-checking. No new providers yet. Everything later builds on this.
 
 - [x] **L5.8** Tutorial part 5 (a collaborative notes app) and its definition-of-done test,
   with a puppeteer check of two contexts typing into one document.
+- [x] **L5.9** *(Bug report: `rate_limited` edits were silently lost.)* `live-doc.ts` coalesces
+  local edits (one `doc_update` per `editInterval`, 100 ms), throttles its awareness to one
+  presence per 150 ms, and on `rate_limited` resends what it sent in the last few seconds
+  (merged; Yjs ignores what the server has) with a backoff, without setting `error`. Test: 200
+  quick keystrokes are a few frames, and refused edits arrive after the retry.
 
 ---
 

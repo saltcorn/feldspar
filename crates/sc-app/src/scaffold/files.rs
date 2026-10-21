@@ -971,6 +971,16 @@ fn accounts_section(endpoints: &EndpointSet) -> String {
          The session is a cookie the browser carries; nothing here stores a \
          credential.\n\
          \n\
+         **External identity providers** (Google, Microsoft, GitHub, any OAuth 2.0 \
+         provider) are set up by an administrator in the admin UI's Settings → \
+         Authentication, never in the application. `api.oauthProviders()` lists \
+         the ones this application offers (`{{ name, label, url }}`), and \
+         `api.oauthSignInUrl(provider, returnTo)` is the address that signs in \
+         with one: navigate the browser there (a link, not a `fetch`). It comes \
+         back to `returnTo` signed in — call `api.whoami()` — or with \
+         `?oauth_error=<message>` to show. The scaffold's `src/Login.tsx` already \
+         renders a button per provider.\n\
+         \n\
          {signup}\
          \n\
          ## Passwords: invitations and resets\n\
@@ -2275,7 +2285,9 @@ export function useUser(): AuthState {
 }
 "#;
 
-const LOGIN_TSX: &str = r#"import { useState, type FormEvent } from "react";
+const LOGIN_TSX: &str = r#"import { useEffect, useState, type FormEvent } from "react";
+import type { OAuthProvider } from "./feldspar/client";
+import { api } from "./feldspar/hooks";
 import { useT } from "./feldspar/i18n";
 import { useUser } from "./auth";
 
@@ -2287,8 +2299,19 @@ export default function Login() {
   // "Forgot your password?" swaps the form for one that emails a reset link.
   const [forgot, setForgot] = useState(false);
   const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
+  // A sign-in with an identity provider that failed comes back here with
+  // `?oauth_error=…`.
+  const [error, setError] = useState<string | undefined>(
+    () => new URLSearchParams(window.location.search).get("oauth_error") ?? undefined,
+  );
   const [busy, setBusy] = useState(false);
+  // The external identity providers the server offers this application
+  // (Settings → Authentication in the admin UI). Empty: the password form only.
+  const [providers, setProviders] = useState<OAuthProvider[]>([]);
+
+  useEffect(() => {
+    api.oauthProviders().then(setProviders, () => setProviders([]));
+  }, []);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -2356,6 +2379,21 @@ export default function Login() {
       <button type="button" className="sc-link" onClick={toggle}>
         {forgot ? t("Back to sign in") : t("Forgot your password?")}
       </button>
+      {!forgot &&
+        providers.map((provider) => (
+          // A link, not a fetch: the sign-in is a round of redirects through
+          // the provider, and comes back to this page signed in.
+          <a
+            key={provider.name}
+            className="sc-oauth"
+            href={api.oauthSignInUrl(
+              provider,
+              window.location.pathname + window.location.search.replace(/[?&]oauth_error=[^&]*/, ""),
+            )}
+          >
+            {t("Sign in with {provider}", { provider: provider.label })}
+          </a>
+        ))}
     </form>
   );
 }
@@ -3161,6 +3199,16 @@ th {
   text-decoration: underline;
   cursor: pointer;
 }
+
+.sc-oauth {
+  display: block;
+  text-align: center;
+  padding: 0.5rem;
+  border: 1px solid var(--muted);
+  border-radius: 0.375rem;
+  color: inherit;
+  text-decoration: none;
+}
 "#;
 
 // --- the generated runtime --------------------------------------------------
@@ -3213,7 +3261,10 @@ fn is_document(stream: &sc_api::StreamExport) -> bool {
 /// synced and allowed to edit, and the page's awareness is its presence state —
 /// `encodeAwarenessUpdate` in base64 — applied to the others' with
 /// `applyAwarenessUpdate` and dropped with `removeAwarenessStates` when they
-/// leave. Existing editor bindings (TipTap's Collaboration, `y-codemirror.next`)
+/// leave. Edits are coalesced (one `doc_update` per `editInterval`) and the
+/// awareness throttled, to stay under the server's rates; an edit refused
+/// `rate_limited` anyway is sent again — everything sent in the last few
+/// seconds, merged — after a backoff, and is never reported as `error`. Existing editor bindings (TipTap's Collaboration, `y-codemirror.next`)
 /// work on the `doc` and `awareness` unchanged.
 pub fn live_doc_ts(streams: &[sc_api::StreamExport], react: bool) -> String {
     let mut out = String::from(GENERATED_HEADER);
@@ -3301,12 +3352,12 @@ export interface LiveDocument<K extends "text" | "xml" = "text" | "xml"> {
 /** A document stream as a page uses it: `open(key)`. */
 export interface DocumentStream<K extends "text" | "xml" = "text" | "xml"> {
   readonly stream: LiveDocumentStream<K>;
-  open(key: LiveTopic): LiveDocument<K>;
+  open(key: LiveTopic, options?: DocumentOptions): LiveDocument<K>;
 }
 
 /** The accessor for a document stream of the generated client. */
 export function documentStream<K extends "text" | "xml">(stream: LiveDocumentStream<K>): DocumentStream<K> {
-  return { stream, open: (key: LiveTopic) => openDocument(stream, key) };
+  return { stream, open: (key: LiveTopic, options?: DocumentOptions) => openDocument(stream, key, options) };
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -3347,10 +3398,30 @@ type DocCore = {
   close(): void;
 };
 
+/**
+ * How an open document paces what it sends, so that typing stays under the
+ * server's 20 edits and 20 presence updates a second per page. The defaults
+ * suit a person typing; a test turns them down to milliseconds.
+ */
+export type DocumentOptions = {
+  /** Local edits made within this many ms go out as one `doc_update` (default 100). */
+  editInterval?: number;
+  /** This page's awareness (its cursor) goes out at most every this many ms, the latest winning (default 150). */
+  presenceInterval?: number;
+  /** After a `rate_limited` reply, wait this many ms before sending again, doubling while refused (default 1000). */
+  retryDelay?: number;
+};
+
+/** How far back sent edits are kept to send again after a `rate_limited` reply, in ms: longer than any reply takes. */
+const RESEND_WINDOW = 5000;
+/** The longest wait between two sends after `rate_limited` replies. */
+const MAX_RETRY_DELAY = 8000;
+
 /** A `Y.Doc` and its awareness, kept in step with the server over `connect`'s subscription. */
 function openCore(
   connect: (handlers: LiveDocumentHandlers<string>) => DocTransport,
   connection: LiveConnection | undefined,
+  options: DocumentOptions = {},
 ): DocCore {
   const doc = new Y.Doc();
   const awareness = new Awareness(doc);
@@ -3365,6 +3436,83 @@ function openCore(
   let applyingFor: string | undefined;
   const ownState = () => toBase64(encodeAwarenessUpdate(awareness, [doc.clientID]));
 
+  const editInterval = options.editInterval ?? 100;
+  const presenceInterval = options.presenceInterval ?? 150;
+  const firstRetry = options.retryDelay ?? 1000;
+  // Local edits not sent yet, and the ones sent lately: the server answers a
+  // refused edit `rate_limited` without saying which it was, so everything
+  // recent goes again (Yjs ignores what the server already has).
+  let pending: Uint8Array[] = [];
+  let recent: { at: number; bytes: Uint8Array }[] = [];
+  let editTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryDelay = firstRetry;
+  let lastRefusal = -Infinity;
+  let presenceTimer: ReturnType<typeof setTimeout> | undefined;
+  let presenceDue = false;
+  let presenceAt = -Infinity;
+  const canSend = () => !closed && !readOnly && status === "synced";
+
+  const sendEdit = (bytes: Uint8Array) => {
+    if (!session.send(toBase64(bytes))) return;
+    const now = Date.now();
+    recent = recent.filter((sent) => now - sent.at < RESEND_WINDOW);
+    recent.push({ at: now, bytes });
+  };
+  // Send what was edited since the last frame, as one; not while waiting to retry.
+  const flushEdits = () => {
+    editTimer = undefined;
+    if (retryTimer !== undefined) return;
+    // Out of sync: the next `doc_sync` is answered with everything the server lacks.
+    if (!canSend()) {
+      pending = [];
+      return;
+    }
+    if (pending.length === 0) return;
+    const merged = pending.length === 1 ? pending[0] : Y.mergeUpdates(pending);
+    pending = [];
+    sendEdit(merged);
+  };
+  const sendPresence = () => {
+    presenceDue = false;
+    presenceAt = Date.now();
+    session.setState(ownState());
+  };
+  // The latest awareness, at most every `presenceInterval`.
+  const queuePresence = () => {
+    if (closed) return;
+    presenceDue = true;
+    if (presenceTimer !== undefined) return;
+    const wait = presenceAt + presenceInterval - Date.now();
+    if (wait <= 0) {
+      sendPresence();
+      return;
+    }
+    presenceTimer = setTimeout(() => {
+      presenceTimer = undefined;
+      if (!closed && presenceDue) sendPresence();
+    }, wait);
+  };
+  // Refused for going too fast: wait, then send everything recent and pending as one frame.
+  // Refusals close together wait longer each time; a quiet window starts over.
+  const retry = () => {
+    if (retryTimer !== undefined) return;
+    const now = Date.now();
+    if (now - lastRefusal > RESEND_WINDOW) retryDelay = firstRetry;
+    lastRefusal = now;
+    const wait = retryDelay;
+    retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (closed) return;
+      const again = [...recent.map((sent) => sent.bytes), ...pending];
+      pending = [];
+      recent = [];
+      if (canSend() && again.length > 0) sendEdit(Y.mergeUpdates(again));
+      if (awareness.getLocalState() !== null) queuePresence();
+    }, wait);
+  };
+
   const session: DocTransport = connect({
     sync(update, ro) {
       const bytes = fromBase64(update);
@@ -3375,9 +3523,9 @@ function openCore(
       // What the server lacks — edits made before this sync, or while disconnected.
       if (!ro) {
         const missing = Y.encodeStateAsUpdate(doc, Y.encodeStateVectorFromUpdate(bytes));
-        if (missing.length > 2) session.send(toBase64(missing));
+        if (missing.length > 2) sendEdit(missing);
       }
-      if (awareness.getLocalState() !== null) session.setState(ownState());
+      if (awareness.getLocalState() !== null) queuePresence();
       changed();
     },
     update(update) {
@@ -3409,6 +3557,11 @@ function openCore(
       changed();
     },
     error(e) {
+      // Too fast is not a refusal of the page: what was refused is sent again, and nobody is told.
+      if (e.code === "rate_limited") {
+        retry();
+        return;
+      }
       error = e;
       changed();
     },
@@ -3425,8 +3578,9 @@ function openCore(
     : () => undefined;
 
   doc.on("update", (update: Uint8Array, origin: unknown) => {
-    if (closed || origin === REMOTE || readOnly || status !== "synced") return;
-    session.send(toBase64(update));
+    if (origin === REMOTE || !canSend()) return;
+    pending.push(update);
+    if (editTimer === undefined) editTimer = setTimeout(flushEdits, editInterval);
   });
   awareness.on(
     "update",
@@ -3439,7 +3593,7 @@ function openCore(
         clientsOf.set(applyingFor, ids);
         return;
       }
-      if ([...added, ...updated, ...removed].includes(doc.clientID)) session.setState(ownState());
+      if ([...added, ...updated, ...removed].includes(doc.clientID)) queuePresence();
     },
   );
 
@@ -3466,6 +3620,7 @@ function openCore(
       if (closed) return;
       closed = true;
       listeners.clear();
+      for (const timer of [editTimer, retryTimer, presenceTimer]) if (timer !== undefined) clearTimeout(timer);
       stopStatus();
       session.close();
       awareness.destroy();
@@ -3478,8 +3633,9 @@ function openCore(
 export function openDocument<K extends "text" | "xml">(
   stream: LiveDocumentStream<K>,
   key: LiveTopic,
+  options?: DocumentOptions,
 ): LiveDocument<K> {
-  const core = openCore((handlers) => stream.connect<string>(key, handlers), stream.connection);
+  const core = openCore((handlers) => stream.connect<string>(key, handlers), stream.connection, options);
   const root = (
     stream.rootKind === "xml" ? core.doc.getXmlFragment(stream.root) : core.doc.getText(stream.root)
   ) as DocRoot<K>;
@@ -3532,6 +3688,7 @@ export interface QueryDocument {
 export function openQueryDocument(
   open: (handlers: LiveOpenHandlers<string>) => LiveOpenedSession,
   connection?: LiveConnection,
+  options?: DocumentOptions,
 ): QueryDocument {
   let opened: LiveOpened | undefined;
   let root: Y.XmlFragment | Y.Text | undefined;
@@ -3555,7 +3712,7 @@ export function openQueryDocument(
       },
     });
     return session;
-  }, connection);
+  }, connection, options);
   const opening = core;
   return {
     doc: opening.doc,
@@ -5933,6 +6090,34 @@ export function Board({ id }: { id: number }) {
         assert!(file(&files, "src/App.tsx").contains("useUser"));
         assert!(file(&files, "src/App.tsx").contains("r.public || user ? r.element : <Login />"));
         assert!(file(&files, "src/auth.tsx").contains("api.whoami("));
+    }
+
+    /// The login screen offers the external identity providers the server
+    /// does (Settings → Authentication), and the runtime README tells an agent
+    /// how, and that the providers are not the application's to configure.
+    #[test]
+    fn the_login_screen_offers_the_identity_providers() {
+        let tables = [tasks()];
+        let eps = endpoints(&tables);
+        let app = todo();
+        let files = project_files(&ctx(&app, &tables, &eps, None));
+        let login = file(&files, "src/Login.tsx");
+        assert!(login.contains("api.oauthProviders()"), "{login}");
+        assert!(login.contains("api.oauthSignInUrl("), "{login}");
+        assert!(login.contains("oauth_error"), "{login}");
+        let readme = file(&files, "src/feldspar/README.md");
+        assert!(
+            readme.contains("api.oauthSignInUrl(provider, returnTo)"),
+            "{readme}"
+        );
+        assert!(readme.contains("Settings → Authentication"), "{readme}");
+        type_check_component(
+            &files,
+            "login-oauth",
+            "src/Login.tsx",
+            login,
+            "the login screen",
+        );
     }
 
     #[test]

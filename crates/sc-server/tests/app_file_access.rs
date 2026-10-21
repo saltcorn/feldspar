@@ -769,7 +769,7 @@ async fn a_row_cannot_be_pointed_at_somebody_elses_upload() -> sc_error::Result<
             Some(json!({
                 "label": "", "description": "",
                 "min_role_read": 80, "min_role_write": 80,
-                "ownership_formula": "", "rls_enabled": false,
+                "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
             })),
         )
         .await;

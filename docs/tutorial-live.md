@@ -648,6 +648,8 @@ Python's `live.document(...)` is the same, without `await`.
   package and its editor bindings. It saves debounced and on close, merging with what is stored.
 - **Limits**: a document is at most 2 MB, and an edit that would pass that is refused
   `too_large`; an edit frame may be up to 1 MB (a long paste), every other frame 64 KB; edits
-  count against the 20-a-second publish rate.
+  count against the 20-a-second publish rate. `live-doc.ts` keeps typing under it — the
+  keystrokes of 100 ms go out as one edit, the cursor at most every 150 ms — and an edit the
+  server refuses `rate_limited` anyway is sent again after a pause, never dropped.
 
 The definition of done for this part is `crates/sc-server/tests/tutorial_live_documents.rs`.

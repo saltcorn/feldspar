@@ -195,7 +195,9 @@ fn the_policy_names_the_map_hosts_and_nothing_else() {
         "{policy}"
     );
     assert!(
-        policy.contains("img-src 'self' data: blob: https://tiles.openfreemap.org http://10.0.0.5:8080;"),
+        policy.contains(
+            "img-src 'self' data: blob: https://tiles.openfreemap.org http://10.0.0.5:8080;"
+        ),
         "{policy}"
     );
     assert!(!policy.contains("evil"), "{policy}");

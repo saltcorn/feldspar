@@ -221,8 +221,11 @@ fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
             tarball.display()
         ),
     );
-    assert!(calls[1]
-        .starts_with("wrangler r2 object put feldspar-latest-static/feldspar.tar.gz.sha256 -f "));
+    assert!(
+        calls[1].starts_with(
+            "wrangler r2 object put feldspar-latest-static/feldspar.tar.gz.sha256 -f "
+        )
+    );
     assert!(calls[1].ends_with(" --remote"), "{}", calls[1]);
 
     // What is inside it: the host installer, so the machine that downloads this

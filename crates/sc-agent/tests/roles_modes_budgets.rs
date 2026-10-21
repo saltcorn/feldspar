@@ -143,7 +143,7 @@ fn last_tool_result(request: &sc_llm::LlmRequest) -> LlmMessageResult {
             }
             _ => None,
         })
-        .map_or(LlmMessageResult(String::new()), |r| r)
+        .unwrap_or(LlmMessageResult(String::new()))
 }
 
 #[tokio::test]

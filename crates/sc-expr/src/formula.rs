@@ -185,7 +185,8 @@ mod tests {
         for (src, named) in [
             ("owner = user.id", "assignment"),
             ("counter++", "increment"),
-            ("new Date()", "`new`"),
+            ("new Map()", "`new`"),
+            ("new globalThis.Date()", "`new`"),
             ("this.owner", "`this`"),
             ("(a, b)", "comma"),
             ("[...groups]", "spread"),

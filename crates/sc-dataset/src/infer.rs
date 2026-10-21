@@ -88,6 +88,8 @@ pub(crate) fn infer(
             _ => (ColType::Unknown, None),
         },
         Ast::Call { callee, args, .. } => call(callee, args, schema),
+        // A JavaScript `Date` is an instant.
+        Ast::NewDate(_) => (ColType::Timestamp, None),
     }
 }
 

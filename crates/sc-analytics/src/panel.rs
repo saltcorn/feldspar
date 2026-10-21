@@ -779,7 +779,9 @@ pub async fn render_panel_in(
                 }
             }
         }
-        PanelBody::Map { spec } => out.map = Some(render_map_in(catalog, caller, spec, &scope).await?),
+        PanelBody::Map { spec } => {
+            out.map = Some(render_map_in(catalog, caller, spec, &scope).await?)
+        }
         PanelBody::StatCard(card) => {
             out.card = Some(render_card_in(catalog, caller, card, &scope).await?);
         }

@@ -143,7 +143,7 @@ pub(crate) struct AppState {
     /// Name → handler resolution for `HandlerRef::Named`.
     handlers: Arc<HandlerRegistry>,
     /// The session store backing login/logout and per-request auth.
-    sessions: Arc<SessionStore>,
+    pub(crate) sessions: Arc<SessionStore>,
     /// Directory holding the built `ui/ide` bundle, if configured.
     ide_dir: Option<Arc<PathBuf>>,
     /// Directory holding the built `ui/analytics` bundle, if configured.
@@ -153,7 +153,7 @@ pub(crate) struct AppState {
     /// Directory holding the built `ui/builder` bundle, if configured.
     builder_dir: Option<Arc<PathBuf>>,
     /// Whether to set `Secure` on the session cookie.
-    secure_cookies: bool,
+    pub(crate) secure_cookies: bool,
     /// The applications served on their own subdomains, if any.
     ///
     /// `pub(crate)` because it is also where the catalog and the trigger
@@ -373,6 +373,25 @@ pub fn build_router_with_apps(
         // here, so following the move does not mean logging in again. A real
         // route because its answer is a cookie and a redirect, not JSON.
         .route(HANDOFF_ROUTE, axum::routing::get(admin_handoff))
+        // Signing in with an external identity provider (Settings →
+        // Authentication): redirects and a cookie, on every host, so real
+        // routes rather than typed endpoints (`crate::oauth`).
+        .route(
+            crate::oauth::PROVIDERS_ROUTE,
+            axum::routing::get(crate::oauth::providers),
+        )
+        .route(
+            crate::oauth::START_ROUTE,
+            axum::routing::get(crate::oauth::start),
+        )
+        .route(
+            crate::oauth::CALLBACK_ROUTE,
+            axum::routing::get(crate::oauth::callback),
+        )
+        .route(
+            crate::oauth::COMPLETE_ROUTE,
+            axum::routing::get(crate::oauth::complete),
+        )
         .fallback(dispatch)
         // Explicit rather than axum's implicit 2 MiB (TODO F2.5): every `Bytes`
         // extractor above reads at most `--max-request-body`. The fallback reads
@@ -1170,7 +1189,11 @@ fn open_to_public(state: &AppState, request: &axum::extract::Request) -> bool {
 /// the request is served: a concurrent mount/unmount never blocks on an in-flight
 /// request, and a request in flight against a since-replaced app keeps serving the
 /// version it resolved.
-fn resolve_app(state: &AppState, headers: &axum::http::HeaderMap, jar: &CookieJar) -> Resolved {
+pub(crate) fn resolve_app(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    jar: &CookieJar,
+) -> Resolved {
     let Some((base, host)) = state.base_domain.as_ref().and_then(|base| {
         let host = headers.get(header::HOST)?.to_str().ok()?;
         Some((base.as_str(), host))
@@ -1317,7 +1340,11 @@ async fn admin_handoff(
     else {
         return Redirect::to("/").into_response();
     };
-    match state.sessions.login(user).await {
+    match state
+        .sessions
+        .login_for(user, state.apps.session_ttl())
+        .await
+    {
         Ok(token) => {
             let domain = session_cookie_domain(&state, Some(&host));
             let cookie = session_cookie(&state, token, domain.as_deref());
@@ -1390,7 +1417,7 @@ fn request_client_ip(
 }
 
 /// What a request's `Host` resolves to.
-enum Resolved {
+pub(crate) enum Resolved {
     /// An application, or a run's preview of one.
     App(Arc<MountedApp>),
     /// A run's preview, without that run's session.
@@ -2553,7 +2580,7 @@ async fn apply_response(
 /// cookie is scoped from ([`session_cookie_domain`]).
 ///
 /// `Err` is the response to send instead, when a session could not be started.
-async fn apply_session(
+pub(crate) async fn apply_session(
     state: &AppState,
     jar: CookieJar,
     session_token: Option<String>,
@@ -2564,7 +2591,7 @@ async fn apply_session(
     let domain = session_cookie_domain(state, host);
     // A response that sets or clears the session cookie also expires it in the
     // scope it is *not* in now. Both can be in the browser at once — the scope
-    // changed since one was set (Settings → Development) — and a request then
+    // changed since one was set (Settings → Authentication) — and a request then
     // carries two `sc_session`s, of which the server reads one. Clearing the
     // other on every login and logout is what keeps a stale one from shadowing
     // the session that was just started, or outliving the one just ended. A
@@ -2593,7 +2620,11 @@ async fn apply_session(
             jar,
             stale: AppendHeaders(None),
         },
-        SessionAction::Start(user) => match state.sessions.login(user.clone()).await {
+        SessionAction::Start(user) => match state
+            .sessions
+            .login_for(user.clone(), state.apps.session_ttl())
+            .await
+        {
             Ok(token) => {
                 // The session the request arrived with is replaced, not joined:
                 // the cookie is about to name the new one, so leaving the old one
@@ -2609,7 +2640,7 @@ async fn apply_session(
                 fire_login(state, &user).await;
                 let mut cookie = session_cookie(state, token, domain.as_deref());
                 if client.native {
-                    let ttl = state.sessions.ttl().num_seconds();
+                    let ttl = state.apps.session_ttl().num_seconds();
                     cookie.set_max_age(time::Duration::seconds(ttl));
                 }
                 cookies(jar.add(cookie))
@@ -2653,15 +2684,15 @@ async fn apply_session(
 /// What [`apply_session`] leaves for the response: the jar, and the session
 /// cookie of the other scope to expire, which the jar cannot hold because it
 /// keeps one cookie per name.
-struct SessionCookies {
-    jar: CookieJar,
-    stale: AppendHeaders<Option<(header::HeaderName, HeaderValue)>>,
+pub(crate) struct SessionCookies {
+    pub(crate) jar: CookieJar,
+    pub(crate) stale: AppendHeaders<Option<(header::HeaderName, HeaderValue)>>,
 }
 
 /// What [`apply_session`] needs to know about the request a session cookie is
 /// set or cleared for.
 #[derive(Default)]
-struct SessionClient {
+pub(crate) struct SessionClient {
     /// [`is_native_client`] of the request.
     native: bool,
     /// The request's `Host`, for scoping a shared session cookie.
@@ -2670,7 +2701,7 @@ struct SessionClient {
 
 impl SessionClient {
     /// The client a request's headers describe.
-    fn of(headers: &axum::http::HeaderMap) -> SessionClient {
+    pub(crate) fn of(headers: &axum::http::HeaderMap) -> SessionClient {
         SessionClient {
             native: is_native_client(headers),
             host: headers
@@ -2699,7 +2730,7 @@ fn base_domain_of(state: &AppState, host: Option<&str>) -> Option<String> {
 }
 
 /// The `Domain` of the session cookie a request to `host` is given: its base
-/// domain when Settings → Development shares the session cookie between
+/// domain when Settings → Authentication shares the session cookie between
 /// applications, so one sign-in reaches the admin UI and every application;
 /// otherwise `None`, a host-only cookie, which no other application is sent.
 fn session_cookie_domain(state: &AppState, host: Option<&str>) -> Option<String> {
@@ -3034,7 +3065,7 @@ fn error_status(err: &Error) -> StatusCode {
 /// for. Values are percent-decoded (and `+` read as a space, as
 /// `application/x-www-form-urlencoded` and `URLSearchParams` write it), so what
 /// a handler reads is what the caller wrote.
-fn parse_query(uri: &Uri) -> Vec<(String, String)> {
+pub(crate) fn parse_query(uri: &Uri) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if let Some(query) = uri.query() {
         for pair in query.split('&').filter(|p| !p.is_empty()) {

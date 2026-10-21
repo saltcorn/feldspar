@@ -302,9 +302,9 @@ impl Style {
 
     fn static_problem(&self) -> Option<String> {
         match self {
-            Style::Single { color: Some(c) } if !is_hex_colour(c) => Some(format!(
-                "`{c}` is not a colour; give one as #rrggbb"
-            )),
+            Style::Single { color: Some(c) } if !is_hex_colour(c) => {
+                Some(format!("`{c}` is not a colour; give one as #rrggbb"))
+            }
             Style::Graduated { classes, .. } if !(MIN_CLASSES..=MAX_CLASSES).contains(classes) => {
                 Some(format!(
                     "graduated colours have from {MIN_CLASSES} to {MAX_CLASSES} classes, not \
@@ -334,7 +334,11 @@ impl Style {
                     Some(c) if !is_measure(c) => Some(format!(
                         "{what} need a number on Color, and `{}` is {}; choose categories instead",
                         f.field,
-                        if c.key.is_some() { "a key" } else { c.ty.name() }
+                        if c.key.is_some() {
+                            "a key"
+                        } else {
+                            c.ty.name()
+                        }
                     )),
                     _ => None,
                 },
@@ -428,7 +432,10 @@ impl ReferenceLayer {
             ));
         }
         let url = self.service.url().trim();
-        if url.chars().any(|c| c.is_whitespace() || c == '"' || c == '\'' || c == '<') {
+        if url
+            .chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\'' || c == '<')
+        {
             return Err(format!("`{url}` is not a URL"));
         }
         self.service.origin()?;
@@ -870,7 +877,9 @@ pub async fn render_map_in(
                 continue;
             }
             for (channel, f) in layer.encoding.iter() {
-                let Some(c) = shape.column(&f.field) else { continue };
+                let Some(c) = shape.column(&f.field) else {
+                    continue;
+                };
                 let spread = match (channel, &layer.style) {
                     // One colour, or a heat surface: nothing on Color is drawn.
                     ("color", Style::Single { .. } | Style::Heatmap { .. }) => continue,
@@ -1036,9 +1045,13 @@ mod tests {
         let check = |enc: serde_json::Value| -> Vec<String> {
             validate_encoding(&s, &serde_json::from_value(enc).unwrap(), "houses")
         };
-        assert!(check(json!({ "color": { "field": "price" }, "size": { "field": "rooms" },
-                              "shape": { "field": "kind" }, "label": { "field": "price" } }))
-        .is_empty());
+        assert!(
+            check(
+                json!({ "color": { "field": "price" }, "size": { "field": "rooms" },
+                              "shape": { "field": "kind" }, "label": { "field": "price" } })
+            )
+            .is_empty()
+        );
         // A key and a whole number are categories enough for a shape.
         assert!(check(json!({ "shape": { "field": "district" } })).is_empty());
         assert!(check(json!({ "shape": { "field": "rooms" } })).is_empty());
@@ -1105,11 +1118,18 @@ mod tests {
         let spec = spec_of_state(&state).expect("reads");
         spec.check(true).expect("checks");
         assert!(!spec.layers[0].visible);
-        assert_eq!(spec.reference[1].service.origin().as_deref(), Ok("https://maps.example.com"));
+        assert_eq!(
+            spec.reference[1].service.origin().as_deref(),
+            Ok("https://maps.example.com")
+        );
         // What the screen keeps beside the spec is not the spec's.
         let back = serde_json::to_value(&spec).unwrap();
         assert!(back.get("selection").is_none());
-        assert_eq!(back["layers"][1].get("visible"), None, "defaults are left out");
+        assert_eq!(
+            back["layers"][1].get("visible"),
+            None,
+            "defaults are left out"
+        );
 
         let refused = |change: &dyn Fn(&mut serde_json::Value), says: &str| {
             let mut s = state.clone();
@@ -1119,16 +1139,28 @@ mod tests {
                 .expect_err(says);
             assert!(err.to_string().contains(says), "{err} should say {says}");
         };
-        refused(&|s| s["layers"][1]["id"] = json!("a"), "which another layer has");
+        refused(
+            &|s| s["layers"][1]["id"] = json!("a"),
+            "which another layer has",
+        );
         refused(
             &|s| {
                 s["layers"][1].as_object_mut().unwrap().remove("id");
             },
             "layer 2 has no id",
         );
-        refused(&|s| s["layers"][0]["opacity"] = json!(1.5), "the layer \"Incidents\": its opacity");
-        refused(&|s| s["layers"][1]["style"]["color"] = json!("red"), "not a colour");
-        refused(&|s| s["layers"][0]["style"]["classes"] = json!(9), "from 2 to 7 classes");
+        refused(
+            &|s| s["layers"][0]["opacity"] = json!(1.5),
+            "the layer \"Incidents\": its opacity",
+        );
+        refused(
+            &|s| s["layers"][1]["style"]["color"] = json!("red"),
+            "not a colour",
+        );
+        refused(
+            &|s| s["layers"][0]["style"]["classes"] = json!(9),
+            "from 2 to 7 classes",
+        );
         refused(
             &|s| s["reference"][0]["url"] = json!("https://tile.example.com/tiles.png"),
             "not a tile template",
@@ -1138,12 +1170,21 @@ mod tests {
             "not an http or https URL",
         );
         refused(
-            &|s| s["reference"][0]["url"] = json!("https://a.example.com/{z}/{x}/{y}.png\"; script-src *"),
+            &|s| {
+                s["reference"][0]["url"] =
+                    json!("https://a.example.com/{z}/{x}/{y}.png\"; script-src *")
+            },
             "is not a URL",
         );
-        refused(&|s| s["reference"][1]["layers"] = json!(" "), "names of the layers");
+        refused(
+            &|s| s["reference"][1]["layers"] = json!(" "),
+            "names of the layers",
+        );
         refused(&|s| s["view"]["zoom"] = json!(30), "zoom 30");
-        refused(&|s| s["layers"][0]["style"]["kind"] = json!("rainbow"), "does not read");
+        refused(
+            &|s| s["layers"][0]["style"]["kind"] = json!("rainbow"),
+            "does not read",
+        );
         // A panel's map has no ids to keep.
         let mut panel = spec.clone();
         panel.layers[0].id = None;
@@ -1158,7 +1199,12 @@ mod tests {
         let layer = MapLayer {
             style: Style::Heatmap { radius: None },
             filter: Some("  ".into()),
-            ..MapLayer::new(DatasetId::new(), GeometrySource::Column { column: "at".into() })
+            ..MapLayer::new(
+                DatasetId::new(),
+                GeometrySource::Column {
+                    column: "at".into(),
+                },
+            )
         };
         let req = layer.request();
         assert!(req.points);

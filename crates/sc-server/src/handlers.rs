@@ -4384,6 +4384,9 @@ pub fn admin_handlers_with(
                 // signs in again and gets a cookie scoped the new way.
                 let shared_session_cookie = sc_config::shared_session_cookie_from(&merged);
                 let rescoping = shared_session_cookie != apps.shared_session_cookie();
+                // How long a session lasts: refused here when it is not a
+                // number of hours, and live for the next sign-in after the save.
+                let session_ttl_hours = sc_config::session_ttl_hours_from(&merged)?;
 
                 sc_config::set_config_many(&catalog, &values).await?;
                 // The admin UI moves now, and the new name's certificate is
@@ -4393,6 +4396,7 @@ pub fn admin_handlers_with(
                     apps.set_admin_subdomain(admin_subdomain);
                 }
                 apps.set_shared_session_cookie(shared_session_cookie);
+                apps.set_session_ttl_hours(session_ttl_hours);
                 // The two switches this process runs under move **now**, not at
                 // the next restart: an admin ticks "Log SQL" precisely because
                 // something is happening in the server they are looking at, and
@@ -4408,6 +4412,94 @@ pub fn admin_handlers_with(
                 } else {
                     HandlerResponse::ok(body)
                 })
+            }
+        }
+    });
+
+    // --- external identity providers (Settings → Authentication) ------------
+    //
+    // A list of records under one internal key. Each is checked against
+    // `oauth_provider_spec` on save; its client secret is redacted on the way
+    // out (`oauth_provider_json`) and the sentinel merged back on the way in,
+    // as an LLM provider's key is.
+
+    reg.register("listOAuthProviders", {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let out: Vec<Json> = sc_config::oauth_provider_records(&catalog)
+                    .await?
+                    .iter()
+                    .map(oauth_provider_json)
+                    .collect();
+                Ok(HandlerResponse::ok(Json::Array(out)))
+            }
+        }
+    });
+
+    reg.register("getOAuthProviderSpec", |ctx| async move {
+        Ok(HandlerResponse::ok(json!({
+            "fields": spec_json(&sc_config::oauth_provider_spec(), &ctx.locale),
+            "callback_path": crate::oauth::CALLBACK_ROUTE,
+        })))
+    });
+
+    reg.register("createOAuthProvider", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let submitted = oauth_provider_body(&ctx.body)?;
+                let spec = sc_config::oauth_provider_spec();
+                // Nothing is stored to merge a sentinel against, so one is
+                // dropped rather than saved as the secret.
+                let record = sc_types::merge_secrets(&spec, &Attrs::new(), &submitted);
+                let mut records = sc_config::oauth_provider_records(&catalog).await?;
+                records.push(record.clone());
+                sc_config::save_oauth_provider_records(&catalog, &records).await?;
+                Ok(HandlerResponse::ok(oauth_provider_json(&record)).with_status(201))
+            }
+        }
+    });
+
+    reg.register("updateOAuthProvider", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let name = ctx.path_param("name")?.to_owned();
+                let submitted = oauth_provider_body(&ctx.body)?;
+                let mut records = sc_config::oauth_provider_records(&catalog).await?;
+                let at = records
+                    .iter()
+                    .position(|r| oauth_record_name(r) == name)
+                    .ok_or_else(|| {
+                        Error::not_found(format!("no identity provider called `{name}`"))
+                    })?;
+                let spec = sc_config::oauth_provider_spec();
+                let record = sc_types::merge_secrets(&spec, &records[at], &submitted);
+                records[at] = record.clone();
+                sc_config::save_oauth_provider_records(&catalog, &records).await?;
+                Ok(HandlerResponse::ok(oauth_provider_json(&record)))
+            }
+        }
+    });
+
+    reg.register("deleteOAuthProvider", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let name = ctx.path_param("name")?.to_owned();
+                let mut records = sc_config::oauth_provider_records(&catalog).await?;
+                let before = records.len();
+                records.retain(|r| oauth_record_name(r) != name);
+                let deleted = records.len() != before;
+                if deleted {
+                    sc_config::save_oauth_provider_records(&catalog, &records).await?;
+                }
+                Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
         }
     });
@@ -8795,9 +8887,7 @@ pub(crate) async fn install_module_json(
     // time it is written — a module that has to be reloaded to be
     // allowed to work is not one click.
     let bundled = match source {
-        sc_module::ModuleSource::Bundled => {
-            Some(services.bundled().require(&location)?)
-        }
+        sc_module::ModuleSource::Bundled => Some(services.bundled().require(&location)?),
         _ => None,
     };
     let language = bundled.map_or(language, |entry| entry.language);
@@ -9988,6 +10078,49 @@ fn target_job_json(job: &crate::target_builds::TargetJob) -> Json {
         "log": job.artifact.as_ref().map(|a| a.log.clone()),
         "error": job.error,
     })
+}
+
+/// A stored identity provider as the Authentication tab lists it: the client
+/// secret redacted.
+fn oauth_provider_json(record: &Attrs) -> Json {
+    let text = |key: &str| record.get(key).and_then(Json::as_str).unwrap_or_default();
+    let config = sc_types::redact_attrs(&sc_config::oauth_provider_spec(), record);
+    json!({
+        "name": text(sc_config::authentication::PROVIDER_NAME),
+        "label": text(sc_config::authentication::PROVIDER_LABEL),
+        "preset": match text(sc_config::authentication::PROVIDER_PRESET) {
+            "" => sc_config::authentication::PRESET_CUSTOM,
+            preset => preset,
+        },
+        "enabled": record
+            .get(sc_config::authentication::PROVIDER_ENABLED)
+            .and_then(Json::as_bool)
+            .unwrap_or(true),
+        "config": Json::Object(config),
+    })
+}
+
+/// The `name` a stored provider record is addressed by.
+fn oauth_record_name(record: &Attrs) -> &str {
+    record
+        .get(sc_config::authentication::PROVIDER_NAME)
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+}
+
+/// The `config` object of a create or update body, without its blanks (a
+/// cleared box means the declared default).
+fn oauth_provider_body(body: &Json) -> Result<Attrs> {
+    match body.get("config") {
+        Some(Json::Object(config)) => Ok(config
+            .iter()
+            .filter(|(_, v)| !v.is_null() && v.as_str() != Some(""))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()),
+        _ => Err(Error::invalid(
+            "`config` should be an object of the provider's settings",
+        )),
+    }
 }
 
 /// The settings screen's whole payload: what may be set, and what is set

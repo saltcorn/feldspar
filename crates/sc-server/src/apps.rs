@@ -168,6 +168,19 @@ impl MountedApp {
     }
 }
 
+/// The session lifetime in hours, defaulting to the declared default rather
+/// than to zero: [`AppMounts`] is `Default`, and a zero lifetime would end every
+/// session as it started.
+struct SessionTtlHours(std::sync::atomic::AtomicI64);
+
+impl Default for SessionTtlHours {
+    fn default() -> Self {
+        SessionTtlHours(std::sync::atomic::AtomicI64::new(
+            sc_config::DEFAULT_SESSION_TTL_HOURS,
+        ))
+    }
+}
+
 /// The applications this server serves, resolved by subdomain — **live shared
 /// state**, not a value frozen at router-build time (design §13.2 "the mount
 /// registry is live; a full restart should never be required").
@@ -283,8 +296,13 @@ pub struct AppMounts {
     /// moving it is a save rather than a restart.
     admin: crate::admin_host::AdminHost,
     /// Whether the session cookie is scoped to the base domain rather than to
-    /// the host that set it (Settings → Development): live for the same reason.
+    /// the host that set it (Settings → Authentication): live for the same reason.
     shared_session_cookie: AtomicBool,
+    /// How long a session started from the next response on lasts, in hours
+    /// (Settings → Authentication → Session lifetime).
+    session_ttl_hours: SessionTtlHours,
+    /// The identity-provider sign-ins under way (`crate::oauth`).
+    oauth: crate::oauth::OAuthFlows,
 }
 
 /// One run's preview of one application.
@@ -341,6 +359,8 @@ impl AppMounts {
             target_builds: crate::target_builds::TargetBuilds::default(),
             admin: crate::admin_host::AdminHost::default(),
             shared_session_cookie: AtomicBool::new(false),
+            session_ttl_hours: SessionTtlHours::default(),
+            oauth: crate::oauth::OAuthFlows::default(),
         }
     }
 
@@ -373,6 +393,23 @@ impl AppMounts {
     /// caller ends every session when this changes.
     pub fn set_shared_session_cookie(&self, shared: bool) {
         self.shared_session_cookie.store(shared, Ordering::Relaxed);
+    }
+
+    /// How long a session started now lasts: a password sign-in's and an
+    /// identity provider's alike.
+    pub fn session_ttl(&self) -> chrono::Duration {
+        chrono::Duration::hours(self.session_ttl_hours.0.load(Ordering::Relaxed))
+    }
+
+    /// Give sessions started from the next response on `hours`. A session
+    /// already started keeps the expiry it was given.
+    pub fn set_session_ttl_hours(&self, hours: i64) {
+        self.session_ttl_hours.0.store(hours, Ordering::Relaxed);
+    }
+
+    /// The identity-provider sign-ins this process has under way.
+    pub(crate) fn oauth(&self) -> &crate::oauth::OAuthFlows {
+        &self.oauth
     }
 
     /// The host the admin UI is served on, if this deployment has a base domain.

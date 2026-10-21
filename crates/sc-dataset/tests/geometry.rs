@@ -132,7 +132,14 @@ async fn london() -> Result<Option<(Catalog, TestDb)>> {
 }
 
 pub(crate) async fn rows(cat: &Catalog, def: &DatasetDef) -> Result<(Vec<String>, Vec<Vec<Json>>)> {
-    let page = sc_dataset::read_stage(cat, &sc_dataset::Caller::admin(), def, None, sc_dataset::Page::first(1000)).await?;
+    let page = sc_dataset::read_stage(
+        cat,
+        &sc_dataset::Caller::admin(),
+        def,
+        None,
+        sc_dataset::Page::first(1000),
+    )
+    .await?;
     Ok((
         page.columns.iter().map(|c| c.name.clone()).collect(),
         page.rows

@@ -357,7 +357,7 @@ describe("the Development tab's Python reading", () => {
   });
 });
 
-describe("the Development tab's shared sign-in", () => {
+describe("the Authentication tab's shared sign-in", () => {
   /** The confirmation opens for a change either way, and for nothing else:
    * the server ends every session when the cookie's scope changes, and only
    * then. A setting never saved is off, which is what the form shows. */

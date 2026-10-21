@@ -36,9 +36,8 @@ use serde_json::{Map, Value as Json, json};
 
 use sc_catalog::Catalog;
 use sc_dataset::{
-    Caller, Reader,
-    ColType, DatasetDef, DatasetId, Op, OpStatus, Operation, Options, ROW_KEY, Schema, Stage,
-    StageColumn, compile, read_rows_with, value_json,
+    Caller, ColType, DatasetDef, DatasetId, Op, OpStatus, Operation, Options, ROW_KEY, Reader,
+    Schema, Stage, StageColumn, compile, read_rows_with, value_json,
 };
 use sc_error::{Error, Result};
 use sc_query::{Expr, OrderBy, Projection, Select, Source, UnOp, Value};
@@ -470,8 +469,14 @@ pub async fn layer_data(
             Projection::expr_as(func("ST_YMin", vec![extent()]), "s"),
             Projection::expr_as(func("ST_XMax", vec![extent()]), "e"),
             Projection::expr_as(func("ST_YMax", vec![extent()]), "nn"),
-            Projection::expr_as(agg("min", vec![func("ST_Dimension", vec![g.clone()])]), "dl"),
-            Projection::expr_as(agg("max", vec![func("ST_Dimension", vec![g.clone()])]), "dh"),
+            Projection::expr_as(
+                agg("min", vec![func("ST_Dimension", vec![g.clone()])]),
+                "dl",
+            ),
+            Projection::expr_as(
+                agg("max", vec![func("ST_Dimension", vec![g.clone()])]),
+                "dh",
+            ),
         ])
         .filter(Expr::unary(UnOp::IsNotNull, g));
     let rows = run(&layer, summary).await?;
@@ -725,7 +730,9 @@ pub async fn layer_tile(
             "there is no tile {x}/{y} at zoom {z}: each of them is below {side}"
         )));
     }
-    let layer = prepare(catalog, caller, req).await?.map_err(Error::invalid)?;
+    let layer = prepare(catalog, caller, req)
+        .await?
+        .map_err(Error::invalid)?;
     let features = layer.stage.features_query().map_err(Error::invalid)?;
     let int = |n: u32| lit_as(Value::Int(i64::from(n)), "integer");
     let float = |f: f64| lit_as(Value::Float(f), "double precision");

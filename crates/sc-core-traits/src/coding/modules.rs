@@ -111,7 +111,9 @@ pub async fn install(args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
         location: string_arg(&args, ARG_LOCATION)?,
     };
     if request.location.trim().is_empty() {
-        return Err(Error::invalid("`location` names what to install and cannot be empty"));
+        return Err(Error::invalid(
+            "`location` names what to install and cannot be empty",
+        ));
     }
     let module = ctx.require_modules()?.install(request).await?;
     Ok(json!({

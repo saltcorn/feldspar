@@ -251,7 +251,12 @@ mod tests {
             assert!(APP_ENDPOINTS.contains(name), "{name}");
         }
         // What is the admin's alone stays the admin's.
-        for name in ["getModelOutputs", "allowMapHost", "installPublicDataset", "listModels"] {
+        for name in [
+            "getModelOutputs",
+            "allowMapHost",
+            "installPublicDataset",
+            "listModels",
+        ] {
             assert!(!APP_ENDPOINTS.contains(&name), "{name}");
         }
     }
@@ -285,7 +290,11 @@ mod tests {
             .unwrap();
         assert_eq!(asset.status, 200);
         assert!(asset.headers.iter().any(|(_, v)| v.contains("immutable")));
-        for path in ["/analytics/../secret", "/elsewhere", "/analytics/missing.js"] {
+        for path in [
+            "/analytics/../secret",
+            "/elsewhere",
+            "/analytics/missing.js",
+        ] {
             let r = fw.handle(AppRequest::get(path), &catalog).await.unwrap();
             assert_eq!(r.status, 404, "{path}");
         }

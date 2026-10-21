@@ -32,7 +32,7 @@
 //   tab's, which the server would read as "clear them".
 //
 // One setting is asked about before it is saved: **Share sign-in between
-// applications** (Development). Changing it ends every session, the admin's own
+// applications** (Authentication). Changing it ends every session, the admin's own
 // included, so the save waits for a confirmation that says so, and afterwards
 // the screen reloads into the sign-in page rather than failing its next call.
 
@@ -60,6 +60,7 @@ import { ClearAllPanel } from "./ClearAll";
 import { CodeLibraryPanel } from "./CodeLibraries";
 import { SharedTranslationsPanel } from "./SharedTranslations";
 import { McpTokensPanel } from "./McpTokens";
+import { OAuthProvidersPanel } from "./OAuthProviders";
 import { ModulesTab } from "./ModulesTab";
 import { PythonStatusPanel } from "./PythonStatus";
 import { TestEmail } from "./TestEmail";
@@ -408,7 +409,7 @@ function SectionCard({
  *
  * Kept to a single lookup so it is obvious what the exception costs — a section
  * with nothing here renders its form and nothing else, which is every section
- * but Email, Localisation and Development. */
+ * but Email, Localisation, Development and Authentication. */
 function SectionExtra({
   name,
   stored,
@@ -419,6 +420,9 @@ function SectionExtra({
   if (name === "email") return <TestEmail />;
   // Settings → Localisation → Translations (shared) (TODO F6).
   if (name === "localisation") return <SharedTranslationsPanel />;
+  // Settings → Authentication → External identity providers: a list of
+  // records with a form each, not fields of this one.
+  if (name === "authentication") return <OAuthProvidersPanel />;
   if (name === "development")
     return (
       <>

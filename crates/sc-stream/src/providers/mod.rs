@@ -50,6 +50,7 @@ pub const BUILTINS_COMPILED_OUT: &str = "this server was built with `--no-defaul
 ///
 /// `internal`, `table_changes` and `document` always, and MQTT with the `mqtt` feature on.
 pub fn builtin_providers() -> Vec<Arc<dyn StreamProvider>> {
+    #[cfg_attr(not(feature = "mqtt"), allow(unused_mut))]
     let mut providers: Vec<Arc<dyn StreamProvider>> = vec![
         Arc::new(internal::Internal),
         Arc::new(table_changes::TableChanges),

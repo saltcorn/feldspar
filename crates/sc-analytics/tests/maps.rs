@@ -119,38 +119,38 @@ async fn a_map_is_drawn_with_its_domains_and_geometry_kinds() -> Result<()> {
         return Ok(());
     };
     let spec = MapSpec::of(vec![
-            // The regions, coloured by name.
-            MapLayer {
-                encoding: MapEncoding {
-                    color: Some(FieldDef::of("name")),
-                    ..MapEncoding::default()
-                },
-                ..MapLayer::new(
-                    regions_id,
-                    GeometrySource::Column {
-                        column: "outline".into(),
-                    },
-                )
+        // The regions, coloured by name.
+        MapLayer {
+            encoding: MapEncoding {
+                color: Some(FieldDef::of("name")),
+                ..MapEncoding::default()
             },
-            // The sites over them, sized by latitude, a shape per region, and
-            // a filter leaving two.
-            MapLayer {
-                encoding: MapEncoding {
-                    color: Some(FieldDef::of("lon")),
-                    size: Some(FieldDef::of("lat")),
-                    shape: Some(FieldDef::of("region")),
-                    label: Some(FieldDef::of("name")),
+            ..MapLayer::new(
+                regions_id,
+                GeometrySource::Column {
+                    column: "outline".into(),
                 },
-                filter: Some("name !== \"c\"".into()),
-                ..MapLayer::new(
-                    sites_id,
-                    GeometrySource::LonLat {
-                        longitude: "lon".into(),
-                        latitude: "lat".into(),
-                    },
-                )
+            )
+        },
+        // The sites over them, sized by latitude, a shape per region, and
+        // a filter leaving two.
+        MapLayer {
+            encoding: MapEncoding {
+                color: Some(FieldDef::of("lon")),
+                size: Some(FieldDef::of("lat")),
+                shape: Some(FieldDef::of("region")),
+                label: Some(FieldDef::of("name")),
             },
-        ]);
+            filter: Some("name !== \"c\"".into()),
+            ..MapLayer::new(
+                sites_id,
+                GeometrySource::LonLat {
+                    longitude: "lon".into(),
+                    latitude: "lat".into(),
+                },
+            )
+        },
+    ]);
     let drawn = render_map(&cat, &sc_dataset::Caller::admin(), &spec).await?;
     assert_eq!(drawn.layers.len(), 2);
 
@@ -217,7 +217,9 @@ async fn domains_are_read_over_the_features_with_a_geometry() -> Result<()> {
             geometry: "outline".into(),
         },
     );
-    let domains = layer_domains(&cat, &sc_dataset::Caller::admin(),
+    let domains = layer_domains(
+        &cat,
+        &sc_dataset::Caller::admin(),
         &req,
         &[
             ("region".into(), Spread::Values),
@@ -236,7 +238,13 @@ async fn domains_are_read_over_the_features_with_a_geometry() -> Result<()> {
             column: "name".into(),
         },
     );
-    let refused = layer_domains(&cat, &sc_dataset::Caller::admin(), &bad, &[("lat".into(), Spread::Range)]).await?;
+    let refused = layer_domains(
+        &cat,
+        &sc_dataset::Caller::admin(),
+        &bad,
+        &[("lat".into(), Spread::Range)],
+    )
+    .await?;
     assert!(refused.unwrap_err().contains("not a geometry"));
     Ok(())
 }

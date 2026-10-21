@@ -431,6 +431,7 @@ fn fold(ast: &Ast, op: Operation, locals: &mut Vec<String>) -> Ast {
             args: args.iter().map(|a| fold(a, op, locals)).collect(),
             optional: *optional,
         },
+        Ast::NewDate(args) => Ast::NewDate(args.iter().map(|a| fold(a, op, locals)).collect()),
         Ast::Unary { op: uop, expr } => {
             let expr = fold(expr, op, locals);
             match (uop, &expr) {
@@ -1350,6 +1351,7 @@ fn js_truthy(v: &Value) -> bool {
 fn describe(ast: &Ast) -> &'static str {
     match ast {
         Ast::Call { .. } => "a function call",
+        Ast::NewDate(_) => "a `new Date(…)`",
         Ast::Array(_) => "an array literal",
         Ast::Template { .. } => "a template literal",
         Ast::Arrow { .. } => "an arrow function",
@@ -2336,7 +2338,10 @@ mod tests {
             "ST_Intersects(\"places\".\"location\", \
              ST_SetSRID(ST_GeomFromGeoJSON(CAST($1 AS text)), $2))"
         );
-        assert_eq!(binds, vec![Value::Text(polygon.to_owned()), Value::Int(4326)]);
+        assert_eq!(
+            binds,
+            vec![Value::Text(polygon.to_owned()), Value::Int(4326)]
+        );
     }
 
     #[test]

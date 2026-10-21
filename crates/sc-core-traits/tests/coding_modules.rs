@@ -107,8 +107,14 @@ async fn the_module_tools_are_offered_only_under_the_grant_to_an_admin() -> Resu
     let user = as_user("ada@example.com");
 
     let offered = names(Some(&admin), &granted());
-    assert!(offered.contains(&"list_modules_apps_web".to_owned()), "{offered:?}");
-    assert!(offered.contains(&"install_module_apps_web".to_owned()), "{offered:?}");
+    assert!(
+        offered.contains(&"list_modules_apps_web".to_owned()),
+        "{offered:?}"
+    );
+    assert!(
+        offered.contains(&"install_module_apps_web".to_owned()),
+        "{offered:?}"
+    );
     for withheld in [
         names(Some(&user), &granted()),
         names(None, &granted()),
@@ -131,8 +137,7 @@ async fn the_module_tools_are_offered_only_under_the_grant_to_an_admin() -> Resu
 }
 
 #[tokio::test]
-async fn an_install_reaches_the_server_installer_and_is_refused_without_the_grant()
--> Result<()> {
+async fn an_install_reaches_the_server_installer_and_is_refused_without_the_grant() -> Result<()> {
     let env = Env::new().await?;
     env.with_file_store("apps", None).await?;
     let scope = configured_scope(&granted())?;
@@ -162,15 +167,29 @@ async fn an_install_reaches_the_server_installer_and_is_refused_without_the_gran
             location: "requests>=2".to_owned(),
         }]
     );
-    let listed = call(&env, &granted(), &list, json!({}), &admin, RunMode::Act, Some(fake.as_ref()))
-        .await?;
+    let listed = call(
+        &env,
+        &granted(),
+        &list,
+        json!({}),
+        &admin,
+        RunMode::Act,
+        Some(fake.as_ref()),
+    )
+    .await?;
     assert_eq!(listed["pip"], json!(true));
 
     // Refused, by name, and nothing more is installed: without the grant, for a
     // non-admin caller, in a planning run, and where the server has no installer.
     let user = as_user("ada@example.com");
     let refusals = [
-        (not_granted(), &admin, RunMode::Act, true, CFG_MAY_INSTALL_MODULES),
+        (
+            not_granted(),
+            &admin,
+            RunMode::Act,
+            true,
+            CFG_MAY_INSTALL_MODULES,
+        ),
         (granted(), &user, RunMode::Act, true, "administrator"),
         (granted(), &admin, RunMode::Plan, true, "plan"),
         (granted(), &admin, RunMode::Act, false, "module installer"),

@@ -135,9 +135,9 @@ pub use build_application::{BuildApplication, CFG_APPLICATION};
 pub use coding::{
     Baseline, CFG_CHECKS, CFG_DIAGNOSE, CFG_EDIT_FORMAT, CFG_MAX_LINES, CFG_MAX_RESULTS,
     CFG_MAY_CHECK, CFG_MAY_EDIT, CFG_MAY_INSTALL_MODULES, CFG_MAY_RUN_SCRIPTS, CFG_MAY_USE_SHELL,
-    CFG_MAY_VIEW_APP, CFG_REPO_MAP_TOKENS, CFG_SHELL_IMAGE, CFG_SHELL_NETWORK, CFG_SHELL_RUNTIME, CFG_SHELL_SANDBOX,
-    CFG_SHELL_TIMEOUT, CFG_SHELL_TIMEOUT_MAX, CFG_TIMEOUT, CFG_VIEW_APP_TIMEOUT, CFG_VIEW_APP_USER,
-    ChangeStatus, Coding, CodingState, DEFAULT_DIAGNOSE, DEFAULT_MAX_LINES,
+    CFG_MAY_VIEW_APP, CFG_REPO_MAP_TOKENS, CFG_SHELL_IMAGE, CFG_SHELL_NETWORK, CFG_SHELL_RUNTIME,
+    CFG_SHELL_SANDBOX, CFG_SHELL_TIMEOUT, CFG_SHELL_TIMEOUT_MAX, CFG_TIMEOUT, CFG_VIEW_APP_TIMEOUT,
+    CFG_VIEW_APP_USER, ChangeStatus, Coding, CodingState, DEFAULT_DIAGNOSE, DEFAULT_MAX_LINES,
     DEFAULT_REPO_MAP_TOKENS, DEFAULT_SHELL_TIMEOUT, DEFAULT_SHELL_TIMEOUT_MAX,
     DEFAULT_TIMEOUT_SECONDS, DEFAULT_VIEW_APP_TIMEOUT, EDIT_FORMAT_AUTO, EditStats, FileChange,
     LONGEST_TOOL_PREFIX, Ledger, MAX_OUTPUT_CHARS, MAX_REPO_MAP_TOKENS, PreImage, RunDiff,
@@ -181,12 +181,12 @@ pub mod tool_names {
         explore_tool_name as explore, find_files_tool_name as find_files,
         implement_feature_tool_name as implement_feature,
         install_module_tool_name as install_module, list_assets_tool_name as list_assets,
-        list_modules_tool_name as list_modules,
-        process_tool_name as process, read_file_tool_name as read_file,
-        repo_map_tool_name as repo_map, run_script_tool_name as run_project_script,
-        save_plan_tool_name as save_plan, search_files_tool_name as search_files,
-        shell_tool_name as shell, view_app_tool_name as view_app,
-        view_image_tool_name as view_image, write_file_tool_name as write_file,
+        list_modules_tool_name as list_modules, process_tool_name as process,
+        read_file_tool_name as read_file, repo_map_tool_name as repo_map,
+        run_script_tool_name as run_project_script, save_plan_tool_name as save_plan,
+        search_files_tool_name as search_files, shell_tool_name as shell,
+        view_app_tool_name as view_app, view_image_tool_name as view_image,
+        write_file_tool_name as write_file,
     };
     pub use crate::delete_rows::tool_name as delete_rows;
     pub use crate::http::tool_name as http;
@@ -500,11 +500,11 @@ mod tests {
             ]
         );
         // `admin_copilot`'s names are fixed rather than derived, and say the
-        // same twenty things every deployment's do — two over the schema,
+        // same twenty-one things every deployment's do — two over the schema,
         // four over the triggers, one reference for a code body, six over
         // applications (reading, creating one and its store, changing one —
         // its tables, static directories and CSP — and its custom SQL
-        // queries), two over its translations, three over the code
+        // queries), one over its streams, two over its translations, three over the code
         // libraries, and its own two: delegating code to a coding agent and
         // publishing.
         assert_eq!(
@@ -521,6 +521,7 @@ mod tests {
                 "create_file_store",
                 "create_application",
                 "update_application",
+                "edit_streams",
                 "describe_translations",
                 "save_translations",
                 "save_api_query",

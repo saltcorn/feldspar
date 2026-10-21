@@ -139,7 +139,10 @@ fn card(fx: &Fixture, mut raw: Json) -> StatCard {
 }
 
 async fn numbers(fx: &Fixture, raw: Json) -> CardData {
-    match render_card(&fx.cat, &sc_dataset::Caller::admin(), &card(fx, raw)).await.expect("renders") {
+    match render_card(&fx.cat, &sc_dataset::Caller::admin(), &card(fx, raw))
+        .await
+        .expect("renders")
+    {
         RenderedCard::Card(data) => data,
         RenderedCard::Refused { problems, .. } => {
             panic!("on {}: refused: {problems:?}", fx.backend)
@@ -148,7 +151,10 @@ async fn numbers(fx: &Fixture, raw: Json) -> CardData {
 }
 
 async fn refused(fx: &Fixture, raw: Json) -> String {
-    match render_card(&fx.cat, &sc_dataset::Caller::admin(), &card(fx, raw)).await.expect("answers") {
+    match render_card(&fx.cat, &sc_dataset::Caller::admin(), &card(fx, raw))
+        .await
+        .expect("answers")
+    {
         RenderedCard::Refused { error, .. } => error,
         RenderedCard::Card(data) => panic!("on {}: drew {data:?}", fx.backend),
     }

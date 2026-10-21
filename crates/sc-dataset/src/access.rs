@@ -408,10 +408,7 @@ pub fn tables_read(select: &Select) -> BTreeSet<String> {
 /// joins, unions, derived tables and the subqueries inside its expressions.
 /// `f` answers whether it replaced the source, in which case the replacement is
 /// not descended into.
-fn visit_select(
-    select: &mut Select,
-    f: &mut dyn FnMut(&mut Source) -> Result<bool>,
-) -> Result<()> {
+fn visit_select(select: &mut Select, f: &mut dyn FnMut(&mut Source) -> Result<bool>) -> Result<()> {
     visit_source(&mut select.from, f)?;
     for Join { source, on, .. } in &mut select.joins {
         visit_source(source, f)?;
@@ -521,9 +518,7 @@ mod tests {
         ));
         assert_eq!(
             tables_read(&outer),
-            BTreeSet::from(
-                ["extra", "hoods", "houses", "owners"].map(str::to_owned)
-            )
+            BTreeSet::from(["extra", "hoods", "houses", "owners"].map(str::to_owned))
         );
     }
 
@@ -552,8 +547,22 @@ mod tests {
         // The admin's own, from before owners: nobody else's to change.
         let old = Sharing::default();
         assert!(!old.admits(&alice) && !old.may_change(&alice));
-        assert!(Sharing { share_role: Some(0), ..old }.check().is_err());
-        assert!(Sharing { share_role: Some(100), ..old }.check().is_ok());
+        assert!(
+            Sharing {
+                share_role: Some(0),
+                ..old
+            }
+            .check()
+            .is_err()
+        );
+        assert!(
+            Sharing {
+                share_role: Some(100),
+                ..old
+            }
+            .check()
+            .is_ok()
+        );
     }
 
     #[test]
@@ -574,7 +583,11 @@ mod tests {
         let context = caller.context();
         assert_eq!(context.role, 40);
         assert_eq!(
-            context.user.as_ref().and_then(|u| u.get("id")).and_then(Json::as_str),
+            context
+                .user
+                .as_ref()
+                .and_then(|u| u.get("id"))
+                .and_then(Json::as_str),
             Some(user.id.to_string().as_str())
         );
     }

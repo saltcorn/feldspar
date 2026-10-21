@@ -2236,7 +2236,9 @@ impl Plan {
             };
             if table.sync_enabled() {
                 let pk = sc_catalog::sync_key(catalog, table)?;
-                steps.push(SchemaStep::Sql(sc_catalog::enable_sync_sql(dialect, name, &pk)));
+                steps.push(SchemaStep::Sql(sc_catalog::enable_sync_sql(
+                    dialect, name, &pk,
+                )));
             } else if self.was_sync.contains(name) {
                 steps.push(SchemaStep::Sql(sc_catalog::disable_sync_sql(dialect, name)));
             }

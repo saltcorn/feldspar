@@ -32,9 +32,8 @@ use serde_json::{Value as Json, json};
 
 use sc_catalog::Catalog;
 use sc_dataset::{
-    Caller,
-    Base, ColType, DatasetDef, Grain, Op, OpStatus, Operation, Options, Schema, SortKey, SortOp,
-    StageColumn, compile, read_rows_with, value_json,
+    Base, Caller, ColType, DatasetDef, Grain, Op, OpStatus, Operation, Options, Schema, SortKey,
+    SortOp, StageColumn, compile, read_rows_with, value_json,
 };
 use sc_error::{Error, Result};
 use sc_query::Value;

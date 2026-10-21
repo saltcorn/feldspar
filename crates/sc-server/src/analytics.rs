@@ -17,11 +17,11 @@ use std::sync::Arc;
 use sc_analytics::app::AppScope;
 use sc_analytics::layer;
 use sc_analytics::map;
-use sc_analytics::selection;
-use sc_analytics::tools;
 use sc_analytics::panel::Panel;
 use sc_analytics::plot::{self, PlotSpec};
+use sc_analytics::selection;
 use sc_analytics::stats;
+use sc_analytics::tools;
 use sc_analytics::{Workspace, WorkspaceId, WorkspaceKind};
 use sc_catalog::Catalog;
 use sc_dataset::{
@@ -87,7 +87,9 @@ impl Access {
     /// answered as one that is not there.
     async fn dataset(&self, catalog: &Catalog, id: DatasetId) -> Result<(DatasetDef, Sharing)> {
         let missing = || Error::not_found(format!("there is no dataset with id {id}"));
-        let def = sc_dataset::load_dataset(catalog, id).await?.ok_or_else(missing)?;
+        let def = sc_dataset::load_dataset(catalog, id)
+            .await?
+            .ok_or_else(missing)?;
         let sharing = sc_dataset::dataset_sharing(catalog, id)
             .await?
             .unwrap_or_default();
@@ -202,7 +204,9 @@ impl Access {
         if self.app.is_none() || self.sees_workspace(&ws) {
             Ok(ws)
         } else {
-            Err(Error::not_found(format!("there is no workspace with id {id}")))
+            Err(Error::not_found(format!(
+                "there is no workspace with id {id}"
+            )))
         }
     }
 
@@ -245,9 +249,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     .defs()
                     .filter_map(|def| {
                         let shared = sharing.get(&def.id).copied().unwrap_or_default();
-                        access
-                            .sees(def, &shared, &library)
-                            .then_some((def, shared))
+                        access.sees(def, &shared, &library).then_some((def, shared))
                     })
                     .map(|(def, shared)| {
                         let resolved = sc_model::Dataset::of_def(&schema, &library, def);
@@ -399,7 +401,11 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     .await?
                     .iter()
                     .filter(|d| {
-                        access.sees(d, &sharing.get(&d.id).copied().unwrap_or_default(), &library)
+                        access.sees(
+                            d,
+                            &sharing.get(&d.id).copied().unwrap_or_default(),
+                            &library,
+                        )
                     })
                     .map(|d| json!({ "id": d.id, "name": d.name }))
                     .collect();
@@ -610,7 +616,9 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 )
                 .map_err(|e| Error::invalid(format!("`spec` is not a plot spec: {e}")))?;
                 let access = Access::of(&ctx);
-                access.check_datasets(&catalog, data_datasets(&spec.data)).await?;
+                access
+                    .check_datasets(&catalog, data_datasets(&spec.data))
+                    .await?;
                 let rendered = plot::render_plot(&catalog, &access.caller, &spec).await?;
                 Ok(HandlerResponse::ok(
                     serde_json::to_value(rendered).map_err(|e| {
@@ -634,7 +642,9 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 )
                 .map_err(|e| Error::invalid(format!("`spec` is not a summary table: {e}")))?;
                 let access = Access::of(&ctx);
-                access.check_datasets(&catalog, data_datasets(&spec.data)).await?;
+                access
+                    .check_datasets(&catalog, data_datasets(&spec.data))
+                    .await?;
                 let rendered = plot::render_table(&catalog, &access.caller, &spec).await?;
                 Ok(HandlerResponse::ok(
                     serde_json::to_value(rendered).map_err(|e| {
@@ -658,7 +668,9 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 )
                 .map_err(|e| Error::invalid(format!("`spec` is not a set of test roles: {e}")))?;
                 let access = Access::of(&ctx);
-                access.check_datasets(&catalog, data_datasets(&spec.data)).await?;
+                access
+                    .check_datasets(&catalog, data_datasets(&spec.data))
+                    .await?;
                 let answer = stats::run_tests(&catalog, &access.caller, &spec).await?;
                 Ok(HandlerResponse::ok(serde_json::to_value(answer).map_err(
                     |e| Error::serde(format!("a test's results do not serialise: {e}")),
@@ -805,17 +817,22 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     .map(serde_json::from_value)
                     .transpose()
                     .map_err(|e| Error::invalid(format!("`sort` is not an order: {e}")))?;
-                let limit = optional_usize(&ctx.body, "limit")
-                    .map_or(selection::TABLE_ROWS, |l| l as u64);
-                let answer =
-                    match selection::layer_rows(&catalog, &access.caller, &layer, sort.as_ref(), limit)
-                        .await?
-                    {
-                        Ok(rows) => serde_json::to_value(rows).map_err(|e| {
-                            Error::serde(format!("a layer's rows do not serialise: {e}"))
-                        })?,
-                        Err(error) => json!({ "error": error }),
-                    };
+                let limit =
+                    optional_usize(&ctx.body, "limit").map_or(selection::TABLE_ROWS, |l| l as u64);
+                let answer = match selection::layer_rows(
+                    &catalog,
+                    &access.caller,
+                    &layer,
+                    sort.as_ref(),
+                    limit,
+                )
+                .await?
+                {
+                    Ok(rows) => serde_json::to_value(rows).map_err(|e| {
+                        Error::serde(format!("a layer's rows do not serialise: {e}"))
+                    })?,
+                    Err(error) => json!({ "error": error }),
+                };
                 Ok(HandlerResponse::ok(answer))
             }
         }
@@ -934,8 +951,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                         .collect();
                     access.check_datasets(&catalog, named).await?;
                 }
-                let run =
-                    tools::run_tool(&catalog, &tool, &tools::ToolArgs(params), name).await?;
+                let run = tools::run_tool(&catalog, &tool, &tools::ToolArgs(params), name).await?;
                 owned_by_caller(&catalog, &access, run.dataset.id).await?;
                 let mut answer = detail(&catalog, &access, &run.dataset).await?;
                 if let Some(fields) = answer.as_object_mut() {
@@ -979,8 +995,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                         Error::invalid(format!("`geometry` is not a geometry source: {e}"))
                     })?;
                 Access::of(&ctx).check_datasets(&catalog, [id]).await?;
-                let answer =
-                    map::suggest_map(&catalog, id, &assignment, geometry.as_ref()).await?;
+                let answer = map::suggest_map(&catalog, id, &assignment, geometry.as_ref()).await?;
                 Ok(HandlerResponse::ok(serde_json::to_value(answer).map_err(
                     |e| Error::serde(format!("a suggested map does not serialise: {e}")),
                 )?))
@@ -1041,9 +1056,8 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     &filters,
                 )
                 .await?;
-                let mut answer = serde_json::to_value(&rendered).map_err(|e| {
-                    Error::serde(format!("a panel's data does not serialise: {e}"))
-                })?;
+                let mut answer = serde_json::to_value(&rendered)
+                    .map_err(|e| Error::serde(format!("a panel's data does not serialise: {e}")))?;
                 // A map panel's tiled layers are fetched by URL, as
                 // `renderMap`'s are.
                 if let (Some(map), Some(fields)) = (&rendered.map, answer.as_object_mut()) {

@@ -1,5 +1,5 @@
 //! Sharing the session cookie between every application of an instance
-//! (Settings → Development → Share sign-in between applications).
+//! (Settings → Authentication → Share sign-in between applications).
 //!
 //! Driven through the assembled router, reading the `Set-Cookie` headers a
 //! browser would act on. What is pinned here:

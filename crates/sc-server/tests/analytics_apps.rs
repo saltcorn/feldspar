@@ -163,7 +163,10 @@ impl Client {
             "{} {method} {path}: {status} {value}",
             self.host
         );
-        (status, value["error"].as_str().unwrap_or_default().to_owned())
+        (
+            status,
+            value["error"].as_str().unwrap_or_default().to_owned(),
+        )
     }
 
     /// Sign in as `email` on this client's host.
@@ -326,8 +329,7 @@ fn application(subdomain: &str, config: Value, tables: &[&str]) -> Value {
 }
 
 #[tokio::test]
-async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_error::Result<()>
-{
+async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_error::Result<()> {
     let (mut admin, router, _db, bundle) = setup().await?;
 
     // --- the framework is offered, with its settings ---------------------------
@@ -393,7 +395,9 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
     assert!(String::from_utf8_lossy(&body).contains("id=\"root\""));
     let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
     assert!(csp.contains("worker-src 'self'"), "{csp}");
-    let (status, _, _) = sam.raw("GET", "/analytics/assets/index-1a2b3c4d.js", None).await;
+    let (status, _, _) = sam
+        .raw("GET", "/analytics/assets/index-1a2b3c4d.js", None)
+        .await;
     assert_eq!(status, StatusCode::OK);
 
     // Nobody signed in: who they are is answered, and nothing else.
@@ -412,7 +416,10 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
     let shell = sam.ok("GET", "/api/analytics/shell", None).await;
     assert_eq!(shell["application"]["mode"], json!("self_serve"), "{shell}");
     assert_eq!(shell["application"]["dataset_editor"], json!(true));
-    assert_eq!(shell["application"]["workspace_kinds"], json!(["data_explorer"]));
+    assert_eq!(
+        shell["application"]["workspace_kinds"],
+        json!(["data_explorer"])
+    );
     assert!(
         shell["roles"]
             .as_array()
@@ -443,7 +450,10 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
         )
         .await;
     assert_eq!(code, StatusCode::UNAUTHORIZED, "{why}");
-    assert!(why.contains("`incidents` is not one of the tables"), "{why}");
+    assert!(
+        why.contains("`incidents` is not one of the tables"),
+        "{why}"
+    );
     // Nor by an unsaved definition sent to be read.
     let (_, why) = sam
         .refused(
@@ -452,7 +462,10 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
             Some(json!({ "dataset": on_table("x", "incidents", json!([])) })),
         )
         .await;
-    assert!(why.contains("`incidents` is not one of the tables"), "{why}");
+    assert!(
+        why.contains("`incidents` is not one of the tables"),
+        "{why}"
+    );
 
     // --- a dataset of Sam's, read as Sam ----------------------------------------
     let mine = sam
@@ -462,7 +475,11 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
             Some(on_table(
                 "My houses",
                 "houses",
-                json!([op("h", "calculated", json!({ "name": "hood", "formula": "neighbourhoodⱵname" }))]),
+                json!([op(
+                    "h",
+                    "calculated",
+                    json!({ "name": "hood", "formula": "neighbourhoodⱵname" })
+                )]),
             )),
         )
         .await;
@@ -483,7 +500,11 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
         .await;
     assert_eq!(table["total"], json!(4), "{table}");
     let stage = sam
-        .ok("POST", "/api/datasets/stage", Some(json!({ "dataset": mine["dataset"] })))
+        .ok(
+            "POST",
+            "/api/datasets/stage",
+            Some(json!({ "dataset": mine["dataset"] })),
+        )
         .await;
     assert_eq!(stage["total"], json!(4), "{stage}");
     let hood = stage["columns"]
@@ -529,15 +550,26 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
     let joined = on_table(
         "With incidents",
         "houses",
-        json!([op("j", "join", json!({
-            "with": { "kind": "table", "table": "incidents" },
-            "kind": "left", "on": [{ "left": "id", "right": "id" }],
-        }))]),
+        json!([op(
+            "j",
+            "join",
+            json!({
+                "with": { "kind": "table", "table": "incidents" },
+                "kind": "left", "on": [{ "left": "id", "right": "id" }],
+            })
+        )]),
     );
     let (_, why) = sam
-        .refused("POST", "/api/datasets/stage", Some(json!({ "dataset": joined })))
+        .refused(
+            "POST",
+            "/api/datasets/stage",
+            Some(json!({ "dataset": joined })),
+        )
         .await;
-    assert!(why.contains("`incidents` is not one of the tables"), "{why}");
+    assert!(
+        why.contains("`incidents` is not one of the tables"),
+        "{why}"
+    );
 
     // A table Staff may not read at all: the join reaches it, and says so.
     admin
@@ -607,10 +639,17 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
     assert!(why.contains("not yours to change"), "{why}");
     // An admin's dataset on `houses` is seen only once it is shared.
     let admins = admin
-        .ok("POST", "/api/datasets", Some(on_table("Prices", "houses", json!([]))))
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(on_table("Prices", "houses", json!([]))),
+        )
         .await;
     let admins_id = admins["dataset"]["id"].as_str().unwrap().to_owned();
-    assert_eq!(listed(&sam.ok("GET", "/api/datasets", None).await), ["My houses"]);
+    assert_eq!(
+        listed(&sam.ok("GET", "/api/datasets", None).await),
+        ["My houses"]
+    );
     admin
         .ok(
             "PUT",
@@ -642,11 +681,20 @@ async fn a_self_serve_application_reads_as_its_user_and_only_its_tables() -> sc_
         )
         .await;
     assert_eq!(code, StatusCode::UNAUTHORIZED);
-    assert!(why.contains("cannot be opened in this application"), "{why}");
+    assert!(
+        why.contains("cannot be opened in this application"),
+        "{why}"
+    );
     let kinds = sam.ok("GET", "/api/workspace-kinds", None).await;
     assert_eq!(kinds.as_array().unwrap().len(), 1, "{kinds}");
     // Kim does not see it until it is shared, and may not change it after.
-    assert!(kim.ok("GET", "/api/workspaces", None).await.as_array().unwrap().is_empty());
+    assert!(
+        kim.ok("GET", "/api/workspaces", None)
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     sam.ok(
         "PUT",
         &format!("/api/workspaces/{ws_id}/share"),
@@ -684,11 +732,19 @@ async fn a_fixed_application_shows_its_dashboard_and_nothing_else() -> sc_error:
 
     // The admin's dashboard, on a dataset of all the houses.
     let houses = admin
-        .ok("POST", "/api/datasets", Some(on_table("All houses", "houses", json!([]))))
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(on_table("All houses", "houses", json!([]))),
+        )
         .await;
     let houses_id = houses["dataset"]["id"].as_str().unwrap().to_owned();
     let other = admin
-        .ok("POST", "/api/datasets", Some(on_table("Areas", "neighbourhoods", json!([]))))
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(on_table("Areas", "neighbourhoods", json!([]))),
+        )
         .await;
     let other_id = other["dataset"]["id"].as_str().unwrap().to_owned();
     let board = admin
@@ -806,12 +862,22 @@ async fn a_fixed_application_shows_its_dashboard_and_nothing_else() -> sc_error:
     // Whatever operations are sent with it, the dashboard's dataset is read as
     // it is stored.
     let mut sent = houses["dataset"].clone();
-    sent["operations"] = json!([op("f", "filter", json!({ "formula": "true" })),
-                                 op("j", "join", json!({
+    sent["operations"] = json!([
+        op("f", "filter", json!({ "formula": "true" })),
+        op(
+            "j",
+            "join",
+            json!({
                                      "with": { "kind": "table", "table": "incidents" },
-                                     "kind": "left", "on": [{ "left": "id", "right": "id" }] }))]);
+                                     "kind": "left", "on": [{ "left": "id", "right": "id" }] })
+        )
+    ]);
     let stage = sam
-        .ok("POST", "/api/datasets/stage", Some(json!({ "dataset": sent })))
+        .ok(
+            "POST",
+            "/api/datasets/stage",
+            Some(json!({ "dataset": sent })),
+        )
         .await;
     assert_eq!(stage["total"], json!(4), "{stage}");
     assert!(
@@ -856,7 +922,11 @@ async fn row_level_security_decides_inside_a_transaction_that_carries_the_caller
     let mut sam = Client::new(&router, "explore.example.com");
     sam.sign_in(SAM).await;
     let mine = sam
-        .ok("POST", "/api/datasets", Some(on_table("Mine", "houses", json!([]))))
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(on_table("Mine", "houses", json!([]))),
+        )
         .await;
     let id = mine["dataset"]["id"].as_str().unwrap().to_owned();
     let table = sam

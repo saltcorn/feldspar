@@ -10,9 +10,10 @@
 //! evaluator parity a provable property rather than a hope.
 //!
 //! Lowering is also where the language is bounded: a formula is a single pure
-//! expression. Assignment, `new`, function/class definitions, `await` — anything
-//! with an effect or a binding beyond an arrow parameter — is refused here by
-//! name, so neither evaluator ever has to decide what such a construct means.
+//! expression. Assignment, `new` (bar `new Date(…)`), function/class
+//! definitions, `await` — anything with an effect or a binding beyond an arrow
+//! parameter — is refused here by name, so neither evaluator ever has to decide
+//! what such a construct means.
 
 use sc_error::{Error, Result};
 use swc_ecma_ast as swc;
@@ -94,6 +95,10 @@ pub enum Ast {
         /// The interpolated expressions.
         exprs: Vec<Ast>,
     },
+    /// `new Date(args…)` — the one constructor a formula may call, so that a
+    /// date default (`new Date()`) or date arithmetic reads as JavaScript does.
+    /// Any other `new` is refused at lowering.
+    NewDate(Vec<Ast>),
     /// An arrow function with simple named parameters and an expression body —
     /// the only binding form a formula has, and only so that array methods
     /// (`some`, `every`, …) are usable on the reified path.
@@ -238,7 +243,13 @@ pub(crate) fn lower(e: &swc::Expr) -> Result<Ast> {
         swc::Expr::Assign(_) => Err(unsupported("assignment")),
         swc::Expr::Update(_) => Err(unsupported("increment/decrement")),
         swc::Expr::Seq(_) => Err(unsupported("comma expressions")),
-        swc::Expr::New(_) => Err(unsupported("`new`")),
+        swc::Expr::New(n) if matches!(&*n.callee, swc::Expr::Ident(i) if &*i.sym == "Date") => {
+            Ok(Ast::NewDate(match &n.args {
+                Some(args) => lower_args(args)?,
+                None => Vec::new(),
+            }))
+        }
+        swc::Expr::New(_) => Err(unsupported("`new` (other than `new Date(…)`)")),
         swc::Expr::Object(_) => Err(unsupported("object literals")),
         swc::Expr::Fn(_) => Err(unsupported("`function` expressions (use an arrow)")),
         swc::Expr::Class(_) => Err(unsupported("class expressions")),

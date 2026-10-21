@@ -3960,6 +3960,73 @@ pub fn admin_endpoints() -> EndpointSet {
             .auth(AuthRequirement::admin()),
     );
 
+    // --- external identity providers (Settings → Authentication) ------------
+    // OAuth 2.0 providers people sign in with, on the admin UI and in
+    // applications. Each one's settings are declared (`getOAuthProviderSpec`),
+    // so the tab's form is generic; its client secret is redacted on the way
+    // out and the sentinel merged back on save, as an LLM provider's key is.
+    // Addressed by name: the name is the slug in the provider's sign-in URL.
+
+    set.register(
+        Endpoint::new(
+            "listOAuthProviders",
+            Method::Get,
+            api().lit("oauth-providers"),
+        )
+        .output(TypeSchema::array(oauth_provider_schema()))
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "getOAuthProviderSpec",
+            Method::Get,
+            api().lit("oauth-provider-spec"),
+        )
+        .output(TypeSchema::struct_of([
+            StructField::new("fields", TypeSchema::array(form_field_schema())),
+            // The path a provider must be told to send the browser back to, on
+            // the admin UI's own host (the screen adds its origin).
+            StructField::new("callback_path", TypeSchema::text()),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "createOAuthProvider",
+            Method::Post,
+            api().lit("oauth-providers"),
+        )
+        .input(oauth_provider_input_schema())
+        .output(oauth_provider_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "updateOAuthProvider",
+            Method::Put,
+            api().lit("oauth-providers").param("name", ValueType::Text),
+        )
+        .input(oauth_provider_input_schema())
+        .output(oauth_provider_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "deleteOAuthProvider",
+            Method::Delete,
+            api().lit("oauth-providers").param("name", ValueType::Text),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "deleted",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // Where the admin UI is served, and whether a browser can follow it there
     // yet (Settings → Development → Admin subdomain). The dialog a move opens
     // polls this until `ready`, and the screens that link to applications read
@@ -5131,6 +5198,24 @@ fn module_action_schema() -> TypeSchema {
         StructField::new("description", TypeSchema::text()),
         StructField::new("config_spec", TypeSchema::array(form_field_schema())),
     ])
+}
+
+/// An external identity provider as the Authentication tab lists it: its
+/// name and label, and its settings with the client secret redacted.
+fn oauth_provider_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("label", TypeSchema::text()),
+        StructField::new("preset", TypeSchema::text()),
+        StructField::new("enabled", TypeSchema::bool()),
+        StructField::new("config", TypeSchema::json()),
+    ])
+}
+
+/// The body that creates or replaces a provider: its settings, per
+/// `getOAuthProviderSpec`.
+fn oauth_provider_input_schema() -> TypeSchema {
+    TypeSchema::struct_of([StructField::new("config", TypeSchema::json())])
 }
 
 /// A registered LLM provider backend and the settings it declares.

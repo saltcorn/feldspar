@@ -726,7 +726,7 @@ fn collect_child_fields(param: &str, body: &Ast, out: &mut Vec<String>) {
             collect_child_fields(param, cons, out);
             collect_child_fields(param, alt, out);
         }
-        Ast::Array(elems) => elems
+        Ast::Array(elems) | Ast::NewDate(elems) => elems
             .iter()
             .for_each(|e| collect_child_fields(param, e, out)),
         Ast::Template { exprs, .. } => exprs

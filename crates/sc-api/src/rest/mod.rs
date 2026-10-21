@@ -248,7 +248,7 @@ const ACTIONS_SEGMENT: &str = "actions";
 /// The endpoint names of the app's own auth operations. They are fixed rather
 /// than derived from a table, so a table cannot collide with them: `op_name`
 /// always prefixes a table's operations with `list`/`create`/`update`/`delete`.
-const LOGIN: &str = "login";
+pub(crate) const LOGIN: &str = "login";
 const LOGOUT: &str = "logout";
 const WHOAMI: &str = "whoami";
 const SIGNUP: &str = "signup";

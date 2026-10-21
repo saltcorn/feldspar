@@ -1309,11 +1309,16 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
         ..
     } = setup().await?;
     enable_mcp(&catalog, true).await?;
-    let plain = mint(&mut client, "no access", json!({})).await;
+    let plain = mint(
+        &mut client,
+        "no access",
+        json!({ "allow_access_changes": false, "allow_drop": false }),
+    )
+    .await;
     let access = mint(
         &mut client,
         "access",
-        json!({ "allow_access_changes": true }),
+        json!({ "allow_access_changes": true, "allow_drop": false }),
     )
     .await;
     let both = mint(
@@ -1463,7 +1468,12 @@ async fn a_document_stream_is_created_exposed_and_deleted_over_mcp() -> sc_error
     enable_mcp(&catalog, true).await?;
     let dir = TempDir::new("streams");
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", &dir.0)?))?;
-    let builder = mint(&mut client, "builder", json!({})).await;
+    let builder = mint(
+        &mut client,
+        "builder",
+        json!({ "allow_access_changes": false, "allow_drop": false }),
+    )
+    .await;
     let admin = mint(
         &mut client,
         "admin",
@@ -1626,8 +1636,8 @@ async fn a_document_stream_is_created_exposed_and_deleted_over_mcp() -> sc_error
     Ok(())
 }
 
-/// The module tools are the one area a token does not get by default: listing
-/// and installing a package is offered only to a token minted with
+/// A token gets every flag unless the mint says otherwise — modules, drops and
+/// access changes included. The module tools are offered only to a token with
 /// `allow_modules`, and installing also needs `allow_create`.
 #[tokio::test]
 async fn the_module_tools_are_offered_only_to_a_token_given_allow_modules() -> sc_error::Result<()>
@@ -1641,8 +1651,8 @@ async fn the_module_tools_are_offered_only_to_a_token_given_allow_modules() -> s
     } = setup().await?;
     enable_mcp(&catalog, true).await?;
 
-    let default = mint(&mut client, "defaults", json!({})).await;
-    let modules = mint(&mut client, "modules", json!({ "allow_modules": true })).await;
+    let without = mint(&mut client, "no modules", json!({ "allow_modules": false })).await;
+    let modules = mint(&mut client, "defaults", json!({})).await;
     let read_only = mint(
         &mut client,
         "modules, no create",
@@ -1651,7 +1661,7 @@ async fn the_module_tools_are_offered_only_to_a_token_given_allow_modules() -> s
     .await;
     let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
 
-    let (_, body) = McpRequest::new(&default, list.clone()).send(&router).await;
+    let (_, body) = McpRequest::new(&without, list.clone()).send(&router).await;
     let offered = tool_names(&body);
     for absent in ["listModules", "installModule"] {
         assert!(!offered.contains(&absent.to_owned()), "{offered:?}");
@@ -1676,10 +1686,7 @@ async fn the_module_tools_are_offered_only_to_a_token_given_allow_modules() -> s
     // without module services) answers with its own error.
     let (is_error, answer) = call_tool(&router, &modules, "listModules", json!({})).await;
     assert!(is_error, "{answer}");
-    assert!(
-        answer.to_string().contains("no module support"),
-        "{answer}"
-    );
+    assert!(answer.to_string().contains("no module support"), "{answer}");
 
     // Installing without `allow_create` is refused, naming it, before anything
     // is installed.
@@ -1695,7 +1702,7 @@ async fn the_module_tools_are_offered_only_to_a_token_given_allow_modules() -> s
 
     // And a token without the area cannot call it by name either.
     let (_, body) = McpRequest::new(
-        &default,
+        &without,
         json!({
             "jsonrpc": "2.0",
             "id": 1,

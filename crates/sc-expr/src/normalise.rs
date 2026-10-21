@@ -161,6 +161,16 @@ fn render(
             }
             out.push(')');
         }
+        Ast::NewDate(args) => {
+            out.push_str("new Date(");
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                render(a, locals, hoisted, out);
+            }
+            out.push(')');
+        }
         Ast::Unary { op, expr } => match op {
             // `!` is native: JS two-valued logic is the specified semantics
             // (the translator's `IS DISTINCT FROM TRUE` side of the bargain).
@@ -357,6 +367,13 @@ mod tests {
 
     fn js(src: &str) -> String {
         render_js(Formula::parse(src).unwrap().ast())
+    }
+
+    #[test]
+    fn new_date_renders_as_itself() {
+        assert_eq!(js("new Date()"), "new Date()");
+        assert_eq!(js("new Date"), "new Date()");
+        assert_eq!(js("new Date(start)"), "new Date(start)");
     }
 
     #[test]

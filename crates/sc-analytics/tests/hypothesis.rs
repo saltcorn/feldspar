@@ -50,14 +50,20 @@ fn spec(fx: &Fixture, y: &[&str], x: Option<FieldDef>) -> TestSpec {
 }
 
 async fn analyse(cat: &Catalog, backend: &str, spec: &TestSpec) -> Analysis {
-    match run_tests(cat, &sc_dataset::Caller::admin(), spec).await.expect("runs") {
+    match run_tests(cat, &sc_dataset::Caller::admin(), spec)
+        .await
+        .expect("runs")
+    {
         TestsAnswer::Analysis(a) => *a,
         TestsAnswer::Refused { error, .. } => panic!("on {backend}: refused: {error}"),
     }
 }
 
 async fn refused(fx: &Fixture, spec: &TestSpec) -> String {
-    match run_tests(&fx.cat, &sc_dataset::Caller::admin(), spec).await.expect("answers") {
+    match run_tests(&fx.cat, &sc_dataset::Caller::admin(), spec)
+        .await
+        .expect("answers")
+    {
         TestsAnswer::Refused { error, .. } => error,
         TestsAnswer::Analysis(a) => panic!("on {}: tested {:?}", fx.backend, a.design),
     }

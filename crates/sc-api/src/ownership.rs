@@ -1011,9 +1011,7 @@ pub(crate) fn proposed_insert_row(table: &Table, body: &Json) -> Result<BTreeMap
         if field.is_calc() || field.is_collab_doc() || field.generated.is_some() {
             continue;
         }
-        values
-            .entry(field.base.name.clone())
-            .or_insert(Value::Null);
+        values.entry(field.base.name.clone()).or_insert(Value::Null);
     }
     Ok(values)
 }

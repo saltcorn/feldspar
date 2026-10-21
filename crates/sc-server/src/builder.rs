@@ -270,6 +270,9 @@ async fn asset(dir: Option<&Path>, file: &[&str], missing: &str) -> Response {
 /// or the refusal naming the first condition that fails, in the order a reader
 /// would check them: the bundle, the application, its framework, the view or
 /// page, the step, the options, the mode.
+// `clippy::result_large_err` does not apply: the `Err` is not an error being
+// propagated, it *is* the response to send, returned unchanged by the one caller.
+#[allow(clippy::result_large_err)]
 async fn document(
     env: &BuilderEnv<'_>,
     headers: &HeaderMap,
@@ -292,7 +295,7 @@ async fn document(
     };
     let app = require_saltcorn_ui_app(catalog, raw_app)
         .await
-        .map_err(&not_found)?;
+        .map_err(not_found)?;
     let set = view_sets()
         .get(catalog, app.id)
         .await
@@ -358,7 +361,7 @@ async fn document(
                     None,
                 )
             })?;
-            let mode = builder_mode(&options, &BUILDER_VIEW_MODES).map_err(&not_found)?;
+            let mode = builder_mode(&options, &BUILDER_VIEW_MODES).map_err(not_found)?;
             // Where the step's values land (v1's `contextField`), and so where
             // its layout is.
             let scope = match &config_step.context_field {
@@ -403,7 +406,7 @@ async fn document(
                 .page_builder_options(page)
                 .await
                 .map_err(|e| failure(&e))?;
-            let mode = builder_mode(&options, &[BUILDER_PAGE_MODE]).map_err(&not_found)?;
+            let mode = builder_mode(&options, &[BUILDER_PAGE_MODE]).map_err(not_found)?;
             let pages_url = format!("{admin_app}/pages");
             Page {
                 heading: format!("Page {name}"),

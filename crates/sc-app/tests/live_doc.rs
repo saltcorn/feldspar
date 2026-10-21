@@ -8,6 +8,9 @@
 //!   `Y.Doc`, and the page answers with nothing when it had nothing new;
 //! - a local edit goes out as one `doc_update`, and a remote one is applied
 //!   and **not** sent back;
+//! - quick edits are **coalesced** into a few frames, and an edit refused
+//!   `rate_limited` is **sent again** after a backoff (with the awareness),
+//!   without becoming the page's `error` — another refusal still does;
 //! - **edits made while disconnected arrive after the reconnect**: the page
 //!   answers the new `doc_sync` with what the server lacks;
 //! - a read-only document sends nothing;
@@ -109,7 +112,7 @@ const api = createClient({
   baseUrl: "https://notes.example.com",
   live: { WebSocket: FakeSocket as unknown as typeof WebSocket, minDelay: 2, maxDelay: 8, presenceInterval: 0 },
 });
-const page = openDocument(api.live.note_body, 7);
+const page = openDocument(api.live.note_body, 7, { editInterval: 2, presenceInterval: 0 });
 say("field", page.field, "root is a Y.Text", page.root instanceof Y.Text);
 const first = FakeSocket.all[0];
 first.open();
@@ -121,6 +124,7 @@ say("after sync", page.status, page.readOnly, page.root.toString(), "answered", 
 
 // A local edit goes out once; a remote one comes in and is not sent back.
 page.root.insert(5, " world");
+await sleep(5);
 say("local edit sent", absorb(first), server.getText("default").toString());
 const other = new Y.Doc();
 Y.applyUpdate(other, Y.encodeStateAsUpdate(server));
@@ -212,6 +216,156 @@ fn a_document_syncs_edits_reconnects_and_carries_awareness() -> std::io::Result<
         r#"["after reconnect","synced","answered",1,">> Hello world!"]"#,
         r#"["read-only sends nothing",true,0]"#,
         r#"["closed",true]"#,
+    ]
+    .iter()
+    .map(|entry| serde_json::from_str(entry).expect("an expected entry is JSON"))
+    .collect();
+    assert_eq!(log, expected, "{log:#?}");
+    Ok(())
+}
+
+const RATE_DRIVER_TS: &str = r#"
+import * as Y from "yjs";
+import { createClient } from "./client.ts";
+import { openDocument } from "./live-doc.ts";
+
+const log: unknown[] = [];
+const say = (...entry: unknown[]) => log.push(entry);
+const b64 = (u: Uint8Array) => Buffer.from(u).toString("base64");
+const unb64 = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
+
+class FakeSocket {
+  static all: FakeSocket[] = [];
+  url: string;
+  readyState = 0;
+  sent: any[] = [];
+  onopen: ((e: unknown) => void) | null = null;
+  onmessage: ((e: { data: unknown }) => void) | null = null;
+  onclose: ((e: unknown) => void) | null = null;
+  onerror: ((e: unknown) => void) | null = null;
+  constructor(url: string) {
+    this.url = url;
+    FakeSocket.all.push(this);
+  }
+  send(data: string) { this.sent.push(JSON.parse(data)); }
+  close() { this.readyState = 3; this.onclose?.({}); }
+  open() { this.readyState = 1; this.onopen?.({}); }
+  frame(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }); }
+  take(type: string) {
+    const found = this.sent.filter((f) => f.type === type);
+    this.sent = this.sent.filter((f) => f.type !== type);
+    return found;
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const server = new Y.Doc();
+const text = () => server.getText("default").toString();
+const absorb = (socket: FakeSocket) => {
+  const updates = socket.take("doc_update");
+  for (const u of updates) Y.applyUpdate(server, unb64(u.update));
+  return updates.length;
+};
+const refuse = (socket: FakeSocket) => {
+  const refused = socket.take("doc_update").length;
+  socket.frame({ type: "error", sub: "s1", code: "rate_limited", message: "send it again" });
+  return refused;
+};
+
+const api = createClient({
+  baseUrl: "https://notes.example.com",
+  live: { WebSocket: FakeSocket as unknown as typeof WebSocket, minDelay: 2, maxDelay: 8, presenceInterval: 0 },
+});
+const page = openDocument(api.live.note_body, 7, { editInterval: 10, presenceInterval: 10, retryDelay: 50 });
+const socket = FakeSocket.all[0];
+socket.open();
+socket.frame({ type: "ready", sub: "s1", stream: "note_body", replayed: 0, can_publish: false });
+socket.frame({ type: "presence", sub: "s1", connection: "me", members: [{ connection: "me", user_id: "a", state: null }] });
+socket.frame({ type: "doc_sync", sub: "s1", update: b64(Y.encodeStateAsUpdate(server)), read_only: false });
+page.awareness.setLocalStateField("user", { name: "Alice" });
+
+// 200 keystrokes, each its own Yjs update, are a frame or two.
+for (let i = 0; i < 200; i++) page.root.insert(page.root.length, "a");
+await sleep(30);
+const frames = absorb(socket);
+say("200 keystrokes", frames <= 2, text().length);
+
+// Quick cursor moves are one presence or two, the latest winning.
+socket.take("presence");
+for (let i = 0; i < 20; i++) page.awareness.setLocalStateField("cursor", i);
+await sleep(30);
+say("20 cursor moves", socket.take("presence").length <= 3);
+
+// Refused: not the page's error, and sent again (with the awareness) after the delay.
+for (let i = 0; i < 50; i++) page.root.insert(page.root.length, "b");
+await sleep(15);
+say("refused", refuse(socket), page.error === undefined);
+await sleep(10);
+say("not sent before the delay", socket.sent.filter((f) => f.type === "doc_update").length);
+await sleep(80);
+say("presence sent again", socket.take("presence").length >= 1);
+// Refused again: the second wait is longer, and the edits still arrive.
+say("refused again", refuse(socket), page.error === undefined);
+page.root.insert(page.root.length, "c");
+await sleep(50);
+say("still waiting", socket.sent.filter((f) => f.type === "doc_update").length);
+await sleep(100);
+absorb(socket);
+say("all arrived", text() === page.root.toString(), text().length);
+
+// Any other refusal is the page's error.
+socket.frame({ type: "error", sub: "s1", code: "too_large", message: "too big" });
+say("too_large", page.error?.code);
+page.close();
+console.log(JSON.stringify(log));
+"#;
+
+/// Typing fast stays under the server's rate, and what the server refused for
+/// going too fast is sent again rather than lost (a bug report: a fast typist's
+/// text was missing on the server).
+#[test]
+fn quick_edits_are_coalesced_and_rate_limited_ones_are_sent_again() -> std::io::Result<()> {
+    let Some(node_modules) = admin_node_modules() else {
+        eprintln!("skipping: needs `node` and `yjs` in ui/admin/node_modules");
+        return Ok(());
+    };
+    let dir = project("rate", &node_modules)?;
+    let streams = [note_body("text")];
+    let fix = |text: String| text.replace("from \"./helper\"", "from \"./helper.ts\"");
+    std::fs::write(
+        dir.join("client.ts"),
+        fix(sc_api::generate_client_with_streams(
+            &sc_api::EndpointSet::new(),
+            &streams,
+        )),
+    )?;
+    for (name, text) in sc_api::client_runtime(false) {
+        std::fs::write(dir.join(name), text)?;
+    }
+    std::fs::write(
+        dir.join("live-doc.ts"),
+        fix(sc_app::live_doc_ts(&streams, false)),
+    )?;
+    std::fs::write(dir.join("driver.ts"), RATE_DRIVER_TS)?;
+    let output = Command::new("node").arg(dir.join("driver.ts")).output()?;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.status.success(),
+        "running live-doc.ts failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("the driver prints its log");
+    let expected: Vec<serde_json::Value> = [
+        r#"["200 keystrokes",true,200]"#,
+        r#"["20 cursor moves",true]"#,
+        r#"["refused",1,true]"#,
+        r#"["not sent before the delay",0]"#,
+        r#"["presence sent again",true]"#,
+        r#"["refused again",1,true]"#,
+        r#"["still waiting",0]"#,
+        r#"["all arrived",true,251]"#,
+        r#"["too_large","too_large"]"#,
     ]
     .iter()
     .map(|entry| serde_json::from_str(entry).expect("an expected entry is JSON"))
@@ -394,7 +548,9 @@ const api = createClient({
   baseUrl: "https://notes.example.com",
   live: { WebSocket: FakeSocket as unknown as typeof WebSocket, minDelay: 2, maxDelay: 8, presenceInterval: 0 },
 });
-const page = openQueryDocument((h) => api.openNote({ token: "t1" }, h), api.live.note_body.connection);
+const page = openQueryDocument((h) => api.openNote({ token: "t1" }, h), api.live.note_body.connection, {
+  editInterval: 2,
+});
 const first = FakeSocket.all[0];
 first.open();
 say("opened with", first.take("open"));
@@ -404,6 +560,7 @@ say("root after ready", page.field, page.root instanceof Y.Text, page.opened?.ke
 first.frame({ type: "doc_sync", sub: "s1", update: b64(Y.encodeStateAsUpdate(server)), read_only: false });
 say("synced", page.status, page.readOnly, String(page.root));
 (page.root as Y.Text).insert(5, " world");
+await sleep(5);
 const edits = first.take("doc_update");
 for (const u of edits) Y.applyUpdate(server, unb64(u.update));
 say("edit sent", edits.length, server.getText("body").toString());

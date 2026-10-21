@@ -794,11 +794,13 @@ async fn dashboards_hold_tiles_of_panels_and_stat_cards() -> sc_error::Result<()
 #[tokio::test]
 async fn a_dashboards_panels_are_drawn_with_its_selections_and_filters() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
-    let made = |name: &str, table: &str| {
-        json!({ "name": name, "base": { "kind": "table", "table": table }, "operations": [] })
-    };
+    let made = |name: &str, table: &str| json!({ "name": name, "base": { "kind": "table", "table": table }, "operations": [] });
     let areas = client
-        .ok("POST", "/api/datasets", Some(made("Areas", "neighbourhoods")))
+        .ok(
+            "POST",
+            "/api/datasets",
+            Some(made("Areas", "neighbourhoods")),
+        )
         .await;
     let areas = areas["dataset"]["id"].as_str().unwrap().to_owned();
     let houses = client
@@ -835,7 +837,11 @@ async fn a_dashboards_panels_are_drawn_with_its_selections_and_filters() -> sc_e
     assert_eq!(drawn["card"]["value"], json!(5.0), "{drawn}");
     // Without filters, every house; a filter that is not one is refused.
     let drawn = client
-        .ok("POST", "/api/panels/render", Some(json!({ "panel": count })))
+        .ok(
+            "POST",
+            "/api/panels/render",
+            Some(json!({ "panel": count })),
+        )
         .await;
     assert_eq!(drawn["card"]["value"], json!(60.0));
     assert!(drawn.get("filters").is_none_or(Value::is_null), "{drawn}");
@@ -843,7 +849,9 @@ async fn a_dashboards_panels_are_drawn_with_its_selections_and_filters() -> sc_e
         .refused(
             "POST",
             "/api/panels/render",
-            Some(draw(json!([{ "id": "x", "dataset": houses, "column": "area" }]))),
+            Some(draw(
+                json!([{ "id": "x", "dataset": houses, "column": "area" }]),
+            )),
         )
         .await;
     assert!(

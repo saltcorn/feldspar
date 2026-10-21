@@ -599,7 +599,11 @@ async fn a_map_panel_is_suggested_drawn_and_its_base_map_allowed() -> sc_error::
             .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
     }
-    for (id, species, count, lng) in [(1, "heron", 2, -0.12), (2, "egret", 5, -0.11), (3, "heron", 9, -0.10)] {
+    for (id, species, count, lng) in [
+        (1, "heron", 2, -0.12),
+        (2, "egret", 5, -0.11),
+        (3, "heron", 9, -0.10),
+    ] {
         let (status, body) = h
             .admin
             .send(
@@ -650,7 +654,10 @@ async fn a_map_panel_is_suggested_drawn_and_its_base_map_allowed() -> sc_error::
     let layer = &drawn["layers"][0];
     assert_eq!(layer["data"]["delivery"], "geojson", "{layer}");
     assert_eq!(layer["data"]["geometry"], json!(["point"]));
-    assert_eq!(layer["domains"]["color"]["values"], json!(["egret", "heron"]));
+    assert_eq!(
+        layer["domains"]["color"]["values"],
+        json!(["egret", "heron"])
+    );
     assert_eq!(layer["domains"]["size"]["min"], json!(2.0));
     assert_eq!(layer["domains"]["size"]["max"], json!(9.0));
 
@@ -744,7 +751,9 @@ async fn a_map_panel_is_suggested_drawn_and_its_base_map_allowed() -> sc_error::
         "{served}"
     );
     assert!(
-        served.contains("img-src 'self' data: blob: https://maps.example.org https://glyphs.example.net;"),
+        served.contains(
+            "img-src 'self' data: blob: https://maps.example.org https://glyphs.example.net;"
+        ),
         "{served}"
     );
     assert!(!served.contains("openfreemap"), "{served}");
@@ -845,7 +854,12 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
         assert!(status.is_success(), "{body}");
     }
     // Three calls in the west, one in the middle, none in the east.
-    for (id, kind, lon) in [(1, "fire", 0.01), (2, "flood", 0.02), (3, "fire", 0.03), (4, "fire", 0.15)] {
+    for (id, kind, lon) in [
+        (1, "fire", 0.01),
+        (2, "flood", 0.02),
+        (3, "fire", 0.03),
+        (4, "fire", 0.15),
+    ] {
         let (status, body) = h
             .admin
             .send(
@@ -887,7 +901,11 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
     assert_eq!(map_kind["available"], json!(true), "{map_kind}");
     let (status, ws) = h
         .admin
-        .send("POST", "/api/workspaces", Some(json!({ "name": "Calls map", "kind": "map" })))
+        .send(
+            "POST",
+            "/api/workspaces",
+            Some(json!({ "name": "Calls map", "kind": "map" })),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{ws}");
     let ws_id = ws["id"].as_str().unwrap().to_owned();
@@ -928,7 +946,11 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
     );
     let (_, page) = h
         .admin
-        .send("POST", "/api/datasets/stage", Some(json!({ "dataset": run["dataset"] })))
+        .send(
+            "POST",
+            "/api/datasets/stage",
+            Some(json!({ "dataset": run["dataset"] })),
+        )
         .await;
     assert_eq!(page["rows"], json!([[1, 3], [2, 1], [3, 0]]), "{page}");
     // A tool that cannot make a dataset says why, and stores nothing.
@@ -987,11 +1009,18 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body.to_string().contains("which another layer has"), "{body}");
+    assert!(
+        body.to_string().contains("which another layer has"),
+        "{body}"
+    );
     // What uses the calls: the map, by one layer.
     let (_, usage) = h
         .admin
-        .send("GET", &format!("/api/datasets/{}/usage", ids["Calls"].as_str().unwrap()), None)
+        .send(
+            "GET",
+            &format!("/api/datasets/{}/usage", ids["Calls"].as_str().unwrap()),
+            None,
+        )
         .await;
     assert_eq!(
         usage["workspaces"],
@@ -1009,8 +1038,15 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
         .await;
     assert_eq!(status, StatusCode::OK, "{rows}");
     assert_eq!(rows["ids"], json!([4, 3, 2, 1]));
-    assert_eq!(rows["columns"].as_array().unwrap().len(), 2, "geometry left out: {rows}");
-    assert_eq!((rows["keyed"].clone(), rows["sorted"].clone()), (json!(true), json!(true)));
+    assert_eq!(
+        rows["columns"].as_array().unwrap().len(),
+        2,
+        "geometry left out: {rows}"
+    );
+    assert_eq!(
+        (rows["keyed"].clone(), rows["sorted"].clone()),
+        (json!(true), json!(true))
+    );
 
     // Selection: within 3 km of a point in the west.
     let (status, found) = h
@@ -1043,7 +1079,13 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
             Some(json!({ "layer": calls, "by": { "by": "condition", "formula": "colour == 2" } })),
         )
         .await;
-    assert!(bad["error"].as_str().unwrap().contains("condition does not work"), "{bad}");
+    assert!(
+        bad["error"]
+            .as_str()
+            .unwrap()
+            .contains("condition does not work"),
+        "{bad}"
+    );
 
     // Save selection as dataset: by the condition, and by clicked ids.
     let (status, near) = h
@@ -1056,10 +1098,17 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{near}");
-    assert_eq!(near["dataset"]["base"], json!({ "kind": "dataset", "dataset": ids["Calls"] }));
+    assert_eq!(
+        near["dataset"]["base"],
+        json!({ "kind": "dataset", "dataset": ids["Calls"] })
+    );
     let (_, page) = h
         .admin
-        .send("POST", "/api/datasets/stage", Some(json!({ "dataset": near["dataset"] })))
+        .send(
+            "POST",
+            "/api/datasets/stage",
+            Some(json!({ "dataset": near["dataset"] })),
+        )
         .await;
     assert_eq!(page["total"], 3, "{page}");
     let (status, picked) = h
@@ -1073,7 +1122,11 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
     assert_eq!(status, StatusCode::CREATED, "{picked}");
     let (_, page) = h
         .admin
-        .send("POST", "/api/datasets/stage", Some(json!({ "dataset": picked["dataset"] })))
+        .send(
+            "POST",
+            "/api/datasets/stage",
+            Some(json!({ "dataset": picked["dataset"] })),
+        )
         .await;
     assert_eq!(page["rows"], json!([[1, 3]]), "{page}");
 
@@ -1083,17 +1136,30 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
         .send(
             "POST",
             "/api/panels/render",
-            Some(json!({ "panel": { "id": "6f1c0f9e-3a43-4d55-9f43-1e2f7d0c8a11", "kind": "map",
-                                    "title": "Calls map", "content": { "spec": state } } })),
+            Some(
+                json!({ "panel": { "id": "6f1c0f9e-3a43-4d55-9f43-1e2f7d0c8a11", "kind": "map",
+                                    "title": "Calls map", "content": { "spec": state } } }),
+            ),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{panel}");
     assert_eq!(panel["kind"], "map");
-    assert_eq!(panel["map"]["layers"].as_array().unwrap().len(), 3, "{panel}");
-    assert_eq!(panel["map"]["layers"][2]["classes"], json!([0.0, 1.0, 3.0, 3.0]));
+    assert_eq!(
+        panel["map"]["layers"].as_array().unwrap().len(),
+        3,
+        "{panel}"
+    );
+    assert_eq!(
+        panel["map"]["layers"][2]["classes"],
+        json!([0.0, 1.0, 3.0, 3.0])
+    );
 
     // A reference layer's host, allowed: in Settings → Maps and the policy.
-    assert!(!analytics_policy(&h).await.contains("tile.openstreetmap.org"));
+    assert!(
+        !analytics_policy(&h)
+            .await
+            .contains("tile.openstreetmap.org")
+    );
     let (status, settings) = h
         .admin
         .send(
@@ -1117,7 +1183,11 @@ async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error
     );
     let (status, body) = h
         .admin
-        .send("POST", "/api/maps/hosts", Some(json!({ "url": "data:text/html,x" })))
+        .send(
+            "POST",
+            "/api/maps/hosts",
+            Some(json!({ "url": "data:text/html,x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     Ok(())

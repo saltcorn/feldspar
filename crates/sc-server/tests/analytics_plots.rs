@@ -232,7 +232,10 @@ async fn plots_are_suggested_drawn_and_refused_through_the_api() -> sc_error::Re
             Some(json!({ "dataset": houses, "preset": "map" })),
         )
         .await;
-    assert!(map["error"].as_str().unwrap().contains("suggestMap"), "{map}");
+    assert!(
+        map["error"].as_str().unwrap().contains("suggestMap"),
+        "{map}"
+    );
 
     // A spec that cannot be drawn answers why, with every reason.
     let refused = client

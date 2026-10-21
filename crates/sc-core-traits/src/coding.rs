@@ -133,6 +133,9 @@ pub use feature::{
 pub use find::tool_name as find_files_tool_name;
 pub use inspect::{ScopeDiff, agent_run_diff, run_plan, run_tree};
 pub use ledger::{ChangeStatus, FileChange, Ledger, PreImage, RunDiff, diff_ledger, run_diff};
+pub use modules::{
+    install_tool_name as install_module_tool_name, list_tool_name as list_modules_tool_name,
+};
 pub use patch::tool_name as apply_patch_tool_name;
 pub use plan::{
     Feature, Kind as FeatureKind, Plan, Progress, Status as FeatureStatus, checklist,
@@ -152,9 +155,6 @@ pub use shell::{
     CFG_SHELL_IMAGE, CFG_SHELL_NETWORK, CFG_SHELL_RUNTIME, CFG_SHELL_SANDBOX, CFG_SHELL_TIMEOUT,
     CFG_SHELL_TIMEOUT_MAX, DEFAULT_SHELL_TIMEOUT, DEFAULT_SHELL_TIMEOUT_MAX, SHELL_ENV,
     tool_name as shell_tool_name,
-};
-pub use modules::{
-    install_tool_name as install_module_tool_name, list_tool_name as list_modules_tool_name,
 };
 pub use state::{CodingState, EditStats};
 pub use view_app::{

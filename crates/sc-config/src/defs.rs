@@ -101,6 +101,7 @@ pub fn config_sections() -> &'static [ConfigSection] {
             crate::ssl::ssl_section(),
             crate::email::email_section(),
             crate::development::development_section(),
+            crate::authentication::authentication_section(),
             crate::localisation::localisation_section(),
             crate::maps::maps_section(),
         ]
@@ -138,6 +139,15 @@ pub fn internal_defs() -> &'static [ConfigDef] {
             ConfigDef::new(
                 FormField::new(DEFAULT_LLM_PROVIDER, sc_types::BasicType::Text)
                     .label("Default LLM provider"),
+            ),
+            // A list of provider records, each checked against
+            // `oauth_provider_spec` when it is saved.
+            ConfigDef::new(
+                FormField::new(
+                    crate::authentication::OAUTH_PROVIDERS,
+                    sc_types::BasicType::Json,
+                )
+                .label("External identity providers"),
             ),
         ]
     })
@@ -207,6 +217,7 @@ mod tests {
             BACKUP_SCHEDULES,
             BACKUP_SCHEDULE_STATUS,
             DEFAULT_LLM_PROVIDER,
+            crate::authentication::OAUTH_PROVIDERS,
         ] {
             assert!(known_keys().contains(&key));
             assert!(!config_spec().iter().any(|f| f.name() == key));

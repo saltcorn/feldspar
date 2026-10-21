@@ -113,6 +113,13 @@ export async function exercise(): Promise<void> {
   // The second table is its own object, with its own row type.
   const authors: AuthorsRow[] = await api.authors.list();
 
+  // Signing in with an external identity provider (Settings → Authentication):
+  // the providers on offer, and the address that signs in with one.
+  const providers = await api.oauthProviders();
+  const signInWith: string = api.oauthSignInUrl(providers[0], "/orders");
+  const providerLabel: string = providers[0].label;
+  void signInWith; void providerLabel;
+
   // A select assembled at runtime cannot be read by the compiler, so the answer
   // degrades to the whole row rather than to a lie about it.
   const dynamic: string = (await api.posts.list({ select: String(1) }))[0].title;

@@ -11,9 +11,7 @@
 use std::sync::Arc;
 
 use sc_api::rows::Executor;
-use sc_api::schema_edit::{
-    self, ApplyOptions, FieldSettings, FieldSpec, Operation, TableSettings,
-};
+use sc_api::schema_edit::{self, ApplyOptions, FieldSettings, FieldSpec, Operation, TableSettings};
 use sc_auth::User;
 use sc_catalog::{Catalog, bootstrap_field_meta, bootstrap_table_meta};
 use sc_db::DatabaseDriver;
@@ -217,7 +215,10 @@ async fn a_default_is_refused_on_a_nullable_field_and_when_it_does_not_validate(
     )
     .await
     .expect_err("unknown field");
-    assert!(err.to_string().contains("default value of `notes.slug`"), "{err}");
+    assert!(
+        err.to_string().contains("default value of `notes.slug`"),
+        "{err}"
+    );
 
     // Altering another setting keeps the default; an empty one clears it.
     schema_edit::apply(
@@ -325,5 +326,101 @@ async fn a_field_the_insert_leaves_out_is_null_to_the_ownership_formula() -> Res
         let expected = if rls { "no such row" } else { "outside" };
         assert!(err.to_string().contains(expected), "rls={rls}: {err}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn new_date_is_a_default_for_date_and_timestamp_fields() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = setup(&db).await?;
+    schema_edit::apply(
+        &catalog,
+        &[Operation::CreateTable {
+            name: "events".into(),
+            database: String::new(),
+            settings: TableSettings::default(),
+            fields: vec![
+                FieldSpec {
+                    primary_key: true,
+                    ..field("id", "int")
+                },
+                field("title", "text"),
+                required_with_default("day", "date", "new Date()"),
+                required_with_default("at", "timestamp", "new Date()"),
+                required_with_default("fixed", "date", "new Date('2026-03-04T10:00:00Z')"),
+            ],
+        }],
+        &ApplyOptions::default(),
+    )
+    .await?;
+    let events = catalog.require("events")?;
+    assert_eq!(
+        events.field("day").unwrap().default_expression.as_deref(),
+        Some("new Date()")
+    );
+
+    let before = chrono::Utc::now();
+    let row = sc_api::rows::create_row(&catalog, &events, &json!({ "title": "Launch" })).await?;
+    let after = chrono::Utc::now();
+
+    let day = row["day"].as_str().unwrap();
+    assert!(
+        [before.date_naive(), after.date_naive()]
+            .iter()
+            .any(|d| d.to_string() == day),
+        "day {day} is not today"
+    );
+    let at = chrono::DateTime::parse_from_rfc3339(row["at"].as_str().unwrap()).unwrap();
+    assert!(
+        at >= before - chrono::Duration::seconds(1) && at <= after + chrono::Duration::seconds(1),
+        "at {at} is not now"
+    );
+    assert_eq!(row["fixed"], json!("2026-03-04"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_boolean_literal_is_a_default_for_a_bool_field() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = setup(&db).await?;
+    schema_edit::apply(
+        &catalog,
+        &[Operation::CreateTable {
+            name: "flags".into(),
+            database: String::new(),
+            settings: TableSettings::default(),
+            fields: vec![
+                FieldSpec {
+                    primary_key: true,
+                    ..field("id", "int")
+                },
+                field("title", "text"),
+                required_with_default("active", "bool", "true"),
+                required_with_default("archived", "bool", "false"),
+            ],
+        }],
+        &ApplyOptions::default(),
+    )
+    .await?;
+    let flags = catalog.require("flags")?;
+    assert_eq!(
+        flags.field("archived").unwrap().default_expression.as_deref(),
+        Some("false")
+    );
+
+    // Left out: each takes its default — `false` is a value, not a missing one.
+    let row = sc_api::rows::create_row(&catalog, &flags, &json!({ "title": "a" })).await?;
+    assert_eq!(row["active"], json!(true));
+    assert_eq!(row["archived"], json!(false));
+
+    // Given: the body's value wins, including a `false` over a `true` default.
+    let row = sc_api::rows::create_row(
+        &catalog,
+        &flags,
+        &json!({ "title": "b", "active": false, "archived": true }),
+    )
+    .await?;
+    assert_eq!(row["active"], json!(false));
+    assert_eq!(row["archived"], json!(true));
     Ok(())
 }

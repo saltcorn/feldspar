@@ -99,8 +99,17 @@ pub fn json_to_value(basic: &BasicType, json: &Json) -> Result<Value> {
             Decimal::from_str(s).map(Value::Decimal).ok()
         }),
         BasicType::Uuid => parse_str(json, "uuid", |s| Uuid::parse_str(s).map(Value::Uuid).ok()),
+        // A full instant is accepted too, as its UTC calendar date — what a
+        // JavaScript `Date` (a `new Date()` default) serialises to.
         BasicType::Date => parse_str(json, "date", |s| {
-            NaiveDate::from_str(s).map(Value::Date).ok()
+            NaiveDate::from_str(s)
+                .ok()
+                .or_else(|| {
+                    DateTime::parse_from_rfc3339(s)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc).date_naive())
+                })
+                .map(Value::Date)
         }),
         BasicType::Time => parse_str(json, "time", |s| {
             NaiveTime::from_str(s).map(Value::Time).ok()
@@ -203,6 +212,19 @@ mod tests {
     fn rejects_malformed_typed_string() {
         assert!(json_to_value(&BasicType::Uuid, &Json::String("nope".into())).is_err());
         assert!(json_to_value(&BasicType::Int, &Json::String("x".into())).is_err());
+    }
+
+    #[test]
+    fn a_date_column_takes_an_instant_as_its_utc_date() {
+        let date = |s: &str| json_to_value(&BasicType::Date, &Json::String(s.into()));
+        let expected = Value::Date(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap());
+        assert_eq!(date("2026-03-04").unwrap(), expected);
+        assert_eq!(date("2026-03-04T10:00:00.000Z").unwrap(), expected);
+        assert_eq!(
+            date("2026-03-03T23:30:00-01:00").unwrap(),
+            Value::Date(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap())
+        );
+        assert!(date("2026-03-04 nonsense").is_err());
     }
 
     #[test]

@@ -799,7 +799,17 @@ pub fn generate_app_client(
     }
 
     // --- ApiClient interface ------------------------------------------------
+    // A client that can sign in can sign in with an external identity provider
+    // too (Settings → Authentication): two methods over the server's own
+    // `/_feldspar/oauth` routes, which are not endpoints of the set.
+    let oauth = loose.iter().any(|e| e.name == crate::rest::LOGIN);
+    if oauth {
+        out.push_str(OAUTH_TYPES);
+    }
     out.push_str("export interface ApiClient {\n");
+    if oauth {
+        out.push_str(OAUTH_SIGNATURES);
+    }
     for ep in &loose {
         let _ = writeln!(out, "  {};", method_signature(ep));
         if let Some(sig) = url_helper_signature(ep) {
@@ -925,6 +935,9 @@ pub fn generate_app_client(
         out.push_str(&offline_copy(base, &tables));
     }
     out.push_str("  return {\n");
+    if oauth {
+        out.push_str(OAUTH_METHODS);
+    }
     for ep in &loose {
         if ep.stream_output {
             emit_stream_method_impl(&mut out, ep, !streams.is_empty());
@@ -966,6 +979,36 @@ pub fn generate_app_client(
 
     out
 }
+
+/// The external identity provider an application offers, as
+/// `oauthProviders()` lists it.
+const OAUTH_TYPES: &str = r#"/** An external identity provider this application offers (Settings →
+ * Authentication). */
+export type OAuthProvider = { name: string; label: string; url: string };
+
+"#;
+
+const OAUTH_SIGNATURES: &str = r#"  /** The external identity providers this application offers people to sign in with. */
+  oauthProviders(): Promise<OAuthProvider[]>;
+  /** The address that signs in with `provider` and comes back to `returnTo`, a
+   * path on this application (`/` by default), signed in. Send the browser
+   * there: `location.href = api.oauthSignInUrl(provider)`. A failed sign-in
+   * comes back with `?oauth_error=<message>`. */
+  oauthSignInUrl(provider: OAuthProvider, returnTo?: string): string;
+"#;
+
+const OAUTH_METHODS: &str = r#"    async oauthProviders() {
+      const res = await doFetch(`${baseUrl}/_feldspar/oauth/providers`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("oauthProviders", res);
+      return (await res.json()) as OAuthProvider[];
+    },
+    oauthSignInUrl(provider: OAuthProvider, returnTo = "/") {
+      return `${baseUrl}${provider.url}?return_to=${encodeURIComponent(returnTo)}`;
+    },
+"#;
 
 /// Whether a client generated from `set` can keep tables offline
 /// (`createClient({ offline })`): a table is synced, and the API has the sync

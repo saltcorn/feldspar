@@ -25,6 +25,9 @@
 //! - [`maps`] is the fifth: the base map the Analytics UI draws its map
 //!   layers over, and with it the hosts its Content-Security-Policy lets a map
 //!   load from (analytics A5.6).
+//! - [`authentication`] follows Development: whether a sign-in is shared
+//!   between applications, how long a session lasts, and the external
+//!   identity providers (OAuth 2.0) people may sign in with.
 //! - [`development`] is the third: what this server prints while it runs — the
 //!   SQL echo and the log verbosity, both of which are switches on the
 //!   process-wide atomics in `sc-log` rather than values anybody reads from
@@ -35,6 +38,7 @@
 //! does not serve anything.
 
 pub mod acme;
+pub mod authentication;
 pub mod defs;
 pub mod development;
 pub mod email;
@@ -44,16 +48,22 @@ pub mod ssl;
 pub mod store;
 
 pub use acme::{ACME_CACHE_TABLE, AcmeCache, bootstrap_acme_cache};
+pub use authentication::{
+    DEFAULT_SESSION_TTL_HOURS, MAX_SESSION_TTL_HOURS, OAUTH_PRESETS, OAUTH_PROVIDERS, OAuthPreset,
+    OAuthProvider, SESSION_TTL_HOURS, SHARED_SESSION_COOKIE, authentication_section, oauth_preset,
+    oauth_provider, oauth_provider_records, oauth_provider_spec, oauth_providers,
+    save_oauth_provider_records, session_ttl_hours, session_ttl_hours_from, shared_session_cookie,
+    shared_session_cookie_from,
+};
 pub use defs::{
     BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef, ConfigSection,
     DEFAULT_LLM_PROVIDER, config_sections, config_spec, definition, internal_defs, known_keys,
 };
 pub use development::{
     ADMIN_SUBDOMAIN, DevelopmentSettings, LOG_SQL, LOG_VERBOSITY, MCP_ENABLED, MCP_LOOPBACK_ONLY,
-    McpSettings, ROOT_SUBDOMAIN, SHARED_SESSION_COOKIE, admin_subdomain, admin_subdomain_from,
-    apply_development_settings, check_admin_subdomain, development_section, development_settings,
-    development_settings_from, mcp_settings, mcp_settings_from, shared_session_cookie,
-    shared_session_cookie_from,
+    McpSettings, ROOT_SUBDOMAIN, admin_subdomain, admin_subdomain_from, apply_development_settings,
+    check_admin_subdomain, development_section, development_settings, development_settings_from,
+    mcp_settings, mcp_settings_from,
 };
 pub use email::{
     DEFAULT_SMTP_PORT, EMAIL_FROM, EmailSettings, Mailbox, SECURITY_NONE, SECURITY_STARTTLS,

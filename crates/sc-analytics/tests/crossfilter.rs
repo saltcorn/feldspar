@@ -133,7 +133,9 @@ async fn fill(cat: Catalog, backend: &'static str, db: Option<TestDb>) -> Result
         ],
     )
     .await?;
-    let incidents: [(i64, Option<i64>, &str, (i32, u32, u32)); 7] = [
+    // (id, district, category, (year, month, day))
+    type Incident<'a> = (i64, Option<i64>, &'a str, (i32, u32, u32));
+    let incidents: [Incident; 7] = [
         (1, Some(1), "burglary", (2025, 1, 10)),
         (2, Some(1), "theft", (2025, 2, 3)),
         (3, Some(2), "burglary", (2025, 2, 15)),

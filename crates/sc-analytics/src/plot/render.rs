@@ -265,7 +265,12 @@ impl RowsDb {
     pub(crate) async fn query(&self, select: Select) -> Result<Vec<Row>> {
         match self {
             RowsDb::Primary(reader) => reader.query(select).await,
-            RowsDb::Memory(db) => db.query(&Statement::from(select)).await?.try_collect().await,
+            RowsDb::Memory(db) => {
+                db.query(&Statement::from(select))
+                    .await?
+                    .try_collect()
+                    .await
+            }
         }
     }
 }

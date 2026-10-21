@@ -148,7 +148,8 @@ impl AnalyticsConfig {
                 .and_then(|f| f.resolve(config).cloned())
                 .filter(|v| !v.is_null())
         };
-        let refuse = |what: String| Error::invalid(format!("framework `{ANALYTICS_FRAMEWORK}`: {what}"));
+        let refuse =
+            |what: String| Error::invalid(format!("framework `{ANALYTICS_FRAMEWORK}`: {what}"));
         let mode = match get(CFG_MODE).as_ref().and_then(Json::as_str) {
             Some("fixed") => Mode::Fixed,
             Some("self_serve") => Mode::SelfServe,
@@ -242,7 +243,8 @@ pub async fn check_config_against(catalog: &Catalog, config: &Attrs) -> Result<(
 /// The workspaces `refs` name, in order: each an id, or the name of exactly
 /// one workspace of the unrestricted Analytics UI.
 pub async fn resolve_workspaces(catalog: &Catalog, refs: &[String]) -> Result<Vec<Workspace>> {
-    let refuse = |what: String| Error::invalid(format!("framework `{ANALYTICS_FRAMEWORK}`: {what}"));
+    let refuse =
+        |what: String| Error::invalid(format!("framework `{ANALYTICS_FRAMEWORK}`: {what}"));
     let mut all: Option<Vec<Workspace>> = None;
     let mut out: Vec<Workspace> = Vec::with_capacity(refs.len());
     for r in refs {
@@ -275,9 +277,7 @@ pub async fn resolve_workspaces(catalog: &Catalog, refs: &[String]) -> Result<Ve
                 ws.name
             )));
         }
-        ws.kind
-            .check_available()
-            .map_err(|e| refuse(plain(&e)))?;
+        ws.kind.check_available().map_err(|e| refuse(plain(&e)))?;
         if !out.iter().any(|w| w.id == ws.id) {
             out.push(ws);
         }
@@ -519,9 +519,18 @@ mod tests {
             assert!(err.to_string().contains(says), "{err}");
         };
         refused(json!({ "mode": "fixed" }), "names none");
-        refused(json!({ "mode": "sometimes", "workspaces": ["A"] }), "`fixed` or `self_serve`");
-        refused(json!({ "min_role": 0, "workspaces": ["A"] }), "from 1 to 100");
-        refused(json!({ "min_role": 101, "workspaces": ["A"] }), "from 1 to 100");
+        refused(
+            json!({ "mode": "sometimes", "workspaces": ["A"] }),
+            "`fixed` or `self_serve`",
+        );
+        refused(
+            json!({ "min_role": 0, "workspaces": ["A"] }),
+            "from 1 to 100",
+        );
+        refused(
+            json!({ "min_role": 101, "workspaces": ["A"] }),
+            "from 1 to 100",
+        );
         refused(json!({ "workspaces": "A" }), "is a list of workspace names");
         refused(json!({ "workspaces": [""] }), "is not one");
         refused(
@@ -549,8 +558,15 @@ mod tests {
         };
         assert!(applies(CFG_WORKSPACES, "fixed"));
         assert!(!applies(CFG_WORKSPACES, "self_serve"));
-        for name in [CFG_DATASET_EDITOR, CFG_WORKSPACE_KINDS, CFG_CREATE_WORKSPACES] {
-            assert!(applies(name, "self_serve") && !applies(name, "fixed"), "{name}");
+        for name in [
+            CFG_DATASET_EDITOR,
+            CFG_WORKSPACE_KINDS,
+            CFG_CREATE_WORKSPACES,
+        ] {
+            assert!(
+                applies(name, "self_serve") && !applies(name, "fixed"),
+                "{name}"
+            );
         }
         assert!(applies(CFG_MIN_ROLE, "fixed") && applies(CFG_MIN_ROLE, "self_serve"));
         // The structural check every framework's settings go through accepts
@@ -647,7 +663,10 @@ mod tests {
         assert!(app.allows_kind(WorkspaceKind::Dashboard));
         assert!(!app.allows_kind(WorkspaceKind::DataExplorer));
         assert!(app.check_change_workspace(&caller, &ws).is_err());
-        assert!(app.check_create_workspace(WorkspaceKind::Dashboard).is_err());
+        assert!(
+            app.check_create_workspace(WorkspaceKind::Dashboard)
+                .is_err()
+        );
         assert!(app.check_dataset_editor().is_err());
         assert!(!app.offers_table("houses"));
         // No table subset: the shown workspaces' datasets are the grant.
