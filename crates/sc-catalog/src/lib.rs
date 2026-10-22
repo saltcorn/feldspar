@@ -36,6 +36,7 @@ mod events;
 mod field;
 mod field_meta;
 mod file_stores;
+pub mod history;
 pub mod inmem;
 mod model_host;
 mod module_tables;

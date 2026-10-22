@@ -28,7 +28,9 @@
 //! `listAgentTraits`, `listTableProviders`, `listActions`, `listTriggers`), the
 //! objects it may be asked to **build** that have no composite tool (the agents,
 //! the workflows), and the one thing it must do **after** a schema change
-//! (`buildApplication`, since re-projection runs no bundler). Row CRUD, the file
+//! (`buildApplication`, since re-projection runs no bundler). Row history's
+//! reads are tagged too, in an area of their own that is off unless granted
+//! (§14.12): they are row data. Row CRUD, the file
 //! store, backup and restore and user management are tier 3 — absent on purpose,
 //! not overlooked.
 
@@ -675,6 +677,137 @@ pub fn admin_endpoints() -> EndpointSet {
             TypeSchema::int(),
         )]))
         .auth(AuthRequirement::admin()),
+    );
+
+    // --- row history (§14.12 "Reading", TODO-history H2) --------------------
+    //
+    // Admin-only, like the rows themselves above, and for the same reason: a
+    // table whose history is opened to role 80 (`history.min_role`) is opened
+    // for the surfaces an application's users reach, and this is not one of
+    // them. That rule and the row-by-row read check live in `sc_api::history`,
+    // which these handlers call too. Each is a tool in the history area, off
+    // unless granted, because history is row data (see
+    // `the_surfaces_that_were_left_out_stayed_out`).
+
+    set.register(
+        Endpoint::new(
+            "getRowHistory",
+            Method::Get,
+            api()
+                .lit("tables")
+                .param("table", ValueType::Text)
+                .lit("rows")
+                .param("id", ValueType::Text)
+                .lit("history"),
+        )
+        .output(TypeSchema::array(history_entry_schema()))
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Read the history of one row of a table that keeps row history: \
+                 its versions newest first, each with the fields it changed (old \
+                 and new value; `removed` marks a field dropped since), who made \
+                 the change, when, and from where (`source`: request, import, \
+                 workflow, undo, restore, sync, mcp or sql). `id` is the row's \
+                 primary key. Secrets show as a placeholder.",
+            )
+            .in_area(Area::History),
+        ),
+    );
+
+    set.register(
+        Endpoint::new(
+            "listDeletedRows",
+            Method::Get,
+            api()
+                .lit("tables")
+                .param("table", ValueType::Text)
+                .lit("deleted"),
+        )
+        .query([
+            QueryParam::new("limit", ValueType::Int),
+            QueryParam::new("offset", ValueType::Int),
+        ])
+        .output(TypeSchema::array(deleted_row_schema()))
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "List the rows deleted from a table that keeps row history and not \
+                 put back since, newest deletion first: each row as it was when \
+                 deleted (`removed` holds values of fields dropped since), and \
+                 who deleted it, when.",
+            )
+            .in_area(Area::History),
+        ),
+    );
+
+    // The row as it was. `as_of` is a time (RFC 3339, or a date) or an entry's
+    // `seq` from the row's history; `row` is null when it did not exist then.
+    set.register(
+        Endpoint::new(
+            "getRowAsOf",
+            Method::Get,
+            api()
+                .lit("tables")
+                .param("table", ValueType::Text)
+                .lit("rows")
+                .param("id", ValueType::Text),
+        )
+        .query([QueryParam::new("as_of", ValueType::Text).required()])
+        .output(row_as_of_schema())
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Rebuild one row of a table that keeps row history as it was at \
+                 `as_of`: a time (like 2026-10-22T09:30:00Z, or a date) or the \
+                 `seq` of an entry in the row's history, meaning just after it. \
+                 `row` is null when the row did not exist then; `removed` holds \
+                 its values of fields dropped since.",
+            )
+            .in_area(Area::History),
+        ),
+    );
+
+    set.register(
+        Endpoint::new("listChangesets", Method::Get, api().lit("changesets"))
+            .query([
+                QueryParam::new("user", ValueType::Text),
+                QueryParam::new("table", ValueType::Text),
+                QueryParam::new("source", ValueType::Text),
+                QueryParam::new("since", ValueType::Text),
+                QueryParam::new("limit", ValueType::Int),
+                QueryParam::new("offset", ValueType::Int),
+            ])
+            .output(TypeSchema::array(changeset_summary_schema()))
+            .auth(AuthRequirement::admin())
+            .mcp(
+                McpTag::new(
+                    "List changesets, newest first: each is one user action (a \
+                     request, an import, a workflow run, an MCP call, an offline \
+                     upload, a psql transaction…) with how many rows it changed in \
+                     which tables that keep history. Filter by `user` (id), \
+                     `table`, `source` and `since` (a time).",
+                )
+                .in_area(Area::History),
+            ),
+    );
+
+    set.register(
+        Endpoint::new(
+            "getChangeset",
+            Method::Get,
+            api().lit("changesets").param("id", ValueType::Text),
+        )
+        .output(changeset_detail_schema())
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Read one changeset: who did it, when and from where, and every row \
+                 it changed in tables that keep history, with the fields' old and \
+                 new values.",
+            )
+            .in_area(Area::History),
+        ),
     );
 
     // --- rows in bulk, as CSV ----------------------------------------------
@@ -4512,6 +4645,89 @@ fn row_read_params() -> Vec<QueryParam> {
     ]
 }
 
+/// A changeset as history shows it (§14.12): who, when, from where.
+fn changeset_fields() -> Vec<StructField> {
+    let text = || TypeSchema::optional(TypeSchema::text());
+    vec![
+        StructField::new("id", TypeSchema::text()),
+        StructField::new("at", TypeSchema::text()),
+        StructField::new("user_id", text()),
+        // For the admin only: below it, a reader sees who by id.
+        StructField::new("user_email", text()),
+        StructField::new("source", TypeSchema::text()),
+        StructField::new("application", text()),
+        StructField::new("description", text()),
+        StructField::new("cause", text()),
+        StructField::new("undo_table", text()),
+        StructField::new("client_id", text()),
+        StructField::new("mutation", TypeSchema::optional(TypeSchema::int())),
+    ]
+}
+
+/// One entry of a row's history: one changeset's net change to the row, field
+/// by field.
+fn history_entry_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("seq", TypeSchema::int()),
+        // The row's version this made, from 1; 0 in a changeset's entries.
+        StructField::new("version", TypeSchema::int()),
+        StructField::new("table", TypeSchema::text()),
+        StructField::new("key", TypeSchema::text()),
+        // `i`, `u` or `d`.
+        StructField::new("op", TypeSchema::text()),
+        StructField::new("at", TypeSchema::text()),
+        StructField::new(
+            "changes",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("field", TypeSchema::text()),
+                StructField::new("old", TypeSchema::json()),
+                StructField::new("new", TypeSchema::json()),
+                // The field has been dropped from the table since.
+                StructField::new("removed", TypeSchema::bool()),
+            ])),
+        ),
+        StructField::new("changeset", TypeSchema::Struct(changeset_fields())),
+    ])
+}
+
+/// A deleted row: its image, split by whether each field still exists.
+fn deleted_row_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("key", TypeSchema::text()),
+        StructField::new("seq", TypeSchema::int()),
+        StructField::new("at", TypeSchema::text()),
+        StructField::new("row", TypeSchema::json()),
+        StructField::new("removed", TypeSchema::json()),
+        StructField::new("changeset", TypeSchema::Struct(changeset_fields())),
+    ])
+}
+
+fn row_as_of_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("row", TypeSchema::optional(TypeSchema::json())),
+        StructField::new("removed", TypeSchema::json()),
+    ])
+}
+
+fn changeset_summary_schema() -> TypeSchema {
+    let mut fields = changeset_fields();
+    fields.push(StructField::new("entries", TypeSchema::int()));
+    fields.push(StructField::new(
+        "tables",
+        TypeSchema::array(TypeSchema::text()),
+    ));
+    TypeSchema::Struct(fields)
+}
+
+fn changeset_detail_schema() -> TypeSchema {
+    let mut fields = changeset_fields();
+    fields.push(StructField::new(
+        "entries",
+        TypeSchema::array(history_entry_schema()),
+    ));
+    TypeSchema::Struct(fields)
+}
+
 /// A `PathSpec` rooted at the admin API prefix.
 fn api() -> PathSpec {
     PathSpec::root().lit(ADMIN_API_PREFIX)
@@ -4639,6 +4855,10 @@ fn table_settings_fields() -> Vec<StructField> {
         // Whether the table keeps row history (§14.12), off by default. The same
         // refusals as `sync_enabled`; the two share one change trigger.
         StructField::new("history_enabled", TypeSchema::bool()),
+        // Who may read the table's history (§14.12): the admin unless a wider
+        // role is named, and then each row is checked against its read rule
+        // too. Optional, and absent is the admin's.
+        StructField::new("history_min_role", TypeSchema::optional(TypeSchema::int())),
     ]
 }
 
@@ -6932,6 +7152,14 @@ mod tests {
                 "createRole",
                 "deleteRole",
                 "listFieldTypes",
+                // Row history (TODO-history H2.4), behind its own area that is
+                // off unless granted: it is row data, which the schema tools
+                // are deliberately not.
+                "getRowHistory",
+                "listDeletedRows",
+                "getRowAsOf",
+                "listChangesets",
+                "getChangeset",
                 // Modules, behind their own area that is off unless granted: an
                 // agent writing Python needs a library installed to import it,
                 // and asking a human to click Install is the gap this closes.
@@ -7034,6 +7262,15 @@ mod tests {
         // Installing a package is its own area, off unless granted.
         assert_eq!(area_of("listModules"), Some(Area::Modules));
         assert_eq!(area_of("installModule"), Some(Area::Modules));
+        for name in [
+            "getRowHistory",
+            "listDeletedRows",
+            "getRowAsOf",
+            "listChangesets",
+            "getChangeset",
+        ] {
+            assert_eq!(area_of(name), Some(Area::History), "{name}");
+        }
         // The schema half has no area: it is what this surface is.
         assert_eq!(area_of("listFieldTypes"), None);
         assert_eq!(area_of("listAgents"), None);

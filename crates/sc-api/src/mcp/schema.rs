@@ -229,6 +229,7 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
         "rls_available": rls_available,
         "sync_enabled": table.sync_enabled(),
         "history_enabled": table.history_enabled(),
+        "history_min_role": sc_catalog::history::history_min_role(&table.attributes),
         "fields": fields,
         "references": references,
         "referenced_by": referenced_by,
@@ -541,6 +542,17 @@ fn edit_parameters() -> Json {
                                 "Keep every version of the table's rows, so a row's \
                                  history can be listed and an old version restored. \
                                  Off by default; needs a primary key of one column.",
+                        },
+                        "history_min_role": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description":
+                                "The least-privileged role that may read the \
+                                 table's history; 1 (admin only) by default. Each \
+                                 row is still checked against the read rule. Kept \
+                                 only while history is on; needs the access-rules \
+                                 permission.",
                         },
                     },
                     "required": ["op", "table"],
@@ -878,6 +890,7 @@ fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
         rls_enabled: optional_bool(obj, "rls_enabled")?,
         sync_enabled: optional_bool(obj, "sync_enabled")?,
         history_enabled: optional_bool(obj, "history_enabled")?,
+        history_min_role: optional_role(obj, "history_min_role")?,
     })
 }
 

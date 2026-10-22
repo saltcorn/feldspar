@@ -1220,6 +1220,7 @@ function Settings({
   const [rls, setRls] = useState(false);
   const [sync, setSync] = useState(false);
   const [history, setHistory] = useState(false);
+  const [historyRole, setHistoryRole] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -1235,6 +1236,7 @@ function Settings({
     setRls(settings?.rls_enabled ?? false);
     setSync(settings?.sync_enabled ?? false);
     setHistory(settings?.history_enabled ?? false);
+    setHistoryRole(settings?.history_min_role ?? 1);
     setSaved(false);
   }, [settings]);
 
@@ -1252,6 +1254,7 @@ function Settings({
         rls_enabled: rls,
         sync_enabled: sync,
         history_enabled: history,
+        history_min_role: history ? historyRole : 1,
       });
       setSaved(true);
       onChange();
@@ -1382,6 +1385,20 @@ function Settings({
               <Form.Text muted>
                 <T text="Keeps every version of each row, so you can see who changed what and restore an earlier version." />
               </Form.Text>
+              {history && (
+                <div className="mt-2">
+                  <RoleSelect
+                    id="tableHistoryRole"
+                    label={t("Minimum role to read the history")}
+                    value={historyRole}
+                    roles={roles}
+                    onChange={setHistoryRole}
+                  />
+                  <Form.Text muted>
+                    <T text="Admin only by default. A wider role sees only the history of rows its read access lets it see, and secrets stay hidden. The admin screens stay admin-only." />
+                  </Form.Text>
+                </div>
+              )}
             </Form.Group>
           )}
           <Button type="submit" size="sm" disabled={busy}>

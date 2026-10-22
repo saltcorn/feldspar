@@ -4317,7 +4317,9 @@ can write an SQL endpoint and cannot remove one.
 `listModules` and `installModule` endpoints — so an agent writing a Python body can install the
 library it imports — and it is **off** unless a token or agent ticks it, because installing a
 package runs a third party's code with the server's privileges and a Python one has no sandbox at
-all. No existing credential gains it by upgrading. **An MCP token is the exception to all of these
+all. No existing credential gains it by upgrading. **A fourth, `allow_history`,** is off unless
+ticked for the same kind of reason: its tools (`getRowHistory`, `listDeletedRows`, `getRowAsOf`,
+`listChangesets`, `getChangeset`, §14.12) read row data, which no other tool shows an agent. **An MCP token is the exception to all of these
 defaults:** a mint that leaves a flag out grants it (`sc_api::mcp::token_flags_from_submitted`) and
 the panel starts with every box ticked, because a token is minted by an admin, on purpose, for an
 agent they are handing the installation to; the stored `grants` is explicit, so the copilot's
@@ -11212,6 +11214,21 @@ grants it when evaluated (reified, as for an `only_if`) against the deleted row.
   (or the deleted image) and applying the `old_values` of later entries, newest first.
 - `GET /changesets?user=&table=&source=&since=` and `GET /changesets/{id}`: what one action did,
   across tables.
+
+**As built (H2).** The rule lives in one place, `sc_api::history::HistoryReader`, over the log
+queries in `sc_catalog::history`. The admin API paths are `GET /api/tables/{table}/rows/{key}/history`,
+`/api/tables/{table}/deleted`, `/api/tables/{table}/rows/{key}?as_of=` and
+`/api/changesets[/{id}]`. They are **admin-only routes**, like the admin API's row CRUD: a table
+whose history is opened to role 80 is opened for the surfaces an application's users reach (the
+code API's `Table` history methods, H6), and the admin API is not one of them. A table must have
+history on to be read, and changesets show only entries of tables that have it on. Changesets
+span tables, so listing and reading them is always the admin's. Below the admin, a reader sees
+who made a change by user id, not by email. `as_of` takes a time, a date or an entry's `seq`
+(meaning just after it), and answers `{ row, removed }`, with values of dropped columns under
+`removed`. A history entry lists its `changes` field by field, each marked `removed` when the
+column is gone. The MCP tools are these five endpoints, in their own area `allow_history`, which
+is off unless granted (as `allow_modules` is): history is row data, and the schema tools are
+deliberately not.
 
 These are also admin screens: a History tab in the row editor, a Deleted tab on the table with
 Restore, and a changeset browser with Undo. They are MCP tools too, and in code bodies the v1

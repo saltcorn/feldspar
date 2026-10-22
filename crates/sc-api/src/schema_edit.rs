@@ -285,13 +285,17 @@ pub struct TableSettings {
     pub sync_enabled: Option<bool>,
     /// Whether row history records the table's changes (§14.12).
     pub history_enabled: Option<bool>,
+    /// The least-privileged role that may read the table's history; the
+    /// admin's by default (§14.12 "Reading"). Kept only while history is on.
+    pub history_min_role: Option<u8>,
 }
 
 impl TableSettings {
-    /// Whether anything here touches the access rules — the four settings behind
+    /// Whether anything here touches the access rules — the settings behind
     /// [`Grants::access_changes`].
     pub fn touches_access(&self) -> bool {
         self.min_role_read.is_some()
+            || self.history_min_role.is_some()
             || self.min_role_write.is_some()
             || self.ownership_formula.is_some()
             || self.rls_enabled.is_some()
@@ -1179,6 +1183,14 @@ impl Plan {
             // Likewise; the trigger is shared with sync.
             sc_catalog::set_history_enabled(&mut meta.attributes, enabled);
             self.change_log_dirty.insert(table.to_owned());
+        }
+        if let Some(role) = settings.history_min_role {
+            if !(1..=100).contains(&role) {
+                return Err(Error::invalid(format!(
+                    "`history_min_role` must be a role from 1 to 100, not {role}"
+                )));
+            }
+            sc_catalog::history::set_history_min_role(&mut meta.attributes, role);
         }
         let meta = meta.clone();
 

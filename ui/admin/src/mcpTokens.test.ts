@@ -181,6 +181,7 @@ describe("the grant checkboxes", () => {
       allow_triggers: true,
       allow_applications: true,
       allow_modules: true,
+      allow_history: true,
     });
   });
 });
@@ -201,7 +202,7 @@ describe("minting", () => {
     expect(mintProblem({ ...form, expiresInDays: "" })).toBeNull();
   });
 
-  it("sends all seven flags explicitly, whichever are ticked", () => {
+  it("sends all eight flags explicitly, whichever are ticked", () => {
     const form = {
       label: "  claude-code on my laptop  ",
       grants: { allow_create: true, allow_triggers: true },
@@ -218,6 +219,7 @@ describe("minting", () => {
         allow_triggers: true,
         allow_applications: false,
         allow_modules: false,
+        allow_history: false,
         allow_all: false,
       },
       expires_in_days: 90,

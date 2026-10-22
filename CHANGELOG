@@ -2,6 +2,54 @@
 
 Changes in reverse chronological order.
 
+## Row history H2: reading
+
+A table's history can now be read: a row's versions, the deleted rows, a row as it was, and
+the changesets, in the admin API, the admin UI and as MCP tools.
+
+- `sc-catalog::history` (new): the log queries. `row_history` (a row's entries, newest first,
+  each with its version number), `deleted_rows` (rows whose last entry is a delete and whose key
+  is not in the table now), `deleted_image`, `row_as_of` (start from the row now, or nothing,
+  and undo the later entries newest first; `AsOf` is a time, a date or an entry's `seq`),
+  `list_changesets` (filter by user, table, source and since) and `changeset_entries`. Entries
+  without values are skipped. Changesets show only entries of tables with history on.
+  `history_min_role` / `set_history_min_role` handle `attributes.history.min_role`.
+- `sc-api::history::HistoryReader` (new) holds the access rule. A table must have history on.
+  Reading it needs the admin, or the table's `history.min_role`. Below the admin, each row is
+  checked too: a row that exists now against the read rule (`row_readable_as`), and a deleted
+  row against its deleted image (`RowImage`, reified). The deleted list is bounded after that
+  check. Secrets are the sentinel everywhere, including old values. Changesets are the admin's
+  only. A reader below the admin sees who made a change by user id, not by email.
+- Admin API: `getRowHistory` (`GET /api/tables/{table}/rows/{id}/history`), `listDeletedRows`
+  (`…/deleted`), `getRowAsOf` (`GET /api/tables/{table}/rows/{id}?as_of=`), `listChangesets`
+  (`GET /api/changesets?user=&table=&source=&since=&limit=&offset=`) and `getChangeset`.
+  **Deviation:** the routes are admin-only, like the admin API's row CRUD and per the
+  "every projected endpoint is admin-only" rule (§13.6). `history.min_role` takes effect
+  through `HistoryReader`, which H6's code API will use. The design doc (§14.12 "As built")
+  says so.
+- `history_min_role` is a table setting: `TableSettings`, the `PUT /api/tables/:name` body
+  (optional, absent means admin), the table listing and orphan settings, the MCP schema tool
+  (it needs `allow_access_changes`), and backup restore. It is kept only while history is on.
+- MCP: the five endpoints are tools in a new area, **`allow_history`**. Like `allow_modules`,
+  it is off unless granted (a fresh token gets it, as it gets every flag). History is row data,
+  which the schema tools do not show. `FLAG_KEYS` now has eight keys; the token panel, the CLI
+  and OPERATIONS.md list it.
+- Admin UI: the row form has a **History** tab (versions newest first; each shows who, when,
+  source and the fields before and after, with `removed` on dropped columns). The table data
+  screen has a **Deleted** tab. There is a **changeset browser** (`#/changesets`, filters for
+  user, table, source and date) with a detail page per changeset, reached from the Tables list
+  and a table's data. The table screen has a "Minimum role to read the history" picker under
+  the history switch. `client.ts` is regenerated, and the ide/builder/analytics copies with it.
+- Tests: `sc-api/tests/history_read.rs` covers: admin-only by default, then `min_role` plus the
+  read rule for live and deleted rows (and the bound applied after the check); a table without
+  history is refused; `as_of` rebuilds a row across several changesets, by `seq` and by time,
+  including after a delete; a dropped column shows as removed in an entry, a rebuilt row and a
+  deleted row; secrets are the sentinel in every answer; changesets are listed, filtered and
+  read. `sc-server`: the five routes over HTTP, which are admin-only after logout
+  (`table_settings_api.rs`), and the tools offered only with `allow_history`
+  (`mcp_server.rs`). There are unit tests for `AsOf` and `history.min_role`, and vitest for
+  `history.ts`.
+
 ## Row history H1: capture (Postgres)
 
 Every change to a table with sync or history on is now recorded with its values, in the

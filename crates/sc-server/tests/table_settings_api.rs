@@ -520,7 +520,10 @@ async fn row_history_is_switched_on_and_off_with_the_table_settings() -> sc_erro
 
     let (status, tables) = client.send("GET", "/api/tables", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(listed_table(&tables, "notes")["history_enabled"], json!(true));
+    assert_eq!(
+        listed_table(&tables, "notes")["history_enabled"],
+        json!(true)
+    );
 
     // The body is the whole configuration: leaving the switch out turns it off.
     let (status, saved) = client
@@ -529,5 +532,120 @@ async fn row_history_is_switched_on_and_off_with_the_table_settings() -> sc_erro
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["history_enabled"], json!(false));
     assert!(change_triggers(&db, "notes").await.is_empty());
+    Ok(())
+}
+
+/// Row history H2: the admin API reads a row's history, the deleted rows, a
+/// row as it was and the changesets, each request one changeset by the admin
+/// who made it; and the history's read role is a table setting.
+#[tokio::test]
+async fn row_history_is_read_through_the_admin_api() -> sc_error::Result<()> {
+    let (mut client, catalog, _db) = setup().await?;
+    sc_catalog::bootstrap_change_log(&catalog).await?;
+    client
+        .send("POST", "/api/tables", Some(json!({ "name": "notes" })))
+        .await;
+    for field in [
+        json!({ "name": "id", "type": "int", "primary_key": true }),
+        json!({ "name": "title", "type": "text" }),
+    ] {
+        let (status, _) = client
+            .send("POST", "/api/tables/notes/fields", Some(field))
+            .await;
+        assert!(status.is_success(), "{status}");
+    }
+    let (status, saved) = client
+        .send(
+            "PUT",
+            "/api/tables/notes",
+            Some(json!({
+                "label": "Notes", "description": "", "min_role_read": 1, "min_role_write": 1,
+                "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
+                "history_enabled": true, "history_min_role": 40,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["history_min_role"], json!(40));
+
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/tables/notes/rows",
+            Some(json!({ "id": 1, "title": "milk" })),
+        ),
+        (
+            "PUT",
+            "/api/tables/notes/rows/1",
+            Some(json!({ "title": "oat milk" })),
+        ),
+        (
+            "POST",
+            "/api/tables/notes/rows",
+            Some(json!({ "id": 2, "title": "eggs" })),
+        ),
+        ("DELETE", "/api/tables/notes/rows/2", None),
+    ] {
+        let (status, answer) = client.send(method, path, body).await;
+        assert!(status.is_success(), "{method} {path}: {status} {answer}");
+    }
+
+    let (status, history) = client
+        .send("GET", "/api/tables/notes/rows/1/history", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    assert_eq!(history.as_array().unwrap().len(), 2);
+    assert_eq!(
+        history[0]["changes"],
+        json!([{ "field": "title", "old": "milk", "new": "oat milk", "removed": false }])
+    );
+    assert_eq!(history[0]["changeset"]["source"], json!("request"));
+    assert_eq!(
+        history[0]["changeset"]["user_email"],
+        json!("admin@example.com")
+    );
+
+    let first = history[1]["seq"].to_string();
+    let (status, rebuilt) = client
+        .send(
+            "GET",
+            &format!("/api/tables/notes/rows/1?as_of={first}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rebuilt}");
+    assert_eq!(rebuilt["row"]["title"], json!("milk"));
+    // The count route is not a row called `count`.
+    let (status, count) = client
+        .send("GET", "/api/tables/notes/rows/count", None)
+        .await;
+    assert_eq!((status, count["count"].clone()), (StatusCode::OK, json!(1)));
+
+    let (status, deleted) = client.send("GET", "/api/tables/notes/deleted", None).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    assert_eq!(deleted[0]["key"], json!("2"));
+    assert_eq!(deleted[0]["row"]["title"], json!("eggs"));
+
+    let (status, list) = client
+        .send("GET", "/api/changesets?table=notes&source=request", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list.as_array().unwrap().len(), 4);
+    let id = list[0]["id"].as_str().unwrap().to_owned();
+    let (status, one) = client
+        .send("GET", &format!("/api/changesets/{id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{one}");
+    assert_eq!(one["entries"][0]["op"], json!("d"));
+
+    // The admin API is the admin's, whatever role the table opens history to.
+    client.send("POST", "/api/logout", None).await;
+    let (status, _) = client
+        .send("GET", "/api/tables/notes/rows/1/history", None)
+        .await;
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+        "{status}"
+    );
     Ok(())
 }

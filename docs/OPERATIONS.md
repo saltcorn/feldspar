@@ -1062,7 +1062,7 @@ about proxies first — behind a reverse proxy every peer looks local.
 ### 7.2 Minting a token
 
 The panel below those switches. A label, an expiry in days, an **All grants** switch
-and seven grants — all seven ticked on a fresh form, so untick what this agent should
+and eight grants — all eight ticked on a fresh form, so untick what this agent should
 not have:
 
 | Grant | What it allows |
@@ -1074,11 +1074,13 @@ not have:
 | `allow_triggers` | work on triggers at all |
 | `allow_applications` | work on applications' custom SQL queries |
 | `allow_modules` | list and install modules: npm packages and Python distributions (§7.7) |
+| `allow_history` | read row history: a row's old values, deleted rows, and who changed what |
 
 `allow_access_changes` is the one to think hardest about: it changes what *every*
 user of the deployment can reach. `allow_drop` at least announces itself.
 `allow_modules` is the other one: an installed package runs its own code with the
-server's privileges, and a Python one has no sandbox at all.
+server's privileges, and a Python one has no sandbox at all. `allow_history` hands an
+agent your rows' data, past and present, which the schema tools never show it.
 
 **All grants** (off on a fresh form) is stored on the token as `allow_all`. A token
 with it also holds every grant a later version of Feldspar adds, without being minted

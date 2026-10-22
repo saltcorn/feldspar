@@ -53,6 +53,8 @@ mod graphql_rows;
 mod graphql_schema;
 #[path = "history_capture.rs"]
 mod history_capture;
+#[path = "history_read.rs"]
+mod history_read;
 #[path = "live_connection.rs"]
 mod live_connection;
 #[path = "public_datasets.rs"]

@@ -190,6 +190,11 @@ export function Tables() {
             <Button variant="outline-secondary" onClick={() => navigate("/db-connections")}>
               <T text="Connections" />
             </Button>
+            {tables?.some((table) => table.history_enabled) && (
+              <Button variant="outline-secondary" onClick={() => navigate("/changesets")}>
+                <T text="Changesets" />
+              </Button>
+            )}
             <Button onClick={() => setCreating({ ...EMPTY_NEW_TABLE_FORM })}><T text="+ New table" /></Button>
           </>
         }

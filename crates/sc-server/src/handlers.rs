@@ -28,6 +28,7 @@ use sc_action::{
 };
 use sc_api::auth::{credentials, user_row_json, user_summary_json};
 use sc_api::csv as csv_rows;
+use sc_api::history::HistoryReader;
 use sc_api::rows::{self, require_object};
 use sc_api::schema_edit;
 use sc_api::{ApiRequest, GRAPHQL_PROVIDER, Method as ApiMethod};
@@ -602,6 +603,7 @@ pub fn admin_handlers_with(
                             "rls_enabled": meta.rls_enabled(),
                             "sync_enabled": sc_catalog::sync_enabled(&meta.attributes),
                             "history_enabled": sc_catalog::history_enabled(&meta.attributes),
+                            "history_min_role": sc_catalog::history::history_min_role(&meta.attributes),
                         })
                     })
                     .collect();
@@ -1059,6 +1061,92 @@ pub fn admin_handlers_with(
                     sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
                 }
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
+            }
+        }
+    });
+
+    // --- row history (§14.12 "Reading") -------------------------------------
+    //
+    // Admin-only routes, read through `sc_api::history` all the same, so the
+    // table must keep history and secrets are the sentinel here as everywhere.
+
+    reg.register("getRowHistory", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let out = reader
+                    .row_history(ctx.path_param("table")?, ctx.path_param("id")?)
+                    .await?;
+                Ok(HandlerResponse::ok(out))
+            }
+        }
+    });
+
+    reg.register("listDeletedRows", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let limit = optional_query_u64(&ctx, "limit")?;
+                let offset = optional_query_u64(&ctx, "offset")?.unwrap_or(0);
+                let out = reader
+                    .deleted_rows(ctx.path_param("table")?, limit, offset)
+                    .await?;
+                Ok(HandlerResponse::ok(out))
+            }
+        }
+    });
+
+    reg.register("getRowAsOf", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let as_of = ctx.query_get("as_of").ok_or_else(|| {
+                    Error::invalid("`as_of` is required: a time or an entry's number")
+                })?;
+                let out = reader
+                    .row_as_of(ctx.path_param("table")?, ctx.path_param("id")?, as_of)
+                    .await?;
+                Ok(HandlerResponse::ok(out))
+            }
+        }
+    });
+
+    reg.register("listChangesets", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), None);
+                let filter = sc_api::history::changeset_filter(&ctx.query)?;
+                Ok(HandlerResponse::ok(reader.list_changesets(filter).await?))
+            }
+        }
+    });
+
+    reg.register("getChangeset", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), None);
+                Ok(HandlerResponse::ok(
+                    reader.changeset(ctx.path_param("id")?).await?,
+                ))
             }
         }
     });
@@ -7136,6 +7224,11 @@ pub(crate) fn table_settings_from_body(
         // Optional on the wire only so a body written before the switch existed
         // (an older backup's `table.json`) still restores.
         history_enabled: Some(optional_bool(obj, "history_enabled")?),
+        // Absent is the admin's, the default (§14.12).
+        history_min_role: Some(match obj.get("history_min_role") {
+            None | Some(Json::Null) => ROLE_ADMIN,
+            Some(_) => role_field(obj, "history_min_role")?,
+        }),
     })
 }
 
@@ -11393,6 +11486,7 @@ pub(crate) fn table_json(
         "sync_available": sc_catalog::change_log_key(catalog, table, sc_catalog::ChangeLogFeature::Sync)
             .is_ok(),
         "history_enabled": table.history_enabled(),
+        "history_min_role": sc_catalog::history::history_min_role(&table.attributes),
         // Row history needs the same one-column key on Saltcorn's own database.
         "history_available": sc_catalog::change_log_key(catalog, table, sc_catalog::ChangeLogFeature::History)
             .is_ok(),
@@ -11641,6 +11735,17 @@ fn int_field(obj: &Map<String, Json>, key: &str) -> Result<i64> {
     obj.get(key)
         .and_then(Json::as_i64)
         .ok_or_else(|| Error::invalid(format!("missing or non-integer field `{key}`")))
+}
+
+/// An optional whole-number query parameter; absent or empty is `None`.
+fn optional_query_u64(ctx: &crate::HandlerCtx, name: &str) -> Result<Option<u64>> {
+    match ctx.query_get(name) {
+        None | Some("") => Ok(None),
+        Some(raw) => raw
+            .parse()
+            .map(Some)
+            .map_err(|_| Error::invalid(format!("`{name}` must be a whole number"))),
+    }
 }
 
 /// A required boolean field of an object body.

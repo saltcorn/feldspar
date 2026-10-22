@@ -65,16 +65,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H2 — Reading
 
-- [ ] H2.1 `GET {table}/{key}/history`, `GET {table}/deleted`, `GET {table}/{key}?as_of=`,
+- [x] H2.1 `GET {table}/{key}/history`, `GET {table}/deleted`, `GET {table}/{key}?as_of=`,
       `GET /changesets` (filters: user, table, source, since) and `GET /changesets/{id}`, in the
       admin API.
-- [ ] H2.2 Access: admin only by default; `history.min_role` opens it further, and each row is
+- [x] H2.2 Access: admin only by default; `history.min_role` opens it further, and each row is
       still checked against its read rule (a deleted row against its deleted image, reified).
       Secret fields are shown as the sentinel.
-- [ ] H2.3 Admin UI: a History tab in the row editor (field-level old and new values, who, when,
+- [x] H2.3 Admin UI: a History tab in the row editor (field-level old and new values, who, when,
       source), a Deleted tab on the table, and a changeset browser.
-- [ ] H2.4 MCP tools: read a row's history, list deleted rows, list and read changesets.
-- [ ] H2.5 Tests: access rules for history and for deleted rows; `as_of` rebuilds a row
+- [x] H2.4 MCP tools: read a row's history, list deleted rows, list and read changesets.
+- [x] H2.5 Tests: access rules for history and for deleted rows; `as_of` rebuilds a row
       correctly across several changesets; a column dropped since shows as removed.
 
 ## H3 — Restore and undo

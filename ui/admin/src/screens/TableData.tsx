@@ -12,12 +12,17 @@
 // column at once including the required ones the grid cannot leave blank, and a
 // `File` field, whose value is a path *within* a store and so is browsed rather
 // than typed. Everything else happens in the grid.
+//
+// A table that keeps row history (§14.12) gets two tabs more: Deleted, beside
+// the grid, listing the rows deleted and not put back; and History, in the row
+// form, listing that row's versions.
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
 import Form from "react-bootstrap/Form";
 import Modal from "react-bootstrap/Modal";
+import Nav from "react-bootstrap/Nav";
 
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
@@ -28,6 +33,8 @@ import { PageBody, PageHeader } from "../layout";
 import { ALL_WRITES, canSubmit, formOffered, writesOf, type TableWrites } from "../tableWrites";
 import type { BrowseFilesResponse, ListFieldsResponse, ListTablesResponse } from "../client";
 import { T } from "../i18n";
+import { DeletedRows } from "./DeletedRows";
+import { RowHistory } from "./RowHistory";
 
 /**
  * Best-effort parse of a form input into JSON: `5` → number, `true` → boolean,
@@ -55,6 +62,10 @@ export function TableData({ table }: { table: string }) {
   // its module answered for a provided one (§8.3).
   const [writes, setWrites] = useState<TableWrites>(ALL_WRITES);
   const [provider, setProvider] = useState<string | null>(null);
+  // Whether the table keeps row history (§14.12): then the screen has a Deleted
+  // tab, and the row form a History tab.
+  const [history, setHistory] = useState(false);
+  const [tab, setTab] = useState<"rows" | "deleted">("rows");
   const [error, setError] = useState<string | null>(null);
   // The row the form is open on: an existing row, `null` for a new one, and
   // `undefined` when the form is closed.
@@ -73,6 +84,7 @@ export function TableData({ table }: { table: string }) {
         setLabel(summary?.label || table);
         setWrites(writesOf(summary?.provider));
         setProvider(summary?.provider ? summary.provider.provider : null);
+        setHistory(summary?.history_enabled ?? false);
       })
       .catch(() => {
         if (live) setError("Could not load the table.");
@@ -90,13 +102,23 @@ export function TableData({ table }: { table: string }) {
         pretitle="Table data"
         title={label}
         actions={
-          <Button
-            variant="outline-secondary"
-            onClick={() => navigate(`/tables/${encodeURIComponent(table)}`)}
-          >
-            <IconArrowLeft className="icon-2" />
-            {label}
-          </Button>
+          <>
+            {history && (
+              <Button
+                variant="outline-secondary"
+                onClick={() => navigate(`/changesets?table=${encodeURIComponent(table)}`)}
+              >
+                <T text="Changesets" />
+              </Button>
+            )}
+            <Button
+              variant="outline-secondary"
+              onClick={() => navigate(`/tables/${encodeURIComponent(table)}`)}
+            >
+              <IconArrowLeft className="icon-2" />
+              {label}
+            </Button>
+          </>
         }
       />
       <PageBody>
@@ -109,7 +131,23 @@ export function TableData({ table }: { table: string }) {
         {fields !== null && fields.length === 0 && (
           <Alert variant="secondary"><T text="Add a field before creating rows." /></Alert>
         )}
-        {fields !== null && fields.length > 0 && (
+        {history && (
+          <Nav
+            variant="tabs"
+            className="mb-3"
+            activeKey={tab}
+            onSelect={(key) => setTab(key === "deleted" ? "deleted" : "rows")}
+          >
+            <Nav.Item>
+              <Nav.Link eventKey="rows"><T text="Rows" /></Nav.Link>
+            </Nav.Item>
+            <Nav.Item>
+              <Nav.Link eventKey="deleted"><T text="Deleted" /></Nav.Link>
+            </Nav.Item>
+          </Nav>
+        )}
+        {history && tab === "deleted" && <DeletedRows table={table} />}
+        {fields !== null && fields.length > 0 && (!history || tab === "rows") && (
           <DataGrid
             table={table}
             fields={fields}
@@ -126,6 +164,7 @@ export function TableData({ table }: { table: string }) {
           fields={fields}
           writes={writes}
           row={formRow}
+          history={history}
           onClose={() => setFormRow(undefined)}
           onSaved={() => {
             setFormRow(undefined);
@@ -152,6 +191,7 @@ function RowForm({
   fields,
   writes,
   row,
+  history,
   onClose,
   onSaved,
 }: {
@@ -159,6 +199,8 @@ function RowForm({
   fields: FieldInfo[];
   writes: TableWrites;
   row: RowRecord | null;
+  /** The table keeps row history, so an existing row has a History tab. */
+  history: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -180,6 +222,7 @@ function RowForm({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"row" | "history">("row");
 
   const editingId = row === null || pk === null ? null : display(row[pk]);
   const submittable = canSubmit(writes, editingId !== null);
@@ -221,8 +264,24 @@ function RowForm({
       </Modal.Header>
       <Form onSubmit={submit}>
         <Modal.Body>
+          {history && editingId !== null && (
+            <Nav
+              variant="tabs"
+              className="mb-3"
+              activeKey={tab}
+              onSelect={(key) => setTab(key === "history" ? "history" : "row")}
+            >
+              <Nav.Item>
+                <Nav.Link eventKey="row"><T text="Row" /></Nav.Link>
+              </Nav.Item>
+              <Nav.Item>
+                <Nav.Link eventKey="history"><T text="History" /></Nav.Link>
+              </Nav.Item>
+            </Nav>
+          )}
+          {tab === "history" && editingId !== null && <RowHistory table={table} id={editingId} />}
           {error && <Alert variant="danger">{error}</Alert>}
-          {editable.map((f) => {
+          {tab === "row" && editable.map((f) => {
             const store = fileStoreOf(f);
             return (
               <Form.Group className="mb-2" controlId={`row-${f.name}`} key={f.name}>
@@ -269,7 +328,7 @@ function RowForm({
           <Button variant="secondary" onClick={onClose} type="button">
             <T text="Cancel" />
           </Button>
-          <Button type="submit" disabled={busy || !submittable}>
+          <Button type="submit" disabled={busy || !submittable || tab !== "row"}>
             {editingId !== null ? "Save changes" : "Add row"}
           </Button>
         </Modal.Footer>

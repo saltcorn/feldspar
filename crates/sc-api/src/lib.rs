@@ -39,6 +39,7 @@ pub mod convert;
 pub mod csv;
 pub mod filter;
 pub mod geo_import;
+pub mod history;
 // The administrative tool surface (§13.6): one implementation of the tools that
 // build an application's configuration half, shared by the built-in copilot
 // agent and the administration MCP server.

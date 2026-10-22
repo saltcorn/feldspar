@@ -1722,6 +1722,91 @@ async fn the_module_tools_are_offered_only_to_a_token_given_allow_modules() -> s
     Ok(())
 }
 
+/// Row history's reads are tools only for a token given `allow_history`, and
+/// one called reaches the history: here a row's versions, changed as the MCP
+/// caller (TODO-history H2.4).
+#[tokio::test]
+async fn the_history_tools_are_offered_only_to_a_token_given_allow_history() -> sc_error::Result<()>
+{
+    let Harness {
+        mut client,
+        router,
+        catalog,
+        _db,
+        ..
+    } = setup().await?;
+    enable_mcp(&catalog, true).await?;
+    sc_catalog::bootstrap_change_log(&catalog).await?;
+    _db.client()
+        .await?
+        .batch_execute("CREATE TABLE notes (id bigint primary key, title text)")
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    catalog.reload().await?;
+    sc_api::schema_edit::apply(
+        &catalog,
+        &[sc_api::schema_edit::Operation::AlterTable {
+            table: "notes".to_owned(),
+            settings: sc_api::schema_edit::TableSettings {
+                history_enabled: Some(true),
+                ..Default::default()
+            },
+        }],
+        &sc_api::schema_edit::ApplyOptions::default(),
+    )
+    .await?;
+    // Two transactions, so two `sql` changesets and two versions.
+    for statement in [
+        "INSERT INTO notes VALUES (1, 'milk')",
+        "UPDATE notes SET title = 'oat milk'",
+    ] {
+        _db.client()
+            .await?
+            .batch_execute(statement)
+            .await
+            .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    }
+
+    let tools = [
+        "getRowHistory",
+        "listDeletedRows",
+        "getRowAsOf",
+        "listChangesets",
+        "getChangeset",
+    ];
+    let without = mint(&mut client, "no history", json!({ "allow_history": false })).await;
+    let history = mint(&mut client, "defaults", json!({})).await;
+    let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+    let (_, body) = McpRequest::new(&without, list.clone()).send(&router).await;
+    let offered = tool_names(&body);
+    for absent in tools {
+        assert!(!offered.contains(&absent.to_owned()), "{offered:?}");
+    }
+    let (_, body) = McpRequest::new(&history, list).send(&router).await;
+    let offered = tool_names(&body);
+    for present in tools {
+        assert!(offered.contains(&present.to_owned()), "{offered:?}");
+    }
+
+    let (is_error, answer) = call_tool(
+        &router,
+        &history,
+        "getRowHistory",
+        json!({ "table": "notes", "id": "1" }),
+    )
+    .await;
+    assert!(!is_error, "{answer}");
+    let versions: Vec<&str> = answer
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["op"].as_str().unwrap())
+        .collect();
+    assert_eq!(versions, ["u", "i"], "{answer}");
+    assert_eq!(answer[0]["changeset"]["source"], json!("sql"));
+    Ok(())
+}
+
 /// The whole loop an agent needs to call a module's action from its app: a
 /// `none` trigger made with `save_trigger`, exposed with `update_application`'s
 /// `triggers` section, and `api.run<Name>()` in the generated client at once —
