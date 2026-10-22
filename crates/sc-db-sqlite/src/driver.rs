@@ -124,7 +124,7 @@ impl SqliteDriver {
             identity_sequences: false,
             unlogged_tables: false,
             native_temporal_types: false,
-            sync_triggers: false,
+            change_triggers: false,
         }
     }
 

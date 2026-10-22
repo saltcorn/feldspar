@@ -459,6 +459,7 @@ fn create_table(decl: &TableDecl) -> Operation {
             ownership_formula: decl.ownership.clone(),
             rls_enabled: None,
             sync_enabled: None,
+            history_enabled: None,
         },
         fields,
     }

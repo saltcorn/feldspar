@@ -2,6 +2,33 @@
 
 Changes in reverse chronological order.
 
+## Row history H0: one change log for sync and history
+
+The change-recording code that offline sync owned is now shared with row history. Sync behaves
+as it did before; history has a switch but records nothing new yet (H1).
+
+- `sc-catalog`: the new `change_log` module holds the log `_fd_changes`, the trigger function
+  and the trigger DDL. `sync.rs` keeps only what is sync's own: devices, watermarks, `changed_keys`
+  and `mark_sync_device`. Renames: `sync_key` → `change_log_key(catalog, table, feature)`, which
+  names the feature that asked ("offline sync" / "row history"); `enable_sync_sql` /
+  `disable_sync_sql` → `enable_change_log_sql` / `disable_change_log_sql`; `bootstrap_sync` →
+  `bootstrap_change_log` (which also creates `_fd_sync_clients`); and the trigger `_fd_sync` →
+  `_fd_changes`. The driver capability `sync_triggers` is now `change_triggers`.
+- New: `history_enabled` / `set_history_enabled` on `attributes.history` (switching on keeps
+  `keep_days`), `change_log_enabled`, and `Table::history_enabled` /
+  `Table::change_log_enabled`.
+- `schema_edit::TableSettings.history_enabled`. A batch keeps the trigger while sync **or**
+  history is on and drops it only when both are off, and it checks the key for each feature
+  that is on. The PATCH body, the MCP tool and the admin screen do not carry the switch yet
+  (H1.6).
+- `TABLES_RENAME.sql`: an idempotent block that renames `_fd_sync` to `_fd_changes` on every
+  table that has it, and drops the old trigger where both exist.
+- Tests (`sc-api/tests/sync_changes.rs`): switching sync off while history is on keeps the
+  trigger, and it keeps recording; both off drops it; history is refused with its own name;
+  the rename script moves an old trigger and can be run twice. There are also unit tests for
+  the history attribute. The existing sync tests pass; the only change to them is the
+  bootstrap's new name.
+
 ## Row history: design and TODO (H0–H6)
 
 A design for per-table row history, used for undo, audit and restoring deleted rows. Design

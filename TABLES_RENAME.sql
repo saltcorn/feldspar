@@ -700,3 +700,34 @@ ALTER TABLE IF EXISTS "_fd_translations" ALTER COLUMN "application" DROP NOT NUL
 ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "min_role" bigint;
 ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "max_role" bigint;
 ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "access_if" text;
+
+-- ---------------------------------------------------------------------------
+-- TODO-history H0: the change-log trigger is shared by offline sync and row
+-- history, so it is renamed from `_fd_sync` to `_fd_changes` (2026-10-22).
+-- Postgres only (SQLite has no change-log triggers yet).
+-- ---------------------------------------------------------------------------
+--
+-- Renames the trigger on every table that has it. A table that already has a
+-- `_fd_changes` trigger keeps it, and its stale `_fd_sync` is dropped.
+-- Re-running it is a no-op.
+
+DO $fd$
+DECLARE
+  t record;
+BEGIN
+  FOR t IN
+    SELECT c.oid, n.nspname, c.relname
+      FROM pg_trigger g
+      JOIN pg_class c ON c.oid = g.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE g.tgname = '_fd_sync' AND NOT g.tgisinternal
+  LOOP
+    IF EXISTS (SELECT 1 FROM pg_trigger
+                WHERE tgrelid = t.oid AND tgname = '_fd_changes') THEN
+      EXECUTE format('DROP TRIGGER %I ON %I.%I', '_fd_sync', t.nspname, t.relname);
+    ELSE
+      EXECUTE format('ALTER TRIGGER %I ON %I.%I RENAME TO %I',
+                     '_fd_sync', t.nspname, t.relname, '_fd_changes');
+    END IF;
+  END LOOP;
+END $fd$;

@@ -564,6 +564,17 @@ impl Table {
         crate::sync::sync_enabled(&self.attributes)
     }
 
+    /// Whether row history records this table's changes (§14.12): its
+    /// overlay's `attributes.history.enabled`.
+    pub fn history_enabled(&self) -> bool {
+        crate::change_log::history_enabled(&self.attributes)
+    }
+
+    /// Whether this table has the change-log trigger: sync or history is on.
+    pub fn change_log_enabled(&self) -> bool {
+        crate::change_log::change_log_enabled(&self.attributes)
+    }
+
     /// Whether this table is kept out of the user-facing lists: a system table
     /// nobody has added as a metadata table. What [`is_system`](Table::is_system)
     /// alone still decides is that the schema is not editable.

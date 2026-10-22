@@ -38,7 +38,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       restored database whose transaction ids are already past the device's goes unnoticed.
 - [ ] S2.8 A schema change that rewrites a synced table's rows (a column added with a default, a
       type changed, a column dropped or renamed) fires no row trigger; the next pull of that
-      table resets it on every device. Next to `sync_dirty` in `schema_edit.rs`, the same
+      table resets it on every device. Next to `change_log_dirty` in `schema_edit.rs`, the same
       hook as history's H5.2.
 - [x] S2.9 One pull reads in one `REPEATABLE READ READ ONLY` transaction, with the watermark
       taken inside it: all tables from one moment (a child row never arrives without its parent)

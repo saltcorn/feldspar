@@ -869,6 +869,8 @@ fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
         ownership_formula: optional_string(obj, "ownership_formula")?,
         rls_enabled: optional_bool(obj, "rls_enabled")?,
         sync_enabled: optional_bool(obj, "sync_enabled")?,
+        // The history switch reaches agents with H1.6.
+        history_enabled: None,
     })
 }
 

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use sc_api::{rows, schema_edit};
-use sc_catalog::{Catalog, bootstrap_field_meta, bootstrap_sync, bootstrap_table_meta};
+use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
@@ -30,7 +30,7 @@ async fn setup(db: &TestDb) -> Result<Catalog> {
     let catalog = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
     bootstrap_table_meta(&catalog).await?;
     bootstrap_field_meta(&catalog).await?;
-    bootstrap_sync(&catalog).await?;
+    bootstrap_change_log(&catalog).await?;
     catalog.reload().await?;
     Ok(catalog)
 }
@@ -145,6 +145,101 @@ async fn a_synced_table_records_every_change() -> Result<()> {
     Ok(())
 }
 
+async fn set_history(catalog: &Catalog, table: &str, enabled: bool) -> Result<()> {
+    let op = schema_edit::Operation::AlterTable {
+        table: table.to_owned(),
+        settings: schema_edit::TableSettings {
+            history_enabled: Some(enabled),
+            ..Default::default()
+        },
+    };
+    schema_edit::apply(catalog, &[op], &schema_edit::ApplyOptions::default()).await?;
+    Ok(())
+}
+
+/// The change-log triggers on `table`, by name.
+async fn triggers(db: &TestDb, table: &str) -> Result<Vec<String>> {
+    let rows = db
+        .client()
+        .await?
+        .query(
+            "SELECT tgname::text FROM pg_trigger
+              WHERE tgrelid = $1::text::regclass AND NOT tgisinternal ORDER BY tgname",
+            &[&table],
+        )
+        .await
+        .map_err(|e| Error::database(e.to_string()))?;
+    Ok(rows.iter().map(|r| r.get(0)).collect())
+}
+
+/// History-H0: sync and history share one trigger, which stays while either
+/// is on.
+#[tokio::test]
+async fn the_trigger_stays_while_sync_or_history_is_on() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = setup(&db).await?;
+
+    set_sync(&catalog, "todo", true).await?;
+    set_history(&catalog, "todo", true).await?;
+    assert_eq!(triggers(&db, "todo").await?, vec!["_fd_changes"]);
+
+    // Sync off, history still on: the trigger stays and keeps recording.
+    set_sync(&catalog, "todo", false).await?;
+    let todo = catalog.require("todo")?;
+    assert!(!todo.sync_enabled() && todo.history_enabled());
+    assert_eq!(triggers(&db, "todo").await?, vec!["_fd_changes"]);
+    sql(&db, "INSERT INTO todo (title) VALUES ('kept')").await?;
+    assert_eq!(changes(&db).await?.len(), 1);
+
+    // Both off: gone.
+    set_history(&catalog, "todo", false).await?;
+    assert!(triggers(&db, "todo").await?.is_empty());
+    sql(&db, "INSERT INTO todo (title) VALUES ('unrecorded')").await?;
+    assert_eq!(changes(&db).await?.len(), 1);
+
+    // History alone makes the trigger, and turning sync off that was never on
+    // leaves it alone.
+    set_history(&catalog, "todo", true).await?;
+    set_sync(&catalog, "todo", false).await?;
+    assert_eq!(triggers(&db, "todo").await?, vec!["_fd_changes"]);
+
+    // History is refused where sync is, and names itself.
+    let err = set_history(&catalog, "pairs", true)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("row history needs a key of one column"), "{err}");
+    Ok(())
+}
+
+/// `TABLES_RENAME.sql`'s H0 section renames an old `_fd_sync` trigger, and
+/// running it again changes nothing.
+#[tokio::test]
+async fn the_rename_script_moves_the_old_trigger() -> Result<()> {
+    let db = TestDb::new().await?;
+    setup(&db).await?;
+    let script = include_str!("../../../TABLES_RENAME.sql");
+    let section = &script[script
+        .find("-- TODO-history H0")
+        .expect("the H0 section is in TABLES_RENAME.sql")..];
+    let section = &section[section.find("DO $fd$").unwrap()..];
+    let section = &section[..section.find("END $fd$;").unwrap() + "END $fd$;".len()];
+
+    sql(
+        &db,
+        "CREATE TRIGGER _fd_sync AFTER INSERT OR UPDATE OR DELETE ON todo
+           FOR EACH ROW EXECUTE FUNCTION _fd_record_change('id');",
+    )
+    .await?;
+    sql(&db, section).await?;
+    assert_eq!(triggers(&db, "todo").await?, vec!["_fd_changes"]);
+    sql(&db, section).await?;
+    assert_eq!(triggers(&db, "todo").await?, vec!["_fd_changes"]);
+    sql(&db, "INSERT INTO todo (title) VALUES ('milk')").await?;
+    assert_eq!(changes(&db).await?.len(), 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn sync_needs_a_key_of_one_column() -> Result<()> {
     let db = TestDb::new().await?;
@@ -228,7 +323,7 @@ async fn sqlite_says_it_cannot_record_changes_yet() -> Result<()> {
     bootstrap_table_meta(&catalog).await?;
     bootstrap_field_meta(&catalog).await?;
     // A no-op here: there is no change-log to create.
-    bootstrap_sync(&catalog).await?;
+    bootstrap_change_log(&catalog).await?;
     assert!(catalog.get("_fd_changes")?.is_none());
     catalog
         .create_table(

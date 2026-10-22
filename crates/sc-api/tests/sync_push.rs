@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use sc_api::{ApiProvider, ApiRequest, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
-use sc_catalog::{Catalog, bootstrap_field_meta, bootstrap_sync, bootstrap_table_meta};
+use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
@@ -50,7 +50,7 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
-    bootstrap_sync(&cat).await?;
+    bootstrap_change_log(&cat).await?;
     cat.reload().await?;
 
     let settings = |formula: &str, sync: bool| schema_edit::TableSettings {

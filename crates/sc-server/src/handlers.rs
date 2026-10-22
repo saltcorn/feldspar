@@ -1986,7 +1986,11 @@ pub fn admin_handlers_with(
                     .get(&module.name)
                     .ok_or_else(|| Error::msg("the saved module is not in the loaded set"))?;
                 let statuses = services.service_statuses(&module.name);
-                Ok(HandlerResponse::ok(module_json(loaded, &statuses, &ctx.locale)))
+                Ok(HandlerResponse::ok(module_json(
+                    loaded,
+                    &statuses,
+                    &ctx.locale,
+                )))
             }
         }
     });
@@ -7127,6 +7131,8 @@ pub(crate) fn table_settings_from_body(
         ownership_formula: Some(str_field(obj, "ownership_formula")?.to_owned()),
         rls_enabled: Some(bool_field(obj, "rls_enabled")?),
         sync_enabled: Some(bool_field(obj, "sync_enabled")?),
+        // Not part of this body yet (TODO-history H1.6): left as it is.
+        history_enabled: None,
     })
 }
 
@@ -11381,7 +11387,8 @@ pub(crate) fn table_json(
         "rls_enabled": table.rls_enabled,
         "sync_enabled": table.sync_enabled(),
         // The same rule a save is refused by, so the switch is never a trap.
-        "sync_available": sc_catalog::sync_key(catalog, table).is_ok(),
+        "sync_available": sc_catalog::change_log_key(catalog, table, sc_catalog::ChangeLogFeature::Sync)
+            .is_ok(),
         // The backend's capability *and* whose database this is: RLS is DDL
         // against the primary driver, so it is never available on a table a
         // connection contributed, nor on a **provided** table, whose rows are

@@ -10,18 +10,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H0 — One change log for sync and history (no new behaviour)
 
-- [ ] H0.1 Generalise sync's names in `sc-catalog/src/sync.rs`. Move the shared part to a
+- [x] H0.1 Generalise sync's names in `sc-catalog/src/sync.rs`. Move the shared part to a
       `change_log` module, and leave sync-only code (watermark, `_fd_sync_clients`) in `sync.rs`:
       `sync_key` → `change_log_key` (same checks; the message names the feature that asked),
       `enable_sync_sql`/`disable_sync_sql` → `enable_change_log_sql`/`disable_change_log_sql`,
       trigger `_fd_sync` → `_fd_changes`, `bootstrap_sync` → `bootstrap_change_log`, and the
       capability `sync_triggers` → `change_triggers`.
-- [ ] H0.2 The trigger exists while `attributes.sync` **or** `attributes.history` is enabled.
+- [x] H0.2 The trigger exists while `attributes.sync` **or** `attributes.history` is enabled.
       Switching one off drops it only when the other is off too. Add `history_enabled` /
       `set_history_enabled`, mirroring the sync ones.
-- [ ] H0.3 `TABLES_RENAME.sql`: idempotently rename the `_fd_sync` trigger to `_fd_changes` on
+- [x] H0.3 `TABLES_RENAME.sql`: idempotently rename the `_fd_sync` trigger to `_fd_changes` on
       every table that has it.
-- [ ] H0.4 Tests: the existing sync tests pass unchanged. Switching sync off while history is on
+- [x] H0.4 Tests: the existing sync tests pass unchanged. Switching sync off while history is on
       keeps the trigger.
 
 ## H1 — Capture (Postgres)

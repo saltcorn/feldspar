@@ -57,12 +57,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::{
-    ATTR_OWNERSHIP_FORMULA, Attrs, Catalog, ConstraintKind, DataField, DataFieldKind, DbId,
-    FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged, SchemaProjection,
-    SchemaStep, Table, TableConstraint, TableId, TableMeta, create_constraint_steps,
-    disable_rls_sql, drop_constraint_steps, enable_rls_sql, formula_fields,
-    load_field_meta_by_field, load_table_meta_by_name, save_field_meta_row, save_table_meta_row,
-    validate_formula,
+    ATTR_OWNERSHIP_FORMULA, Attrs, Catalog, ChangeLogFeature, ConstraintKind, DataField,
+    DataFieldKind, DbId, FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged,
+    SchemaProjection, SchemaStep, Table, TableConstraint, TableId, TableMeta,
+    create_constraint_steps, disable_rls_sql, drop_constraint_steps, enable_rls_sql,
+    formula_fields, load_field_meta_by_field, load_table_meta_by_name, save_field_meta_row,
+    save_table_meta_row, validate_formula,
 };
 use sc_db::{ColumnGenerator, ColumnRef, SchemaChange};
 use sc_error::{Error, Result};
@@ -283,6 +283,8 @@ pub struct TableSettings {
     pub rls_enabled: Option<bool>,
     /// Whether offline sync records the table's changes (§14.11).
     pub sync_enabled: Option<bool>,
+    /// Whether row history records the table's changes (§14.12).
+    pub history_enabled: Option<bool>,
 }
 
 impl TableSettings {
@@ -299,6 +301,7 @@ impl TableSettings {
         self.label.is_none()
             && self.description.is_none()
             && self.sync_enabled.is_none()
+            && self.history_enabled.is_none()
             && !self.touches_access()
     }
 }
@@ -770,11 +773,13 @@ struct Plan {
     was_rls: BTreeMap<String, bool>,
     /// Tables whose policies must be re-emitted or dropped at the end.
     rls_dirty: BTreeSet<String>,
-    /// Which tables offline sync was recording *before* the batch.
-    was_sync: BTreeSet<String>,
-    /// Tables whose sync trigger must be re-created or dropped at the end: sync
-    /// switched on or off, or a synced table's key changed.
-    sync_dirty: BTreeSet<String>,
+    /// Which tables had the change-log trigger (sync or history on) *before*
+    /// the batch.
+    was_logged: BTreeSet<String>,
+    /// Tables whose change-log trigger must be re-created or dropped at the
+    /// end: sync or history switched on or off, or a recorded table's key
+    /// changed.
+    change_log_dirty: BTreeSet<String>,
     /// Tables dropped by this batch, so nothing is emitted for them afterwards.
     dropped: BTreeSet<String>,
     /// Calculated-field expressions to validate against the final schema, as
@@ -811,17 +816,17 @@ impl Plan {
             .iter()
             .map(|t| (t.name.clone(), t.rls_enabled))
             .collect();
-        let was_sync = projection
+        let was_logged = projection
             .tables()
             .iter()
-            .filter(|t| t.sync_enabled())
+            .filter(|t| t.change_log_enabled())
             .map(|t| t.name.clone())
             .collect();
         Ok(Plan {
             projection,
             was_rls,
-            was_sync,
-            sync_dirty: BTreeSet::new(),
+            was_logged,
+            change_log_dirty: BTreeSet::new(),
             ddl: Vec::new(),
             metas: Vec::new(),
             table_metas: BTreeMap::new(),
@@ -1168,7 +1173,12 @@ impl Plan {
             // Checked at the end of the batch, against the key the table ends
             // up with.
             sc_catalog::set_sync_enabled(&mut meta.attributes, enabled);
-            self.sync_dirty.insert(table.to_owned());
+            self.change_log_dirty.insert(table.to_owned());
+        }
+        if let Some(enabled) = settings.history_enabled {
+            // Likewise; the trigger is shared with sync.
+            sc_catalog::set_history_enabled(&mut meta.attributes, enabled);
+            self.change_log_dirty.insert(table.to_owned());
         }
         let meta = meta.clone();
 
@@ -1442,9 +1452,9 @@ impl Plan {
                 table: table.to_owned(),
                 columns: projected.primary_key.clone(),
             });
-            // The sync trigger is keyed by the primary-key column.
-            if projected.sync_enabled() {
-                self.sync_dirty.insert(table.to_owned());
+            // The change-log trigger is keyed by the primary-key column.
+            if projected.change_log_enabled() {
+                self.change_log_dirty.insert(table.to_owned());
             }
             if generator.is_some() {
                 self.ddl.push(SchemaChange::SetColumnGenerator {
@@ -1745,7 +1755,7 @@ impl Plan {
         self.dropped.insert(table.to_owned());
         self.rls_dirty.remove(table);
         // Dropping the table drops its trigger.
-        self.sync_dirty.remove(table);
+        self.change_log_dirty.remove(table);
         self.table_metas.remove(table);
         self.metas.push(MetaWrite {
             index,
@@ -2234,11 +2244,15 @@ impl Plan {
             };
             validate_ownership(catalog, &self.projection, table)?;
         }
-        for name in &self.sync_dirty {
-            if let Some(table) = self.projection.get(name)
-                && table.sync_enabled()
-            {
-                sc_catalog::sync_key(catalog, table)?;
+        for name in &self.change_log_dirty {
+            let Some(table) = self.projection.get(name) else {
+                continue;
+            };
+            if table.sync_enabled() {
+                sc_catalog::change_log_key(catalog, table, ChangeLogFeature::Sync)?;
+            }
+            if table.history_enabled() {
+                sc_catalog::change_log_key(catalog, table, ChangeLogFeature::History)?;
             }
         }
         Ok(notes)
@@ -2290,17 +2304,26 @@ impl Plan {
             }
         }
         // Last, so the trigger is keyed by the column the batch ends with.
-        for name in &self.sync_dirty {
+        // One trigger serves sync and history, so it is dropped only when
+        // both are off.
+        for name in &self.change_log_dirty {
             let Some(table) = self.projection.get(name) else {
                 continue;
             };
-            if table.sync_enabled() {
-                let pk = sc_catalog::sync_key(catalog, table)?;
-                steps.push(SchemaStep::Sql(sc_catalog::enable_sync_sql(
+            if table.change_log_enabled() {
+                let feature = if table.sync_enabled() {
+                    ChangeLogFeature::Sync
+                } else {
+                    ChangeLogFeature::History
+                };
+                let pk = sc_catalog::change_log_key(catalog, table, feature)?;
+                steps.push(SchemaStep::Sql(sc_catalog::enable_change_log_sql(
                     dialect, name, &pk,
                 )));
-            } else if self.was_sync.contains(name) {
-                steps.push(SchemaStep::Sql(sc_catalog::disable_sync_sql(dialect, name)));
+            } else if self.was_logged.contains(name) {
+                steps.push(SchemaStep::Sql(sc_catalog::disable_change_log_sql(
+                    dialect, name,
+                )));
             }
         }
         Ok(steps)
