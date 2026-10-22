@@ -40,7 +40,12 @@ type PullAnswer = {
 };
 
 type PushAnswer = {
-  results: Array<{ mutation: number; status: string; error?: string }>;
+  results: Array<{
+    mutation: number;
+    status: string;
+    error?: string;
+    key?: string;
+  }>;
 };
 
 /**
@@ -75,17 +80,26 @@ type OnlineTable = {
 
 const UPLOAD_BATCH = 100;
 
-/** Storage keys: `m/` settings, `b/<table>/<key>` the server's rows, `o/` the outbox, `r/` refusals. */
+/**
+ * Storage keys: `m/` settings, `b/<table>/<key>` the server's rows, `o/` the outbox, `r/` refusals,
+ * `a/<table>/<temporary key>` the real key of a row created offline.
+ */
 const outboxKey = (mutation: number): string =>
   `o/${String(mutation).padStart(12, "0")}`;
 const refusedKey = (mutation: number): string =>
   `r/${String(mutation).padStart(12, "0")}`;
 const serverRowKey = (table: string, key: string): string =>
   `b/${table}/${key}`;
+const aliasKey = (table: string, temp: string): string => `a/${table}/${temp}`;
 
 /** A key as the change-log writes it: text as itself, a number as its digits. */
 function keyText(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/** A key's text as the row holds it: a number for a numeric key. */
+function typedKey(spec: SyncTableSpec, key: string): string | number {
+  return spec.keyKind === "number" ? Number(key) : key;
 }
 
 /** A version 4 UUID, where `crypto.randomUUID` is missing too (Hermes). */
@@ -141,6 +155,9 @@ function unreachable(error: unknown): boolean {
  * - `visibleRows`: `serverRows` with the outbox applied on top. This is what
  *   `list()` and `get()` return, so local changes show at once and a pull
  *   never overwrites them.
+ *
+ * All three live in memory, loaded from storage at start; fine up to roughly
+ * 10–20k rows per table (larger tables: `TODO-offline-sync.md`, Later).
  */
 export class OfflineCopy implements OfflineSync {
   // --- setup, given to the constructor ---------------------------------------
@@ -164,6 +181,10 @@ export class OfflineCopy implements OfflineSync {
   private outbox: SyncChange[] = [];
   // Changes the server refused, with its reason, until `clearRefused()`.
   private refusals: RefusedChange[] = [];
+  // Real keys of rows created offline: table → temporary key → real key, so an id the app still holds keeps working.
+  private readonly aliases = new Map<string, Map<string, string>>();
+  // The last local write or upload answer; the next one waits for it, so they never interleave.
+  private lastWrite: Promise<unknown> = Promise.resolve();
 
   // --- sync position, saved on the device ------------------------------------
   // This device's id from `register`; `undefined` until the first sync.
@@ -240,6 +261,19 @@ export class OfflineCopy implements OfflineSync {
     return { ...this.current, pending: this.outbox.length };
   }
 
+  /**
+   * Whether `key` is a temporary key: one the device gave a row it created
+   * offline, in a table whose keys the server makes. The row gets its real key
+   * when the upload is answered.
+   */
+  isTemporary(table: string, key: unknown): boolean {
+    return (
+      this.specs[table]?.serverKey === true &&
+      Number.isInteger(Number(key)) &&
+      Number(key) < 0
+    );
+  }
+
   /** The changes the server refused, oldest first, with its reason for each. */
   refused(): RefusedChange[] {
     return [...this.refusals];
@@ -290,6 +324,7 @@ export class OfflineCopy implements OfflineSync {
     const tables = [...this.visibleRows.keys()];
     this.serverRows.clear();
     this.visibleRows.clear();
+    this.aliases.clear();
     this.outbox = [];
     this.refusals = [];
     this.client = undefined;
@@ -317,7 +352,7 @@ export class OfflineCopy implements OfflineSync {
       async get(id: unknown, query?: { select?: string }): Promise<unknown> {
         const rows = await store.list(name, spec, source, {
           select: query?.select,
-          filter: { [spec.key]: `eq.${keyText(id)}` },
+          filter: { [spec.key]: `eq.${store.realKey(name, keyText(id))}` },
           limit: 1,
         });
         return rows[0];
@@ -443,9 +478,12 @@ export class OfflineCopy implements OfflineSync {
   // --- writing the copy ------------------------------------------------------
 
   /**
-   * Add a row on the device and queue it for upload. A UUID key is made here;
-   * an integer key comes from the server, so that create goes online (offline it
-   * fails with a clear message).
+   * Add a row on the device and queue it for upload. A UUID key is made here.
+   * A key the server issues comes straight from the server when the device is
+   * online with nothing waiting, so the app never sees a temporary key; offline,
+   * the row gets a temporary one (`-mutation`) until the upload answers the
+   * real key. Any other key the caller leaves out comes from the server, so
+   * that create goes online.
    */
   private async create(
     name: string,
@@ -455,37 +493,66 @@ export class OfflineCopy implements OfflineSync {
   ): Promise<SyncRow> {
     await this.ready;
     let id = given[spec.key];
-    if (id === undefined || id === null) {
-      if (spec.keyKind !== "uuid") {
-        // The server gives this key out, so the row is made there.
-        if (!online.create)
-          throw new Error(`\`${name}\` cannot be created from this client`);
-        let made: SyncRow;
+    if (
+      (id === undefined || id === null) &&
+      !spec.serverKey &&
+      spec.keyKind !== "uuid"
+    ) {
+      if (!online.create)
+        throw new Error(`\`${name}\` cannot be created from this client`);
+      let made: SyncRow;
+      try {
+        made = (await online.create(given)) as SyncRow;
+      } catch (e) {
+        // `fetch` rejects with a `TypeError` when the server cannot be reached.
+        if (!(e instanceof TypeError)) throw e;
+        throw new Error(
+          `Adding to "${name}" needs a connection: the server makes its key. Please try again when you are back online.`
+        );
+      }
+      await this.adopt(name, spec, made);
+      return { ...made };
+    }
+    return this.locked(async () => {
+      const temp = (id === undefined || id === null) && spec.serverKey === true;
+      // Online with nothing waiting to go before it: the server makes the row
+      // now. When it cannot be reached after all, the row is made offline.
+      if (temp && this.current.online && !this.outbox.length && online.create) {
         try {
-          made = (await online.create(given)) as SyncRow;
+          // If the row points to a row that was created offline, use that row's real key.
+          const sent = this.translate(
+            { mutation: 0, table: name, op: "insert", key: "", row: given },
+            new Map()
+          ).row;
+          const made = (await online.create(sent ?? given)) as SyncRow;
+          await this.adopt(name, spec, made);
+          return { ...made };
         } catch (e) {
           // `fetch` rejects with a `TypeError` when the server cannot be reached.
           if (!(e instanceof TypeError)) throw e;
-          throw new Error(
-            `Adding to "${name}" while offline is not supported yet (it is planned). Please try again when you are back online.`
-          );
         }
-        await this.adopt(name, spec, made);
-        return { ...made };
       }
-      id = newUuid();
-    }
-    const key = keyText(id);
-    if (this.visibleRows.get(name)?.has(key)) {
-      throw new Error(
-        `\`${name}\` already has a row with ${spec.key} = ${key}`
-      );
-    }
-    const row: SyncRow = {};
-    for (const column of Object.keys(spec.columns)) row[column] = null;
-    Object.assign(row, given, { [spec.key]: id });
-    await this.record({ mutation: 0, table: name, op: "insert", key, row });
-    return { ...row };
+      if (temp) id = -this.next;
+      else if (id === undefined || id === null) id = newUuid();
+      const key = keyText(id);
+      if (this.visibleRows.get(name)?.has(key)) {
+        throw new Error(
+          `\`${name}\` already has a row with ${spec.key} = ${key}`
+        );
+      }
+      const row: SyncRow = {};
+      for (const column of Object.keys(spec.columns)) row[column] = null;
+      Object.assign(row, given, { [spec.key]: id });
+      await this.record({
+        mutation: 0,
+        table: name,
+        op: "insert",
+        key,
+        row,
+        ...(temp ? { temp: true } : {}),
+      });
+      return { ...row };
+    });
   }
 
   /** Change a row on the device and queue the change. The key cannot change. */
@@ -496,30 +563,46 @@ export class OfflineCopy implements OfflineSync {
     changes: SyncRow
   ): Promise<SyncRow> {
     await this.ready;
-    const key = keyText(id);
-    const current = this.visibleRows.get(name)?.get(key);
-    if (!current)
-      throw new Error(`\`${name}\` has no row with ${spec.key} = ${key}`);
-    if (spec.key in changes && keyText(changes[spec.key]) !== key) {
-      throw new Error(`a row's ${spec.key} cannot be changed`);
-    }
-    await this.record({
-      mutation: 0,
-      table: name,
-      op: "update",
-      key,
-      row: { ...changes },
+    return this.locked(async () => {
+      const key = this.realKey(name, keyText(id));
+      const current = this.visibleRows.get(name)?.get(key);
+      if (!current)
+        throw new Error(`\`${name}\` has no row with ${spec.key} = ${key}`);
+      const row = { ...changes };
+      if (spec.key in row) {
+        if (this.realKey(name, keyText(row[spec.key])) !== key)
+          throw new Error(`a row's ${spec.key} cannot be changed`);
+        delete row[spec.key];
+      }
+      await this.record({ mutation: 0, table: name, op: "update", key, row });
+      return { ...current, ...row };
     });
-    return { ...current, ...changes };
   }
 
   /** Delete a row on the device and queue the delete. */
   private async remove(name: string, id: unknown): Promise<void> {
     await this.ready;
-    const key = keyText(id);
-    if (!this.visibleRows.get(name)?.has(key))
-      throw new Error(`\`${name}\` has no row with key ${key}`);
-    await this.record({ mutation: 0, table: name, op: "delete", key });
+    return this.locked(async () => {
+      const key = this.realKey(name, keyText(id));
+      if (!this.visibleRows.get(name)?.has(key))
+        throw new Error(`\`${name}\` has no row with key ${key}`);
+      await this.record({ mutation: 0, table: name, op: "delete", key });
+    });
+  }
+
+  /** `key`, or the real key when it is the temporary key of a row created offline. */
+  private realKey(table: string, key: string): string {
+    return this.aliases.get(table)?.get(key) ?? key;
+  }
+
+  /**
+   * Run `work` after the previous local write or upload answer has finished, so
+   * a change is never added while an answer renames temporary keys.
+   */
+  private locked<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.lastWrite.then(work, work);
+    this.lastWrite = run.catch(() => undefined);
+    return run;
   }
 
   /**
@@ -670,23 +753,65 @@ export class OfflineCopy implements OfflineSync {
   private async upload(batch: SyncChange[]): Promise<void> {
     const answer = (await this.transport.post("push", {
       client_id: this.client,
-      changes: batch.map(({ mutation, table, op, key, row }) => ({
+      changes: batch.map(({ mutation, table, op, key, row, temp }) => ({
         mutation,
         table,
         op,
         key,
         row,
+        ...(temp ? { temp } : {}),
       })),
     })) as PushAnswer;
+    await this.locked(() => this.applyAnswer(batch, answer));
+  }
+
+  /**
+   * Take in an upload's answer. A row created under a temporary key gets its real
+   * key everywhere: in `serverRows`, in the changes still waiting and as an alias.
+   * One that the server did not create takes the waiting changes that need it
+   * along into `refused()`.
+   */
+  private async applyAnswer(
+    batch: SyncChange[],
+    answer: PushAnswer
+  ): Promise<void> {
     const results = new Map(answer.results.map((r) => [r.mutation, r]));
     const writes: Array<[string, string | null]> = [];
     const done = new Set<number>();
     const touched = new Map<string, Set<string>>();
-    for (const change of batch) {
-      const result = results.get(change.mutation);
+    // This answer's temporary keys: table → temporary key → real key.
+    const renamed = new Map<string, Map<string, string>>();
+    // Temporary keys whose row was not created, and why.
+    const lost: Array<{ table: string; key: string; why: string }> = [];
+    for (const sent of batch) {
+      const result = results.get(sent.mutation);
       if (!result) break;
-      done.add(change.mutation);
-      writes.push([outboxKey(change.mutation), null]);
+      done.add(sent.mutation);
+      writes.push([outboxKey(sent.mutation), null]);
+      let change = this.translate(sent, renamed);
+      if (sent.temp) {
+        if (result.key !== undefined && result.status !== "refused") {
+          const spec = this.specs[sent.table];
+          const real = result.key;
+          let keys = renamed.get(sent.table);
+          if (!keys) renamed.set(sent.table, (keys = new Map()));
+          keys.set(sent.key, real);
+          writes.push([aliasKey(sent.table, sent.key), real]);
+          change = {
+            ...change,
+            key: real,
+            row: spec
+              ? { ...change.row, [spec.key]: typedKey(spec, real) }
+              : change.row,
+          };
+        } else {
+          lost.push({
+            table: sent.table,
+            key: sent.key,
+            why: result.error ?? "an earlier upload refused it",
+          });
+        }
+      }
       if (result.status === "refused") {
         const refusal: RefusedChange = {
           ...change,
@@ -694,7 +819,10 @@ export class OfflineCopy implements OfflineSync {
         };
         this.refusals.push(refusal);
         writes.push([refusedKey(change.mutation), JSON.stringify(refusal)]);
-      } else if (this.held.has(change.table)) {
+      } else if (
+        this.held.has(change.table) &&
+        !(sent.temp && result.key === undefined)
+      ) {
         // Handled by the server: its row now, until the next pull says exactly.
         const row = applyChange(
           this.serverRows.get(change.table)?.get(change.key),
@@ -712,11 +840,99 @@ export class OfflineCopy implements OfflineSync {
       touched.set(change.table, keys);
     }
     if (!done.size) throw new Error("sync/push answered none of the changes");
+
+    // The changes still waiting: those that need a row that was not created are
+    // refused with it, and the rest name the real keys.
+    let waiting = this.outbox.filter((c) => !done.has(c.mutation));
+    const before = waiting.length;
+    while (lost.length) {
+      const gone = lost.pop()!;
+      const needs = waiting.filter((c) =>
+        this.refersTo(c, gone.table, gone.key)
+      );
+      waiting = waiting.filter((c) => !needs.includes(c));
+      for (const change of needs) {
+        const refusal: RefusedChange = {
+          ...change,
+          error: `its row in "${gone.table}" was not created: ${gone.why}`,
+        };
+        this.refusals.push(refusal);
+        writes.push([outboxKey(change.mutation), null]);
+        writes.push([refusedKey(change.mutation), JSON.stringify(refusal)]);
+        if (change.temp)
+          lost.push({
+            table: change.table,
+            key: change.key,
+            why: refusal.error,
+          });
+      }
+    }
+    waiting = waiting.map((c) => {
+      const named = this.translate(c, renamed);
+      if (named !== c)
+        writes.push([outboxKey(c.mutation), JSON.stringify(named)]);
+      return named;
+    });
+
     await this.storage.write(writes);
-    this.outbox = this.outbox.filter((c) => !done.has(c.mutation));
-    for (const [table, keys] of touched) this.refresh(table, [...keys]);
-    this.emit([...touched.keys()]);
+    this.outbox = waiting;
+    for (const [table, keys] of renamed) {
+      let aliases = this.aliases.get(table);
+      if (!aliases) this.aliases.set(table, (aliases = new Map()));
+      for (const [temp, real] of keys) aliases.set(temp, real);
+    }
+    if (renamed.size || waiting.length < before) {
+      // Keys moved, and rows elsewhere point at them: rebuild every table.
+      for (const table of Object.keys(this.specs)) this.rebuild(table);
+      this.emit(Object.keys(this.specs));
+    } else {
+      for (const [table, keys] of touched) this.refresh(table, [...keys]);
+      this.emit([...touched.keys()]);
+    }
     this.setStatus({});
+  }
+
+  /**
+   * `change` with the temporary keys that now have a real one replaced: its own
+   * key, and the columns that point at a row created offline. The same object
+   * when nothing changed.
+   */
+  private translate(
+    change: SyncChange,
+    renamed: Map<string, Map<string, string>>
+  ): SyncChange {
+    const real = (table: string, key: string) =>
+      renamed.get(table)?.get(key) ?? this.aliases.get(table)?.get(key);
+    const spec = this.specs[change.table];
+    let out = change;
+    const key = change.temp ? undefined : real(change.table, change.key);
+    if (key !== undefined) out = { ...out, key };
+    if (!spec || !change.row) return out;
+    let row = change.row;
+    for (const [column, into] of Object.entries(spec.rels)) {
+      const value = row[column];
+      const intoSpec = this.specs[into];
+      if (value === null || value === undefined || !intoSpec) continue;
+      const realKey = real(into, keyText(value));
+      if (realKey !== undefined)
+        row = { ...row, [column]: typedKey(intoSpec, realKey) };
+    }
+    if (key !== undefined && spec.key in row)
+      row = { ...row, [spec.key]: typedKey(spec, key) };
+    return row === change.row ? out : { ...out, row };
+  }
+
+  /** Whether `change` is about the row `key` of `table`, or points at it. */
+  private refersTo(change: SyncChange, table: string, key: string): boolean {
+    if (change.table === table && change.key === key) return true;
+    const spec = this.specs[change.table];
+    return Object.entries(spec?.rels ?? {}).some(
+      ([column, into]) =>
+        into === table &&
+        change.row?.[column] !== undefined &&
+        change.row?.[column] !== null &&
+        keyText(change.row[column]) === key
+    );
   }
 
   /**
@@ -787,21 +1003,41 @@ export class OfflineCopy implements OfflineSync {
    */
   private async load(): Promise<void> {
     for (const [key, value] of await this.storage.entries("")) {
-      if (key === "m/client") this.client = value;
-      else if (key === "m/watermark") this.watermark = value;
-      else if (key === "m/held")
-        this.held = new Set(JSON.parse(value) as string[]);
-      else if (key === "m/next") this.next = Number(value);
-      else if (key.startsWith("o/"))
-        this.outbox.push(JSON.parse(value) as SyncChange);
-      else if (key.startsWith("r/"))
-        this.refusals.push(JSON.parse(value) as RefusedChange);
-      else if (key.startsWith("b/")) {
-        const slash = key.indexOf("/", 2);
-        this.serverRowsOf(key.slice(2, slash)).set(
-          key.slice(slash + 1),
-          JSON.parse(value) as SyncRow
-        );
+      // `m/` entries are whole keys; the others are a prefix plus `<table>/<key>` or `<mutation>`.
+      const slash = key.indexOf("/", 2);
+      switch (key.startsWith("m/") ? key : key.slice(0, 2)) {
+        case "m/client": // device id from `register`
+          this.client = value;
+          break;
+        case "m/watermark": // where the last pull stopped
+          this.watermark = value;
+          break;
+        case "m/held": // tables the device holds a copy of
+          this.held = new Set(JSON.parse(value) as string[]);
+          break;
+        case "m/next": // next change number
+          this.next = Number(value);
+          break;
+        case "o/": // a change waiting in the outbox
+          this.outbox.push(JSON.parse(value) as SyncChange);
+          break;
+        case "r/": // a change the server refused
+          this.refusals.push(JSON.parse(value) as RefusedChange);
+          break;
+        case "b/": // a row as the server last sent it
+          this.serverRowsOf(key.slice(2, slash)).set(
+            key.slice(slash + 1),
+            JSON.parse(value) as SyncRow
+          );
+          break;
+        case "a/": {
+          // temporary key → real key of a row created offline
+          const table = key.slice(2, slash);
+          let aliases = this.aliases.get(table);
+          if (!aliases) this.aliases.set(table, (aliases = new Map()));
+          aliases.set(key.slice(slash + 1), value);
+          break;
+        }
       }
     }
     this.outbox.sort((a, b) => a.mutation - b.mutation);

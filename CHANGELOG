@@ -47,7 +47,7 @@ Every change to a table with sync or history on is now recorded with its values,
   as `new_values` keys with null values, collapses duplicates to the net op, and drops the old
   columns. Run it with the server stopped.
 - Docs: §14.12 describes the JSON GUC, the ambient changeset and the stricter removal check.
-  TODO-offline-sync S3.3/S3.6 point at the new places.
+  TODO-offline-sync S3.3 points at the new places.
 - Tests: `sc-api/tests/history_capture.rs`. It covers: a request whose trigger updates the same
   row and writes a second table is one changeset with two entries, recorded under the requesting
   user although the trigger wrote as admin; insert+update is one `i` with the final row;
@@ -107,6 +107,37 @@ only; no code has changed.
   is added, and `fields`, `client_id` and `mutation` move from `_fd_changes` to the changeset.
 - `TODO-history.md` (new). `TODO-offline-sync.md` points S1.4, S2.8 and S5.1 at the shared
   history tasks.
+
+## Offline sync: rows with integer keys can be created offline
+
+Tables whose integer key the server hands out (`serial`, identity) can now get new rows on a
+device without a connection, like tables with a `uuid` key. Before, such a create went straight
+to the server and failed offline.
+
+- The device gives the new row a temporary key, its change number negated (`-17`). The row
+  shows at once and other rows can point at it.
+- On upload the server inserts the row, answers its real key, and translates `-17` in the
+  upload's later changes: an update, a delete, or a foreign key of a row made in it. The pair is
+  kept in a new system table, `_fd_sync_keys`, so a retried upload gets the key again and a
+  later upload that still names `-17` is translated too.
+- The device then renames the row everywhere in its copy and in the changes still waiting. An id
+  the app still holds keeps working: `api.lists.get(-17)` finds the row under its real key.
+- If the server refuses the new row, the changes that need it are refused with it, with a
+  reason saying so, instead of failing on a foreign key.
+- A change made while an upload is on its way waits for the answer, so it never keeps a key that
+  was just renamed.
+- Online with nothing waiting to upload, such a create goes straight to the server, so the app
+  gets the real key at once and never shows a negative id. It falls back to a temporary key when
+  the server cannot be reached.
+- `api.sync.isTemporary(table, key)` tells whether a key is such a temporary one. The generated
+  web pages and React Native screens of a synced table show "…" for it instead of `-17`.
+- Only a key the server makes that is not an integer (a text key with a default) still needs a
+  connection.
+- Tests: `sync_push.rs` (one upload with a list and its entries, a retry, a refused list) and
+  `sync_client.rs` (the generated client under Node: offline creates, renaming, the change made
+  during an upload, the refusal of rows that need a refused one, and an online create getting
+  its real key at once). `bundled_react_native.rs` and a scaffold unit test check the "…" in
+  the generated screens.
 
 ## Typed `api.run<Name>()` methods: actions declare their payload and answer
 

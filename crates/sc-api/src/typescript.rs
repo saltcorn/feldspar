@@ -1072,6 +1072,7 @@ fn offline_copy(base: &str, tables: &[TableClient<'_>]) -> String {
             serde_json::json!({
                 "key": key.name,
                 "keyKind": key_kind,
+                "serverKey": key.ty == ValueType::Int && key.has_default,
                 "columns": columns,
                 "rels": rels,
             }),

@@ -11010,6 +11010,8 @@ writes the first, so a pull never overwrites a change that is not uploaded yet, 
 server refuses leaves the outbox and with it the page. Rows are kept as JSON under their key, not
 as tables, so a schema change needs nothing on the device, and every storage is the same small
 key/value interface: SQLite (`expo-sqlite`) on a phone, IndexedDB in a browser, memory in tests.
+The whole copy is loaded into memory and read there, which suits tables up to roughly 10–20k
+rows; larger ones will need real local tables (`TODO-offline-sync.md`, Later).
 Reads apply a list read's filters, ordering, paging and `select` locally, embeds included when the
 embedded table is synced too. Sync runs by itself: at start, shortly after a write, at an
 interval, when the browser comes online, and when a live stream of a synced table's changes
@@ -11020,12 +11022,21 @@ every application: `offline-types.ts` (the options,
 `offline-copy.ts` (the copy itself).
 
 **Keys:** a device can create rows offline whatever the table's key. A `uuid` key is made by
-the device and kept by the server. An integer key is given out by the server, so offline the
-device uses a temporary key for the new row, also in the rows that point to it. On upload the
-server inserts the row, rewrites the temporary key to the real one in the later changes of the
-same upload, and answers the pairs; the device then replaces the temporary key in its copy and
-its outbox. A pair is found again for a retried upload whose answer was lost. The log stores
-keys as text, so none of this changes the schema.
+the device and kept by the server. An integer key is given out by the server, so the device
+uses a temporary key, its change number negated (`-17`), for the new row and in the rows that
+point to it; a key the server issues is never negative. The insert is sent with `temp: true`.
+The server inserts the row, answers the real key, and translates the temporary key in later
+changes (their key and their foreign keys). It keeps the pair in `_fd_sync_keys` (device,
+change number, table, real key) in the insert's transaction, so a retried upload whose answer
+was lost gets the key again, and a later upload still naming `-17` is translated too. A change
+that needs a row the server refused is refused with a reason saying so. The device renames the
+row in its copy and its outbox, and keeps the pair as an alias so an id the app still holds keeps
+working. Local writes and applying an upload's answer take turns, so a change made during an
+upload never keeps a key that was just renamed. A device that is online with an empty outbox
+sends such a create straight to the server instead, so the app never sees a temporary key; it
+uses one only when the server cannot be reached or other changes are still waiting.
+`api.sync.isTemporary(table, key)` tells an app whether a key is a temporary one; the generated
+pages and screens show "…" for it.
 
 **What a device gets:** every row of the application's synced tables that the user may read.
 Filtering by more than the access rules (only recent rows, say) is left for later.

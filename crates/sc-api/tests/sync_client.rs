@@ -123,7 +123,8 @@ struct Fixture {
     ann: User,
 }
 
-/// `notes` belong to their `owner`; `items` hang off a note. Both synced.
+/// `notes` belong to their `owner`; `items` hang off a note. `lists` and their
+/// `entries` have integer keys the server issues. All synced.
 async fn fixture(db: &TestDb) -> Result<Fixture> {
     fixture_with(db, Some("owner === user.id")).await
 }
@@ -140,7 +141,10 @@ async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
            END LOOP; END $$;
          CREATE TABLE notes (id uuid PRIMARY KEY, title text NOT NULL, owner uuid);
          CREATE TABLE items (id uuid PRIMARY KEY, note uuid REFERENCES notes(id) ON DELETE CASCADE,
-                             label text, rank integer, done boolean);",
+                             label text, rank integer, done boolean);
+         CREATE TABLE lists (id serial PRIMARY KEY, name text NOT NULL);
+         CREATE TABLE entries (id serial PRIMARY KEY,
+                               list int REFERENCES lists(id) ON DELETE CASCADE, text text);",
     )
     .await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
@@ -172,6 +176,14 @@ async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
                 table: "items".into(),
                 settings: synced(80, None),
             },
+            schema_edit::Operation::AlterTable {
+                table: "lists".into(),
+                settings: synced(80, None),
+            },
+            schema_edit::Operation::AlterTable {
+                table: "entries".into(),
+                settings: synced(80, None),
+            },
         ],
         &schema_edit::ApplyOptions::default(),
     )
@@ -179,7 +191,11 @@ async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
 
     sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
     let ann = create_user(&cat, "ann@example.com", "ann-password", 80).await?;
-    let api = RestProvider::project("/api", &[cat.require("notes")?, cat.require("items")?])
+    let tables = ["notes", "items", "lists", "entries"]
+        .iter()
+        .map(|t| cat.require(t))
+        .collect::<Result<Vec<_>>>()?;
+    let api = RestProvider::project("/api", &tables)
         .with_application(APP)
         .with_evaluator(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>);
     Ok(Fixture {
@@ -571,56 +587,156 @@ fn the_copy_syncs_by_itself_until_stopped() {
     assert_eq!(r["afterStop"], json!([]), "{r:#}");
 }
 
-/// A create on an integer-key table goes to the server, which gives out the
-/// key: offline it fails with a message that says so, while an error the server
-/// answered is passed on as it is.
+/// Rows of integer-key tables created offline: a list and an entry in it, under
+/// temporary keys, renamed to the server's keys by the upload. Changes made while
+/// the upload is out wait for its answer: an edit gets the real key, and an entry
+/// in a list the server refused is refused with it.
 const INTEGER_KEY_DRIVER_TS: &str = r#"
-import type { SyncTransport } from "./offline-types.ts";
+import { createClient } from "./client.ts";
 import { memoryStorage } from "./offline-backends.ts";
-import { OfflineCopy } from "./offline-copy.ts";
+import * as readline from "node:readline";
 
-const transport: SyncTransport = {
-  async post() {
-    throw new TypeError("fetch failed");
-  },
+const waiting = new Map<number, (answer: any) => void>();
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const answer = JSON.parse(line);
+  waiting.get(answer.id)?.(answer);
+  waiting.delete(answer.id);
+});
+let asked = 0;
+const ask = (question: object): Promise<any> => {
+  const id = ++asked;
+  process.stdout.write(JSON.stringify({ ...question, id }) + "\n");
+  return new Promise((resolve) => waiting.set(id, resolve));
 };
-let reachable = false;
-const online = {
-  async create() {
-    if (!reachable) throw new TypeError("fetch failed");
-    throw new Error("create failed: 400 value is required");
-  },
+let offline = false;
+let onPush: (() => void) | undefined;
+const fetch = async (url: any, init: any) => {
+  if (offline) throw new TypeError("fetch failed");
+  if (String(url).endsWith("/push")) onPush?.();
+  const answer = await ask({
+    kind: "fetch",
+    method: init?.method ?? "GET",
+    url: String(url),
+    body: init?.body ? JSON.parse(init.body) : null,
+  });
+  return new Response(JSON.stringify(answer.body), {
+    status: answer.status,
+    headers: { "content-type": "application/json" },
+  });
 };
-const store = new OfflineCopy(
-  { storage: memoryStorage(), auto: false },
-  transport,
-  { data: { key: "id", keyKind: "number", columns: { id: "number", value: "text" }, rels: {} } },
-);
-const data = store.table("data", online) as any;
-const message = (p: Promise<unknown>) => p.then(() => "created", (e: Error) => e.message);
+
 const out: Record<string, unknown> = {};
-out.offline = await message(data.create({ value: "a" }));
-reachable = true;
-out.refused = await message(data.create({ value: "a" }));
-out.pending = store.status().pending;
-console.log(JSON.stringify(out));
+const api = createClient({ fetch, offline: { storage: memoryStorage(), auto: false } });
+const sync = api.sync!;
+await sync.now();
+
+offline = true;
+const list = await api.lists.create({ name: "groceries" });
+await api.entries.create({ list: list.id, text: "milk" });
+await api.lists.update(list.id, { name: "shopping" });
+const broken = await api.lists.create({ name: null as any });
+out.tempKeys = [list.id, broken.id];
+out.isTemporary = [sync.isTemporary("lists", list.id), sync.isTemporary("lists", 7)];
+out.offline = await api.entries.list({ select: "text,list(name)" });
+
+offline = false;
+const pushing = new Promise<void>((resolve) => (onPush = resolve));
+const uploading = sync.now();
+await pushing;
+await api.entries.create({ list: broken.id, text: "orphan" });
+await api.lists.update(list.id, { name: "food" });
+await uploading;
+await sync.now();
+out.lists = (await api.lists.list()).map((l) => ({ id: l.id, name: l.name }));
+out.entries = (await api.entries.list()).map((e) => ({ list: e.list, text: e.text }));
+out.byTempKey = (await api.lists.get(list.id))?.name;
+out.refused = sync.refused().map((r) => ({ table: r.table, error: r.error }));
+out.pending = sync.status().pending;
+
+// Online with nothing waiting: the server makes the row, no temporary key.
+const direct = await api.lists.create({ name: "direct" });
+out.direct = {
+  id: direct.id,
+  name: (await api.lists.get(direct.id))?.name,
+  pending: sync.status().pending,
+};
+try {
+  await api.lists.create({ name: null as any });
+  out.directRefused = "created";
+} catch (e) {
+  out.directRefused = sync.status().pending;
+}
+process.stdout.write(JSON.stringify({ kind: "done", result: out }) + "\n");
+process.exit(0);
 "#;
 
-#[test]
-fn an_integer_key_create_offline_says_why_it_failed() {
-    let Some(r) = run_stub_driver("integer-key", INTEGER_KEY_DRIVER_TS) else {
-        return;
-    };
+#[tokio::test]
+async fn rows_with_integer_keys_are_created_offline() -> Result<()> {
+    if std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: no `node` on PATH to run the generated client");
+        return Ok(());
+    }
+    let db = TestDb::new().await?;
+    let f = fixture(&db).await?;
+    let r = run_bridged(&db, &f, "integer-key", INTEGER_KEY_DRIVER_TS, &[]).await?;
+
+    // Offline: temporary keys, and the entry already embeds its list.
+    assert_eq!(r["tempKeys"], json!([-1, -4]), "{r:#}");
+    assert_eq!(r["isTemporary"], json!([true, false]), "{r:#}");
     assert_eq!(
         r["offline"],
-        "Adding to \"data\" while offline is not supported yet (it is planned). Please try again when you are back online.",
+        json!([{ "text": "milk", "list": { "name": "shopping" } }]),
         "{r:#}"
     );
+
+    // Synced: the server's keys everywhere, and the edit made during the upload.
+    let rows = db
+        .client()
+        .await?
+        .query(
+            "SELECT l.id, l.name, e.list, e.text FROM lists l JOIN entries e ON e.list = l.id",
+            &[],
+        )
+        .await
+        .map_err(|e| Error::database(e.to_string()))?;
+    assert_eq!(rows.len(), 1);
+    let id: i32 = rows[0].get(0);
+    assert_eq!(rows[0].get::<_, String>(1), "food");
+    assert_eq!(rows[0].get::<_, Option<i32>>(2), Some(id));
+    assert_eq!(rows[0].get::<_, String>(3), "milk");
+    assert_eq!(r["lists"], json!([{ "id": id, "name": "food" }]), "{r:#}");
     assert_eq!(
-        r["refused"], "create failed: 400 value is required",
+        r["entries"],
+        json!([{ "list": id, "text": "milk" }]),
+        "{r:#}"
+    );
+    assert_eq!(r["byTempKey"], "food", "{r:#}");
+
+    // The list the server refused, and the entry made in it during the upload.
+    let refused = r["refused"].as_array().unwrap();
+    assert_eq!(refused.len(), 2, "{r:#}");
+    assert_eq!(refused[0]["table"], "lists", "{r:#}");
+    assert_eq!(refused[1]["table"], "entries", "{r:#}");
+    assert!(
+        refused[1]["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("its row in \"lists\" was not created"),
         "{r:#}"
     );
     assert_eq!(r["pending"], 0, "{r:#}");
+
+    // Online with an empty outbox: the real key at once, and a refusal thrown
+    // rather than queued.
+    assert!(r["direct"]["id"].as_i64().unwrap() > id as i64, "{r:#}");
+    assert_eq!(r["direct"]["name"], "direct", "{r:#}");
+    assert_eq!(r["direct"]["pending"], 0, "{r:#}");
+    assert_eq!(r["directRefused"], 0, "{r:#}");
+    Ok(())
 }
 
 const NOTE_A: &str = "00000000-0000-4000-8000-00000000000a";

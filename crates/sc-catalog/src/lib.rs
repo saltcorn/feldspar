@@ -56,11 +56,11 @@ mod wakeups;
 pub use admin_host::{AdminCall, AdminHost};
 pub use caller::CallerContext;
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
-pub use changeset::{CHANGESETS_TABLE, Changeset, ChangesetSource};
 pub use change_log::{
     ChangeLogFeature, bootstrap_change_log, change_log_enabled, change_log_key,
     disable_change_log_sql, enable_change_log_sql, history_enabled, set_history_enabled,
 };
+pub use changeset::{CHANGESETS_TABLE, Changeset, ChangesetSource};
 pub use code_libraries::{
     CODE_LIBRARIES_TABLE, CodeLibrary, bootstrap_code_libraries, check_code_library_saveable,
     delete_application_code_libraries, delete_code_library, list_code_libraries, load_code_library,
@@ -114,7 +114,7 @@ pub use rls::{
 pub use secrets::SecretKey;
 pub use spatial::bootstrap_spatial;
 pub use sync::{
-    SYNC_CLIENTS_TABLE, SyncWatermark, changed_keys, set_sync_enabled,
+    SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_keys, set_sync_enabled,
     sync_enabled, sync_watermark,
 };
 pub use table::{AccessRules, FieldMergeIssue, Table, TableSource};

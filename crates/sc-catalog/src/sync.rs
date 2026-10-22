@@ -20,6 +20,11 @@ use crate::tx::SharedTx;
 /// watermark of the last pull it confirmed having applied.
 pub const SYNC_CLIENTS_TABLE: &str = "_fd_sync_clients";
 
+/// The real key of each row a device created with a temporary one (a table whose
+/// key the server issues), by the device's change number: a retried upload gets
+/// the key again, and a later change still naming the temporary key is translated.
+pub const SYNC_KEYS_TABLE: &str = "_fd_sync_keys";
+
 /// `_fd_tables.attributes` key holding a table's sync settings, an object
 /// (`{ "enabled": true }`) so later settings have somewhere to go.
 pub const ATTR_SYNC: &str = "sync";
@@ -46,11 +51,30 @@ fn clients_fields() -> Vec<DataField> {
     ]
 }
 
-/// Ensure the device table exists; [`bootstrap_change_log`](crate::bootstrap_change_log)
-/// calls this.
+/// The key table's columns: one row per device change that created a row with a
+/// temporary key.
+fn keys_fields() -> Vec<DataField> {
+    let text = || TypeRef::Basic(BasicType::Text);
+    vec![
+        DataField::plain("client_id", TypeRef::Basic(BasicType::Uuid))
+            .required()
+            .primary_key(),
+        DataField::plain("mutation", TypeRef::Basic(BasicType::Int))
+            .required()
+            .primary_key(),
+        DataField::plain("table_name", text()).required(),
+        DataField::plain("row_key", text()).required(),
+    ]
+}
+
+/// Ensure the device table and the key table exist;
+/// [`bootstrap_change_log`](crate::bootstrap_change_log) calls this.
 pub(crate) async fn bootstrap_sync_clients(catalog: &Catalog) -> Result<()> {
     catalog
         .bootstrap_table(SYNC_CLIENTS_TABLE, &clients_fields())
+        .await?;
+    catalog
+        .bootstrap_table(SYNC_KEYS_TABLE, &keys_fields())
         .await?;
     Ok(())
 }

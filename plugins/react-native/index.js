@@ -214,7 +214,8 @@ const configuration_workflow = () => ({
               "above the list of keys.",
             // Trimmed by the generator, so whitespace around a pasted value is fine.
             attributes: {
-              regexp: "\\s*[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\s*",
+              regexp:
+                "\\s*[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\s*",
               re_invalid_error:
                 "An issuer ID is a UUID, like 57246542-96fe-1a63-e053-0824d011072a.",
             },
@@ -228,7 +229,8 @@ const configuration_workflow = () => ({
               "The ID of an API key with the Admin or App Manager role, from the same page.",
             attributes: {
               regexp: "\\s*[A-Z0-9]{10}\\s*",
-              re_invalid_error: "A key ID is ten capital letters and digits, like 2X9R4HXF34.",
+              re_invalid_error:
+                "A key ID is ten capital letters and digits, like 2X9R4HXF34.",
             },
             showIf: { use_asc: true },
           },
@@ -498,7 +500,7 @@ function targets({
               throw new Error(
                 'The App Store Connect API is switched off. Tick "Use the App Store Connect API" ' +
                   "under Settings → Modules → React Native and fill in its key, or upload a profile " +
-                  "made in Apple's developer portal instead.",
+                  "made in Apple's developer portal instead."
               );
             return generateProfileOperation(ctx, ascEnv);
           },
@@ -689,11 +691,15 @@ import { APP_URL } from "./config";
  * relative. On a phone there is no page: they go to the application's URL.
  */
 export const api: ApiClient = createClient({
-  baseUrl: Platform.OS === "web" ? "" : APP_URL,${ctx.offline ? `
+  baseUrl: Platform.OS === "web" ? "" : APP_URL,${
+    ctx.offline
+      ? `
   // The synced tables are kept on the device (SQLite on a phone, IndexedDB on
   // the web), so they can be read and changed offline. \`api.sync\` says how
   // syncing goes.
-  offline: { storage: syncStorage() },` : ""}
+  offline: { storage: syncStorage() },`
+      : ""
+  }
 });
 
 /** The state of one read: data, plus what is happening to it. */
@@ -919,9 +925,17 @@ matching types and hooks exist at the next build.
 |---|---|
 | \`client.ts\` | the typed API client: one method per endpoint this application exposes |
 | \`helper.ts\` | how a request is made and how a failure is reported — the same in every application |
-${ctx.offline ? `| \`offline-types.ts\`, \`offline-backends.ts\`, \`offline-copy.ts\` | offline sync: the options and \`api.sync\`, the storages, and the device's copy of the synced tables |
-` : ""}| \`hooks.ts\` | React hooks over that client, one set per table |${ctx.offline ? `
-| \`storage.ts\`, \`storage.native.ts\` | where the offline copy of the synced tables is kept, on the web and on a phone |` : ""}
+${
+  ctx.offline
+    ? `| \`offline-types.ts\`, \`offline-backends.ts\`, \`offline-copy.ts\` | offline sync: the options and \`api.sync\`, the storages, and the device's copy of the synced tables |
+`
+    : ""
+}| \`hooks.ts\` | React hooks over that client, one set per table |${
+    ctx.offline
+      ? `
+| \`storage.ts\`, \`storage.native.ts\` | where the offline copy of the synced tables is kept, on the web and on a phone |`
+      : ""
+  }
 | \`config.ts\` | the application's URL, which a phone sends its requests to |
 | \`native.json\` | the native apps' settings (application and bundle ID, version, icon, build type, provisioning profile), which \`app.config.js\` reads |
 | \`ios/build.cjs\` | the iOS builds: the \`build:ios:*\` scripts |
@@ -936,17 +950,23 @@ ${ctx.offline ? `| \`offline-types.ts\`, \`offline-backends.ts\`, \`offline-copy
 ${list}
 
 A write is a \`Mutation\`: call \`run\`, and every query over that table re-runs.
-${ctx.offline ? `
+${
+  ctx.offline
+    ? `
 ## Offline
 
 The synced tables are kept on the device: SQLite on a phone (\`storage.native.ts\`),
 IndexedDB on the web (\`storage.ts\`). Their reads and writes work without a
 connection; writes wait in an outbox and are uploaded when the device is online
 again, and the server's changes are pulled down. \`api.sync\` has the status
-(\`status()\`, \`onStatus\`), the changes the server refused (\`refused()\`), and
-\`now()\` to sync at once. A project made before sync was switched on needs
+(\`status()\`, \`onStatus\`), the changes the server refused (\`refused()\`),
+\`isTemporary(table, key)\` for the negative key a row created offline has until it is
+uploaded (the screens show "…" for it), and \`now()\` to sync at once. A project made
+before sync was switched on needs
 \`npx expo install expo-sqlite\` once.
-` : ""}
+`
+    : ""
+}
 ## The API is missing something I need
 
 Add a custom SQL query to the application and it becomes a typed method on
@@ -1789,7 +1809,9 @@ function screenTsx(table) {
   if (inputs.some((f) => f.control === "checkbox")) rn.add("Switch");
   if (inputs.some((f) => f.control !== "checkbox")) rn.add("TextInput");
 
-  const hooks = [`use${pascal}`];
+  // A synced table's new rows may show a temporary key until they are uploaded.
+  const temporary = table.synced && !!pk;
+  const hooks = temporary ? ["api", `use${pascal}`] : [`use${pascal}`];
   if (canCreate) hooks.push(`useCreate${pascal}`);
   if (canDelete) hooks.push(`useDelete${pascal}`);
 
@@ -1838,11 +1860,17 @@ ${controls}
   if (canDelete) {
     jsx += `      {remove.error ? <Text style={styles.error}>{remove.error.message}</Text> : null}\n`;
   }
+  const value = (f) =>
+    temporary && f.name === pk
+      ? `api.sync?.isTemporary(${JSON.stringify(
+          table.name
+        )}, row.${pk}) ? "…" : String(row.${pk} ?? "")`
+      : `String(row.${f.name} ?? "")`;
   const cells = table.fields
     .map(
       (f) => `                <Text style={styles.text}>
                   <Text style={styles.label}>${f.label}: </Text>
-                  {String(row.${f.name} ?? "")}
+                  {${value(f)}}
                 </Text>`
     )
     .join("\n");
@@ -2024,8 +2052,14 @@ function runtime(ctx) {
     { path: at(ctx.runtime, "hooks.ts"), contents: hooksTs(ctx) },
     ...(ctx.offline
       ? [
-          { path: at(ctx.runtime, "storage.ts"), contents: GENERATED + STORAGE_WEB_TS },
-          { path: at(ctx.runtime, "storage.native.ts"), contents: GENERATED + STORAGE_NATIVE_TS },
+          {
+            path: at(ctx.runtime, "storage.ts"),
+            contents: GENERATED + STORAGE_WEB_TS,
+          },
+          {
+            path: at(ctx.runtime, "storage.native.ts"),
+            contents: GENERATED + STORAGE_NATIVE_TS,
+          },
         ]
       : []),
     { path: at(ctx.runtime, "config.ts"), contents: configTs(ctx) },

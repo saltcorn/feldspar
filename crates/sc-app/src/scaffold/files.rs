@@ -842,7 +842,9 @@ fn runtime_readme(ctx: &ProjectContext<'_>) -> String {
              outbox and are uploaded when the browser is online again, and the \
              server's changes are pulled down. `api.sync` has the status \
              (`status()`, `onStatus`), the changes the server refused \
-             (`refused()`), and `now()` to sync at once.\n",
+             (`refused()`), `isTemporary(table, key)` for the negative key a row \
+             created offline has until it is uploaded (the pages show \"…\" for it), \
+             and `now()` to sync at once.\n",
         );
     }
     if ctx.graphql.is_some() {
@@ -2652,12 +2654,7 @@ fn page_tsx(table: &Table, endpoints: &EndpointSet) -> String {
         .join("\n");
     let cells = shown
         .iter()
-        .map(|f| {
-            format!(
-                "              <td>{{String(row.{} ?? \"\")}}</td>",
-                f.base.name
-            )
-        })
+        .map(|f| format!("              <td>{{{}}}</td>", cell_value(table, f)))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -2665,7 +2662,11 @@ fn page_tsx(table: &Table, endpoints: &EndpointSet) -> String {
     // page that imports a hook it does not call — or declares state it does not
     // use — fails the project's own type-check (`noUnusedLocals`), in generated
     // code the admin never wrote.
-    let mut hook_imports = format!("use{pascal}");
+    let mut hook_imports = if shows_temporary_keys(table) {
+        format!("api, use{pascal}")
+    } else {
+        format!("use{pascal}")
+    };
     if can_create {
         hook_imports.push_str(&format!(", useCreate{pascal}"));
     }
@@ -2798,12 +2799,7 @@ fn store_page_tsx(table: &Table, endpoints: &EndpointSet) -> String {
         .join("\n");
     let cells = shown
         .iter()
-        .map(|f| {
-            format!(
-                "              <td>{{String(row.{} ?? \"\")}}</td>",
-                f.base.name
-            )
-        })
+        .map(|f| format!("              <td>{{{}}}</td>", cell_value(table, f)))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -2812,9 +2808,15 @@ fn store_page_tsx(table: &Table, endpoints: &EndpointSet) -> String {
     let form_fields = form.controls();
     let argument = form.argument();
 
+    let api_import = if shows_temporary_keys(table) {
+        "import { api } from \"../feldspar/hooks\";\n"
+    } else {
+        ""
+    };
+
     format!(
         r#"import {{ useState }} from "react";
-import {{ useT }} from "../feldspar/i18n";
+{api_import}import {{ useT }} from "../feldspar/i18n";
 import {{ use{pascal}Store }} from "../feldspar/store";
 
 const empty = {{
@@ -2987,6 +2989,25 @@ impl<'a> CreateForm<'a> {
 /// table declares, in the table's order. The users table's password hash is
 /// no API's (`sc_api`'s row layer), so a page that named it would not compile
 /// against the generated row type. A table with no model shows every column.
+/// Whether a page shows `table`'s key as "…" while it is a temporary key: a
+/// synced table, whose new rows may wait offline for the key the server makes.
+fn shows_temporary_keys(table: &Table) -> bool {
+    table.sync_enabled() && single_pk(table).is_some()
+}
+
+/// The text of one cell: the field's value, or "…" for a temporary key.
+fn cell_value(table: &Table, field: &sc_catalog::DataField) -> String {
+    let name = &field.base.name;
+    if shows_temporary_keys(table) && single_pk(table).as_deref() == Some(name.as_str()) {
+        format!(
+            "api.sync?.isTemporary({:?}, row.{name}) ? \"…\" : String(row.{name} ?? \"\")",
+            table.name
+        )
+    } else {
+        format!("String(row.{name} ?? \"\")")
+    }
+}
+
 pub(super) fn shown_fields<'a>(
     table: &'a Table,
     endpoints: &EndpointSet,
@@ -5890,6 +5911,30 @@ export function Board({ id }: { id: number }) {
         let online = hooks_ts(&[tasks()], &endpoints(&[tasks()]));
         assert!(online.contains("createClient();"), "{online}");
         assert!(!online.contains("indexedDb"), "{online}");
+    }
+
+    /// A synced table's page shows "…" for a row created offline until the
+    /// server answers its real key; other tables show the key as it is.
+    #[test]
+    fn a_synced_tables_page_shows_temporary_keys_as_dots() {
+        let mut synced = tasks();
+        sc_catalog::set_sync_enabled(&mut synced.attributes, true);
+        let tables = vec![synced.clone()];
+        let page = page_tsx(&synced, &endpoints(&tables));
+        assert!(
+            page.contains(
+                r#"{api.sync?.isTemporary("tasks", row.id) ? "…" : String(row.id ?? "")}"#
+            ),
+            "{page}"
+        );
+        assert!(
+            page.contains("import { api } from \"../feldspar/hooks\";")
+                || page.contains("import { api, useTasks"),
+            "{page}"
+        );
+        let online = page_tsx(&tasks(), &endpoints(&[tasks()]));
+        assert!(!online.contains("isTemporary"), "{online}");
+        assert!(!online.contains("import { api"), "{online}");
     }
 
     #[test]

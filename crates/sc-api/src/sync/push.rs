@@ -20,14 +20,24 @@
 //!   still handled once and in order.
 //! - **Marked as the device's.** The device's id and the change's number are set
 //!   for the trigger, so the change-log knows where the change came from.
+//! - **Temporary keys.** In a table whose integer key the server issues, a
+//!   device creates a row under a temporary key, its change number negated
+//!   (`-17`). The server inserts the row without it, answers the real key, and
+//!   keeps the pair in `_fd_sync_keys`: later changes naming `-17`, as their key
+//!   or in a foreign key, are translated, in this upload or any later one.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sc_auth::User;
-use sc_catalog::{CallerContext, Catalog, Changeset, ChangesetSource, SharedTx, Table};
+use sc_catalog::{
+    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, SYNC_KEYS_TABLE, SharedTx,
+    Table,
+};
 use sc_error::{Error, Repr, Result};
 use sc_expr::JsEvaluator;
 use sc_query::{Statement, Value};
+use sc_types::BasicType;
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
@@ -47,7 +57,8 @@ const CHANGE_SAVEPOINT: &str = "sc_sync_change";
 /// Per change: `mutation`, the device's own number for it, increasing; `table`;
 /// `op`, one of `insert`, `update`, `delete`; `key`, the row's primary key
 /// (for an insert it may be in `row` instead); `row`, the inserted row, or an
-/// update's changed fields.
+/// update's changed fields; `temp`, true on an insert whose `key` is temporary
+/// (`-mutation`) and the server issues the real one.
 pub(crate) fn push_input_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("client_id", TypeSchema::text()),
@@ -59,6 +70,7 @@ pub(crate) fn push_input_schema() -> TypeSchema {
                 StructField::new("op", TypeSchema::text()),
                 StructField::new("key", TypeSchema::optional(TypeSchema::text())),
                 StructField::new("row", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("temp", TypeSchema::optional(TypeSchema::bool())),
             ])),
         ),
     ])
@@ -67,7 +79,8 @@ pub(crate) fn push_input_schema() -> TypeSchema {
 /// The answer: one result per change, in order. `status` is `applied`,
 /// `refused` (with `error` saying why) or `skipped`: handled by an earlier
 /// upload, applied or refused — that upload's answer said which, and the next
-/// pull brings the server's row either way.
+/// pull brings the server's row either way. A `temp` insert that was applied,
+/// now or by an earlier upload, has `key`: the row's real key.
 pub(crate) fn push_output_schema() -> TypeSchema {
     TypeSchema::struct_of([StructField::new(
         "results",
@@ -75,6 +88,7 @@ pub(crate) fn push_output_schema() -> TypeSchema {
             StructField::new("mutation", TypeSchema::int()),
             StructField::new("status", TypeSchema::text()),
             StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("key", TypeSchema::optional(TypeSchema::text())),
         ])),
     )])
 }
@@ -101,15 +115,31 @@ pub(crate) async fn push(
         context: &context,
         exposed,
     };
+    let mut made = MadeKeys::new();
     let mut results = Vec::with_capacity(request.changes.len());
     for change in &request.changes {
-        let result = match device.apply(cat, change).await? {
-            Outcome::Applied => json!({ "mutation": change.mutation, "status": "applied" }),
-            Outcome::Skipped => json!({ "mutation": change.mutation, "status": "skipped" }),
-            Outcome::Refused(why) => {
-                json!({ "mutation": change.mutation, "status": "refused", "error": why })
-            }
+        let outcome = device.apply(cat, change, &made).await?;
+        let (mut result, real) = match outcome {
+            Outcome::Applied(real) => (
+                json!({ "mutation": change.mutation, "status": "applied" }),
+                real,
+            ),
+            Outcome::Skipped(real) => (
+                json!({ "mutation": change.mutation, "status": "skipped" }),
+                real,
+            ),
+            Outcome::Refused(why) => (
+                json!({ "mutation": change.mutation, "status": "refused", "error": why }),
+                None,
+            ),
         };
+        if change.temp {
+            if let Some(real) = &real {
+                result["key"] = Json::String(real.clone());
+            }
+            let temp = change.key.clone().unwrap_or_default();
+            made.insert((change.table.clone(), temp), real);
+        }
         results.push(result);
     }
     Ok(json!({ "results": results }))
@@ -129,6 +159,24 @@ struct Change {
     op: Op,
     key: Option<String>,
     row: Map<String, Json>,
+    /// An insert under a temporary key (`key` is `-mutation`): the server issues
+    /// the real one.
+    temp: bool,
+}
+
+/// What this upload's temporary keys became, by table and temporary key: the
+/// real key, or `None` when the insert was refused.
+type MadeKeys = HashMap<(String, String), Option<String>>;
+
+/// A temporary key: a negative whole number, which a key the server issues
+/// never is.
+fn temp_key(value: &Json) -> Option<i64> {
+    let n = match value {
+        Json::Number(n) => n.as_i64(),
+        Json::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }?;
+    (n < 0).then_some(n)
 }
 
 struct PushRequest {
@@ -188,21 +236,30 @@ impl PushRequest {
             if op != Op::Insert && key.is_none() {
                 return Err(at("an update or delete needs the row's `key`"));
             }
+            let temp = item.get("temp").and_then(Json::as_bool).unwrap_or(false);
+            if temp && (op != Op::Insert || key != Some((-mutation).to_string())) {
+                return Err(at(
+                    "`temp` is for an insert whose `key` is the change's number, negated",
+                ));
+            }
             changes.push(Change {
                 mutation,
                 table,
                 op,
                 key,
                 row,
+                temp,
             });
         }
         Ok(PushRequest { client_id, changes })
     }
 }
 
+/// What became of one change. `Applied` and `Skipped` carry the real key of a
+/// row created under a temporary one.
 enum Outcome {
-    Applied,
-    Skipped,
+    Applied(Option<String>),
+    Skipped(Option<String>),
     Refused(String),
 }
 
@@ -219,17 +276,23 @@ struct Device<'a> {
 
 impl Device<'_> {
     /// Claim `change`'s number and apply it, in a transaction of its own.
-    async fn apply(&self, cat: &Catalog, change: &Change) -> Result<Outcome> {
+    async fn apply(&self, cat: &Catalog, change: &Change, made: &MadeKeys) -> Result<Outcome> {
         let tx = SharedTx::begin_primary(cat)?;
         if !self.claim(cat, &tx, change.mutation).await? {
+            // Handled before: a row it created keeps its key for the device.
+            let key = if change.temp {
+                self.made_key(&tx, change.mutation, &change.table).await?
+            } else {
+                None
+            };
             let _ = tx.rollback().await;
-            return Ok(Outcome::Skipped);
+            return Ok(Outcome::Skipped(key));
         }
         tx.savepoint(CHANGE_SAVEPOINT).await?;
-        let outcome = match self.write(cat, &tx, change).await {
-            Ok(Ok(())) => {
+        let outcome = match self.write(cat, &tx, change, made).await {
+            Ok(Ok(key)) => {
                 tx.release_savepoint(CHANGE_SAVEPOINT).await?;
-                Outcome::Applied
+                Outcome::Applied(key)
             }
             Ok(Err(why)) => {
                 tx.rollback_to_savepoint(CHANGE_SAVEPOINT).await?;
@@ -268,14 +331,16 @@ impl Device<'_> {
         Ok(!claimed.is_empty())
     }
 
-    /// Write one change as the user. `Ok(Err(why))` is a refusal decided here;
-    /// an `Err` may still be one (see [`refusal`]).
+    /// Write one change as the user, answering the real key of a row created
+    /// under a temporary one. `Ok(Err(why))` is a refusal decided here; an `Err`
+    /// may still be one (see [`refusal`]).
     async fn write(
         &self,
         cat: &Catalog,
         tx: &SharedTx,
         change: &Change,
-    ) -> Result<std::result::Result<(), String>> {
+        made: &MadeKeys,
+    ) -> Result<std::result::Result<Option<String>, String>> {
         let Some(table) = self.synced_table(cat, &change.table)? else {
             return Ok(Err(format!(
                 "`{}` is not a synced table of this application",
@@ -305,8 +370,61 @@ impl Device<'_> {
             executor: &executor,
         };
         let mut row = change.row.clone();
+        let mut key = change.key.clone();
+        // Rows the device created offline still have temporary keys on its side.
+        // Swap in the real ones: for the row being updated or deleted, and in
+        // columns that point to another row.
+        if change.op != Op::Insert
+            && let Some(offline_key) = key.as_deref().and_then(|k| temp_key(&Json::from(k)))
+            && issues_keys(&table, &pk)
+        {
+            match self.resolve(tx, made, &table.name, offline_key).await? {
+                Ok(real) => key = Some(real),
+                Err(why) => return Ok(Err(why)),
+            }
+        }
+        for field in &table.fields {
+            let DataFieldKind::Key { target_table, .. } = &field.kind else {
+                continue;
+            };
+            let Some(offline_key) = row.get(&field.base.name).and_then(temp_key) else {
+                continue;
+            };
+            let target = cat.require(&target_table.0)?;
+            let target_pk = rows::single_pk(&target)?;
+            if !issues_keys(&target, &target_pk) {
+                continue;
+            }
+            match self.resolve(tx, made, &target.name, offline_key).await? {
+                Ok(real) => {
+                    let value = real.parse::<i64>().map_or(Json::String(real), Json::from);
+                    row.insert(field.base.name.clone(), value);
+                }
+                Err(why) => return Ok(Err(why)),
+            }
+        }
         let denied = |d: write_as::Denied| d.message().to_owned();
         Ok(match change.op {
+            Op::Insert if change.temp => {
+                row.remove(&pk);
+                let created =
+                    match write_as::create(cat, &table, &Json::Object(row), &caller).await? {
+                        Ok(created) => created,
+                        Err(d) => return Ok(Err(denied(d))),
+                    };
+                let real = created
+                    .get(&pk)
+                    .filter(|v| !v.is_null())
+                    .map(key_text)
+                    .ok_or_else(|| {
+                        Error::msg(format!(
+                            "an insert into `{}` answered no `{pk}`",
+                            table.name
+                        ))
+                    })?;
+                self.save_made_key(cat, tx, change, &real).await?;
+                Ok(Some(real))
+            }
             Op::Insert => {
                 match (&change.key, row.get(&pk)) {
                     (None, None | Some(Json::Null)) => {
@@ -324,11 +442,11 @@ impl Device<'_> {
                 }
                 write_as::create(cat, &table, &Json::Object(row), &caller)
                     .await?
-                    .map(|_| ())
+                    .map(|_| None)
                     .map_err(denied)
             }
             Op::Update => {
-                let key = change.key.as_deref().unwrap_or_default();
+                let key = key.as_deref().unwrap_or_default();
                 if let Some(given) = row.remove(&pk)
                     && key_text(&given) != key
                 {
@@ -337,20 +455,96 @@ impl Device<'_> {
                     ));
                 }
                 if row.is_empty() {
-                    return Ok(Ok(()));
+                    return Ok(Ok(None));
                 }
                 write_as::update(cat, &table, key, &Json::Object(row), &caller)
                     .await?
-                    .map(|_| ())
+                    .map(|_| None)
                     .map_err(denied)
             }
             Op::Delete => {
-                let key = change.key.as_deref().unwrap_or_default();
+                let key = key.as_deref().unwrap_or_default();
                 write_as::delete(cat, &table, key, &caller)
                     .await?
+                    .map(|()| None)
                     .map_err(denied)
             }
         })
+    }
+
+    /// Look up the real key for a temporary key `temp` in `table`. It looks in this
+    /// upload first, then in earlier ones. If the row was never created, the
+    /// change is refused with the reason.
+    async fn resolve(
+        &self,
+        tx: &SharedTx,
+        made: &MadeKeys,
+        table: &str,
+        temp: i64,
+    ) -> Result<std::result::Result<String, String>> {
+        let refused = || {
+            format!(
+                "it refers to a row of `{table}` whose creation was refused (temporary key {temp})"
+            )
+        };
+        if let Some(real) = made.get(&(table.to_owned(), temp.to_string())) {
+            return Ok(real.clone().ok_or_else(refused));
+        }
+        Ok(self.made_key(tx, -temp, table).await?.ok_or_else(refused))
+    }
+
+    /// The key a row got that this device created in its change `mutation`.
+    async fn made_key(&self, tx: &SharedTx, mutation: i64, table: &str) -> Result<Option<String>> {
+        let rows = tx
+            .run(
+                Some(self.context),
+                &Statement::raw(
+                    format!(
+                        "SELECT row_key FROM \"{SYNC_KEYS_TABLE}\" \
+                         WHERE client_id = $1 AND mutation = $2 AND table_name = $3"
+                    ),
+                    vec![
+                        Value::Uuid(self.id),
+                        Value::Int(mutation),
+                        Value::Text(table.to_owned()),
+                    ],
+                ),
+            )
+            .await?;
+        Ok(rows.first().and_then(|r| match r.get("row_key") {
+            Some(Value::Text(key)) => Some(key.clone()),
+            _ => None,
+        }))
+    }
+
+    /// Save the real key of the row `change` just created in `_fd_sync_keys`, so a
+    /// retried or later upload that names its temporary key finds it
+    /// ([`made_key`](Self::made_key)). Runs in the insert's transaction: no row, no pair.
+    async fn save_made_key(
+        &self,
+        cat: &Catalog,
+        tx: &SharedTx,
+        change: &Change,
+        real: &str,
+    ) -> Result<()> {
+        let sql = format!(
+            "INSERT INTO {keys} (client_id, mutation, table_name, row_key) VALUES ($1, $2, $3, $4)",
+            keys = cat.primary().dialect().quote_ident(SYNC_KEYS_TABLE),
+        );
+        tx.run(
+            Some(self.context),
+            &Statement::raw(
+                sql,
+                vec![
+                    Value::Uuid(self.id),
+                    Value::Int(change.mutation),
+                    Value::Text(change.table.clone()),
+                    Value::Text(real.to_owned()),
+                ],
+            ),
+        )
+        .await?;
+        Ok(())
     }
 
     /// `name`, when it is one of this application's tables and synced.
@@ -360,6 +554,14 @@ impl Device<'_> {
         }
         Ok(cat.get(name)?.filter(Table::sync_enabled))
     }
+}
+
+/// Whether the server makes `table`'s keys (an integer key with a default).
+/// Only then can a device use a temporary key for a row it created.
+fn issues_keys(table: &Table, pk: &str) -> bool {
+    table
+        .field(pk)
+        .is_some_and(|f| f.has_default() && matches!(f.base.type_.as_basic(), Some(BasicType::Int)))
 }
 
 /// The reason to report when `error` is the change's own fault: a rule it broke
