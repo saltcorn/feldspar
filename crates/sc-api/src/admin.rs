@@ -454,10 +454,11 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
-    // Overlay-only edits: label, description, rich type, kind parameters,
-    // attributes. Renaming or retyping a *column* is a schema change and is out
-    // of scope (§3.3), so this endpoint cannot touch `name`, `required`, `unique`
-    // or the storage SQL type.
+    // Overlay edits: label, description, rich type, kind parameters,
+    // attributes; plus the key, `required`, and `name`, which renames the
+    // column (its row history follows, §14.12). Retyping a column is a
+    // migration and is out of scope (§3.3), so this endpoint cannot touch
+    // `unique` or the storage SQL type.
     set.register(
         Endpoint::new(
             "updateField",
@@ -4987,6 +4988,10 @@ fn table_settings_fields() -> Vec<StructField> {
         // role is named, and then each row is checked against its read rule
         // too. Optional, and absent is the admin's.
         StructField::new("history_min_role", TypeSchema::optional(TypeSchema::int())),
+        // How many days history keeps a change; absent or 0 keeps it forever.
+        // The cleanup job removes older entries, and the files of rows whose
+        // delete entry went.
+        StructField::new("history_keep_days", TypeSchema::optional(TypeSchema::int())),
     ]
 }
 
@@ -5193,6 +5198,8 @@ fn create_constraint_schema() -> TypeSchema {
 /// Both are **omitted means leave it**, unlike the rest of this body.
 fn field_settings_schema() -> TypeSchema {
     TypeSchema::struct_of([
+        // Omitted keeps the name; another renames the field.
+        StructField::new("name", TypeSchema::optional(TypeSchema::text())),
         StructField::new("type", TypeSchema::optional(TypeSchema::text())),
         StructField::new("kind", TypeSchema::optional(TypeSchema::json())),
         StructField::new("attributes", TypeSchema::optional(TypeSchema::json())),

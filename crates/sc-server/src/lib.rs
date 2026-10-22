@@ -27,6 +27,7 @@ mod apps;
 mod backup;
 mod browser;
 mod builder;
+mod change_log_cleanup;
 mod chat;
 mod clear_all;
 mod config;

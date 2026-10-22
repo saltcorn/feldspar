@@ -342,3 +342,34 @@ async fn a_watermark_that_is_not_one_is_refused() -> Result<()> {
     }
     Ok(())
 }
+
+/// A device whose last pull is older than sync's retention starts over: the
+/// cleanup may have removed what it missed (§14.11 "Cleanup").
+#[tokio::test]
+async fn a_device_not_seen_within_the_retention_reloads_its_tables() -> Result<()> {
+    let db = TestDb::new().await?;
+    let f = fixture(&db).await?;
+    let ann = f.ann.id;
+    sql(
+        &db,
+        &format!("INSERT INTO notes (title, owner) VALUES ('ann 1', '{ann}');"),
+    )
+    .await?;
+    let device = register(&f, &f.ann).await?;
+    let first = pull(&f, &f.ann, &device, &Json::Null).await?;
+    let recent = pull(&f, &f.ann, &device, &first["watermark"]).await?;
+    assert_eq!(notes(&recent), (false, set(&[]), set(&[])));
+
+    sql(
+        &db,
+        &format!(
+            "UPDATE _fd_sync_clients SET last_seen = now() - interval '{} days' \
+             WHERE id = '{device}';",
+            sc_catalog::retention::SYNC_KEEP_DAYS + 1
+        ),
+    )
+    .await?;
+    let stale = pull(&f, &f.ann, &device, &recent["watermark"]).await?;
+    assert_eq!(notes(&stale), (true, set(&["ann 1"]), set(&[])));
+    Ok(())
+}

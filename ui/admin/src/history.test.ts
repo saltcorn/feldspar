@@ -7,6 +7,7 @@ import {
   canRevert,
   changesetQuery,
   conflictPlace,
+  dropTableQuestion,
   droppedNote,
   historyValue,
   opLabel,
@@ -94,5 +95,13 @@ describe("row history", () => {
     const conflict = { table: "t", key: "1", expected: 1, actual: 2, reason: "r" };
     expect(conflictPlace({ ...conflict, field: "x" })).toBe("t 1 · x");
     expect(conflictPlace({ ...conflict, field: null })).toBe("t 1");
+  });
+});
+
+describe("dropTableQuestion", () => {
+  it("says the row history goes too when the table records its changes", () => {
+    expect(dropTableQuestion("notes", true)).toContain("row history is deleted too");
+    expect(dropTableQuestion("notes", false)).not.toContain("history");
+    expect(dropTableQuestion("notes", false)).toContain('"notes"');
   });
 });

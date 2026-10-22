@@ -17,8 +17,7 @@
 
 use crate::calc_read::CalcPlan;
 use sc_catalog::{
-    CallerContext, Catalog, DataField, DataFieldKind, FileOnDelete, SharedTx, Table, TableWrite,
-    WriteOp,
+    CallerContext, Catalog, DataField, DataFieldKind, SharedTx, Table, TableWrite, WriteOp,
 };
 use sc_db::Row;
 use sc_error::{Error, Repr, Result};
@@ -1144,20 +1143,15 @@ pub async fn delete_all_rows_ctx(
     Ok(rows.len() as u64)
 }
 
-/// The `File` fields of `table` whose file goes with the row: `(column, store)`.
+/// The `File` fields of `table` whose file goes with the row now:
+/// `(column, store)`. None on a table with history on, which keeps the files
+/// while a restore may still want them; the change log's cleanup removes them
+/// when the delete entry expires (§14.12 "Files").
 fn files_removed_on_delete(table: &Table) -> Vec<(&str, &str)> {
-    table
-        .fields
-        .iter()
-        .filter_map(|field| match &field.kind {
-            DataFieldKind::File {
-                store,
-                on_delete: FileOnDelete::RemoveFile,
-                ..
-            } => Some((field.base.name.as_str(), store.0.as_str())),
-            _ => None,
-        })
-        .collect()
+    if table.history_enabled() {
+        return Vec::new();
+    }
+    table.files_removed_on_delete()
 }
 
 /// Remove the files deleted `rows` referenced through `on_delete: remove_file`

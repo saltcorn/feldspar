@@ -561,12 +561,17 @@ async fn row_history_is_read_through_the_admin_api() -> sc_error::Result<()> {
             Some(json!({
                 "label": "Notes", "description": "", "min_role_read": 1, "min_role_write": 1,
                 "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
-                "history_enabled": true, "history_min_role": 40,
+                "history_enabled": true, "history_min_role": 40, "history_keep_days": 90,
             })),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["history_min_role"], json!(40));
+    assert_eq!(saved["history_keep_days"], json!(90));
+    assert_eq!(
+        catalog.require("notes")?.attributes["history"]["keep_days"],
+        json!(90)
+    );
 
     for (method, path, body) in [
         (

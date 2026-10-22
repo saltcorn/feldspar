@@ -288,6 +288,9 @@ pub struct TableSettings {
     /// The least-privileged role that may read the table's history; the
     /// admin's by default (§14.12 "Reading"). Kept only while history is on.
     pub history_min_role: Option<u8>,
+    /// How many days the table's history keeps an entry; `0` keeps it
+    /// forever, the default (§14.12). Kept only while history is on.
+    pub history_keep_days: Option<u32>,
 }
 
 impl TableSettings {
@@ -306,6 +309,7 @@ impl TableSettings {
             && self.description.is_none()
             && self.sync_enabled.is_none()
             && self.history_enabled.is_none()
+            && self.history_keep_days.is_none()
             && !self.touches_access()
     }
 }
@@ -317,6 +321,13 @@ impl TableSettings {
 /// migration, and a migration framework is out of scope.
 #[derive(Debug, Clone, Default)]
 pub struct FieldSettings {
+    /// A new name for the field: its column is renamed (`RENAME COLUMN`), its
+    /// overlay row follows, and the change log's entries for the table are
+    /// rewritten to the new name in the same batch, so history stays readable
+    /// (§14.12 "Schema edits"). Refused while a formula, a constraint or
+    /// another table's key names the field. Applied first, so the other
+    /// settings of the operation are about the renamed field.
+    pub name: Option<String>,
     /// The human label.
     pub label: Option<String>,
     /// The description.
@@ -650,6 +661,13 @@ fn refuse_on_module_table(catalog: &Catalog, op: &Operation) -> Result<()> {
     match op {
         Operation::DropTable { table } => tables.refuse_drop(table, None),
         Operation::DropField { table, field } => tables.refuse_drop(table, Some(field)),
+        Operation::AlterField {
+            table,
+            field,
+            settings,
+        } if settings.name.as_deref().is_some_and(|n| n.trim() != field) => {
+            tables.refuse_rename(table, field)
+        }
         _ => Ok(()),
     }
 }
@@ -784,6 +802,11 @@ struct Plan {
     /// end: sync or history switched on or off, or a recorded table's key
     /// changed.
     change_log_dirty: BTreeSet<String>,
+    /// Statements that keep the change log (`_fd_changes`) in step with the
+    /// schema, run in the batch's transaction after its DDL: a renamed column's
+    /// key rewritten in the entries, a dropped table's entries removed
+    /// (§14.12 "Schema edits"; sync's S2.8 hooks here too).
+    change_log_edits: Vec<String>,
     /// Tables dropped by this batch, so nothing is emitted for them afterwards.
     dropped: BTreeSet<String>,
     /// Calculated-field expressions to validate against the final schema, as
@@ -831,6 +854,7 @@ impl Plan {
             was_rls,
             was_logged,
             change_log_dirty: BTreeSet::new(),
+            change_log_edits: Vec::new(),
             ddl: Vec::new(),
             metas: Vec::new(),
             table_metas: BTreeMap::new(),
@@ -932,7 +956,7 @@ impl Plan {
             }
             Operation::DropTable { table } => {
                 grants.check(grants.drop, "drop a table", GRANT_DROP)?;
-                self.drop_table(index, op, table)
+                self.drop_table(catalog, index, op, table)
             }
             Operation::AddConstraint {
                 table,
@@ -1192,6 +1216,9 @@ impl Plan {
             }
             sc_catalog::history::set_history_min_role(&mut meta.attributes, role);
         }
+        if let Some(days) = settings.history_keep_days {
+            sc_catalog::retention::set_history_keep_days(&mut meta.attributes, days);
+        }
         let meta = meta.clone();
 
         // Mirror the row onto the projection exactly as `Catalog::reload` will,
@@ -1297,6 +1324,15 @@ impl Plan {
         settings: &FieldSettings,
     ) -> Result<()> {
         self.require_editable(table)?;
+        // The overlay row as stored, found by the name the field has now.
+        let stored = stored_field_meta(catalog, table, field).await?;
+        let field = match settings.name.as_deref().map(str::trim) {
+            Some(name) if name != field => {
+                self.rename_field(catalog, table, field, name)?;
+                name
+            }
+            _ => field,
+        };
         let projected = self
             .projection
             .get(table)
@@ -1312,7 +1348,6 @@ impl Plan {
             })?
             .clone();
 
-        let stored = stored_field_meta(catalog, table, field).await?;
         let mut meta = FieldMeta::new(table, field);
         if let Some(row) = &stored {
             meta = meta.id(row.id);
@@ -1491,6 +1526,124 @@ impl Plan {
         });
         self.applied.fields_altered.push(format!("{table}.{field}"));
         self.note_changed(table);
+        Ok(())
+    }
+
+    /// Rename `table.field` to `name`, on the projection and in the DDL, and
+    /// rewrite the change log's entries for the table to the new name.
+    ///
+    /// Refused, by name, wherever the old name is written down somewhere the
+    /// rename cannot follow: a calculated field, a row constraint or index, the
+    /// ownership formula, another table's key. Views, pages and code that name
+    /// the field are the application's, and the caller is told to update them.
+    fn rename_field(
+        &mut self,
+        catalog: &Catalog,
+        table: &str,
+        field: &str,
+        name: &str,
+    ) -> Result<()> {
+        check_identifier(name, "field")?;
+        let projected = self
+            .projection
+            .get(table)
+            .ok_or_else(|| Error::not_found(format!("table `{table}` is not in the catalog")))?
+            .clone();
+        let existing = projected.field(field).ok_or_else(|| {
+            Error::not_found(format!(
+                "table `{table}` has no field `{field}`; it has {}",
+                field_list(&projected)
+            ))
+        })?;
+        if projected.field(name).is_some() {
+            return Err(Error::invalid(format!(
+                "`{table}` already has a field `{name}`"
+            )));
+        }
+        if let Some((_, columns)) = PROTECTED_COLUMNS.iter().find(|(t, _)| *t == table)
+            && columns.contains(&field)
+        {
+            return Err(Error::invalid(format!(
+                "`{table}.{field}` is a built-in column of `{table}` and keeps its name"
+            )));
+        }
+        let readers = calc_readers(&projected, field);
+        if !readers.is_empty() {
+            return Err(Error::invalid(format!(
+                "`{table}.{field}` is read by the calculated field(s) {}; \
+                 change them so they do not, rename, then change them back",
+                quoted(&readers)
+            )));
+        }
+        let referencing = keys_targeting(&self.projection, table, field);
+        if !referencing.is_empty() {
+            return Err(Error::invalid(format!(
+                "`{table}.{field}` is referenced by {}, which name it; it cannot be renamed \
+                 while they do",
+                quoted(&referencing)
+            )));
+        }
+        let constraining: Vec<String> = projected
+            .constraints
+            .iter()
+            .filter(|c| match &c.kind {
+                ConstraintKind::Formula { formula } => {
+                    formula_fields(&self.projection, table, formula).contains(field)
+                }
+                kind => kind.fields().iter().any(|f| f == field),
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        if !constraining.is_empty() {
+            return Err(Error::invalid(format!(
+                "`{table}.{field}` is named by the constraint(s) {}; drop them, rename, and \
+                 add them again",
+                quoted(&constraining)
+            )));
+        }
+        if projected
+            .ownership
+            .as_ref()
+            .is_some_and(|f| names_identifier(f.source(), field))
+        {
+            return Err(Error::invalid(format!(
+                "`{table}.{field}` is named by the table's ownership formula; change the \
+                 formula first"
+            )));
+        }
+
+        if !existing.is_calc() {
+            self.ddl.push(SchemaChange::RenameColumn {
+                table: table.to_owned(),
+                from: field.to_owned(),
+                to: name.to_owned(),
+            });
+        }
+        let is_key = projected.primary_key.iter().any(|k| k == field);
+        let mut projected = projected;
+        for slot in &mut projected.fields {
+            if slot.base.name == field {
+                slot.base.name = name.to_owned();
+            }
+        }
+        for key in &mut projected.primary_key {
+            if key == field {
+                *key = name.to_owned();
+            }
+        }
+        // The change-log trigger is keyed by the primary-key column's name.
+        if is_key && projected.change_log_enabled() {
+            self.change_log_dirty.insert(table.to_owned());
+        }
+        self.projection.insert(projected);
+        self.refresh_full_text_index(table);
+        if let Some(sql) = rename_in_change_log_sql(catalog, &self.projection, table, field, name) {
+            self.change_log_edits.push(sql);
+        }
+        self.applied.notes.push(format!(
+            "`{table}.{field}` is now `{table}.{name}`; views, pages and code that name \
+             `{field}` need the new name"
+        ));
         Ok(())
     }
 
@@ -1740,7 +1893,13 @@ impl Plan {
         Ok(())
     }
 
-    fn drop_table(&mut self, index: usize, op: &Operation, table: &str) -> Result<()> {
+    fn drop_table(
+        &mut self,
+        catalog: &Catalog,
+        index: usize,
+        op: &Operation,
+        table: &str,
+    ) -> Result<()> {
         self.require_editable(table)?;
         if table == USERS_TABLE || table == ROLES_TABLE {
             return Err(Error::invalid(format!(
@@ -1758,6 +1917,11 @@ impl Plan {
                  tables) first",
                 quoted(&names)
             )));
+        }
+        // Its change-log entries go with it, so a later table of the same name
+        // does not inherit its history.
+        if let Some(sql) = forget_in_change_log_sql(catalog, &self.projection, table) {
+            self.change_log_edits.push(sql);
         }
         self.ddl.push(SchemaChange::DropTable {
             name: table.to_owned(),
@@ -2338,8 +2502,80 @@ impl Plan {
                 )));
             }
         }
+        steps.extend(self.change_log_edits.iter().cloned().map(SchemaStep::Sql));
         Ok(steps)
     }
+}
+
+/// Whether `table` may have change-log entries, in the database the batch
+/// changes it in: the log is kept in Saltcorn's own database, once it has been
+/// bootstrapped there.
+fn has_change_log(catalog: &Catalog, projection: &SchemaProjection, table: &str) -> bool {
+    catalog.primary().capabilities().change_triggers
+        && catalog
+            .get(sc_catalog::CHANGES_TABLE)
+            .is_ok_and(|log| log.is_some())
+        && catalog
+            .get(sc_catalog::SYNC_KEYS_TABLE)
+            .is_ok_and(|keys| keys.is_some())
+        && projection
+            .get(table)
+            .is_some_and(|t| t.database == DbId::primary())
+}
+
+/// The statement that rewrites the key `from` to `to` in `table`'s change-log
+/// entries, old and new values both, or `None` when the table has no log.
+fn rename_in_change_log_sql(
+    catalog: &Catalog,
+    projection: &SchemaProjection,
+    table: &str,
+    from: &str,
+    to: &str,
+) -> Option<String> {
+    if !has_change_log(catalog, projection, table) {
+        return None;
+    }
+    let dialect = catalog.primary().dialect();
+    let (table, from, to) = (
+        dialect.quote_literal(table),
+        dialect.quote_literal(from),
+        dialect.quote_literal(to),
+    );
+    let renamed = |column: &str| {
+        format!(
+            "{column} = CASE WHEN {column} ? {from} \
+             THEN ({column} - {from}) || jsonb_build_object({to}, {column} -> {from}) \
+             ELSE {column} END"
+        )
+    };
+    Some(format!(
+        "UPDATE {log} SET {old}, {new} WHERE table_name = {table} \
+         AND (old_values ? {from} OR new_values ? {from});",
+        log = dialect.quote_ident(sc_catalog::CHANGES_TABLE),
+        old = renamed("old_values"),
+        new = renamed("new_values"),
+    ))
+}
+
+/// The statements that remove a dropped table's change-log entries and sync's
+/// key pairs for it, or `None` when the table has no log. Its changesets are
+/// left to the cleanup job, which removes those left empty.
+fn forget_in_change_log_sql(
+    catalog: &Catalog,
+    projection: &SchemaProjection,
+    table: &str,
+) -> Option<String> {
+    if !has_change_log(catalog, projection, table) {
+        return None;
+    }
+    let dialect = catalog.primary().dialect();
+    let table = dialect.quote_literal(table);
+    Some(format!(
+        "DELETE FROM {log} WHERE table_name = {table};\n\
+         DELETE FROM {keys} WHERE table_name = {table};",
+        log = dialect.quote_ident(sc_catalog::CHANGES_TABLE),
+        keys = dialect.quote_ident(sc_catalog::SYNC_KEYS_TABLE),
+    ))
 }
 
 /// The stored `_fd_fields` row for a field, or `None` — including on a database

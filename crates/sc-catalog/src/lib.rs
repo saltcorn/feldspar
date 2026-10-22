@@ -45,6 +45,7 @@ mod origin;
 mod prefetch;
 mod projection;
 mod provider;
+pub mod retention;
 mod rls;
 pub mod secrets;
 mod spatial;
@@ -58,7 +59,7 @@ pub use admin_host::{AdminCall, AdminHost};
 pub use caller::CallerContext;
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
-    ChangeLogFeature, bootstrap_change_log, change_log_enabled, change_log_key,
+    CHANGES_TABLE, ChangeLogFeature, bootstrap_change_log, change_log_enabled, change_log_key,
     disable_change_log_sql, enable_change_log_sql, history_enabled, set_history_enabled,
 };
 pub use changeset::{CHANGESETS_TABLE, Changeset, ChangesetSource};

@@ -461,6 +461,7 @@ fn create_table(decl: &TableDecl) -> Operation {
             sync_enabled: None,
             history_enabled: None,
             history_min_role: None,
+            history_keep_days: None,
         },
         fields,
     }

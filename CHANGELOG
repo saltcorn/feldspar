@@ -2,6 +2,47 @@
 
 Changes in reverse chronological order.
 
+## Row history H5: files, schema edits and retention
+
+History now keeps what a restore needs and lets go of it on schedule, and survives column
+renames.
+
+- **Files.** On a table with history on, deleting a row no longer removes its `remove_file`
+  files (`rows.rs`). The cleanup job removes a file when its delete entry expires, unless a row
+  of the table (read as the admin) or a remaining entry still names the path. A restore gets the
+  file back. `Table::files_removed_on_delete` is shared by both.
+- **Retention.** A new `history_keep_days` table setting (`PATCH` table settings, the admin
+  table screen's "Keep history for (days)", MCP `alter_table`; 0 keeps forever), stored as
+  `attributes.history.keep_days`.
+- **One cleanup job** for sync and history (sync's S5.1): `sc_catalog::retention::
+  clean_change_log`, run hourly by the server (`change_log_cleanup.rs`). An entry goes once
+  both features are done with it (history: past `keep_days`, or off; sync: superseded and past
+  `SYNC_KEEP_DAYS` = 30, or off), entries of tables no longer in the catalog go, then expired
+  files, then changesets left empty (after a day's grace), then `_fd_sync_keys` pairs older than
+  sync's retention. `_fd_sync_keys` gained an `at` column (bootstrap adds it;
+  `TABLES_RENAME.sql` too). A device whose last pull is older than sync's retention gets its
+  tables whole on its next pull.
+- **Renaming a field** (new): the `name` setting of `alter_field` (MCP `rename_to`, `name` on
+  the admin API's `updateField`; admin clients regenerated). `SchemaChange::RenameColumn` on
+  Postgres and SQLite, the overlay row follows, and the batch's new `change_log_edits` rewrite
+  the key in the table's change-log entries in the same transaction. Refused while a calculated
+  field, a constraint, the ownership formula, another table's key or a module names the field;
+  renaming the key column re-creates the change-log trigger. The answer notes that views, pages
+  and code naming the old name need updating. There is no rename control in the admin UI yet.
+- **Dropping a table** deletes its change-log entries and sync key pairs in the drop's batch,
+  so a later table of the same name starts with no history. The drop confirmation says so
+  when the table has history or sync on.
+- Docs: §14.12 "As built (H5)".
+- Tests: `sc-api/tests/history_retention.rs` (a file survives the delete and comes back with a
+  restore, and goes at once with history off; expiry removes entries, files and empty
+  changesets but keeps a file a row or a kept entry names; retention with sync and history both
+  on, history kept forever, sync key pairs, and both switched off; a rename keeps history and
+  `as_of` readable and a drop forgets it; renaming the key keeps recording);
+  `sync_pull.rs` (a device not seen within the retention reloads); `sc-server` `field_api.rs`
+  (rename over HTTP) and `table_settings_api.rs` (`history_keep_days` round trip); render tests
+  for `RENAME COLUMN` in both drivers; unit tests for `keep_days`; `history.test.ts` for the
+  drop confirmation.
+
 ## Row history H4: the Undo action
 
 `undo` is a new core action: a trigger with it, exposed by an application, is an Undo button

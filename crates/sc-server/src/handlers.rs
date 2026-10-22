@@ -605,6 +605,7 @@ pub fn admin_handlers_with(
                             "sync_enabled": sc_catalog::sync_enabled(&meta.attributes),
                             "history_enabled": sc_catalog::history_enabled(&meta.attributes),
                             "history_min_role": sc_catalog::history::history_min_role(&meta.attributes),
+                            "history_keep_days": sc_catalog::retention::history_keep_days(&meta.attributes),
                         })
                     })
                     .collect();
@@ -758,7 +759,15 @@ pub fn admin_handlers_with(
                 let description = optional_str(obj, "description").trim().to_owned();
                 // Whole-object, like `updateTable`: the admin UI edits a field it
                 // has loaded, so an omitted value means cleared.
+                // Omitted, like the key below, leaves the name as it is.
+                let rename = obj
+                    .get("name")
+                    .and_then(Json::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned);
                 let settings = schema_edit::FieldSettings {
+                    name: rename.clone(),
                     label: Some(optional_str(obj, "label")),
                     description: Some(description.clone()),
                     type_name: Some(optional_str(obj, "type")),
@@ -791,6 +800,7 @@ pub fn admin_handlers_with(
                     &schema_edit::ApplyOptions::default(),
                 )
                 .await?;
+                let field_name = rename.unwrap_or(field_name);
                 let table = catalog.require(&table_name)?;
                 let updated = table.field(&field_name).ok_or_else(|| {
                     Error::msg(format!("field `{field_name}` missing after update"))
@@ -7302,6 +7312,16 @@ pub(crate) fn table_settings_from_body(
             None | Some(Json::Null) => ROLE_ADMIN,
             Some(_) => role_field(obj, "history_min_role")?,
         }),
+        // Absent keeps history forever, the default.
+        history_keep_days: Some(match obj.get("history_keep_days") {
+            None | Some(Json::Null) => 0,
+            Some(days) => days
+                .as_u64()
+                .and_then(|d| u32::try_from(d).ok())
+                .ok_or_else(|| {
+                    Error::invalid("`history_keep_days` must be a whole number of days")
+                })?,
+        }),
     })
 }
 
@@ -11560,6 +11580,7 @@ pub(crate) fn table_json(
             .is_ok(),
         "history_enabled": table.history_enabled(),
         "history_min_role": sc_catalog::history::history_min_role(&table.attributes),
+        "history_keep_days": sc_catalog::retention::history_keep_days(&table.attributes),
         // Row history needs the same one-column key on Saltcorn's own database.
         "history_available": sc_catalog::change_log_key(catalog, table, sc_catalog::ChangeLogFeature::History)
             .is_ok(),

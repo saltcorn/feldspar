@@ -575,6 +575,22 @@ impl Table {
         crate::change_log::change_log_enabled(&self.attributes)
     }
 
+    /// The `File` fields whose file goes with the row
+    /// (`on_delete: remove_file`), as `(column, store)`.
+    pub fn files_removed_on_delete(&self) -> Vec<(&str, &str)> {
+        self.fields
+            .iter()
+            .filter_map(|field| match &field.kind {
+                crate::DataFieldKind::File {
+                    store,
+                    on_delete: crate::FileOnDelete::RemoveFile,
+                    ..
+                } => Some((field.base.name.as_str(), store.0.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Whether this table is kept out of the user-facing lists: a system table
     /// nobody has added as a metadata table. What [`is_system`](Table::is_system)
     /// alone still decides is that the schema is not editable.

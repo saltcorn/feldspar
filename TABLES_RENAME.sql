@@ -849,3 +849,7 @@ BEGIN
   CREATE UNIQUE INDEX IF NOT EXISTS "_fd_changes_entry"
     ON "_fd_changes" (changeset, table_name, row_key);
 END $fd$;
+
+-- Row history H5 / sync S5.1: when each sync key pair was made, so the change log's cleanup
+-- can remove pairs older than sync's retention. (Bootstrap adds it too.)
+ALTER TABLE IF EXISTS "_fd_sync_keys" ADD COLUMN IF NOT EXISTS "at" timestamptz DEFAULT now();

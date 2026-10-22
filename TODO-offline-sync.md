@@ -90,7 +90,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## S5 — Cleanup and documentation
 
-- [ ] S5.1 Removing superseded log entries after a retention period; a device older than that
+- [x] S5.1 Removing superseded log entries after a retention period; a device older than that
       reloads its tables. The same for `_fd_sync_keys`: a pair is only needed until the device
       has the upload's answer, so it can go with the same retention. One cleanup job with row
       history: done as H5.3 in [TODO-history.md](./TODO-history.md).

@@ -153,3 +153,13 @@ export function conflictPlace(conflict: UndoConflict): string {
   const row = `${conflict.table} ${conflict.key}`;
   return conflict.field ? `${row} · ${conflict.field}` : row;
 }
+
+/**
+ * The confirmation for dropping a database table. A table whose changes are
+ * recorded (row history, offline sync) loses that record too, so a later
+ * table of the same name starts with none (§14.12).
+ */
+export function dropTableQuestion(table: string, logged: boolean): string {
+  const history = logged ? " Its row history is deleted too, including its deleted rows." : "";
+  return `Drop the table "${table}" and every row in it?${history} This cannot be undone.`;
+}

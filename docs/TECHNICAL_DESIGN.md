@@ -11352,6 +11352,27 @@ removed once **both** are done with it:
 After that, the job removes the files whose delete entries expired, and then changesets with
 no entries left.
 
+**As built (H5).** History's `keep_days` is a table setting (`history_keep_days` in `PATCH`
+table settings, the admin table screen and MCP `alter_table`; 0 or absent keeps forever).
+`rows.rs` keeps every `remove_file` file while the table has history on. The job is
+`sc_catalog::retention::clean_change_log(catalog, now)`, run hourly by the server
+(`change_log_cleanup.rs`), and answers what it removed. Sync's retention is
+`SYNC_KEEP_DAYS` (30). Entries of tables that are no longer in the catalog go whatever their
+age. A file is removed only when no row of the table (read as the admin, so row-level security
+hides none) and no remaining entry of the table names its path. An empty changeset goes a day
+after its `at`, so a write joining it is not raced. `_fd_sync_keys` gained `at`, and pairs older
+than sync's retention go too. A device whose last pull is older than sync's retention gets
+whole tables (`reset`) on its next pull.
+
+A rename is the `name` setting of `alter_field` (MCP `rename_to`, `name` on the admin API's
+`updateField`): `RENAME COLUMN` on both backends, the overlay row follows, and the batch's
+`change_log_edits` (the hook sync's S2.8 shares) rewrite the key in the table's `old_values` and
+`new_values`. It is refused while a calculated field, a constraint, the ownership formula,
+another table's key or a module's declaration names the field. Renaming the key column re-creates
+the trigger. A dropped table's entries and sync key pairs are deleted in the drop's batch, and
+the drop confirmation says the row history goes too. Known gap: a row inserted and deleted in
+one transaction of a history table leaves no delete entry, so its file is never removed.
+
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 
 A `CodeAdapter` maintains an open interpreter for a guest language, inside which the catalog

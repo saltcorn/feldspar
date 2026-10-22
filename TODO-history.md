@@ -109,15 +109,15 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H5 — Files, schema edits and retention
 
-- [ ] H5.1 On a table with history on, a delete keeps files that `files_removed_on_delete`
+- [x] H5.1 On a table with history on, a delete keeps files that `files_removed_on_delete`
       would remove. The cleanup job removes them when the delete entry expires, unless a row or a
       remaining entry still references the path.
-- [ ] H5.2 Renaming a column rewrites the JSON keys of the table's entries in the same schema
+- [x] H5.2 Renaming a column rewrites the JSON keys of the table's entries in the same schema
       batch (same `schema_edit.rs` hook as sync S2.8). Dropping a table deletes its entries, and
       the drop dialog says so.
-- [ ] H5.3 One cleanup job for sync and history (this is sync S5.1): remove an entry once both
+- [x] H5.3 One cleanup job for sync and history (this is sync S5.1): remove an entry once both
       are done with it, then expired files, then empty changesets.
-- [ ] H5.4 Tests: retention with both features on; a file survives the delete and a restore
+- [x] H5.4 Tests: retention with both features on; a file survives the delete and a restore
       gets it back; the file is removed after expiry; a rename keeps history readable.
 
 ## H6 — Code, SQLite, documentation

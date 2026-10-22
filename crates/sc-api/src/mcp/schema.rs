@@ -230,6 +230,7 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
         "sync_enabled": table.sync_enabled(),
         "history_enabled": table.history_enabled(),
         "history_min_role": sc_catalog::history::history_min_role(&table.attributes),
+        "history_keep_days": sc_catalog::retention::history_keep_days(&table.attributes),
         "fields": fields,
         "references": references,
         "referenced_by": referenced_by,
@@ -410,6 +411,15 @@ fn edit_parameters() -> Json {
                                 "The field's name. Required for `add_field`, \
                                  `alter_field` and `drop_field`.",
                         },
+                        "rename_to": {
+                            "type": "string",
+                            "description":
+                                "Rename the field (`alter_field`): its column, its \
+                                 settings and its row history follow. Refused while \
+                                 a calculated field, a constraint, the ownership \
+                                 formula or another table's key names it. Views, \
+                                 pages and code that name it must be updated.",
+                        },
                         "type": {
                             "type": "string",
                             "description":
@@ -553,6 +563,14 @@ fn edit_parameters() -> Json {
                                  row is still checked against the read rule. Kept \
                                  only while history is on; needs the access-rules \
                                  permission.",
+                        },
+                        "history_keep_days": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description":
+                                "How many days the table's history keeps a change \
+                                 (and a deleted row's files); 0, the default, keeps \
+                                 it forever. Kept only while history is on.",
                         },
                     },
                     "required": ["op", "table"],
@@ -891,12 +909,23 @@ fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
         sync_enabled: optional_bool(obj, "sync_enabled")?,
         history_enabled: optional_bool(obj, "history_enabled")?,
         history_min_role: optional_role(obj, "history_min_role")?,
+        history_keep_days: match obj.get("history_keep_days") {
+            None | Some(Json::Null) => None,
+            Some(days) => Some(
+                days.as_u64()
+                    .and_then(|d| u32::try_from(d).ok())
+                    .ok_or_else(|| {
+                        Error::invalid("`history_keep_days` must be a whole number of days")
+                    })?,
+            ),
+        },
     })
 }
 
 fn parse_field_settings(obj: &Map<String, Json>) -> Result<FieldSettings> {
     let kind = field_kind(obj)?;
     Ok(FieldSettings {
+        name: optional_string(obj, "rename_to")?,
         label: optional_string(obj, "label")?,
         description: optional_string(obj, "description")?,
         type_name: optional_string(obj, "type")?,

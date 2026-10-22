@@ -64,6 +64,10 @@ fn keys_fields() -> Vec<DataField> {
             .primary_key(),
         DataField::plain("table_name", text()).required(),
         DataField::plain("row_key", text()).required(),
+        // When the pair was made: the cleanup removes it after sync's
+        // retention, by which time the device has long had the answer.
+        DataField::plain("at", TypeRef::Basic(BasicType::Timestamp))
+            .generated(ColumnGenerator::Default("now()".into())),
     ]
 }
 

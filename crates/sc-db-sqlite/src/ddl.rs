@@ -155,6 +155,16 @@ fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<V
                 dialect.quote_ident(column)
             )]
         }
+        // SQLite (3.25 on) rewrites the indexes, triggers and views that name
+        // the column too.
+        SchemaChange::RenameColumn { table, from, to } => {
+            vec![format!(
+                "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                dialect.quote_ident(table),
+                dialect.quote_ident(from),
+                dialect.quote_ident(to)
+            )]
+        }
         // All of these change a column's declaration, which SQLite cannot do.
         SchemaChange::SetPrimaryKey { .. }
         | SchemaChange::SetColumnGenerator { .. }
@@ -748,6 +758,7 @@ fn change_name(change: &SchemaChange) -> &'static str {
         SchemaChange::DropTable { .. } => "drop table",
         SchemaChange::AddColumn { .. } => "add column",
         SchemaChange::DropColumn { .. } => "drop column",
+        SchemaChange::RenameColumn { .. } => "rename column",
         SchemaChange::SetPrimaryKey { .. } => "set primary key",
         SchemaChange::SetColumnGenerator { .. } => "set column generator",
         SchemaChange::SetColumnNullable { .. } => "set column nullable",
@@ -925,5 +936,17 @@ mod tests {
         )
         .expect_err("a rebuild cannot be rendered from the change alone");
         assert!(format!("{err}").contains("rebuilding the table"));
+    }
+
+    #[test]
+    fn a_column_is_renamed_in_place() {
+        assert_eq!(
+            render_change(&SchemaChange::RenameColumn {
+                table: "member".into(),
+                from: "note".into(),
+                to: "remark".into(),
+            }),
+            "ALTER TABLE \"member\" RENAME COLUMN \"note\" TO \"remark\""
+        );
     }
 }

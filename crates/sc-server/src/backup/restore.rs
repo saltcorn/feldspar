@@ -567,6 +567,7 @@ async fn restore_table(
         history_enabled: settings.history_enabled.take(),
         // Kept only while history is on, so it follows the switch.
         history_min_role: settings.history_min_role.take(),
+        history_keep_days: settings.history_keep_days.take(),
         ..Default::default()
     };
     let exists = catalog.get(name)?.is_some();

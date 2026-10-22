@@ -56,6 +56,9 @@ pub async fn serve(
     spawn_preview_sweep(apps.clone());
     // Uploads abandoned for a day go, with their bytes (TODO F2, §2.3).
     crate::uploads::spawn_upload_sweep(apps.clone());
+    // Change-log entries sync and history are done with go, and with them the
+    // files of rows whose history expired (§14.12).
+    crate::change_log_cleanup::spawn_change_log_cleanup(apps.clone());
 
     // The coding agent's headless browser, and the loopback listener it reaches
     // previews through (TODO §7b), where this host has a browser.
