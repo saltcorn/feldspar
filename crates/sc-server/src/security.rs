@@ -42,6 +42,9 @@ use uuid::Uuid;
 
 /// Name of the session cookie (opaque token → [`SessionStore`](sc_auth::SessionStore)).
 pub const SESSION_COOKIE: &str = "sc_session";
+/// Name of the **guest session** cookie (TODO-payments P1.5): an application's
+/// own, set on its host only, and lasting the guest session's lifetime.
+pub const GUEST_COOKIE: &str = "sc_guest";
 /// Name of the cookie that lets a `view_app` browser context reach its run's
 /// previews whether or not it is signed in (see
 /// [`AppMounts::allow_preview_token`](crate::AppMounts::allow_preview_token)).

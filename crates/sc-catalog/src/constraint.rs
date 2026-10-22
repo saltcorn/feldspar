@@ -665,10 +665,10 @@ pub fn validate_formula(
     // whatever the session says in the admin UI, and it fires on insert and
     // update alike, so `_insert` would have to be two different constants at
     // once.
-    if analysis.uses(sc_expr::Ambient::User) {
+    if analysis.uses_caller() {
         return Err(Error::invalid(
-            "a row constraint cannot use `user`: it is checked by the database, which has \
-             no session. Put the rule in the table's ownership formula instead.",
+            "a row constraint cannot use `user` or `session`: it is checked by the database, \
+             which has no session. Put the rule in the table's ownership formula instead.",
         ));
     }
     if !analysis.flags.is_empty() {

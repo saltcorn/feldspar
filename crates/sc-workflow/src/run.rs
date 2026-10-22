@@ -81,6 +81,13 @@ pub struct StoredEvent {
     /// The caller's fields, or `None` for an anonymous event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<Json>,
+    /// The application whose request raised it, `{ id, url, scheme }`
+    /// (TODO-payments P1.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<Json>,
+    /// The caller's guest session public id (TODO-payments P1.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 fn public_role() -> u8 {
@@ -102,6 +109,8 @@ impl StoredEvent {
             payload: event.payload.clone(),
             role: event.role,
             user: event.user.clone(),
+            app: event.app.as_ref().map(sc_catalog::CallingApp::to_json),
+            session: event.session.clone(),
         }
     }
 
@@ -118,6 +127,11 @@ impl StoredEvent {
         event.payload = self.payload.clone();
         event.role = self.role;
         event.user = self.user.clone();
+        event.app = self
+            .app
+            .as_ref()
+            .and_then(sc_catalog::CallingApp::from_json);
+        event.session = self.session.clone();
         Ok(event)
     }
 }
@@ -366,6 +380,14 @@ mod tests {
                 40,
                 Some(json!({ "id": Uuid::nil().to_string(), "email": "a@b.c" })),
             )
+            .from_origin(sc_catalog::Origin {
+                app: Some(sc_catalog::CallingApp {
+                    id: Uuid::nil(),
+                    url: "https://shop.example.com".into(),
+                    scheme: Some("myshop".into()),
+                }),
+                session: Some("gs_1".into()),
+            })
     }
 
     #[test]
@@ -382,6 +404,9 @@ mod tests {
         assert_eq!(again.row, event.row);
         assert_eq!(again.old_row, event.old_row);
         assert_eq!(again.payload, event.payload);
+        // And where it came from (TODO-payments P1.3, P1.5).
+        assert_eq!(again.app, event.app);
+        assert_eq!(again.session, event.session);
         assert_eq!(again.role, event.role);
         assert_eq!(again.user, event.user);
     }

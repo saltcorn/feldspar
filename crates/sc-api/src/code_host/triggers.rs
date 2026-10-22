@@ -170,9 +170,10 @@ impl<'a> TriggerRunHost<'a> {
             // The event's own caller, which is what both of these run as: the
             // admin's authority is the *trigger's*, and the run still carries
             // who caused it.
-            Authority::Admin | Authority::User => {
-                (CallerContext::new(self.role, self.user.clone()), None)
-            }
+            Authority::Admin | Authority::User => (
+                CallerContext::new(self.role, self.user.clone()).in_current_origin(),
+                None,
+            ),
             Authority::Public => (CallerContext::new(sc_auth::ROLE_PUBLIC, None), None),
             Authority::Named(id) => {
                 let user = super::load_named_user(self.catalog, id).await?;

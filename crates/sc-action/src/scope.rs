@@ -404,6 +404,9 @@ impl EventBindings {
                 .as_object()
                 .map(|obj| object(Ambient::Payload, obj)),
         );
+        // `session` is the caller's guest session (TODO-payments P1.5): in
+        // scope for every kind, like `user`, and null for a caller without one.
+        ambient.extend(sc_expr::session_ambient(event.session.as_deref()));
         let user = event
             .user
             .as_ref()
@@ -530,7 +533,9 @@ pub async fn render_event_template(
     // correlates on has to agree with the database (a uuid compared as text is
     // a SQL error, not a mismatch).
     let bindings = ctx.bind_values(|ambient, field, json| match ambient {
-        Ambient::User | Ambient::Payload | Ambient::Context => value_from_json(json),
+        Ambient::User | Ambient::Payload | Ambient::Context | Ambient::Session => {
+            value_from_json(json)
+        }
         Ambient::Row | Ambient::Old => typed_value(table.as_ref(), field, json),
     });
     // The bare scope is the event's row, so `{{ id }}` is the row this template
@@ -650,10 +655,26 @@ mod tests {
         let bindings = EventBindings::of(&login);
         assert!(!bindings.ambient.contains_key(&Ambient::Row));
         assert!(!bindings.ambient.contains_key(&Ambient::Old));
-        // `payload` is the exception, and is in scope for every kind — see
-        // `the_payload_is_in_scope_for_every_kind_and_only_as_an_object`.
-        assert_eq!(bindings.ambient.len(), 1);
+        // `payload` and `session` are the exceptions, in scope for every kind —
+        // see `the_payload_is_in_scope_for_every_kind_and_only_as_an_object`;
+        // `session` is null for a caller with no guest session (TODO-payments
+        // P1.5).
+        assert_eq!(bindings.ambient.len(), 2);
+        assert_eq!(bindings.ambient.get(&Ambient::Session), Some(&None));
         assert!(bindings.user.is_some());
+        let guest = Event::new(EventKind::Insert)
+            .on("orders")
+            .row(json!({ "id": 1 }))
+            .from_origin(sc_catalog::Origin {
+                app: None,
+                session: Some("gs_1".into()),
+            });
+        assert_eq!(
+            EventBindings::of(&guest).ambient[&Ambient::Session]
+                .as_ref()
+                .and_then(|s| s.get("id")),
+            Some(&Value::Text("gs_1".into()))
+        );
     }
 
     #[test]

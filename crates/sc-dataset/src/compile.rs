@@ -42,7 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Datelike, Duration, Months, NaiveDate};
 use sc_expr::{
-    Ambient, Env, Formula, Operation as FormulaOperation, TableShape, TranslateError, UserEnv,
+    Env, Formula, Operation as FormulaOperation, TableShape, TranslateError, UserEnv,
     translate_rooted, translate_value_rooted,
 };
 use sc_query::{
@@ -913,10 +913,10 @@ impl Compiler<'_> {
                 plain(&message)
             }
         })?;
-        if analysis.uses(Ambient::User) || !analysis.flags.is_empty() {
+        if analysis.uses_caller() || !analysis.flags.is_empty() {
             return Err(
-                "a dataset cannot use `user` or the operation flags: it has no caller, and its \
-                 rows must not depend on who reads them"
+                "a dataset cannot use `user`, `session` or the operation flags: it has no \
+                 caller, and its rows must not depend on who reads them"
                     .to_owned(),
             );
         }

@@ -568,6 +568,9 @@ pub fn app_providers_with(
                     // its invitations likewise…
                     .with_signup(sc_api::rest_signup_role(&api.config))
                     .with_invite(sc_api::rest_invite_min_role(&api.config))
+                    // …and guest sessions, where the application keeps them
+                    // (TODO-payments P1.5)…
+                    .with_guest_sessions(app.guest_session_days())
                     // …and its custom SQL queries, one endpoint each (§13.4).
                     .with_queries(sc_api::custom_queries(&api.config)?)
                     .map_err(|e| Error::config(format!("application `{}`: {e}", app.name)))?;

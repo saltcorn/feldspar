@@ -64,9 +64,8 @@ pub use ast::{Ast, BinaryOp, MemberProp, UnaryOp};
 pub use code::CodeRuntime;
 pub use code::{
     CodeAdapter, CodeCall, CodeHost, CodeHosts, ConsoleLine, ConsoleSink, DB_PRELUDE,
-    DEFAULT_CODE_TIMEOUT,
-    DEFAULT_CODE_WORKERS, DEFAULT_FETCH_TIMEOUT, DEFAULT_MAX_FETCHES, DEFAULT_MAX_FILE_OPS,
-    DEFAULT_MAX_HOST_CALLS, DEFAULT_MAX_INFLIGHT, DEFAULT_MAX_MODULE_CALLS,
+    DEFAULT_CODE_TIMEOUT, DEFAULT_CODE_WORKERS, DEFAULT_FETCH_TIMEOUT, DEFAULT_MAX_FETCHES,
+    DEFAULT_MAX_FILE_OPS, DEFAULT_MAX_HOST_CALLS, DEFAULT_MAX_INFLIGHT, DEFAULT_MAX_MODULE_CALLS,
     DEFAULT_MAX_TRIGGER_RUNS, DocRequest, FETCH_MARGIN, FetchHost, FileHost, LiveHost, LiveTopics,
     MAX_CODE_TIMEOUT, MAX_CONSOLE_LINES, MAX_LIVE_PUBLISHES, MIN_FETCH_WINDOW,
     MIN_MODULE_FN_WINDOW, MIN_TRIGGER_WINDOW, MODULE_FN_MARGIN, ModuleFnArg, ModuleFnHost,
@@ -87,6 +86,7 @@ pub use shape::{FieldShape, KeyShape, RowsOf, SchemaShape, TableShape};
 pub use subquery::{AggFunc, AggregateSpec, aggregate_expr, correlated_aggregate, correlation};
 pub use template::{Escape, MAX_PASSES, RenderMode, Template, Token};
 pub use translate::{
-    AmbientValues, CalcFields, Env, Operation, TranslateError, USER_GUC, UserEnv, join_path_expr,
-    join_path_expr_rooted, translate, translate_rooted, translate_value, translate_value_rooted,
+    AmbientValues, CalcFields, Env, Operation, SESSION_GUC, TranslateError, USER_GUC, UserEnv,
+    join_path_expr, join_path_expr_rooted, session_ambient, translate, translate_rooted,
+    translate_value, translate_value_rooted,
 };

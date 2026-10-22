@@ -25,6 +25,7 @@
 
 mod create;
 mod first_user;
+mod guest;
 mod login;
 mod lookup;
 mod manage;
@@ -38,6 +39,11 @@ mod users;
 
 pub use create::{CreatedUser, NewUser, create_user, create_user_with};
 pub use first_user::{any_user_exists, create_first_user};
+pub use guest::{
+    DEFAULT_GUEST_SESSION_DAYS, GUEST_SESSIONS_TABLE, GuestSession, StartedGuestSession,
+    bootstrap_guest_sessions, end_guest_session, guest_session, start_guest_session,
+    sweep_guest_sessions,
+};
 pub use login::{authenticate, authenticate_admin};
 pub use lookup::{first_user_with_role, load_user, load_user_by_email};
 pub use manage::{UserUpdate, delete_user, set_user_disabled, set_user_password, update_user};

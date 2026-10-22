@@ -647,6 +647,9 @@ fn binding_for(call: &FormulaCall, ident: &str) -> Result<Option<serde_json::Val
     if let Some(ambient) = Ambient::from_ident(ident) {
         let values = match ambient {
             Ambient::User => Some(call.user.as_ref()),
+            // Always bound, like `user`: null for a caller with no guest
+            // session, which is every caller a call does not say otherwise of.
+            Ambient::Session => Some(call.ambient.get(&ambient).and_then(Option::as_ref)),
             other => call.ambient.get(&other).map(Option::as_ref),
         };
         if let Some(values) = values {

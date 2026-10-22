@@ -945,6 +945,16 @@ export function scopeDeclarations(
     `/** Whoever caused the event, or null for the server's own events. */\n` +
       `declare const user: ScUser | null;`,
   );
+  parts.push(
+    `/** The application whose request raised the event, at the base URL that\n` +
+      ` * request reached it on — or null when no application's request did. */\n` +
+      `declare const app: { id: string; url: string; scheme: string | null } | null;`,
+  );
+  parts.push(
+    `/** The caller's guest session, when they are not signed in and the\n` +
+      ` * application keeps one — or null. */\n` +
+      `declare const session: { id: string } | null;`,
+  );
   if (scope.request && scope.bytes) {
     parts.push(
       `/** The raw request body (this query's body type is \`bytes\`). Its\n` +

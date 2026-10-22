@@ -5134,6 +5134,17 @@ fn module_schema() -> TypeSchema {
                 StructField::new("last_error", TypeSchema::optional(TypeSchema::text())),
             ])),
         ),
+        // The webhooks it receives (TODO-payments P1.2): `path` is where each
+        // is served on the admin host, which the admin registers with the
+        // service that calls it.
+        StructField::new(
+            "webhooks",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("description", TypeSchema::text()),
+                StructField::new("path", TypeSchema::text()),
+            ])),
+        ),
         // The model providers it supplies — names only, for the same reason:
         // what a provider *asks for* belongs to the model being fitted and is
         // on `listModelProviders`.
@@ -5146,6 +5157,18 @@ fn module_schema() -> TypeSchema {
         // what one *asks for* is its configuration wizard, a call per step on
         // `viewConfigStep`.
         StructField::new("view_patterns", TypeSchema::array(TypeSchema::text())),
+        // The content-security sources it suggests (TODO-payments P1.4): an
+        // application allows one when its admin puts the `key` in the
+        // application's `csp_sources` attribute. `sources` is directive → hosts.
+        StructField::new(
+            "csp_sources",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("key", TypeSchema::text()),
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("description", TypeSchema::text()),
+                StructField::new("sources", TypeSchema::json()),
+            ])),
+        ),
         // What it also supplies and this version does not load: `{key, count}`,
         // so the tab can say "also supplies 1 table provider (not yet
         // supported)".
@@ -5195,6 +5218,15 @@ fn bundled_module_schema() -> TypeSchema {
         // The services it runs in the background (TODO-imap M5): the card says
         // so before the click.
         StructField::new("services", TypeSchema::array(TypeSchema::text())),
+        // The webhooks it receives (TODO-payments P1.2), with the path each will
+        // be served at once installed.
+        StructField::new(
+            "webhooks",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("path", TypeSchema::text()),
+            ])),
+        ),
         // What it will be granted: the same `{ net, read, write, env }` shape a
         // module's own permissions have, so one renderer draws both. Always
         // closed for a Python module — there is nothing to enforce it (§10).

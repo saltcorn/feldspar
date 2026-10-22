@@ -527,8 +527,11 @@ impl<'a> Driver<'a> {
         // is exposed at all.
         ctx = ctx.with_adapters(&services.adapters);
         // The action's return value is what the step contributes to the context;
-        // what it wrote there directly travels with it.
-        let value = action.run(&mut ctx).await?;
+        // what it wrote there directly travels with it. It runs inside the
+        // event's origin, as a trigger's action does (TODO-payments P1.3, P1.5):
+        // a step that resumes tomorrow still writes for the application and the
+        // guest session that started the run.
+        let value = sc_catalog::with_origin(event.origin(), action.run(&mut ctx)).await?;
         Ok((value, ctx.context))
     }
 

@@ -23,7 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use sc_expr::{Ambient, Formula, SchemaShape};
+use sc_expr::{Formula, SchemaShape};
 
 use crate::field::TableId;
 use crate::table::{FieldMergeIssue, Table};
@@ -78,12 +78,13 @@ pub(crate) fn merge_calc_fields(
                             issues.push(issue(&table.name, name, &e.to_string()));
                         }
                         Ok(analysis) => {
-                            if analysis.uses(Ambient::User) || !analysis.flags.is_empty() {
+                            if analysis.uses_caller() || !analysis.flags.is_empty() {
                                 invalid.insert(name.clone());
                                 issues.push(issue(
                                     &table.name,
                                     name,
-                                    "a calculated field cannot use `user` or the operation flags",
+                                    "a calculated field cannot use `user`, `session` or the \
+                                     operation flags",
                                 ));
                             }
                         }

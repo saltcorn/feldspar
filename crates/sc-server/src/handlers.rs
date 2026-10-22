@@ -1986,7 +1986,11 @@ pub fn admin_handlers_with(
                     .get(&module.name)
                     .ok_or_else(|| Error::msg("the saved module is not in the loaded set"))?;
                 let statuses = services.service_statuses(&module.name);
-                Ok(HandlerResponse::ok(module_json(loaded, &statuses, &ctx.locale)))
+                Ok(HandlerResponse::ok(module_json(
+                    loaded,
+                    &statuses,
+                    &ctx.locale,
+                )))
             }
         }
     });
@@ -9120,6 +9124,27 @@ fn module_json(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
+        // The webhooks it receives (TODO-payments P1.2), each with the path it
+        // is served at on this host — what the admin registers with the
+        // provider. The tab puts its own origin in front: it is served on the
+        // admin host, which is where webhooks are.
+        "webhooks": loaded
+            .manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest
+                    .webhooks
+                    .iter()
+                    .map(|webhook| {
+                        json!({
+                            "name": webhook.name,
+                            "description": webhook.description,
+                            "path": sc_module::hook_path(&module.name, &webhook.name),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
         // And the model providers, for the same reason: installing
         // `feldspar-sklearn` gets an admin five estimators on the model form,
         // and the tab is where they find that out.
@@ -9131,6 +9156,13 @@ fn module_json(
         // application's New view offers beside v1's six. One whose name was
         // taken is not here; its issue says so.
         "view_patterns": loaded.view_pattern_names(),
+        // The content-security sources it suggests an application allow
+        // (TODO-payments P1.4), each switched on per application by its `key`.
+        "csp_sources": loaded
+            .csp_suggestions()
+            .iter()
+            .map(sc_module::CspSuggestion::to_json)
+            .collect::<Vec<_>>(),
         "unsupported": sc_module::unsupported_json(loaded),
         "issues": loaded.issues,
         "loaded": loaded.is_loaded(),
@@ -9156,6 +9188,13 @@ fn bundled_json(entry: &sc_module::BundledModule, installed: bool) -> Json {
         // And the services it runs (TODO-imap M5): the card says it runs in
         // the background and writes to its own tables.
         "services": entry.services,
+        // And the webhooks it receives (TODO-payments P1.2), with the path each
+        // will be served at once it is installed.
+        "webhooks": entry
+            .webhooks
+            .iter()
+            .map(|name| json!({ "name": name, "path": sc_module::hook_path(&entry.name, name) }))
+            .collect::<Vec<_>>(),
         "supplies": entry.supplies,
         "installs": entry.installs,
         // What installing it grants, in the same shape a module's own

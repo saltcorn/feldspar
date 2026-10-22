@@ -52,7 +52,7 @@ mod tx;
 mod wakeups;
 
 pub use admin_host::{AdminCall, AdminHost};
-pub use caller::CallerContext;
+pub use caller::{CallerContext, CallingApp, Origin, current_origin, with_origin};
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
 pub use code_libraries::{
     CODE_LIBRARIES_TABLE, CodeLibrary, bootstrap_code_libraries, check_code_library_saveable,
@@ -90,8 +90,8 @@ pub use file_stores::{
     load_file_store_by_name, resolve_options, save_file_store, store_file_settings,
     unique_file_store_name,
 };
-pub use module_tables::{ModuleTableClaim, ModuleTables};
 pub use model_host::{ModelHost, ModelSummary, PredictRows, check_model_calls};
+pub use module_tables::{ModuleTableClaim, ModuleTables};
 pub use observer::{ReprojectedApp, SchemaChanged, SchemaObserver};
 pub use origin::PublicOrigin;
 pub use prefetch::prefetch_bindings;

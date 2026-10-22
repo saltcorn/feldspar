@@ -83,10 +83,10 @@ use crate::endpoint::{
     AuthRequirement, Endpoint, EndpointSet, HandlerRef, Method, PathSpec, QueryParam,
 };
 use crate::ownership;
-use crate::provider::{ApiProvider, ApiRequest, ApiResponse, StreamOpening};
+use crate::provider::{ApiProvider, ApiRequest, ApiResponse, SessionAction, StreamOpening};
 use crate::resource::{ResourceField, ResourceFile, ResourceModel};
 use crate::rows;
-use crate::schema::{TypeSchema, ValueType};
+use crate::schema::{StructField, TypeSchema, ValueType};
 use crate::write_as;
 
 /// The provider's registered name.
@@ -254,8 +254,20 @@ const LOGOUT: &str = "logout";
 const WHOAMI: &str = "whoami";
 const SIGNUP: &str = "signup";
 const INVITE: &str = "invite";
+/// `POST {mount}/guest-session` — `api.startGuestSession()` (TODO-payments
+/// P1.5).
+const GUEST_SESSION: &str = "startGuestSession";
+/// Its path segment.
+const GUEST_SESSION_SEGMENT: &str = "guest-session";
 const FORGOT_PASSWORD: &str = "forgotPassword";
 const SET_PASSWORD: &str = "setPassword";
+
+/// How many guest sessions one address may start a minute: a basket's worth,
+/// and not a crawler's.
+const GUEST_SESSION_RATE: sc_ratelimit::Rate = sc_ratelimit::Rate {
+    max: 20,
+    window: std::time::Duration::from_secs(60),
+};
 
 /// The endpoints that make up an application's **sign-in**: how a caller who
 /// is nobody yet becomes somebody, or gets back to being able to. A caller an
@@ -279,7 +291,7 @@ const SYNC_PUSH: &str = "syncPush";
 /// A table's name is the other half of that rule, and it is not a constant — it
 /// is whatever the application declares. `signup` is reserved whether or not
 /// the application offers it, so turning sign-up on cannot shadow a query.
-pub(crate) const RESERVED_SEGMENTS: [&str; 9] = [
+pub(crate) const RESERVED_SEGMENTS: [&str; 10] = [
     ACTIONS_SEGMENT,
     SYNC_SEGMENT,
     LOGIN,
@@ -287,6 +299,7 @@ pub(crate) const RESERVED_SEGMENTS: [&str; 9] = [
     WHOAMI,
     SIGNUP,
     INVITE,
+    GUEST_SESSION_SEGMENT,
     "forgot-password",
     "set-password",
 ];
@@ -294,7 +307,8 @@ pub(crate) const RESERVED_SEGMENTS: [&str; 9] = [
 /// Every endpoint name the provider's own auth may project — the five every
 /// app has plus `signup` and `invite` — which a custom query may therefore not
 /// be named.
-pub(crate) const RESERVED_AUTH_NAMES: [&str; 10] = [
+pub(crate) const RESERVED_AUTH_NAMES: [&str; 11] = [
+    GUEST_SESSION,
     SYNC_REGISTER,
     SYNC_PULL,
     SYNC_PUSH,
@@ -328,6 +342,9 @@ pub struct RestProvider {
     /// The role a `signup` gives a new account, when the application offers
     /// sign-up at all ([`with_signup`](RestProvider::with_signup)).
     signup_role: Option<u8>,
+    /// How many days a guest session lasts, when the application keeps them
+    /// at all ([`with_guest_sessions`](RestProvider::with_guest_sessions)).
+    guest_session_days: Option<i64>,
     /// The least powerful role that may invite somebody, when the application
     /// offers invitations at all ([`with_invite`](RestProvider::with_invite)).
     invite_min_role: Option<u8>,
@@ -655,6 +672,7 @@ impl RestProvider {
             routes,
             trigger_routes,
             signup_role: None,
+            guest_session_days: None,
             invite_min_role: None,
             mailer: None,
             custom_routes: HashMap::new(),
@@ -710,6 +728,35 @@ impl RestProvider {
             .auth(AuthRequirement::Public);
         self.register_auth_endpoint(signup);
         self.signup_role = Some(role);
+        self
+    }
+
+    /// Keep **guest sessions** (TODO-payments P1.5, design C9): project `POST
+    /// {mount}/guest-session` — `api.startGuestSession()` — which starts one
+    /// lasting `days` for a caller who is not signed in and answers its public
+    /// id. `None` is the default and projects nothing.
+    ///
+    /// Started on request, never on a visit: a crawler that only looks at pages
+    /// never makes a row. The endpoint's auth is [`AuthRequirement::Public`],
+    /// which is not the public *role*, so a request without the CSRF token is
+    /// refused rather than served as nobody — a cross-site page cannot plant a
+    /// guest session in somebody's browser.
+    pub fn with_guest_sessions(mut self, days: Option<i64>) -> RestProvider {
+        self.guest_session_days = days.filter(|d| *d > 0);
+        if self.guest_session_days.is_none() || self.endpoints.find(GUEST_SESSION).is_some() {
+            return self;
+        }
+        let start = Endpoint::new(
+            GUEST_SESSION,
+            Method::Post,
+            path_at(&self.mount).lit(GUEST_SESSION_SEGMENT),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "id",
+            TypeSchema::text(),
+        )]))
+        .auth(AuthRequirement::Public);
+        self.register_auth_endpoint(start);
         self
     }
 
@@ -1051,6 +1098,55 @@ impl RestProvider {
                 Ok(ApiResponse::error(401, "invalid credentials"))
             }
         }
+    }
+
+    /// Start a guest session — `POST {mount}/guest-session` (TODO-payments
+    /// P1.5).
+    ///
+    /// Idempotent for a caller who already has one: the request runs inside
+    /// its origin, so the session it carries is answered and nothing is made.
+    /// A signed-in caller is refused: their rows are theirs by `user`, and a
+    /// guest session beside an account would be a second owner nobody can see.
+    /// Throttled per address, because a row is made for anybody who asks.
+    async fn start_guest_session(
+        &self,
+        req: &ApiRequest,
+        cat: &Catalog,
+        user: Option<&User>,
+    ) -> Result<ApiResponse> {
+        let Some(days) = self.guest_session_days else {
+            return Ok(ApiResponse::error(
+                404,
+                "this application keeps no guest sessions",
+            ));
+        };
+        if user.is_some() {
+            return Ok(ApiResponse::error(
+                409,
+                "you are signed in; a guest session is for a visitor who is not",
+            ));
+        }
+        if let Some(id) = sc_catalog::current_origin().session {
+            return Ok(ApiResponse::ok(json!({ "id": id })));
+        }
+        let application = self.application.ok_or_else(|| {
+            Error::config("a guest session needs the application this API serves")
+        })?;
+        if let Some(ip) = req.client_ip
+            && let Err(limited) =
+                sc_ratelimit::global().hit(&format!("guest-session:{ip}"), GUEST_SESSION_RATE)
+        {
+            return Ok(ApiResponse::too_many_requests(limited));
+        }
+        let started =
+            sc_auth::start_guest_session(cat, application, chrono::Duration::days(days)).await?;
+        Ok(ApiResponse {
+            session: SessionAction::StartGuest {
+                token: started.token,
+                max_age_secs: days * 24 * 60 * 60,
+            },
+            ..ApiResponse::ok(json!({ "id": started.session.public_id }))
+        })
     }
 
     /// Make an account and start a session for it — `POST {mount}/signup`,
@@ -1967,6 +2063,9 @@ impl RestProvider {
         match &endpoint.handler {
             HandlerRef::Named(_) if endpoint.name == LOGIN => self.login(&req, cat).await,
             HandlerRef::Named(_) if endpoint.name == SIGNUP => self.signup(&req.body, cat).await,
+            HandlerRef::Named(_) if endpoint.name == GUEST_SESSION => {
+                self.start_guest_session(&req, cat, user).await
+            }
             HandlerRef::Named(_) if endpoint.name == INVITE && self.invite_min_role.is_some() => {
                 password::invite(&req, cat, user, self.mailer.as_ref()).await
             }
@@ -2613,6 +2712,28 @@ mod tests {
             Ok(_) => panic!("a name the API already projects must be refused"),
         };
         assert!(err.contains("listPosts"), "{err}");
+    }
+
+    /// TODO-payments P1.5: `startGuestSession` exists only where the
+    /// application keeps guest sessions, and needs the CSRF token — it is not
+    /// open to the public *role*, so a request without one is refused rather
+    /// than served as nobody.
+    #[test]
+    fn a_guest_session_endpoint_is_projected_only_where_the_application_keeps_them() {
+        let tables = [table("orders", AccessRules::default())];
+        let off = RestProvider::project("/api", &tables).with_guest_sessions(None);
+        assert!(off.endpoints().find(GUEST_SESSION).is_none());
+        assert!(!crate::generate_client(off.endpoints()).contains("startGuestSession("));
+
+        let on = RestProvider::project("/api", &tables).with_guest_sessions(Some(30));
+        let start = on.endpoints().find(GUEST_SESSION).expect("projected");
+        assert_eq!(start.method, Method::Post);
+        assert_eq!(start.path.pattern(), "/api/guest-session");
+        assert_eq!(start.auth, AuthRequirement::Public);
+        assert!(!on.open_to_public(Method::Post, "/api/guest-session"));
+        assert!(crate::generate_client(on.endpoints()).contains("startGuestSession("));
+        // Its path cannot be taken by a custom query.
+        assert!(RESERVED_SEGMENTS.contains(&"guest-session"));
     }
 
     #[test]

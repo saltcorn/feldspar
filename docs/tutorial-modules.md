@@ -544,6 +544,89 @@ run: async ({ payload, callerFiles }) => {
 **On a bundled card**, list the services in `feldspar-module.json` as `services: ["ticker"]`. The
 card then says the module runs in the background and writes to its own tables.
 
+## Step 9 — A module that receives webhooks
+
+Another service tells a module that something happened by calling a URL: a payment provider posts
+"payment succeeded", a mail provider posts "message bounced". Such a module exports
+**`webhooks`**:
+
+```js
+const crypto = require("crypto");
+
+module.exports = {
+  tables: [{ name: "pv_events", fields: [{ name: "event_id", type: "text" }, { name: "kind", type: "text" }] }],
+  webhooks: {
+    events: {
+      description: "Events from the provider",
+      handle: async (req, ctx) => {
+        // Check the signature over the bytes as they were sent, before trusting anything.
+        const secret = ctx.configuration.webhook_secret || "";
+        const expected = crypto.createHmac("sha256", secret).update(req.rawBody).digest("hex");
+        if (req.headers["x-signature"] !== expected) return { status: 400, body: "bad signature" };
+        const event = req.json();
+        await ctx.db.pv_events.insert({ event_id: event.id, kind: event.type });
+        return { status: 200, body: { received: true } };
+      },
+    },
+  },
+};
+```
+
+It is served at **`POST /_feldspar/hooks/<module>/<name>`** on the admin host, where `<module>` is
+the package's name without its npm scope: `@acme/provider` receives at
+`/_feldspar/hooks/provider/events`. Anything after the name arrives as `req.rest`, so
+`/_feldspar/hooks/provider/events/acct_1` gives `req.rest === "acct_1"`. The installed card shows
+the full URL with a copy button; that is the address to paste into the provider's settings.
+
+**What `req` has.** `req.rawBody` is a `Buffer` of the body **byte for byte** — a signature is
+computed over those bytes, and a body parsed and re-serialised would not verify. `req.text()` and
+`req.json()` read it. `req.headers` are lower-cased (cookies and credentials are removed),
+`req.query` is the query string and `req.method` is `POST`.
+
+**What it answers.** `{ status, body, headers }`. A string or a `Buffer` body is sent as it is;
+anything else is sent as JSON. A 2xx tells the provider to stop retrying. A handler that throws is
+a **500**, so the provider tries again later, and the failure is logged and raised as the `error`
+event.
+
+**What `ctx` has.** What a service's has, for the length of one request: `ctx.db` over the module's
+own tables (and nothing else), `ctx.files`, `ctx.runTrigger`, `ctx.log` and `ctx.configuration`.
+It runs as the module; a trigger fired by its write sees `{ module, webhook }` as its `user`.
+
+**What protects it.** There is no session and no CSRF check: the caller is another server, and the
+signature is the authentication. The server caps the body at 1 MiB and limits each address to 600
+requests a minute.
+
+**On a bundled card**, list the webhooks in `feldspar-module.json` as `webhooks: ["events"]`, and
+the card shows the URL each will be served at before it is installed.
+
+## Step 10 — Suggesting content-security sources
+
+An application's pages may load scripts, frames and API calls from their own origin only. A module
+whose provider has an embedded form — a payment form in an iframe, say — needs that provider's
+hosts allowed. It **suggests** them, and an admin switches the suggestion on per application:
+
+```js
+module.exports = {
+  csp: {
+    elements: {
+      description: "The provider's embedded payment form",
+      sources: {
+        "script-src": ["https://js.provider.example"],
+        "frame-src": ["https://js.provider.example"],
+        "connect-src": ["https://api.provider.example"],
+      },
+    },
+  },
+};
+```
+
+The suggestion is listed on the module's card and on every application's settings page, under
+**Sources suggested by modules**; installing the module allows nothing by itself. Once switched on,
+each directive gains the hosts beside what it already allows (`script-src 'self'
+https://js.provider.example`). Only `https://` and `wss://` hosts are accepted, in the directives
+that load or reach something; a keyword such as `'unsafe-inline'` is refused, with an issue on the
+card. `csp` can also be a function of the module's configuration.
+
 ## Developing a module against a running server
 
 Point the **local directory** source at your checkout. The package is copied into the modules
@@ -598,7 +681,8 @@ ordinary tables from then on, and yours to drop.
 
 ## What this is not, yet
 
-- **Only actions, functions, table providers, view patterns, tables and services.** Types, field
+- **Only actions, functions, table providers, view patterns, tables, services, webhooks and
+  content-security suggestions.** Types, field
   views and event types are named in the tab and not loaded. Only JavaScript modules have
   `files` (TODO-imap M6); a Python module cannot declare tables yet, so it has no file area.
 - **Not only JavaScript any more.** The Type dropdown now offers four pairs, because a module can

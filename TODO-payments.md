@@ -526,16 +526,16 @@ Open: none at present.
 
 ## P1 — Core seams: webhooks, the calling application, CSP, guest sessions (core)
 
-- [ ] **P1.1** C1 module webhooks: manifest key, route, raw body and headers, cap, rate limit,
+- [x] **P1.1** C1 module webhooks: manifest key, route, raw body and headers, cap, rate limit,
   `ctx` with the module's own tables. Test: a fixture module's webhook receives a raw body and
   headers byte-for-byte, writes a row to its table, and its status code reaches the caller.
   It cannot write a table it did not declare.
-- [ ] **P1.2** Bundled card and installed card list the webhook URLs.
-- [ ] **P1.3** C5: `Event.app` (id, base URL, scheme) on events raised through an app's API.
+- [x] **P1.2** Bundled card and installed card list the webhook URLs.
+- [x] **P1.3** C5: `Event.app` (id, base URL, scheme) on events raised through an app's API.
   Test: an exposed trigger sees its app's URL on two different hosts.
-- [ ] **P1.4** C6: per-application CSP additions, with module-suggested sources shown and
+- [x] **P1.4** C6: per-application CSP additions, with module-suggested sources shown and
   switched on by the admin. Test: the app's CSP header carries them only once enabled.
-- [ ] **P1.5** C9 guest sessions: the per-application switch, `startGuestSession()` in the
+- [x] **P1.5** C9 guest sessions: the per-application switch, `startGuestSession()` in the
   generated client, the logged session rows, `session.id` in ownership formulas, default
   expressions, `only_if`, code bodies and the RLS GUC, and the CSRF rule. Tests: two guests
   each see only their own `open` order through REST, under runtime checks and under RLS; the
@@ -543,8 +543,20 @@ Open: none at present.
   without the CSRF token is served as session-less; an expired guest session reads nothing;
   the cookie is set on the application's host only; after a cross-site return from the `fake`
   checkout, the success page's API call sees the guest's order.
-- [ ] **P1.6** The `login` event's `guest_session`, and the guest session ending at sign-in.
+- [x] **P1.6** The `login` event's `guest_session`, and the guest session ending at sign-in.
   Test: a trigger moves a guest's orders to the account that signed in from the same browser.
+
+Notes from P1, for the milestones that build on it:
+- C1's URL has a webhook name between the module and the rest:
+  `/_feldspar/hooks/payments/<webhook>/<rest>`. §6.5's `/_feldspar/hooks/payments/<account name>`
+  becomes, for example, `/_feldspar/hooks/payments/events/<account name>` (P2.3).
+- The P1.5 test for a return from the `fake` checkout is a navigation that arrives without the
+  cookie, then an API call that carries it. Repeat it against the real `fake` page in P2.2/P2.4.
+- A guest's live socket does not carry the guest session yet. The basket's live updates (§6.1
+  step 2) need that before P2.8.
+- A default expression is still allowed only on a required field. `orders` with both `user_id`
+  (`user && user.id`) and `session_id` (`session.id`) defaults needs nullable fields to take
+  defaults (P2.8).
 
 ## P2 — The module and use case 1 (shop), on Stripe and `fake`
 

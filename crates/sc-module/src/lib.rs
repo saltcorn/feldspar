@@ -60,6 +60,7 @@
 pub mod action;
 pub mod bounds;
 pub mod bundled;
+pub mod csp;
 #[cfg(feature = "deno-host")]
 pub mod deno;
 pub mod files;
@@ -79,12 +80,14 @@ pub mod stream_providers;
 pub mod table_providers;
 pub mod tables;
 pub mod view_runtime;
+pub mod webhooks;
 
 pub use action::ModuleAction;
 pub use bounds::{
     DEFAULT_CALL_TIMEOUT, DEFAULT_MODULE_JS_SLICE, DEFAULT_MODULE_MAX_HEAP, DEFAULT_MODULE_WORKERS,
 };
 pub use bundled::{BUNDLED_IN_CHECKOUT, BundledModule, BundledModules};
+pub use csp::{CspSuggestion, SUGGESTIBLE_DIRECTIVES};
 #[cfg(feature = "deno-host")]
 pub use deno::{DenoModuleHost, PoolBounds};
 pub use frameworks::ModuleFrameworks;
@@ -92,7 +95,7 @@ pub use functions::ModuleFunctions;
 pub use host::{
     ActionManifest, CallHosts, FrameworkManifest, FunctionArg, FunctionManifest,
     ModelProviderManifest, ModuleHost, ModuleManifest, ServiceAsks, ServiceManifest,
-    TableProviderManifest, UnsupportedEntity, prime_v8,
+    TableProviderManifest, UnsupportedEntity, WebhookManifest, prime_v8,
 };
 pub use install::{
     InstalledPackage, Installer, MIN_NPM_VERSION, have_node, have_npm, npm_too_old, npm_version,
@@ -114,3 +117,7 @@ pub use stream_providers::ModuleStreamProviders;
 pub use table_providers::ModuleTableProviders;
 pub use tables::{FieldDecl, MODULE_TABLE_KEY, SyncReport, TableDecl};
 pub use view_runtime::{BUILTIN_VIEW_RUNTIME, ModuleViewRuntime};
+pub use webhooks::{
+    HOOKS_PREFIX, WEBHOOK_MAX_BODY, WebhookRequest, WebhookResponse, hook_path, hook_segment,
+    run_webhook, webhook_module,
+};

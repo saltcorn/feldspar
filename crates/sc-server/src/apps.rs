@@ -430,14 +430,28 @@ impl AppMounts {
     /// The `Content-Security-Policy` an application's responses carry, with the
     /// admin UI's framing following it to its own subdomain
     /// ([`follow_admin_host`](sc_app::follow_admin_host)).
+    ///
+    /// With the content-security sources its admin has switched on from the
+    /// installed modules' suggestions (TODO-payments P1.4): a suggestion whose
+    /// module is no longer installed adds nothing.
     pub fn app_csp(&self, app: &Application) -> String {
-        match (self.base_domain(), self.admin.subdomain()) {
+        let mut csp = match (self.base_domain(), self.admin.subdomain()) {
             (Some(base), Some(subdomain)) => {
                 sc_app::follow_admin_host(&app.csp, base, &format!("{subdomain}.{base}"))
-                    .header_value()
             }
-            _ => app.csp.header_value(),
+            _ => app.csp.clone(),
+        };
+        let enabled = app.csp_sources();
+        if !enabled.is_empty()
+            && let Some(modules) = self.modules()
+        {
+            for suggestion in modules.modules().csp_suggestions() {
+                if enabled.contains(&suggestion.key()) {
+                    csp = csp.with_sources(&suggestion.sources);
+                }
+            }
         }
+        csp.header_value()
     }
 
     /// Say which domain applications are served under, so a preview has a host

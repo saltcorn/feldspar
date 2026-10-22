@@ -84,17 +84,36 @@ pub enum Ambient {
     /// nothing declares what a run has accumulated, so `context.x` resolves and
     /// reads null before the step that writes it has run.
     Context,
+    /// `session` — the caller's **guest session** (TODO-payments P1.5, design
+    /// C9): `{ id }`, the session's public id, for a visitor who is not signed
+    /// in and whose application keeps guest sessions; null for everybody else.
+    ///
+    /// Always in scope, like `user`, because every formula has a caller and this
+    /// is part of who the caller is: `user ? user_id === user.id : session_id ===
+    /// session.id` is an ownership rule a guest's basket is kept by. Its one
+    /// field is declared, so `session.token` is an error on save rather than a
+    /// null at run time — and there is no token to read: what a table stores and
+    /// a formula sees is the public id, never the cookie.
+    Session,
 }
 
 impl Ambient {
     /// Every ambient object, in scope-declaration order.
-    pub const ALL: [Ambient; 5] = [
+    pub const ALL: [Ambient; 6] = [
         Ambient::User,
         Ambient::Row,
         Ambient::Old,
         Ambient::Payload,
         Ambient::Context,
+        Ambient::Session,
     ];
+
+    /// The ambient objects every formula has, because every formula has a
+    /// caller: `user` and `session`.
+    pub const CALLER: [Ambient; 2] = [Ambient::User, Ambient::Session];
+
+    /// The one field of `session`.
+    pub const SESSION_FIELDS: [&'static str; 1] = ["id"];
 
     /// The identifier this object is spelled with.
     pub fn as_str(self) -> &'static str {
@@ -104,6 +123,7 @@ impl Ambient {
             Ambient::Old => "old",
             Ambient::Payload => "payload",
             Ambient::Context => "context",
+            Ambient::Session => "session",
         }
     }
 
@@ -437,6 +457,13 @@ impl Analysis {
     /// Whether the formula names `ambient` at all.
     pub fn uses(&self, ambient: Ambient) -> bool {
         self.ambient.contains_key(&ambient)
+    }
+
+    /// Whether the formula depends on who is asking — `user` or `session` —
+    /// which is what makes a calculated field impossible to store and a
+    /// constraint impossible to check against a table.
+    pub fn uses_caller(&self) -> bool {
+        Ambient::CALLER.iter().any(|a| self.uses(*a))
     }
 
     /// The properties the formula reads from `ambient` (empty when unused).

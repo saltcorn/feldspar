@@ -227,6 +227,16 @@ pub enum SessionAction {
     /// End **every** session there is, the caller's cookie included — what
     /// Clear all does once it has deleted every account.
     EndAll,
+    /// Give the caller the **guest session** just started for them
+    /// (TODO-payments P1.5): set its cookie, on the application's own host,
+    /// lasting `max_age_secs`. The row already exists; this is the cookie.
+    StartGuest {
+        /// The cookie's value.
+        token: String,
+        /// How long the cookie lasts, in seconds: the guest session's lifetime,
+        /// so a basket survives the browser being closed.
+        max_age_secs: i64,
+    },
 }
 
 /// A raw-bytes response body — a file download — with the content type the

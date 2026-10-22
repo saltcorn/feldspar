@@ -156,7 +156,10 @@ async fn a_python_trigger_reaches_the_adapter_registered_under_python() -> Resul
     // Presence is scope, and it is the JavaScript action's rule unchanged: the
     // event's rows, its user and its payload, and no `context` outside a run.
     let names: Vec<&str> = seen.bindings.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(names, vec!["old", "payload", "row", "user"]);
+    assert_eq!(
+        names,
+        vec!["app", "old", "payload", "row", "session", "user"]
+    );
     // All five surfaces travel: the same borrowed hosts a JavaScript body gets,
     // which is what makes the two languages agree about authority and events.
     assert_eq!(
@@ -259,8 +262,9 @@ async fn a_workflow_step_reaches_the_same_adapter_a_trigger_does() -> Result<()>
     // decision 8, which the step shares with `run_js_code`.
     let seen = python.only();
     let names: Vec<&str> = seen.bindings.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(names, vec!["context", "payload", "user"]);
-    assert_eq!(seen.bindings[0].1, json!({ "so_far": 4 }), "the run so far");
+    assert_eq!(names, vec!["app", "context", "payload", "session", "user"]);
+    let context = seen.bindings.iter().find(|(k, _)| k == "context").unwrap();
+    assert_eq!(context.1, json!({ "so_far": 4 }), "the run so far");
     Ok(())
 }
 

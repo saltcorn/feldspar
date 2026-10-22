@@ -684,6 +684,33 @@ impl DenoModuleHost {
         .map_err(|e| denial(module, e))
     }
 
+    /// Run one webhook of one module (TODO-payments P1.1).
+    ///
+    /// Routed like [`run`](DenoModuleHost::run), and bounded like it: a
+    /// provider waiting on a webhook is a caller like any other.
+    pub async fn run_webhook(
+        &self,
+        module: &str,
+        webhook: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        let index = self.worker_for(module).await;
+        self.send_with(
+            index,
+            json!({
+                "op": "webhook_call",
+                "module": module,
+                "webhook": webhook,
+                "request": request,
+            }),
+            None,
+            call,
+        )
+        .await
+        .map_err(|e| denial(module, e))
+    }
+
     /// Stop one running service, and answer once its `stop` has finished.
     pub async fn stop_service(&self, module: &str, service: &str) -> Result<Json> {
         let index = self.worker_for(module).await;

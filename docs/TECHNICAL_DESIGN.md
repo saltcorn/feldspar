@@ -1280,6 +1280,60 @@ deletable (without admin nobody can administer anything; without public an anony
 no role to be), and a role any user still holds cannot be deleted either — nothing cascades a
 user to a different role.
 
+### 7.5 Guest sessions, and where a request came from (TODO-payments P1.3, P1.5, P1.6)
+
+**The origin.** Two facts about a request matter far below the transport, past signatures that
+carry only the user: the **application** it came through (an event's `app` — its id, its base
+URL as this request reached it, and its native apps' URL scheme from the `url_scheme` attribute),
+and the caller's **guest session**. They travel as one `sc_catalog::Origin`. The router runs an
+application request inside it (`with_origin`, a task-local), and whatever builds a caller context
+reads it there — `ownership::caller_context_at`, a code body's table host, the row actions'
+authority — so `CallerContext` carries `app` and `session` explicitly from then on, onto the write,
+onto the event the write raises (`Event::caused_by`), and back into scope by the dispatcher while
+the trigger's action runs. A scheduled trigger, a service and a webhook run in no origin, and see
+none. A code body binds `app` (`{ id, url, scheme }` or null) and `session` (`{ id }` or null)
+beside `user`.
+
+**Guest sessions** (design C9) let a visitor who is not signed in own rows — a basket — as a
+signed-in user owns them by `user`.
+
+- **Off per application** until the admin switches `guest_sessions` on (its lifetime,
+  `guest_session_days`, defaults to 30). The REST provider then projects `POST
+  {mount}/guest-session`, `api.startGuestSession()`: started on request, never on a visit, so a
+  crawler makes no rows. Idempotent for a caller who has one; refused (409) for a signed-in
+  caller; throttled per address. Its auth is `Public`, not the public *role*, so it needs the CSRF
+  token — a cross-site page cannot plant a guest session.
+- **Two secrets.** `_fd_guest_sessions` keys on the SHA-256 of the cookie token, and stores a
+  separate random **public id** (`gs_…`) beside it. The public id is what a table stores and what
+  a formula sees as `session.id`; a dump or a REST read of `orders.session_id` is not a usable
+  cookie. The table is **logged**, unlike `_fd_sessions`: the guest session is the only record of
+  who owns a guest's rows.
+- **The cookie** (`sc_guest`) is the application's own: no `Domain` (never the shared cookie
+  domain), `SameSite=Strict`, `HttpOnly`, and **persistent** (`Max-Age` = the lifetime), so the
+  basket survives a reload and closing the browser. A cross-site return from a provider's
+  checkout therefore arrives without it; the success page loads the order through the API, whose
+  same-site calls carry it.
+- **Resolution.** For an application API request with no signed-in user, the transport looks the
+  cookie up (token and application, unexpired) and runs the provider inside an origin with that
+  session. A mutating request that failed the CSRF check is the anonymous caller §7.3 describes,
+  and gets no guest session either.
+- **`session` in formulas** is an ambient object always in scope, like `user`, with one declared
+  field, `id` (`session.token` is an error on save). Ownership formulas (runtime and RLS), default
+  expressions, `only_if` and action formulas see it; in an RLS policy `session.id` is
+  `NULLIF(current_setting('sc.session', true), '')`, and `set_caller_context` sets `sc.session`
+  beside `sc.role`/`sc.user`. A calculated field, a constraint and a dataset may not use it, for
+  `user`'s reason (`Analysis::uses_caller`). `user` stays null and the role stays public for a
+  guest, so `user && …` still means "signed in".
+- **Signing in from the same browser** (P1.6) ends the guest session — row deleted, cookie
+  cleared — and the `login` event's payload is `{ guest_session: <public id> }`, which the
+  application's own trigger uses to move the guest's rows to the account (`update_rows` where
+  `session_id === payload.guest_session`). A login from a browser that was nobody's guest has no
+  payload, as before.
+
+Not yet: a live socket opened by a guest does not carry the guest session (its re-checks run on
+tasks outside the request's origin), and a default expression is still allowed only on a required
+field, which a table owned by *either* `user` or `session` needs relaxing (TODO-payments P2.8).
+
 ---
 
 ## 8. The Catalog and caching (`sc-catalog` + `sc-bus`)
@@ -11549,6 +11603,36 @@ reads one back inside the worker's 256 MB heap. `read` reads in 4 MB pieces by `
 `sc_files::CONTENT_TYPE_ATTRIBUTE` (`content_type`), and `file_response::serve` uses it before
 guessing from the path (a descriptor's own type still wins). `filename` is the existing
 `FILENAME_ATTRIBUTE`. Both are set by `ModuleFiles` after the `write` or the final `rename`.
+
+### 15.1e Module webhooks and content-security suggestions (TODO-payments P1.1, P1.2, P1.4)
+
+**Webhooks** (design C1). A module exports `webhooks: { name: { description, handle } }` (or a
+bare function, or a function of its configuration). The server serves each at `POST
+/_feldspar/hooks/<module>/<name>[/<rest>]` on the **admin host only** — one stable URL to register,
+as the OAuth callback is — where `<module>` is the package name without its npm scope
+(`sc_module::hook_segment`); two modules that would share a segment are an error naming both.
+The request reaches the module as one `webhook_call` on its worker: `req.rawBody` is a `Buffer` of
+the bytes as sent (base64 across the seam), `req.headers` are lower-cased with cookies and
+credentials withheld, `req.rest` is the path after the name. `ctx` is a service's for one call —
+`db` through the same `ScopedTables` (the module's declared tables only, no SQL, no `asUser`),
+`files`, `runTrigger`, `log`, `configuration` — at the admin role with `{ module, webhook }` as the
+writes' user, bounded like an action (wall clock and ask budget). The answer `{ status, body,
+headers }` is sent as it is; a throw is a 500 (so the provider retries), logged and raised as the
+`error` event. No session, no CSRF (the CSRF middleware treats the prefix as open to the public:
+the route reads no cookie), a 1 MiB body cap on the route, and a per-IP rate limit (600/min). The
+installed card lists each webhook's path, the admin UI prefixes its own origin and offers a copy
+button; a bundled manifest's `webhooks: [names]` puts them on the catalog card before the install.
+
+**Content-security suggestions** (design C6). A module exports `csp: { name: { description,
+sources: { directive: [hosts] } } }`. `sc_module::csp` accepts only `https://`/`wss://` host
+sources in the directives that load or reach something (`script-src`, `frame-src`,
+`connect-src`, …) — no keyword, no bare scheme, no `*`, no `default-src` or `frame-ancestors` —
+and reports anything else as an issue on the card. Nothing is allowed by installing: an
+application lists the suggestions it allows by key (`<module>:<name>`) in its `csp_sources`
+attribute, switched on from its settings page, and `AppMounts::app_csp` merges each enabled one
+when the policy is served (`CspPolicy::with_sources`: added to what the directive allows now, or
+to `default-src`'s list when the policy does not state the directive, so the application's own
+`'self'` is kept). A key whose module has been uninstalled adds nothing.
 
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 

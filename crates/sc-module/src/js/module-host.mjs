@@ -766,6 +766,10 @@ const supportedKeys = new Set([
   "tables",
   // The services a module runs in the background (TODO-imap M5).
   "services",
+  // The webhooks a module receives (TODO-payments P1.1).
+  "webhooks",
+  // The content-security sources a module suggests (TODO-payments P1.4).
+  "csp",
   // Saltcorn UI (TODO "Saltcorn UI" §6): view patterns, and the scripts and
   // stylesheets a document rendering them wants.
   "viewtemplates",
@@ -1373,6 +1377,203 @@ function serviceEvent({ module: name, service: serviceName, event }) {
     });
   }
   return { delivered };
+}
+
+/** This system's `webhooks` key (TODO-payments P1.1): requests from another
+ * service — a payment provider's events — that the server routes to the module
+ * at `POST /_feldspar/hooks/<module>/<name>[/<rest>]`.
+ *
+ * ```js
+ * webhooks: {
+ *   events: {
+ *     description: "Payment events from the provider",
+ *     handle: async (req, ctx) => ({ status: 200, body: { ok: true } }),
+ *   },
+ * }
+ * ```
+ *
+ * An object, or a function of the module's configuration returning one. A bare
+ * function is its own `handle`. The manifest carries the names and the
+ * descriptions; the functions stay here, and each request is one
+ * `webhook_call`. */
+async function evalWebhooks(plugin, configuration) {
+  const exported = plugin.webhooks;
+  let raw = {};
+  const issues = [];
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(configuration || {})) || {};
+    } catch (e) {
+      issues.push(`its webhooks could not be built: ${e.message}`);
+      raw = {};
+    }
+  } else if (exported && typeof exported === "object") {
+    raw = exported;
+  }
+  const webhooks = [];
+  const set = {};
+  if (Array.isArray(raw)) {
+    issues.push("its `webhooks` is a list; it should be an object of webhooks by name");
+    return { webhooks, set, issues };
+  }
+  for (const [name, value] of Object.entries(raw)) {
+    const impl = typeof value === "function" ? { handle: value } : value;
+    if (!impl || typeof impl.handle !== "function") {
+      issues.push(`the webhook "${name}" has no handle function`);
+      continue;
+    }
+    // The name is a path segment of the URL a provider is given, so it is
+    // spelled the way a path segment can be without escaping.
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      issues.push(
+        `the webhook "${name}" cannot be served: a webhook's name is part of its URL, ` +
+          "so it is letters, digits, `-` and `_`",
+      );
+      continue;
+    }
+    set[name] = impl;
+    webhooks.push({
+      name,
+      description: typeof impl.description === "string" ? impl.description : "",
+    });
+  }
+  return { webhooks, set, issues };
+}
+
+/** This system's `csp` key (TODO-payments P1.4): content-security sources the
+ * module suggests an application allow — a provider's embedded form, say.
+ * Data: an object of `{ description, sources }` by name, or a function of the
+ * module's configuration returning one. The server checks each and offers the
+ * valid ones on an application's page; nothing is allowed until an admin
+ * switches one on there. */
+async function evalCsp(plugin, configuration) {
+  const exported = plugin.csp;
+  let raw = {};
+  const issues = [];
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(configuration || {})) || {};
+    } catch (e) {
+      issues.push(`its content-security suggestions could not be built: ${e.message}`);
+      raw = {};
+    }
+  } else if (exported && typeof exported === "object") {
+    raw = exported;
+  }
+  const csp = [];
+  if (Array.isArray(raw)) {
+    issues.push("its `csp` is a list; it should be an object of suggestions by name");
+    return { csp, issues };
+  }
+  for (const [name, value] of Object.entries(raw)) {
+    try {
+      csp.push(
+        JSON.parse(
+          JSON.stringify({
+            name,
+            description: (value && value.description) || "",
+            sources: (value && value.sources) || null,
+          }),
+        ),
+      );
+    } catch (e) {
+      issues.push(`the content-security suggestion "${name}" is not plain data: ${e.message}`);
+    }
+  }
+  return { csp, issues };
+}
+
+/** `webhook_call`: one request to one of a module's webhooks.
+ *
+ * `req` is what arrived — `rawBody` as a `Buffer` of the bytes as sent (a
+ * signature is computed over them), `headers` lower-cased, `rest` (the path
+ * after the webhook's name), `method` and `query` — plus `text()` and `json()`
+ * over the body. `ctx` is a service's: `db` over the module's own tables,
+ * `files`, `runTrigger` and `log`, every ask on this call. The answer is
+ * `{ status, body, headers }`: a string or bytes body is sent as it is, and
+ * anything else as JSON. */
+async function runWebhook({ module: name, webhook: hookName, request }) {
+  const entry = loaded.get(name);
+  if (!entry) throw new Error(`the module ${name} is not loaded in this host`);
+  const impl = entry.webhooks && entry.webhooks[hookName];
+  if (!impl) throw new Error(`the module ${name} has no webhook ${hookName}`);
+  const store = running.getStore();
+  const callId = store && store.call;
+  const incoming = request || {};
+  const rawBody = Buffer.from(incoming.body || "", "base64");
+  const req = {
+    method: incoming.method || "POST",
+    headers: incoming.headers || {},
+    query: incoming.query || {},
+    rest: incoming.rest || "",
+    rawBody,
+    text: () => rawBody.toString("utf8"),
+    json: () => JSON.parse(rawBody.toString("utf8")),
+  };
+  const line = (level) => (...args) => {
+    try {
+      log(level, name, format(...args));
+    } catch (_) {
+      // As `speak`: a log line must not become the webhook's failure.
+    }
+  };
+  const ctx = {
+    module: name,
+    webhook: hookName,
+    configuration: entry.configuration || {},
+    db: globalThis.__scMakeDb(callId),
+    files: moduleFiles((plan) => askFor(callId, "module_files", plan)),
+    runTrigger: (trigger, payload) =>
+      askFor(callId, "trigger", {
+        trigger,
+        payload: payload === undefined ? {} : payload,
+      }),
+    log: Object.assign(line("info"), {
+      info: line("info"),
+      warn: line("warning"),
+      error: line("error"),
+      debug: line("verbose"),
+    }),
+  };
+  const answer = (await impl.handle(req, ctx)) || {};
+  return webhookAnswer(answer, name, hookName);
+}
+
+/** What a webhook's handler answered, as the server sends it: a status, the
+ * headers as strings, and the body base64-encoded with the content type it
+ * implies when the handler named none. */
+function webhookAnswer(answer, module, hook) {
+  if (typeof answer !== "object" || Array.isArray(answer)) {
+    throw new Error(
+      `the webhook ${hook} of ${module} answered ${typeof answer}; it answers ` +
+        "{ status, body, headers }",
+    );
+  }
+  const status = answer.status === undefined ? 200 : Number(answer.status);
+  if (!Number.isInteger(status) || status < 100 || status > 599) {
+    throw new Error(`the webhook ${hook} of ${module} answered status ${answer.status}`);
+  }
+  const headers = {};
+  for (const [key, value] of Object.entries(answer.headers || {})) {
+    if (value !== undefined && value !== null) headers[key.toLowerCase()] = String(value);
+  }
+  let bytes;
+  let contentType = null;
+  const body = answer.body;
+  if (body === undefined || body === null) {
+    bytes = Buffer.alloc(0);
+  } else if (typeof body === "string") {
+    bytes = Buffer.from(body, "utf8");
+    contentType = "text/plain; charset=utf-8";
+  } else if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
+    bytes = Buffer.from(body);
+    contentType = "application/octet-stream";
+  } else {
+    bytes = Buffer.from(JSON.stringify(body), "utf8");
+    contentType = "application/json";
+  }
+  if (contentType && !headers["content-type"]) headers["content-type"] = contentType;
+  return { status, headers, body: bytes.toString("base64") };
 }
 
 /** This system's `tables` key (TODO-imap M4): the tables a module keeps its
@@ -2171,6 +2372,16 @@ async function loadModule({ module: name, dir, configuration }) {
   issues.push(...serviceIssues);
 
   const {
+    webhooks: webhookList,
+    set: webhookSet,
+    issues: webhookIssues,
+  } = await evalWebhooks(plugin, configuration);
+  issues.push(...webhookIssues);
+
+  const { csp, issues: cspIssues } = await evalCsp(plugin, configuration);
+  issues.push(...cspIssues);
+
+  const {
     frameworks,
     set: frameworkSet,
     issues: frameworkIssues,
@@ -2202,6 +2413,7 @@ async function loadModule({ module: name, dir, configuration }) {
     frameworks: frameworkSet,
     viewtemplates: viewPatternSet,
     services: serviceSet,
+    webhooks: webhookSet,
     configuration: configuration || {},
   });
   // The registry may hold this module's previous patterns: rebuild it on the
@@ -2220,6 +2432,8 @@ async function loadModule({ module: name, dir, configuration }) {
     map_tools: mapTools,
     tables,
     services: serviceList,
+    webhooks: webhookList,
+    csp,
     frameworks,
     view_patterns: viewPatterns,
     headers,
@@ -4456,6 +4670,11 @@ async function handle(request) {
       return await stopServiceOp(request);
     case "service_event":
       return serviceEvent(request);
+    case "webhook_call": {
+      const pending = loading.get(request.module);
+      if (pending) await pending;
+      return await runWebhook(request);
+    }
     // Saltcorn UI's view runtime (TODO "Saltcorn UI" §3). No module to wait
     // on: the runtime is not a module in `loaded`, and imports itself.
     case "view_patterns":

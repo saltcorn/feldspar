@@ -247,7 +247,9 @@ impl<'a> Scope<'a> {
     }
 
     pub(crate) fn authority(&self) -> CallerContext {
-        CallerContext::new(ROLE_ADMIN, self.user_json.cloned()).chained(self.chain.clone())
+        CallerContext::new(ROLE_ADMIN, self.user_json.cloned())
+            .chained(self.chain.clone())
+            .in_current_origin()
     }
 
     /// Whether the predicate selects one fetched row — the reified half of
@@ -319,8 +321,8 @@ fn typed_bindings(ctx: &ActionContext<'_>) -> EventBindings {
             Ambient::Row | Ambient::Old => event_table.as_ref(),
             // Neither a payload nor a run context has columns behind it —
             // whatever its sender, or the step before this one, put in it is
-            // read as its own JSON shape.
-            Ambient::Payload | Ambient::Context => None,
+            // read as its own JSON shape. Nor does a guest session's id.
+            Ambient::Payload | Ambient::Context | Ambient::Session => None,
         };
         typed_value(table, field, json)
     })

@@ -841,7 +841,9 @@ impl<'a> TableHost<'a> {
     /// The caller every statement of this run carries: **admin, in the event's
     /// user's name**, with the trigger chain that led here.
     fn caller(&self) -> CallerContext {
-        CallerContext::new(ROLE_ADMIN, self.user.clone()).chained(self.chain.clone())
+        CallerContext::new(ROLE_ADMIN, self.user.clone())
+            .chained(self.chain.clone())
+            .in_current_origin()
     }
 
     /// §5's one asymmetry, said in the code body's own terms.

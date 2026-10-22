@@ -707,7 +707,8 @@ pub async fn create_row_in(
 /// as `null`, filled in from it.
 ///
 /// Each expression is evaluated with `user` (the writing user's object, or
-/// `null` for none) and the row's other values in scope — the values the body
+/// `null` for none), `session` (the guest session's `{ id }`, or `null`) and
+/// the row's other values in scope — the values the body
 /// gives, then the defaults already filled, in field order — under the
 /// `_insert` flag. It may follow a Key with Ⱶ and call a module function, which
 /// are fetched first, exactly as a calculated field's are.
@@ -782,7 +783,10 @@ pub async fn fill_defaults(
             op: sc_expr::Operation::Insert,
             row: bound,
             user: user.clone(),
-            ambient: sc_expr::AmbientValues::new(),
+            // `session` (TODO-payments P1.5): the guest session of the request
+            // this insert runs inside, so a basket's `session_id` can default
+            // to `session.id`.
+            ambient: sc_expr::session_ambient(sc_catalog::current_origin().session.as_deref()),
         };
         let json = evaluator
             .eval_value(call)

@@ -64,6 +64,12 @@ use crate::subquery::{AggFunc, AggregateSpec, correlated_aggregate, correlation}
 /// construction.
 pub const USER_GUC: &str = "sc.user";
 
+/// The GUC that carries the caller's **guest session** public id in
+/// [`UserEnv::Guc`] mode (TODO-payments P1.5): `session.id` in a policy reads
+/// it, as plain text. Unset or `''` reads as `NULL`, so a policy over it fails
+/// closed for everybody without one.
+pub const SESSION_GUC: &str = "sc.session";
+
 /// The access operation a formula is being translated for. Chooses the value
 /// of each operation flag (`_write` is true for everything but [`Read`]).
 ///
@@ -175,6 +181,16 @@ pub type AmbientValues = BTreeMap<Ambient, Option<BTreeMap<String, Value>>>;
 /// triggering row.
 static EMPTY_AMBIENT: AmbientValues = BTreeMap::new();
 
+/// The ambient map holding only `session`, for an ownership translation or a
+/// reified check (TODO-payments P1.5): `{ id }` for a caller with a guest
+/// session, null for anybody else.
+pub fn session_ambient(session: Option<&str>) -> AmbientValues {
+    BTreeMap::from([(
+        Ambient::Session,
+        session.map(|id| BTreeMap::from([("id".to_owned(), Value::Text(id.to_owned()))])),
+    )])
+}
+
 /// Everything a translation resolves against beyond the schema: the caller, the
 /// ambient objects, and the calc fields to inline.
 ///
@@ -215,7 +231,7 @@ impl<'a> Env<'a> {
     /// exactly when the caller put them in the ambient map (even with a null
     /// value — `old` on an insert is in scope *and* null).
     fn in_scope(&self, ambient: Ambient) -> bool {
-        ambient == Ambient::User || self.ambient.contains_key(&ambient)
+        Ambient::CALLER.contains(&ambient) || self.ambient.contains_key(&ambient)
     }
 
     /// The inlined values of an ambient object — `user`'s from [`UserEnv`],
@@ -1185,9 +1201,18 @@ impl<'a> Translator<'a> {
         }
     }
 
+    /// Whether this object is `session` rendering as a read of [`SESSION_GUC`]:
+    /// under [`UserEnv::Guc`], where an RLS policy outlives every request.
+    fn session_guc(&self, ambient: Ambient) -> bool {
+        ambient == Ambient::Session && matches!(self.env.user, UserEnv::Guc { .. })
+    }
+
     /// Bare `user`/`row`/`old` as a condition: object-or-null, so truthy ⇔
     /// present (for `user`, ⇔ logged in).
     fn ambient_truthy(&self, ambient: Ambient) -> QExpr {
+        if self.session_guc(ambient) {
+            return QExpr::unary(QUnOp::IsNotNull, session_guc_raw());
+        }
         match self.guc_types(ambient) {
             Some(_) => QExpr::unary(QUnOp::IsNotNull, guc_raw()),
             None => QExpr::lit(self.env.values(ambient).is_some()),
@@ -1196,6 +1221,9 @@ impl<'a> Translator<'a> {
 
     /// `user === null` (and the same for `row`/`old`).
     fn ambient_is_null(&self, ambient: Ambient) -> QExpr {
+        if self.session_guc(ambient) {
+            return QExpr::unary(QUnOp::IsNull, session_guc_raw());
+        }
         match self.guc_types(ambient) {
             Some(_) => QExpr::unary(QUnOp::IsNull, guc_raw()),
             None => QExpr::lit(self.env.values(ambient).is_none()),
@@ -1206,6 +1234,13 @@ impl<'a> Translator<'a> {
     /// values (null when the object is null or has no such field), or the cast
     /// JSON extraction from the GUC for an RLS policy's `user`.
     fn ambient_field(&self, ambient: Ambient, field: &str) -> QExpr {
+        if self.session_guc(ambient) {
+            // `session` has one field, its id, which is the whole GUC.
+            return match field {
+                "id" => session_guc_raw(),
+                _ => QExpr::Lit(Value::Null),
+            };
+        }
         let Some(field_types) = self.guc_types(ambient) else {
             let value = self
                 .env
@@ -1238,6 +1273,14 @@ impl<'a> Translator<'a> {
     /// the env declares boolean (null-safe `IS NOT DISTINCT FROM TRUE`, so a
     /// missing user or field is false, as JS truthiness of `undefined` is).
     fn ambient_field_truthy(&self, ambient: Ambient, field: &str) -> Result<QExpr, TranslateError> {
+        if self.session_guc(ambient) {
+            // An id is truthy exactly when there is one: it is never `''`,
+            // which the GUC read folds to null anyway.
+            return Ok(QExpr::unary(
+                QUnOp::IsNotNull,
+                self.ambient_field(ambient, field),
+            ));
+        }
         let Some(field_types) = self.guc_types(ambient) else {
             let truthy = self
                 .env
@@ -1276,6 +1319,22 @@ fn guc_raw() -> QExpr {
             QExpr::Func {
                 name: "current_setting".into(),
                 args: vec![QExpr::lit(USER_GUC), QExpr::lit(true)],
+            },
+            QExpr::lit(""),
+        ],
+    }
+}
+
+/// `NULLIF(current_setting('sc.session', true), '')` — the caller's guest
+/// session public id, or `NULL` when there is none ([`guc_raw`]'s `NULLIF`, for
+/// its reason).
+fn session_guc_raw() -> QExpr {
+    QExpr::Func {
+        name: "NULLIF".into(),
+        args: vec![
+            QExpr::Func {
+                name: "current_setting".into(),
+                args: vec![QExpr::lit(SESSION_GUC), QExpr::lit(true)],
             },
             QExpr::lit(""),
         ],
@@ -1478,6 +1537,54 @@ mod tests {
             .unwrap_or_else(|| panic!("unexpected statement shape: {sql}"))
             .to_string();
         (clause, binds)
+    }
+
+    /// TODO-payments P1.5: `session` is always in scope. Inline, its id is a
+    /// literal (null without a guest session, so the rule grants nothing); in
+    /// an RLS policy, it is the `sc.session` GUC read.
+    #[test]
+    fn session_inlines_its_id_or_reads_the_session_guc() {
+        let anon = UserEnv::Inline(None);
+        let rule = "user ? owner === user.email : owner === session.id";
+        let (sql, binds) = where_sql_ambient(rule, &anon, &session_ambient(Some("gs_1")));
+        assert!(
+            sql.contains("\"books\".\"owner\" IS NOT DISTINCT FROM $"),
+            "{sql}"
+        );
+        assert!(binds.contains(&Value::Text("gs_1".into())), "{binds:?}");
+        // No guest session: the id is null, and a non-null owner never matches.
+        let (_, binds) = where_sql_ambient(rule, &anon, &session_ambient(None));
+        assert!(
+            !binds
+                .iter()
+                .any(|b| matches!(b, Value::Text(t) if t.starts_with("gs_")))
+        );
+        // Not passed at all is the same as null: `session` is never unbound.
+        let (sql, _) = where_sql_ambient("session === null", &anon, &AmbientValues::new());
+        assert!(sql.contains("TRUE") || sql.contains("$1"), "{sql}");
+
+        let policy = guc(&[("email", "text")]);
+        let (sql, _) = where_sql_ambient("owner === session.id", &policy, &AmbientValues::new());
+        assert!(sql.contains("current_setting"), "{sql}");
+        assert!(sql.contains("NULLIF"), "{sql}");
+        let (_, binds) = where_sql_ambient("owner === session.id", &policy, &AmbientValues::new());
+        assert!(
+            binds.contains(&Value::Text(SESSION_GUC.into())),
+            "{binds:?}"
+        );
+        let (sql, _) = where_sql_ambient("session !== null", &policy, &AmbientValues::new());
+        assert!(sql.contains("IS NOT NULL") || sql.contains("NOT"), "{sql}");
+    }
+
+    #[test]
+    fn session_has_one_field() {
+        let formula = Formula::parse("owner === session.token").unwrap();
+        let err = formula.validate(&shape(), "books").unwrap_err().to_string();
+        assert!(err.contains("token"), "{err}");
+        Formula::parse("owner === session.id")
+            .unwrap()
+            .validate(&shape(), "books")
+            .unwrap();
     }
 
     #[test]

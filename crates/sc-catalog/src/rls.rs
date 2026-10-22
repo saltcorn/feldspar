@@ -18,7 +18,7 @@
 
 use sc_db::Row;
 use sc_error::{Context, Error, Result};
-use sc_expr::{Formula, Operation, SchemaShape, USER_GUC, UserEnv};
+use sc_expr::{Formula, Operation, SESSION_GUC, SchemaShape, USER_GUC, UserEnv};
 use sc_query::{SqlDialect, Statement, render_policy_expr};
 
 use crate::caller::CallerContext;
@@ -87,6 +87,10 @@ pub async fn set_caller_context(
     tx.set_local(ROLE_GUC, &context.role.to_string()).await?;
     tx.set_local(USER_GUC, context.user_json().as_deref().unwrap_or(""))
         .await?;
+    // And the guest session (TODO-payments P1.5), for the same reason: the
+    // last writer's must not decide the next writer's `session.id`.
+    tx.set_local(SESSION_GUC, context.session.as_deref().unwrap_or(""))
+        .await?;
     Ok(())
 }
 
@@ -103,6 +107,7 @@ pub async fn set_caller_context(
 pub async fn clear_caller_context(tx: &mut dyn sc_db::Transaction) -> Result<()> {
     tx.set_local(ROLE_GUC, "").await?;
     tx.set_local(USER_GUC, "").await?;
+    tx.set_local(SESSION_GUC, "").await?;
     Ok(())
 }
 

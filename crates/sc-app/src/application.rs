@@ -399,11 +399,65 @@ impl CspPolicy {
     }
 }
 
+impl CspPolicy {
+    /// The policy with `additions` — directive → sources — added (TODO-payments
+    /// P1.4): what an application serves once its admin has switched on a
+    /// module's suggestion.
+    ///
+    /// **Added to what the directive allows now**, which for a directive the
+    /// policy does not state is what `default-src` allows: a policy of
+    /// `default-src 'self'` given `script-src https://js.stripe.com` becomes
+    /// `script-src 'self' https://js.stripe.com`, not a `script-src` that
+    /// refuses the application's own scripts. `form-action` does not fall back
+    /// to `default-src`, so it starts from `'self'`. A `'none'` is dropped once
+    /// there is something to allow.
+    pub fn with_sources(&self, additions: &BTreeMap<String, Vec<String>>) -> CspPolicy {
+        let mut out = self.clone();
+        for (directive, sources) in additions {
+            if sources.is_empty() {
+                continue;
+            }
+            let mut list = match out.directives.get(directive) {
+                Some(existing) => existing.clone(),
+                None if directive == "form-action" => vec!["'self'".to_owned()],
+                None => out
+                    .directives
+                    .get("default-src")
+                    .cloned()
+                    .unwrap_or_else(|| vec!["'self'".to_owned()]),
+            };
+            list.retain(|s| s != "'none'");
+            for source in sources {
+                if !list.contains(source) {
+                    list.push(source.clone());
+                }
+            }
+            out.directives.insert(directive.clone(), list);
+        }
+        out
+    }
+}
+
 impl Default for CspPolicy {
     fn default() -> Self {
         CspPolicy::strict()
     }
 }
+
+/// The attribute that switches **guest sessions** on for an application
+/// (TODO-payments P1.5, design C9): `true` lets a visitor who is not signed in
+/// start one, and own rows by it as a signed-in user owns them by `user`. Off
+/// unless an admin turns it on.
+pub const GUEST_SESSIONS_ATTRIBUTE: &str = "guest_sessions";
+
+/// The attribute saying how many days a guest session lasts — its cookie's
+/// `Max-Age` and its row's expiry. [`sc_auth::DEFAULT_GUEST_SESSION_DAYS`] when
+/// absent.
+pub const GUEST_SESSION_DAYS_ATTRIBUTE: &str = "guest_session_days";
+
+/// The attribute listing the content-security suggestions an application's
+/// admin has switched on, each `<module>:<name>` (TODO-payments P1.4).
+pub const CSP_SOURCES_ATTRIBUTE: &str = "csp_sources";
 
 /// The name of the directive that says who may frame an application.
 pub const FRAME_ANCESTORS: &str = "frame-ancestors";
@@ -700,6 +754,41 @@ impl Application {
         self
     }
 
+    /// The content-security suggestions switched on for this application, by
+    /// key ([`CSP_SOURCES_ATTRIBUTE`]).
+    pub fn csp_sources(&self) -> Vec<String> {
+        self.attributes
+            .get(CSP_SOURCES_ATTRIBUTE)
+            .and_then(Json::as_array)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(Json::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// How many days a guest session of this application lasts, or `None` when
+    /// it keeps none ([`GUEST_SESSIONS_ATTRIBUTE`]).
+    pub fn guest_session_days(&self) -> Option<i64> {
+        if !self
+            .attributes
+            .get(GUEST_SESSIONS_ATTRIBUTE)
+            .and_then(Json::as_bool)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        Some(
+            self.attributes
+                .get(GUEST_SESSION_DAYS_ATTRIBUTE)
+                .and_then(Json::as_i64)
+                .filter(|d| (1..=3650).contains(d))
+                .unwrap_or(sc_auth::DEFAULT_GUEST_SESSION_DAYS),
+        )
+    }
+
     /// Whether the app is permitted to access `table`.
     pub fn can_access_table(&self, table: &TableId) -> bool {
         self.tables.contains(table)
@@ -747,6 +836,64 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TODO-payments P1.4: a suggestion is added to what the directive allows
+    /// now — `default-src` for one the policy does not state — so switching on
+    /// a provider's script does not switch off the application's own.
+    #[test]
+    fn suggested_sources_widen_a_directive_rather_than_replace_it() {
+        let additions: BTreeMap<String, Vec<String>> = [
+            (
+                "script-src".to_owned(),
+                vec!["https://js.stripe.com".to_owned()],
+            ),
+            (
+                "connect-src".to_owned(),
+                vec!["https://api.stripe.com".to_owned()],
+            ),
+            (
+                "form-action".to_owned(),
+                vec!["https://checkout.stripe.com".to_owned()],
+            ),
+            (
+                "img-src".to_owned(),
+                vec!["https://q.stripe.com".to_owned()],
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let policy = CspPolicy::strict()
+            .directive("connect-src", ["'self'", "wss:"])
+            .directive("img-src", ["'none'"])
+            .with_sources(&additions);
+        assert_eq!(
+            policy.directives["script-src"],
+            ["'self'", "https://js.stripe.com"]
+        );
+        assert_eq!(
+            policy.directives["connect-src"],
+            ["'self'", "wss:", "https://api.stripe.com"]
+        );
+        assert_eq!(
+            policy.directives["form-action"],
+            ["'self'", "https://checkout.stripe.com"]
+        );
+        assert_eq!(policy.directives["img-src"], ["https://q.stripe.com"]);
+        assert_eq!(policy.directives["default-src"], ["'self'"]);
+        // Twice is once.
+        assert_eq!(policy.with_sources(&additions), policy);
+    }
+
+    #[test]
+    fn an_application_lists_the_suggestions_switched_on_for_it() {
+        let app = Application::new("Shop", "shop", FrameworkRef::new("none")).attribute(
+            CSP_SOURCES_ATTRIBUTE,
+            serde_json::json!(["@feldspar/payments:stripe"]),
+        );
+        assert_eq!(app.csp_sources(), ["@feldspar/payments:stripe"]);
+        let none = Application::new("Shop", "shop", FrameworkRef::new("none"));
+        assert!(none.csp_sources().is_empty());
+    }
 
     /// An application created while the admin UI was on the base domain keeps
     /// letting it frame the preview pane after it moves to `admin.example.com`;

@@ -459,6 +459,37 @@ export function ModulesTab() {
  * whole permission model — but an admin can, and an admin who pressed a button
  * with "installing lets it connect to any host" written beside it has.
  */
+/** A webhook's full URL: its path on this host, which is the admin host —
+ * where webhooks are served (TODO-payments P1.2). */
+function webhookUrl(path: string): string {
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  return `${origin}${path}`;
+}
+
+/** A webhook's URL with a button that copies it, since it is pasted into
+ * another service's settings. */
+function WebhookUrl({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const url = webhookUrl(path);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      // The address is on screen and selectable, which is the fallback.
+      setCopied(false);
+    }
+  };
+  return (
+    <>
+      <code>{url}</code>{" "}
+      <Button size="sm" variant="outline-secondary" className="py-0" onClick={copy}>
+        {copied ? <T text="Copied" /> : <T text="Copy" />}
+      </Button>
+    </>
+  );
+}
+
 function BundledCard({
   entry,
   busy,
@@ -512,6 +543,18 @@ function BundledCard({
                 </span>
               ))}
               ).
+            </div>
+          )}
+          {entry.webhooks.length > 0 && (
+            <div className="text-secondary mb-1">
+              <T text="Receives webhooks at" />{" "}
+              {entry.webhooks.map((webhook, i) => (
+                <span key={webhook.name}>
+                  {i > 0 && ", "}
+                  <code>{webhookUrl(webhook.path)}</code>
+                </span>
+              ))}
+              .
             </div>
           )}
           {grant && <div className="text-secondary mb-1">{grant}</div>}
@@ -688,6 +731,25 @@ function ModuleCard({
             </ul>
             <div className="text-secondary mb-2">
               <T text="Runs in the background and writes to its own tables. A service that fails is restarted, waiting longer each time." />
+            </div>
+          </>
+        )}
+
+        {module.webhooks.length > 0 && (
+          <>
+            <div className="text-secondary mb-1"><T text="Receives webhooks at" /></div>
+            <ul className="list-unstyled mb-2">
+              {module.webhooks.map((webhook) => (
+                <li key={webhook.name}>
+                  <WebhookUrl path={webhook.path} />
+                  {webhook.description && (
+                    <span className="text-secondary"> — {webhook.description}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div className="text-secondary mb-2">
+              <T text="Give this address to the service that sends the events. It answers on this host, with no sign-in: the module checks each request itself." />
             </div>
           </>
         )}

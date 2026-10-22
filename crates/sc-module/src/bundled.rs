@@ -111,6 +111,10 @@ pub struct BundledModule {
     /// before the click, because a module that is always running is one an
     /// admin should know about first.
     pub services: Vec<String>,
+    /// The webhooks it receives (TODO-payments P1.2) — said on the card with
+    /// the URL each is served at, because that URL is what the admin registers
+    /// with the other service.
+    pub webhooks: Vec<String>,
     /// What it asks to be allowed to reach. Granted by the install, printed by
     /// the tab beside the button that does it.
     pub permissions: ModulePermissions,
@@ -294,9 +298,7 @@ fn read_manifest(dir: &Path) -> Result<BundledModule> {
     for table in &tables {
         if table.is_empty()
             || table.starts_with("_fd_")
-            || !table
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         {
             return Err(Error::invalid(format!(
                 "{}: `tables` lists `{table}`, which is not a table name a module can declare",
@@ -324,6 +326,7 @@ fn read_manifest(dir: &Path) -> Result<BundledModule> {
         installs: lines("installs")?,
         tables,
         services: lines("services")?,
+        webhooks: lines("webhooks")?,
         permissions,
         directory: dir.to_path_buf(),
     })
@@ -454,7 +457,10 @@ mod tests {
             issues.contains("lists `mail_folders`, but no line of `supplies` names it"),
             "{issues}"
         );
-        assert!(issues.contains("`_fd_tables`, which is not a table name"), "{issues}");
+        assert!(
+            issues.contains("`_fd_tables`, which is not a table name"),
+            "{issues}"
+        );
         // A whole word: `mail_account` is not named by `mail_accounts`.
         assert!(issues.contains("`mail_account`, but no line"), "{issues}");
     }
@@ -471,6 +477,25 @@ mod tests {
         assert!(catalog.issues().is_empty(), "{:?}", catalog.issues());
         assert_eq!(catalog.get("imap").unwrap().services, ["sync"]);
         assert!(catalog.get("rss").unwrap().services.is_empty());
+    }
+
+    /// TODO-payments P1.2: the webhooks a module receives are listed for the
+    /// card, which prints the URL each is served at.
+    #[test]
+    fn a_manifest_lists_the_webhooks_it_receives() {
+        let pay = r#"{
+            "name": "@feldspar/payments", "language": "javascript", "title": "Payments",
+            "description": "Payments.", "supplies": ["Webhooks"], "webhooks": ["events"]
+        }"#;
+        let (_dir, catalog) = catalog_of(&[("payments", pay), ("rss", RSS)]);
+        assert!(catalog.issues().is_empty(), "{:?}", catalog.issues());
+        let entry = catalog.get("payments").unwrap();
+        assert_eq!(entry.webhooks, ["events"]);
+        assert_eq!(
+            crate::hook_path(&entry.name, &entry.webhooks[0]),
+            "/_feldspar/hooks/payments/events"
+        );
+        assert!(catalog.get("rss").unwrap().webhooks.is_empty());
     }
 
     #[test]

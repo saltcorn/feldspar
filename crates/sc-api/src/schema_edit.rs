@@ -2480,10 +2480,10 @@ fn validate_calc_expression(
     let analysis = formula
         .validate(shape, table)
         .map_err(|e| Error::invalid(format!("calculated field `{table}.{field}`: {e}")))?;
-    if analysis.uses(sc_expr::Ambient::User) || !analysis.flags.is_empty() {
+    if analysis.uses_caller() || !analysis.flags.is_empty() {
         return Err(Error::invalid(format!(
-            "calculated field `{table}.{field}`: a calculated field cannot use `user` \
-             or the operation flags"
+            "calculated field `{table}.{field}`: a calculated field cannot use `user`, \
+             `session` or the operation flags"
         )));
     }
     Ok(analysis)

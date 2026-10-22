@@ -77,7 +77,10 @@ pub fn caller_context_at(role: u8, user: Option<&User>) -> CallerContext {
             .collect();
         Json::Object(obj)
     });
-    CallerContext::new(role, fields)
+    // The application and the guest session of the request this runs inside
+    // (TODO-payments P1.3, P1.5): what the event a write raises reports, and the
+    // `sc.session` an RLS policy reads.
+    CallerContext::new(role, fields).in_current_origin()
 }
 
 /// The user object as the formula sees it: `id`, `role`, and every extra field
@@ -90,6 +93,18 @@ fn user_values(user: Option<&User>) -> Option<BTreeMap<String, Value>> {
         map.insert(COL_ROLE.to_owned(), Value::Int(i64::from(u.role)));
         map
     })
+}
+
+/// The caller's guest session as a formula sees it (TODO-payments P1.5):
+/// `session` bound to `{ id }`, or to null for a caller without one.
+///
+/// Read from the origin the request runs inside rather than passed down beside
+/// the user: every function here is reached with the user alone, and the
+/// transport is what knows the session ([`sc_catalog::Origin`]). A signed-in
+/// caller never has one — the transport resolves a guest session only for
+/// somebody who is not signed in.
+fn session_values() -> sc_expr::AmbientValues {
+    sc_expr::session_ambient(sc_catalog::current_origin().session.as_deref())
 }
 
 /// The rows of `table` a caller may read, applying §7.3's rule to a
@@ -218,11 +233,12 @@ pub async fn read_row_values_as_in(
 
     let shape = cat.schema_shape()?;
     let env = UserEnv::Inline(user_values(user));
+    let session = session_values();
     let calc = table.calc_formulas();
     match translate(
         formula,
         Operation::Read,
-        &Env::new(&env).with_calc(&calc),
+        &Env::new(&env).with_calc(&calc).with_ambient(&session),
         &shape,
         &table.name,
     ) {
@@ -605,11 +621,12 @@ pub fn aggregate_guard(
     };
     let shape = cat.schema_shape()?;
     let env = UserEnv::Inline(user_values(user));
+    let session = session_values();
     let calc = table.calc_formulas();
     match translate_rooted(
         formula,
         Operation::Read,
-        &Env::new(&env).with_calc(&calc),
+        &Env::new(&env).with_calc(&calc).with_ambient(&session),
         &shape,
         &table.name,
         root,
@@ -962,11 +979,12 @@ pub(crate) fn write_guard(
 ) -> Result<Option<Expr>> {
     let shape = cat.schema_shape()?;
     let env = UserEnv::Inline(user_values(user));
+    let session = session_values();
     let calc = table.calc_formulas();
     match translate(
         formula,
         op,
-        &Env::new(&env).with_calc(&calc),
+        &Env::new(&env).with_calc(&calc).with_ambient(&session),
         &shape,
         &table.name,
     ) {
@@ -1074,8 +1092,8 @@ async fn allowed(
         user: user_values(user),
         // An ownership formula has no triggering event, so no `row`/`old` is in
         // scope — validation refuses naming one (§7.3's scope is the row's own
-        // fields, `user` and the flags).
-        ambient: Default::default(),
+        // fields, `user`, `session` and the flags).
+        ambient: session_values(),
     };
     evaluator.eval(call).await.unwrap_or(false)
 }

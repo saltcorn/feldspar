@@ -2,6 +2,97 @@
 
 Changes in reverse chronological order.
 
+## Payments P1: module webhooks, the calling application, CSP suggestions, guest sessions
+
+The core seams the payments module needs (TODO-payments.md milestone P1, design C1, C5, C6, C9).
+Nothing here takes a payment; it is what a payments module, and a shop built on it, stand on.
+
+**Module webhooks (P1.1, P1.2).** A module can export `webhooks`, and the server serves each at
+`POST /_feldspar/hooks/<module>/<name>[/<rest>]` on the admin host. `<module>` is the package name
+without its npm scope (`@feldspar/payments` → `payments`).
+- The handler gets `req.rawBody` as the bytes that were sent, so a provider's signature can be
+  checked. It also gets lower-cased headers (cookies and credentials removed), `req.rest`,
+  `req.query`, `text()` and `json()`.
+- Its `ctx` is a service's, for one call: `db` over the module's own tables only (the same
+  `ScopedTables` check), `files`, `runTrigger`, `log` and `configuration`.
+- It answers `{ status, body, headers }`, which the caller gets as it is. A handler that throws is
+  a 500, logged and raised as the `error` event, so the provider retries.
+- No session and no CSRF check. The route has a 1 MiB body cap and a per-IP limit of 600 a minute.
+- The installed card lists each webhook's URL with a copy button. A bundled manifest's
+  `webhooks: [names]` shows them on the catalog card before the install.
+- New: `sc_module::webhooks`, `sc-server`'s `webhooks.rs`, `ModuleServices::webhook`. The worker
+  op is `webhook_call`. `ScopedTables` is shared with services and its refusals name the kind.
+
+**The calling application (P1.3).** An event raised through an application's API now carries
+`app`: the application's id, its base URL as this request reached it, and its native apps' URL
+scheme (the `url_scheme` attribute). A code body sees it as `app`.
+- It travels as part of a request **origin** (`sc_catalog::Origin`, with the guest session below).
+  The router runs each application request inside it.
+- `CallerContext` and `Event` carry `app` and `session` explicitly. `Event::caused_by` copies a
+  caller context onto an event.
+- The dispatcher runs a trigger's action inside the event's origin. So a write the action makes
+  raises an event that still names the application.
+- A workflow run keeps `app` and `session` on its stored event, and each step's action runs inside
+  them, so a step that resumes later still writes for the same application and guest.
+
+**Content-security suggestions (P1.4).** A module can export `csp: { name: { description, sources
+} }`: the `https://`/`wss://` hosts an embedded provider form needs, per directive.
+- Only host sources in the loading directives are accepted. A keyword, a bare scheme or `*` is an
+  issue on the card.
+- The module card lists the suggestions, and the application form shows them as switches under
+  **Sources suggested by modules**. A switch adds the suggestion's key to the application's
+  `csp_sources` attribute.
+- The served policy merges only the suggestions that are switched on. `CspPolicy::with_sources`
+  adds to what the directive allows now, or to `default-src`'s list, so `'self'` is kept.
+- The application form now keeps the application's stored attributes when it saves, instead of
+  sending `{}`.
+
+**Guest sessions (P1.5).** An application can let visitors who are not signed in own rows (a
+basket) by a guest session. It is off by default: switch it on in the application's settings, with
+a lifetime in days (default 30).
+- `api.startGuestSession()` (`POST {mount}/guest-session`) starts one when the app asks, never on
+  a page view, and answers its public id. Asking again answers the same session. A signed-in caller
+  gets a 409. Starting one needs the CSRF token, and it is throttled per address.
+- `_fd_guest_sessions` is a **logged** table. It stores the SHA-256 of the cookie token and a
+  separate random public id (`gs_…`). Tables store the public id, which is not a usable cookie.
+- The `sc_guest` cookie is set on the application's own host (never the shared cookie domain). It
+  is `SameSite=Strict`, `HttpOnly`, and persistent for the session's lifetime.
+- `session` is a new ambient object in the formula language, always in scope like `user`, with one
+  field, `id`. Ownership formulas, default expressions, `only_if`, action formulas and code bodies
+  see it.
+- In RLS policies `session.id` reads the new `sc.session` GUC, which `set_caller_context` sets.
+  Calculated fields, constraints and datasets may not use `session`, as they may not use `user`.
+- A mutating request that fails the CSRF check gets no guest session. A lapsed session reads
+  nothing.
+
+**Signing in ends the guest session (P1.6).** Signing in or signing up in the same browser deletes
+the guest session and clears its cookie. The `login` event's payload is then `{ guest_session:
+<public id> }`, so an app trigger can move the guest's rows to the account (`update_rows` where
+`session_id === payload.guest_session`).
+
+Not done yet:
+- A guest's live socket does not carry the guest session.
+- A default expression is still allowed only on required fields. The tutorial's `orders` table,
+  owned by either `user_id` or `session_id`, needs that relaxed (P2.8).
+- The "return from the `fake` checkout" case in P1.5 is tested as a navigation without the cookie
+  followed by an API call with it. The `fake` adapter itself comes in P2.2.
+
+Tests:
+- `sc-server`'s `module_seams.rs` covers webhooks and CSP suggestions with two new fixture modules
+  (`webhook-module`, `csp-module`). For webhooks: bytes and headers arrive exactly as sent, the
+  handler's status reaches the caller, it writes its own table but not `users`, a throw is a 500,
+  and unknown names and an oversized body are refused. For CSP: the card lists the suggestion, an
+  invalid one is an issue, and the policy changes only once it is switched on.
+- `app_calling_app.rs`: an exposed trigger sees its application's URL on two hosts, and the URL
+  carries into an insert trigger's event.
+- `app_guest_sessions.rs`: two guests see only their own baskets, under runtime checks and under
+  RLS. Also covered: the default fills `session_id`, an insert trigger's `only_if` and code body see
+  `session`, a reload with the cookie, the cookie's attributes with a shared cookie domain on, a
+  write without CSRF, a lapsed session, the success page, and a sign-in moving the basket.
+- Unit tests in `sc-expr` (inline and RLS rendering of `session`, its one field), `sc-api` (the
+  endpoint is projected only when on), `sc-app` (the CSP merge), `sc-module` (suggestion checks,
+  webhook addressing, the bundled manifest) and `sc-auth`.
+
 ## Offline sync: rows with integer keys can be created offline
 
 Tables whose integer key the server hands out (`serial`, identity) can now get new rows on a

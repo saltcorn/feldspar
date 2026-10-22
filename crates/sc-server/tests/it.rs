@@ -49,10 +49,14 @@ mod api_token_admin_api;
 mod app_access;
 #[path = "app_builder_agent.rs"]
 mod app_builder_agent;
+#[path = "app_calling_app.rs"]
+mod app_calling_app;
 #[path = "app_code_files.rs"]
 mod app_code_files;
 #[path = "app_file_access.rs"]
 mod app_file_access;
+#[path = "app_guest_sessions.rs"]
+mod app_guest_sessions;
 #[path = "app_i18n.rs"]
 mod app_i18n;
 #[path = "app_invite.rs"]
@@ -145,6 +149,8 @@ mod model_formulas;
 mod model_handle;
 #[path = "models_without_actions.rs"]
 mod models_without_actions;
+#[path = "module_seams.rs"]
+mod module_seams;
 #[path = "modules_api.rs"]
 mod modules_api;
 #[path = "named_datasets.rs"]

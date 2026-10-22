@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/webhook",
+  "version": "0.1.0",
+  "description": "A module that receives webhooks into a table of its own, for the module-webhook tests (TODO-payments P1.1).",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

@@ -83,8 +83,9 @@ pub use api::{
     serves_custom_queries, validate_api_config, validate_api_mounts, validate_static_dirs,
 };
 pub use application::{
-    ApiConfig, AppFileUrls, AppId, Application, CspPolicy, FRAME_ANCESTORS, FrameworkRef,
-    StaticDir, StreamRef, TriggerRef, allow_admin_framing, follow_admin_host,
+    ApiConfig, AppFileUrls, AppId, Application, CSP_SOURCES_ATTRIBUTE, CspPolicy, FRAME_ANCESTORS,
+    FrameworkRef, GUEST_SESSION_DAYS_ATTRIBUTE, GUEST_SESSIONS_ATTRIBUTE, StaticDir, StreamRef,
+    TriggerRef, allow_admin_framing, follow_admin_host,
 };
 pub use applications::{
     APPLICATIONS_TABLE, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS,

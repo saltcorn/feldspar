@@ -41,11 +41,23 @@ pub struct SchemaShape {
 }
 
 impl Default for SchemaShape {
-    /// No tables, and `user` in scope with unknown fields — the base language.
+    /// No tables, `user` in scope with unknown fields and `session` with its one
+    /// — the base language.
     fn default() -> SchemaShape {
         SchemaShape {
             tables: BTreeMap::new(),
-            ambient: BTreeMap::from([(Ambient::User, None)]),
+            ambient: BTreeMap::from([
+                (Ambient::User, None),
+                (
+                    Ambient::Session,
+                    Some(
+                        Ambient::SESSION_FIELDS
+                            .iter()
+                            .map(|f| (*f).to_owned())
+                            .collect(),
+                    ),
+                ),
+            ]),
             module_functions: BTreeMap::new(),
         }
     }

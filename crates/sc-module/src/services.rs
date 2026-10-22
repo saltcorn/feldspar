@@ -400,6 +400,7 @@ async fn serve_once(
         catalog,
         module,
         tables,
+        kind: "service",
     };
     let dispatcher = shared.dispatcher.read().ok().and_then(|d| d.clone());
     let triggers = dispatcher.as_deref().map(|d| {
@@ -483,12 +484,14 @@ async fn deliver(
 // ---------------------------------------------------------------------------
 
 /// A service's `db`: a [`TableHost`] that answers only plans over the tables
-/// its module declared.
-struct ScopedTables<'a> {
-    inner: TableHost<'a>,
-    catalog: &'a Catalog,
-    module: &'a str,
-    tables: &'a BTreeSet<String>,
+/// its module declared. A webhook's `ctx.db` is the same (TODO-payments P1.1).
+pub(crate) struct ScopedTables<'a> {
+    pub(crate) inner: TableHost<'a>,
+    pub(crate) catalog: &'a Catalog,
+    pub(crate) module: &'a str,
+    pub(crate) tables: &'a BTreeSet<String>,
+    /// What is asking, for the refusals: `service` or `webhook`.
+    pub(crate) kind: &'static str,
 }
 
 impl ScopedTables<'_> {
@@ -497,16 +500,18 @@ impl ScopedTables<'_> {
         match request.get("op").and_then(Json::as_str) {
             Some("sql") => {
                 return Err(Error::invalid(format!(
-                    "a service of `{}` cannot run its own SQL: a service reaches only its \
+                    "a {kind} of `{}` cannot run its own SQL: a {kind} reaches only its \
                      module's tables, and SQL text can name any table — use ctx.db's chain",
-                    self.module
+                    self.module,
+                    kind = self.kind
                 )));
             }
             Some("models") => {
                 return Err(Error::invalid(format!(
-                    "a service of `{}` cannot use models: a service reaches only its module's \
+                    "a {kind} of `{}` cannot use models: a {kind} reaches only its module's \
                      tables",
-                    self.module
+                    self.module,
+                    kind = self.kind
                 )));
             }
             _ => {}
@@ -518,10 +523,10 @@ impl ScopedTables<'_> {
         self.own(table, None)?;
         if request.get("authority").and_then(Json::as_str) == Some("user") {
             return Err(Error::invalid(format!(
-                "a service of `{}` has no caller to act as, so `asUser()` means nothing \
+                "a {} of `{}` has no caller to act as, so `asUser()` means nothing \
                  here: it writes as its module (the default), or for a named user with \
                  `forUser`",
-                self.module
+                self.kind, self.module
             )));
         }
         let mut paths = Vec::new();
@@ -548,8 +553,9 @@ impl ScopedTables<'_> {
         }
         let declared: Vec<String> = self.tables.iter().map(|t| format!("`{t}`")).collect();
         Err(Error::invalid(format!(
-            "a service of `{}` may reach only the tables its module declared ({}), and {} \
+            "a {} of `{}` may reach only the tables its module declared ({}), and {} \
              `{table}` is not one of them",
+            self.kind,
             self.module,
             if declared.is_empty() {
                 "it declared none".to_owned()
@@ -569,9 +575,9 @@ impl ScopedTables<'_> {
     fn walk(&self, table: &str, path: &str) -> Result<()> {
         if path.contains('Ↄ') {
             return Err(Error::invalid(format!(
-                "a service of `{}` cannot follow a relation (`{path}`): it reads its module's \
+                "a {} of `{}` cannot follow a relation (`{path}`): it reads its module's \
                  tables one at a time",
-                self.module
+                self.kind, self.module
             )));
         }
         let segments: Vec<&str> = path.split('Ⱶ').collect();

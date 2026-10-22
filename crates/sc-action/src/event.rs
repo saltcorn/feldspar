@@ -23,6 +23,7 @@
 //! [`MAX_DEPTH`], naming the whole chain. A depth counter alone would have caught
 //! the loop but left the admin to find it; the chain *is* the diagnosis.
 
+use sc_catalog::{CallerContext, CallingApp, Origin};
 use sc_error::{Error, ErrorKind, Result};
 use serde_json::{Map, Value as Json};
 
@@ -207,6 +208,14 @@ pub struct Event {
     /// The trigger names that led here, outermost first. Empty for an event
     /// raised by a request rather than by another trigger's action.
     pub chain: Vec<String>,
+    /// The application the event's request came through (TODO-payments P1.3):
+    /// its id, its base URL as that request reached it, and its native apps'
+    /// URL scheme. `None` for an event no application's request raised.
+    pub app: Option<CallingApp>,
+    /// The caller's **guest session** public id (TODO-payments P1.5), what a
+    /// formula sees as `session.id`. `None` for a signed-in caller and for
+    /// anybody with no guest session.
+    pub session: Option<String>,
 }
 
 impl Event {
@@ -222,6 +231,8 @@ impl Event {
             role: ROLE_PUBLIC,
             user: None,
             chain: Vec::new(),
+            app: None,
+            session: None,
         }
     }
 
@@ -322,6 +333,33 @@ impl Event {
         self.role = role;
         self.user = user;
         self
+    }
+
+    /// Set everything about who caused this event from the caller context of
+    /// the write or the run that raised it: the role, the user, the chain, the
+    /// application and the guest session.
+    pub fn caused_by(mut self, caller: &CallerContext) -> Event {
+        self.role = caller.role;
+        self.user = caller.user.clone();
+        self.chain = caller.chain.clone();
+        self.app = caller.app.clone();
+        self.session = caller.session.clone();
+        self
+    }
+
+    /// Set where the event came from: the application and the guest session.
+    pub fn from_origin(mut self, origin: Origin) -> Event {
+        self.app = origin.app;
+        self.session = origin.session;
+        self
+    }
+
+    /// Where the event came from, to run its trigger's action inside.
+    pub fn origin(&self) -> Origin {
+        Origin {
+            app: self.app.clone(),
+            session: self.session.clone(),
+        }
     }
 
     /// Set the chain of triggers this event descends from — what

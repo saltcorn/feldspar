@@ -466,6 +466,30 @@ pub struct ServiceManifest {
     pub description: String,
 }
 
+/// One **webhook** a module receives (TODO-payments P1.1, design C1).
+///
+/// A module exports `webhooks` beside its `services`:
+///
+/// ```js
+/// webhooks: {
+///   events: {
+///     description: "Payment events from the provider",
+///     handle: async (req, ctx) => ({ status: 200, body: { ok: true } }),
+///   },
+/// }
+/// ```
+///
+/// What crosses is the name and the description. `handle` stays in the
+/// worker, and each request is one [`ModuleHost::run_webhook`] call.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WebhookManifest {
+    /// The webhook's name, unique within its module: a segment of its URL.
+    pub name: String,
+    /// One line for the module card.
+    #[serde(default)]
+    pub description: String,
+}
+
 /// An entity type the module exports and this version does not load.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UnsupportedEntity {
@@ -535,6 +559,15 @@ pub struct ModuleManifest {
     /// [`ServiceSupervisor`](crate::ServiceSupervisor) after every load.
     #[serde(default)]
     pub services: Vec<ServiceManifest>,
+    /// The webhooks it receives (TODO-payments P1.1) — served by the server at
+    /// `POST /_feldspar/hooks/<module>/<name>`.
+    #[serde(default)]
+    pub webhooks: Vec<WebhookManifest>,
+    /// The content-security sources it suggests an application allow
+    /// (TODO-payments P1.4) — data, `{ name, description, sources }` each, read
+    /// and checked by [`crate::csp::read_suggestions`].
+    #[serde(default)]
+    pub csp: Vec<Json>,
     /// The fields of its `configuration_workflow`'s forms, flattened (§5).
     #[serde(default)]
     pub config_fields: Vec<Json>,
@@ -794,6 +827,31 @@ impl ModuleHost {
         #[cfg(not(feature = "deno-host"))]
         {
             let _ = (module, service, call);
+            Err(no_runtime())
+        }
+    }
+
+    /// Run one **webhook** of one module (TODO-payments P1.1): call its
+    /// `handle(req, ctx)` with `request` — `{ method, headers, query, rest,
+    /// body }`, the body base64 — and answer `{ status, headers, body }`, the
+    /// body base64 again.
+    ///
+    /// Bounded like an action: the call's wall clock and its budget of asks.
+    /// Every `ctx.db` read and write is an ask on this call, served from `call`.
+    pub async fn run_webhook(
+        &self,
+        module: &str,
+        webhook: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool.run_webhook(module, webhook, request, call).await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, webhook, request, call);
             Err(no_runtime())
         }
     }
