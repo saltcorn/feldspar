@@ -8,8 +8,9 @@ could use the whole Stripe API.
 
 This builds on modules (`plugins/README.md`, [docs/tutorial-modules.md](./docs/tutorial-modules.md),
 TECHNICAL_DESIGN §15.1–15.1d: declared tables, services, `Secret` fields, typed action payloads),
-roles (§7.4), exposed triggers (§10.2), agents and their cost accounting (§11.1, `Usage::cost`),
-and the React Native framework (`plugins/react-native`).
+roles (§7.4), triggers and the row actions `insert_row` and `update_rows` (§10.2), workflows
+(§10.3), agents and their cost accounting (§11.1, `Usage::cost`), and the React Native framework
+(`plugins/react-native`).
 
 The design comes first, then the milestones. Each milestone is prefixed **P** and its tasks are
 numbered P1.1, P1.2, …. The order follows the use cases in priority order (§1). P1, P3 and P6
@@ -25,12 +26,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 | | Use case | Who pays | Logged in? | What a payment produces |
 |---|---|---|---|---|
-| **1** | **Shop.** The application sells goods. A basket is paid for at checkout. | a buyer | maybe not | an order, marked paid; stock and fulfilment are the app's |
+| **1** | **Shop.** The application sells goods. A basket is paid for at checkout. | a buyer | maybe not | a payment event; the app's own order is marked paid by the app's trigger |
 | **2** | **Subscription SaaS.** Paying gives access, as a role. Tiers give different roles. Free tiers and free trials are optional. | the user | yes | a role grant that lasts while the subscription does |
 | **3** | **LLM credits.** A payment buys units that LLM calls made by agent runs use up. A subscription can include an allowance, which may roll over up to a cap. Top-ups are charged to the same card. | the user | yes | credit added to a balance; agent runs' LLM calls draw it down |
 | **4** | **Mobile wallets.** Apple Pay and Google Pay in React Native apps. | as 1–3 | as 1–3 | as 1–3 |
-| **5** | **Marketplace.** One user sells, another buys, and the app keeps X% and pays the seller the rest. | a buyer | yes | an order, a fee for the app, a payout to the seller |
-| **6** | **Invoices and payment requests** (added use case). A services business (a consultancy, a booking or rental app) bills a customer for an amount the app works out (a timesheet, a booking deposit). It sends a pay link by email, and the customer may pay by card or by bank transfer or direct debit (SEPA, ACH, iDEAL), which settles days later. A deposit can be authorised now and captured later. | a customer, often with no account | no | an invoice row whose status follows the payment, including "processing" for days |
+| **5** | **Marketplace.** One user sells, another buys, and the app keeps X% and pays the seller the rest. | a buyer | yes | a payment, a fee for the app, a transfer to the seller |
+| **6** | **Invoices and payment requests** (added use case). A services business (a consultancy, a booking or rental app) bills a customer for an amount the app works out (a timesheet, a booking deposit). It sends a pay link by email, and the customer may pay by card or by bank transfer or direct debit (SEPA, ACH, iDEAL), which settles days later. A deposit can be authorised now and captured later. | a customer, often with no account | no | payment events that the app's invoice row follows, including "processing" for days |
 
 Use case 6 is worth having because it is the commonest payment in the business apps Saltcorn is
 used for. It also tests the design on two things the first three use cases do not cover: **slow
@@ -59,7 +60,7 @@ Two kinds of provider, and the difference decides the legal setup, not just the 
 | **Adyen** | PSP (enterprise) | yes | yes | no | no | yes | for Platforms | Later, on demand. |
 | **PayPal** | PSP or wallet | yes | yes | no | no | no | limited | Later, on demand. |
 | **Apple App Store / Google Play** | the store is the seller | in-app purchase | yes | the store's | consumables | n/a | no | Needed for digital goods sold *inside* native apps (§7). |
-| **RevenueCat** | aggregates both stores | — | — | — | — | — | — | **Not used** (§3.11): we write our own `apple` and `google_play` adapters. |
+| **RevenueCat** | aggregates both stores | — | — | — | — | — | — | **Not used** (§3.12): we write our own `apple` and `google_play` adapters. |
 
 **Which first.** Stripe, because it is the commonest, covers use cases 1–6, and with Managed
 Payments it is both a PSP and an MoR. **Polar** second (decided), as the open-source MoR aimed at
@@ -69,51 +70,72 @@ not just Stripe's shape (P5). Paddle and Mollie after that.
 ## 3. Decisions
 
 1. **One module with adapters, not a module per provider.** `@feldspar/payments` owns the
-   tables, the actions, the webhook, the reconciliation service and the provider-neutral rules
-   (prices, trials, roles, credits, guest orders). An **adapter** (`adapters/stripe.js`,
-   `adapters/polar.js`, …) is the one thing that differs per provider. It implements the
-   interface in §4 and declares what it can do. What one provider does differently is in one
-   file, not copied into six modules. Several adapters can be configured at once, for example
-   Stripe on the web plus the app stores for native apps, and they write into the same tables.
-   So a subscription bought on iOS gives the same role on the web.
+   actions, the webhook, the reconciliation service and three infrastructure tables (§5). An
+   **adapter** (`adapters/stripe.js`, `adapters/polar.js`, …) is the one thing that differs per
+   provider. It implements the interface in §4 and declares what it can do. Several adapters can
+   be configured at once, for example Stripe on the web plus the app stores for native apps. A
+   subscription bought on iOS then gives the same role on the web.
 
-2. **Feldspar holds the billing state the app needs; the provider is the payment rail.** Orders,
-   subscriptions, grants and balances are rows in the app's database, kept up to date from the
-   provider. This is what makes one module possible: an app reads `pay_subscriptions.status`,
-   not a Stripe or Polar object. Every row keeps the provider's id and its raw object
-   (`provider_data`), so nothing the provider knows is lost.
+2. **The app owns its business data; the module owns only the connection to the provider.**
+   The module has **no orders, order lines, customers, plans or products tables**. Those are the
+   app's own tables, in whatever shape the business needs: an order with a delivery slot, a plan
+   with a feature list, a booking with a deposit. Building those tables into the module would
+   force one shape on every app. The module keeps only what it cannot do without: the provider
+   accounts, a mirror of the provider's objects, and a log of payment events (§5).
 
-3. **Full functionality goes through escape hatches, not a growing abstraction.** The
+3. **Bindings: the app tells the module which of its rows and fields mean what.** A payment is
+   always *for* a row of the app's: an order, an invoice, a credit pack, a booking. The checkout
+   action's **trigger configuration** names that row's table and gives **formulas** over it for
+   the amounts, descriptions and quantities (§6.1). Plans live in a table the app's admin
+   creates (decided), and are bound the same way, once, in the module's configuration: "plans
+   are the rows of `plans`; `stripe_price` holds the Stripe price; `role` is the role it gives"
+   (§6.2). Configuring a binding per trigger, not as a module-wide
+   field mapping, is the normal Feldspar shape: two shops in one instance are two triggers.
+
+4. **Payment events flow back as rows; the app reacts with its own triggers.** When a payment
+   succeeds, fails, is refunded or a subscription changes, the module inserts a normalised row
+   into `pay_events`. The row names the app row the payment was for (`ref_table`, `ref_key`).
+   The app reacts with ordinary triggers on that table, usually with no code. For example, an
+   `update_rows` action sets `orders.status = "paid"` where `id === row.ref_key`. **The module
+   never writes the app's tables.** This keeps the module's authority to what it declared
+   (§15.1c's `ScopedTables`, unchanged). An admin can also see everything that happens to the
+   app's data in its own trigger list.
+
+5. **Full functionality goes through escape hatches, not a growing abstraction.** The
    abstraction covers the common path. Everything else uses these:
-   - `pay_api(provider, method, path, body)`: a module function that makes an authenticated
+   - `pay_api(account, method, path, body)`: a module function that makes an authenticated
      request to the provider's REST API, with the configured keys. It works for every provider
      and from any code body (`modfn("payments").pay_api(…)`).
    - `pay_provider_code`: an action whose configuration is a JavaScript body that runs **in the
      module's worker**, with the provider's SDK client in scope (`stripe`, `polar`). This is
      what v1's "return the `stripe` object" was for. It cannot be a function returning the
      object, because a module function answers JSON across the worker seam.
-   - Every webhook event is stored in `pay_events`. An insert trigger on that table reacts to any
-     event type the module does not handle itself.
+   - Provider events the module does not understand are still inserted into `pay_events`, as
+     `kind: "other"` with the raw event, so an app trigger can react to any of them.
 
-4. **Webhooks tell the module what changed; it then reads the current state from the provider.**
+6. **Webhooks tell the module what changed; it then reads the current state from the provider.**
    Providers deliver events at least once and in no guaranteed order. So an adapter does not
    apply an event's payload. It takes the object reference from the event, **fetches the
-   object's current state** from the provider and upserts it. Processing the same event twice,
-   or two events out of order, then gives the right final state. Anything that adds value (a
-   credit grant, a role grant) is keyed by an **idempotency key** derived from the provider
+   object's current state** from the provider and upserts the mirror. Processing the same event
+   twice, or two events out of order, then gives the right final state. Anything that adds value
+   (a credit grant, a role grant) is keyed by an **idempotency key** derived from the provider
    object (`invoice:in_123`), with a unique constraint. A replayed event cannot add credit
    twice.
 
-5. **Access is a role grant with an expiry, not a write to `users.role`** (core, P3). v1 set
+7. **Access is a role grant with an expiry, not a write to `users.role`** (core, P3). v1 set
    the user's role directly. If a cancellation webhook was missed, the user kept the role for
    good. If an admin changed the role, the module overwrote it. A user could not have a role
    from both a subscription and an admin's free upgrade. Here a grant is a row:
    `(user, role, source, source_ref, starts_at, expires_at)`. The **effective role is the most
    privileged of the base role and the grants in force**. A subscription's grant expires at the
    end of the paid period plus a grace period, and each renewal extends it. If every webhook is
-   missed, access ends on time. Missing a webhook makes access lapse; it never extends it.
+   missed, access ends on time. Missing a webhook makes access lapse; it never extends it. Role
+   grants and credit grants are the **only** effects the module applies itself, because they
+   must be idempotent and must follow the subscription's lifecycle. Leaving them to every app's
+   triggers would mean every app re-implementing grace periods and renewals, and getting it
+   wrong.
 
-6. **LLM usage credits are a core ledger, and only for LLM usage** (core, P6). Agent runs are
+8. **LLM usage credits are a core ledger, and only for LLM usage** (core, P6). Agent runs are
    the only place LLM calls are made, and agents are in core. A run must check the balance
    before it starts and draw it down after each model call. That cannot go through the provider
    (a network call per agent step) or through a module call. So core has **buckets** (an amount
@@ -123,36 +145,39 @@ not just Stripe's shape (P5). Paddle and Mollie after that.
    whether to refuse beforehand or charge afterwards), and an app that wants to charge for other
    activities can build that with its own tables, ownership formulas and actions. Credits can
    still be **granted** from outside: the payments module (allowances, top-ups) and an admin by
-   hand. The module adds the policy: how much a plan includes, rollover and its cap, top-up
-   packs. The provider's own meters are used only to *bill* overage, never to hold the balance.
+   hand. The provider's own meters are used only to *bill* overage, never to hold the balance.
 
-7. **The server sets prices; the client sends only what is wanted.** A checkout request carries
-   `{item, quantity}` lines. The checkout action reads each line's price and name from the app's
-   table, as configured on the trigger. It never takes an amount from the client, except an
-   explicitly configured "pay what you want" field with a minimum.
+9. **Amounts come from formulas evaluated on the server, over the app's rows.** The client
+   sends only *which* row to pay for (an order id, a pack id) or `{item, quantity}` lines. It
+   never sends an amount, except through an explicitly configured "pay what you want" field with
+   a minimum. Because the formulas read the app's tables, **the app must keep the fields they
+   read out of the buyer's reach**. `productⱵprice * quantity` on an order line is safe, because
+   the buyer cannot write `products`. A `price` column the buyer may write on their own order line
+   is not. The tutorial makes this its first lesson. The amount actually charged is recorded on
+   the mirror and on every event, so a trigger can compare it with the order's total.
 
-8. **Card data never reaches Feldspar.** Payment uses hosted checkout (a redirect), the
-   provider's embedded elements, or the native payment sheet. That keeps the app in the
-   lightest PCI scope (SAQ A). There is no card form of our own.
+10. **Card data never reaches Feldspar.** Payment uses hosted checkout (a redirect), the
+    provider's embedded elements, or the native payment sheet. That keeps the app in the
+    lightest PCI scope (SAQ A). There is no card form of our own.
 
-9. **Amounts are integers in the currency's minor unit, plus an ISO currency code.** The adapter
-   converts for zero-decimal currencies (JPY) and three-decimal ones (KWD). Floating-point money
-   is not allowed anywhere.
+11. **Amounts are integers in the currency's minor unit, plus an ISO currency code.** The adapter
+    converts for zero-decimal currencies (JPY) and three-decimal ones (KWD). Floating-point money
+    is not allowed anywhere.
 
-10. **Building blocks, not full solutions.** The module takes the payment and records the result
-    in tables. What a payment *means* for the business is the app's, built with triggers on those
-    tables. Examples: delivering digital goods (a licence key, a download link, access to a
-    file), decrementing stock, sending a confirmation, creating a shipment. A feature belongs in
-    the module only if an app could not reasonably build it from the tables, triggers and
-    actions. The tutorials show how to build the common ones. Delivering digital goods is
-    deliberately not built in; it is part 1 of the tutorial (P2.8).
-
-11. **Our own app-store adapters.** In-app purchases are verified by `apple` and `google_play`
+12. **Our own app-store adapters.** In-app purchases are verified by `apple` and `google_play`
     adapters written here, using Apple's official App Store Server Library and Google's Play
     Developer API, not through RevenueCat. This avoids a paid third party between an app and
-    its stores, and the store subscriptions land in the same tables as every other provider's.
+    its stores, and the store subscriptions land in the same mirror as every other provider's.
 
-12. **There is a `fake` adapter.** It is a provider with a local checkout page ("Pay" / "Fail"
+13. **Building blocks, not full solutions.** The module takes payments and reports what
+    happened. What a payment *means* for the business is the app's, built with triggers and
+    workflows. Examples: delivering digital goods, decrementing stock, sending a confirmation,
+    creating a shipment, letting a guest see their order, reminding a user that their trial
+    ends. A feature belongs in the module only if an app could not reasonably build it from
+    tables, triggers and actions (grants, §3.7, are the example of one that could not). The
+    tutorials show how to build the common ones.
+
+14. **There is a `fake` adapter.** It is a provider with a local checkout page ("Pay" / "Fail"
     buttons), which sends webhooks to the module's own endpoint. Tests use it, and so can an
     admin or a coding agent building the app's payment screens before anybody has a Stripe
     account. Each adapter is also tested against recorded provider responses. Live tests against
@@ -177,8 +202,8 @@ module.exports = {
   createPortal(account, { customer, return_url }),
   chargeSavedMethod(account, { customer, amount, currency, description, key }),   // off-session
   createNativeSheet(account, { customer, amount, currency, mode }),               // §7
-  changePlan(account, subscription, plan), cancel(account, subscription, { at_period_end }),
-  refund(account, payment, { amount, key }),
+  changePlan(account, subscription, price_ref), cancel(account, subscription, { at_period_end }),
+  refund(account, payment, { amount, key }), capture(account, payment, { amount }),
 
   verifyWebhook(account, { rawBody, headers }),   // → [{ id, type, ref }] or throws
   fetch(account, ref),                            // → a normalised object (§5) + provider_data
@@ -186,99 +211,153 @@ module.exports = {
 };
 ```
 
-A normalised object is one of `customer`, `checkout`, `order`/`payment`, `subscription`,
-`invoice`, `refund`, `dispute` or `payout`, with a fixed set of fields per kind. Where the
-adapter cannot fill a field it leaves it null; it never makes a value up.
+A normalised object is one of `customer`, `checkout`, `payment`, `subscription`, `refund`,
+`dispute` or `connected_account`, with a fixed set of fields per kind. Where the adapter cannot
+fill a field it leaves it null; it never makes a value up.
 
-## 5. Tables (module-declared, all prefixed `pay_`)
+## 5. The module's tables, and what the app brings
+
+The module declares **three tables**, all infrastructure:
 
 | Table | Holds | Notable fields |
 |---|---|---|
-| `pay_accounts` | one configured provider each (§3.1) | `name`, `adapter`, `mode` (test/live), `secret_key` and `webhook_secret` (`Secret`), `publishable_key`, `settings`, `enabled`. Admin-only. |
-| `pay_customers` | the provider's customer for a user (or a guest email) | `user_id → users` (nullable), `account`, `provider_ref`, `email`; unique `(account, provider_ref)` |
-| `pay_plans` | what can be subscribed to | `name`, `label`, `role` (the role granted), `amount`, `currency`, `interval`, `trial_days`, `trial_needs_card`, `allowance` (LLM credits per period), `rollover` (`none`/`capped`/`all`), `rollover_cap`, `provider_refs` (`{stripe: "price_…", paddle: "pri_…", apple: "com.app.pro"}`), `active` |
-| `pay_packs` | LLM credit top-ups | `units`, `amount`, `currency`, `expires_after_days`, `provider_refs` |
-| `pay_subscriptions` | one per provider subscription | `user_id`, `plan`, `account`, `provider_ref`, `status` (`trialing`/`active`/`past_due`/`paused`/`canceled`/`incomplete`), `current_period_end`, `cancel_at_period_end`, `trial_end`, `provider_data`. Readable by its owner. |
-| `pay_orders` | a one-off payment: a basket, a top-up or an invoice | `kind`, `user_id` (nullable), `email`, `status` (`open`/`processing`/`paid`/`failed`/`canceled`/`refunded`/`partially_refunded`), `amount_total`, `amount_tax`, `currency`, `shipping`, `account`, `provider_ref`, `access_token` (for guests), `paid_at`, `metadata`. Readable by its owner. |
-| `pay_order_lines` | the lines | `order`, `item_table`, `item_key`, `description`, `quantity`, `unit_amount`, `amount` |
-| `pay_transactions` | money movements | `order`/`subscription`, `type` (`charge`/`refund`/`dispute`/`fee`/`payout`), `amount`, `status`, `provider_ref` |
-| `pay_events` | every webhook delivery | `account`, `event_id` (unique with account), `type`, `payload`, `received_at`, `processed_at`, `error`, `attempts` |
+| `pay_accounts` | one configured provider each | `name`, `adapter`, `mode` (test/live), `secret_key` and `webhook_secret` (`Secret`), `publishable_key`, `settings`, `enabled`. Admin-only. |
+| `pay_objects` | **a mirror** of the provider objects this instance created or was told about: customers, checkouts, payments, subscriptions, refunds, disputes | `account`, `kind`, `provider_ref` (unique with account), `user_id → users` (nullable), `email`, `ref_table` and `ref_key` (the app row it was for; the key is stored so that `id === row.ref_key` holds for an integer, text or UUID key, which P2.4 tests), `status`, `amount`, `currency`, `price_ref` and `current_period_end` (subscriptions), `lines` (the lines as charged, JSON), `effects` (what to grant when it is paid, §6.1), `provider_data`. Readable by its owner (`user_id === user.id`). |
+| `pay_events` | **the log the app reacts to**: one row per thing that happened, normalised | `account`, `event_id` (unique with account and kind), `kind` (below), `object → pay_objects`, `user_id`, `email`, `ref_table`, `ref_key`, `amount`, `currency`, `status`, `provider_type`, `raw`, `created_at`. Admin-only by default; the app's triggers fire on its inserts. |
 
-Ownership follows the mail module's patterns (§15.1b): owners read their own rows, and only the
-module writes. App-specific data is the app's own table with a key onto these, for example
-`shipments.order → pay_orders`.
+Event kinds: `checkout.completed`, `payment.processing`, `payment.succeeded`, `payment.failed`,
+`payment.refunded`, `dispute.opened`, `dispute.closed`, `subscription.started`,
+`subscription.renewed`, `subscription.changed`, `subscription.past_due`,
+`subscription.canceled`, `subscription.ended`, `connected_account.updated`, and `other`.
+
+**Why a mirror, when orders and customers are the app's.** `pay_objects` is not a business
+table: its shape is the provider's, not the business's, and the app never writes it. The module
+needs it for four things the app's tables cannot hold for it:
+- which provider customer a user is, so that a top-up can charge the same card and the portal
+  opens on the right account;
+- which app row a checkout was for. Provider metadata cannot hold this for every provider: an
+  App Store purchase has only `appAccountToken`;
+- a subscription's state, for grants, for renewals and for the reconciliation sweep;
+- the amount and lines as charged.
+
+An app can show "your plan renews on 3 November" by reading its own user's subscription row
+from it, with no table of its own.
+
+**What the app brings**, in whatever shape it likes:
+- what it sells: products, plans, credit packs, invoices, bookings;
+- what it records: orders and lines, shipments, licence keys, sellers;
+- the triggers that connect `pay_events` to those tables.
+
+The tutorials (P2.8, P4.5, P7.4) show one shape for each use case, not the only one.
 
 ## 6. The flows
 
 ### 6.1 Checkout (use case 1, guest or signed in)
 
-The basket lives **in the client** (React state and `localStorage`). Feldspar has no anonymous
-session, and none is needed. An app that wants a basket that follows a signed-in user across
-devices keeps an ordinary `basket_items` table with an ownership formula.
+**`pay_checkout`** is one action whose trigger configuration has these parts:
 
-1. The app calls `api.runCheckout({ lines: [{ item: 12, quantity: 2 }], email? })`. This is an
-   exposed trigger on `pay_checkout`, with `min_role` 100 when guests may buy, and its payload
-   and answer are typed.
-2. The action's **trigger configuration** says where the items are: the table, the price field
-   or formula, the name, an optional stock field, the currency, whether to collect a shipping
-   address, and the shipping options. Configuring this per trigger, not as a module-wide
-   mapping, is the normal Feldspar shape: two shops in one instance are two triggers.
-3. It prices the lines, writes a `pay_orders` row (`open`) and its lines, and asks the adapter
-   for a checkout. The success and cancel URLs are on the **calling application's** host (core
-   change C5), with the order's `access_token`. It answers `{ order, url }` for a redirect, or
-   `{ order, client_secret }` for embedded elements.
-4. The webhook (§6.5) marks the order `paid` (or `processing` for a bank method). Triggers on
-   `pay_orders` do the app's work (§3.10): decrement stock, send the confirmation, create the
-   shipment, deliver a digital good.
-5. A guest's order page calls `api.runOrderStatus({ token })`, which reads one order by its
-   unguessable token. Whether a guest order can later become an account's order is open (§10).
+- **Account and mode**: which `pay_accounts` row; `payment` or `subscription`.
+- **Source**: always **a row of the app's**: a table, and where its key comes from: a payload
+  field (`{ order: 12 }`), or the trigger's own row when the trigger fires on an insert. "The
+  caller must be able to read the row" is on by default. It is turned off only for a checkout
+  that runs as a later step of a workflow that just created the row. A guest passes this check
+  through their guest session (C9). There is no "basket" source with no row behind it (decided):
+  one way to do it is enough, and guest sessions make it unnecessary.
+- **Lines**, as formulas evaluated on the server:
+  - *one line* from the source row: `amount` (`total`), `description` (`"Invoice " + number`);
+  - *child rows* of the source row: a child table and its key field, then `quantity`,
+    `unit_amount` (`productⱵprice`), `description` (`productⱵname`) and `item` (`product`), in
+    the child row's scope;
+  - for a subscription, `price_ref` (`planⱵstripe_price`, or a literal), `quantity` and
+    `trial_days`.
+- **Currency** (a literal or a formula), **customer** (the caller, or an `email` formula for
+  guests), **tax** (none, the provider's calculation, or MoR, which is refused when a shipping
+  address is collected, because MoRs do not sell physical goods), **shipping**, **payment
+  methods**, **capture** (now, or later for deposits), **success and cancel paths** on the
+  calling application's host (core change C5).
+- **Effects** (optional), applied by the module once the payment succeeds (§3.7): *grant
+  credits* (an amount formula, say `units` on a credit pack row, and an optional expiry), and
+  *grant a role* (a role and a duration, for a one-off "pass").
 
-The tax mode is a checkout setting: none, the provider's tax calculation (Stripe Tax), or MoR.
-MoR is refused when the configuration collects a shipping address, because MoRs do not sell
-physical goods.
+It answers `{ url }` for a redirect, or `{ client_secret }` for embedded elements, plus the
+mirror row's id. The same configuration shape is shared by `pay_charge_saved` (§6.3),
+`pay_native_sheet` (§7) and `pay_request` (§6.4).
+
+**A shop, end to end** (the tutorial's version; any other shape works the same way):
+
+1. The app creates **`orders`** and **`order_lines`** tables of its own. `orders` has a
+   `user_id` (default `user && user.id`) and a **`session_id`** (default `session.id`, C9), a
+   `status` (`open`, then `paid`) and an `email`. `order_lines` has `order`, `product` and
+   `quantity`, and **no price column**.
+2. Ownership lets the buyer, signed in or not, keep their own basket as an `open` order through
+   the ordinary REST API, live updates included:
+   - `orders`: `user ? user_id === user.id : session_id === session.id`, with writes only while
+     `status === "open"`;
+   - `order_lines`: the same rule through `orderⱵ…`.
+
+   The basket survives a reload and needs no client-side storage.
+3. Checkout is `api.runCheckout({ order })`, an exposed trigger with `min_role` 100 on
+   `pay_checkout`. The order is the source, and the lines are its `order_lines` priced as
+   `productⱵprice * quantity`, which the buyer cannot change.
+4. On `payment.succeeded` with `ref_table === "orders"`, the app's triggers mark the order paid
+   (`update_rows`), decrement stock, send the confirmation, and deliver a digital good.
+5. A guest sees their paid order through the same ownership rule, for as long as the guest
+   session lasts. A guest on another device uses whatever the app built for that, for example a
+   token in the confirmation email and a code query that reads one order by token.
+6. When the guest **signs up or signs in in the same browser**, the `login` event carries the
+   guest session's id (C9). An app trigger moves the guest's orders to the account:
+   `update_rows` on `orders` where `session_id === payload.guest_session`, set
+   `user_id = user.id`. This is safe where matching by email is not: holding the guest session's
+   cookie proves it is the same buyer, while password sign-up does not verify email
+   addresses.
 
 ### 6.2 Subscriptions (use case 2)
 
-Access policy is the module's configuration. It is a few independent switches, so every
-combination in the request can be set:
+**The plan binding**, in the module's configuration, is a list, usually of one entry:
 
-- **Base role**: what a signed-up user with no subscription has, usually 80. This is the
-  ordinary `users.role`. Paid plans grant more privileged roles (70, 60, …).
-- **Is a subscription required?** If it is, the app shows a paywall to users at the base role.
-  This needs no core support: the app checks `user.role`, and every table already does. If it
-  is not, the base role *is* the free tier.
-- **Free trial**: none, or N days, and **card up front or not**:
-  - *No card*: on sign-up (a `login` or user-insert trigger), or when the user presses "Start
-    trial", the module grants the plan's role directly with `expires_at = now + N days`. The
-    provider is not involved, so this works with every provider, MoRs and app stores included.
-    `pay_customers.trial_used_at` allows one trial per user.
-  - *Card up front*: the trial is the provider's (`trial_period_days` on the checkout). The
-    subscription is `trialing`, the role grant lasts until `trial_end`, and the provider charges
-    and converts when the trial ends.
-- **Grace for failed renewals**: N days. A `past_due` subscription keeps its grant until
-  `current_period_end + grace`, while the provider retries the card.
+- the app's plans table;
+- for each account, the field holding that provider's price or product id (`stripe_price`,
+  `polar_product`, `apple_product`, `google_product`);
+- the field holding the role it grants, and optionally the fields for the LLM-credit allowance,
+  the rollover policy and the rollover cap;
+- the grace period for failed renewals.
 
-What each status means for the grant:
+The plan is looked up from the subscription's **current** price on every change, so a tier
+change made in the provider's portal moves the role with no app involvement. A subscription
+whose price matches no plan row is mirrored and logged, but grants nothing, and the module
+reports it as an issue.
+
+What each status means for the grant (`source_ref` is the subscription, so there is one grant
+per subscription, upserted):
 
 | status | grant |
 |---|---|
-| `trialing`, `active` | role until `current_period_end` (or `trial_end`) + grace; each renewal extends it |
+| `trialing`, `active` | the plan's role until `current_period_end` (or `trial_end`) + grace; each renewal extends it |
 | `past_due` | unchanged: it runs out on its own unless the provider recovers the payment |
 | `canceled` with `cancel_at_period_end` | kept to the period's end |
 | `canceled` now, `paused`, `incomplete` | revoked |
 
-Upgrading, downgrading, proration, changing the card and cancelling all go through the
-provider's **customer portal** (`api.runBillingPortal()` → URL). `pay_change_plan` and
-`pay_cancel` exist for apps that want their own buttons. Plan changes upsert the grant (the
-`source_ref` is the subscription), so a tier change is one row that changes role.
+Everything else is the app's, built from smaller pieces:
 
-Daily trigger: emails the user before a card-less trial ends, and before an annual renewal. It
-uses `send_email` and the app's own templates.
+- **Base role and the free tier.** A signed-up user's ordinary `users.role` (say 80) is the free
+  tier, or the "must subscribe" state. The app shows a paywall at that role; tables already
+  check `user.role`.
+- **Card-less trials** need no payments at all. A trigger on user insert runs core's
+  **`grant_role`** action (C8): role 70 for 14 days, key `trial:<user id>`, `once`, so a second
+  trial is never granted. It works whichever provider the user later pays through, app stores
+  included.
+- **Trials with the card up front** are the provider's: `trial_days` on the subscription
+  checkout. The subscription is `trialing`, and the grant lasts until `trial_end` + grace.
+- **Reminders** ("your trial ends tomorrow") are a daily trigger over core's `role_grants` table
+  with `send_email`.
+- **Changing plan, changing the card, cancelling**: `pay_portal` answers the provider's customer
+  portal URL. `pay_change_subscription` (a `price_ref` formula) and `pay_cancel_subscription` are
+  for apps that want their own buttons.
 
 ### 6.3 LLM credits (use case 3)
 
 **Core (P6).** The ledger exists for one purpose: paying for the LLM calls agent runs make. It
-is not a general metering facility (§3.6). A user's balance is the sum of their unexpired
+is not a general metering facility (§3.8). A user's balance is the sum of their unexpired
 buckets. Operations:
 
 - `grant(user, amount, { expires_at, kind, key })`: a new bucket. The `key` is unique, so
@@ -308,30 +387,35 @@ named meters only matter for charging different activities, which is out of scop
 entries are ordinary tables that owners can read (an entry records the run, model and tokens),
 so a balance widget is a REST read and updates live.
 
-**Module (P7).** It is all policy:
+**Module (P7).**
 
-- **Allowance**: on each paid renewal (`invoice.paid`, keyed by the invoice) the plan's
+- **Allowance**, from the plan binding: on each paid renewal (keyed by the invoice) the plan's
   allowance is granted as a bucket that expires at the period's end. **Rollover**: `none`, `all`,
   or `capped`, which carries `min(remaining, cap)` into the new bucket. The old bucket is
   expired by the same key.
-- **Top-up packs**: `api.runBuyCredits({ pack })`. If the adapter can charge a saved card
-  (`charge_saved_method`, for example a Stripe off-session PaymentIntent or a Paddle one-time
-  charge on the subscription), it charges **the same card** with no checkout page and answers
+- **Top-ups** are the app's credit-pack rows paid through `pay_checkout` with a *grant credits*
+  effect (§6.1). **`pay_charge_saved`** takes the same configuration but charges **the same
+  card** with no checkout page, when the adapter can (`charge_saved_method`: a Stripe
+  off-session PaymentIntent, a Paddle one-time charge on the subscription), and answers
   `{ status: "paid" }`. If the bank asks for authentication (SCA), or there is no saved card, it
-  falls back to a checkout URL. The credit is granted from the webhook, never from the request.
-- **Auto top-up** (optional): when an agent run's debits take the balance below a threshold,
-  buy a pack (rate-limited, at most once per hour). Core announces the crossing as an insert
-  on `credit_entries` with `kind: "low_balance"`, so the module needs no hook into the agent loop.
+  answers a checkout URL instead. The credit is granted from the webhook, never from the
+  request.
+- **Auto top-up** is an app trigger, not a module feature: core inserts a `credit_entries` row
+  with `kind: "low_balance"` when an agent run takes the balance below the user's threshold, and
+  the app's trigger on it runs `pay_charge_saved` for the pack it chooses.
 - **Postpaid overage** (later): instead of stopping at zero, report usage to the provider's
   meter and bill it on the next invoice.
 
 ### 6.4 Invoices and payment requests (use case 6)
 
-`pay_request({ amount or lines, email, due, methods, capture: "now" | "later" })` creates a
-`pay_orders` row of `kind: "invoice"` and answers a pay link. The app emails it with its own
-template. Bank methods leave the order `processing` until they settle or fail, and triggers on
-the status change do the rest. `capture: "later"` authorises a deposit, and
-`pay_capture(order, amount?)` or `pay_cancel(order)` settles it. Stripe and Mollie only.
+The invoice is the app's row. `pay_request` takes the checkout configuration with that row as
+the source and an `email` formula, with **payment methods** (card, SEPA debit, ACH, bank
+transfer, iDEAL) and **capture** (now, or later for a deposit). It answers a payment URL.
+Provider checkout links expire (Stripe's after 24 hours), so the link the app emails points at
+**the app's own page**, which calls `pay_request` when the customer opens it. Bank methods log
+`payment.processing`, then `payment.succeeded` or `payment.failed` days later, and the app's
+triggers move the invoice along. A deposit is settled with `pay_capture` (an optional amount)
+or released with `pay_cancel_payment`, each given the source row. Stripe and Mollie only.
 
 ### 6.5 Webhooks and reconciliation
 
@@ -339,16 +423,16 @@ the status change do the rest. `capture: "later"` authorises a deposit, and
 with the provider. The account's settings page shows it with a copy button. The handler:
 
 1. verifies the signature over the **raw body**. If it fails, it answers 400 and stores nothing;
-2. inserts the events into `pay_events`. If the event id is already there, it answers 200 and
-   stops;
-3. processes them: `fetch` the current state of each object it refers to, upsert, and apply
-   grants and credits by key;
-4. answers 200. If processing fails, it stores the error and answers 500, so the provider
-   retries.
+2. skips events already in `pay_events` (answering 200);
+3. in one transaction: `fetch`es the current state of each object an event refers to, upserts
+   the mirror, applies grants and credits by key, and inserts the normalised `pay_events` rows.
+   The app's triggers fire on those inserts;
+4. answers 200. If processing fails, it reports the error to the error log and answers 500, so
+   the provider retries.
 
-The **`reconcile` service** re-processes events with an error (with backoff), and every few
-hours lists the subscriptions changed since the last sweep and syncs them, which catches a
-webhook that never arrived. Admin action `pay_sync` does the same on demand.
+The **`reconcile` service** lists, every few hours, the subscriptions and payments the provider
+changed since the last sweep and processes them as above, which catches a webhook that never
+arrived. The admin action `pay_sync` does the same on demand.
 
 ## 7. Mobile (use case 4)
 
@@ -357,10 +441,10 @@ Two different things are both called "mobile payments", and the store rules sepa
 **(a) Apple Pay and Google Pay as a way to pay**, for physical goods and services used outside
 the app: the shop (1), invoices (6) and the marketplace (5). This is the provider's native
 SDK. For Stripe that is `@stripe/stripe-react-native`'s PaymentSheet, or `PlatformPayButton`
-for a wallet-only button. It needs a server action, `pay_native_sheet`, that answers
-`{ paymentIntent, ephemeralKey, customer, publishableKey }`, not a checkout URL.
-`plugins/react-native` adds the SDK and its Expo config plugin (the Apple merchant id and
-Google Pay enabled) when the payments module has a Stripe account, generates
+for a wallet-only button. It needs a server action, `pay_native_sheet` (the checkout
+configuration of §6.1), that answers `{ paymentIntent, ephemeralKey, customer, publishableKey }`,
+not a checkout URL. `plugins/react-native` adds the SDK and its Expo config plugin (the Apple
+merchant id and Google Pay enabled) when the payments module has a Stripe account, generates
 `src/feldspar/payments.ts` (a `usePayment()` hook around the sheet), and sets the app's URL
 scheme as the 3-D Secure return URL. On the **web** target (react-native-web) the same hook
 redirects to hosted checkout, which itself offers Apple Pay and Google Pay. The admin still has
@@ -382,60 +466,65 @@ So the module supports both:
   (`Linking.openURL`). It is a per-storefront switch, because whether it is allowed depends on
   the storefront, not on our code. The subscription is the web provider's and the role follows
   the user to the app.
-- **In-app purchase** (P9): our own `apple` and `google_play` adapters (§3.11). The app buys with `expo-iap`, passing the user's id as `appAccountToken` /
-  `obfuscatedAccountId`. It sends the transaction to `pay_verify_store_purchase`, which checks
-  it against the App Store Server API or the Play Developer API. Store server notifications (App
-  Store Server Notifications v2, Play RTDN) arrive at the same webhook route. Plans carry store
-  product ids in `provider_refs`, and grants work exactly as in §6.2. A user who subscribed on
-  iOS is subscribed on the web.
+- **In-app purchase** (P9): our own `apple` and `google_play` adapters (§3.12). The app buys with
+  `expo-iap`, passing the user's id as `appAccountToken` / `obfuscatedAccountId`. It sends the
+  transaction to `pay_verify_store_purchase`, which checks it against the App Store Server API
+  or the Play Developer API. Store server notifications (App Store Server Notifications v2, Play
+  RTDN) arrive at the same webhook route. The plan binding names the plans table's
+  `apple_product` and `google_product` fields, and grants work exactly as in §6.2. A user who
+  subscribed on iOS is subscribed on the web.
 
 ## 8. Marketplace (use case 5, later)
 
-Stripe Connect (Express accounts) first. Sellers get a `pay_sellers` row (`user_id`, connected
-account id, onboarding status). `pay_seller_onboarding` answers Stripe's hosted KYC link, so the
-seller's identity checks and payouts are Stripe's job, not the app's. A purchase is a
-**destination charge** with `application_fee_amount` = the commission. Baskets with lines from
-several sellers use **separate charges and transfers**. Refunds and disputes reverse the
-transfer and the fee by a policy setting. MoRs cannot do this, and Stripe Managed Payments
-excludes Connect, so a marketplace is always PSP mode. Mollie Connect and Adyen for Platforms are
-the alternatives. This is the most legally involved use case (who is the seller of record, and
-1099/DAC7 reporting), which is another reason to leave it until last.
+Stripe Connect (Express accounts) first. The sellers are the app's own rows. `pay_connect_onboarding`
+creates a connected account for the caller and answers Stripe's hosted KYC link, so the seller's
+identity checks and payouts are Stripe's job. The module mirrors the connected account and logs
+`connected_account.updated`. The app's trigger stores the account id and its status on its own
+sellers table. The checkout configuration gains two formulas: the **destination** (for example
+`sellerⱵstripe_account`) and the **application fee** (`round(total * 0.1)`), giving a
+destination charge. Baskets with lines from several sellers use **separate charges and
+transfers**, with a destination formula per line. Refunds and disputes reverse the transfer and
+the fee by a setting. MoRs cannot do this, and Stripe Managed Payments excludes Connect, so a
+marketplace is always PSP mode. Mollie Connect and Adyen for Platforms are the alternatives.
+This is the most legally involved use case (who is the seller of record, and 1099/DAC7
+reporting), which is another reason to leave it until last.
 
 ## 9. Core changes
 
 | | Change | Needed by |
 |---|---|---|
 | **C1** | **Module webhooks.** A module declares `webhooks: { name: async (req, ctx) => ({ status, body }) }`, served at `POST /_feldspar/hooks/<module>/<name>/<rest>` on the admin host, as the OAuth callback is (one stable URL to register). `req` has `rawBody` (bytes), `headers` and `rest`. There is no session and no CSRF check. There is a body cap (1 MiB) and a per-IP rate limit. `ctx` is a service's (`db` over the module's own tables, `files`, `log`) plus C4. The bundled card says "Receives webhooks at …". | all |
-| **C2** | **Role grants.** `_fd_role_grants` and one `effective_role(user)` function, used wherever a user is loaded: sessions, API tokens, MCP, the `login` event. `user.role` in formulas, the RLS GUC and `Event.role` are the effective role. `users.role` stays the base role an admin sets. The admin's user page lists grants and can add a time-limited one by hand. | 2, 3 |
+| **C2** | **Role grants.** The ordinary table `role_grants` (owner-readable, written only by core, so an app can show "your trial ends on …" and a daily trigger can send reminders), and one `effective_role(user)` function, used wherever a user is loaded: sessions, API tokens, MCP, the `login` event. `user.role` in formulas, the RLS GUC and `Event.role` are the effective role. `users.role` stays the base role an admin sets. The admin's user page lists grants and can add a time-limited one by hand. | 2, 3 |
 | **C3** | **LLM credits ledger.** The ordinary tables `credit_buckets` and `credit_entries`, owner-readable and written only by core. `grant` and `balance` as in §6.3; the debit is internal to the agent loop, and agent runs are the only spender. No code-body surface and no action. | 3 |
 | **C4** | **Module access to C2/C3.** `ctx.roles.grant/revoke` and `ctx.credits.grant/balance` (no debit) for module actions, services and webhooks. Granting roles is a **permission the admin gives at install**, with a ceiling: "may grant roles 70 to 100". Admin (1) can never be granted by a module. | 2, 3 |
 | **C5** | **The calling application in `Event`**: its id, public base URL and (for native apps) URL scheme. Checkout success, cancel and portal return URLs need it. | 1, 2, 4 |
-| **C6** | **CSP additions per application.** Embedded elements need `js.stripe.com` in `script-src` and `frame-src`, and `api.stripe.com` in `connect-src`; Paddle.js would need its CDN. A module manifest may *suggest* sources per adapter. The admin turns them on per application (shown on the application's page); they are not added on install. Hosted-checkout redirects need nothing. | 1, 2 (embedded) |
+| **C6** | **CSP additions per application.** Embedded elements need `js.stripe.com` in `script-src` and `frame-src`, and `api.stripe.com` in `connect-src`. A module manifest may *suggest* sources per adapter. The admin turns them on per application (shown on the application's page); they are not added on install. Hosted-checkout redirects need nothing. | 1, 2 (embedded) |
 | **C7** | **React Native native payments** in `plugins/react-native` (§7a): the dependency, config plugin, generated hook and return URL. Later, `expo-iap` (§7b). | 4 |
+| **C8** | **The `grant_role` action**: a user formula, a role, a duration or `expires_at` formula, a key formula, and `once` (no grant if one with that key ever existed, expired included). For card-less trials, comps and promotions, with no payments involved. Like `update_rows`, it runs with the trigger's authority, and only an admin configures it. | 2 |
+| **C9** | **Guest sessions.** An application can switch on sessions for visitors who are not signed in (off by default). The generated client's `startGuestSession()` starts one explicitly, when the basket gets its first item, so a crawler or a bot that only looks at pages never creates a row. A guest session has the same hashed cookie token as a signed-in session, plus a separate random **public id**. That public id is what a table stores and what formulas see as `session.id`. The cookie token is never stored in a table, so a database dump or a REST read of `orders.session_id` is not a usable cookie. `session` is in scope wherever `user` is: ownership formulas, default expressions, `only_if` and code bodies, plus a third RLS GUC (`sc.session`). `user` stays `null` and the role stays public (100), so existing formulas keep their meaning, and `user && …` still means "signed in". A request carrying a guest session must pass the CSRF check to use it, otherwise it is served as a session-less anonymous caller (§7.3's rule). Guest sessions are kept in a **logged** table, not the unlogged session table: a guest session is the only record of who owns a guest's rows, so losing it in a crash would lose the guest's basket. **The cookie is persistent**, with `Max-Age` equal to the guest session's lifetime (a setting, default 30 days), so the basket survives a reload, closing the tab and restarting the browser. It is lost only when the visitor clears cookies, uses a private window that has since closed, or switches device. Guest sessions are **per application** (decided): the cookie is set on the application's own host, never on the shared cookie domain that signed-in sessions can use. The cookie is `SameSite=Strict` like a signed-in session's. So the first page load after returning from the provider's checkout (a cross-site redirect) arrives without it, as an OAuth return does (§7.2). A React app's later API calls are same-site and do carry it. The success page therefore loads the order through the API rather than from the initial page request. At sign-in or sign-up in the same browser, the `login` event's payload carries `guest_session` (the public id) and the guest session ends. | 1 |
 
 The module's `net` permission is **an exact allow-list**: the union of the configured adapters'
 `hosts` (`api.stripe.com`, `api.polar.sh`, `sandbox-api.polar.sh`, …), not `*`.
 
-## 10. Open questions
+## 10. Decided, and open questions
 
-- **Guest orders becoming an account's orders.** A guest order has `user_id` null, so it is
-  invisible to an ownership formula like `user_id === user.id` and does not appear under "My
-  orders". It is reachable only through its token link. If the buyer later creates an account,
-  should those orders join it? Matching by email is the obvious way, but it is unsafe here:
-  password sign-up does not verify the email address, so anybody who signs up as
-  `alice@example.com` would see Alice's orders (her address and what she bought). The options:
-  (a) never attach; (b) attach by email only for a verified address, which needs email
-  verification in core first; (c) a `pay_claim_order({ token })` action: a signed-in user who
-  holds the order's token, for example from the confirmation email, attaches it to their
-  account. Holding the token proves they are the buyer. (c) is a building block in the sense of
-  §3.10 and is safe without verification. The proposal is (c), and the app decides when to
-  call it.
+Decided:
+- **Plans live in a table the app's admin creates**, with whatever fields the business needs.
+  The module's plan binding (§6.2) only says which fields hold the provider price ids, the role
+  and the credit allowance. No plan data is kept on the provider's products as metadata.
+- **A checkout is always for a row the app created** (§6.1). Guests get one through guest
+  sessions (C9), not through a separate basket mode.
+
+- **Guest sessions are per application**, even where signed-in sessions share a cookie
+  between applications.
+
+Open: none at present.
 
 ---
 
 # Part II — Milestones
 
-## P1 — Core seams: webhooks, the calling application, CSP (core)
+## P1 — Core seams: webhooks, the calling application, CSP, guest sessions (core)
 
 - [ ] **P1.1** C1 module webhooks: manifest key, route, raw body and headers, cap, rate limit,
   `ctx` with the module's own tables. Test: a fixture module's webhook receives a raw body and
@@ -446,51 +535,72 @@ The module's `net` permission is **an exact allow-list**: the union of the confi
   Test: an exposed trigger sees its app's URL on two different hosts.
 - [ ] **P1.4** C6: per-application CSP additions, with module-suggested sources shown and
   switched on by the admin. Test: the app's CSP header carries them only once enabled.
+- [ ] **P1.5** C9 guest sessions: the per-application switch, `startGuestSession()` in the
+  generated client, the logged session rows, `session.id` in ownership formulas, default
+  expressions, `only_if`, code bodies and the RLS GUC, and the CSRF rule. Tests: two guests
+  each see only their own `open` order through REST, under runtime checks and under RLS; the
+  same basket is read again by a new request carrying the cookie (a reload); a guest write
+  without the CSRF token is served as session-less; an expired guest session reads nothing;
+  the cookie is set on the application's host only; after a cross-site return from the `fake`
+  checkout, the success page's API call sees the guest's order.
+- [ ] **P1.6** The `login` event's `guest_session`, and the guest session ending at sign-in.
+  Test: a trigger moves a guest's orders to the account that signed in from the same browser.
 
 ## P2 — The module and use case 1 (shop), on Stripe and `fake`
 
-- [ ] **P2.1** `plugins/payments` skeleton: manifest, tables (§5), `pay_accounts` with `Secret`
-  keys, adapter loading, capability checks with named refusals, net allow-list from hosts.
+- [ ] **P2.1** `plugins/payments` skeleton: manifest, the three tables (§5), `pay_accounts` with
+  `Secret` keys, adapter loading, capability checks with named refusals, net allow-list from
+  hosts.
 - [ ] **P2.2** `fake` adapter: a local checkout page and self-delivered signed webhooks.
-- [ ] **P2.3** Webhook handler and event store (§6.5): verify, dedupe, fetch-and-upsert, 500 on
-  failure. Tests: a duplicate event is processed once, out-of-order events give the right final
-  state, and a bad signature stores nothing.
-- [ ] **P2.4** `pay_checkout` (§6.1) with its trigger configuration (item table, price, name,
-  stock, currency, shipping), server-side pricing, guest orders and `access_token`; typed payload
-  and answer. `pay_order_status`. Tests against `fake`: a client-sent price is ignored, a guest
-  order reaches `paid`, and an order triggers a stock decrement.
+- [ ] **P2.3** Webhook handler (§6.5): verify, dedupe, fetch-and-upsert the mirror, insert
+  normalised events, 500 on failure. Tests: a duplicate event is processed once, out-of-order
+  events give the right final state, a bad signature stores nothing, and an unknown provider
+  event is logged as `other`.
+- [ ] **P2.4** `pay_checkout` (§6.1): the shared checkout configuration (the source row, line
+  formulas, currency, customer, tax, shipping, paths, effects), the read check on the source
+  row, and a typed payload and answer. Tests against `fake`: an app table's row is paid for,
+  and an app trigger on `payment.succeeded` marks it paid with `update_rows`; a payload amount
+  is ignored; line formulas read through Ⱶ; a guest checks out their own order through a guest
+  session; nobody can check out a row they cannot read.
 - [ ] **P2.5** Stripe adapter, one-off: Checkout Session with ad-hoc prices, Stripe Tax option,
   shipping, the `managed_payments` flag (refused with shipping), refunds, webhook verification.
   Recorded-response tests; live test-mode test when keys are present.
-- [ ] **P2.6** Escape hatches: `pay_api` function and the `pay_provider_code` action (`stripe`
-  in scope).
-- [ ] **P2.7** `reconcile` service: retry errored events, periodic sync.
-- [ ] **P2.8** Tutorial `docs/tutorial-payments.md` part 1: a React shop with a guest checkout,
-  and **delivering a digital good** with a trigger on `pay_orders` (a paid order of a
-  downloadable product writes a download row the buyer can read, and emails the link).
+- [ ] **P2.6** `pay_refund` (given the source row or a mirror row), and the escape hatches:
+  `pay_api` and `pay_provider_code` (`stripe` in scope).
+- [ ] **P2.7** `reconcile` service: the periodic sweep.
+- [ ] **P2.8** Tutorial `docs/tutorial-payments.md` part 1: a React shop with its own
+  `products`, `orders` and `order_lines` tables, the basket as an `open` order owned by the
+  user or the guest session, prices read through Ⱶ so the buyer cannot set them, triggers that
+  mark orders paid and decrement stock, moving a guest's orders to the account at sign-in, and
+  **delivering a digital good** (a paid order
+  of a downloadable product writes a download row the buyer can read, and emails the link).
 
 ## P3 — Role grants (core)
 
-- [ ] **P3.1** `_fd_role_grants` and `effective_role`, used in sessions, tokens, MCP, the
+- [ ] **P3.1** `role_grants` and `effective_role`, used in sessions, tokens, MCP, the
   `login` event, `user.role` in formulas and the RLS GUC. Tests: a grant changes what a user
   can read within the session freshness TTL, and an expired grant ends access with no write.
 - [ ] **P3.2** Admin user page: base role, grants in force, add a time-limited grant by hand.
 - [ ] **P3.3** C4 for roles: `ctx.roles.grant/revoke` (upsert by source and ref), with the
   install-time ceiling. Test: a module granting a role above its ceiling, or role 1, is
   refused.
+- [ ] **P3.4** C8, the `grant_role` action, with `once`. Test: a trial granted on sign-up is not
+  granted again after it expires.
 
 ## P4 — Use case 2: subscriptions on Stripe and `fake`
 
-- [ ] **P4.1** `pay_plans`; `pay_subscribe(plan)` → checkout URL; subscription sync; grants per
-  §6.2's table, with grace.
-- [ ] **P4.2** Trials: card-less (granted by the module, one per user) and card-up-front (the
-  provider's). Tests with `fake` and Stripe test clocks: a trial ends with and without
-  conversion, and a renewal fails then recovers within grace.
-- [ ] **P4.3** `pay_billing_portal`, `pay_change_plan`, `pay_cancel`; a tier change moves the
-  grant's role.
-- [ ] **P4.4** Access-policy settings (base role, required or free tier, trial mode, grace) and
-  the daily reminder trigger.
-- [ ] **P4.5** Tutorial part 2: a SaaS app with a free tier, two paid tiers and a card-less trial.
+- [ ] **P4.1** The plan binding (§6.2) in the module's configuration; subscription mode in
+  `pay_checkout`; subscription sync; grants per §6.2's table, with grace; the plan looked up
+  from the current price on every change. Test: an unbound price grants nothing and is
+  reported.
+- [ ] **P4.2** Trials with the card up front. Tests with `fake` and Stripe test clocks: a trial
+  ends with and without conversion, and a renewal fails then recovers within grace.
+- [ ] **P4.3** `pay_portal`, `pay_change_subscription`, `pay_cancel_subscription`. Test: a tier
+  change in the portal moves the grant's role.
+- [ ] **P4.4** Owner-readable subscription rows in the mirror, so an app can show the renewal
+  date.
+- [ ] **P4.5** Tutorial part 2: a SaaS app with its own `plans` table, a free tier, two paid
+  tiers, a card-less trial with `grant_role`, and a daily trial-ending reminder.
 
 ## P5 — Second adapter: Polar, a merchant of record
 
@@ -509,24 +619,25 @@ The module's `net` permission is **an exact allow-list**: the union of the confi
   soonest-expiring first, debt and repayment, idempotency keys. Tests: concurrent debits
   never overdraw, and a replayed grant does nothing.
 - [ ] **P6.2** Admin user page: the balance, the entries, and a manual grant.
-- [ ] **P6.3** Agent metering (§6.3): the LLM credits setting, rate, minimum balance; a debit per model call; the run
-  stops at zero; anonymous callers are refused.
-- [ ] **P6.4** C4 for credits (`ctx.credits.grant/balance`), and the `low_balance` entry.
+- [ ] **P6.3** Agent metering (§6.3): the LLM credits setting, rate, minimum balance; a debit
+  per model call; the run stops at zero; anonymous callers are refused.
+- [ ] **P6.4** C4 for credits (`ctx.credits.grant/balance`), and the `low_balance` entry with a
+  per-user threshold.
 
 ## P7 — Use case 3: allowances, rollover, top-ups
 
-- [ ] **P7.1** Plan allowances granted on paid renewals; rollover `none`/`all`/`capped`. Tests
-  over three periods for each policy.
-- [ ] **P7.2** `pay_packs` and `pay_buy_credits`: charge the saved card where the adapter can,
-  falling back to checkout when the bank asks for authentication or there is no saved card.
-  The credit is granted from the webhook.
-- [ ] **P7.3** Auto top-up below a threshold, rate-limited.
-- [ ] **P7.4** Tutorial part 3: an agent app with a $5 plan including 100 units and $2 top-ups.
+- [ ] **P7.1** Allowance and rollover fields in the plan binding; allowances granted on paid
+  renewals; rollover `none`/`all`/`capped`. Tests over three periods for each policy.
+- [ ] **P7.2** The *grant credits* effect on `pay_checkout`, and `pay_charge_saved`: the saved
+  card where the adapter can, falling back to checkout when the bank asks for authentication or
+  there is no saved card. The credit is granted from the webhook.
+- [ ] **P7.3** Tutorial part 3: an agent app with a $5 plan including 100 units, a
+  `credit_packs` table with a $2 top-up, and auto top-up as a trigger on `low_balance`.
 
 ## P8 — Use case 4a: Apple Pay and Google Pay in React Native
 
-- [ ] **P8.1** `pay_native_sheet` (Stripe): customer, ephemeral key, PaymentIntent; the order
-  is created as in P2.4.
+- [ ] **P8.1** `pay_native_sheet` (Stripe), on the shared checkout configuration: customer,
+  ephemeral key, PaymentIntent.
 - [ ] **P8.2** C7 in `plugins/react-native`: the dependency and Expo config plugin when a Stripe
   account exists, generated `usePayment()`, URL-scheme return URL, hosted-checkout fallback on
   web.
@@ -545,17 +656,19 @@ The module's `net` permission is **an exact allow-list**: the union of the confi
 
 ## P10 — Use case 6: invoices and payment requests
 
-- [ ] **P10.1** `pay_request`, pay links, the `processing` status, bank methods (Stripe; Mollie
-  adapter).
-- [ ] **P10.2** Manual capture: `pay_capture` and cancelling an authorisation.
+- [ ] **P10.1** `pay_request`, payment methods, the `payment.processing` event, bank methods
+  (Stripe; Mollie adapter).
+- [ ] **P10.2** Manual capture: `pay_capture` and `pay_cancel_payment`.
+- [ ] **P10.3** Tutorial part 4: an invoices table, a pay page that calls `pay_request`, and a
+  booking deposit captured on completion.
 
 ## P11 — Use case 5: marketplace (Stripe Connect)
 
-- [ ] **P11.1** `pay_sellers`, hosted onboarding, account status sync.
-- [ ] **P11.2** Destination charges with a commission; multi-seller baskets with separate
+- [ ] **P11.1** `pay_connect_onboarding`, the connected-account mirror and its event.
+- [ ] **P11.2** Destination and application-fee formulas; multi-seller baskets with separate
   charges and transfers; refund and dispute policy.
 
 ## P12 — More adapters, on demand
 
-- [ ] **P12.1** Paddle, Mollie (if P10 did not), Lemon
-  Squeezy, Creem, Dodo, PayPal: each one adapter file and a run of the shared suite.
+- [ ] **P12.1** Paddle, Mollie (if P10 did not), Lemon Squeezy, Creem, Dodo, PayPal: each one
+  adapter file and a run of the shared suite.
