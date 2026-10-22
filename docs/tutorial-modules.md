@@ -57,7 +57,10 @@ milestone.
 Before the form, look under **Modules that ship with Saltcorn**. A few modules are written and
 maintained in the Saltcorn repository and travel inside the release you are running, so there
 is no package name to look up and nothing to trust that you are not already running. Today that
-is an **RSS feed** table provider and a **Markdown** renderer.
+is an **RSS feed** table provider, a **Markdown** renderer, **scikit-learn** model providers, the
+**Vue** and **React Native** application frameworks, and **Mail (IMAP and SMTP)**: IMAP mailboxes
+kept in four tables of the module's own by a background service, and mail actions
+([tutorial-mail.md](tutorial-mail.md)).
 
 They are still modules: nothing on those cards does anything until you install it. The card
 says what it supplies, what installing downloads and what installing lets it reach, and then

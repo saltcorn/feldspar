@@ -12,7 +12,9 @@ module does neither:
 
 Steps 1–5 are use case A of [TODO-imap.md](../TODO-imap.md): one mailbox, shared, append-only.
 Steps 6–8 are the other half: each user's own accounts kept as a two-way **mirror** for a mail
-client of your own (use case B), and sending from an account (D).
+client of your own (use case B), and sending from an account (D). Step 9 sends automated mail
+from the shared account (C), and Step 10 builds the client's pages on the tables: a live inbox,
+a message shown safely, and a reply.
 
 ## Step 1 — Install the module
 
@@ -268,5 +270,362 @@ await post("/api/actions/send_mail", {
   rule.
 
 Errors name the server and never the password. To send automatically from an account (an order
-confirmation from `orders@`, use case C), use the built-in `send_email` action with its SMTP
-settings filled from the account: see [tutorial-triggers.md](tutorial-triggers.md).
+confirmation from `orders@`, use case C), you need no module action: Step 9.
+
+## Step 9 — Mail from your own data: "your order has shipped"
+
+Step 3's orders came from `orders@`, and the answer to a customer should come from there too,
+through that mailbox's own SMTP server, not from the installation's address in **Settings →
+Email**. That is the built-in `send_email` action with its SMTP override settings
+([tutorial-triggers.md](tutorial-triggers.md), "sending from an account's own server"), filled
+from the account the order's mail arrived at. Add a `shipped` Bool field to `orders`, then
+**Triggers → New trigger**:
+
+| Field | Value |
+|---|---|
+| Name | `order_shipped` |
+| Event | `A row is updated` |
+| Table | `orders` |
+| Only if | `shipped && !old.shipped` |
+| Action | `send_email` |
+
+and its settings:
+
+| Setting | Value |
+|---|---|
+| to | `{{ messageⱵfrom_addr }}` |
+| from | `{{ messageⱵaccountⱵdisplay_name }} <{{ messageⱵaccountⱵemail }}>` |
+| subject | `Shipped: {{ title }}` |
+| text | `Your order "{{ title }}" is on its way.` |
+| smtp_host | `{{ messageⱵaccountⱵsmtp_host }}` |
+| smtp_port | `{{ messageⱵaccountⱵsmtp_port }}` |
+| smtp_security | `{{ messageⱵaccountⱵsmtp_security }}` |
+| smtp_user | `{{ messageⱵaccountⱵsmtp_user }}` |
+| smtp_password | `{{ messageⱵaccountⱵsmtp_password }}` |
+
+Tick **shipped** on an order and the customer gets the mail from `orders@`. The template follows
+two keys, `orders.message` to `mail_messages` and its `account` to `mail_accounts`, and a `{{ }}`
+template is the one kind of formula that may end on a Secret field, so the password is decrypted
+for the send and shown nowhere: the trigger editor stores the template, not the password. The
+override is held to Step 1's rules, so the account's SMTP server must be public (465 or 587).
+
+Two differences from `mail_send` (Step 8): `send_email` does not put a copy in Sent (Gmail and
+Microsoft 365 file one themselves; other servers keep none), and it does not thread the reply.
+When either matters, call `mail_send` from a code body instead (`in_reply_to: row.message`).
+
+## Step 10 — A mail client on the tables
+
+Steps 6–8 gave each user a mirror of their own accounts. What remains is the app: the module
+supplies no pages (TODO-imap.md §2.6), because a mail client is your application's own design.
+This step builds its three hard parts in the React app of
+[tutorial-react-todo.md](tutorial-react-todo.md): a folder that updates by itself, a message
+shown without letting it run anything or phone home, and a reply.
+
+### Expose the tables, the streams and the actions
+
+**Applications → your app → Edit**:
+
+- **Tables:** tick `mail_accounts`, `mail_folders`, `mail_messages` and `mail_attachments`. The
+  ownership rule (Step 2) goes with them: each user's API answers their own accounts and mail,
+  and the shared accounts their role reaches.
+- **Streams:** make two `table_changes` streams (**Streams → New stream**), `mail_messages_live`
+  on `mail_messages` and `mail_folders_live` on `mail_folders`, with **Minimum role to observe**
+  user, and tick both. A change is delivered only to subscribers who may read the row, so the
+  same rule decides who hears about what.
+- **Triggers:** one trigger per action, event **None**, minimum role user, named like the action
+  (`mail_fetch_body`, `mail_set_flags`, `mail_attachment`, `mail_send`, and the others of Step 7
+  you use), and tick them. The client then has `api.runMailFetchBody(…)`, `api.runMailSend(…)`
+  and so on.
+
+Build the app, so `src/feldspar/` is regenerated with the tables, `live` and the `run…` methods.
+
+### A folder that updates by itself
+
+```tsx
+// src/mail/Folder.tsx
+import { useLiveRows } from "../feldspar/live-react";
+import { api } from "../feldspar/hooks";
+
+const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
+
+export function Folder({ folderId, open }: { folderId: number; open: (id: number) => void }) {
+  const { rows, loading } = useLiveRows(api.mail_messages, {
+    where: { folder: `eq.${folderId}`, internal_date: `gte.${since}` },
+    orderBy: "internal_date.desc",
+    select: "id,subject,from_name,from_addr,snippet,internal_date,seen,flagged,has_attachments",
+  });
+  if (loading) return <p>Loading…</p>;
+  return (
+    <ul className="mail-list">
+      {rows.map((m) => (
+        <li key={m.id} className={m.seen ? "" : "unread"} onClick={() => open(m.id)}>
+          <b>{m.from_name || m.from_addr}</b> {m.subject}
+          {m.has_attachments && " 📎"} <span>{m.snippet}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+New mail is a row about a second after the server has it (IDLE on INBOX; the other folders within
+5 minutes), and `useLiveRows` puts it at the top of the list without a reload. So do flags set in
+another mail program, mail moved or deleted there, and the user's own actions. The `where` keeps
+the read to the last 30 days: `useLiveRows` reads every row its filter matches, and a mirror's
+folder can hold tens of thousands. Page further back with an ordinary `api.mail_messages.list`.
+The folder list is the same hook on `mail_folders` (`` where: { account: `eq.${accountId}` } ``),
+whose `unread` and `total` the service keeps current.
+
+### Showing a message safely
+
+`body_html` is whatever the sender wrote. Show it as it is, and a mail can run scripts in your
+app, submit forms, or load a remote image that tells the sender you opened it and from where.
+Mail programs therefore show it in a sandbox, with remote content blocked until the reader asks.
+Three layers do that here:
+
+1. **The iframe's `sandbox`** without `allow-scripts`: nothing in the mail runs, whatever slipped
+   past the rest. `allow-same-origin` lets the page measure the frame's height and lets the
+   frame load the inline images from your app's API with the user's session. Never combine it
+   with `allow-scripts`, which would let a mail's script take the page's place.
+2. **A Content-Security-Policy** in the frame's own document: images from your app (`'self'`) and
+   `data:` only, styles inline only, no fonts, scripts, frames or connections. That blocks
+   remote images in CSS `url()`s too, which no markup rewrite finds.
+3. **A rewrite of the markup** before it is shown: scripts, frames, `<base>`, `<meta>` and
+   `<link>` removed, `on…` attributes dropped, remote `src`s set aside (and counted, for a "Show
+   images" button), links opened in a new tab, and `cid:` references rewritten to the inline
+   images' download URLs.
+
+**`cid:` images.** An inline image is a `mail_attachments` row with `inline = true` and its
+Content-ID in `cid`, and `body_html` refers to it as `<img src="cid:…">` (the module does not
+embed it). Its bytes are at the attachment's File field, `GET /api/mail_attachments/{id}/file`.
+In ingest mode the file is stored on import; in mirror mode it is stored when first opened, so
+call `mail_attachment` first when `file` is still empty.
+
+```ts
+// src/mail/mailHtml.ts
+/** The inline images of one message: Content-ID (no angle brackets) → the URL of its file. */
+export type InlineImages = Record<string, string>;
+
+/** Elements a mail never needs, which could navigate, run, frame or restyle the page. */
+const DROP = "script, noscript, iframe, frame, frameset, object, embed, applet, base, link, meta";
+/** Attributes that load something. */
+const LOADS = ["src", "background", "poster"];
+const REMOTE = /^(https?:)?\/\//i;
+
+function cidOf(url: string): string {
+  const raw = url.trim().slice(4).replace(/^<|>$/g, "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * A mail's HTML as an iframe's `srcdoc`: rewritten as above, with a Content-Security-Policy that
+ * allows images from this app and `data:` only (and remote ones when `showRemote`). `blocked`
+ * counts the remote images set aside, for a "Show images" button.
+ */
+export function mailDocument(html: string, images: InlineImages, showRemote = false): { srcdoc: string; blocked: number } {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll(DROP).forEach((el) => el.remove());
+  let blocked = 0;
+  for (const el of Array.from(doc.querySelectorAll("*"))) {
+    for (const attr of Array.from(el.attributes)) {
+      if (attr.name.toLowerCase().startsWith("on")) el.removeAttribute(attr.name);
+    }
+    for (const name of LOADS) {
+      const value = el.getAttribute(name);
+      if (value === null) continue;
+      if (/^\s*cid:/i.test(value)) {
+        const cid = cidOf(value);
+        const url = images[cid] ?? images[value.trim().slice(4)];
+        if (url) el.setAttribute(name, url);
+        else el.removeAttribute(name);
+      } else if (REMOTE.test(value.trim()) && !showRemote) {
+        el.setAttribute(`data-blocked-${name}`, value);
+        el.removeAttribute(name);
+        blocked++;
+      }
+    }
+    if (el.hasAttribute("srcset") && !showRemote) el.removeAttribute("srcset");
+    if (el.tagName === "A" && el.hasAttribute("href")) {
+      if (/^\s*(javascript|data|vbscript):/i.test(el.getAttribute("href") ?? "")) el.removeAttribute("href");
+      el.setAttribute("target", "_blank");
+      el.setAttribute("rel", "noopener noreferrer");
+    }
+  }
+  const remote = showRemote ? " https: http:" : "";
+  const csp = doc.createElement("meta");
+  csp.setAttribute("http-equiv", "Content-Security-Policy");
+  csp.setAttribute(
+    "content",
+    `default-src 'none'; img-src 'self' data:${remote}; style-src 'unsafe-inline'${remote}; font-src data:${remote}`,
+  );
+  doc.head.prepend(csp);
+  return { srcdoc: `<!doctype html>${doc.documentElement.outerHTML}`, blocked };
+}
+```
+
+The parse is `DOMParser`'s, which builds an inert document: nothing in it loads or runs while it
+is rewritten. The policy is the frame's first element, so it covers everything after it, and a
+policy of the mail's own could only make it stricter.
+
+```tsx
+// src/mail/Message.tsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLiveRows } from "../feldspar/live-react";
+import { api } from "../feldspar/hooks";
+import { mailDocument, type InlineImages } from "./mailHtml";
+
+const fileUrl = (attachmentId: number) => `/api/mail_attachments/${attachmentId}/file`;
+
+export function Message({ id }: { id: number }) {
+  const [message] = useLiveRows(api.mail_messages, { where: { id: `eq.${id}` } }).rows;
+  const attachments = useLiveRows(api.mail_attachments, { where: { message: `eq.${id}` } }).rows;
+  const [showRemote, setShowRemote] = useState(false);
+  const [images, setImages] = useState<InlineImages>({});
+  const frame = useRef<HTMLIFrameElement>(null);
+
+  // Older mirror mail is stored as headers only (body_days): fetch it whole when opened.
+  useEffect(() => {
+    if (message?.body_state === "headers") void api.runMailFetchBody({ message_id: id });
+  }, [id, message?.body_state]);
+
+  // Opening a message marks it read, on the server too.
+  useEffect(() => {
+    if (message && !message.seen) void api.runMailSetFlags({ message_ids: [id], seen: true });
+  }, [id, message?.seen]);
+
+  // The inline images, each stored first if this is its first opening.
+  const inline = attachments.filter((a) => a.inline && a.cid);
+  const inlineKey = inline.map((a) => `${a.id}:${a.file ?? ""}`).join(",");
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      inline.map(async (a) => {
+        if (!a.file) await api.runMailAttachment({ attachment_id: a.id });
+        return [a.cid as string, fileUrl(a.id)] as const;
+      }),
+    ).then((pairs) => !cancelled && setImages(Object.fromEntries(pairs)));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inlineKey]);
+
+  const shown = useMemo(
+    () => (message?.body_html ? mailDocument(message.body_html, images, showRemote) : null),
+    [message?.body_html, images, showRemote],
+  );
+  if (!message) return null;
+
+  const download = async (attachmentId: number) => {
+    await api.runMailAttachment({ attachment_id: attachmentId }); // stores it if it is not yet
+    window.open(fileUrl(attachmentId), "_blank", "noopener");
+  };
+
+  return (
+    <article>
+      <h2>{message.subject}</h2>
+      <p>{message.from_name} &lt;{message.from_addr}&gt;</p>
+      {shown && shown.blocked > 0 && !showRemote && (
+        <button onClick={() => setShowRemote(true)}>Show {shown.blocked} remote images</button>
+      )}
+      {shown ? (
+        <iframe
+          ref={frame}
+          title={message.subject ?? "message"}
+          sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+          referrerPolicy="no-referrer"
+          srcDoc={shown.srcdoc}
+          style={{ width: "100%", border: 0 }}
+          onLoad={() => {
+            const f = frame.current;
+            if (f?.contentDocument) f.style.height = `${f.contentDocument.documentElement.scrollHeight}px`;
+          }}
+        />
+      ) : (
+        // A text-only mail: React escapes it, and pre-wrap keeps its lines.
+        <pre style={{ whiteSpace: "pre-wrap" }}>{message.body_text}</pre>
+      )}
+      <ul>
+        {attachments.filter((a) => !a.inline).map((a) => (
+          <li key={a.id}>
+            <button onClick={() => download(a.id)}>{a.filename}</button> ({Math.ceil((a.size ?? 0) / 1024)} kB)
+          </li>
+        ))}
+      </ul>
+    </article>
+  );
+}
+```
+
+`body_text` is always there for a message with a body, including the module's placeholders for
+mail with none ("this message is encrypted", TODO-imap.md §5.4), so the `<pre>` is also the fallback while
+a `headers` message is being fetched. When it arrives, the live row updates and the frame
+appears. Treat `subject`, `from_name` and the file names as text, as above: never as HTML.
+
+### Reply
+
+A reply is `mail_send` (Step 8) with `in_reply_to`, so the threading headers are the module's
+job, and the sent copy lands in Sent and in the thread (`thread_key`) as a row:
+
+```tsx
+// src/mail/Reply.tsx
+import { useState } from "react";
+import { api } from "../feldspar/hooks";
+
+type Original = { id: number; account: number; subject: string | null; from_addr: string | null; reply_to: unknown };
+
+export function Reply({ original, done }: { original: Original; done: () => void }) {
+  const replyTo = Array.isArray(original.reply_to) && original.reply_to[0]?.address;
+  const [to, setTo] = useState<string>(replyTo || original.from_addr || "");
+  const [subject, setSubject] = useState(/^re:/i.test(original.subject ?? "") ? original.subject! : `Re: ${original.subject ?? ""}`);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const send = async () => {
+    try {
+      const sent = (await api.runMailSend({
+        account_id: original.account,
+        to,
+        subject,
+        text,
+        in_reply_to: original.id,
+      })) as { saved: boolean; save_error: string | null };
+      if (!sent.saved && sent.save_error) console.warn(`sent, but not saved in Sent: ${sent.save_error}`);
+      done();
+    } catch (e) {
+      setError(String(e)); // a bad address, too many recipients, a refused login: nothing was sent
+    }
+  };
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void send();
+      }}
+    >
+      <input value={to} onChange={(e) => setTo(e.target.value)} />
+      <input value={subject} onChange={(e) => setSubject(e.target.value)} />
+      <textarea value={text} onChange={(e) => setText(e.target.value)} />
+      {error && <p role="alert">{error}</p>}
+      <button>Send</button>
+    </form>
+  );
+}
+```
+
+**Attachments** are files of your application's own, read as the sender (Step 8): give the app a
+table with a File field (say `outgoing`, with `file` in the store `uploads`, folder `outgoing`),
+upload into it with `api.outgoing.file.upload(row.id, f.name, f)`, and pass
+`attachments: [{ store: "uploads", path: row.file }]`. To forward a mail's own attachment, pass
+`{ attachment_id }`. A **draft** is `mail_save_draft` with the same payload. Saving again with
+`replaces: <the previous draft's id>` keeps one draft, and `draft_id` on the send deletes it.
+
+**What this step does not need.** No polling (the rows are live), no IMAP in the browser, and no
+password in the app: the client only ever sees `••••••••` in `imap_password`. Writing a field
+the service owns (`status`, `seen`, the folder state) through REST is overwritten at the next
+sync. Change flags, folders and mail through the actions, which do it on the server first.

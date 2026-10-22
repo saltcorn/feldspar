@@ -8,9 +8,10 @@
 #   test/servers/dovecot.sh deliver <user> <folder> <file.eml>
 #
 # IMAP on 127.0.0.1:11143 (STARTTLS required) and 127.0.0.1:11993 (TLS), with certificates from
-# run/certs/ca.crt. Users `ingest` and `other` (ingest mode), `mirror` (mirror mode) and
-# `ann1`, `ann2`, `bob1`, `bob2` (two users' two accounts each), all with one password that has
-# non-ASCII characters (PASSWORD). Every mailbox the tests use is created on login.
+# run/certs/ca.crt. Users `ingest` and `other` (ingest mode), `mirror` (mirror mode),
+# `ann1`, `ann2`, `bob1`, `bob2` (two users' two accounts each) and `live` (live-matrix.test.mjs),
+# all with one password that has non-ASCII characters (PASSWORD). Every mailbox the tests use
+# is created on login.
 set -euo pipefail
 
 servers="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +20,7 @@ root="$run/dovecot"
 conf="$run/dovecot.conf"
 spike="$servers/../../spike/run/dovecot"
 PASSWORD='Grüße-€-pässwort'
-USERS=(ingest other mirror ann1 ann2 bob1 bob2)
+USERS=(ingest other mirror ann1 ann2 bob1 bob2 live)
 export LD_LIBRARY_PATH="$root/usr/lib/dovecot:$root/usr/lib/x86_64-linux-gnu"
 
 doveconf() { "$root/usr/bin/doveconf" -c "$conf" "$@"; }

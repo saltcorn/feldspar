@@ -2,6 +2,60 @@
 
 Changes in reverse chronological order.
 
+## Mail module M10.1–M10.2: the client tutorial, the catalog, and the live-server matrix
+
+- **M10.1** [docs/tutorial-mail.md](docs/tutorial-mail.md) gets two steps.
+  - **Step 9 (use case C):** "your order has shipped" from `orders@`, through that account's own
+    SMTP server. It is a plain `send_email` trigger on `orders` whose SMTP override settings
+    follow `messageⱵaccountⱵ…`. The password is a Secret at the end of a two-key join, which a
+    `{{ }}` template may open. It notes what `send_email` does not do that `mail_send` does
+    (the Sent copy and threading).
+  - **Step 10 (use cases B and D):** a mail client on the tables. It covers exposing the four
+    tables, two `table_changes` streams and one trigger per action.
+    - `Folder.tsx`: `useLiveRows` on `mail_messages`, bounded to 30 days, because a live read
+      reads everything its filter matches.
+    - `mailHtml.ts` and `Message.tsx`: `body_html` in an iframe `sandbox` with
+      `allow-same-origin` and never `allow-scripts`. A Content-Security-Policy `<meta>` is the
+      frame's first element and allows only `'self'` and `data:` images until "Show images".
+      A `DOMParser` rewrite drops scripts, frames, `<base>`, `<meta>`, `<link>`, `on…`
+      attributes and `javascript:` links, sets remote `src`/`srcset`/`background` aside and
+      counts them, and rewrites `cid:` to `/api/mail_attachments/{id}/file`, after
+      `mail_attachment` has stored a mirror's file.
+    - The page fetches a `headers` body when a message is opened, and marks the message read.
+    - `Reply.tsx`: `mail_send` with `in_reply_to`. Attachments and drafts are explained in text.
+  - `plugins/imap/test/tutorial-client.test.mjs` takes `mailHtml.ts` out of the tutorial and runs
+    it under jsdom: scripts, handlers, refresh/base/link, frames, tracking pixels,
+    protocol-relative and `srcset` images, `cid:` (case and URL-encoding), `data:` kept, links,
+    "Show images", and broken markup. It also checks that the TSX blocks are valid syntax. jsdom
+    and typescript come from `ui/builder`'s dependencies; without them the test is skipped. It
+    found that `<body onload>` survived the first version, which only walked the body's
+    descendants.
+  - **The catalog.** The module was already on the Modules tab (M7.1). README.md,
+    tutorial-modules Step 0 and `plugins/README.md` now name it. `bundled_catalog` gets
+    `every_bundled_module_has_its_row_in_the_plugins_readme`.
+- **M10.2** `plugins/imap/test/live-matrix.mjs` is the manual live-server matrix. It takes a JSON
+  file of accounts and runs the module's own `AccountRunner` and actions, in mirror mode over
+  the in-memory host, against each account. The steps:
+  - login (`mail_test_account`) and sync to `idle`;
+  - `mail_send` to itself, and the mail arriving as a row by IDLE alone (timed);
+  - exactly one copy in Sent on the server, which tells whether `save_sent`'s Gmail/Microsoft 365
+    default is right for that server;
+  - a `\Flagged` set on the server reaching the row by itself (timed), and `mail_set_flags`
+    reaching the server;
+  - the test mail deleted for good (`--keep` keeps it).
+
+  It prints one Markdown row per account for TODO-imap.md's results table. Errors go through
+  `connect.redact`, and an entry may carry `configuration` (trusted servers, CA) for an
+  on-premises Exchange. `test/live-matrix.test.mjs` runs it against the test Dovecot (new user
+  `live`) and the SMTP sink on ports of its own, playing the MTA by APPENDing what the sink got.
+  It checks every check passing, mail within 5 s, the cleanup, a failed login stopping at login,
+  and no password in any output. The local row is recorded. **The real servers are not run
+  yet**: they need accounts, and their rows say "not run yet".
+- `npm test` in `plugins/imap` now runs its files one at a time (`--test-concurrency=1`, about
+  1.5 minutes). Every Dovecot test shares one server, and `ingest.test.mjs`'s reconnect test
+  restarts it. With two more files, Node's default of three files at once put that restart in
+  the middle of `mirror.test.mjs`, and five of its tests failed with ECONNREFUSED.
+
 ## Mail module M9: mirror mode and sending
 
 The bundled mail module now does use cases B and D of TODO-imap.md: each user's own accounts kept

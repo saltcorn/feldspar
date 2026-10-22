@@ -905,19 +905,62 @@ and do not commit.
 
 ## M10 — Docs, live servers, later
 
-- [ ] **M10.1** `docs/tutorial-mail.md`:
+- [x] **M10.1** `docs/tutorial-mail.md`:
   - shared mailbox to orders (A, C);
   - building a client on the tables (B, D): `useLiveRows` on `mail_messages`, rendering
     `body_html` in a sandboxed iframe with remote images blocked by default, rewriting `cid:`
     references, compose with `mail_send`.
 
   Add the module to the Modules catalog.
-- [ ] **M10.2** A manual live-server test matrix, with results recorded in this file:
+
+  **Done (2026-10-22).** Step 9 is use case C (a `send_email` trigger on `orders` whose SMTP
+  settings follow `messageⱵaccountⱵ…`, password included). Step 10 is the client: exposing the
+  tables, two `table_changes` streams and one trigger per action; `Folder.tsx` (`useLiveRows`,
+  bounded to 30 days); `mailHtml.ts` + `Message.tsx` (three layers: an iframe `sandbox` with
+  `allow-same-origin` and never `allow-scripts`, a CSP `<meta>` as the frame's first element
+  allowing `'self'` and `data:` images only, and a `DOMParser` rewrite that drops scripts,
+  frames, `<base>`/`<meta>`/`<link>` and `on…` attributes, sets remote `src`s aside with a count
+  for "Show images", and rewrites `cid:` to `/api/mail_attachments/{id}/file` after
+  `mail_attachment` stores the file); `Reply.tsx` (`mail_send` with `in_reply_to`).
+  `plugins/imap/test/tutorial-client.test.mjs` takes `mailHtml.ts` out of the tutorial and runs
+  it under jsdom, and checks the TSX blocks' syntax (jsdom and typescript from `ui/builder`).
+  The catalog: the module was already on the Modules tab (M7.1); README.md, tutorial-modules
+  Step 0 and `plugins/README.md` now name it, and `bundled_catalog` checks that every bundled
+  module has its `plugins/README.md` row.
+- [~] **M10.2** A manual live-server test matrix, with results recorded in this file:
   - Gmail (app password), Microsoft 365, iCloud, Fastmail;
   - GMX, web.de, IONOS, Strato;
   - Dovecot, Exchange on-premises if available.
 
   Login, IDLE, new mail, flags, send, Sent copy.
+
+  **The tool is done (2026-10-22); the runs need real accounts.** `plugins/imap/test/live-matrix.mjs`
+  runs the module's own runner and actions (mirror mode, over the in-memory host) against an
+  account from a JSON file: login (`mail_test_account`), sync to `idle`, `mail_send` to itself,
+  the mail arriving by IDLE (timed, no poll), exactly one copy in Sent (APPENDed or filed by the
+  server, which says whether `save_sent`'s default is right there), a server flag reaching the
+  row by itself (timed) and `mail_set_flags` reaching the server, then the test mail deleted. It
+  prints the row for the table below. `test/live-matrix.test.mjs` runs it against the test
+  Dovecot and SMTP sink, so the script is known to work.
+
+  ```
+  cd plugins/imap && node test/live-matrix.mjs ~/mail-accounts.json   # keep that file out of git
+  ```
+
+  Results (✓ passed, ✗ failed, – not reached; times are delivery to row):
+
+  | server | date | login | sync | send | new mail | Sent copy | flags | capabilities | notes |
+  |---|---|---|---|---|---|---|---|---|---|
+  | Dovecot 2.4 (test, local) | 2026-10-22 | ✓ | ✓ | ✓ | ✓ 0.6 s | ✓ | ✓ 1.6 s | COMPRESS=DEFLATE CONDSTORE ENABLE IDLE MOVE QRESYNC SPECIAL-USE UIDPLUS | `live-matrix.test.mjs`, the SMTP sink delivering by APPEND; one copy in Sent, APPENDed by the module |
+  | Gmail (app password) | | | | | | | | | not run yet |
+  | Microsoft 365 | | | | | | | | | not run yet (basic auth may be refused: M10.3) |
+  | iCloud | | | | | | | | | not run yet |
+  | Fastmail | | | | | | | | | not run yet |
+  | GMX | | | | | | | | | not run yet |
+  | web.de | | | | | | | | | not run yet |
+  | IONOS | | | | | | | | | not run yet |
+  | Strato | | | | | | | | | not run yet |
+  | Exchange on-premises | | | | | | | | | not run yet; needs `configuration` (trusted server, CA) in its entry |
 - [ ] **M10.3** OAuth2 / XOAUTH2 per account (Gmail, Microsoft 365), built on the core OAuth work
   (`sc-server/src/oauth.rs`). The tokens are Secret fields. *(later)*
 - [ ] **M10.4** Search: server-side `UID SEARCH` for an action, plus Postgres full-text search over

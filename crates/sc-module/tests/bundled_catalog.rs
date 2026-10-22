@@ -268,6 +268,32 @@ fn the_mail_module_ships_and_declares_the_tables_its_card_lists() {
     assert_eq!(names, imap.tables);
 }
 
+/// TODO-imap M10.1: the catalog the Modules tab shows is the one
+/// `plugins/README.md` documents — each bundled module has its row there, with
+/// its directory and its package's name, so a module added to `plugins/` is
+/// not one the docs have never heard of.
+#[test]
+fn every_bundled_module_has_its_row_in_the_plugins_readme() {
+    let catalog = catalog();
+    let readme = read(
+        &catalog
+            .root()
+            .expect("the catalog has a root")
+            .join("README.md"),
+    );
+    for module in catalog.modules() {
+        let row = format!("| `{}/` | `{}` |", module.id, module.name);
+        assert!(
+            readme.lines().any(|line| line.starts_with(&row)),
+            "plugins/README.md has no row starting `{row}`"
+        );
+    }
+    assert!(
+        catalog.get("imap").is_some(),
+        "the mail module is in the catalog"
+    );
+}
+
 /// The names in a `package.json`'s `dependencies`.
 fn package_json_dependencies(dir: &Path) -> Vec<String> {
     let text = read(&dir.join("package.json"));
