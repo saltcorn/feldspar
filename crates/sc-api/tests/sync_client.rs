@@ -636,6 +636,7 @@ await api.entries.create({ list: list.id, text: "milk" });
 await api.lists.update(list.id, { name: "shopping" });
 const broken = await api.lists.create({ name: null as any });
 out.tempKeys = [list.id, broken.id];
+out.isTemporary = [sync.isTemporary("lists", list.id), sync.isTemporary("lists", 7)];
 out.offline = await api.entries.list({ select: "text,list(name)" });
 
 offline = false;
@@ -651,6 +652,20 @@ out.entries = (await api.entries.list()).map((e) => ({ list: e.list, text: e.tex
 out.byTempKey = (await api.lists.get(list.id))?.name;
 out.refused = sync.refused().map((r) => ({ table: r.table, error: r.error }));
 out.pending = sync.status().pending;
+
+// Online with nothing waiting: the server makes the row, no temporary key.
+const direct = await api.lists.create({ name: "direct" });
+out.direct = {
+  id: direct.id,
+  name: (await api.lists.get(direct.id))?.name,
+  pending: sync.status().pending,
+};
+try {
+  await api.lists.create({ name: null as any });
+  out.directRefused = "created";
+} catch (e) {
+  out.directRefused = sync.status().pending;
+}
 process.stdout.write(JSON.stringify({ kind: "done", result: out }) + "\n");
 process.exit(0);
 "#;
@@ -671,6 +686,7 @@ async fn rows_with_integer_keys_are_created_offline() -> Result<()> {
 
     // Offline: temporary keys, and the entry already embeds its list.
     assert_eq!(r["tempKeys"], json!([-1, -4]), "{r:#}");
+    assert_eq!(r["isTemporary"], json!([true, false]), "{r:#}");
     assert_eq!(
         r["offline"],
         json!([{ "text": "milk", "list": { "name": "shopping" } }]),
@@ -713,6 +729,13 @@ async fn rows_with_integer_keys_are_created_offline() -> Result<()> {
         "{r:#}"
     );
     assert_eq!(r["pending"], 0, "{r:#}");
+
+    // Online with an empty outbox: the real key at once, and a refusal thrown
+    // rather than queued.
+    assert!(r["direct"]["id"].as_i64().unwrap() > id as i64, "{r:#}");
+    assert_eq!(r["direct"]["name"], "direct", "{r:#}");
+    assert_eq!(r["direct"]["pending"], 0, "{r:#}");
+    assert_eq!(r["directRefused"], 0, "{r:#}");
     Ok(())
 }
 

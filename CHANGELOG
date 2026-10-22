@@ -20,11 +20,18 @@ to the server and failed offline.
   reason saying so, instead of failing on a foreign key.
 - A change made while an upload is on its way waits for the answer, so it never keeps a key that
   was just renamed.
-- Every create on a synced table now goes through the device's outbox, online too. Only a key
-  the server makes that is not an integer (a text key with a default) still needs a connection.
+- Online with nothing waiting to upload, such a create goes straight to the server, so the app
+  gets the real key at once and never shows a negative id. It falls back to a temporary key when
+  the server cannot be reached.
+- `api.sync.isTemporary(table, key)` tells whether a key is such a temporary one. The generated
+  web pages and React Native screens of a synced table show "…" for it instead of `-17`.
+- Only a key the server makes that is not an integer (a text key with a default) still needs a
+  connection.
 - Tests: `sync_push.rs` (one upload with a list and its entries, a retry, a refused list) and
   `sync_client.rs` (the generated client under Node: offline creates, renaming, the change made
-  during an upload, and the refusal of rows that need a refused one).
+  during an upload, the refusal of rows that need a refused one, and an online create getting
+  its real key at once). `bundled_react_native.rs` and a scaffold unit test check the "…" in
+  the generated screens.
 
 ## Fix: document edits refused `rate_limited` were lost
 

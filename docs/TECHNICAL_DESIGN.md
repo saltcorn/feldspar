@@ -10933,7 +10933,11 @@ was lost gets the key again, and a later upload still naming `-17` is translated
 that needs a row the server refused is refused with a reason saying so. The device renames the
 row in its copy and its outbox, and keeps the pair as an alias so an id the app still holds keeps
 working. Local writes and applying an upload's answer take turns, so a change made during an
-upload never keeps a key that was just renamed.
+upload never keeps a key that was just renamed. A device that is online with an empty outbox
+sends such a create straight to the server instead, so the app never sees a temporary key; it
+uses one only when the server cannot be reached or other changes are still waiting.
+`api.sync.isTemporary(table, key)` tells an app whether a key is a temporary one; the generated
+pages and screens show "…" for it.
 
 **What a device gets:** every row of the application's synced tables that the user may read.
 Filtering by more than the access rules (only recent rows, say) is left for later.

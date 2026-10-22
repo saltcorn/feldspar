@@ -1867,7 +1867,9 @@ async fn the_keystore_operation_makes_a_keystore_and_the_settings_naming_it() {
 #[tokio::test]
 async fn an_app_with_a_synced_table_keeps_it_on_the_device() {
     skip_without!(have_npm(), "npm is not on the PATH");
-    let mut ctx = context(true, vec![tasks_table()]);
+    let mut synced = tasks_table();
+    synced["synced"] = json!(true);
+    let mut ctx = context(true, vec![synced]);
     ctx["offline"] = json!(true);
     let files = frameworks("bundled-rn-offline")
         .await
@@ -1896,8 +1898,17 @@ async fn an_app_with_a_synced_table_keeps_it_on_the_device() {
     assert!(native.contains("from \"expo-sqlite\""), "{native}");
     assert!(file(&files, "package.json").contains("\"expo-sqlite\": \"~57.0.4\""));
 
+    // A row created offline shows "…" until the server answers its real key.
+    let screen = file(&files, "src/screens/Tasks.tsx");
+    assert!(
+        screen.contains(r#"{api.sync?.isTemporary("tasks", row.id) ? "…" : String(row.id ?? "")}"#),
+        "{screen}"
+    );
+    assert!(screen.contains("import { api, useTasks"), "{screen}");
+
     // Without a synced table there is no copy, and no storage files.
     let online = scaffold("bundled-rn-online", true, vec![tasks_table()]).await;
     assert!(!online.iter().any(|f| f.path.contains("storage")));
     assert!(!file(&online, "src/feldspar/hooks.ts").contains("offline"));
+    assert!(!file(&online, "src/screens/Tasks.tsx").contains("isTemporary"));
 }

@@ -71,6 +71,12 @@ export interface OfflineSync {
   /** Upload the local changes and download the server's, now. */
   now(): Promise<void>;
   status(): SyncStatus;
+  /**
+   * Whether `key` is a temporary key of a row created offline (a negative
+   * number until the upload answers the real one). For display, e.g. to show
+   * "…" instead of `-17`.
+   */
+  isTemporary(table: string, key: unknown): boolean;
   /** Changes the server refused, oldest first, until cleared. */
   refused(): RefusedChange[];
   clearRefused(): Promise<void>;

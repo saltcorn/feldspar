@@ -261,6 +261,19 @@ export class OfflineCopy implements OfflineSync {
     return { ...this.current, pending: this.outbox.length };
   }
 
+  /**
+   * Whether `key` is a temporary key: one the device gave a row it created
+   * offline, in a table whose keys the server makes. The row gets its real key
+   * when the upload is answered.
+   */
+  isTemporary(table: string, key: unknown): boolean {
+    return (
+      this.specs[table]?.serverKey === true &&
+      Number.isInteger(Number(key)) &&
+      Number(key) < 0
+    );
+  }
+
   /** The changes the server refused, oldest first, with its reason for each. */
   refused(): RefusedChange[] {
     return [...this.refusals];
@@ -466,9 +479,11 @@ export class OfflineCopy implements OfflineSync {
 
   /**
    * Add a row on the device and queue it for upload. A UUID key is made here.
-   * A key the server issues gets a temporary one (`-mutation`) until the upload
-   * answers the real key. Any other key the caller leaves out comes from the
-   * server, so that create goes online.
+   * A key the server issues comes straight from the server when the device is
+   * online with nothing waiting, so the app never sees a temporary key; offline,
+   * the row gets a temporary one (`-mutation`) until the upload answers the
+   * real key. Any other key the caller leaves out comes from the server, so
+   * that create goes online.
    */
   private async create(
     name: string,
@@ -500,6 +515,23 @@ export class OfflineCopy implements OfflineSync {
     }
     return this.locked(async () => {
       const temp = (id === undefined || id === null) && spec.serverKey === true;
+      // Online with nothing waiting to go before it: the server makes the row
+      // now. When it cannot be reached after all, the row is made offline.
+      if (temp && this.current.online && !this.outbox.length && online.create) {
+        try {
+          // If the row points to a row that was created offline, use that row's real key.
+          const sent = this.translate(
+            { mutation: 0, table: name, op: "insert", key: "", row: given },
+            new Map()
+          ).row;
+          const made = (await online.create(sent ?? given)) as SyncRow;
+          await this.adopt(name, spec, made);
+          return { ...made };
+        } catch (e) {
+          // `fetch` rejects with a `TypeError` when the server cannot be reached.
+          if (!(e instanceof TypeError)) throw e;
+        }
+      }
       if (temp) id = -this.next;
       else if (id === undefined || id === null) id = newUuid();
       const key = keyText(id);
