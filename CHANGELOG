@@ -2,6 +2,63 @@
 
 Changes in reverse chronological order.
 
+## Row history H1: capture (Postgres)
+
+Every change to a table with sync or history on is now recorded with its values, in the
+**changeset** (the user-level action) it belongs to, one entry per row per changeset.
+
+- `sc-catalog::changeset` (new): `Changeset` (id, `source`, `session`, `application`, `cause`,
+  `description`, `undo_table`, `client_id`, `mutation`) and `ChangesetSource`. A task-local
+  **ambient** changeset (`changeset::scope`, `scope_if`, `current`) is picked up by
+  `CallerContext::new`, so the many places that build a caller need no changes.
+- `_fd_changesets` (new, created by `bootstrap_change_log`). `_fd_changes` gains `changeset`,
+  `old_values` and `new_values`, and the unique index `_fd_changes_entry` on
+  `(changeset, table_name, row_key)`. `fields`, `client_id` and `mutation` are gone.
+- `CallerContext.changeset` / `in_changeset`; `Event.changeset` / `in_changeset`.
+  `set_caller_context` sets `sc.changeset` to a JSON object (changeset fields plus the writer's
+  `user_id`, and `session` only when there is a user). `clear_caller_context` sets the ambient
+  changeset. The GUCs are applied where the backend has RLS **or** change triggers. A write to a
+  change-logged table always goes through a caller-context transaction, so the GUC reaches the
+  trigger. `SharedTx` tracks the changeset with the role and user. A savepoint rollback now
+  forgets which GUCs are in force, because the rollback undoes them.
+- Dispatch runs each trigger's action inside the event's changeset. A table event carries its
+  writer's changeset.
+- Minted per HTTP request (router middleware, session key derived from the cookie's token hash
+  by `sc_auth::changeset_session_key`; an app request also records its application), per CSV
+  import (`source = import`), per MCP tool call (`mcp`, keyed by `changeset_token_key` of the
+  bearer token's id) and per workflow run (kept in the run's `attributes.changeset`, with
+  `cause` = the starting event's changeset; each step runs in it).
+- The trigger function `_fd_record_change` and a new helper `_fd_merge_change`: record
+  `old_values`/`new_values`, mint a `sql` changeset for writes with no context, write the
+  `_fd_changesets` row with the first entry, and merge per §14.12 (earlier old value wins, later
+  new value wins, net op, drop unchanged columns). `txid` moves forward. An emptied entry is
+  removed only when its changeset began in this transaction, otherwise it is kept without
+  values. `sc.change_log = 'off'` skips recording, and backup restore now inserts rows with it.
+- Sync push opens one `sync` changeset per device change (device, change number, session,
+  application). `mark_sync_device` and the `sc.sync_client` / `sc.sync_mutation` GUCs are removed.
+- H1.6, the history switch: `history_enabled` is in the admin table settings (`PUT
+  /api/tables/:name`, the listing and orphan settings), with `history_available` beside
+  `sync_available`; a "Keep row history" switch on the admin table screen, off by default; the
+  MCP schema-edit tool; and backup restore, which defers it like `sync_enabled`. The generated
+  `client.ts` files are regenerated. This also brings the stale ide/builder/analytics copies up
+  to date.
+- `TABLES_RENAME.sql`: creates `_fd_changesets` and migrates `_fd_changes`. It gives one
+  changeset per device change and one per transaction for the rest, keeps changed field names
+  as `new_values` keys with null values, collapses duplicates to the net op, and drops the old
+  columns. Run it with the server stopped.
+- Docs: §14.12 describes the JSON GUC, the ambient changeset and the stricter removal check.
+  TODO-offline-sync S3.3/S3.6 point at the new places.
+- Tests: `sc-api/tests/history_capture.rs`. It covers: a request whose trigger updates the same
+  row and writes a second table is one changeset with two entries, recorded under the requesting
+  user although the trigger wrote as admin; insert+update is one `i` with the final row;
+  insert+delete in one transaction leaves nothing; a no-op update records nothing; `psql`
+  writes get one `sql` changeset per transaction; a pull between two transactions of one
+  changeset sees the second, and a reversal leaves an empty entry the pull still sees;
+  `sc.change_log = off`; the migration script, run twice. `sync_changes` and `sync_push` were
+  updated to the new log shape (the device is found on the changeset). There are unit tests for
+  `Changeset` and the workflow run's changeset, and the H1.6 tests are in
+  `sc-server/tests/table_settings_api.rs` and `mcp/schema.rs`.
+
 ## Row history H0: one change log for sync and history
 
 The change-recording code that offline sync owned is now shared with row history. Sync behaves

@@ -1219,6 +1219,7 @@ function Settings({
   const [formula, setFormula] = useState("");
   const [rls, setRls] = useState(false);
   const [sync, setSync] = useState(false);
+  const [history, setHistory] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -1233,6 +1234,7 @@ function Settings({
     setFormula(settings?.ownership_formula ?? "");
     setRls(settings?.rls_enabled ?? false);
     setSync(settings?.sync_enabled ?? false);
+    setHistory(settings?.history_enabled ?? false);
     setSaved(false);
   }, [settings]);
 
@@ -1249,6 +1251,7 @@ function Settings({
         ownership_formula: formula.trim(),
         rls_enabled: rls,
         sync_enabled: sync,
+        history_enabled: history,
       });
       setSaved(true);
       onChange();
@@ -1365,6 +1368,19 @@ function Settings({
               />
               <Form.Text muted>
                 <T text="Records every change to this table, so apps can keep an offline copy and sync it. Rows created offline need a uuid key." />
+              </Form.Text>
+            </Form.Group>
+          )}
+          {settings?.history_available && (
+            <Form.Group className="mb-3" controlId="tableHistoryEnabled">
+              <Form.Check
+                type="switch"
+                label={t("Keep row history")}
+                checked={history}
+                onChange={(e) => setHistory(e.target.checked)}
+              />
+              <Form.Text muted>
+                <T text="Keeps every version of each row, so you can see who changed what and restore an earlier version." />
               </Form.Text>
             </Form.Group>
           )}

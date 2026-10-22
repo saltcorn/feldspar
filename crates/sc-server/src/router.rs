@@ -401,6 +401,9 @@ pub fn build_router_with_apps(
             config.max_request_body,
         ))
         .with_state(state.clone())
+        // Every request is one changeset (§14.12): what it writes, and what the
+        // triggers its writes fire write, is one action to read back or undo.
+        .layer(axum::middleware::from_fn(request_changeset))
         // CSRF runs outside dispatch so it guards every route and can mint the
         // double-submit cookie on the way out. It asks the live app registry
         // whether a failing request is for an endpoint open to the public role,
@@ -476,6 +479,26 @@ pub fn build_router_with_apps(
         .layer(axum::middleware::from_fn(crate::logging::log_requests));
 
     Ok(app)
+}
+
+/// Run the request inside a changeset of its own (§14.12), keyed to its
+/// session cookie when it carries one.
+///
+/// Minted here rather than where the caller is known because a request has
+/// many ways to learn its caller and one way in. The cookie is not checked
+/// here: a changeset records its session only for a writer with a user, and a
+/// cookie that names no live session has none. Minting costs nothing that is
+/// kept: the `_fd_changesets` row is written with the first recorded change.
+async fn request_changeset(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let session = CookieJar::from_headers(request.headers())
+        .get(SESSION_COOKIE)
+        .map(|cookie| sc_auth::changeset_session_key(cookie.value()));
+    let changeset =
+        sc_catalog::Changeset::new(sc_catalog::ChangesetSource::Request).session(session);
+    sc_catalog::changeset::scope(Arc::new(changeset), next.run(request)).await
 }
 
 /// The `413` every body over a limit gets, as `{error}` JSON.
@@ -2180,6 +2203,10 @@ pub(crate) async fn app_caller(
         None => None,
     };
     let (user, refused) = admit_caller(state, app, user).await;
+    // What this request writes, it writes in this application.
+    if let Some(changeset) = sc_catalog::changeset::current() {
+        changeset.set_application(app.id.0);
+    }
     Ok(AppCaller {
         session,
         user,

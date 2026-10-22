@@ -736,6 +736,21 @@ fn new_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
+/// The key a changeset records for the session `token` belongs to (§14.12):
+/// derived from the token's hash, and never the hash itself, which is
+/// `_fd_sessions`' primary key and would let a reader of the log find the
+/// session row. Stable for the session's life, so an undo can step back
+/// through one session's changesets.
+pub fn changeset_session_key(token: &str) -> String {
+    token_hash(&format!("changeset-session:{}", token_hash(token)))
+}
+
+/// [`changeset_session_key`] for a bearer-token caller (§13.6), derived from
+/// the token's public id.
+pub fn changeset_token_key(token_id: Uuid) -> String {
+    token_hash(&format!("changeset-token:{token_id}"))
+}
+
 /// What the database stores in place of the token: its SHA-256, hex-encoded.
 ///
 /// Fast on purpose — see the module docs. The token is uniform randomness, so

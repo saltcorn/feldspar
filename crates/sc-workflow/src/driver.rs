@@ -528,7 +528,9 @@ impl<'a> Driver<'a> {
         ctx = ctx.with_adapters(&services.adapters);
         // The action's return value is what the step contributes to the context;
         // what it wrote there directly travels with it.
-        let value = action.run(&mut ctx).await?;
+        // In the run's changeset (§14.12), so every step's writes are one action.
+        let value =
+            sc_catalog::changeset::scope_if(event.changeset.clone(), action.run(&mut ctx)).await?;
         Ok((value, ctx.context))
     }
 

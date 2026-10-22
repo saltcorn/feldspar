@@ -23,6 +23,7 @@ use sc_query::{SqlDialect, Statement, render_policy_expr};
 
 use crate::caller::CallerContext;
 use crate::catalog::Catalog;
+use crate::changeset::{self, CHANGESET_GUC};
 use crate::projection::SchemaProjection;
 use crate::table::Table;
 
@@ -87,6 +88,10 @@ pub async fn set_caller_context(
     tx.set_local(ROLE_GUC, &context.role.to_string()).await?;
     tx.set_local(USER_GUC, context.user_json().as_deref().unwrap_or(""))
         .await?;
+    // The changeset, for the change-log trigger (§14.12), on the same terms:
+    // always set, so one writer's changeset is never the next one's.
+    tx.set_local(CHANGESET_GUC, &context.changeset_json())
+        .await?;
     Ok(())
 }
 
@@ -100,10 +105,26 @@ pub async fn set_caller_context(
 /// `NULL` (`NULLIF(current_setting(…), '')`), and `NULL` is what every one of
 /// them treats as no access, while a *number* would be a role and role 0 would be
 /// more privileged than the admin.
+///
+/// The changeset is the exception: a write with no caller still belongs to the
+/// ambient changeset ([`changeset::current`]), when there is one.
 pub async fn clear_caller_context(tx: &mut dyn sc_db::Transaction) -> Result<()> {
     tx.set_local(ROLE_GUC, "").await?;
     tx.set_local(USER_GUC, "").await?;
+    let ambient = changeset::current()
+        .map(|c| c.guc_value(None))
+        .unwrap_or_default();
+    tx.set_local(CHANGESET_GUC, &ambient).await?;
     Ok(())
+}
+
+/// Whether `driver`'s transactions take the caller GUCs: it has row-level
+/// security for the role and user to reach, or change-log triggers for the
+/// changeset to reach. Both are Postgres's; asking SQLite for a
+/// transaction-local setting would fail a statement that is safe to run.
+pub(crate) fn takes_caller_gucs(driver: &dyn sc_db::DatabaseDriver) -> bool {
+    let capabilities = driver.capabilities();
+    capabilities.row_level_security || capabilities.change_triggers
 }
 
 /// [`run_in_context`] in a `READ ONLY` transaction — see [`Access::ReadOnly`].
@@ -134,7 +155,7 @@ async fn run_in_context_mode(
     // to, and asking for a transaction-local setting there would fail a
     // statement that is perfectly safe to run — the authorization it would have
     // enforced is enforced above the database on such a backend (§7).
-    if driver.capabilities().row_level_security {
+    if takes_caller_gucs(driver.as_ref()) {
         set_caller_context(tx.as_mut(), context).await?;
     }
     let outcome = match tx.query(stmt).await {

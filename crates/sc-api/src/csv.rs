@@ -48,8 +48,11 @@
 //! round-trip through a spreadsheet is small enough to cross as one.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use sc_catalog::{CallerContext, Catalog, DataFieldKind, SharedTx, Table};
+use sc_catalog::{
+    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, SharedTx, Table, changeset,
+};
 use sc_error::{Error, Result};
 use sc_query::Expr;
 use sc_types::BasicType;
@@ -150,6 +153,29 @@ pub async fn export_table(
 /// commit, when the statement that caused it is long past, so it fails the
 /// import as a whole and says so.
 pub async fn import_table(
+    catalog: &Catalog,
+    table: &Table,
+    document: &str,
+    context: Option<&CallerContext>,
+) -> Result<ImportOutcome> {
+    // One changeset for the whole file (§14.12), in the session and the
+    // application of the request that brought it.
+    let around = changeset::current();
+    let changeset = Arc::new(
+        Changeset::new(ChangesetSource::Import)
+            .session(around.as_ref().and_then(|c| c.session.clone()))
+            .in_application(around.as_ref().and_then(|c| c.application())),
+    );
+    let context = context.map(|c| c.clone().in_changeset(Some(changeset.clone())));
+    changeset::scope(
+        changeset,
+        import_in_changeset(catalog, table, document, context.as_ref()),
+    )
+    .await
+}
+
+/// [`import_table`] inside its changeset.
+async fn import_in_changeset(
     catalog: &Catalog,
     table: &Table,
     document: &str,

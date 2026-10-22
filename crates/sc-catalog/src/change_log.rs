@@ -25,8 +25,9 @@ use sc_types::{BasicType, TypeRef};
 use serde_json::Value as Json;
 
 use crate::catalog::{Catalog, SchemaStep};
+use crate::changeset::{CHANGE_LOG_GUC, CHANGESET_GUC, CHANGESETS_TABLE, changesets_fields};
 use crate::field::{Attrs, DataField};
-use crate::sync::{SYNC_CLIENT_GUC, SYNC_MUTATION_GUC, sync_enabled};
+use crate::sync::sync_enabled;
 use crate::table::Table;
 
 /// The change log: one entry per recorded insert, update or delete.
@@ -61,33 +62,45 @@ impl ChangeLogFeature {
     }
 }
 
-/// The log's columns. `txid` is the writing transaction's id, which a pull
+/// The log's columns (§14.12 Storage): one entry per row per changeset.
+/// `txid` is the **last** transaction that touched the entry, which a pull
 /// checks against its watermark snapshots, so a transaction that commits late
-/// is never skipped.
+/// is never skipped, and an entry merged into later is seen again.
 fn changes_fields() -> Vec<DataField> {
     let int = || TypeRef::Basic(BasicType::Int);
     let text = || TypeRef::Basic(BasicType::Text);
+    let json = || TypeRef::Basic(BasicType::Json);
     vec![
         DataField::plain("seq", int())
             .required()
             .primary_key()
             .generated(ColumnGenerator::Identity),
+        DataField::plain("changeset", TypeRef::Basic(BasicType::Uuid)).required(),
         DataField::plain("table_name", text()).required(),
         DataField::plain("row_key", text()).required(),
+        // The net operation of the changeset on the row: `i`, `u` or `d`.
         DataField::plain("op", text()).required(),
-        // An update's changed columns, as a JSON array of names; null otherwise.
-        DataField::plain("fields", TypeRef::Basic(BasicType::Json)),
+        // An update's changed columns before, or a deleted row whole.
+        DataField::plain("old_values", json()),
+        // An update's changed columns after, or an inserted row whole.
+        DataField::plain("new_values", json()),
         DataField::plain("txid", int()).required(),
-        DataField::plain("client_id", TypeRef::Basic(BasicType::Uuid)),
-        DataField::plain("mutation", int()),
         DataField::plain("at", TypeRef::Basic(BasicType::Timestamp))
             .required()
             .generated(ColumnGenerator::Default("now()".into())),
     ]
 }
 
-/// Ensure the change log, its indexes, the trigger function and sync's device
-/// table exist.
+/// The function that merges one write into its changeset's entry for the row.
+pub const MERGE_FUNCTION: &str = "_fd_merge_change";
+
+/// The transaction-local marker naming the changeset whose `_fd_changesets`
+/// row this transaction has already seen to, and whether it created it
+/// (`<id>:new`) or found it (`<id>:old`).
+const CHANGESET_TX_GUC: &str = "sc.changeset_tx";
+
+/// Ensure the change log, the changesets, their indexes, the trigger function
+/// and sync's device table exist.
 ///
 /// Idempotent, and a no-op on a backend that cannot record changes with a
 /// trigger: switching a table's sync or history on is refused there with a
@@ -96,6 +109,9 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
     if !catalog.primary().capabilities().change_triggers {
         return Ok(());
     }
+    catalog
+        .bootstrap_table(CHANGESETS_TABLE, &changesets_fields())
+        .await?;
     catalog
         .bootstrap_table(CHANGES_TABLE, &changes_fields())
         .await?;
@@ -106,61 +122,172 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
         .apply_schema_batch(&[SchemaStep::Sql(format!(
             "CREATE INDEX IF NOT EXISTS {by_tx} ON {table} (txid, seq);\n\
              CREATE INDEX IF NOT EXISTS {by_row} ON {table} (table_name, row_key, txid);\n\
+             CREATE UNIQUE INDEX IF NOT EXISTS {entry} ON {table} (changeset, table_name, row_key);\n\
              {function}",
             by_tx = dialect.quote_ident("_fd_changes_txid"),
             by_row = dialect.quote_ident("_fd_changes_row"),
+            entry = dialect.quote_ident("_fd_changes_entry"),
             function = record_function_sql(),
         ))])
         .await
 }
 
-/// The trigger function, `CREATE OR REPLACE`d on every boot so a fix to it
-/// reaches every recorded table at once.
+/// The trigger function and its merge, `CREATE OR REPLACE`d on every boot so a
+/// fix to them reaches every recorded table at once (§14.12 "The trigger
+/// function, and the merge").
 ///
 /// - An update that changes nothing records nothing.
 /// - A change of primary key is recorded as a delete of the old key and an
 ///   insert of the new one: to a device, they are two different rows.
-/// - The device and its change number come from transaction-local settings,
-///   which only a device's upload sets.
+/// - The changeset is the writer's ([`CHANGESET_GUC`]), or one minted for the
+///   transaction (`source = 'sql'`) when nothing set one. Its `_fd_changesets`
+///   row is written with its first entry.
+/// - Writes to one row in one changeset are merged into one entry: the earlier
+///   old value and the later new value win, the operation is the net one, and
+///   columns that ended where they started are dropped. An entry left with
+///   nothing is removed only if its changeset began in this transaction (so
+///   everything merged into it did too); otherwise it is kept without values,
+///   because a device may have pulled the state in between.
+/// - [`CHANGE_LOG_GUC`] `= 'off'` skips recording.
 /// - It runs with its owner's rights (`SECURITY DEFINER`), so whoever writes a
 ///   recorded table needs no rights on the change log, and cannot forge entries
 ///   in it. Its `search_path` is pinned to the schema the change log was created
 ///   in, so nobody can slip another `_fd_changes` in front of it.
 fn record_function_sql() -> String {
     format!(
-        r#"CREATE OR REPLACE FUNCTION {RECORD_FUNCTION}() RETURNS trigger LANGUAGE plpgsql
+        r#"CREATE OR REPLACE FUNCTION {MERGE_FUNCTION}(cs uuid, created boolean, tbl text,
+  key text, op text, old_v jsonb, new_v jsonb) RETURNS void LANGUAGE plpgsql AS $fd$
+DECLARE
+  prev  {CHANGES_TABLE}%ROWTYPE;
+  m_op  text;
+  m_old jsonb;
+  m_new jsonb;
+  d_old jsonb;
+  d_new jsonb;
+BEGIN
+  INSERT INTO {CHANGES_TABLE} (changeset, table_name, row_key, op, old_values, new_values, txid)
+  VALUES (cs, tbl, key, op, old_v, new_v, txid_current())
+  ON CONFLICT (changeset, table_name, row_key) DO NOTHING;
+  IF FOUND THEN
+    RETURN;
+  END IF;
+  SELECT * INTO prev FROM {CHANGES_TABLE}
+   WHERE changeset = cs AND table_name = tbl AND row_key = key FOR UPDATE;
+  m_old := coalesce(prev.old_values, '{{}}');
+  m_new := coalesce(prev.new_values, '{{}}');
+  IF prev.op = 'i' AND prev.new_values IS NULL THEN
+    -- An insert taken back: the row was not there before, so this write
+    -- starts afresh.
+    m_op := op;  m_old := old_v;  m_new := new_v;
+  ELSIF op = 'i' THEN
+    IF prev.op = 'd' THEN
+      m_op := 'u';  m_new := new_v;
+    ELSE
+      m_op := prev.op;  m_new := m_new || new_v;
+    END IF;
+  ELSIF op = 'u' THEN
+    IF prev.op = 'i' THEN
+      m_op := 'i';  m_old := NULL;
+    ELSE
+      m_op := 'u';  m_old := old_v || m_old;
+    END IF;
+    m_new := m_new || new_v;
+  ELSIF prev.op = 'i' THEN
+    m_op := 'i';  m_old := NULL;  m_new := NULL;
+  ELSE
+    -- The whole original row: the deleted one, overlaid with what the
+    -- changeset had already changed.
+    m_op := 'd';  m_old := old_v || m_old;  m_new := NULL;
+  END IF;
+  IF m_op = 'u' THEN
+    SELECT jsonb_object_agg(k.key, m_old -> k.key), jsonb_object_agg(k.key, m_new -> k.key)
+      INTO d_old, d_new
+      FROM (SELECT jsonb_object_keys(m_old || m_new) AS key) k
+     WHERE (m_old -> k.key) IS DISTINCT FROM (m_new -> k.key);
+    m_old := d_old;  m_new := d_new;
+  END IF;
+  IF m_new IS NULL AND m_old IS NULL THEN
+    IF created THEN
+      DELETE FROM {CHANGES_TABLE} WHERE seq = prev.seq;
+      RETURN;
+    END IF;
+  END IF;
+  UPDATE {CHANGES_TABLE}
+     SET op = m_op, old_values = m_old, new_values = m_new, txid = txid_current(), at = now()
+   WHERE seq = prev.seq;
+END
+$fd$;
+REVOKE ALL ON FUNCTION {MERGE_FUNCTION}(uuid, boolean, text, text, text, jsonb, jsonb) FROM PUBLIC;
+CREATE OR REPLACE FUNCTION {RECORD_FUNCTION}() RETURNS trigger LANGUAGE plpgsql
 SECURITY DEFINER AS $fd$
 DECLARE
-  pk      text  := TG_ARGV[0];
-  new_row jsonb := CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END;
-  old_row jsonb := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
-  changed jsonb;
-  cid     uuid   := nullif(current_setting('{SYNC_CLIENT_GUC}', true), '')::uuid;
-  mut     bigint := nullif(current_setting('{SYNC_MUTATION_GUC}', true), '')::bigint;
+  pk      text := TG_ARGV[0];
+  new_row jsonb;
+  old_row jsonb;
+  old_v   jsonb;
+  new_v   jsonb;
+  cs      jsonb;
+  cs_id   uuid;
+  marker  text;
+  created boolean;
 BEGIN
+  IF current_setting('{CHANGE_LOG_GUC}', true) = 'off' THEN
+    RETURN NULL;
+  END IF;
+  new_row := CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END;
+  old_row := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
   IF TG_OP = 'UPDATE' THEN
-    SELECT jsonb_agg(n.key ORDER BY n.key) INTO changed
+    SELECT jsonb_object_agg(n.key, old_row -> n.key), jsonb_object_agg(n.key, n.value)
+      INTO old_v, new_v
       FROM jsonb_each(new_row) n
      WHERE n.value IS DISTINCT FROM old_row -> n.key;
-    IF changed IS NULL THEN
-      RETURN NULL;
-    END IF;
-    IF old_row ->> pk IS DISTINCT FROM new_row ->> pk THEN
-      INSERT INTO {CHANGES_TABLE} (table_name, row_key, op, txid, client_id, mutation)
-      VALUES (TG_TABLE_NAME, old_row ->> pk, 'd', txid_current(), cid, mut),
-             (TG_TABLE_NAME, new_row ->> pk, 'i', txid_current(), cid, mut);
+    IF new_v IS NULL THEN
       RETURN NULL;
     END IF;
   END IF;
-  INSERT INTO {CHANGES_TABLE} (table_name, row_key, op, fields, txid, client_id, mutation)
-  VALUES (TG_TABLE_NAME, coalesce(new_row, old_row) ->> pk, lower(left(TG_OP, 1)),
-          changed, txid_current(), cid, mut);
+
+  cs := nullif(current_setting('{CHANGESET_GUC}', true), '')::jsonb;
+  IF cs IS NULL THEN
+    cs := jsonb_strip_nulls(jsonb_build_object(
+      'id', gen_random_uuid(), 'source', 'sql',
+      'user_id', nullif(current_setting('sc.user', true), '')::jsonb ->> 'id'));
+    PERFORM set_config('{CHANGESET_GUC}', cs::text, true);
+  END IF;
+  cs_id := (cs ->> 'id')::uuid;
+  marker := coalesce(current_setting('{CHANGESET_TX_GUC}', true), '');
+  IF marker LIKE cs_id::text || ':%' THEN
+    created := marker = cs_id::text || ':new';
+  ELSE
+    INSERT INTO {CHANGESETS_TABLE} (id, txid, user_id, session, source, application,
+                                description, cause, undo_table, client_id, mutation)
+    VALUES (cs_id, txid_current(), (cs ->> 'user_id')::uuid, cs ->> 'session',
+            coalesce(cs ->> 'source', 'sql'), (cs ->> 'application')::uuid,
+            cs ->> 'description', (cs ->> 'cause')::uuid, cs ->> 'undo_table',
+            (cs ->> 'client_id')::uuid, (cs ->> 'mutation')::bigint)
+    ON CONFLICT (id) DO NOTHING;
+    created := FOUND;
+    PERFORM set_config('{CHANGESET_TX_GUC}',
+                       cs_id::text || CASE WHEN created THEN ':new' ELSE ':old' END, true);
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    PERFORM {MERGE_FUNCTION}(cs_id, created, TG_TABLE_NAME, new_row ->> pk, 'i', NULL, new_row);
+  ELSIF TG_OP = 'DELETE' THEN
+    PERFORM {MERGE_FUNCTION}(cs_id, created, TG_TABLE_NAME, old_row ->> pk, 'd', old_row, NULL);
+  ELSIF old_row ->> pk IS DISTINCT FROM new_row ->> pk THEN
+    PERFORM {MERGE_FUNCTION}(cs_id, created, TG_TABLE_NAME, old_row ->> pk, 'd', old_row, NULL);
+    PERFORM {MERGE_FUNCTION}(cs_id, created, TG_TABLE_NAME, new_row ->> pk, 'i', NULL, new_row);
+  ELSE
+    PERFORM {MERGE_FUNCTION}(cs_id, created, TG_TABLE_NAME, new_row ->> pk, 'u', old_v, new_v);
+  END IF;
   RETURN NULL;
 END
 $fd$;
 DO $fd$ BEGIN
   EXECUTE format('ALTER FUNCTION {RECORD_FUNCTION}() SET search_path = %I, pg_temp',
                  current_schema());
+  EXECUTE format('ALTER FUNCTION {MERGE_FUNCTION}(uuid, boolean, text, text, text, jsonb, jsonb) '
+                 'SET search_path = %I, pg_temp', current_schema());
 END $fd$;"#
     )
 }

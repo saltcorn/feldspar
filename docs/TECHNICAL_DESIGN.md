@@ -11122,6 +11122,15 @@ the trigger `chain` it already carries, and `set_caller_context` sets it as the
 transaction-local `sc.changeset`, beside `sc.role` and `sc.user`. `Event` carries it too, so a
 trigger's action passes it to the writes it makes.
 
+`sc.changeset` holds a JSON object: the changeset's id, `source`, `application`, `cause` and
+the rest of its row, and the writer's `user_id` (with `session` only when there is a user). The
+trigger needs all of it, because it writes the `_fd_changesets` row. Most code never handles a
+changeset: one is **ambient** for the task that runs the action (`sc_catalog::changeset::scope`),
+and `CallerContext::new` picks it up. The server's request middleware sets one for each request,
+and so do a CSV import, an MCP tool call, a workflow step (from the run) and a trigger's action
+(from the event). A write to a change-logged table always runs in a caller-context transaction,
+so the GUCs reach the trigger.
+
 - **A request** mints one changeset. Its `_fd_changesets` row is written by the first
   recorded entry, so a request that changes nothing leaves nothing behind.
 - **A trigger** fired by a write gets the event's changeset. **A stored calculated field**
@@ -11162,7 +11171,10 @@ REPLACE`d at every boot, as it is now. For each row:
      - `i`+`d` is nothing.
    - Columns whose old and new values are equal are dropped. An update left with no columns,
      or an insert followed by a delete, is **removed only if every write merged into it was in
-     the current transaction**. Otherwise it is kept with no values. A device may already have
+     the current transaction**. The check is that the changeset's row was created in this
+     transaction. That is a little stricter than needed: an entry made and emptied in the second
+     transaction of a changeset is kept, empty. Otherwise it is kept with no values. An emptied
+     insert keeps the op `i` with no values, and a later write to the row starts it afresh. A device may already have
      pulled the intermediate state, so the pull must still see the key. History readers skip
      entries with no values.
    - `txid = txid_current()`. Moving it forward makes the next pull see the entry again.

@@ -311,7 +311,16 @@ async fn dispatch_rpc(
                 .collect();
             json_rpc_result(&id, json!({ "tools": listed }))
         }
-        "tools/call" => call_tool(state, catalog, caller, &id, &params).await,
+        // One changeset per tool call (§14.12), whatever the tool writes.
+        "tools/call" => {
+            let changeset = sc_catalog::Changeset::new(sc_catalog::ChangesetSource::Mcp)
+                .session(Some(sc_auth::changeset_token_key(caller.token.id)));
+            sc_catalog::changeset::scope(
+                Arc::new(changeset),
+                call_tool(state, catalog, caller, &id, &params),
+            )
+            .await
+        }
         // `ping` is the specification's one-line liveness check and costs
         // nothing to answer honestly.
         "ping" => json_rpc_result(&id, json!({})),

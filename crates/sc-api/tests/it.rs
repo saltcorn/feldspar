@@ -51,6 +51,8 @@ mod graphql_mutations;
 mod graphql_rows;
 #[path = "graphql_schema.rs"]
 mod graphql_schema;
+#[path = "history_capture.rs"]
+mod history_capture;
 #[path = "live_connection.rs"]
 mod live_connection;
 #[path = "public_datasets.rs"]

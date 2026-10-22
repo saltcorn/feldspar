@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use sc_auth::User;
-use sc_catalog::{CallerContext, Catalog, SharedTx, Table, mark_sync_device};
+use sc_catalog::{CallerContext, Catalog, Changeset, ChangesetSource, SharedTx, Table};
 use sc_error::{Error, Repr, Result};
 use sc_expr::JsEvaluator;
 use sc_query::{Statement, Value};
@@ -94,6 +94,7 @@ pub(crate) async fn push(
     let context = ownership::caller_context(Some(user));
     let device = Device {
         id: request.client_id,
+        application,
         table: &devices,
         user,
         evaluator,
@@ -208,6 +209,7 @@ enum Outcome {
 /// The uploading device, and who it writes as.
 struct Device<'a> {
     id: Uuid,
+    application: Uuid,
     table: &'a Table,
     user: &'a User,
     evaluator: Option<&'a Arc<dyn JsEvaluator>>,
@@ -281,14 +283,25 @@ impl Device<'_> {
             )));
         };
         let pk = rows::single_pk(&table)?;
-        // For the trigger: these entries are this device's.
-        mark_sync_device(tx, Some(self.context), self.id, change.mutation).await?;
+        // One changeset per change, naming the device and its number (§14.11):
+        // each change is its own transaction, accepted or refused on its own.
+        // The triggers it fires join it through the event.
+        let changeset = Changeset::new(ChangesetSource::Sync)
+            .device(self.id, change.mutation)
+            .session(
+                self.context
+                    .changeset
+                    .as_ref()
+                    .and_then(|c| c.session.clone()),
+            )
+            .in_application(Some(self.application));
+        let context = self.context.clone().in_changeset(Some(Arc::new(changeset)));
 
         let executor = Executor::Transaction(tx.clone());
         let caller = write_as::Caller {
             user: Some(self.user),
             evaluator: self.evaluator,
-            context: self.context,
+            context: &context,
             executor: &executor,
         };
         let mut row = change.row.clone();

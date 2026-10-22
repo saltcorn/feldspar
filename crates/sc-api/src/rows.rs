@@ -1726,6 +1726,16 @@ fn in_context<'a>(
     context.filter(|_| table.rls_enabled || reaches_rls)
 }
 
+/// The caller context a write runs in: [`in_context`]'s, and on a table whose
+/// changes are recorded (§14.11, §14.12) the caller's too, because the
+/// change-log trigger reads the writer's changeset from the same GUCs.
+fn write_context<'a>(
+    table: &Table,
+    context: Option<&'a CallerContext>,
+) -> Option<&'a CallerContext> {
+    in_context(table, context, false).or(context.filter(|_| table.change_log_enabled()))
+}
+
 /// Run a `SELECT`, collecting its rows — through an RLS caller-context
 /// transaction on an RLS table (§7.3) or one whose subqueries reach one, else on
 /// a pooled connection via the table's provider.
@@ -1799,7 +1809,7 @@ async fn run_write_in(
 ) -> Result<Vec<Row>> {
     let outcome = match executor.serving(table) {
         Some(tx) => tx.run(context, &statement).await,
-        None => match in_context(table, context, false) {
+        None => match write_context(table, context) {
             Some(context) => sc_catalog::run_in_context(catalog, context, &statement).await,
             None => match catalog.provider(table)?.write(&statement).await {
                 Ok(stream) => stream.try_collect().await,

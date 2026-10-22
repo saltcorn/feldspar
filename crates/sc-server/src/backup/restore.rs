@@ -563,6 +563,8 @@ async fn restore_table(
         rls_enabled: settings.rls_enabled.take(),
         // Applied later too: sync needs the primary key, added with the columns.
         sync_enabled: settings.sync_enabled.take(),
+        // And history, for the same reason.
+        history_enabled: settings.history_enabled.take(),
         ..Default::default()
     };
     let exists = catalog.get(name)?.is_some();
@@ -597,7 +599,8 @@ async fn restore_table(
             .unwrap_or_default()
             .is_empty()
         && access.rls_enabled != Some(true)
-        && access.sync_enabled != Some(true);
+        && access.sync_enabled != Some(true)
+        && access.history_enabled != Some(true);
     Ok((line, (!nothing_to_apply).then_some(access)))
 }
 
@@ -1224,17 +1227,31 @@ async fn insert_batch(catalog: &Catalog, table: &Table, batch: &[Json]) -> Resul
         }
         rows.push(row);
     }
-    let insert = Insert {
+    let insert = Statement::from(Insert {
         rows,
         ..Insert::row(table.name.clone(), columns, Vec::new())
-    };
-    catalog
-        .primary()
-        .query(&Statement::from(insert))
-        .await?
-        .try_collect()
+    });
+    let driver = catalog.primary();
+    if !driver.capabilities().change_triggers {
+        driver.query(&insert).await?.try_collect().await?;
+        return Ok(());
+    }
+    // Not recorded in the change log (§14.12): the rows are history being put
+    // back, not changes being made, and the log is restored as itself.
+    let mut tx = driver.begin().await?;
+    tx.set_local(sc_catalog::changeset::CHANGE_LOG_GUC, "off")
         .await?;
-    Ok(())
+    let outcome = match tx.query(&insert).await {
+        Ok(stream) => stream.try_collect().await,
+        Err(e) => Err(e),
+    };
+    match outcome {
+        Ok(_) => tx.commit().await,
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
 }
 
 /// A store's definition (only when there is not one already), then its files.

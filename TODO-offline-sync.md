@@ -56,7 +56,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [ ] S3.3 Field-wise merge, server wins on a field changed on both sides. Delete against change:
       a device's delete of a row changed on the server since the device saw it is refused (the
       device gets the row back); a device's change of a row deleted on the server is refused (the
-      device removes it). The answer lists accepted, merged and refused changes.
+      device removes it). The answer lists accepted, merged and refused changes. "Changed on
+      the server" is read from `_fd_changes`: an update's changed fields are the keys of
+      `new_values` (history H1).
 - [x] S3.4 Refused for now, and reported: a change of a row's primary key from a device; a row
       pointing at a row that no longer exists (deleted meanwhile); a delete the database's foreign
       keys forbid.
@@ -67,7 +69,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       key, the server inserts the row and rewrites that temporary key to the real one in the
       later changes of the same upload (a child's foreign key, an update, a delete). The answer
       pairs each temporary key with its real key. A retried upload whose answer was lost gets
-      the pairs again (from the change-log's device and change number).
+      the pairs again (from the change-log's device and change number, which are on the
+      entry's changeset: `_fd_changesets.client_id`, `mutation`, history H1).
 
 ## S4 — The client
 

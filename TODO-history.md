@@ -26,30 +26,30 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H1 — Capture (Postgres)
 
-- [ ] H1.1 `_fd_changesets` (§14.12 Storage), created by `bootstrap_change_log`.
-- [ ] H1.2 `_fd_changes` gains `changeset`, `old_values` and `new_values`, and the unique key
+- [x] H1.1 `_fd_changesets` (§14.12 Storage), created by `bootstrap_change_log`.
+- [x] H1.2 `_fd_changes` gains `changeset`, `old_values` and `new_values`, and the unique key
       `(changeset, table_name, row_key)`. `fields`, `client_id` and `mutation` are dropped.
       `TABLES_RENAME.sql`: create `_fd_changesets`, add the columns, give each existing entry a
       changeset (one per distinct `(client_id, mutation)`, one per `txid` for the rest),
       backfill `new_values` as `{field: null}` from `fields` so S3.3's field names survive, then
       drop the old columns.
-- [ ] H1.3 `changeset` on `CallerContext` and `Event`. `set_caller_context` sets
+- [x] H1.3 `changeset` on `CallerContext` and `Event`. `set_caller_context` sets
       `sc.changeset`, and a trigger's writes carry the event's changeset. Mint one per request,
       CSV import, MCP tool call and workflow run (kept on `_fd_runs`, `cause` = the starting
       event's changeset). `user_id`, `session` (derived from the session token hash or the
       bearer token's id, never the hash itself), `source` and `application` come with it.
-- [ ] H1.4 The trigger function: capture `old_values`/`new_values`; find or mint the changeset
+- [x] H1.4 The trigger function: capture `old_values`/`new_values`; find or mint the changeset
       (`source = 'sql'` with no context); upsert and merge as in §14.12 (earlier old value wins,
       later new value wins, net op, drop unchanged columns); `txid` moves forward; remove an
       emptied entry only when all of it is from the current transaction, otherwise keep it
       without values. `sc.change_log = 'off'` skips recording, and backup restore sets it.
-- [ ] H1.5 Sync push opens one changeset per device change (`source = 'sync'`, `client_id`,
+- [x] H1.5 Sync push opens one changeset per device change (`source = 'sync'`, `client_id`,
       `mutation`) instead of setting `sc.sync_client`/`sc.sync_mutation`. Remove
       `mark_sync_device` and the two GUCs. S3.3 and S3.6 read the changed fields and the device
       from the new places.
-- [ ] H1.6 The history switch: `PATCH` table settings, the admin table screen (off by default)
+- [x] H1.6 The history switch: `PATCH` table settings, the admin table screen (off by default)
       and the MCP tool, the same paths as sync's switch.
-- [ ] H1.7 Tests:
+- [x] H1.7 Tests:
       - a request that updates a row, whose trigger updates the same row again and writes a
         second table, gives one changeset with two entries;
       - insert then update in one changeset is one `i` entry with the final row;

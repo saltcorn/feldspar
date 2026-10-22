@@ -207,13 +207,19 @@ async fn a_device_uploads_what_it_did_offline() -> Result<()> {
     // The change-log knows each change came from this device, and which one.
     let log = query(
         &db,
-        "SELECT table_name || ' ' || op || ' ' || mutation FROM _fd_changes \
-          WHERE client_id::text = (SELECT id::text FROM _fd_sync_clients) ORDER BY seq",
+        "SELECT c.table_name || ' ' || c.op || ' ' || s.mutation || ' ' || s.source \
+           FROM _fd_changes c JOIN _fd_changesets s ON s.id = c.changeset \
+          WHERE s.client_id::text = (SELECT id::text FROM _fd_sync_clients) ORDER BY c.seq",
     )
     .await?;
     assert_eq!(
         log,
-        vec!["notes i 1", "items i 2", "notes u 3", "items d 4"]
+        vec![
+            "notes i 1 sync",
+            "items i 2 sync",
+            "notes u 3 sync",
+            "items d 4 sync"
+        ]
     );
     Ok(())
 }

@@ -448,3 +448,86 @@ async fn roles_are_rows_that_can_be_created_and_deleted() -> sc_error::Result<()
     assert_eq!(role_numbers(&roles), vec![1, 100]);
     Ok(())
 }
+
+/// The `_fd_changes` triggers on `table`, by name.
+async fn change_triggers(db: &TestDb, table: &str) -> Vec<String> {
+    db.client()
+        .await
+        .unwrap()
+        .query(
+            "SELECT tgname::text FROM pg_trigger \
+              WHERE tgrelid = $1::text::regclass AND NOT tgisinternal ORDER BY tgname",
+            &[&table],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect()
+}
+
+/// TODO-history H1.6: the history switch rides the same `PUT` as sync's —
+/// off by default, offered where sync is, and on means the shared change trigger.
+#[tokio::test]
+async fn row_history_is_switched_on_and_off_with_the_table_settings() -> sc_error::Result<()> {
+    let (mut client, catalog, db) = setup().await?;
+    // The change log the trigger writes to, as the real boot path makes it.
+    sc_catalog::bootstrap_change_log(&catalog).await?;
+
+    let (status, table) = client
+        .send("POST", "/api/tables", Some(json!({ "name": "notes" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // No key yet: history, like sync, is not on offer.
+    assert_eq!(table["history_enabled"], json!(false));
+    assert_eq!(table["history_available"], json!(false));
+    assert_eq!(table["sync_available"], json!(false));
+
+    let (status, _) = client
+        .send(
+            "POST",
+            "/api/tables/notes/fields",
+            Some(json!({ "name": "id", "type": "int", "primary_key": true })),
+        )
+        .await;
+    assert!(status.is_success(), "{status}");
+    let (status, tables) = client.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let notes = listed_table(&tables, "notes");
+    assert_eq!(notes["history_enabled"], json!(false));
+    assert_eq!(notes["history_available"], json!(true));
+    assert_eq!(notes["sync_available"], json!(true));
+
+    let settings = |history: Option<bool>| {
+        let mut body = json!({
+            "label": "Notes", "description": "", "min_role_read": 1, "min_role_write": 1,
+            "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
+        });
+        if let Some(on) = history {
+            body["history_enabled"] = json!(on);
+        }
+        body
+    };
+
+    let (status, saved) = client
+        .send("PUT", "/api/tables/notes", Some(settings(Some(true))))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["history_enabled"], json!(true));
+    assert_eq!(saved["sync_enabled"], json!(false));
+    assert!(catalog.require("notes")?.history_enabled());
+    assert_eq!(change_triggers(&db, "notes").await, vec!["_fd_changes"]);
+
+    let (status, tables) = client.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed_table(&tables, "notes")["history_enabled"], json!(true));
+
+    // The body is the whole configuration: leaving the switch out turns it off.
+    let (status, saved) = client
+        .send("PUT", "/api/tables/notes", Some(settings(None)))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["history_enabled"], json!(false));
+    assert!(change_triggers(&db, "notes").await.is_empty());
+    Ok(())
+}

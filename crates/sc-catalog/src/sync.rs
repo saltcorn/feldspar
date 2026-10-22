@@ -11,18 +11,10 @@ use sc_error::{Error, Result};
 use sc_query::{Statement, Value};
 use sc_types::{BasicType, TypeRef};
 use serde_json::Value as Json;
-use uuid::Uuid;
 
-use crate::CallerContext;
 use crate::catalog::Catalog;
 use crate::field::{Attrs, DataField};
 use crate::tx::SharedTx;
-
-/// Set by a device's upload for the length of its transaction, so the entries
-/// it causes name the device (§14.11). Unset, the entry's `client_id` is null.
-pub const SYNC_CLIENT_GUC: &str = "sc.sync_client";
-/// The device's own number for the change being applied.
-pub const SYNC_MUTATION_GUC: &str = "sc.sync_mutation";
 
 /// One row per registered device: whose it is, for which application, and the
 /// watermark of the last pull it confirmed having applied.
@@ -60,30 +52,6 @@ pub(crate) async fn bootstrap_sync_clients(catalog: &Catalog) -> Result<()> {
     catalog
         .bootstrap_table(SYNC_CLIENTS_TABLE, &clients_fields())
         .await?;
-    Ok(())
-}
-
-/// Mark the rest of `tx` as a device's upload: every change-log entry it writes
-/// names `client` and the device's own number for the change, `mutation`.
-pub async fn mark_sync_device(
-    tx: &SharedTx,
-    caller: Option<&CallerContext>,
-    client: Uuid,
-    mutation: i64,
-) -> Result<()> {
-    tx.run(
-        caller,
-        &Statement::raw(
-            "SELECT set_config($1, $2, true), set_config($3, $4, true)",
-            vec![
-                Value::Text(SYNC_CLIENT_GUC.to_owned()),
-                Value::Text(client.to_string()),
-                Value::Text(SYNC_MUTATION_GUC.to_owned()),
-                Value::Text(mutation.to_string()),
-            ],
-        ),
-    )
-    .await?;
     Ok(())
 }
 

@@ -476,7 +476,8 @@ impl TriggerDispatcher {
         if let Some(caller) = caller {
             event = event
                 .caller(caller.role, caller.user.clone())
-                .chained(caller.chain.clone());
+                .chained(caller.chain.clone())
+                .in_changeset(caller.changeset.clone());
         }
         let result = fire_trigger_in(self, catalog, trigger, &event, tx).await?;
         Ok(result.unwrap_or(Json::Null))
@@ -509,7 +510,8 @@ impl TriggerDispatcher {
         if let Some(caller) = caller {
             event = event
                 .caller(caller.role, caller.user.clone())
-                .chained(caller.chain.clone());
+                .chained(caller.chain.clone())
+                .in_changeset(caller.changeset.clone());
         }
         let chain = event.firing(name)?;
         let config: Attrs = [("code".to_owned(), Json::String(code.to_owned()))]
@@ -604,7 +606,8 @@ impl TriggerDispatcher {
         if let Some(caller) = caller {
             event = event
                 .caller(caller.role, caller.user.clone())
-                .chained(caller.chain.clone());
+                .chained(caller.chain.clone())
+                .in_changeset(caller.changeset.clone());
         }
         let result = fire_trigger_with(self, catalog, trigger, &event, None, Some(console)).await?;
         Ok(result.unwrap_or(Json::Null))
@@ -681,8 +684,11 @@ fn table_event(write: &TableWrite<'_>) -> Event {
     match write.caller {
         Some(caller) => event
             .caller(caller.role, caller.user.clone())
-            .chained(caller.chain.clone()),
-        None => event.caller(ROLE_PUBLIC, None),
+            .chained(caller.chain.clone())
+            .in_changeset(caller.changeset.clone()),
+        None => event
+            .caller(ROLE_PUBLIC, None)
+            .in_changeset(sc_catalog::changeset::current()),
     }
 }
 
@@ -811,7 +817,11 @@ pub async fn fire_trigger_with(
     if let Some(console) = console {
         ctx = ctx.with_console(Arc::clone(console));
     }
-    action.run(&mut ctx).await.map(Some)
+    // In the event's changeset, so whatever the action writes joins the
+    // action that raised the event (§14.12), however it builds its caller.
+    sc_catalog::changeset::scope_if(event.changeset.clone(), action.run(&mut ctx))
+        .await
+        .map(Some)
 }
 
 /// What every action run is handed by the dispatcher running it: the

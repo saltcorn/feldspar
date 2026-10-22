@@ -4545,6 +4545,9 @@ fn table_schema() -> TypeSchema {
     // Whether offline sync can be switched on: a one-column primary key, in
     // Saltcorn's own Postgres database. The form shows the switch only then.
     fields.push(StructField::new("sync_available", TypeSchema::bool()));
+    // Whether row history can be switched on: the same conditions as sync's
+    // (§14.12), reported apart so neither form has to know that.
+    fields.push(StructField::new("history_available", TypeSchema::bool()));
     // Which database hosts the table: `primary`, or the name of the connection
     // it came from (§5's Connections). Reported on every table rather than only
     // on foreign ones, so a client never has to read absence as "the primary".
@@ -4633,6 +4636,9 @@ fn table_settings_fields() -> Vec<StructField> {
         // save without a one-column primary key, or on a database that cannot
         // record changes.
         StructField::new("sync_enabled", TypeSchema::bool()),
+        // Whether the table keeps row history (§14.12), off by default. The same
+        // refusals as `sync_enabled`; the two share one change trigger.
+        StructField::new("history_enabled", TypeSchema::bool()),
     ]
 }
 

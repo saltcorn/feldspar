@@ -228,6 +228,7 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
         // database that will refuse it, once per conversation.
         "rls_available": rls_available,
         "sync_enabled": table.sync_enabled(),
+        "history_enabled": table.history_enabled(),
         "fields": fields,
         "references": references,
         "referenced_by": referenced_by,
@@ -533,6 +534,13 @@ fn edit_parameters() -> Json {
                                 "Record the table's changes for offline sync. Needs \
                                  a primary key of one column; offline inserts need \
                                  a uuid key.",
+                        },
+                        "history_enabled": {
+                            "type": "boolean",
+                            "description":
+                                "Keep every version of the table's rows, so a row's \
+                                 history can be listed and an old version restored. \
+                                 Off by default; needs a primary key of one column.",
                         },
                     },
                     "required": ["op", "table"],
@@ -869,8 +877,7 @@ fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
         ownership_formula: optional_string(obj, "ownership_formula")?,
         rls_enabled: optional_bool(obj, "rls_enabled")?,
         sync_enabled: optional_bool(obj, "sync_enabled")?,
-        // The history switch reaches agents with H1.6.
-        history_enabled: None,
+        history_enabled: optional_bool(obj, "history_enabled")?,
     })
 }
 
@@ -1168,6 +1175,23 @@ mod tests {
         assert_eq!(settings.ownership_formula, None);
         assert_eq!(settings.rls_enabled, None);
         assert_eq!(settings.label, None);
+    }
+
+    #[test]
+    fn the_history_switch_reaches_agents_beside_sync() {
+        let Operation::AlterTable { settings, .. } = parse_operation(&json!({
+            "op": "alter_table", "table": "clients", "history_enabled": true,
+        }))
+        .unwrap() else {
+            panic!("an alter_table");
+        };
+        assert_eq!(settings.history_enabled, Some(true));
+        assert_eq!(settings.sync_enabled, None);
+        // And the tool's schema offers it, or the model never learns to ask.
+        let params = edit_parameters();
+        let props = &params["properties"][ARG_OPERATIONS]["items"]["properties"];
+        assert_eq!(props["history_enabled"]["type"], json!("boolean"));
+        assert_eq!(props["sync_enabled"]["type"], json!("boolean"));
     }
 
     #[test]

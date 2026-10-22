@@ -28,6 +28,7 @@ mod calc;
 mod caller;
 mod catalog;
 mod change_log;
+pub mod changeset;
 mod code_libraries;
 mod constraint;
 mod db_connections;
@@ -55,6 +56,7 @@ mod wakeups;
 pub use admin_host::{AdminCall, AdminHost};
 pub use caller::CallerContext;
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
+pub use changeset::{CHANGESETS_TABLE, Changeset, ChangesetSource};
 pub use change_log::{
     ChangeLogFeature, bootstrap_change_log, change_log_enabled, change_log_key,
     disable_change_log_sql, enable_change_log_sql, history_enabled, set_history_enabled,
@@ -112,7 +114,7 @@ pub use rls::{
 pub use secrets::SecretKey;
 pub use spatial::bootstrap_spatial;
 pub use sync::{
-    SYNC_CLIENTS_TABLE, SyncWatermark, changed_keys, mark_sync_device, set_sync_enabled,
+    SYNC_CLIENTS_TABLE, SyncWatermark, changed_keys, set_sync_enabled,
     sync_enabled, sync_watermark,
 };
 pub use table::{AccessRules, FieldMergeIssue, Table, TableSource};

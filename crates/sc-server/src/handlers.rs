@@ -601,6 +601,7 @@ pub fn admin_handlers_with(
                             "ownership_formula": meta.ownership_formula().unwrap_or(""),
                             "rls_enabled": meta.rls_enabled(),
                             "sync_enabled": sc_catalog::sync_enabled(&meta.attributes),
+                            "history_enabled": sc_catalog::history_enabled(&meta.attributes),
                         })
                     })
                     .collect();
@@ -7131,8 +7132,10 @@ pub(crate) fn table_settings_from_body(
         ownership_formula: Some(str_field(obj, "ownership_formula")?.to_owned()),
         rls_enabled: Some(bool_field(obj, "rls_enabled")?),
         sync_enabled: Some(bool_field(obj, "sync_enabled")?),
-        // Not part of this body yet (TODO-history H1.6): left as it is.
-        history_enabled: None,
+        // Absent reads as off, like every other omitted value of this body.
+        // Optional on the wire only so a body written before the switch existed
+        // (an older backup's `table.json`) still restores.
+        history_enabled: Some(optional_bool(obj, "history_enabled")?),
     })
 }
 
@@ -11388,6 +11391,10 @@ pub(crate) fn table_json(
         "sync_enabled": table.sync_enabled(),
         // The same rule a save is refused by, so the switch is never a trap.
         "sync_available": sc_catalog::change_log_key(catalog, table, sc_catalog::ChangeLogFeature::Sync)
+            .is_ok(),
+        "history_enabled": table.history_enabled(),
+        // Row history needs the same one-column key on Saltcorn's own database.
+        "history_available": sc_catalog::change_log_key(catalog, table, sc_catalog::ChangeLogFeature::History)
             .is_ok(),
         // The backend's capability *and* whose database this is: RLS is DDL
         // against the primary driver, so it is never available on a table a

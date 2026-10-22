@@ -23,6 +23,9 @@
 //! [`MAX_DEPTH`], naming the whole chain. A depth counter alone would have caught
 //! the loop but left the admin to find it; the chain *is* the diagnosis.
 
+use std::sync::Arc;
+
+use sc_catalog::Changeset;
 use sc_error::{Error, ErrorKind, Result};
 use serde_json::{Map, Value as Json};
 
@@ -207,6 +210,10 @@ pub struct Event {
     /// The trigger names that led here, outermost first. Empty for an event
     /// raised by a request rather than by another trigger's action.
     pub chain: Vec<String>,
+    /// The changeset of the write that raised it (§14.12), which the writes
+    /// of the triggers it fires join: the user's edit and its trigger's
+    /// follow-up are one action. `None` for an event no changeset led to.
+    pub changeset: Option<Arc<Changeset>>,
 }
 
 impl Event {
@@ -222,6 +229,7 @@ impl Event {
             role: ROLE_PUBLIC,
             user: None,
             chain: Vec::new(),
+            changeset: None,
         }
     }
 
@@ -328,6 +336,12 @@ impl Event {
     /// [`firing`](Event::firing) handed the action that caused it.
     pub fn chained(mut self, chain: Vec<String>) -> Event {
         self.chain = chain;
+        self
+    }
+
+    /// Set the changeset the event belongs to.
+    pub fn in_changeset(mut self, changeset: Option<Arc<Changeset>>) -> Event {
+        self.changeset = changeset;
         self
     }
 
