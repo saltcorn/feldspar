@@ -691,7 +691,10 @@ throws when called, naming itself and why — never a quiet `undefined`.
 | `Field.create`, `field.update`, `field.delete` | refused | Likewise |
 | `field.alter_sql_type`, `field.toggle_not_null`, `field.enable_fkey_constraint` | refused | Likewise |
 | `field.add_unique_constraint`, `field.remove_unique_constraint` | refused | Likewise |
-| `table.get_history`, `table.insert_history_row`, `table.restore_row_version`, `table.undo_row_changes`, `table.redo_row_changes`, `table.compress_history` | refused | This server keeps no row history to read, restore or compress |
+| `table.get_history` | different | The table must have history on ([tutorial-history.md](tutorial-history.md)). Takes the row's id, which v1 did not require: every version oldest first, each the whole row just after it, with `_version`, `_time`, `_userid`, and `_deleted`, `_op`, `_changeset`, `_source` |
+| `table.restore_row_version` | implemented | A write through the row layer in a `restore` changeset; a row deleted since is inserted again, and a row already as it was is left alone |
+| `table.undo_row_changes`, `table.redo_row_changes` | implemented | Step the row back one version and forward again, as v1 did; each step is a restore, and nothing to step to does nothing |
+| `table.insert_history_row`, `table.compress_history` | refused | History is recorded by the database itself, merged as it is written and expired by `keep_days` |
 | `table.latestSyncInfo`, `table.latestSyncInfos` | refused | v1's mobile offline sync has no counterpart here |
 | `table.update_stored_calculateds`, `table.recalculate_for_stored` | refused | Calculated fields are recomputed by the server, on read; there is nothing to drive by hand |
 | `Table.create_from_csv`, `table.import_csv_file`, `table.import_json_file`, `table.dump_to_json` | refused | Import and export are this server's own, through the API and the admin UI |
@@ -807,7 +810,9 @@ mail will not appear there.
 `undo` takes back what the person pressing the button last did, the way an editor's undo does:
 press it again and it steps back one action further. It reads the tables' **row history**, so
 switch that on first: **Tables → tasks → Keep row history** (it is off by default). A change to a
-table without history cannot be undone, because nothing remembers what it was.
+table without history cannot be undone, because nothing remembers what it was. Reading a row's
+history, restoring deleted rows and undoing an action from the admin screens are in
+[tutorial-history.md](tutorial-history.md).
 
 **Triggers → New trigger**:
 

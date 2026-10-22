@@ -377,15 +377,17 @@ async fn the_change_log_cannot_be_swapped_by_the_search_path() -> Result<()> {
     Ok(())
 }
 
+/// SQLite records a synced table's changes too (TODO-history H6.2): its
+/// triggers are generated from the table's columns, and the watermark is the
+/// log's `seq`.
 #[tokio::test]
-async fn sqlite_says_it_cannot_record_changes_yet() -> Result<()> {
+async fn sqlite_records_a_synced_tables_changes() -> Result<()> {
     let driver: Arc<dyn DatabaseDriver> = Arc::new(sc_db_sqlite::SqliteDriver::open_in_memory()?);
     let catalog = Catalog::init(driver).await?;
     bootstrap_table_meta(&catalog).await?;
     bootstrap_field_meta(&catalog).await?;
-    // A no-op here: there is no change-log to create.
     bootstrap_change_log(&catalog).await?;
-    assert!(catalog.get("_fd_changes")?.is_none());
+    assert!(catalog.get("_fd_changes")?.is_some());
     catalog
         .create_table(
             "todo",
@@ -403,10 +405,16 @@ async fn sqlite_says_it_cannot_record_changes_yet() -> Result<()> {
             ],
         )
         .await?;
-    let err = set_sync(&catalog, "todo", true)
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("needs a Postgres database"), "{err}");
+    set_sync(&catalog, "todo", true).await?;
+    let tx = sc_catalog::SharedTx::begin_snapshot(&catalog).await?;
+    let before = sc_catalog::sync_watermark(&catalog, &tx).await?;
+    tx.commit().await?;
+    let todo = catalog.require("todo")?;
+    rows::create_row(&catalog, &todo, &json!({ "id": "a", "title": "milk" })).await?;
+    let tx = sc_catalog::SharedTx::begin_snapshot(&catalog).await?;
+    let after = sc_catalog::sync_watermark(&catalog, &tx).await?;
+    let keys = sc_catalog::changed_keys(&catalog, &tx, "todo", &before, &after).await?;
+    tx.commit().await?;
+    assert_eq!(keys.into_iter().collect::<Vec<_>>(), vec!["a".to_owned()]);
     Ok(())
 }

@@ -28,6 +28,7 @@ mod calc;
 mod caller;
 mod catalog;
 mod change_log;
+pub mod change_log_sqlite;
 pub mod changeset;
 mod code_libraries;
 mod constraint;
@@ -59,8 +60,9 @@ pub use admin_host::{AdminCall, AdminHost};
 pub use caller::CallerContext;
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
-    CHANGES_TABLE, ChangeLogFeature, bootstrap_change_log, change_log_enabled, change_log_key,
-    disable_change_log_sql, enable_change_log_sql, history_enabled, set_history_enabled,
+    CHANGES_TABLE, ChangeLogFeature, as_text_sql, bootstrap_change_log, change_log_enabled,
+    change_log_key, disable_change_log_sql, enable_change_log_sql, history_enabled,
+    json_distinct_array_sql, json_texts_sql, row_json_sql, set_history_enabled,
 };
 pub use changeset::{CHANGESETS_TABLE, Changeset, ChangesetSource};
 pub use code_libraries::{

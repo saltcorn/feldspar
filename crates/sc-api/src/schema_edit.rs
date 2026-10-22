@@ -2494,7 +2494,7 @@ impl Plan {
                 };
                 let pk = sc_catalog::change_log_key(catalog, table, feature)?;
                 steps.push(SchemaStep::Sql(sc_catalog::enable_change_log_sql(
-                    dialect, name, &pk,
+                    dialect, table, &pk,
                 )));
             } else if self.was_logged.contains(name) {
                 steps.push(SchemaStep::Sql(sc_catalog::disable_change_log_sql(
@@ -2536,6 +2536,26 @@ fn rename_in_change_log_sql(
         return None;
     }
     let dialect = catalog.primary().dialect();
+    if dialect.is_sqlite() {
+        let path =
+            |key: &str| dialect.quote_literal(&format!("$.\"{}\"", key.replace('"', "\\\"")));
+        let (table, from, to) = (dialect.quote_literal(table), path(from), path(to));
+        let renamed = |column: &str| {
+            format!(
+                "{column} = CASE WHEN json_type({column}, {from}) IS NOT NULL \
+                 THEN json_set(json_remove({column}, {from}), {to}, {column} -> {from}) \
+                 ELSE {column} END"
+            )
+        };
+        return Some(format!(
+            "UPDATE {log} SET {old}, {new} WHERE table_name = {table} \
+             AND (json_type(old_values, {from}) IS NOT NULL \
+                  OR json_type(new_values, {from}) IS NOT NULL);",
+            log = dialect.quote_ident(sc_catalog::CHANGES_TABLE),
+            old = renamed("old_values"),
+            new = renamed("new_values"),
+        ));
+    }
     let (table, from, to) = (
         dialect.quote_literal(table),
         dialect.quote_literal(from),

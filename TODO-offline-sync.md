@@ -18,7 +18,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       its trigger; refused for a table without a single-column primary key. Admin UI and MCP.
 - [x] S1.3 Tests: insert, update with its changed fields, an update that changes nothing, a
       change of key, delete, and a write made with plain SQL.
-- [ ] S1.4 SQLite: a trigger per table, regenerated whenever the table's columns change.
+- [x] S1.4 SQLite: a trigger per table, regenerated whenever the table's columns change.
       Shared with row history: done as H6.2 in [TODO-history.md](./TODO-history.md).
 
 ## S2 — Pull

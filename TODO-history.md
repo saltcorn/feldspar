@@ -122,12 +122,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H6 — Code, SQLite, documentation
 
-- [ ] H6.1 Code bodies: the v1 `Table` history methods, taken off `v1_api.js`'s
+- [x] H6.1 Code bodies: the v1 `Table` history methods, taken off `v1_api.js`'s
       not-implemented list, and the same in Python's `db`.
-- [ ] H6.2 SQLite: generated per-table triggers, regenerated on schema change (the same task as
+- [x] H6.2 SQLite: generated per-table triggers, regenerated on schema change (the same task as
       sync S1.4). The changeset is passed through a connection-local temp table. Since `seq` is
-      the watermark there, a merge moves the entry's `seq` forward.
-- [ ] H6.3 `docs/tutorial-history.md`: switching history on, reading it, restoring, and the
+      the watermark there, a merge moves the entry's `seq` forward. (As built: a main-schema
+      `_fd_tx_settings` table, since a trigger cannot read `temp`; see §14.12 "As built (H6)".)
+- [x] H6.3 `docs/tutorial-history.md`: switching history on, reading it, restoring, and the
       Undo action in an application.
 
 ## Later

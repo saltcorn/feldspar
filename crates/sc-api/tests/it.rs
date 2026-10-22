@@ -57,6 +57,8 @@ mod history_capture;
 mod history_read;
 #[path = "history_retention.rs"]
 mod history_retention;
+#[path = "history_sqlite.rs"]
+mod history_sqlite;
 #[path = "history_undo.rs"]
 mod history_undo;
 #[path = "live_connection.rs"]
@@ -87,6 +89,8 @@ mod sync_pull;
 mod sync_push;
 #[path = "typescript_typecheck.rs"]
 mod typescript_typecheck;
+#[path = "v1_table_history.rs"]
+mod v1_table_history;
 #[path = "v1_table_reads.rs"]
 mod v1_table_reads;
 #[path = "v1_table_writes.rs"]

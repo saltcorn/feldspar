@@ -1924,6 +1924,17 @@ erDiagram
     timestamp created_at
     timestamp last_seen
   }
+  SYNCKEYS["_fd_sync_keys"] {
+    uuid client_id PK "the device"
+    int mutation PK "the device's change that created the row"
+    text table_name
+    text row_key "the real key the server gave the row"
+    timestamp at
+  }
+  TXSETTINGS["_fd_tx_settings"] {
+    text name PK "SQLite only: a transaction-local setting, e.g. sc.changeset"
+    text value "deleted before its transaction commits"
+  }
 
   ROLES ||--o{ USERS : "role -- enforced FK"
   USERS ||--o{ SESSIONS : "user_id -- by value"
@@ -1969,6 +1980,7 @@ erDiagram
   CHANGESETS ||--o{ CHANGES : "changeset -- at most one entry per row"
   CHANGESETS |o--o{ CHANGESETS : "cause -- undo, or what started a workflow run"
   SYNCCLIENTS |o--o{ CHANGESETS : "client_id -- by value, an uploaded change"
+  SYNCCLIENTS ||--o{ SYNCKEYS : "client_id -- by value"
   USERS |o--o{ CHANGESETS : "user_id -- by value"
   USERS ||--o{ SYNCCLIENTS : "user_id -- by value"
   APPS ||--o{ SYNCCLIENTS : "application -- by value"
@@ -10965,9 +10977,9 @@ to one row within one changeset are **merged into one entry** (§14.12). The mer
 entry's `txid` forward to the transaction doing it, and an entry is only removed when everything
 merged into it happened in that same transaction, so a pull taken between two transactions of one
 changeset never misses the second. Switching sync on
-needs a one-column primary key in Saltcorn's own Postgres database; on SQLite it is refused for
-now, because a SQLite trigger cannot read a row generically and would have to be regenerated with
-every schema change.
+needs a one-column primary key in Saltcorn's own database. On SQLite a trigger cannot read a row
+generically, so each table's triggers are generated from its columns and regenerated with every
+schema change (§14.12, "As built (H6)").
 
 **Pulls are cut at a watermark, not at a time or a count.** A number or timestamp is taken
 before a transaction commits, so a transaction that started earlier can become visible after a
@@ -11090,8 +11102,8 @@ What differs is who reads the log and how long they keep it:
 
 The switch-on checks are one function, `change_log_key()`: the table is in Saltcorn's own
 Postgres database, is not a system table, is not served by a provider, and has a one-column
-primary key. An error names the feature that asked. The capability is `change_triggers`. On
-SQLite both features are refused until the per-table triggers exist (H6, which is sync's S1.4).
+primary key. An error names the feature that asked. The capability is `change_triggers`, which
+both backends have: SQLite's per-table triggers are H6 (and sync's S1.4).
 
 #### Storage
 
@@ -11234,7 +11246,7 @@ deliberately not.
 
 These are also admin screens: a History tab in the row editor, a Deleted tab on the table with
 Restore, and a changeset browser with Undo. They are MCP tools too, and in code bodies the v1
-`Table` history methods, which are currently on `v1_api.js`'s "not implemented" list (§10.1).
+`Table` history methods and `db.<table>`'s history terminals (§10.1, "As built (H6)").
 
 #### Restore and undo
 
@@ -11372,6 +11384,54 @@ another table's key or a module's declaration names the field. Renaming the key 
 the trigger. A dropped table's entries and sync key pairs are deleted in the drop's batch, and
 the drop confirmation says the row history goes too. Known gap: a row inserted and deleted in
 one transaction of a history table leaves no delete entry, so its file is never removed.
+
+**As built (H6).** *Code bodies.* `db`'s host takes `op: "history"` requests
+(`sc_api::code_host::history`) beside `models`, at the plan's authority: the admin's by default,
+the caller's or a named user's when the body says so, through H2's `HistoryReader` and H3's
+`Reverser`, so the role from `history.min_role`, the row's read rule and the write rules are the
+admin API's. `what` is `history`, `deleted`, `as_of`, `restore` or `revert`, which are
+`db.<table>.history(key)`, `.deleted()` (paged by `.limit()`/`.offset()`), `.asOf(key, when)`
+(`as_of` in Python), `.restore(key)` and `.revert(key, version)` in both languages; and
+`versions`, `restore_version`, `undo_row` and `redo_row`, which are v1's `table.get_history(id)`,
+`restore_row_version`, `undo_row_changes` and `redo_row_changes`. `get_history` rebuilds each
+version from the row now and the log (oldest first, the whole row after each version, with v1's
+`_version`, `_time` and `_userid` and also `_deleted`, `_op`, `_changeset` and `_source`), and
+requires the id, because v1's every-row answer has no cheap counterpart. v1's
+`_restore_of_version` is inferred: the version a restore went back to is the latest earlier
+version, not itself a restore, whose row it equals; undo goes to the version before it, redo to
+the next one that is not a restore, and nothing to step to does nothing, as in v1. A restore to
+the version the row is already at writes nothing (`Reverser::revert_row_if_changed`).
+`insert_history_row` and `compress_history` stay refused. A restore is refused inside a workflow
+step's transaction, which it would wait on. `write_as`'s write floor is now met by the role of the
+context the write runs under as well as the user's, which is what lets a code body restore with
+the admin's authority on behalf of a lower or absent caller.
+
+*SQLite* (`sc_catalog::change_log_sqlite`). The design's "connection-local temp table" cannot
+work: a trigger in the main schema cannot read the `temp` schema. Transaction-local settings are
+rows of a main-schema table, `_fd_tx_settings` (`sc_db::TX_SETTINGS_TABLE`), written by
+`SqliteTransaction::set_local` and deleted before the transaction commits. SQLite allows one
+writer at a time, so nobody else ever sees them, and a rollback takes them with it. A read-only
+transaction, or a database without the table, keeps none. Each recorded table has three triggers,
+`_fd_changes_{table}_ins`, `_upd` and `_del`, generated from its columns, that turn the row into
+JSON (booleans as JSON booleans, valid JSON in a JSON column as JSON, a blob as `\x` and its hex,
+everything else as stored) and insert it into the view `_fd_record_change`. That view's
+`INSTEAD OF INSERT` trigger is the merge, written once and recreated at every boot: it mints a
+`sql` changeset when none is set, writes the changeset's row once with a `:new`/`:old` marker,
+upserts the entry with Postgres's merge rules, drops unchanged columns, removes an emptied entry
+only when its changeset began in this transaction, and moves the entry's `seq` past every number
+given out. `_fd_changes.seq` is `AUTOINCREMENT` there, so a removed entry's number is never
+reused, and `txid` holds the `seq` the write was given. A write from another program has no
+settings and gets a changeset **per row**, removed from the settings at once, because nothing
+tells a trigger where another program's transaction ends. Schema changes keep the triggers in
+`Catalog::apply_schema_batch_in` (and `create_field`/`drop_field`): before a change to a table
+that has them they are dropped (SQLite refuses to drop a column a trigger names, and a rebuild
+would recreate them from their old text), and after it they are generated again from
+`pragma_table_info`. `schema_edit`'s switch generates them from the projected table. The readers,
+the cleanup job and the rename rewrite have SQLite spellings (`json_each`, `json_group_array`,
+`json_set`/`json_remove`, `CAST(… AS TEXT)`, `DELETE … RETURNING` instead of a data-modifying
+CTE, numbered placeholders), and sync's watermark on SQLite is the last `seq` (`n:n:`), with the
+changed keys those of entries after it. `SqliteTransaction` now also turns `query_only` off when a
+read-only transaction commits, which it had left on the pooled connection.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 

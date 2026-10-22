@@ -183,6 +183,17 @@ fn quote(catalog: &Catalog, ident: &str) -> String {
     catalog.primary().dialect().quote_ident(ident)
 }
 
+/// The `n`th bind's placeholder: `$n` on Postgres, `?n` on SQLite, which numbers
+/// a `$n` by where it first appears rather than by `n`.
+fn ph(catalog: &Catalog, n: usize) -> String {
+    catalog.primary().dialect().placeholder(n)
+}
+
+/// The tables named by the JSON array bound at `n`, as a subquery for `IN`.
+fn in_tables(catalog: &Catalog, n: usize) -> String {
+    crate::change_log::json_texts_sql(catalog.primary().dialect(), &ph(catalog, n))
+}
+
 async fn query(catalog: &Catalog, sql: String, binds: Vec<Value>) -> Result<Vec<sc_db::Row>> {
     catalog
         .primary()
@@ -289,9 +300,11 @@ fn key_column(table: &Table) -> Result<&str> {
 pub async fn row_history(catalog: &Catalog, table: &Table, key: &str) -> Result<Vec<HistoryEntry>> {
     let sql = format!(
         "SELECT {ENTRY_COLUMNS} FROM {log} c JOIN {sets} s ON s.id = c.changeset \
-         WHERE c.table_name = $1 AND c.row_key = $2 AND {HAS_VALUES} ORDER BY c.seq",
+         WHERE c.table_name = {p1} AND c.row_key = {p2} AND {HAS_VALUES} ORDER BY c.seq",
         log = quote(catalog, CHANGES_TABLE),
         sets = quote(catalog, CHANGESETS_TABLE),
+        p1 = ph(catalog, 1),
+        p2 = ph(catalog, 2),
     );
     let rows = query(
         catalog,
@@ -322,18 +335,22 @@ pub async fn deleted_rows(
         None if offset > 0 => format!(" OFFSET {offset}"),
         None => String::new(),
     };
+    // Each row's last entry with values: the one no later entry of the row
+    // follows.
     let sql = format!(
-        "SELECT {ENTRY_COLUMNS} FROM \
-           (SELECT DISTINCT ON (c.row_key) c.* FROM {log} c \
-             WHERE c.table_name = $1 AND {HAS_VALUES} ORDER BY c.row_key, c.seq DESC) c \
+        "SELECT {ENTRY_COLUMNS} FROM {log} c \
          JOIN {sets} s ON s.id = c.changeset \
-         WHERE c.op = 'd' \
-           AND NOT EXISTS (SELECT 1 FROM {table} t WHERE t.{pk}::text = c.row_key) \
+         WHERE c.table_name = {p1} AND {HAS_VALUES} AND c.op = 'd' \
+           AND NOT EXISTS (SELECT 1 FROM {log} l WHERE l.table_name = c.table_name \
+                             AND l.row_key = c.row_key AND l.seq > c.seq \
+                             AND (l.old_values IS NOT NULL OR l.new_values IS NOT NULL)) \
+           AND NOT EXISTS (SELECT 1 FROM {table} t WHERE {key} = c.row_key) \
          ORDER BY c.seq DESC{bound}",
         log = quote(catalog, CHANGES_TABLE),
         sets = quote(catalog, CHANGESETS_TABLE),
         table = quote(catalog, &table.name),
-        pk = quote(catalog, pk),
+        key = crate::change_log::as_text_sql(&format!("t.{}", quote(catalog, pk))),
+        p1 = ph(catalog, 1),
     );
     let rows = query(catalog, sql, vec![Value::Text(table.name.clone())]).await?;
     Ok(rows.iter().map(entry_of).collect())
@@ -346,10 +363,13 @@ async fn current_row(
     table: &Table,
     key: &str,
 ) -> Result<Option<Map<String, Json>>> {
+    let dialect = catalog.primary().dialect();
     let sql = format!(
-        "SELECT to_jsonb(t) AS row FROM {table} t WHERE t.{pk}::text = $1",
+        "SELECT {row} AS row FROM {table} t WHERE {key} = {p1}",
+        row = crate::change_log::row_json_sql(dialect, table, "t"),
         table = quote(catalog, &table.name),
-        pk = quote(catalog, key_column(table)?),
+        key = crate::change_log::as_text_sql(&format!("t.{}", quote(catalog, key_column(table)?))),
+        p1 = ph(catalog, 1),
     );
     let rows = query(catalog, sql, vec![Value::Text(key.to_owned())]).await?;
     Ok(rows.first().and_then(|row| object_of(row, "row")))
@@ -383,14 +403,17 @@ pub async fn row_as_of(
 ) -> Result<RowAsOf> {
     let mut state = current_row(catalog, table, key).await?;
     let (after, bind) = match point {
-        AsOf::Seq(seq) => ("c.seq > $3", Value::Int(seq)),
-        AsOf::Time(at) => ("c.at > $3", Value::Timestamp(at)),
+        AsOf::Seq(seq) => ("c.seq", Value::Int(seq)),
+        AsOf::Time(at) => ("c.at", Value::Timestamp(at)),
     };
     let sql = format!(
         "SELECT c.op, c.old_values, c.new_values FROM {log} c \
-         WHERE c.table_name = $1 AND c.row_key = $2 AND {after} AND {HAS_VALUES} \
+         WHERE c.table_name = {p1} AND c.row_key = {p2} AND {after} > {p3} AND {HAS_VALUES} \
          ORDER BY c.seq DESC",
         log = quote(catalog, CHANGES_TABLE),
+        p1 = ph(catalog, 1),
+        p2 = ph(catalog, 2),
+        p3 = ph(catalog, 3),
     );
     let later = query(
         catalog,
@@ -442,20 +465,20 @@ pub async fn list_changesets(
     let mut wheres = Vec::new();
     let mut bind = |value: Value| {
         binds.push(value);
-        binds.len()
+        ph(catalog, binds.len())
     };
     if let Some(user) = filter.user {
-        wheres.push(format!("s.user_id = ${}", bind(Value::Uuid(user))));
+        wheres.push(format!("s.user_id = {}", bind(Value::Uuid(user))));
     }
     if let Some(source) = &filter.source {
-        wheres.push(format!("s.source = ${}", bind(Value::Text(source.clone()))));
+        wheres.push(format!("s.source = {}", bind(Value::Text(source.clone()))));
     }
     if let Some(since) = filter.since {
-        wheres.push(format!("s.at >= ${}", bind(Value::Timestamp(since))));
+        wheres.push(format!("s.at >= {}", bind(Value::Timestamp(since))));
     }
     if let Some(table) = &filter.table {
         wheres.push(format!(
-            "bool_or(c.table_name = ${})",
+            "max(CASE WHEN c.table_name = {} THEN 1 ELSE 0 END) = 1",
             bind(Value::Text(table.clone()))
         ));
     }
@@ -468,14 +491,16 @@ pub async fn list_changesets(
     };
     let group = CHANGESET_COLUMNS.replace(" AS cs_at", "");
     let sql = format!(
-        "SELECT {CHANGESET_COLUMNS}, count(*) AS entries, \
-                jsonb_agg(DISTINCT c.table_name) AS tables \
+        "SELECT {CHANGESET_COLUMNS}, count(*) AS entries, {tables} AS tables \
            FROM {sets} s JOIN {log} c ON c.changeset = s.id \
-          WHERE {HAS_VALUES} AND c.table_name IN (SELECT jsonb_array_elements_text($1::jsonb)) \
+          WHERE {HAS_VALUES} AND c.table_name IN ({in_tables}) \
           GROUP BY {group}{having} \
           ORDER BY s.at DESC, s.id LIMIT {limit} OFFSET {offset}",
         log = quote(catalog, CHANGES_TABLE),
         sets = quote(catalog, CHANGESETS_TABLE),
+        tables =
+            crate::change_log::json_distinct_array_sql(catalog.primary().dialect(), "c.table_name"),
+        in_tables = in_tables(catalog, 1),
         limit = filter.limit,
         offset = filter.offset,
     );
@@ -490,6 +515,10 @@ pub async fn list_changesets(
                     .iter()
                     .filter_map(|n| n.as_str().map(str::to_owned))
                     .collect(),
+                // SQLite's aggregate has no declared type, so it reads as text.
+                Some(Value::Text(text)) => {
+                    serde_json::from_str::<Vec<String>>(text).unwrap_or_default()
+                }
                 _ => Vec::new(),
             },
         })
@@ -505,7 +534,10 @@ pub async fn changeset_entries(
     let sets = quote(catalog, CHANGESETS_TABLE);
     let found = query(
         catalog,
-        format!("SELECT {CHANGESET_COLUMNS} FROM {sets} s WHERE s.id = $1"),
+        format!(
+            "SELECT {CHANGESET_COLUMNS} FROM {sets} s WHERE s.id = {p1}",
+            p1 = ph(catalog, 1)
+        ),
         vec![Value::Uuid(id)],
     )
     .await?;
@@ -514,10 +546,12 @@ pub async fn changeset_entries(
     };
     let sql = format!(
         "SELECT {ENTRY_COLUMNS} FROM {log} c JOIN {sets} s ON s.id = c.changeset \
-         WHERE c.changeset = $1 AND {HAS_VALUES} \
-           AND c.table_name IN (SELECT jsonb_array_elements_text($2::jsonb)) \
+         WHERE c.changeset = {p1} AND {HAS_VALUES} \
+           AND c.table_name IN ({in_tables}) \
          ORDER BY c.seq",
         log = quote(catalog, CHANGES_TABLE),
+        p1 = ph(catalog, 1),
+        in_tables = in_tables(catalog, 2),
     );
     let rows = query(
         catalog,
@@ -549,8 +583,9 @@ impl Undone {
 /// What has been undone of changeset `id`.
 pub async fn undone(catalog: &Catalog, id: Uuid) -> Result<Undone> {
     let sql = format!(
-        "SELECT s.undo_table FROM {sets} s WHERE s.cause = $1 AND s.source = 'undo'",
+        "SELECT s.undo_table FROM {sets} s WHERE s.cause = {p1} AND s.source = 'undo'",
         sets = quote(catalog, CHANGESETS_TABLE),
+        p1 = ph(catalog, 1),
     );
     let mut out = Undone::default();
     for row in query(catalog, sql, vec![Value::Uuid(id)]).await? {
@@ -580,16 +615,16 @@ pub async fn session_undo_target(
     let in_table = match table {
         Some(table) => {
             binds.push(Value::Text(table.to_owned()));
-            " AND c.table_name = $4"
+            format!(" AND c.table_name = {}", ph(catalog, 4))
         }
-        None => "",
+        None => String::new(),
     };
     let sql = format!(
         "SELECT s.id FROM {sets} s \
-          WHERE s.session = $1 AND s.source <> 'undo' AND s.id <> $3 \
+          WHERE s.session = {p1} AND s.source <> 'undo' AND s.id <> {p3} \
             AND EXISTS (SELECT 1 FROM {log} c \
                          WHERE c.changeset = s.id AND {HAS_VALUES}{in_table} \
-                           AND c.table_name IN (SELECT jsonb_array_elements_text($2::jsonb)) \
+                           AND c.table_name IN ({in_tables}) \
                            AND NOT EXISTS (SELECT 1 FROM {sets} u \
                                             WHERE u.cause = s.id AND u.source = 'undo' \
                                               AND (u.undo_table IS NULL \
@@ -597,6 +632,9 @@ pub async fn session_undo_target(
           ORDER BY s.at DESC, s.txid DESC LIMIT 1",
         log = quote(catalog, CHANGES_TABLE),
         sets = quote(catalog, CHANGESETS_TABLE),
+        p1 = ph(catalog, 1),
+        p3 = ph(catalog, 3),
+        in_tables = in_tables(catalog, 2),
     );
     Ok(query(catalog, sql, binds)
         .await?

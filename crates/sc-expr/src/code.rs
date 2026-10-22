@@ -1454,6 +1454,16 @@ Object.defineProperty(globalThis, "__scMakeDb", {
         after = reply.cursor;
       }
     }
+    // A history request: the table and this query's authority, and nothing
+    // else of the chain — history is addressed by key, not by a where.
+    const historyPlan = (what, extra) =>
+      Object.assign({ op: "history", what: what, table: state.table, authority: state.authority }, extra);
+    const rowKey = (method, key) => {
+      if (typeof key !== "string" && typeof key !== "number") {
+        throw new Error(method + "() takes the row's primary key");
+      }
+      return key;
+    };
     return {
       where: (c) => derive({ where: state.where.concat([condition(c)]) }),
       select: (...cols) =>
@@ -1479,6 +1489,36 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       avg: (f) => scalar("avg", f),
       min: (f) => scalar("min", f),
       max: (f) => scalar("max", f),
+
+      // Row history (§14.12): the table must have history on. A row's entries
+      // newest first, the rows deleted and not back, a row as it was, and the
+      // two ways back — each a write through the row layer, under this
+      // query's authority, in a `restore` changeset of its own.
+      history: (key) => send(historyPlan("history", { key: rowKey("history", key) })),
+      deleted: () => {
+        const p = historyPlan("deleted", {});
+        if (state.limit !== null) p.limit = state.limit;
+        if (state.offset !== null) p.offset = state.offset;
+        return send(p);
+      },
+      asOf: (key, when) => {
+        if (when instanceof Date) when = when.toISOString();
+        if (typeof when !== "string" && typeof when !== "number") {
+          throw new Error(
+            "asOf()'s second argument is when: a time, a date, or an entry's seq"
+          );
+        }
+        return send(historyPlan("as_of", { key: rowKey("asOf", key), as_of: when }));
+      },
+      restore: (key) => send(historyPlan("restore", { key: rowKey("restore", key) })),
+      revert: (key, version) => {
+        if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+          throw new Error(
+            "revert()'s second argument is the version to go back to, from history()"
+          );
+        }
+        return send(historyPlan("revert", { key: rowKey("revert", key), version: version }));
+      },
 
       insert: (values) => send(plan("insert", { values: values })),
       update: (...args) => {
@@ -12718,7 +12758,7 @@ mod tests {
         .await;
 
         let refusals = out.as_object().expect("an object of refusals");
-        assert!(refusals.len() > 40, "the refusal tier is the list: {out}");
+        assert!(refusals.len() > 30, "the refusal tier is the list: {out}");
         assert_eq!(
             out["implemented"],
             json!(true),
@@ -12739,10 +12779,10 @@ mod tests {
         let schema = out["Table.create"].as_str().unwrap_or_default();
         assert!(schema.contains("introspects the schema"), "{schema}");
         assert!(
-            out["table.get_history"]
+            out["table.compress_history"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("no row history"),
+                .contains("nothing to compress"),
             "{out}"
         );
         assert!(
@@ -12773,6 +12813,11 @@ mod tests {
             "table.deleteRows",
             "table.toggleBool",
             "table.run_trigger",
+            // Row history (TODO-history H6.1).
+            "table.get_history",
+            "table.restore_row_version",
+            "table.undo_row_changes",
+            "table.redo_row_changes",
         ] {
             assert!(
                 refusals.get(method).is_none(),

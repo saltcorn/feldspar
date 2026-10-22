@@ -55,7 +55,10 @@ pub(crate) async fn register(
 
 pub(super) fn devices_table(cat: &Catalog) -> Result<Table> {
     cat.get(SYNC_CLIENTS_TABLE)?.ok_or_else(|| {
-        Error::invalid("offline sync needs a Postgres database; this one cannot record changes yet")
+        Error::invalid(
+            "offline sync needs a database that can record changes with triggers, and this one \
+             cannot",
+        )
     })
 }
 

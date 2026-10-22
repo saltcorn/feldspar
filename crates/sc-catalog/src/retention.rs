@@ -82,7 +82,8 @@ pub fn set_history_keep_days(attributes: &mut Attrs, days: u32) {
 
 /// The condition under which an entry `c` of `table` in the log `log` may go,
 /// with its binds numbered from `$2` (`$1` is the table's name), or `None` when
-/// nothing of it may go yet.
+/// nothing of it may go yet. Each bind is named after the one before it, so
+/// SQLite, which numbers a `$n` by where it first appears, numbers them alike.
 fn removable(
     table: &Table,
     log: &str,
@@ -119,13 +120,6 @@ async fn query(catalog: &Catalog, sql: String, binds: Vec<Value>) -> Result<Vec<
         .await
 }
 
-fn count_of(rows: &[sc_db::Row]) -> u64 {
-    match rows.first().and_then(|row| row.get_index(0)) {
-        Some(Value::Int(n)) => u64::try_from(*n).unwrap_or(0),
-        _ => 0,
-    }
-}
-
 /// Run the cleanup as at `now`. A no-op on a backend with no change log.
 pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<Cleanup> {
     let mut done = Cleanup::default();
@@ -147,33 +141,35 @@ pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<C
             continue;
         };
         let files = table.files_removed_on_delete();
-        // The deleted rows' file paths, one array per removed delete entry.
-        let paths = match files.is_empty() {
-            true => "NULL::jsonb".to_owned(),
-            false => format!(
-                "jsonb_agg(jsonb_build_array({})) FILTER (WHERE op = 'd' AND old_values IS NOT NULL)",
-                files
-                    .iter()
-                    .map(|(column, _)| format!("old_values ->> '{}'", column.replace('\'', "''")))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+        // The removed entries, with the deleted rows' images when their files
+        // may have to go too.
+        let returning = if files.is_empty() {
+            "seq"
+        } else {
+            "op, old_values"
         };
         let sql = format!(
-            "WITH gone AS (DELETE FROM {log} c WHERE c.table_name = $1 AND {condition} \
-               RETURNING c.op, c.old_values) \
-             SELECT count(*)::int8 AS n, {paths} AS paths FROM gone"
+            "DELETE FROM {log} AS c WHERE c.table_name = $1 AND {condition} RETURNING {returning}"
         );
         let rows = query(catalog, sql, binds).await?;
-        done.entries += count_of(&rows);
-        let images = match rows.first().and_then(|r| r.get("paths")) {
-            Some(Value::Json(Json::Array(images))) => images.clone(),
-            Some(Value::Text(text)) => match serde_json::from_str(text) {
-                Ok(Json::Array(images)) => images,
-                _ => continue,
-            },
-            _ => continue,
-        };
+        done.entries += rows.len() as u64;
+        let images: Vec<Json> = rows
+            .iter()
+            .filter(|row| matches!(row.get("op"), Some(Value::Text(op)) if op == "d"))
+            .filter_map(|row| match row.get("old_values") {
+                Some(Value::Json(image)) => Some(image.clone()),
+                Some(Value::Text(text)) => serde_json::from_str(text).ok(),
+                _ => None,
+            })
+            .map(|image| {
+                Json::Array(
+                    files
+                        .iter()
+                        .map(|(column, _)| image.get(*column).cloned().unwrap_or(Json::Null))
+                        .collect(),
+                )
+            })
+            .collect();
         for image in images {
             let Json::Array(values) = image else { continue };
             for ((column, store), path) in files.iter().zip(values) {
@@ -196,17 +192,14 @@ pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<C
             .map(|t| Json::String(t.name.clone()))
             .collect(),
     );
+    let in_names = crate::change_log::json_texts_sql(catalog.primary().dialect(), "$1");
     let rows = query(
         catalog,
-        format!(
-            "WITH gone AS (DELETE FROM {log} \
-               WHERE table_name NOT IN (SELECT jsonb_array_elements_text($1::jsonb)) \
-               RETURNING 1) SELECT count(*)::int8 FROM gone"
-        ),
+        format!("DELETE FROM {log} WHERE table_name NOT IN ({in_names}) RETURNING seq"),
         vec![Value::Json(names)],
     )
     .await?;
-    done.entries += count_of(&rows);
+    done.entries += rows.len() as u64;
 
     for (table, column, store, path) in &released {
         let Some(table) = tables.iter().find(|t| &t.name == table) else {
@@ -241,29 +234,26 @@ pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<C
     let rows = query(
         catalog,
         format!(
-            "WITH gone AS (DELETE FROM {sets} s WHERE s.at < $1 \
+            "DELETE FROM {sets} AS s WHERE s.at < $1 \
                AND NOT EXISTS (SELECT 1 FROM {log} c WHERE c.changeset = s.id) \
-               RETURNING 1) SELECT count(*)::int8 FROM gone"
+             RETURNING id"
         ),
         vec![Value::Timestamp(
             now - Duration::days(EMPTY_CHANGESET_GRACE_DAYS),
         )],
     )
     .await?;
-    done.changesets = count_of(&rows);
+    done.changesets = rows.len() as u64;
 
     if catalog.get(SYNC_KEYS_TABLE)?.is_some() {
         let keys = catalog.primary().dialect().quote_ident(SYNC_KEYS_TABLE);
         let rows = query(
             catalog,
-            format!(
-                "WITH gone AS (DELETE FROM {keys} WHERE at < $1 RETURNING 1) \
-                 SELECT count(*)::int8 FROM gone"
-            ),
+            format!("DELETE FROM {keys} WHERE at < $1 RETURNING at"),
             vec![Value::Timestamp(now - Duration::days(SYNC_KEEP_DAYS))],
         )
         .await?;
-        done.sync_keys = count_of(&rows);
+        done.sync_keys = rows.len() as u64;
     }
     Ok(done)
 }
@@ -288,7 +278,10 @@ async fn file_referenced(
         )
     };
     let row = Statement::raw(
-        format!("SELECT 1 FROM {quoted_table} WHERE {quoted_column}::text = $1 LIMIT 1"),
+        format!(
+            "SELECT 1 FROM {quoted_table} WHERE {} = $1 LIMIT 1",
+            crate::change_log::as_text_sql(&quoted_column)
+        ),
         vec![Value::Text(path.to_owned())],
     );
     let context = CallerContext::new(ROLE_ADMIN, None);

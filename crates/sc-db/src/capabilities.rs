@@ -8,6 +8,17 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Where a backend without transaction-local settings keeps them: SQLite's
+/// [`Transaction::set_local`](crate::Transaction::set_local) writes one row per
+/// setting, and the change-log triggers read them (§14.12).
+///
+/// A table in the database itself, because a SQLite trigger can only read the
+/// database it belongs to (a connection's `temp` tables are out of its reach).
+/// It holds rows only while a transaction that set them is open: SQLite allows
+/// one writer at a time, the rows are deleted before that transaction commits,
+/// and a rolled-back one takes them with it, so no other writer sees them.
+pub const TX_SETTINGS_TABLE: &str = "_fd_tx_settings";
+
 /// Feature flags describing what a particular [`DatabaseDriver`] backend
 /// supports (technical design §5).
 ///
@@ -56,12 +67,14 @@ pub struct DbCapabilities {
     /// them.
     pub native_temporal_types: bool,
     /// Offline sync and row history can record a table's changes with a
-    /// database trigger (§14.11, §14.12): one shared `plpgsql` function, so a column added later is
-    /// recorded without regenerating anything.
+    /// database trigger (§14.11, §14.12), and the writer's changeset reaches
+    /// that trigger through [`Transaction::set_local`](crate::Transaction::set_local).
     ///
-    /// Postgres can. SQLite triggers cannot read a row generically, so each
-    /// table would need a trigger regenerated with every schema change; that
-    /// is not built yet.
+    /// Both backends can. Postgres shares one `plpgsql` function, so a column
+    /// added later is recorded without regenerating anything. SQLite triggers
+    /// cannot read a row generically, so each table's are generated from its
+    /// columns and regenerated with every schema change, and the settings are
+    /// kept in [`TX_SETTINGS_TABLE`].
     pub change_triggers: bool,
 }
 

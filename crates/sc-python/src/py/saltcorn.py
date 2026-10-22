@@ -543,6 +543,67 @@ class Query:
         """The greatest `field` among the matching rows."""
         return self._scalar("max", field)
 
+    # -- row history (§14.12), on a table with history on --------------------
+
+    def _history(self, what, **extra):
+        plan = {
+            "op": "history",
+            "what": what,
+            "table": self._table,
+            "authority": self._authority,
+        }
+        plan.update(extra)
+        return _call_db(plan)
+
+    @staticmethod
+    def _row_key(method, key):
+        if isinstance(key, bool) or not isinstance(key, (str, int)):
+            raise TypeError(f"{method}() takes the row's primary key")
+        return key
+
+    def history(self, key):
+        """The row's history, newest first: each entry's version, operation,
+        time, changeset (who, from where) and its field-level changes."""
+        return self._history("history", key=self._row_key("history", key))
+
+    def deleted(self):
+        """The rows deleted and not back, newest first, each with the row as it
+        was deleted. ``.limit()`` and ``.offset()`` page it."""
+        extra = {}
+        if self._limit is not None:
+            extra["limit"] = self._limit
+        if self._offset is not None:
+            extra["offset"] = self._offset
+        return self._history("deleted", **extra)
+
+    def as_of(self, key, when):
+        """The row as it was at `when` — a time, a date, or an entry's ``seq``
+        — as ``{"row": ..., "removed": ...}``; ``row`` is ``None`` when it did
+        not exist then."""
+        if hasattr(when, "isoformat"):
+            when = when.isoformat()
+        if isinstance(when, bool) or not isinstance(when, (str, int)):
+            raise TypeError(
+                "as_of()'s second argument is when: a time, a date, or an entry's seq"
+            )
+        return self._history("as_of", key=self._row_key("as_of", key), as_of=when)
+
+    def restore(self, key):
+        """Put a deleted row back, as a write through the row layer in a
+        ``restore`` changeset of its own."""
+        return self._history("restore", key=self._row_key("restore", key))
+
+    def revert(self, key, version):
+        """Set the row back to how it was just after `version` (a number from
+        :meth:`history`), in a ``restore`` changeset of its own."""
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise ValueError(
+                "revert()'s second argument is the version to go back to, from history()"
+            )
+        return self._history(
+            "revert", key=self._row_key("revert", key), version=version
+        )
+
     def insert(self, values=None, **fields):
         """Write a row, or a list of rows.
 

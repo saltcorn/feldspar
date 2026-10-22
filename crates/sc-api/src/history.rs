@@ -274,11 +274,12 @@ impl<'a> HistoryReader<'a> {
         };
         let dialect = self.catalog.primary().dialect();
         let sql = format!(
-            "SELECT {id}, {email} FROM {users} \
-             WHERE {id}::text IN (SELECT jsonb_array_elements_text($1::jsonb))",
+            "SELECT {id}, {email} FROM {users} WHERE {id_text} IN ({ids})",
             id = dialect.quote_ident(sc_auth::COL_ID),
+            id_text = sc_catalog::as_text_sql(&dialect.quote_ident(sc_auth::COL_ID)),
             email = dialect.quote_ident(sc_auth::COL_EMAIL),
             users = dialect.quote_ident(&users.name),
+            ids = sc_catalog::json_texts_sql(dialect, "$1"),
         );
         let ids = Json::Array(ids.iter().map(|id| Json::String(id.to_string())).collect());
         let rows = self

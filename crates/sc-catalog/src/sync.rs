@@ -90,6 +90,11 @@ pub(crate) async fn bootstrap_sync_clients(catalog: &Catalog) -> Result<()> {
 /// A whole snapshot, not one number, so a transaction that stays open (a long
 /// import, a forgotten `BEGIN` in psql) holds back only its own changes: the
 /// next pull picks it up by its id, and everything else moves on.
+///
+/// On SQLite, which runs one write transaction at a time, the log's order is
+/// commit order, so the watermark is the last `seq` given out (`n:n:`, a
+/// snapshot with nothing running), and the keys changed since are those of
+/// entries with a later `seq` — which a merge moves forward.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncWatermark {
     xmin: i64,
@@ -124,6 +129,15 @@ impl SyncWatermark {
         })
     }
 
+    /// The watermark at log position `seq` (SQLite).
+    fn at_seq(seq: i64) -> SyncWatermark {
+        SyncWatermark {
+            xmin: seq,
+            xmax: seq,
+            running: Vec::new(),
+        }
+    }
+
     /// Whether this watermark is from before `other`, or the same — false for
     /// one this database never handed out (a backup's, another server's).
     pub fn not_after(&self, other: &SyncWatermark) -> bool {
@@ -143,7 +157,8 @@ fn require_sync(catalog: &Catalog) -> Result<()> {
         Ok(())
     } else {
         Err(Error::invalid(
-            "offline sync needs a Postgres database; this one cannot record changes yet",
+            "offline sync needs a database that can record changes with triggers, and this one \
+             cannot",
         ))
     }
 }
@@ -153,6 +168,27 @@ fn require_sync(catalog: &Catalog) -> Result<()> {
 /// it sees, so what the reads return and what the watermark names agree.
 pub async fn sync_watermark(catalog: &Catalog, tx: &SharedTx) -> Result<SyncWatermark> {
     require_sync(catalog)?;
+    if catalog.primary().dialect().is_sqlite() {
+        let rows = tx
+            .run(
+                None,
+                &Statement::raw(
+                    format!(
+                        "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name = '{log}'), 0), \
+                         coalesce((SELECT max(seq) FROM \"{log}\"), 0)) AS seq",
+                        log = crate::change_log::CHANGES_TABLE
+                    ),
+                    Vec::new(),
+                ),
+            )
+            .await?;
+        return match rows.first().and_then(|row| row.get_index(0)) {
+            Some(Value::Int(seq)) => Ok(SyncWatermark::at_seq(*seq)),
+            other => Err(Error::database(format!(
+                "the database answered the watermark with {other:?}"
+            ))),
+        };
+    }
     let rows = tx
         .run(
             None,
@@ -177,6 +213,32 @@ pub async fn changed_keys(
     until: &SyncWatermark,
 ) -> Result<BTreeSet<String>> {
     require_sync(catalog)?;
+    if catalog.primary().dialect().is_sqlite() {
+        let sql = format!(
+            "SELECT DISTINCT row_key FROM \"{log}\" WHERE table_name = ?1 AND seq > ?2 AND seq <= ?3",
+            log = crate::change_log::CHANGES_TABLE
+        );
+        let rows = tx
+            .run(
+                None,
+                &Statement::raw(
+                    sql,
+                    vec![
+                        Value::Text(table.to_owned()),
+                        Value::Int(since.xmax),
+                        Value::Int(until.xmax),
+                    ],
+                ),
+            )
+            .await?;
+        return Ok(rows
+            .iter()
+            .filter_map(|row| match row.get_index(0) {
+                Some(Value::Text(key)) => Some(key.clone()),
+                _ => None,
+            })
+            .collect());
+    }
     // The txid bounds only narrow the search to the index; the snapshots decide.
     let sql = format!(
         "SELECT DISTINCT row_key FROM {log} \

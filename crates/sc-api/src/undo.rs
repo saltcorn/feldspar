@@ -289,6 +289,30 @@ impl<'a> Reverser<'a> {
     /// after its version `version`, as one update (or an insert, when the row
     /// is gone now), in a `restore` changeset caused by the row's latest change.
     pub async fn revert_row(&self, table: &str, key: &str, version: i64) -> Result<Restored> {
+        self.revert(table, key, version, false)
+            .await?
+            .ok_or_else(|| Error::invalid("the row is already as it was at that version"))
+    }
+
+    /// [`revert_row`](Reverser::revert_row), answering `None` rather than
+    /// refusing when the row is already as it was at `version`: Saltcorn 1's
+    /// `restore_row_version` writes the same values again, which is no change.
+    pub async fn revert_row_if_changed(
+        &self,
+        table: &str,
+        key: &str,
+        version: i64,
+    ) -> Result<Option<Restored>> {
+        self.revert(table, key, version, true).await
+    }
+
+    async fn revert(
+        &self,
+        table: &str,
+        key: &str,
+        version: i64,
+        same_is_nothing: bool,
+    ) -> Result<Option<Restored>> {
         let table = self.readable(table, key).await?;
         let entries = history::row_history(self.catalog, &table, key).await?;
         let Some(target) = entries.iter().find(|e| e.version == version) else {
@@ -320,29 +344,34 @@ impl<'a> Reverser<'a> {
                             .filter(|(c, v)| now.get(c).unwrap_or(&Json::Null) != v)
                             .collect();
                         if changes.is_empty() {
+                            if same_is_nothing {
+                                return Ok(None);
+                            }
                             return Err(Error::invalid(format!(
                                 "row `{key}` of `{}` is already as it was at version {version}",
                                 table.name
                             )));
                         }
-                        self.update(&tx, &table, key, changes).await
+                        self.update(&tx, &table, key, changes).await.map(Some)
                     }
                     None => {
                         let (values, skipped) = writable(&table, then_row, true);
                         dropped.extend(skipped);
-                        self.insert(&tx, &table, values).await
+                        self.insert(&tx, &table, values).await.map(Some)
                     }
                 }
             }
             .await;
-            let row = finish(&tx, written).await?;
+            let Some(row) = finish(&tx, written).await? else {
+                return Ok(None);
+            };
             dropped.sort();
             dropped.dedup();
-            Ok(Restored {
+            Ok(Some(Restored {
                 changeset: id,
                 row: redacted_json(&table, row),
                 dropped,
-            })
+            }))
         })
         .await
     }
@@ -611,9 +640,9 @@ impl<'a> Reverser<'a> {
             let found = match self.catalog.get(&target_table.0)? {
                 Some(target) => {
                     let sql = format!(
-                        "SELECT 1 AS found FROM {target} t WHERE t.{column}::text = $1 LIMIT 1",
+                        "SELECT 1 AS found FROM {target} t WHERE {column} = $1 LIMIT 1",
                         target = quote(&target.name),
-                        column = quote(&target_field.0),
+                        column = sc_catalog::as_text_sql(&format!("t.{}", quote(&target_field.0))),
                     );
                     let stmt = Statement::raw(sql, vec![Value::Text(text.clone())]);
                     !tx.run(Some(&self.checking()), &stmt).await?.is_empty()
@@ -667,12 +696,16 @@ async fn current_row(
     table: &Table,
     key: &str,
 ) -> Result<Option<Map<String, Json>>> {
-    let quote = |ident: &str| catalog.primary().dialect().quote_ident(ident);
-    let sql = format!(
-        "SELECT to_jsonb(t) AS row FROM {table} t WHERE t.{pk}::text = $1",
-        table = quote(&table.name),
-        pk = quote(&rows::single_pk(table)?),
-    );
+    let sql = {
+        let dialect = catalog.primary().dialect();
+        let quote = |ident: &str| dialect.quote_ident(ident);
+        format!(
+            "SELECT {row} AS row FROM {name} t WHERE {key} = $1",
+            row = sc_catalog::row_json_sql(dialect, table, "t"),
+            name = quote(&table.name),
+            key = sc_catalog::as_text_sql(&format!("t.{}", quote(&rows::single_pk(table)?))),
+        )
+    };
     let found = tx
         .run(
             Some(context),

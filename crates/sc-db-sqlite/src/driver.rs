@@ -124,7 +124,10 @@ impl SqliteDriver {
             identity_sequences: false,
             unlogged_tables: false,
             native_temporal_types: false,
-            change_triggers: false,
+            // Generated per table and regenerated with its columns
+            // (`sc_catalog::change_log_sqlite`); the writer's changeset reaches
+            // them through `set_local`'s settings table.
+            change_triggers: true,
         }
     }
 

@@ -966,11 +966,60 @@ async fn the_driver_is_a_database_driver_that_says_what_it_cannot_do() -> Result
     let tables = driver.introspect().await?;
     assert_eq!(tables[0].primary_key, vec!["org", "person"]);
 
-    // A transaction-local setting is refused rather than silently ignored: the
-    // authorization layer must not think it set a caller context that no policy
-    // will ever read.
+    // A transaction-local setting is kept in the settings table, which only
+    // the change log creates (no policy reads it here). Without the table
+    // there is nothing to keep it in, and nothing reads it.
     let mut tx = driver.begin().await?;
-    assert!(tx.set_local("sc.role", "1").await.is_err());
+    tx.set_local("sc.role", "1").await?;
+    tx.commit().await?;
+    let tables = driver.introspect().await?;
+    assert!(!tables.iter().any(|t| t.name == sc_db::TX_SETTINGS_TABLE));
+    Ok(())
+}
+
+/// With the settings table there, a setting is a row while its transaction
+/// is open and gone once it commits, so no other writer ever reads it; a
+/// read-only transaction keeps none.
+#[tokio::test]
+async fn a_transaction_local_setting_lives_as_long_as_its_transaction() -> Result<()> {
+    let driver: Arc<dyn DatabaseDriver> = Arc::new(driver());
+    let settings = sc_db::TX_SETTINGS_TABLE;
+    let mut tx = driver.begin().await?;
+    tx.batch(&format!(
+        "CREATE TABLE {settings} (name TEXT PRIMARY KEY, value TEXT)"
+    ))
+    .await?;
+    tx.commit().await?;
+
+    let read = |sql: String| Statement::raw(sql, Vec::new());
+    let mut tx = driver.begin().await?;
+    tx.set_local("sc.changeset", "{\"id\":\"a\"}").await?;
+    tx.set_local("sc.changeset", "{\"id\":\"b\"}").await?;
+    let inside = tx
+        .query(&read(format!("SELECT value FROM {settings}")))
+        .await?
+        .try_collect()
+        .await?;
+    assert_eq!(inside.len(), 1);
+    assert_eq!(
+        inside[0].get("value"),
+        Some(&Value::Text("{\"id\":\"b\"}".into()))
+    );
+    tx.commit().await?;
+    let after = driver
+        .query(&read(format!("SELECT value FROM {settings}")))
+        .await?
+        .try_collect()
+        .await?;
+    assert!(after.is_empty());
+
+    let mut tx = driver.begin().await?;
+    tx.set_read_only().await?;
+    tx.set_local("sc.role", "1").await?;
+    tx.commit().await?;
+    // And the connection it used still writes.
+    let mut tx = driver.begin().await?;
+    tx.set_local("sc.role", "1").await?;
     tx.rollback().await?;
     Ok(())
 }

@@ -9,9 +9,11 @@
 //! (`psql`, another program) is recorded like any other. The trigger stays while
 //! either feature is on, and is dropped only when both are off.
 //!
-//! All tables share one `plpgsql` function, [`RECORD_FUNCTION`]; the trigger
-//! passes it the name of the table's primary-key column. Reading the row as JSON
-//! means a column added later is recorded without touching the trigger.
+//! On Postgres all tables share one `plpgsql` function, [`RECORD_FUNCTION`]; the
+//! trigger passes it the name of the table's primary-key column. Reading the row
+//! as JSON means a column added later is recorded without touching the trigger.
+//! On SQLite each table's triggers are generated from its columns
+//! (`change_log_sqlite`).
 //!
 //! User tables gain nothing: no version column, no "deleted" flag. A delete is an
 //! entry in the log.
@@ -109,6 +111,17 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
     if !catalog.primary().capabilities().change_triggers {
         return Ok(());
     }
+    let sqlite = catalog.primary().dialect().is_sqlite();
+    if sqlite && catalog.get(CHANGES_TABLE)?.is_none() {
+        // Its own DDL on SQLite, for `AUTOINCREMENT`: `seq` is the watermark
+        // there, and must never be given out twice.
+        catalog
+            .apply_schema_batch(&[SchemaStep::Sql(
+                crate::change_log_sqlite::changes_table_sql(),
+            )])
+            .await?;
+        catalog.reload().await?;
+    }
     catalog
         .bootstrap_table(CHANGESETS_TABLE, &changesets_fields())
         .await?;
@@ -118,6 +131,11 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
     crate::sync::bootstrap_sync_clients(catalog).await?;
     let dialect = catalog.primary().dialect();
     let table = dialect.quote_ident(CHANGES_TABLE);
+    let function = if sqlite {
+        crate::change_log_sqlite::bootstrap_sql()
+    } else {
+        record_function_sql()
+    };
     catalog
         .apply_schema_batch(&[SchemaStep::Sql(format!(
             "CREATE INDEX IF NOT EXISTS {by_tx} ON {table} (txid, seq);\n\
@@ -130,7 +148,6 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
             by_tx = dialect.quote_ident("_fd_changes_txid"),
             by_row = dialect.quote_ident("_fd_changes_row"),
             entry = dialect.quote_ident("_fd_changes_entry"),
-            function = record_function_sql(),
         ))])
         .await
 }
@@ -298,13 +315,19 @@ END $fd$;"#
 /// The DDL that starts recording `table`'s changes, keyed by the column `pk`.
 /// Drops a trigger left from before first, so it also re-points the trigger
 /// when the primary key changed.
-pub fn enable_change_log_sql(dialect: &dyn SqlDialect, table: &str, pk: &str) -> String {
+///
+/// On SQLite the triggers are generated from `table`'s stored columns, so it
+/// must be the table as the batch leaves it.
+pub fn enable_change_log_sql(dialect: &dyn SqlDialect, table: &Table, pk: &str) -> String {
+    if dialect.is_sqlite() {
+        return crate::change_log_sqlite::enable_sql(&table.name, pk, &stored_columns(table));
+    }
     format!(
-        "{drop}\nCREATE TRIGGER {trigger} AFTER INSERT OR UPDATE OR DELETE ON {table} \
+        "{drop}\nCREATE TRIGGER {trigger} AFTER INSERT OR UPDATE OR DELETE ON {name} \
          FOR EACH ROW EXECUTE FUNCTION {RECORD_FUNCTION}({pk});",
-        drop = disable_change_log_sql(dialect, table),
+        drop = disable_change_log_sql(dialect, &table.name),
         trigger = dialect.quote_ident(CHANGES_TRIGGER),
-        table = dialect.quote_ident(table),
+        name = dialect.quote_ident(&table.name),
         pk = dialect.quote_literal(pk),
     )
 }
@@ -312,11 +335,59 @@ pub fn enable_change_log_sql(dialect: &dyn SqlDialect, table: &str, pk: &str) ->
 /// The DDL that stops recording `table`'s changes. The entries already in the
 /// log stay: a device may still need them, and history reads them.
 pub fn disable_change_log_sql(dialect: &dyn SqlDialect, table: &str) -> String {
+    if dialect.is_sqlite() {
+        return crate::change_log_sqlite::disable_sql(table);
+    }
     format!(
         "DROP TRIGGER IF EXISTS {} ON {};",
         dialect.quote_ident(CHANGES_TRIGGER),
         dialect.quote_ident(table)
     )
+}
+
+/// `table`'s stored columns, with the SQL type each is declared with: every
+/// field but a calculated one, which has no column.
+pub(crate) fn stored_columns(table: &Table) -> Vec<(String, String)> {
+    table
+        .fields
+        .iter()
+        .filter(|f| !f.is_calc())
+        .map(|f| (f.base.name.clone(), f.base.type_.sql_type().to_owned()))
+        .collect()
+}
+
+/// A row `alias` of `table` as the JSON object the log records rows in: what
+/// the trigger would record for it, to compare with an entry or rebuild a
+/// version from.
+pub fn row_json_sql(dialect: &dyn SqlDialect, table: &Table, alias: &str) -> String {
+    if dialect.is_sqlite() {
+        crate::change_log_sqlite::row_json_sql(alias, &stored_columns(table))
+    } else {
+        format!("to_jsonb({alias})")
+    }
+}
+
+/// A column (or any expression) as text, to compare with a `row_key`.
+pub fn as_text_sql(expr: &str) -> String {
+    format!("CAST({expr} AS TEXT)")
+}
+
+/// The texts of a JSON array bound as `bind` (`$1`), as a subquery for `IN`.
+pub fn json_texts_sql(dialect: &dyn SqlDialect, bind: &str) -> String {
+    if dialect.is_sqlite() {
+        format!("SELECT value FROM json_each({bind})")
+    } else {
+        format!("SELECT jsonb_array_elements_text({bind}::jsonb)")
+    }
+}
+
+/// The aggregate collecting `expr`'s distinct values into a JSON array.
+pub fn json_distinct_array_sql(dialect: &dyn SqlDialect, expr: &str) -> String {
+    if dialect.is_sqlite() {
+        format!("json_group_array(DISTINCT {expr})")
+    } else {
+        format!("jsonb_agg(DISTINCT {expr})")
+    }
 }
 
 /// Whether `attributes` (a table's, or its overlay row's) has history switched on.
@@ -364,7 +435,8 @@ pub fn change_log_key(
     let feature = feature.name();
     if !catalog.primary().capabilities().change_triggers {
         return Err(Error::invalid(format!(
-            "{feature} needs a Postgres database; this one cannot record changes yet"
+            "{feature} needs a database that can record changes with triggers, and this \
+             one cannot"
         )));
     }
     if table.is_system() {

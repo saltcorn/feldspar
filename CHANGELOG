@@ -2,6 +2,66 @@
 
 Changes in reverse chronological order.
 
+## Row history H6: code, SQLite, documentation
+
+History is now reachable from code bodies in both languages and Saltcorn 1's `Table`, and works
+on a SQLite primary database. Offline sync records changes on SQLite too (its S1.4).
+
+- **Code bodies (H6.1).** `db`'s host takes `op: "history"` requests
+  (`sc_api::code_host::history`), through H2's `HistoryReader` and H3's `Reverser` at the
+  plan's authority (admin by default, `asUser()`/`as_user()` for the caller). New terminals on
+  `db.<table>` in JavaScript and Python: `history(key)`, `deleted()` (paged by
+  `.limit()`/`.offset()`), `asOf(key, when)` / `as_of(key, when)`, `restore(key)` and
+  `revert(key, version)`. v1's `table.get_history(id)` (every version oldest first, the whole
+  row after each, with `_version`, `_time`, `_userid`, `_deleted`, `_op`, `_changeset`,
+  `_source`; the id is required), `restore_row_version`, `undo_row_changes` and
+  `redo_row_changes` are implemented and off `v1_api.js`'s refusal list. Undo and redo step
+  through versions the way v1's `_restore_of_version` did, inferring which version a restore
+  went back to. `insert_history_row` and `compress_history` stay refused, with new reasons.
+  `Reverser::revert_row_if_changed` answers nothing for a row already at that version. A
+  restore from inside a workflow step's transaction is refused.
+- **Write floor (fix).** `write_as` now accepts the write floor when the role of the context the
+  write runs under meets it, as well as the user's role. A code body restoring a row with the
+  admin's authority on behalf of a role-40 caller, or of nobody, was refused as that caller.
+- **SQLite capture (H6.2).** `sc_catalog::change_log_sqlite`: per table, three triggers
+  (`_fd_changes_{table}_ins/_upd/_del`) generated from its columns turn the row into JSON and
+  insert it into the view `_fd_record_change`, whose `INSTEAD OF` trigger does the changeset
+  handling and Postgres's merge. A merge moves the entry's `seq` forward (`seq` is the sync
+  watermark there, and `AUTOINCREMENT` so no number is reused). The changeset reaches the
+  trigger through `_fd_tx_settings` (`sc_db::TX_SETTINGS_TABLE`): SQLite's `set_local` writes
+  rows there and deletes them before commit. The design's connection-local temp table cannot
+  work, because a main-schema trigger cannot read `temp`. A write from another program is one
+  `sql` changeset per row. SQLite's `change_triggers` capability is now on.
+- **Triggers follow the schema.** `Catalog::apply_schema_batch_in`, `create_field` and
+  `drop_field` drop a table's change-log triggers before a change to it and regenerate them
+  after, from `pragma_table_info`. Without that, SQLite would refuse to drop a column the
+  triggers name, and a table rebuild would bring them back stale. `enable_change_log_sql` now
+  takes the table.
+- **Portable readers.** The history reads, `session_undo_target`, the changeset list, undo's
+  row reads and key checks, the emails lookup, the cleanup job (no data-modifying CTEs:
+  `DELETE … RETURNING`), the rename rewrite (`json_set`/`json_remove` on SQLite) and sync's
+  watermark and changed keys (`seq` on SQLite) run on both backends. New helpers
+  `row_json_sql`, `as_text_sql`, `json_texts_sql`, `json_distinct_array_sql` and
+  `SqlDialect::is_sqlite`.
+- **SQLite read-only fix.** A read-only SQLite transaction that committed left `query_only` on
+  its pooled connection, so the next writer on it failed. `finish` now turns it off.
+- **Docs (H6.3).** New `docs/tutorial-history.md`: switching history on, reading a row's
+  history, restoring deleted rows, undoing a changeset, opening history to a role, history in
+  code, the Undo action, schema changes, SQLite. `tutorial-triggers.md`'s v1 compatibility table
+  is updated and links it. Design §14.12 "As built (H6)", §14.11 and the ER diagram (now with
+  `_fd_sync_keys` and `_fd_tx_settings`) are updated.
+- Tests: `sc-api/tests/v1_table_history.rs` (versions oldest first; undo/redo stepping; restore
+  to a version, to the current version, and of a deleted row); `sc-python/tests/
+  python_db_live.rs` (history, deleted, as_of, restore and revert from Python, refused below the
+  admin, and the same reads from JavaScript); `sc-api/tests/history_sqlite.rs` (one entry per
+  row per changeset, insert+update, insert+delete, no-op update, a write from outside, the
+  settings left empty; a merge moves `seq` so a pull in between sees it; reading, `as_of`,
+  changesets, undo across two tables, delete and restore; triggers following add, rename and
+  drop of a field and dropped when history goes off; the cleanup job and `seq` not reused);
+  `sync_changes.rs` (SQLite records a synced table); `sc-db-sqlite` (a setting lives as long as
+  its transaction; read-only keeps none and leaves the connection writable); unit tests for
+  version rebuilding and undo/redo targets.
+
 ## Row history H5: files, schema edits and retention
 
 History now keeps what a restore needs and lets go of it on schedule, and survives column
