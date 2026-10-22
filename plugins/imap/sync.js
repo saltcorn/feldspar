@@ -35,12 +35,28 @@
 // With CONDSTORE, the flags that changed since `highestmodseq`; without it, the flags of the
 // newest 2,000 messages. Expunges by `UID SEARCH ALL` against the stored UIDs. In ingest mode an
 // expunged message's row is never deleted: its `uid` is cleared, which records that the mail is
-// no longer in that folder on the server.
+// no longer in that folder on the server. In mirror mode it is deleted, with its attachment rows
+// and stored files.
+//
+// Mirror mode (§4, M9.1)
+// ----------------------
+// A mirror account is a two-way copy of every folder, and differs in four ways:
+// - **Newest first.** A folder's first sync stores its newest 50 messages, sets `last_uid` to the
+//   top and `backfill_uid` to the lowest UID stored. New mail is then `uid > last_uid` as above,
+//   and `backfill` works downwards from `backfill_uid`, one batch at a time, as slowly as the
+//   runner calls it (`account.js`: a batch every 15 s, 200 a minute). `backfill_uid` is 0 when
+//   the folder is complete, and null before its first sync.
+// - **Bodies for `body_days`.** Mail received in the last `body_days` days is fetched whole;
+//   older mail is stored from its headers and structure alone (`body_state = "headers"`), and
+//   `mail_fetch_body` fetches the rest when it is opened.
+// - **Attachments are stored when opened** (`mail_attachment`), not on import.
+// - **Nothing is kept that the server no longer has**: an expunge deletes the row, and a new
+//   UIDVALIDITY deletes the folder's rows and syncs it again from the start.
 
 "use strict";
 
 const { parse, SIZE_CAP } = require("./parse.js");
-const { parseLarge } = require("./parse-large.js");
+const { parseLarge, parseHeaders } = require("./parse-large.js");
 
 /** Messages per batch (§5.2). */
 const BATCH = 50;
@@ -83,6 +99,68 @@ async function bytesOf(stream) {
 /** The folder row's numbers, as numbers. */
 const num = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
 
+/** Whether an account is a two-way mirror (§4) rather than an ingest mailbox. */
+const isMirror = (account) => Boolean(account) && account.mode === "mirror";
+
+/** Mirror mode: mail received before this time is stored with its headers only (`body_days`,
+ * default 90). */
+function bodyCutoff(account, now = Date.now()) {
+  const days = num(account && account.body_days);
+  return now - (days !== null && days >= 0 ? days : 90) * 86_400_000;
+}
+
+// ------------------------------------------------------------------------------ deleting
+
+/** Delete messages' rows, with their attachment rows and stored files (mirror mode, and the
+ * mirror actions). A row the database will not delete — the application's own data refers to
+ * it — keeps existing with its `uid` cleared, as ingest mode keeps one, and is logged. */
+async function deleteMessages(env, ids) {
+  const { db, files, log } = env;
+  let deleted = 0;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const part = ids.slice(i, i + CHUNK);
+    const attachments = await db.mail_attachments.where({ message: { in: part } }).rows();
+    for (const a of attachments) {
+      if (a.file && files && files.remove) {
+        await files.remove(FILE_STORE, a.file).catch((e) => log.warn(`could not remove ${a.file}: ${e.message}`));
+      }
+    }
+    if (attachments.length) await db.mail_attachments.where({ message: { in: part } }).delete();
+    try {
+      await db.mail_messages.where({ id: { in: part } }).delete();
+      deleted += part.length;
+    } catch (_) {
+      // One at a time, to find the rows something else refers to.
+      for (const id of part) {
+        try {
+          await db.mail_messages.where({ id }).delete();
+          deleted += 1;
+        } catch (e) {
+          log.warn(`message ${id} is gone from the server but is kept: ${e.message}`);
+          await db.mail_messages.where({ id }).update({ uid: null });
+        }
+      }
+    }
+  }
+  return deleted;
+}
+
+/** A folder that is gone from the server (mirror mode): its messages and its row. */
+async function deleteFolder(env, folder) {
+  const { db } = env;
+  for (;;) {
+    const ids = (await db.mail_messages.where({ folder: folder.id }).select("id").limit(CHUNK).rows()).map((r) => r.id);
+    if (!ids.length) break;
+    const deleted = await deleteMessages(env, ids);
+    if (deleted < ids.length) {
+      // Some are kept: they cannot stay in a folder that is going, so they leave it.
+      await db.mail_messages.where({ folder: folder.id }).update({ folder: null, uid: null });
+      break;
+    }
+  }
+  await db.mail_folders.where({ id: folder.id }).delete();
+}
+
 // ------------------------------------------------------------------------------ folder rows
 
 /** The `mail_folders` row of `path` for an account, inserted when it is missing. */
@@ -101,18 +179,28 @@ async function folderRow(db, account, path, values = {}) {
 
 // ------------------------------------------------------------------------------ uidvalidity
 
-/** UIDVALIDITY changed (§5.2): every UID of the folder means something else now. The rows are
- * kept and their `uid` cleared, so new mail can be matched to them by `message_id` as it is
- * found again; the cursor starts over. */
+/** UIDVALIDITY changed (§5.2): every UID of the folder means something else now. In ingest mode
+ * the rows are kept and their `uid` cleared, so new mail can be matched to them by `message_id`
+ * as it is found again; in mirror mode they are deleted and the folder is synced again from the
+ * start. The cursor starts over either way. */
 async function resetFolder(env, folder, uidValidity) {
   const { db, log } = env;
-  log.warn(`${env.account.label || env.account.email}: ${folder.path} has a new UIDVALIDITY (${folder.uidvalidity} → ${uidValidity}); its messages will be matched again by Message-ID`);
+  const mirror = isMirror(env.account);
+  log.warn(
+    `${env.account.label || env.account.email}: ${folder.path} has a new UIDVALIDITY (${folder.uidvalidity} → ${uidValidity}); ` +
+      (mirror ? "it is synced again" : "its messages will be matched again by Message-ID"),
+  );
   for (;;) {
     const ids = (await db.mail_messages.where({ folder: folder.id, uid: { gt: 0 } }).select("id").limit(CHUNK).rows()).map((r) => r.id);
     if (!ids.length) break;
-    await db.mail_messages.where({ id: { in: ids } }).update({ uid: null });
+    if (mirror) {
+      if ((await deleteMessages(env, ids)) < ids.length) continue;
+    } else {
+      await db.mail_messages.where({ id: { in: ids } }).update({ uid: null });
+    }
   }
-  const values = { uidvalidity: uidValidity, last_uid: 0, highestmodseq: null };
+  delete folder.backlog;
+  const values = { uidvalidity: uidValidity, last_uid: 0, highestmodseq: null, backfill_uid: null };
   await db.mail_folders.where({ id: folder.id }).update(values);
   Object.assign(folder, values);
 }
@@ -128,9 +216,19 @@ async function fetchRawPart(client, uid, part, maxBytes) {
   return [...message.bodyParts.values()][0];
 }
 
-/** One message, parsed: the whole source at or below the cap, the structure above it. */
-async function fetchAndParse(client, meta) {
+/** One message, parsed: the whole source at or below the cap, the structure above it, and
+ * (`headersOnly`, mirror mode's older mail) the headers and structure alone. */
+async function fetchAndParse(client, meta, { headersOnly = false } = {}) {
   const opts = { internalDate: meta.internalDate, flags: meta.flags, size: meta.size };
+  if (headersOnly) {
+    let { bodyStructure, headers } = meta;
+    if (!bodyStructure) {
+      const message = await client.fetchOne(String(meta.uid), { uid: true, bodyStructure: true, headers: true }, { uid: true });
+      if (!message) return null;
+      ({ bodyStructure, headers } = message);
+    }
+    return parseHeaders(bodyStructure, { ...opts, headers });
+  }
   if (!(meta.size > SIZE_CAP)) {
     const message = await client.fetchOne(String(meta.uid), { uid: true, source: true }, { uid: true });
     if (!message || !message.source) return null;
@@ -163,23 +261,27 @@ async function storeMessage(env, folder, meta, parsed, existing) {
     row = await db.mail_messages.insert(values);
   }
   const problems = [];
+  // Mirror mode stores an attachment's file when it is first opened (§4), ingest on import.
+  const storeFiles = !isMirror(env.account) && files;
   for (let i = 0; i < attachments.length; i++) {
     const a = attachments[i];
     let file = null;
-    try {
-      let content = a.content;
-      // Above the cap the parser lists attachments without their bytes; ingest stores them
-      // now (§4), straight from the server as a stream.
-      if (!content && downloadable(a.part)) content = (await client.download(String(meta.uid), a.part, { uid: true })).content;
-      if (content) {
-        const name = safeName(a.filename, `part-${i + 1}`);
-        file = await files.write(FILE_STORE, `${FILE_FOLDER}/${row.id}/${i + 1}-${name}`, content, {
-          contentType: a.content_type || "application/octet-stream",
-          filename: a.filename || name,
-        });
+    if (storeFiles) {
+      try {
+        let content = a.content;
+        // Above the cap the parser lists attachments without their bytes; ingest stores them
+        // now (§4), straight from the server as a stream.
+        if (!content && downloadable(a.part)) content = (await client.download(String(meta.uid), a.part, { uid: true })).content;
+        if (content) {
+          const name = safeName(a.filename, `part-${i + 1}`);
+          file = await files.write(FILE_STORE, `${FILE_FOLDER}/${row.id}/${i + 1}-${name}`, content, {
+            contentType: a.content_type || "application/octet-stream",
+            filename: a.filename || name,
+          });
+        }
+      } catch (e) {
+        problems.push(`attachment ${a.filename || a.part}: ${e.message}`);
       }
-    } catch (e) {
-      problems.push(`attachment ${a.filename || a.part}: ${e.message}`);
     }
     await db.mail_attachments.insert({
       message: row.id,
@@ -224,8 +326,13 @@ function errorRow(meta, error) {
  * already there), in UID order, and the UID it stopped before when a write failed. */
 async function importBatch(env, folder, uids) {
   const { client, db, log } = env;
+  const mirror = isMirror(env.account);
+  const cutoff = mirror ? bodyCutoff(env.account) : null;
   // Collected first: imapflow must not be given another command while a FETCH is streaming.
-  const metas = await client.fetchAll(uids.join(","), { uid: true, flags: true, size: true, internalDate: true, envelope: true }, { uid: true });
+  // A mirror also takes the structure and headers here, for the mail it keeps headers-only.
+  const query = { uid: true, flags: true, size: true, internalDate: true, envelope: true };
+  if (mirror) Object.assign(query, { bodyStructure: true, headers: true });
+  const metas = await client.fetchAll(uids.join(","), query, { uid: true });
   const byUid = new Map(metas.map((m) => [m.uid, m]));
   const stored = [];
   for (const uid of uids) {
@@ -251,7 +358,8 @@ async function importBatch(env, folder, uids) {
       }
       let parsed;
       try {
-        parsed = await fetchAndParse(client, meta);
+        const old = mirror && meta.internalDate && new Date(meta.internalDate).getTime() < cutoff;
+        parsed = await fetchAndParse(client, meta, { headersOnly: Boolean(old) });
         if (!parsed) continue; // gone in the meantime
       } catch (e) {
         if (!client.usable) throw e; // the connection went: retried after the reconnect
@@ -274,6 +382,7 @@ async function importBatch(env, folder, uids) {
  * and the move). A refused move is logged and leaves the mail where it is. */
 async function moveAfterBatch(env, folder, stored) {
   const { account, client, db, log } = env;
+  if (isMirror(account)) return;
   const watched = new Set(watchedFolders(account));
   const groups = new Map();
   for (const s of stored) {
@@ -324,7 +433,17 @@ async function syncNewMail(env, folder) {
     if (since && !isNaN(since)) query.since = since;
     const found = (await client.search(query, { uid: true })) || [];
     const uids = found.filter((u) => u > last).sort((a, b) => a - b);
-    if (!uids.length) break;
+    if (!uids.length) {
+      // Every UID below UIDNEXT was there when the folder was selected, and none above the
+      // cursor is wanted: the cursor can pass them, so a deleted top message is not looked for
+      // again on every pass.
+      const next = num(client.mailbox && client.mailbox.uidNext);
+      if (next && next - 1 > last && !since) {
+        await db.mail_folders.where({ id: folder.id }).update({ last_uid: next - 1 });
+        folder.last_uid = next - 1;
+      }
+      break;
+    }
     const batch = uids.slice(0, BATCH);
     let outcome;
     let failure = null;
@@ -411,7 +530,8 @@ async function syncFlags(env, folder) {
     after = Number(rows[rows.length - 1].uid);
     const gone = rows.filter((r) => Number(r.uid) <= last && !have.has(Number(r.uid))).map((r) => r.id);
     if (gone.length) {
-      await db.mail_messages.where({ id: { in: gone } }).update({ uid: null });
+      if (isMirror(env.account)) await deleteMessages(env, gone);
+      else await db.mail_messages.where({ id: { in: gone } }).update({ uid: null });
       expunged += gone.length;
     }
     if (rows.length < CHUNK) break;
@@ -424,7 +544,7 @@ async function syncFlags(env, folder) {
   return { flags, expunged };
 }
 
-// ------------------------------------------------------------------------------ the folder
+// ------------------------------------------------------------------------------ watched folders
 
 /** The folders an ingest account watches (default `["INBOX"]`). */
 function watchedFolders(account) {
@@ -440,6 +560,81 @@ function watchedFolders(account) {
   return list.length ? list : ["INBOX"];
 }
 
+// ------------------------------------------------------------------------------ mirror
+
+/** A mirror folder's first sync: its newest batch, the cursor at the top, and the backfill
+ * below what was stored. Answers how many messages were stored. */
+async function startMirror(env, folder) {
+  const { client, db } = env;
+  const all = ((await client.search({ all: true }, { uid: true })) || []).sort((a, b) => a - b);
+  const newest = all.slice(-BATCH);
+  let stored = 0;
+  if (newest.length) {
+    const outcome = await importBatch(env, folder, newest);
+    stored = outcome.stored.length;
+    // Stopped (the service is stopping): the next pass starts again; nothing is stored twice.
+    if (outcome.stoppedAt) return stored;
+  }
+  const values = {
+    last_uid: Math.max(all.length ? all[all.length - 1] : 0, num(folder.last_uid) || 0),
+    backfill_uid: all.length > newest.length ? newest[0] : 0,
+  };
+  await db.mail_folders.where({ id: folder.id }).update(values);
+  Object.assign(folder, values);
+  return stored;
+}
+
+/** Whether a mirror folder has older mail still to store. */
+const backfillPending = (folder) => (num(folder.backfill_uid) || 0) > 1;
+
+/**
+ * One step of a mirror folder's backfill (§4: "slow backfill"): the next `limit` messages below
+ * `backfill_uid`, newest first, which is selected and locked. Answers how many were stored.
+ * The UIDs still to do are read once and kept on the folder object (`backlog`), not searched
+ * for again at every step.
+ */
+async function backfill(env, folder, limit = BATCH) {
+  const { client, db } = env;
+  if (!(await checkValidity(env, folder)) || !backfillPending(folder)) return 0;
+  const below = num(folder.backfill_uid);
+  if (!folder.backlog) {
+    folder.backlog = ((await client.search({ uid: `1:${below - 1}` }, { uid: true })) || []).filter((u) => u < below).sort((a, b) => a - b);
+  }
+  const batch = folder.backlog.slice(-limit);
+  let stored = 0;
+  if (batch.length) {
+    const outcome = await importBatch(env, folder, batch);
+    stored = outcome.stored.length;
+    if (outcome.stoppedAt) return stored;
+    folder.backlog.splice(-batch.length);
+  }
+  const next = folder.backlog.length ? batch[0] : 0;
+  if (!next) delete folder.backlog;
+  await db.mail_folders.where({ id: folder.id }).update({ backfill_uid: next });
+  folder.backfill_uid = next;
+  return stored;
+}
+
+// ------------------------------------------------------------------------------ the folder
+
+/** The selected folder's UIDVALIDITY against the stored one: recorded the first time, and the
+ * folder reset when it changed. Answers false when it was reset. */
+async function checkValidity(env, folder) {
+  const mailbox = env.client.mailbox;
+  const uidValidity = mailbox && mailbox.uidValidity !== undefined ? Number(mailbox.uidValidity) : null;
+  if (uidValidity === null) return true;
+  if (folder.uidvalidity === null || folder.uidvalidity === undefined) {
+    await env.db.mail_folders.where({ id: folder.id }).update({ uidvalidity: uidValidity });
+    folder.uidvalidity = uidValidity;
+    return true;
+  }
+  if (Number(folder.uidvalidity) !== uidValidity) {
+    await resetFolder(env, folder, uidValidity);
+    return false;
+  }
+  return true;
+}
+
 /**
  * Sync one folder, which is selected and locked. Answers `{ stored, flags, expunged }`.
  *
@@ -448,17 +643,12 @@ function watchedFolders(account) {
  * @param {{ flags?: boolean }} [opts] also re-read flags and look for expunges
  */
 async function syncFolder(env, folder, opts = {}) {
-  const mailbox = env.client.mailbox;
-  const uidValidity = mailbox && mailbox.uidValidity !== undefined ? Number(mailbox.uidValidity) : null;
-  if (uidValidity !== null) {
-    if (folder.uidvalidity !== null && folder.uidvalidity !== undefined && Number(folder.uidvalidity) !== uidValidity) {
-      await resetFolder(env, folder, uidValidity);
-    } else if (folder.uidvalidity === null || folder.uidvalidity === undefined) {
-      await env.db.mail_folders.where({ id: folder.id }).update({ uidvalidity: uidValidity });
-      folder.uidvalidity = uidValidity;
-    }
+  await checkValidity(env, folder);
+  let stored = 0;
+  if (isMirror(env.account) && (folder.backfill_uid === null || folder.backfill_uid === undefined)) {
+    stored += await startMirror(env, folder);
   }
-  const stored = await syncNewMail(env, folder);
+  stored += await syncNewMail(env, folder);
   let result = { stored, flags: 0, expunged: 0 };
   if (opts.flags) Object.assign(result, await syncFlags(env, folder));
   return result;
@@ -472,9 +662,16 @@ module.exports = {
   syncFolder,
   syncNewMail,
   syncFlags,
+  backfill,
+  backfillPending,
   applyFlags,
   storeMessage,
+  fetchAndParse,
+  deleteMessages,
+  deleteFolder,
   folderRow,
+  isMirror,
+  bodyCutoff,
   flagValues,
   watchedFolders,
   safeName,

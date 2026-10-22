@@ -2,6 +2,79 @@
 
 Changes in reverse chronological order.
 
+## Mail module M9: mirror mode and sending
+
+The bundled mail module now does use cases B and D of TODO-imap.md: each user's own accounts kept
+as a two-way **mirror** of every folder, for a mail client built on the tables, and sending from
+an account with a copy in Sent. New sections in [docs/tutorial-mail.md](docs/tutorial-mail.md)
+(Steps 6–8).
+
+- **M9.1** Mirror sync (`plugins/imap/sync.js`, `account.js`).
+  - Every selectable folder is synced. INBOX by IDLE; the others on a 5-minute poll that lists
+    the folders again (new ones synced, vanished ones deleted with their mail) and opens only
+    those whose STATUS (UIDNEXT, count, HIGHESTMODSEQ) changed.
+  - **Newest first:** a folder's first sync stores its newest 50, sets `last_uid` to the top and
+    the new `mail_folders.backfill_uid` below them. A backfill timer then stores 50 older messages
+    every 15 s (200 a minute), INBOX first and Junk and Trash last, until `backfill_uid` is 0.
+  - **`body_days`:** mail received before it is stored from its headers and BODYSTRUCTURE alone
+    (`parse-large.js` `parseHeaders`, `body_state = "headers"`, attachments listed). Attachment
+    files are stored when first opened, not on import.
+  - Expunges, vanished folders and UIDVALIDITY changes **delete** rows, their attachment rows and
+    stored files. A row the application's own data refers to is kept with `uid` cleared.
+  - The runner queues each folder's sync, each backfill batch and each action separately on the
+    account's one connection, so an action waits for one folder, not a whole pass.
+  - The service runs mirror accounts (they were `unsupported`); any other mode is `refused`.
+  - Both modes: when a folder has nothing new, `last_uid` moves up to UIDNEXT−1, so a deleted top
+    message is not searched for on every pass.
+- **M9.2** Actions (`actions.js`): `mail_fetch_body` (a headers-only message fetched whole, its
+  attachment rows rebuilt, keeping stored files), `mail_move` (by path or `role:<role>`, both
+  modes), `mail_delete` (to Trash, or `\Deleted` + UID EXPUNGE when `permanent` or already in
+  Trash), `mail_create_folder` (optionally inside a `parent`), and `mail_save_draft` (APPEND to
+  Drafts with `\Draft`, `replaces` deletes the earlier draft). Missing Trash, Drafts or Sent
+  folders are created when needed. Rows are written inside the queued IMAP work, so the service
+  never imports an action's result twice. The delete, folder, draft and fetch actions refuse
+  ingest accounts.
+- **M9.3** `mail_send` (§5.7): nodemailer through the account's SMTP server under `connect.js`'s
+  rules. From `display_name <email>`, a Message-ID on the account's domain, `In-Reply-To` and
+  `References` from the message answered (which gets `\Answered`), at most 50 recipients and
+  10 attachments / 20 MB. Attachments are `{ store, path }` application files read **as the
+  caller**, or `{ attachment_id }` to forward. The Sent copy keeps the Bcc and is stored as a
+  row; it is skipped for Gmail and Microsoft 365 unless the new `mail_accounts.save_sent` says
+  otherwise, and a failed copy is `save_error`, not a failed send. `draft_id` is deleted after
+  sending. A personal account sends for its owner; a shared one for users at or above
+  `send_role` (admins only when empty); `mail_save_draft` follows the same rule.
+- **M9.4** `thread_key` (already filled by the parser) is indexed. **Core:** a module's table
+  declaration takes `indexes: [[field, …]]`, created with the table and added on upgrade like
+  `unique` (`sc-module/src/tables.rs`; TECHNICAL_DESIGN §15.1b, tutorial-modules Step 7).
+- **M9.3 core:** a module action gets **`callerFiles`** (`read`, `stat`): the application's file
+  stores read with the caller's authority, over the call's `files` surface
+  (`module-host.mjs`; TECHNICAL_DESIGN §15.1d, tutorial-modules Step 8). Tested in
+  `crates/sc-module/tests/module_files.rs`: an open file reads, an admin-only one is refused, and
+  there is no write.
+- **M9.5** Tests.
+  - `npm test` in `plugins/imap`: `test/mirror.test.mjs` against the test Dovecot and a new SMTP
+    sink (`test/servers/smtp-sink.mjs`, on `smtp-server`, a devDependency the installer's
+    `--omit=dev` skips). Covered: newest first, `body_days`, the backfill (by hand and by its
+    timer), `mail_fetch_body`, new mail by IDLE (about 0.6 s) and by poll, the STATUS shortcut,
+    flags both ways, expunges deleting rows and files, a UIDVALIDITY rebuild, folders made and
+    removed on the server, move, delete to Trash and for good, folders, drafts, a reply through
+    SMTP with a UTF-8 password and its threading headers, the Sent copy with Bcc, the answered
+    flag, draft removal, the input limits, `send_role`, and the ingest refusals.
+    `test/parse-large.test.mjs` checks `parseHeaders` on every generated mail.
+  - `crates/sc-module/tests/imap_mirror.rs` (`#[ignore]`: npm, Dovecot, the sink): two users with
+    two mirror accounts each, while new mail arrives for both, never see each other's mail or
+    accounts through the row layer, REST, GraphQL or a live `table_changes` subscription, and no
+    password is in any of them; `mail_send` runs in the worker with an application file, the
+    copy lands in Sent and the question is answered; the actions refuse the other user's mail.
+    Its helpers are shared with `imap_ingest.rs`, whose module setup is now `load_module`.
+  - `test/servers/dovecot.sh` has users `mirror`, `ann1`, `ann2`, `bob1`, `bob2`. The shared test
+    helpers are in `test/dovecot.mjs`; `test/fake-host.mjs` gained `installFakeTable` (v1's
+    `Table` over the fake tables, with the ownership rule).
+- **M9.6** At most two IMAP connections per account: the service's, which every action queues on
+  while it runs, and otherwise the actions' own connections, now one at a time per account
+  (`account.js` `withConnection`). Tested by counting connections under 30 parallel actions.
+- Fixed: `mail_sync_now` with `wait` left a 60-second timer running after the sync answered.
+
 ## Mail module M8: ingest mode
 
 The bundled mail module now keeps a shared mailbox in its tables (TODO-imap.md M8, use case A).

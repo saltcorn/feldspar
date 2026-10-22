@@ -346,7 +346,8 @@ module.exports = {
 | `default` | the value an insert that leaves the field out gets: a JSON value, or `"=<expression>"`. Only on a `required` field |
 | `label`, `description` | the admin's words for it |
 
-The table itself may give a `label`, a `description`, jointly-`unique` field lists, an
+The table itself may give a `label`, a `description`, jointly-`unique` field lists, `indexes`
+(field lists to index, `[["thread_key"]]`, for what a client searches or groups by), an
 `ownership` formula and the two minimum roles.
 
 **What the server does with it.** The tables are created through the same schema editor the
@@ -356,8 +357,8 @@ GraphQL, ownership, RLS and backups treat them like any other.
 - **Every module table gets an `id` primary key**, a number that fills itself in. A declaration
   does not mention it, so a `references` between two module tables never has to say which column.
 - **It happens on every load:** at install, on a reinstall with a newer version, after a
-  configuration change and at every restart. Missing tables are created and missing fields and
-  unique constraints added. When nothing is missing, nothing happens.
+  configuration change and at every restart. Missing tables are created and missing fields,
+  unique constraints and indexes added. When nothing is missing, nothing happens.
 - **Nothing is ever dropped or changed**, on upgrade or on uninstall. A field the admin added to
   a module table stays theirs.
   - If a declared field's type no longer matches the column, that is reported on the module's
@@ -494,6 +495,18 @@ pieces to a temporary name and renamed into place at the end, so it never has to
 and a reader never sees half of it. Another store, another folder or `..` is refused, naming the
 places the module may write. Files are written as the module, also from an action: the action's
 own table reads decide what its caller may reach.
+
+**The caller's files.** An action that takes a file the *user* names — an attachment to send, a
+document to convert — reads it with `callerFiles`, also in its argument. It reads anywhere in the
+application's file stores, but **as the caller**: a file they could not download is refused, with
+the same rules as their download. It cannot write.
+
+```js
+run: async ({ payload, callerFiles }) => {
+  const info = await callerFiles.stat("uploads", payload.path); // { size, mimeType, … } or null
+  const bytes = await callerFiles.read("uploads", payload.path); // a Buffer
+}
+```
 
 **On a bundled card**, list the services in `feldspar-module.json` as `services: ["ticker"]`. The
 card then says the module runs in the background and writes to its own tables.

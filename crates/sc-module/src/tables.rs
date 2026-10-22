@@ -15,6 +15,7 @@
 //!     { name: "uidvalidity", type: "int" },
 //!   ],
 //!   unique: [["account", "path"]],
+//!   indexes: [["uidvalidity"]],
 //!   ownership: "accountⱵowner === user.id",
 //!   min_role_read: 1, min_role_write: 1,
 //! }]
@@ -81,6 +82,11 @@ pub struct TableDecl {
     /// Jointly-unique field lists — `[["account", "path"]]`.
     #[serde(default)]
     pub unique: Vec<Vec<String>>,
+    /// Indexes, each a field list — `[["thread_key"]]` — for what a client
+    /// searches or groups by (TODO-imap M9.4). Added when missing, on creation
+    /// and on upgrade alike, and never dropped.
+    #[serde(default)]
+    pub indexes: Vec<Vec<String>>,
     /// The ownership formula (§7.3), applied when the table is created.
     #[serde(default)]
     pub ownership: Option<String>,
@@ -282,16 +288,29 @@ fn check_table(decl: &TableDecl, earlier: &[TableDecl]) -> Result<()> {
             )));
         }
     }
-    for fields in &decl.unique {
-        if fields.is_empty() {
-            return Err(Error::invalid("a `unique` entry names no fields"));
-        }
-        for field in fields {
-            if field != MODULE_TABLE_KEY && !seen.contains(field.trim()) {
-                return Err(Error::invalid(format!(
-                    "`unique` names `{field}`, which is not one of its fields"
-                )));
+    for (key, lists) in [("unique", &decl.unique), ("indexes", &decl.indexes)] {
+        for fields in lists {
+            if fields.is_empty() {
+                return Err(Error::invalid(format!("an entry of `{key}` names no fields")));
             }
+            for field in fields {
+                if field != MODULE_TABLE_KEY && !seen.contains(field.trim()) {
+                    return Err(Error::invalid(format!(
+                        "`{key}` names `{field}`, which is not one of its fields"
+                    )));
+                }
+            }
+        }
+    }
+    for fields in &decl.indexes {
+        if let Some(secret) = fields.iter().find(|f| {
+            decl.fields
+                .iter()
+                .any(|d| d.name.trim() == f.trim() && d.secret)
+        }) {
+            return Err(Error::invalid(format!(
+                "`indexes` names `{secret}`, which is a secret and cannot be indexed"
+            )));
         }
     }
     Ok(())
@@ -325,7 +344,7 @@ pub struct SyncReport {
     pub tables_created: Vec<String>,
     /// Fields added to tables that were already there, as `table.field`.
     pub fields_added: Vec<String>,
-    /// Unique constraints added, as `table.constraint`.
+    /// Unique constraints and indexes added, as `table.constraint`.
     pub constraints_added: Vec<String>,
     /// File stores created for a declared file field.
     pub stores_created: Vec<String>,
@@ -383,6 +402,12 @@ pub async fn sync(
                     report
                         .constraints_added
                         .push(format!("{name}.{}", unique_name(name, fields)));
+                }
+                for fields in &decl.indexes {
+                    operations.push(index(name, fields));
+                    report
+                        .constraints_added
+                        .push(format!("{name}.{}", index_name(name, fields)));
                 }
             }
             Ok(Some(table)) if table.provider().is_some() || table.is_metadata() => {
@@ -457,6 +482,26 @@ fn unique(table: &str, fields: &[String]) -> Operation {
     }
 }
 
+fn index_kind(fields: &[String]) -> ConstraintKind {
+    ConstraintKind::Index {
+        fields: fields.iter().map(|f| f.trim().to_owned()).collect(),
+        expression: None,
+        method: "btree".to_owned(),
+    }
+}
+
+fn index_name(table: &str, fields: &[String]) -> String {
+    TableConstraint::derived_name(table, &index_kind(fields), "")
+}
+
+fn index(table: &str, fields: &[String]) -> Operation {
+    Operation::AddConstraint {
+        table: table.to_owned(),
+        given_name: String::new(),
+        constraint: TableConstraint::new(index_name(table, fields), index_kind(fields)),
+    }
+}
+
 /// The operations that bring an existing table up to its declaration, and the
 /// mismatches that are reported instead of changed.
 fn upgrade(
@@ -505,6 +550,23 @@ fn upgrade(
             report
                 .constraints_added
                 .push(format!("{name}.{}", unique_name(name, fields)));
+        }
+    }
+    for fields in &decl.indexes {
+        let wanted: Vec<&str> = fields.iter().map(|f| f.trim()).collect();
+        // Any index over the same fields in the same order serves, whoever
+        // made it: one the admin added by hand is not made twice.
+        let present = table.constraints.iter().any(|c| match &c.kind {
+            ConstraintKind::Index { fields, .. } => {
+                fields.iter().map(String::as_str).eq(wanted.iter().copied())
+            }
+            _ => false,
+        });
+        if !present {
+            operations.push(index(name, fields));
+            report
+                .constraints_added
+                .push(format!("{name}.{}", index_name(name, fields)));
         }
     }
 }
@@ -631,6 +693,9 @@ mod tests {
             { "name": "mail_accounts", "fields": [] },
             { "name": "defaulted", "fields": [{ "name": "n", "type": "int", "default": 3 }] },
             { "name": "u", "fields": [{ "name": "a", "type": "int" }], "unique": [["a", "b"]] },
+            { "name": "i", "fields": [{ "name": "a", "type": "int" }], "indexes": [["c"]] },
+            { "name": "s", "fields": [{ "name": "pw", "secret": true }], "indexes": [["pw"]] },
+            { "name": "e", "fields": [{ "name": "a", "type": "int" }], "indexes": [[]] },
         ]));
         assert_eq!(decls.len(), 1, "{issues:?}");
         assert_eq!(decls[0].fields.len(), 3);
@@ -644,6 +709,9 @@ mod tests {
             "`mail_accounts` is declared twice",
             "has a `default` but is not `required`",
             "`unique` names `b`",
+            "`indexes` names `c`",
+            "`indexes` names `pw`, which is a secret",
+            "an entry of `indexes` names no fields",
         ] {
             assert!(all.contains(needle), "missing {needle:?} in:\n{all}");
         }

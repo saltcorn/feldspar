@@ -9481,6 +9481,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-live",
  "sc-log",
  "sc-model",
  "sc-query",

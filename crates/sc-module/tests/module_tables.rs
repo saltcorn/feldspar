@@ -82,6 +82,7 @@ fn mail_tables() -> Vec<TableDecl> {
                 { "name": "subject", "type": "text" },
                 { "name": "seen", "type": "bool" },
             ],
+            "indexes": [["account", "subject"]],
             "ownership": MESSAGE_RULE, "min_role_read": 1, "min_role_write": 1,
         },
         {
@@ -129,6 +130,17 @@ async fn declared_tables_are_created_once_and_a_second_sync_changes_nothing() ->
         let t = cat.require(table)?;
         assert!(t.ownership.is_some(), "{table}: {:?}", t.ownership_error);
     }
+    // A declared index (TODO-imap M9.4), read back as one, so the second sync
+    // below does not make it again.
+    let messages = cat.require("mail_messages")?;
+    assert!(
+        messages.constraints.iter().any(|c| matches!(
+            &c.kind,
+            sc_catalog::ConstraintKind::Index { fields, .. } if fields == &["account", "subject"]
+        )),
+        "{:?}",
+        messages.constraints
+    );
 
     // The admin narrows a setting; a second load is a no-op and keeps it.
     schema_edit::apply(
@@ -189,10 +201,15 @@ async fn an_upgrade_adds_fields_keeps_the_admins_and_reports_a_changed_type() ->
             { "name": "path", "type": "text", "required": true },
             { "name": "uidvalidity", "type": "int" },
             { "name": "last_uid", "type": "int", "required": true, "default": 0 },
-        ], "unique": [["path"]] },
+        ], "unique": [["path"]], "indexes": [["path", "last_uid"]] },
     ]));
     let report = sync(&cat, MODULE, &v2, &ModuleTables::new()).await;
     assert_eq!(report.fields_added, ["mail_folders.last_uid"]);
+    assert!(
+        report.constraints_added.iter().any(|c| c.contains("path_last_uid")),
+        "the new version's index is added: {:?}",
+        report.constraints_added
+    );
     assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
     assert!(
         report.issues[0].contains("`mail_folders.uidvalidity` is declared as `int` but is `text`"),

@@ -6,7 +6,7 @@
   "supplies": [
     "Four tables: mail_accounts (IMAP and SMTP accounts, shared or personal), mail_folders, mail_messages (one row per mail, with its text and HTML) and mail_attachments (each stored as a file).",
     "A background service that keeps each enabled account connected, and writes new mail and flag changes into the tables as they happen.",
-    "Actions to test an account, sync it now, set flags, move and delete mail, fetch an attachment, and send or reply from an account."
+    "Actions to test an account, sync it now, set flags, move and delete mail, make folders, fetch a body or an attachment, save drafts, and send or reply from an account with a copy in Sent."
   ],
   "installs": [
     "@zone-eu/mailsplit",

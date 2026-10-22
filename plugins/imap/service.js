@@ -9,8 +9,7 @@
 //   else, so saving the row again is how a user says "try again" (§5.1).
 // - **At stop** every runner is stopped and its connection logged out.
 //
-// Mirror accounts (use case B) are M9: until then such an account gets the status `unsupported`
-// and is left alone.
+// Ingest and mirror accounts alike: the runner (`account.js`) does what the mode needs.
 //
 // The runners are kept in `runners`, at module level, so the actions (`actions.js`), which run on
 // the same worker, can find an account's connection and queue on it.
@@ -55,8 +54,8 @@ async function start(ctx) {
   }
 
   async function startOne(account) {
-    if (account.mode && account.mode !== "ingest") {
-      await ctx.db.mail_accounts.where({ id: account.id }).update({ status: "unsupported", last_error: `${account.mode} mode is not available yet` });
+    if (account.mode && account.mode !== "ingest" && account.mode !== "mirror") {
+      await ctx.db.mail_accounts.where({ id: account.id }).update({ status: "refused", last_error: `the mode must be ingest or mirror, not ${account.mode}` });
       return;
     }
     const runner = new AccountRunner(host, account, options);

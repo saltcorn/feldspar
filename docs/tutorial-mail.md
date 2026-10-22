@@ -10,8 +10,9 @@ module does neither:
 - **You map nothing.** The module owns four tables (`mail_accounts`, `mail_folders`,
   `mail_messages`, `mail_attachments`), and your own data refers to them.
 
-This is use case A of [TODO-imap.md](../TODO-imap.md): one mailbox, shared, append-only. A
-personal mail client (mirror mode, sending) comes with M9 and gets its own sections here.
+Steps 1–5 are use case A of [TODO-imap.md](../TODO-imap.md): one mailbox, shared, append-only.
+Steps 6–8 are the other half: each user's own accounts kept as a two-way **mirror** for a mail
+client of your own (use case B), and sending from an account (D).
 
 ## Step 1 — Install the module
 
@@ -161,3 +162,111 @@ module's action, and minimum role user, and name it in the application:
 
 Each action reads what it touches **as the user who called it**, so the ownership rule decides:
 a message that user may not read is "not found", exactly as one that does not exist.
+
+## Step 6 — Personal accounts: mirror mode
+
+A mail client in your app needs the other shape: each user enters their own accounts, sees all
+their folders, and what they do in the app (read, flag, move, delete) happens on the server too.
+That is `mode = mirror`. A user saves the row themselves (their app's form inserts into
+`mail_accounts` as them), with `owner` set to their own id:
+
+| Field | Value |
+|---|---|
+| owner | the user's own id. The ownership rule refuses any other |
+| mode | `mirror` |
+| email / display_name | `ann@example.com` / `Ann Example`: the From of what she sends |
+| imap_… / smtp_… | her servers. The same rules as Step 1 apply |
+| body_days | `90` (the default): how much mail is fetched whole |
+| save_sent | empty (see Step 8) |
+
+Only she can read the account and its mail; a second user with accounts of their own never sees
+hers, through REST, GraphQL or live updates.
+
+**What a mirror keeps:**
+
+- **Every folder**, listed in `mail_folders` with its `role`. INBOX is watched with IDLE, so new
+  mail is a row within a second; the other folders are checked every 5 minutes, and only the ones
+  whose message count or modification sequence changed are opened. Folders created or deleted on
+  the server (by another mail program) appear and disappear here too.
+- **Newest first.** The first sync stores the newest 50 messages of each folder, so the inbox is
+  usable at once. Older mail follows in the background, 50 messages every 15 seconds
+  (`backfill_uid` on the folder says how far it has got; 0 means done).
+- **Bodies for `body_days`.** Mail received in the last `body_days` days is stored whole. Older
+  mail is stored with its headers, flags and attachment list only: `body_state = "headers"`,
+  `body_text` empty. When the user opens one, call `mail_fetch_body` (Step 7).
+- **Attachments are stored when first opened** (`mail_attachment`), not on import, so a mailbox
+  of large attachments does not fill the file store.
+- **The server decides.** Mail deleted or moved on the server is deleted or moved here. If the
+  server renumbers a folder (a new UIDVALIDITY), its rows are deleted and it is synced again.
+  Your own data should therefore not rely on a mirror's rows staying, the way Step 3 relies on an
+  ingest account's.
+
+**Threads.** `thread_key` is the first Message-ID in `References`, else `In-Reply-To`, else the
+message's own Message-ID, and it is indexed. Group a conversation with
+`where: { account, thread_key }`, across folders: a reply in Sent has the same `thread_key` as the
+question in INBOX.
+
+## Step 7 — The client's actions
+
+As in Step 5, each action is a trigger with event **None** that the application names. Each reads
+what it touches as the caller, so another user's message is "not found".
+
+| action | payload | does | answers |
+|---|---|---|---|
+| `mail_fetch_body` | `{ message_id }` | fetches a `headers` message whole, and fills its body and attachment list | `{ id, body_state, fetched }` |
+| `mail_attachment` | `{ attachment_id }` | stores the file if it is not stored yet | `{ file, stored }` |
+| `mail_set_flags` | `{ message_ids, seen, flagged }` | as in Step 5 | |
+| `mail_move` | `{ message_ids, target }` | moves to `target`: a folder path, or `role:trash`, `role:archive`, `role:spam`, … Also on ingest accounts | `{ moved, missing, not_on_server }` |
+| `mail_delete` | `{ message_ids, permanent }` | moves to Trash; deletes for good when `permanent`, or when the mail is in Trash already | `{ trashed, deleted, missing, not_on_server }` |
+| `mail_create_folder` | `{ account_id, name, parent }` | makes a folder (inside `parent`, a path, if given) | `{ id, path }` |
+| `mail_save_draft` | as `mail_send`, plus `replaces` | saves the message in Drafts; `replaces` (a draft's row id) is deleted | `{ id, uid, message_id, replaced }` |
+| `mail_send` | Step 8 | | |
+
+`mail_delete`, `mail_create_folder`, `mail_save_draft` and `mail_fetch_body` are for mirror
+accounts; an ingest account keeps every mail and refuses them. A Trash, Drafts or Sent folder the
+server does not have is created when an action first needs it.
+
+An action's changes are on the server and in the rows when it answers, so a live list
+(`useLiveRows` on `mail_messages`) updates without a sync. However many actions the app calls at
+once, an account never has more than two IMAP connections: the service's, which the actions
+queue on while it runs, and otherwise one of the actions' own at a time.
+
+## Step 8 — Sending
+
+`mail_send` sends from an account through its own SMTP server. Name a trigger for it (here
+`send_mail`, event None, action `mail_send`) in the application, and the app posts the message to
+`{api mount}/actions/send_mail`:
+
+```js
+await post("/api/actions/send_mail", {
+  account_id: 7,
+  to: "Shop <orders@shop.example>",           // a string, or a list of strings or { name, address }
+  cc: [], bcc: "me@example.com",
+  subject: "Re: Your order",
+  text: "Thanks!", html: "<p>Thanks!</p>",
+  in_reply_to: 123,                            // the mail_messages row answered
+  draft_id: 456,                               // the draft this was, deleted once sent
+  attachments: [
+    { store: "uploads", path: "quotes/q-17.pdf" },   // a file of your application's
+    { attachment_id: 89 },                           // a mail attachment, to forward
+  ],
+});
+// → { message_id, id, saved, save_error, accepted, rejected }
+```
+
+- **From** is the account's `display_name <email>`, and the Message-ID is on the account's domain.
+- **A reply** (`in_reply_to`) gets `In-Reply-To` and `References` from the message answered, which
+  is then marked answered, on the server too.
+- **Attachments** are read **as the caller**: a file they could not download cannot be attached.
+  At most 10 files and 20 MB in all; at most 50 recipients.
+- **A copy goes to Sent**, with its Bcc kept, and its row is answered as `id`. Gmail and
+  Microsoft 365 file sent mail into Sent themselves, so for an account on those servers the copy
+  is left out, unless `save_sent` says otherwise (`true` or `false` decides it for any server). A
+  copy that cannot be saved does not undo the send: `saved` is false and `save_error` says why.
+- **Who may send.** From a personal account, its owner. From a shared account (Step 2), a user at
+  or above its `send_role`; an admin only, when that is empty. `mail_save_draft` follows the same
+  rule.
+
+Errors name the server and never the password. To send automatically from an account (an order
+confirmation from `orders@`, use case C), use the built-in `send_email` action with its SMTP
+settings filled from the account: see [tutorial-triggers.md](tutorial-triggers.md).

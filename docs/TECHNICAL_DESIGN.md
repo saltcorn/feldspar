@@ -11279,6 +11279,7 @@ tables: [{                                   // or (configuration) => [...]
   fields: [{ name, type, label, description, required, unique,
              references, secret, file_store, file_folder, default }],
   unique: [["account", "path"]],             // jointly-unique field lists
+  indexes: [["thread_key"]],                 // indexes, each a field list (TODO-imap M9.4)
   ownership: "<formula>",                    // §7.3
   min_role_read, min_role_write,
 }]
@@ -11296,7 +11297,8 @@ into `TableDecl`s with `deny_unknown_fields` — a typo is an issue on the card,
 missing column — and `ModuleSet::load` calls `tables::sync` for each loaded module, in the set's
 order, after the actions are registered. `sync` builds **one `schema_edit` batch**: a
 `CreateTable` per missing table, an `AddField` per missing field, an `AddConstraint` per missing
-unique list. It goes through the same planner, validation and transaction as an admin's edit or
+unique list and per missing index (a `btree` over the listed fields; any index over the same
+fields in the same order counts as there, whoever made it). It goes through the same planner, validation and transaction as an admin's edit or
 an agent's, so a module table is an ordinary table — triggers, live streams, REST, GraphQL,
 ownership, RLS and backups need no knowledge of modules — and a refused batch applies nothing.
 
@@ -11461,6 +11463,13 @@ every module action (`files` in v1's argument object, added by the host script w
 ask). Both run as the module: an action's caller decides which rows it may reach, through its
 `Table` reads; the module decides which of its own files those rows need. Who may download a
 stored file is the File field's business.
+
+**The caller's files (TODO-imap M9.3).** An action also gets **`callerFiles`**: `read(store,
+path)` and `stat(store, path)` over the call's ordinary `files` surface with `authority: "user"`,
+which is a code body's `fs(…).asUser()` — the store's floor and every rule up the path decide, as
+for the caller's own download, and a refusal is the same refusal. It is read-only: a module
+writes nowhere but its own areas. The mail module's `mail_send` attaches an application file this
+way, so a user cannot mail themselves a file they could not have downloaded.
 
 **The vocabulary** is four functions, store-relative paths throughout:
 `write(store, path, data, { contentType, filename }) → path`, `read(store, path, { encoding }) →

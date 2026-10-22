@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const { parse, split } = require("../parse.js");
-const { parseLarge, TEXT_FETCH_LIMIT } = require("../parse-large.js");
+const { parseLarge, parseHeaders, TEXT_FETCH_LIMIT } = require("../parse-large.js");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const generated = join(here, "fixtures/generated");
@@ -138,3 +138,26 @@ test("no structure and no headers still give a row", async () => {
   assert.equal(large.message.body_state, "too_large");
   assert.ok(large.message.body_text);
 });
+
+// Mirror mode's older mail (M9.1): headers and structure, no body, nothing downloaded.
+for (const mail of expected.filter((m) => !DIFFERENT.has(m.file))) {
+  test(`${mail.file}: a headers-only row agrees with the whole parse on its headers and attachments`, async () => {
+    const source = readFileSync(join(generated, mail.file));
+    const opts = { internalDate: new Date("2020-01-01T12:00:00Z"), flags: ["\\Flagged"], size: source.length };
+    const whole = await parse(source, opts);
+    const { bodyStructure, headers } = await serverView(source);
+    const row = await parseHeaders(bodyStructure, { ...opts, headers });
+    assert.equal(row.message.body_state, "headers");
+    assert.equal(row.message.body_text, null);
+    assert.equal(row.message.body_html, null);
+    assert.equal(row.message.snippet, null);
+    for (const key of ["subject", "from_addr", "message_id", "in_reply_to", "thread_key", "sent_at", "flagged", "seen", "size"]) {
+      assert.deepEqual(row.message[key], whole.message[key], key);
+    }
+    // Listed from the structure; a TNEF container is one attachment until the body is fetched.
+    const plain = whole.attachments.filter((a) => !a.part.includes(":"));
+    const shape = (a) => [a.part, a.filename, a.content_type];
+    for (const a of plain) assert.ok(row.attachments.some((b) => JSON.stringify(shape(b)) === JSON.stringify(shape(a))), a.filename);
+    assert.ok(row.attachments.every((a) => a.content === null));
+  });
+}

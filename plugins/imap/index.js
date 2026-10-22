@@ -14,7 +14,9 @@
 // - `service.js`: the background service, one runner per enabled account (§5.5);
 // - `actions.js`: the actions an application calls (§5.6).
 //
-// Ingest mode (use case A) is here. Mirror mode and sending (B, D) are M9.
+// Both modes are here: ingest (use case A, a shared mailbox kept append-only) and mirror (B, a
+// personal mail client's two-way copy), and sending from an account (C through `send_email`'s
+// SMTP settings, D through `mail_send`).
 
 "use strict";
 
@@ -28,6 +30,12 @@ const ACTIONS = {
   mail_sync_now: "Sync an account now. Payload: { account_id, wait }.",
   mail_set_flags: "Mark messages read or unread, flagged or not, on the server and in the table. Payload: { message_ids, seen, flagged }.",
   mail_attachment: "Store an attachment's file if it is not stored yet, and answer its File path. Payload: { attachment_id }.",
+  mail_fetch_body: "Fetch the body of a message stored with its headers only (mirror mode's older mail). Payload: { message_id }.",
+  mail_move: "Move messages to another folder of their account, on the server and in the table. Payload: { message_ids, target } (a path, or role:trash, role:archive, …).",
+  mail_delete: "Delete messages: to Trash, or for good when permanent (or already in Trash). Mirror accounts. Payload: { message_ids, permanent }.",
+  mail_create_folder: "Create a folder on a mirror account's server. Payload: { account_id, name, parent }.",
+  mail_save_draft: "Save a draft in the account's Drafts folder, replacing an earlier one. Payload: { account_id, to, cc, bcc, subject, text, html, attachments, in_reply_to, replaces }.",
+  mail_send: "Send a message through the account's SMTP server and keep a copy in Sent. Payload: { account_id, to, cc, bcc, subject, text, html, attachments, in_reply_to, draft_id }.",
 };
 
 /** v1's `actions(configuration)`: the module's settings reach an action this way, because the
@@ -73,6 +81,12 @@ const tables = [
       { name: "error_folder", type: "text", label: "Move failed mail to" },
       { name: "start_from", type: "timestamp", label: "Import mail from", description: "Ingest: only mail on or after this date. Empty means all of it" },
       { name: "body_days", type: "int", required: true, default: 90, label: "Days of full bodies", description: "Mirror: older mail keeps its headers only until it is opened" },
+      {
+        name: "save_sent",
+        type: "bool",
+        label: "Copy sent mail to Sent",
+        description: "Empty: yes, except for Gmail and Microsoft 365, whose servers file sent mail themselves",
+      },
       { name: "enabled", type: "bool", required: true, default: true, label: "Enabled" },
       { name: "status", type: "text", label: "Status" },
       { name: "last_error", type: "text", label: "Last error" },
@@ -99,6 +113,7 @@ const tables = [
       { name: "unread", type: "int", label: "Unread" },
       { name: "total", type: "int", label: "Total" },
       { name: "sync", type: "bool", label: "Synced" },
+      { name: "backfill_uid", type: "int", label: "Backfill below UID", description: "Mirror: older mail below this UID is still to be stored; 0 when done" },
     ],
     unique: [["account", "path"]],
     ownership: viaAccount("account"),
@@ -133,10 +148,12 @@ const tables = [
       { name: "flagged", type: "bool", label: "Flagged" },
       { name: "answered", type: "bool", label: "Answered" },
       { name: "draft", type: "bool", label: "Draft" },
-      { name: "body_state", type: "text", label: "Body", description: "full, headers or too_large" },
+      { name: "body_state", type: "text", label: "Body", description: "full, headers (mirror mode's older mail, until opened) or too_large" },
       { name: "import_error", type: "text", label: "Import error" },
     ],
     unique: [["folder", "uid"]],
+    // A client groups conversations by `thread_key` (M9.4).
+    indexes: [["thread_key"]],
     ownership: viaAccount("account"),
     min_role_read: 1,
     min_role_write: 1,

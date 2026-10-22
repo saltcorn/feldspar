@@ -35,6 +35,8 @@ mod frameworks;
 mod host;
 #[path = "imap_ingest.rs"]
 mod imap_ingest;
+#[path = "imap_mirror.rs"]
+mod imap_mirror;
 #[path = "imap_spike.rs"]
 mod imap_spike;
 #[path = "install.rs"]

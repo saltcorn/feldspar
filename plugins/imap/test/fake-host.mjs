@@ -5,6 +5,11 @@
 //
 // It keeps the unique constraints the module declares, so a duplicate insert fails here as it
 // would in Postgres, and records every write as an event, as triggers would see them.
+//
+// For the actions, `installFakeTable` answers `require("@saltcorn/data/models/table")` with v1's
+// `Table` over the same tables, applying the module's ownership rule (§3) to `forUser` reads.
+
+import Module from "node:module";
 
 const UNIQUE = { mail_folders: [["account", "path"]], mail_messages: [["folder", "uid"]] };
 
@@ -108,6 +113,13 @@ export function fakeFiles() {
   const stored = new Map();
   return {
     stored,
+    async remove(store, path) {
+      return stored.delete(path);
+    },
+    async stat(store, path) {
+      const f = stored.get(path);
+      return f ? { size: f.bytes.length, isDirectory: false } : null;
+    },
     async write(store, path, data, opts = {}) {
       if (store !== "mail_files" || !path.startsWith("attachments/")) throw new Error(`refused: ${store}/${path}`);
       let bytes;
@@ -147,4 +159,59 @@ export function fakeCtx(configuration) {
     },
   };
   return { ctx, tables, events, files, log, listeners };
+}
+
+/** Whether `user` may read a row of `name`: the module's rule (§3), through the account. */
+function readableBy(tables, name, row, user) {
+  const account = (id) => tables.mail_accounts.find((a) => a.id === id);
+  const sees = (a) => Boolean(a) && (a.owner === user.id || ((a.owner === null || a.owner === undefined) && user.role <= a.min_role));
+  if (name === "mail_accounts") return sees(row);
+  if (name === "mail_attachments") return sees(account((tables.mail_messages.find((m) => m.id === row.message) || {}).account));
+  return sees(account(row.account));
+}
+
+/**
+ * Answer `require("@saltcorn/data/models/table")` with v1's `Table` over a `fakeDb`'s tables:
+ * `findOne`, and on a table `getRow`, `getRows` (with `{ forUser }`), `insertRow`, `updateRow`
+ * (v1's error string) and `deleteRows`. Answers a function that takes it away again.
+ */
+export function installFakeTable(fake) {
+  const { db, tables } = fake;
+  const Table = {
+    findOne({ name }) {
+      if (!tables[name]) return null;
+      const visible = (rows, opts) => (opts && opts.forUser ? rows.filter((r) => readableBy(tables, name, r, opts.forUser)) : rows);
+      return {
+        name,
+        async getRows(where = {}, opts = {}) {
+          return visible(await db[name].where(where).orderBy("id").rows(), opts);
+        },
+        async getRow(where = {}, opts = {}) {
+          return (await this.getRows(where, opts))[0] || null;
+        },
+        async insertRow(values) {
+          return (await db[name].insert(values)).id;
+        },
+        async updateRow(values, id) {
+          try {
+            const { updated } = await db[name].where({ id }).update(values);
+            return updated ? undefined : `no row of ${name} with that id was updated`;
+          } catch (e) {
+            return e.message;
+          }
+        },
+        async deleteRows(where) {
+          await db[name].where(where).delete();
+        },
+      };
+    },
+  };
+  const load = Module._load;
+  Module._load = function (request, ...rest) {
+    if (request === "@saltcorn/data/models/table") return Table;
+    return load.call(this, request, ...rest);
+  };
+  return () => {
+    Module._load = load;
+  };
 }

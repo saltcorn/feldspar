@@ -169,6 +169,33 @@ mod deno {
             "{result}"
         );
 
+        // --- A file of the application's, read as the caller (M9.3) --------------
+        // `callerFiles` reads with the caller's authority: the rule on a file
+        // decides, as it would for their download, and there is no write.
+        other.write("shared/open.txt", b"for everyone".to_vec().into()).await.unwrap();
+        other.write("shared/closed.txt", b"admins only".to_vec().into()).await.unwrap();
+        other
+            .set_meta(
+                "shared/closed.txt",
+                &sc_files::FileMeta {
+                    min_role: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let event = Event::new(EventKind::None)
+            .payload(json!({ "open": "shared/open.txt", "closed": "shared/closed.txt" }))
+            .caller(80, Some(json!({ "id": "00000000-0000-0000-0000-000000000080", "role": 80 })));
+        let action = registry.require("read_as_caller").unwrap();
+        let mut ctx = ActionContext::new(&cat, &event, &config, "read as the caller");
+        let result = action.run(&mut ctx).await.unwrap();
+        assert_eq!(result["open"], json!("for everyone"), "{result}");
+        assert_eq!(result["size"], json!(12), "{result}");
+        assert_ne!(result["closed"], json!("allowed"), "{result}");
+        assert!(!result["closed"].to_string().contains("admins only"), "{result}");
+        assert_eq!(result["writes"], json!("undefined"));
+
         supervisor.stop_all().await;
         host.shutdown().await;
         let _ = std::fs::remove_dir_all(installer.root());

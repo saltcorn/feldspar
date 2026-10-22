@@ -15,5 +15,8 @@
     "imapflow": "2.2.6",
     "libmime": "5.4.7",
     "nodemailer": "10.0.15"
+  },
+  "devDependencies": {
+    "smtp-server": "3.19.17"
   }
 }

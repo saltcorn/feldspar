@@ -2369,6 +2369,21 @@ function moduleFiles(send) {
   };
 }
 
+/** `callerFiles` of an action (TODO-imap M9.3): the application's file stores,
+ * **read** as the action's caller — the code body's `fs(…).asUser()`, over the
+ * call's own `files` surface. A module that sends a user's file somewhere (the
+ * mail module's `mail_send` attaching one) reads it this way, so the store's
+ * and the path's rules decide, and a file the caller could not download is
+ * one the module cannot read for them. Read and stat only: a module writes to
+ * its own area (`files`) and nowhere else.
+ *
+ *   const bytes = await callerFiles.read("uploads", "quotes/q-17.pdf");
+ */
+function callerFiles(send) {
+  const own = moduleFiles((plan) => send({ ...plan, authority: "user" }));
+  return { read: own.read, stat: own.stat };
+}
+
 /** Run one action of one module, with v1's argument object. */
 async function runAction({ module: name, action: actionName, args }) {
   const entry = loaded.get(name);
@@ -2385,6 +2400,7 @@ async function runAction({ module: name, action: actionName, args }) {
   if (store && store.asks) {
     const callId = store.call;
     argument.files = moduleFiles((plan) => askFor(callId, "module_files", plan));
+    argument.callerFiles = callerFiles((plan) => askFor(callId, "files", plan));
   }
   const result = await impl.run(argument);
   return result === undefined ? null : result;

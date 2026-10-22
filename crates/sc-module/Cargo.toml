@@ -155,6 +155,9 @@ sc-test-harness.workspace = true
 # asserted against, which is exactly what a seam test wants and what the
 # feature exists to let another crate reach.
 sc-stream = { workspace = true, features = ["testing"] }
+# The live hub, for the mail module's isolation test (TODO-imap M9.5): what a
+# live subscriber is sent of another user's mail.
+sc-live.workspace = true
 
 [lints]
 workspace = true

@@ -832,29 +832,76 @@ and do not commit.
 
 ## M9 — Mirror mode and the client actions (use cases B and D)
 
-- [ ] **M9.1** Mirror sync:
+- [x] **M9.1** Mirror sync:
   - all folders; INBOX by IDLE, the others polled every 5 min;
   - newest first, with full bodies for `body_days` and headers only for older mail;
   - slow backfill (a few hundred headers a minute per account);
   - expunges delete rows; `uidvalidity` resets rebuild the folder.
-- [ ] **M9.2** Actions: `mail_fetch_body`, `mail_move`, `mail_delete`, `mail_create_folder`,
+- [x] **M9.2** Actions: `mail_fetch_body`, `mail_move`, `mail_delete`, `mail_create_folder`,
   `mail_save_draft`, `mail_attachment` (store when first opened).
-- [ ] **M9.3** `mail_send` (§5.7), with nodemailer:
+- [x] **M9.3** `mail_send` (§5.7), with nodemailer:
   - the Sent copy;
   - threading headers;
   - draft removal;
   - the `send_role` check for shared accounts.
-- [ ] **M9.4** `thread_key`: the root of `References`, then `In-Reply-To`, then the message's own
+- [x] **M9.4** `thread_key`: the root of `References`, then `In-Reply-To`, then the message's own
   `message_id`. Index it, so the client can group conversations.
-- [ ] **M9.5** Integration tests:
+- [x] **M9.5** Integration tests:
   - **isolation:** two users with two accounts each never see each other's mail or accounts, by
     REST, GraphQL or live subscription;
   - **flags:** a flag set in the app appears on the server, and one set on the server appears in
     the app;
   - **send:** a reply arrives at the SMTP sink with the right threading headers and lands in Sent;
   - **delete:** delete to Trash and permanent delete.
-- [ ] **M9.6** Connection budget: the number of IMAP connections per account never goes above 2,
+- [x] **M9.6** Connection budget: the number of IMAP connections per account never goes above 2,
   even with the app calling actions in parallel. Queue on the short-lived connection.
+
+  **Done (2026-10-21).** Decisions worth knowing for M10 (CHANGELOG has the full list):
+  - **Still one connection per account** (M8's choice). A mirror IDLEs on INBOX; its passes, the
+    backfill and every action queue on that connection **one folder at a time**, so an action
+    waits for at most one folder's sync or one backfill batch. Without the service, an account's
+    own connections (`withConnection`) wait for each other. Tested: 30 parallel actions with the
+    service running opened no second connection; without it, one at a time.
+  - **Polls use STATUS.** Every 5 minutes a mirror lists its folders again (new ones are synced,
+    gone ones deleted with their mail) and opens only the folders whose UIDNEXT, message count or
+    HIGHESTMODSEQ changed. A server without CONDSTORE has every folder opened.
+  - **Newest first** is a cursor pair on `mail_folders`: `last_uid` (new mail above it) and the
+    new `backfill_uid` (older mail below it; null before the first sync, 0 when done). The
+    backfill is 50 messages every 15 s, INBOX first, then Sent, Drafts, Archive, the rest, Junk
+    and Trash. Mail older than `body_days` (by INTERNALDATE) gets `body_state = "headers"`, a row
+    from `parseHeaders` (parse-large.js): headers, flags and the attachment list from
+    BODYSTRUCTURE, with null `body_text`/`body_html`/`snippet`.
+  - **Mirror deletes.** An expunge, a vanished folder and a UIDVALIDITY change delete the rows,
+    their attachment rows and stored files (`sync.js` `deleteMessages`). A row the database will
+    not delete, because the application's own data refers to it, is kept with `uid` cleared.
+  - **Actions write rows inside the queued IMAP work**, so the service's next sync of the target
+    folder finds them: a move records the new UID (UIDPLUS) or clears it, and the target's sync
+    matches it again by Message-ID; an APPENDed draft or Sent copy is stored at once.
+  - **Who may do what:** reading the account (the ownership rule) is enough to set flags, move,
+    delete and make folders. `mail_send` and `mail_save_draft` need the owner, or on a shared
+    account `user.role <= send_role` (an admin only when empty). `mail_fetch_body`,
+    `mail_delete`, `mail_create_folder` and `mail_save_draft` refuse ingest accounts.
+  - **The Sent copy** is skipped for Gmail and Microsoft 365 hosts unless the new
+    `mail_accounts.save_sent` says otherwise. It is the same Message-ID and Date as the mail
+    sent, with its Bcc. A reply sets `\Answered` on the original. Results:
+    `{ message_id, id, saved, save_error, accepted, rejected }` plus `draft_deleted` and
+    `warnings`.
+  - **Attachments are read as the caller** through a new core facility: `callerFiles` in a module
+    action's argument (`read`/`stat` over the call's `files` surface with `authority: "user"`,
+    TECHNICAL_DESIGN §15.1d). `{ store, path }` is an application file, `{ attachment_id }` a mail
+    attachment to forward. At most 10 and 20 MB.
+  - **M9.4: module tables can declare `indexes`** (TECHNICAL_DESIGN §15.1b), created and added on
+    upgrade like `unique`. `mail_messages` indexes `thread_key`. The parser already filled it.
+  - **GraphQL cannot follow a key into a table with an ownership rule** (it refuses, by design),
+    so a client reads `mail_messages` and `mail_accounts` as two queries, not one nested one.
+  - **Tests:** `npm test` in `plugins/imap`: `test/mirror.test.mjs` against Dovecot and
+    `test/servers/smtp-sink.mjs` (`smtp-server`, a devDependency, which the installer's
+    `--omit=dev` leaves out); `crates/sc-module/tests/imap_mirror.rs` (`#[ignore]`) for isolation
+    through the row layer, REST, GraphQL and live, and the actions in the worker.
+  - **Not done:** QRESYNC/VANISHED (expunges are still found by `UID SEARCH ALL`, which reads every
+    stored UID of a folder that changed); a mirror's attachments inside a `winmail.dat` are
+    re-parsed from the source when opened; mail without a Message-ID moved on a server without
+    UIDPLUS is imported again as a new row, and the moved row stays beside it with no `uid`.
 
 ## M10 — Docs, live servers, later
 

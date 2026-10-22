@@ -137,4 +137,40 @@ async function parseLarge(bodyStructure, fetchPart, { headers, internalDate, fla
   }
 }
 
-module.exports = { parseLarge, treeOfStructure, TEXT_FETCH_LIMIT };
+/**
+ * A mail's row from its headers and structure alone, with no body (TODO-imap.md §4, M9.1):
+ * mirror mode keeps older mail this way until it is opened (`mail_fetch_body`).
+ *
+ * The header columns are filled as `parse` fills them, `body_text`, `body_html` and `snippet`
+ * are null, and `body_state` is `"headers"`. The attachments are listed from the structure, as
+ * above the cap, with `content` null, so a client can show a paper clip and offer them.
+ *
+ * @param {object} bodyStructure  imapflow's `bodyStructure`
+ * @param {{ headers?: Buffer, internalDate?: Date|string, flags?: Iterable<string>, size?: number }} opts
+ */
+async function parseHeaders(bodyStructure, { headers, internalDate, flags, size } = {}) {
+  const opts = { internalDate, flags, size, bodyState: "headers" };
+  let rootHeaders = null;
+  let result;
+  try {
+    if (headers && headers.length) {
+      const nodes = await split(Buffer.concat([headers, Buffer.from("\r\n\r\n")]));
+      rootHeaders = nodes.length ? nodes[0].node.headers : null;
+    }
+    const tree = treeOfStructure(bodyStructure || {});
+    result = assemble(rootHeaders, tree, opts);
+    const leaves = leavesOf(tree);
+    for (const a of result.attachments) {
+      const leaf = leaves.find((l) => l.path === a.part);
+      if (leaf && leaf.encoding === "base64") a.size = Math.floor((leaf.size * 3) / 4);
+    }
+  } catch (err) {
+    result = failed(rootHeaders, err, opts);
+  }
+  // `assemble` explains a missing body with a placeholder; here nothing was fetched, which is
+  // not the same thing.
+  Object.assign(result.message, { body_text: null, body_html: null, snippet: null });
+  return result;
+}
+
+module.exports = { parseLarge, parseHeaders, treeOfStructure, TEXT_FETCH_LIMIT };

@@ -483,11 +483,12 @@ test("the service runs each enabled account and follows changes to mail_accounts
     await change("update", { ...fixed, status: "whatever" }, fixed);
     assert.equal(service.runners.get(900), runner);
 
-    // A mirror account waits for M9.
-    const mirror = accountRow({ id: 902, mode: "mirror" });
-    tables.mail_accounts.push(mirror);
-    await change("insert", mirror, null);
-    await until("unsupported", () => accountOf(tables, 902).status === "unsupported");
+    // A mode that is neither ingest nor mirror is refused.
+    const odd = accountRow({ id: 902, mode: "archive" });
+    tables.mail_accounts.push(odd);
+    await change("insert", odd, null);
+    await until("refused", () => accountOf(tables, 902).status === "refused");
+    assert.match(accountOf(tables, 902).last_error, /ingest or mirror/);
 
     // Deleted: stopped.
     await change("delete", null, fixed);

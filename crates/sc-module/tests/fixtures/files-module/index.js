@@ -61,6 +61,15 @@ module.exports = {
         return { path, back, outside };
       },
     },
+    // TODO-imap M9.3: a file of the application's, read as the caller.
+    read_as_caller: {
+      run: async ({ payload, callerFiles }) => {
+        const open = (await callerFiles.read("fm_other", payload.open)).toString("utf8");
+        const stat = await callerFiles.stat("fm_other", payload.open);
+        const closed = await refusal(() => callerFiles.read("fm_other", payload.closed));
+        return { open, size: stat.size, closed, writes: typeof callerFiles.write };
+      },
+    },
   },
   services: {
     keeper: {

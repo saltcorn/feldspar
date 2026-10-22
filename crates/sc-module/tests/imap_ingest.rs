@@ -18,11 +18,13 @@
 //! UIDVALIDITY, a broken mail, the processed folder — is tested at speed by
 //! `npm test` in `plugins/imap` (`test/ingest.test.mjs`) against the same
 //! Dovecot.
+//!
+//! The helpers here are shared with `imap_mirror.rs` (M9.5).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[cfg(feature = "deno-host")]
-mod deno {
+pub(crate) mod deno {
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::sync::Arc;
@@ -50,14 +52,14 @@ mod deno {
 
     use crate::common::{have_npm, surfaces, temp_root};
 
-    const PASSWORD: &str = "Grüße-€-pässwort";
-    const MODULE: &str = "@feldspar/imap";
+    pub(crate) const PASSWORD: &str = "Grüße-€-pässwort";
+    pub(crate) const MODULE: &str = "@feldspar/imap";
 
-    fn servers() -> PathBuf {
+    pub(crate) fn servers() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/imap/test/servers")
     }
 
-    fn dovecot(args: &[&str]) -> bool {
+    pub(crate) fn dovecot(args: &[&str]) -> bool {
         Command::new(servers().join("dovecot.sh"))
             .args(args)
             .stdin(Stdio::null())
@@ -69,7 +71,7 @@ mod deno {
     }
 
     /// Deliver a mail to `user`'s `folder`, as the mail server would.
-    fn deliver(dir: &Path, user: &str, name: &str, source: &str) {
+    pub(crate) fn deliver(dir: &Path, user: &str, name: &str, source: &str) {
         let path = dir.join(name);
         std::fs::write(&path, source.replace('\n', "\r\n")).unwrap();
         assert!(
@@ -112,7 +114,7 @@ mod deno {
         )
     }
 
-    fn base64(bytes: &[u8]) -> String {
+    pub(crate) fn base64(bytes: &[u8]) -> String {
         const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::new();
         for chunk in bytes.chunks(3) {
@@ -136,7 +138,7 @@ mod deno {
             message bigint, subject text, attachments_seen int, who text);
     ";
 
-    async fn catalog(db: &TestDb) -> Arc<Catalog> {
+    pub(crate) async fn catalog(db: &TestDb) -> Arc<Catalog> {
         db.client().await.unwrap().batch_execute(SCHEMA).await.unwrap();
         let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
         let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await.unwrap();
@@ -153,7 +155,7 @@ mod deno {
 
     /// `mail_files` as a local store in a temporary directory, made before the
     /// module loads so its table sync uses it rather than the data directory.
-    async fn store(cat: &Catalog) -> PathBuf {
+    pub(crate) async fn store(cat: &Catalog) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("sc-module-mail-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut def = sc_module::tables::local_store("mail_files").unwrap();
@@ -163,7 +165,7 @@ mod deno {
         dir
     }
 
-    async fn query(db: &TestDb, sql: &str) -> Vec<Json> {
+    pub(crate) async fn query(db: &TestDb, sql: &str) -> Vec<Json> {
         let rows = db
             .client()
             .await
@@ -174,7 +176,7 @@ mod deno {
         rows.iter().map(|r| r.get::<_, Json>(0)).collect()
     }
 
-    async fn until(db: &TestDb, what: &str, timeout: Duration, sql: &str, ready: impl Fn(&[Json]) -> bool) -> Vec<Json> {
+    pub(crate) async fn until(db: &TestDb, what: &str, timeout: Duration, sql: &str, ready: impl Fn(&[Json]) -> bool) -> Vec<Json> {
         let start = Instant::now();
         loop {
             let rows = query(db, sql).await;
@@ -188,13 +190,13 @@ mod deno {
         }
     }
 
-    fn user_json(user: &sc_auth::User) -> Json {
+    pub(crate) fn user_json(user: &sc_auth::User) -> Json {
         json!({ "id": user.id.to_string(), "role": user.role })
     }
 
     /// Run one of the module's actions as `user`, as a trigger with event None
     /// called by the app would.
-    async fn act(cat: &Catalog, registry: &ActionRegistry, action: &str, user: &sc_auth::User, payload: Json) -> sc_error::Result<Json> {
+    pub(crate) async fn act(cat: &Catalog, registry: &ActionRegistry, action: &str, user: &sc_auth::User, payload: Json) -> sc_error::Result<Json> {
         let event = Event::new(EventKind::None)
             .payload(payload)
             .caller(user.role, Some(user_json(user)));
@@ -204,7 +206,7 @@ mod deno {
         action.run(&mut ctx).await
     }
 
-    fn as_user<'a>(cat: &'a Catalog, user: &sc_auth::User) -> TableHost<'a> {
+    pub(crate) fn as_user<'a>(cat: &'a Catalog, user: &sc_auth::User) -> TableHost<'a> {
         TableHost::new(cat)
             .caused_by(user.role, Some(user_json(user)))
             .with_evaluator(Some(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>))
@@ -221,6 +223,43 @@ mod deno {
             .iter()
             .map(|r| r["subject"].as_str().unwrap_or("").to_owned())
             .collect()
+    }
+
+    /// The bundled mail module installed as the Modules tab does it, with the
+    /// grant its card asks for and settings that trust `trusted` (the local
+    /// Dovecot, the SMTP sink) and the test CA; loaded, with its actions in
+    /// the registry beside the built-in ones.
+    pub(crate) async fn load_module(
+        cat: &Catalog,
+        tag: &str,
+        trusted: &[&str],
+    ) -> (Installer, Arc<sc_module::ModuleHost>, ModuleSet, ActionRegistry) {
+        let entry = BundledModules::discover(None);
+        let entry = entry.get("imap").expect("the mail module ships");
+        let root = temp_root(tag);
+        let installer = Installer::new(&root);
+        let package = installer
+            .install(ModuleSource::Local, &entry.directory.display().to_string())
+            .await
+            .unwrap_or_else(|e| panic!("installing plugins/imap: {e}"));
+        assert_eq!(package.name, MODULE);
+        let host = Arc::new(sc_module::ModuleHost::new(&root));
+        let mut module = Module::new(MODULE, ModuleSource::Local, MODULE);
+        module.permissions = ModulePermissions {
+            net: vec![ANY_HOST.to_owned()],
+            ..ModulePermissions::closed()
+        };
+        let ca = std::fs::read_to_string(servers().join("run/certs/ca.crt")).unwrap();
+        module.configuration.insert("trusted_servers".into(), json!(trusted.join("\n")));
+        module.configuration.insert("ca_certificates".into(), json!(ca));
+        save_module(cat, &module).await.unwrap();
+        let mut registry = sc_core_actions::builtin_actions().unwrap();
+        let set = ModuleSet::load(cat, &host, &installer, &surfaces(), &mut registry)
+            .await
+            .unwrap();
+        assert!(set.issues().is_empty(), "{:?}", set.issues());
+        assert_eq!(set.get(MODULE).unwrap().service_names(), ["sync"]);
+        (installer, host, set, registry)
     }
 
     #[tokio::test]
@@ -244,33 +283,7 @@ mod deno {
         cat.set_formula_evaluator(Arc::new(DenoEvaluator::new())).unwrap();
         let files_dir = store(&cat).await;
 
-        // Installed as the Modules tab does it, with the grant its card asks for
-        // and settings that trust the local Dovecot and its CA.
-        let entry = BundledModules::discover(None);
-        let entry = entry.get("imap").expect("the mail module ships");
-        let root = temp_root("imap-ingest");
-        let installer = Installer::new(&root);
-        let package = installer
-            .install(ModuleSource::Local, &entry.directory.display().to_string())
-            .await
-            .unwrap_or_else(|e| panic!("installing plugins/imap: {e}"));
-        assert_eq!(package.name, MODULE);
-        let host = Arc::new(sc_module::ModuleHost::new(&root));
-        let mut module = Module::new(MODULE, ModuleSource::Local, MODULE);
-        module.permissions = ModulePermissions {
-            net: vec![ANY_HOST.to_owned()],
-            ..ModulePermissions::closed()
-        };
-        let ca = std::fs::read_to_string(servers().join("run/certs/ca.crt")).unwrap();
-        module.configuration.insert("trusted_servers".into(), json!("127.0.0.1:11993"));
-        module.configuration.insert("ca_certificates".into(), json!(ca));
-        save_module(&cat, &module).await.unwrap();
-        let mut registry = sc_core_actions::builtin_actions().unwrap();
-        let set = ModuleSet::load(&cat, &host, &installer, &surfaces(), &mut registry)
-            .await
-            .unwrap();
-        assert!(set.issues().is_empty(), "{:?}", set.issues());
-        assert_eq!(set.get(MODULE).unwrap().service_names(), ["sync"]);
+        let (installer, host, set, registry) = load_module(&cat, "imap-ingest", &["127.0.0.1:11993"]).await;
         let registry = Arc::new(registry);
 
         // Users: staff (40) may read the shared mailbox, bob (80) may not, ann
