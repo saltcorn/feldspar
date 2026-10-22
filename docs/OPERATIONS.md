@@ -1074,7 +1074,7 @@ not have:
 | `allow_triggers` | work on triggers at all |
 | `allow_applications` | work on applications' custom SQL queries |
 | `allow_modules` | list and install modules: npm packages and Python distributions (§7.7) |
-| `allow_history` | read row history: a row's old values, deleted rows, and who changed what |
+| `allow_history` | read row history (a row's old values, deleted rows, and who changed what), and, with `allow_edit` (and `allow_drop` for an undo), restore rows and undo changesets |
 
 `allow_access_changes` is the one to think hardest about: it changes what *every*
 user of the deployment can reach. `allow_drop` at least announces itself.

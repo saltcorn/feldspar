@@ -63,6 +63,11 @@ export type GetRowAsOfResponse = { row?: unknown | null; removed: unknown };
 export type ListChangesetsQuery = { user?: string; table?: string; source?: string; since?: string; limit?: number; offset?: number };
 export type ListChangesetsResponse = Array<{ id: string; at: string; user_id?: string | null; user_email?: string | null; source: string; application?: string | null; description?: string | null; cause?: string | null; undo_table?: string | null; client_id?: string | null; mutation?: number | null; entries: number; tables: Array<string> }>;
 export type GetChangesetResponse = { id: string; at: string; user_id?: string | null; user_email?: string | null; source: string; application?: string | null; description?: string | null; cause?: string | null; undo_table?: string | null; client_id?: string | null; mutation?: number | null; entries: Array<{ seq: number; version: number; table: string; key: string; op: string; at: string; changes: Array<{ field: string; old: unknown; new: unknown; removed: boolean }>; changeset: { id: string; at: string; user_id?: string | null; user_email?: string | null; source: string; application?: string | null; description?: string | null; cause?: string | null; undo_table?: string | null; client_id?: string | null; mutation?: number | null } }> };
+export type RestoreRowResponse = { changeset: string; row: unknown; dropped: Array<string> };
+export type RevertRowRequest = { version: number };
+export type RevertRowResponse = { changeset: string; row: unknown; dropped: Array<string> };
+export type UndoChangesetRequest = { table?: string | null; force?: boolean | null };
+export type UndoChangesetResponse = { undone: boolean; changeset?: string | null; entries: number; dropped: Array<string>; conflicts: Array<{ table: string; key: string; field?: string | null; expected: unknown; actual: unknown; reason: string }> };
 export type ExportTableCsvResponse = { filename: string; csv: string };
 export type ImportTableCsvRequest = { csv: string };
 export type ImportTableCsvResponse = { inserted: number; updated: number; errors: Array<string> };
@@ -452,6 +457,9 @@ export interface ApiClient {
   getRowAsOf(table: string, id: string, query: GetRowAsOfQuery): Promise<GetRowAsOfResponse>;
   listChangesets(query?: ListChangesetsQuery): Promise<ListChangesetsResponse>;
   getChangeset(id: string): Promise<GetChangesetResponse>;
+  restoreRow(table: string, id: string): Promise<RestoreRowResponse>;
+  revertRow(table: string, id: string, body: RevertRowRequest): Promise<RevertRowResponse>;
+  undoChangeset(id: string, body: UndoChangesetRequest): Promise<UndoChangesetResponse>;
   exportTableCsv(table: string): Promise<ExportTableCsvResponse>;
   importTableCsv(table: string, body: ImportTableCsvRequest): Promise<ImportTableCsvResponse>;
   listDatabaseConnections(): Promise<ListDatabaseConnectionsResponse>;
@@ -1049,6 +1057,32 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("getChangeset", res);
       return (await res.json()) as GetChangesetResponse;
+    },
+    async restoreRow(table, id) {
+      const res = await doFetch(`${baseUrl}/api/tables/${encodeURIComponent(table)}/deleted/${encodeURIComponent(id)}/restore`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("restoreRow", res);
+      return (await res.json()) as RestoreRowResponse;
+    },
+    async revertRow(table, id, body) {
+      const res = await doFetch(`${baseUrl}/api/tables/${encodeURIComponent(table)}/rows/${encodeURIComponent(id)}/revert`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("revertRow", res);
+      return (await res.json()) as RevertRowResponse;
+    },
+    async undoChangeset(id, body) {
+      const res = await doFetch(`${baseUrl}/api/changesets/${encodeURIComponent(id)}/undo`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("undoChangeset", res);
+      return (await res.json()) as UndoChangesetResponse;
     },
     async exportTableCsv(table) {
       const res = await doFetch(`${baseUrl}/api/tables/${encodeURIComponent(table)}/csv`, {

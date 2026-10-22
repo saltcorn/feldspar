@@ -144,6 +144,12 @@ impl Changeset {
         self
     }
 
+    /// Limit an undo to one table's entries ([`undo_table`](Changeset::undo_table)).
+    pub fn undoing_table(mut self, table: Option<String>) -> Changeset {
+        self.undo_table = table;
+        self
+    }
+
     /// Set the application, unless one is set already.
     pub fn in_application(self, application: Option<Uuid>) -> Changeset {
         if let Some(application) = application {

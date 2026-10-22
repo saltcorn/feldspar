@@ -2,6 +2,57 @@
 
 Changes in reverse chronological order.
 
+## Row history H3: restore and undo
+
+A deleted row can be put back, a row set back to one of its versions, and a changeset undone,
+in the admin API, the admin UI and as MCP tools. Each is an ordinary write as the caller, in one
+transaction and a changeset of its own, so it is recorded and can be undone in turn.
+
+- `sc-api::undo` (new): `Reverser` with `restore_row`, `revert_row` and `undo_changeset`. The
+  writes go through `write_as` (write rules, ownership, validation, triggers) on a `SharedTx`
+  over the primary database, in a `restore` or `undo` changeset whose `cause` is what it
+  reverses (the delete, the row's latest change, the undone changeset). The new changeset keeps
+  the calling one's `session` and `application`, for H4's Undo action.
+  - Restore inserts the deleted image with its key. Revert sets each column to its value as of
+    the version (one update, or an insert if the row is gone), and refuses the row's deletion and
+    the version it is at. Both need the history to be readable by the caller.
+  - Undo applies each entry's inverse, skipping entries already undone (`undo_table` null or
+    the entry's table). It is ordered: rows put back parents first by foreign-key depth, then
+    updates, then rows removed children first. The conflict check compares each entry's
+    `new_values` with the row now. A refusal is an answer, not an error: `UndoOutcome::Refused`
+    with each conflict (table, key, field, expected, actual, reason), and nothing is written.
+    `force` (admins only) overwrites. Below the admin, a caller may undo only their own
+    changesets.
+  - Each written row's key fields are checked inside the transaction first, so a missing
+    parent refuses with a sentence that names it. Dropped columns are left out and reported as
+    `dropped`. Calculated and document columns are not written back.
+- `sc-catalog`: `history::undone` / `Undone` (what has been undone of a changeset) and
+  `Changeset::undoing_table`.
+- Admin API: `restoreRow` (`POST /api/tables/{table}/deleted/{id}/restore`), `revertRow`
+  (`POST /api/tables/{table}/rows/{id}/revert`, `{ version }`) and `undoChangeset`
+  (`POST /api/changesets/{id}/undo`, `{ table?, force? }`, answering `{ undone, changeset,
+  entries, dropped, conflicts }`). These are admin-only, and also MCP tools in the
+  `allow_history` area: restore and revert need `allow_edit`, undo needs `allow_edit` and
+  `allow_drop`. `client.ts` is regenerated (admin, ide, builder, analytics).
+- Admin UI: a **Restore** button on each row of the Deleted tab. **Set back to this version** on
+  older versions in the History tab (it closes the form and reloads the grid, as Save does). An
+  **Undo** panel on a changeset's page, with a table picker when the changeset spans tables. It
+  says that triggers run and that external effects are not undone. On a refusal it lists the
+  conflicts (row, field, value left, value now) and offers "Undo anyway, overwriting them". A
+  finished undo opens the undo's own changeset, which can be undone in turn. New helpers in
+  `history.ts`: `canRevert`, `droppedNote`, `conflictPlace`.
+- Docs: §14.12 "As built (H3)", the MCP areas in §13.6 and OPERATIONS.md.
+- Tests: `sc-api/tests/history_undo.rs`: undo across two tables, recorded as an `undo`
+  changeset, refused when done already, and undoing the undo puts the change back. A
+  conflict refuses and names the field, and nothing is written. `force` overwrites, and is
+  refused below the admin. Insert and delete order follows the foreign key (checked to fail
+  when the order is reversed). A one-table undo leaves the rest for a later full undo. A
+  restore is refused while its parent is gone, then succeeds, reporting a dropped column. Revert
+  to a version, and the refusals. `sc-server`: the three routes over HTTP, including a refused
+  and a forced undo, admin-only after logout (`table_settings_api.rs`); the tools offered with
+  `allow_history` and an undo through MCP (`mcp_server.rs`). Vitest covers the new
+  `history.ts` helpers.
+
 ## Row history H2: reading
 
 A table's history can now be read: a row's versions, the deleted rows, a row as it was, and

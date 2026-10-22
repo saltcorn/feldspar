@@ -5,7 +5,16 @@
 // The screens are `RowHistory`, `DeletedRows` and `Changesets`; what is worth
 // testing about them is here.
 
-import type { GetRowHistoryResponse, ListChangesetsQuery } from "./client";
+import type {
+  GetRowHistoryResponse,
+  ListChangesetsQuery,
+  UndoChangesetResponse,
+} from "./client";
+
+/** What an undo did, or the conflicts that stopped it (TODO-history H3.3). */
+export type UndoOutcome = UndoChangesetResponse;
+/** One row or field changed since the changeset an undo would take back. */
+export type UndoConflict = UndoOutcome["conflicts"][number];
 
 /** One entry of a row's history, as `getRowHistory` answers it. */
 export type HistoryEntry = GetRowHistoryResponse[number];
@@ -121,4 +130,26 @@ export function rowSummary(row: unknown, key?: string): string {
     ([field, value]) => field !== key && value !== null && value !== undefined,
   );
   return entries.map(([field, value]) => `${field}: ${historyValue(value)}`).join(", ");
+}
+
+/** Whether a row can be set back to the version `entry` made: not to the
+ * version it is at now, and not to its deletion. */
+export function canRevert(entry: HistoryEntry, newest: HistoryEntry | undefined): boolean {
+  return entry.op !== "d" && entry.seq !== newest?.seq;
+}
+
+/** What a restore, revert or undo left out because the field is gone; `null`
+ * when it left out nothing. */
+export function droppedNote(dropped: string[]): string | null {
+  if (dropped.length === 0) return null;
+  const fields = dropped.join(", ");
+  return dropped.length === 1
+    ? `The field ${fields} no longer exists, so its old value was left out.`
+    : `The fields ${fields} no longer exist, so their old values were left out.`;
+}
+
+/** Where a conflict is: the row, and the field when one changed. */
+export function conflictPlace(conflict: UndoConflict): string {
+  const row = `${conflict.table} ${conflict.key}`;
+  return conflict.field ? `${row} · ${conflict.field}` : row;
 }

@@ -5,7 +5,9 @@
 // import, a workflow run, one MCP call, one offline upload, one `psql`
 // transaction — so this is the screen that answers "what did that do?". The
 // list filters by user, table, source and date; a changeset opens to its
-// entries, row by row. Undo arrives here in H3.
+// entries, row by row, with Undo (H3.3): every entry reversed in one
+// transaction, refused with the conflicts listed when a row has been changed
+// since, unless the admin chooses to overwrite them.
 
 import { useEffect, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -21,10 +23,13 @@ import {
   EMPTY_CHANGESET_FILTER,
   SOURCE_LABELS,
   changesetQuery,
+  conflictPlace,
   historyTime,
+  historyValue,
   sourceLabel,
   whoLabel,
   type ChangesetFilterForm,
+  type UndoConflict,
 } from "../history";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader } from "../layout";
@@ -255,6 +260,7 @@ export function ChangesetDetail({ id }: { id: string }) {
                 <T text="This changeset changed nothing in a table that keeps row history." />
               </Alert>
             )}
+            {changeset.entries.length > 0 && <UndoPanel changeset={changeset} />}
             {changeset.entries.map((entry) => (
               <EntryBlock
                 key={entry.seq}
@@ -267,5 +273,109 @@ export function ChangesetDetail({ id }: { id: string }) {
         )}
       </PageBody>
     </>
+  );
+}
+
+/** Undo the changeset, or one table's part of it. A refusal lists what has
+ * changed since, and offers to overwrite it. A done undo opens the undo's own
+ * changeset, which can be undone in turn. */
+function UndoPanel({ changeset }: { changeset: GetChangesetResponse }) {
+  const tables = [...new Set(changeset.entries.map((entry) => entry.table))];
+  const [table, setTable] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [conflicts, setConflicts] = useState<UndoConflict[] | null>(null);
+
+  const undo = async (force: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const outcome = await api.undoChangeset(changeset.id, { table: table || null, force });
+      if (outcome.undone && outcome.changeset) {
+        setConflicts(null);
+        navigate(`/changesets/${encodeURIComponent(outcome.changeset)}`);
+      } else {
+        setConflicts(outcome.conflicts);
+      }
+    } catch (err) {
+      setError(errorMessage(err, "Could not undo the changeset."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card mb-3">
+      <div className="card-body p-3">
+        <p className="mb-2">
+          <T text="Undo reverses the changes below in one transaction: created rows are deleted, deleted rows put back and changed fields set back. Triggers run on those writes as on any other." />{" "}
+          <strong>
+            <T text="Effects outside the database, such as emails a trigger sent, are not undone." />
+          </strong>
+        </p>
+        <div className="d-flex flex-wrap align-items-center gap-2">
+          {tables.length > 1 && (
+            <Form.Select
+              size="sm"
+              className="w-auto"
+              aria-label="Which table's changes to undo"
+              value={table}
+              onChange={(e) => {
+                setTable(e.target.value);
+                setConflicts(null);
+              }}
+            >
+              <option value="">All tables</option>
+              {tables.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </Form.Select>
+          )}
+          <Button variant="outline-danger" size="sm" disabled={busy} onClick={() => undo(false)}>
+            {busy ? <T text="Undoing…" /> : <T text="Undo" />}
+          </Button>
+        </div>
+        {error && (
+          <Alert variant="danger" className="mt-2 mb-0">
+            {error}
+          </Alert>
+        )}
+        {conflicts !== null && conflicts.length > 0 && (
+          <Alert variant="warning" className="mt-2 mb-0">
+            <p className="mb-1">
+              <T text="Nothing was undone: these rows have been changed since." />
+            </p>
+            <Table size="sm" className="mb-2">
+              <thead>
+                <tr>
+                  <th><T text="Row" /></th>
+                  <th><T text="Left by this changeset" /></th>
+                  <th><T text="Now" /></th>
+                </tr>
+              </thead>
+              <tbody>
+                {conflicts.map((conflict) => (
+                  <tr key={conflictPlace(conflict)}>
+                    <td>
+                      <code>{conflictPlace(conflict)}</code>
+                      {!conflict.field && (
+                        <div className="small text-secondary">{conflict.reason}</div>
+                      )}
+                    </td>
+                    <td>{conflict.field && historyValue(conflict.expected)}</td>
+                    <td>{conflict.field && historyValue(conflict.actual)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+            <Button variant="danger" size="sm" disabled={busy} onClick={() => undo(true)}>
+              <T text="Undo anyway, overwriting them" />
+            </Button>
+          </Alert>
+        )}
+      </div>
+    </div>
   );
 }

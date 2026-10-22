@@ -6,15 +6,21 @@
 // however many triggers followed it. Each shows who, when and from where, and
 // the fields it changed with their values before and after; a field dropped
 // from the table since is still shown, marked as removed.
+//
+// An older version can be put back (H3.3): one update through the row layer,
+// recorded as a new version in a `restore` changeset.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
 import Badge from "react-bootstrap/Badge";
+import Button from "react-bootstrap/Button";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import {
+  canRevert,
+  droppedNote,
   historyTime,
   historyValue,
   opLabel,
@@ -97,11 +103,14 @@ export function EntryBlock({
   entry,
   title,
   showChangeset = true,
+  action,
 }: {
   entry: HistoryEntry;
   title?: string;
   /** Who and when; left out where the changeset is the page. */
   showChangeset?: boolean;
+  /** A button at the end of the heading line. */
+  action?: ReactNode;
 }) {
   return (
     <div className="border rounded p-2 mb-2">
@@ -109,21 +118,53 @@ export function EntryBlock({
         <Badge bg={opVariant(entry.op)}>{opLabel(entry.op)}</Badge>
         {title && <strong>{title}</strong>}
         {showChangeset && <ChangesetLine changeset={entry.changeset} at={entry.at} />}
+        {action && <span className="ms-auto">{action}</span>}
       </div>
       <EntryChanges entry={entry} />
     </div>
   );
 }
 
-/** A row's history, newest first: the row form's History tab. */
-export function RowHistory({ table, id }: { table: string; id: string }) {
+/** A row's history, newest first: the row form's History tab. `onReverted`
+ * is told once the row has been set back to an older version. */
+export function RowHistory({
+  table,
+  id,
+  onReverted,
+}: {
+  table: string;
+  id: string;
+  onReverted?: () => void;
+}) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  const revert = async (version: number) => {
+    setBusy(version);
+    setError(null);
+    setDone(null);
+    try {
+      const reverted = await api.revertRow(table, id, { version });
+      setDone(
+        [`The row is back as it was at v${version}.`, droppedNote(reverted.dropped)]
+          .filter(Boolean)
+          .join(" "),
+      );
+      setReload((n) => n + 1);
+      onReverted?.();
+    } catch (err) {
+      setError(errorMessage(err, "Could not set the row back."));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   useEffect(() => {
     let live = true;
     setEntries(null);
-    setError(null);
     api
       .getRowHistory(table, id)
       .then((found) => {
@@ -135,9 +176,9 @@ export function RowHistory({ table, id }: { table: string; id: string }) {
     return () => {
       live = false;
     };
-  }, [table, id]);
+  }, [table, id, reload]);
 
-  if (error) return <Alert variant="danger">{error}</Alert>;
+  if (error && entries === null) return <Alert variant="danger">{error}</Alert>;
   if (entries === null) return <p className="text-muted mb-0"><T text="Loading…" /></p>;
   if (entries.length === 0)
     return (
@@ -147,8 +188,26 @@ export function RowHistory({ table, id }: { table: string; id: string }) {
     );
   return (
     <>
+      {error && <Alert variant="danger">{error}</Alert>}
+      {done && <Alert variant="success">{done}</Alert>}
       {entries.map((entry) => (
-        <EntryBlock key={entry.seq} entry={entry} title={`v${entry.version}`} />
+        <EntryBlock
+          key={entry.seq}
+          entry={entry}
+          title={`v${entry.version}`}
+          action={
+            canRevert(entry, entries[0]) && (
+              <Button
+                variant="outline-primary"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => revert(entry.version)}
+              >
+                {busy === entry.version ? <T text="Setting back…" /> : <T text="Set back to this version" />}
+              </Button>
+            )
+          }
+        />
       ))}
     </>
   );

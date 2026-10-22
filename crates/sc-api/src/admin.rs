@@ -810,6 +810,100 @@ pub fn admin_endpoints() -> EndpointSet {
         ),
     );
 
+    // --- restore and undo (§14.12 "Restore and undo", TODO-history H3) ------
+    //
+    // Writes through the row layer as the caller, each in one transaction and
+    // its own changeset (`restore` or `undo`), which is recorded like any other
+    // change and so can be undone in turn. The logic is `sc_api::undo`.
+
+    set.register(
+        Endpoint::new(
+            "restoreRow",
+            Method::Post,
+            api()
+                .lit("tables")
+                .param("table", ValueType::Text)
+                .lit("deleted")
+                .param("id", ValueType::Text)
+                .lit("restore"),
+        )
+        .output(restored_row_schema())
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Put a deleted row back, as it was when it was deleted, with the same \
+                 primary key `id`. Fields dropped from the table since are left out \
+                 and listed in `dropped`. Refused when the row refers to a row that \
+                 no longer exists (restore that first). Triggers run as for any \
+                 insert.",
+            )
+            .in_area(Area::History)
+            .needs(Grant::Edit),
+        ),
+    );
+
+    set.register(
+        Endpoint::new(
+            "revertRow",
+            Method::Post,
+            api()
+                .lit("tables")
+                .param("table", ValueType::Text)
+                .lit("rows")
+                .param("id", ValueType::Text)
+                .lit("revert"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "version",
+            TypeSchema::int(),
+        )]))
+        .output(restored_row_schema())
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Set one row back to how it was at one of its versions (the \
+                 `version` number from its history), as one update, or an insert \
+                 when the row has been deleted since. Fields dropped since are left \
+                 out and listed in `dropped`.",
+            )
+            .in_area(Area::History)
+            .needs(Grant::Edit),
+        ),
+    );
+
+    set.register(
+        Endpoint::new(
+            "undoChangeset",
+            Method::Post,
+            api()
+                .lit("changesets")
+                .param("id", ValueType::Text)
+                .lit("undo"),
+        )
+        .input(TypeSchema::struct_of([
+            // Undo only this table's entries; absent, all of them.
+            StructField::new("table", TypeSchema::optional(TypeSchema::text())),
+            // Overwrite rows changed since instead of refusing.
+            StructField::new("force", TypeSchema::optional(TypeSchema::bool())),
+        ]))
+        .output(undo_outcome_schema())
+        .auth(AuthRequirement::admin())
+        .mcp(
+            McpTag::new(
+                "Undo a changeset: reverse what it did to every row (or only to \
+                 `table`'s rows), in one transaction. Inserted rows are deleted, \
+                 deleted rows put back and updated fields set back. If any of those \
+                 rows has been changed since, nothing is done and `conflicts` says \
+                 which rows and fields; pass `force: true` to overwrite them. The \
+                 undo is a changeset itself, so it can be undone. Effects outside \
+                 the database, such as emails a trigger sent, are not undone.",
+            )
+            .in_area(Area::History)
+            .needs(Grant::Edit)
+            .and_needs(Grant::Drop),
+        ),
+    );
+
     // --- rows in bulk, as CSV ----------------------------------------------
     //
     // The document crosses as a **string** in a JSON envelope rather than as a
@@ -4719,6 +4813,40 @@ fn changeset_summary_schema() -> TypeSchema {
     TypeSchema::Struct(fields)
 }
 
+/// A restored or reverted row, and the `restore` changeset it was written in.
+fn restored_row_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("changeset", TypeSchema::text()),
+        StructField::new("row", TypeSchema::json()),
+        // Fields the old row had that the table no longer has.
+        StructField::new("dropped", TypeSchema::array(TypeSchema::text())),
+    ])
+}
+
+/// What an undo did, or the conflicts that stopped it.
+fn undo_outcome_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("undone", TypeSchema::bool()),
+        // The undo's own changeset; null when refused.
+        StructField::new("changeset", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("entries", TypeSchema::int()),
+        // `table.field` of values left out because the field is gone.
+        StructField::new("dropped", TypeSchema::array(TypeSchema::text())),
+        StructField::new(
+            "conflicts",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("table", TypeSchema::text()),
+                StructField::new("key", TypeSchema::text()),
+                // Null when the row itself is gone, or back.
+                StructField::new("field", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("expected", TypeSchema::json()),
+                StructField::new("actual", TypeSchema::json()),
+                StructField::new("reason", TypeSchema::text()),
+            ])),
+        ),
+    ])
+}
+
 fn changeset_detail_schema() -> TypeSchema {
     let mut fields = changeset_fields();
     fields.push(StructField::new(
@@ -7160,6 +7288,11 @@ mod tests {
                 "getRowAsOf",
                 "listChangesets",
                 "getChangeset",
+                // …and restore and undo (H3.3), in the same area, needing the
+                // grants their writes need.
+                "restoreRow",
+                "revertRow",
+                "undoChangeset",
                 // Modules, behind their own area that is off unless granted: an
                 // agent writing Python needs a library installed to import it,
                 // and asking a human to click Install is the gap this closes.
@@ -7268,6 +7401,9 @@ mod tests {
             "getRowAsOf",
             "listChangesets",
             "getChangeset",
+            "restoreRow",
+            "revertRow",
+            "undoChangeset",
         ] {
             assert_eq!(area_of(name), Some(Area::History), "{name}");
         }

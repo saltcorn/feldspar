@@ -55,6 +55,8 @@ mod graphql_schema;
 mod history_capture;
 #[path = "history_read.rs"]
 mod history_read;
+#[path = "history_undo.rs"]
+mod history_undo;
 #[path = "live_connection.rs"]
 mod live_connection;
 #[path = "public_datasets.rs"]

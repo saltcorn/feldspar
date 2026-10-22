@@ -58,7 +58,7 @@ impl<'a> HistoryReader<'a> {
         }
     }
 
-    fn is_admin(&self) -> bool {
+    pub(crate) fn is_admin(&self) -> bool {
         self.role <= ROLE_ADMIN
     }
 
@@ -82,7 +82,7 @@ impl<'a> HistoryReader<'a> {
     /// Whether this caller may see the history of row `key`: always for the
     /// admin; otherwise when they may read the row now or, if it is gone, its
     /// deleted image.
-    async fn may_see_row(&self, table: &Table, key: &str) -> Result<bool> {
+    pub(crate) async fn may_see_row(&self, table: &Table, key: &str) -> Result<bool> {
         if self.is_admin() {
             return Ok(true);
         }
@@ -300,7 +300,7 @@ impl<'a> HistoryReader<'a> {
     }
 }
 
-fn not_found(table: &Table, key: &str) -> Error {
+pub(crate) fn not_found(table: &Table, key: &str) -> Error {
     Error::not_found(format!(
         "there is no history of row `{key}` of `{}` that you may read",
         table.name
@@ -308,7 +308,7 @@ fn not_found(table: &Table, key: &str) -> Error {
 }
 
 /// `values` with each secret of `table` as its sentinel.
-fn redacted(table: &Table, values: Map<String, Json>) -> Map<String, Json> {
+pub(crate) fn redacted(table: &Table, values: Map<String, Json>) -> Map<String, Json> {
     let mut row = Json::Object(values);
     sc_catalog::secrets::redact_json(table, &mut row);
     match row {

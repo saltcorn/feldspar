@@ -279,7 +279,11 @@ function RowForm({
               </Nav.Item>
             </Nav>
           )}
-          {tab === "history" && editingId !== null && <RowHistory table={table} id={editingId} />}
+          {tab === "history" && editingId !== null && (
+            // Setting the row back is a save: the form's values are stale after
+            // it, so the form closes and the grid reloads as after Save.
+            <RowHistory table={table} id={editingId} onReverted={onSaved} />
+          )}
           {error && <Alert variant="danger">{error}</Alert>}
           {tab === "row" && editable.map((f) => {
             const store = fileStoreOf(f);

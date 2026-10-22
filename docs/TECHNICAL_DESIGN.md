@@ -4319,7 +4319,9 @@ library it imports — and it is **off** unless a token or agent ticks it, becau
 package runs a third party's code with the server's privileges and a Python one has no sandbox at
 all. No existing credential gains it by upgrading. **A fourth, `allow_history`,** is off unless
 ticked for the same kind of reason: its tools (`getRowHistory`, `listDeletedRows`, `getRowAsOf`,
-`listChangesets`, `getChangeset`, §14.12) read row data, which no other tool shows an agent. **An MCP token is the exception to all of these
+`listChangesets`, `getChangeset`, §14.12) read row data, which no other tool shows an agent, and
+its writes (`restoreRow`, `revertRow`, `undoChangeset`) also need the edit grant (undo the drop
+grant too). **An MCP token is the exception to all of these
 defaults:** a mint that leaves a flag out grants it (`sc_api::mcp::token_flags_from_submitted`) and
 the panel starts with every box ticked, because a token is minted by an admin, on purpose, for an
 agent they are handing the installation to; the stored `grants` is explicit, so the copilot's
@@ -11258,6 +11260,36 @@ undone.
 
 An entry counts as **undone** when an undo changeset has the entry's changeset as its `cause`,
 and its `undo_table` is null or names the entry's table.
+
+**As built (H3).** `sc_api::undo::Reverser` does all three, writing through `write_as` (the REST
+API's create, update and delete rules) on a `SharedTx` over the primary database, inside a
+changeset whose `session` and `application` are the ambient (calling) one's, so the Undo action
+can find it. The admin API routes are `POST /api/tables/{table}/deleted/{key}/restore`,
+`POST /api/tables/{table}/rows/{key}/revert` (`{ version }`, the number from the row's history)
+and `POST /api/changesets/{id}/undo` (`{ table?, force? }`), admin-only like the reads, and MCP
+tools in the `allow_history` area (restore and revert need the edit grant, undo edit and drop).
+Details the text above leaves open:
+
+- A restore's `cause` is the delete's changeset; a revert's is the row's latest entry's. Restore
+  and revert need the history to be readable by the caller (they show what the row was).
+  Revert refuses a version that is the row's deletion, and one the row is already at; a row
+  deleted since is inserted.
+- An undo answers `{ undone, changeset, entries, dropped, conflicts }`. **A refusal is an answer,
+  not an error**: `undone: false` and the conflicts (`table`, `key`, `field`, `expected`,
+  `actual`, `reason`; `field` is null when the row is gone, or back), so the screen and an agent
+  can show them and offer `force`. Below the admin, an undo is only of the caller's own
+  changesets, and `force` is refused.
+- Order: rows put back first (parents first by foreign-key depth), then updates, then rows
+  removed (children first); within each, the latest entry first. A self-reference or a cycle
+  counts as no reference.
+- `force` overwrites changed fields and a row that has come back; a row that has been deleted
+  since cannot be updated or deleted, and is passed over.
+- Every written row's key fields are checked first, inside the transaction (so a parent put
+  back earlier in the same undo counts). A dangling one refuses the whole write with
+  "`tasks.project` refers to row 7 of `projects`, which no longer exists; restore that row
+  first".
+- Calculated and document columns are not written back; dropped columns are left out and
+  reported as `dropped`.
 
 #### The Undo action
 

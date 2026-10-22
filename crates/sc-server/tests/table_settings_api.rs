@@ -649,3 +649,133 @@ async fn row_history_is_read_through_the_admin_api() -> sc_error::Result<()> {
     );
     Ok(())
 }
+
+/// Row history H3: restore, revert and undo over the admin API. A restore and
+/// an undo are each a changeset of their own (`restore`, `undo`), and a
+/// refused undo answers its conflicts rather than an error.
+#[tokio::test]
+async fn rows_are_restored_reverted_and_undone_through_the_admin_api() -> sc_error::Result<()> {
+    let (mut client, catalog, _db) = setup().await?;
+    sc_catalog::bootstrap_change_log(&catalog).await?;
+    client
+        .send("POST", "/api/tables", Some(json!({ "name": "notes" })))
+        .await;
+    for field in [
+        json!({ "name": "id", "type": "int", "primary_key": true }),
+        json!({ "name": "title", "type": "text" }),
+    ] {
+        let (status, _) = client
+            .send("POST", "/api/tables/notes/fields", Some(field))
+            .await;
+        assert!(status.is_success(), "{status}");
+    }
+    let (status, saved) = client
+        .send(
+            "PUT",
+            "/api/tables/notes",
+            Some(json!({
+                "label": "Notes", "description": "", "min_role_read": 1, "min_role_write": 1,
+                "ownership_formula": "", "rls_enabled": false, "sync_enabled": false,
+                "history_enabled": true,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/tables/notes/rows",
+            Some(json!({ "id": 1, "title": "milk" })),
+        ),
+        (
+            "PUT",
+            "/api/tables/notes/rows/1",
+            Some(json!({ "title": "oat milk" })),
+        ),
+        (
+            "POST",
+            "/api/tables/notes/rows",
+            Some(json!({ "id": 2, "title": "eggs" })),
+        ),
+        ("DELETE", "/api/tables/notes/rows/2", None),
+    ] {
+        let (status, answer) = client.send(method, path, body).await;
+        assert!(status.is_success(), "{method} {path}: {status} {answer}");
+    }
+
+    // Restore the deleted row.
+    let (status, restored) = client
+        .send("POST", "/api/tables/notes/deleted/2/restore", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{restored}");
+    assert_eq!(restored["row"]["title"], json!("eggs"));
+    assert_eq!(restored["dropped"], json!([]));
+
+    // Set row 1 back to its first version.
+    let (status, reverted) = client
+        .send(
+            "POST",
+            "/api/tables/notes/rows/1/revert",
+            Some(json!({ "version": 1 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reverted}");
+    assert_eq!(reverted["row"]["title"], json!("milk"));
+
+    // Undo the revert: row 1 is "oat milk" again, in an `undo` changeset.
+    let revert = reverted["changeset"].as_str().unwrap().to_owned();
+    let (status, outcome) = client
+        .send("POST", &format!("/api/changesets/{revert}/undo"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{outcome}");
+    assert_eq!(outcome["undone"], json!(true), "{outcome}");
+    let (_, history) = client
+        .send("GET", "/api/tables/notes/rows/1/history", None)
+        .await;
+    assert_eq!(history[0]["changeset"]["source"], json!("undo"));
+    assert_eq!(history[0]["changes"][0]["new"], json!("oat milk"));
+
+    // The restore, after row 2 has been edited since: refused, naming the field.
+    client
+        .send(
+            "PUT",
+            "/api/tables/notes/rows/2",
+            Some(json!({ "title": "brown eggs" })),
+        )
+        .await;
+    let restore = restored["changeset"].as_str().unwrap().to_owned();
+    let (status, outcome) = client
+        .send(
+            "POST",
+            &format!("/api/changesets/{restore}/undo"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{outcome}");
+    assert_eq!(outcome["undone"], json!(false));
+    assert_eq!(outcome["conflicts"][0]["field"], json!("title"));
+    assert_eq!(outcome["conflicts"][0]["actual"], json!("brown eggs"));
+    let (status, outcome) = client
+        .send(
+            "POST",
+            &format!("/api/changesets/{restore}/undo"),
+            Some(json!({ "force": true })),
+        )
+        .await;
+    assert_eq!(
+        (status, outcome["undone"].clone()),
+        (StatusCode::OK, json!(true))
+    );
+    let (_, deleted) = client.send("GET", "/api/tables/notes/deleted", None).await;
+    assert_eq!(deleted[0]["key"], json!("2"));
+
+    client.send("POST", "/api/logout", None).await;
+    let (status, _) = client
+        .send("POST", "/api/tables/notes/deleted/2/restore", None)
+        .await;
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+        "{status}"
+    );
+    Ok(())
+}

@@ -54,6 +54,7 @@ pub mod query_string;
 pub mod rows;
 pub mod schema_edit;
 pub mod throttle;
+pub mod undo;
 
 mod admin;
 mod analytics;

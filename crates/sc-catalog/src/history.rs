@@ -528,6 +528,40 @@ pub async fn changeset_entries(
     Ok(Some((changeset, rows.iter().map(entry_of).collect())))
 }
 
+/// How much of a changeset has been undone (§14.12): an undo changeset whose
+/// `cause` is it undoes the whole of it, or with `undo_table` that table's
+/// entries.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Undone {
+    /// An undo of the whole changeset exists.
+    pub whole: bool,
+    /// The tables whose entries an undo of one table has taken back.
+    pub tables: Vec<String>,
+}
+
+impl Undone {
+    /// Whether `table`'s entries of the changeset have been undone.
+    pub fn covers(&self, table: &str) -> bool {
+        self.whole || self.tables.iter().any(|t| t == table)
+    }
+}
+
+/// What has been undone of changeset `id`.
+pub async fn undone(catalog: &Catalog, id: Uuid) -> Result<Undone> {
+    let sql = format!(
+        "SELECT s.undo_table FROM {sets} s WHERE s.cause = $1 AND s.source = 'undo'",
+        sets = quote(catalog, CHANGESETS_TABLE),
+    );
+    let mut out = Undone::default();
+    for row in query(catalog, sql, vec![Value::Uuid(id)]).await? {
+        match text_of(&row, "undo_table") {
+            Some(table) => out.tables.push(table),
+            None => out.whole = true,
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

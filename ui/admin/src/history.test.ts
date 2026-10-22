@@ -4,13 +4,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   EMPTY_CHANGESET_FILTER,
+  canRevert,
   changesetQuery,
+  conflictPlace,
+  droppedNote,
   historyValue,
   opLabel,
   rowSummary,
   sourceLabel,
   whoLabel,
   type ChangesetInfo,
+  type HistoryEntry,
 } from "./history";
 
 const changeset = (over: Partial<ChangesetInfo>): ChangesetInfo => ({
@@ -64,5 +68,31 @@ describe("row history", () => {
     expect(new Date(query.since as string).getTime()).toBe(
       new Date("2026-10-01T00:00:00").getTime(),
     );
+  });
+
+  it("offers a revert to an older version that is not a deletion", () => {
+    const entry = (seq: number, op: string): HistoryEntry => ({
+      seq,
+      version: seq,
+      table: "t",
+      key: "1",
+      op,
+      at: "2026-10-22T09:00:00Z",
+      changes: [],
+      changeset: changeset({}),
+    });
+    const newest = entry(3, "u");
+    expect(canRevert(entry(1, "i"), newest)).toBe(true);
+    expect(canRevert(newest, newest)).toBe(false);
+    expect(canRevert(entry(2, "d"), newest)).toBe(false);
+  });
+
+  it("says which dropped fields were left out, and where a conflict is", () => {
+    expect(droppedNote([])).toBeNull();
+    expect(droppedNote(["budget"])).toContain("field budget no longer exists");
+    expect(droppedNote(["a", "b"])).toContain("fields a, b no longer exist");
+    const conflict = { table: "t", key: "1", expected: 1, actual: 2, reason: "r" };
+    expect(conflictPlace({ ...conflict, field: "x" })).toBe("t 1 · x");
+    expect(conflictPlace({ ...conflict, field: null })).toBe("t 1");
   });
 });

@@ -31,6 +31,7 @@ use sc_api::csv as csv_rows;
 use sc_api::history::HistoryReader;
 use sc_api::rows::{self, require_object};
 use sc_api::schema_edit;
+use sc_api::undo::Reverser;
 use sc_api::{ApiRequest, GRAPHQL_PROVIDER, Method as ApiMethod};
 use sc_app::{
     ApiConfig, AppId, Application, CspPolicy, FrameworkRef, StaticDir, StreamRef, TriggerRef,
@@ -1147,6 +1148,78 @@ pub fn admin_handlers_with(
                 Ok(HandlerResponse::ok(
                     reader.changeset(ctx.path_param("id")?).await?,
                 ))
+            }
+        }
+    });
+
+    // --- restore and undo (§14.12 "Restore and undo") ----------------------
+    //
+    // Writes as the caller through `sc_api::undo`, each in one transaction and
+    // a changeset of its own.
+
+    reg.register("restoreRow", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let restored = reverser
+                    .restore_row(ctx.path_param("table")?, ctx.path_param("id")?)
+                    .await?;
+                Ok(HandlerResponse::ok(restored.to_json()))
+            }
+        }
+    });
+
+    reg.register("revertRow", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let version = int_field(require_object(&ctx.body)?, "version")?;
+                let restored = reverser
+                    .revert_row(ctx.path_param("table")?, ctx.path_param("id")?, version)
+                    .await?;
+                Ok(HandlerResponse::ok(restored.to_json()))
+            }
+        }
+    });
+
+    reg.register("undoChangeset", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let id = ctx.path_param("id")?;
+                let id: uuid::Uuid = id
+                    .parse()
+                    .map_err(|_| Error::not_found(format!("there is no changeset `{id}`")))?;
+                // Both fields are optional, so an empty body is an undo of all.
+                let empty = Map::new();
+                let obj = match &ctx.body {
+                    Json::Null => &empty,
+                    body => require_object(body)?,
+                };
+                let table = match obj.get("table") {
+                    None | Some(Json::Null) => None,
+                    Some(Json::String(t)) if t.is_empty() => None,
+                    Some(Json::String(t)) => Some(t.as_str()),
+                    Some(_) => return Err(Error::invalid("`table` must be a table's name")),
+                };
+                let force = optional_bool(obj, "force")?;
+                let outcome = reverser.undo_changeset(id, table, force).await?;
+                Ok(HandlerResponse::ok(outcome.to_json()))
             }
         }
     });

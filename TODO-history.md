@@ -79,16 +79,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H3 — Restore and undo
 
-- [ ] H3.1 Restore a deleted row, and revert a row to a version, through the row layer as the
+- [x] H3.1 Restore a deleted row, and revert a row to a version, through the row layer as the
       caller, in a `restore` changeset with `cause`. Columns that no longer exist are dropped
       and reported. A missing referenced row refuses the restore with the reason.
-- [ ] H3.2 Undo a changeset (whole, or one table's entries with `undo_table`) in one transaction,
+- [x] H3.2 Undo a changeset (whole, or one table's entries with `undo_table`) in one transaction,
       ordered by foreign-key depth, with the conflict check. Refuse and list the conflicts;
       admins can pass `force`. An undo is itself undoable.
-- [ ] H3.3 Admin UI: Restore on the Deleted tab and in the History tab; Undo in the changeset
+- [x] H3.3 Admin UI: Restore on the Deleted tab and in the History tab; Undo in the changeset
       browser, showing conflicts and saying that external effects are not undone. MCP tools for
       both.
-- [ ] H3.4 Tests: undo restores rows across two tables; a conflict refuses the undo and names
+- [x] H3.4 Tests: undo restores rows across two tables; a conflict refuses the undo and names
       the field; `force` overwrites; undoing an undo puts the change back; insert and delete
       order with foreign keys; restore refused when the parent is gone.
 

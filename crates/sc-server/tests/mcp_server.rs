@@ -1722,9 +1722,9 @@ async fn the_module_tools_are_offered_only_to_a_token_given_allow_modules() -> s
     Ok(())
 }
 
-/// Row history's reads are tools only for a token given `allow_history`, and
-/// one called reaches the history: here a row's versions, changed as the MCP
-/// caller (TODO-history H2.4).
+/// Row history's tools are offered only to a token given `allow_history`, and
+/// one called reaches the history: here a row's versions (TODO-history H2.4),
+/// and an undo of the last of them (H3.3).
 #[tokio::test]
 async fn the_history_tools_are_offered_only_to_a_token_given_allow_history() -> sc_error::Result<()>
 {
@@ -1773,6 +1773,9 @@ async fn the_history_tools_are_offered_only_to_a_token_given_allow_history() -> 
         "getRowAsOf",
         "listChangesets",
         "getChangeset",
+        "restoreRow",
+        "revertRow",
+        "undoChangeset",
     ];
     let without = mint(&mut client, "no history", json!({ "allow_history": false })).await;
     let history = mint(&mut client, "defaults", json!({})).await;
@@ -1804,6 +1807,21 @@ async fn the_history_tools_are_offered_only_to_a_token_given_allow_history() -> 
         .collect();
     assert_eq!(versions, ["u", "i"], "{answer}");
     assert_eq!(answer[0]["changeset"]["source"], json!("sql"));
+
+    let update = answer[0]["changeset"]["id"].as_str().unwrap().to_owned();
+    let (is_error, undone) =
+        call_tool(&router, &history, "undoChangeset", json!({ "id": update })).await;
+    assert!(!is_error, "{undone}");
+    assert_eq!(undone["undone"], json!(true), "{undone}");
+    let (_, answer) = call_tool(
+        &router,
+        &history,
+        "getRowHistory",
+        json!({ "table": "notes", "id": "1" }),
+    )
+    .await;
+    assert_eq!(answer[0]["changeset"]["source"], json!("undo"), "{answer}");
+    assert_eq!(answer[0]["changes"][0]["new"], json!("milk"), "{answer}");
     Ok(())
 }
 
