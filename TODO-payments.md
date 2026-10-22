@@ -27,7 +27,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 |---|---|---|---|---|
 | **1** | **Shop.** The application sells goods. A basket is paid for at checkout. | a buyer | maybe not | an order, marked paid; stock and fulfilment are the app's |
 | **2** | **Subscription SaaS.** Paying gives access, as a role. Tiers give different roles. Free tiers and free trials are optional. | the user | yes | a role grant that lasts while the subscription does |
-| **3** | **Credits.** A payment buys units that some activity uses up, for example an LLM agent. A subscription can include an allowance, which may roll over up to a cap. Top-ups are charged to the same card. | the user | yes | credit added to a balance; activity draws it down |
+| **3** | **LLM credits.** A payment buys units that LLM calls made by agent runs use up. A subscription can include an allowance, which may roll over up to a cap. Top-ups are charged to the same card. | the user | yes | credit added to a balance; agent runs' LLM calls draw it down |
 | **4** | **Mobile wallets.** Apple Pay and Google Pay in React Native apps. | as 1–3 | as 1–3 | as 1–3 |
 | **5** | **Marketplace.** One user sells, another buys, and the app keeps X% and pays the seller the rest. | a buyer | yes | an order, a fee for the app, a payout to the seller |
 | **6** | **Invoices and payment requests** (added use case). A services business (a consultancy, a booking or rental app) bills a customer for an amount the app works out (a timesheet, a booking deposit). It sends a pay link by email, and the customer may pay by card or by bank transfer or direct debit (SEPA, ACH, iDEAL), which settles days later. A deposit can be authorised now and captured later. | a customer, often with no account | no | an invoice row whose status follows the payment, including "processing" for days |
@@ -59,18 +59,19 @@ Two kinds of provider, and the difference decides the legal setup, not just the 
 | **Adyen** | PSP (enterprise) | yes | yes | no | no | yes | for Platforms | Later, on demand. |
 | **PayPal** | PSP or wallet | yes | yes | no | no | no | limited | Later, on demand. |
 | **Apple App Store / Google Play** | the store is the seller | in-app purchase | yes | the store's | consumables | n/a | no | Needed for digital goods sold *inside* native apps (§7). |
-| **RevenueCat** | aggregates both stores | — | — | — | — | — | — | An option for §7 instead of two store adapters. |
+| **RevenueCat** | aggregates both stores | — | — | — | — | — | — | **Not used** (§3.11): we write our own `apple` and `google_play` adapters. |
 
 **Which first.** Stripe, because it is the commonest, covers use cases 1–6, and with Managed
-Payments it is both a PSP and an MoR. **Paddle** second, as the established MoR and the adapter
-that checks the abstraction is not just Stripe's shape (P5). Polar and Mollie after that.
+Payments it is both a PSP and an MoR. **Polar** second (decided), as the open-source MoR aimed at
+developers, with meters and credits of its own, and the adapter that checks the abstraction is
+not just Stripe's shape (P5). Paddle and Mollie after that.
 
 ## 3. Decisions
 
 1. **One module with adapters, not a module per provider.** `@feldspar/payments` owns the
    tables, the actions, the webhook, the reconciliation service and the provider-neutral rules
    (prices, trials, roles, credits, guest orders). An **adapter** (`adapters/stripe.js`,
-   `adapters/paddle.js`, …) is the one thing that differs per provider. It implements the
+   `adapters/polar.js`, …) is the one thing that differs per provider. It implements the
    interface in §4 and declares what it can do. What one provider does differently is in one
    file, not copied into six modules. Several adapters can be configured at once, for example
    Stripe on the web plus the app stores for native apps, and they write into the same tables.
@@ -79,7 +80,7 @@ that checks the abstraction is not just Stripe's shape (P5). Polar and Mollie af
 2. **Feldspar holds the billing state the app needs; the provider is the payment rail.** Orders,
    subscriptions, grants and balances are rows in the app's database, kept up to date from the
    provider. This is what makes one module possible: an app reads `pay_subscriptions.status`,
-   not a Stripe or Paddle object. Every row keeps the provider's id and its raw object
+   not a Stripe or Polar object. Every row keeps the provider's id and its raw object
    (`provider_data`), so nothing the provider knows is lost.
 
 3. **Full functionality goes through escape hatches, not a growing abstraction.** The
@@ -88,7 +89,7 @@ that checks the abstraction is not just Stripe's shape (P5). Polar and Mollie af
      request to the provider's REST API, with the configured keys. It works for every provider
      and from any code body (`modfn("payments").pay_api(…)`).
    - `pay_provider_code`: an action whose configuration is a JavaScript body that runs **in the
-     module's worker**, with the provider's SDK client in scope (`stripe`, `paddle`). This is
+     module's worker**, with the provider's SDK client in scope (`stripe`, `polar`). This is
      what v1's "return the `stripe` object" was for. It cannot be a function returning the
      object, because a module function answers JSON across the worker seam.
    - Every webhook event is stored in `pay_events`. An insert trigger on that table reacts to any
@@ -112,14 +113,18 @@ that checks the abstraction is not just Stripe's shape (P5). Polar and Mollie af
    end of the paid period plus a grace period, and each renewal extends it. If every webhook is
    missed, access ends on time. Missing a webhook makes access lapse; it never extends it.
 
-6. **Credits are a core ledger, not module rows** (core, P6). Agents are in core and must check
-   the balance before a run and draw it down after each model call. That cannot go through the
-   provider (no network call per agent step) or through a module call. Credits also exist
-   without payments: an admin gives credits, a promotion, a sign-up bonus. So core has
-   **buckets** (an amount with an optional expiry, drawn down soonest-expiring first) and an
-   **entry log**. The module adds the policy: how much a plan includes, rollover and its cap,
-   top-up packs. The provider's own meters are used only to *bill* overage, never to hold the
-   balance.
+6. **LLM usage credits are a core ledger, and only for LLM usage** (core, P6). Agent runs are
+   the only place LLM calls are made, and agents are in core. A run must check the balance
+   before it starts and draw it down after each model call. That cannot go through the provider
+   (a network call per agent step) or through a module call. So core has **buckets** (an amount
+   with an optional expiry, drawn down soonest-expiring first) and an **entry log**, and **the
+   only thing that spends credits is an agent run's model calls**. The ledger is deliberately
+   not a general metering facility. One would need more flexibility (what is charged, when, and
+   whether to refuse beforehand or charge afterwards), and an app that wants to charge for other
+   activities can build that with its own tables, ownership formulas and actions. Credits can
+   still be **granted** from outside: the payments module (allowances, top-ups) and an admin by
+   hand. The module adds the policy: how much a plan includes, rollover and its cap, top-up
+   packs. The provider's own meters are used only to *bill* overage, never to hold the balance.
 
 7. **The server sets prices; the client sends only what is wanted.** A checkout request carries
    `{item, quantity}` lines. The checkout action reads each line's price and name from the app's
@@ -134,7 +139,20 @@ that checks the abstraction is not just Stripe's shape (P5). Polar and Mollie af
    converts for zero-decimal currencies (JPY) and three-decimal ones (KWD). Floating-point money
    is not allowed anywhere.
 
-10. **There is a `fake` adapter.** It is a provider with a local checkout page ("Pay" / "Fail"
+10. **Building blocks, not full solutions.** The module takes the payment and records the result
+    in tables. What a payment *means* for the business is the app's, built with triggers on those
+    tables. Examples: delivering digital goods (a licence key, a download link, access to a
+    file), decrementing stock, sending a confirmation, creating a shipment. A feature belongs in
+    the module only if an app could not reasonably build it from the tables, triggers and
+    actions. The tutorials show how to build the common ones. Delivering digital goods is
+    deliberately not built in; it is part 1 of the tutorial (P2.8).
+
+11. **Our own app-store adapters.** In-app purchases are verified by `apple` and `google_play`
+    adapters written here, using Apple's official App Store Server Library and Google's Play
+    Developer API, not through RevenueCat. This avoids a paid third party between an app and
+    its stores, and the store subscriptions land in the same tables as every other provider's.
+
+12. **There is a `fake` adapter.** It is a provider with a local checkout page ("Pay" / "Fail"
     buttons), which sends webhooks to the module's own endpoint. Tests use it, and so can an
     admin or a coding agent building the app's payment screens before anybody has a Stripe
     account. Each adapter is also tested against recorded provider responses. Live tests against
@@ -178,8 +196,8 @@ adapter cannot fill a field it leaves it null; it never makes a value up.
 |---|---|---|
 | `pay_accounts` | one configured provider each (§3.1) | `name`, `adapter`, `mode` (test/live), `secret_key` and `webhook_secret` (`Secret`), `publishable_key`, `settings`, `enabled`. Admin-only. |
 | `pay_customers` | the provider's customer for a user (or a guest email) | `user_id → users` (nullable), `account`, `provider_ref`, `email`; unique `(account, provider_ref)` |
-| `pay_plans` | what can be subscribed to | `name`, `label`, `role` (the role granted), `amount`, `currency`, `interval`, `trial_days`, `trial_needs_card`, `allowance_meter`, `allowance`, `rollover` (`none`/`capped`/`all`), `rollover_cap`, `provider_refs` (`{stripe: "price_…", paddle: "pri_…", apple: "com.app.pro"}`), `active` |
-| `pay_packs` | credit top-ups | `meter`, `units`, `amount`, `currency`, `expires_after_days`, `provider_refs` |
+| `pay_plans` | what can be subscribed to | `name`, `label`, `role` (the role granted), `amount`, `currency`, `interval`, `trial_days`, `trial_needs_card`, `allowance` (LLM credits per period), `rollover` (`none`/`capped`/`all`), `rollover_cap`, `provider_refs` (`{stripe: "price_…", paddle: "pri_…", apple: "com.app.pro"}`), `active` |
+| `pay_packs` | LLM credit top-ups | `units`, `amount`, `currency`, `expires_after_days`, `provider_refs` |
 | `pay_subscriptions` | one per provider subscription | `user_id`, `plan`, `account`, `provider_ref`, `status` (`trialing`/`active`/`past_due`/`paused`/`canceled`/`incomplete`), `current_period_end`, `cancel_at_period_end`, `trial_end`, `provider_data`. Readable by its owner. |
 | `pay_orders` | a one-off payment: a basket, a top-up or an invoice | `kind`, `user_id` (nullable), `email`, `status` (`open`/`processing`/`paid`/`failed`/`canceled`/`refunded`/`partially_refunded`), `amount_total`, `amount_tax`, `currency`, `shipping`, `account`, `provider_ref`, `access_token` (for guests), `paid_at`, `metadata`. Readable by its owner. |
 | `pay_order_lines` | the lines | `order`, `item_table`, `item_key`, `description`, `quantity`, `unit_amount`, `amount` |
@@ -210,10 +228,10 @@ devices keeps an ordinary `basket_items` table with an ownership formula.
    change C5), with the order's `access_token`. It answers `{ order, url }` for a redirect, or
    `{ order, client_secret }` for embedded elements.
 4. The webhook (§6.5) marks the order `paid` (or `processing` for a bank method). Triggers on
-   `pay_orders` do the app's work: decrement stock, send the confirmation, create the shipment.
+   `pay_orders` do the app's work (§3.10): decrement stock, send the confirmation, create the
+   shipment, deliver a digital good.
 5. A guest's order page calls `api.runOrderStatus({ token })`, which reads one order by its
-   unguessable token. When the order's email signs up or signs in, it can be attached to the
-   account (an option, off by default).
+   unguessable token. Whether a guest order can later become an account's order is open (§10).
 
 The tax mode is a checkout setting: none, the provider's tax calculation (Stripe Tax), or MoR.
 MoR is refused when the configuration collects a shipping address, because MoRs do not sell
@@ -257,25 +275,38 @@ provider's **customer portal** (`api.runBillingPortal()` → URL). `pay_change_p
 Daily trigger: emails the user before a card-less trial ends, and before an annual renewal. It
 uses `send_email` and the app's own templates.
 
-### 6.3 Credits (use case 3)
+### 6.3 LLM credits (use case 3)
 
-**Core (P6).** Meters are named (`ai_units`). A user's balance on a meter is the sum of their
-unexpired buckets. Operations:
+**Core (P6).** The ledger exists for one purpose: paying for the LLM calls agent runs make. It
+is not a general metering facility (§3.6). A user's balance is the sum of their unexpired
+buckets. Operations:
 
-- `grant(user, meter, amount, { expires_at, kind, key })`: a new bucket. The `key` is unique,
-  so replaying it does nothing. A grant first repays any debt.
-- `debit(user, meter, amount, { key, allow_debt })`: takes from the soonest-expiring bucket
-  first, in one transaction with the buckets locked. Without `allow_debt`, a debit larger than
-  the balance is refused and nothing is taken.
-- `balance(user, meter)`.
+- `grant(user, amount, { expires_at, kind, key })`: a new bucket. The `key` is unique, so
+  replaying it does nothing. A grant first repays any debt. Callers: the payments module
+  (C4) and an admin by hand on the user page.
+- `balance(user)`.
+- The debit is **internal to the agent loop**. It takes from the soonest-expiring bucket first,
+  in one transaction with the buckets locked. It is not exposed to code bodies, workflows or
+  modules.
 
-Surfaces: code bodies (`credits.debit("ai_units", 5, { key })`), a `credit_debit` workflow
-action, and module contexts (C4). Buckets and entries are ordinary tables that owners can read,
-so a balance widget is a REST read and updates live. **Agents** get a `meter` setting with a
-rate (units per dollar of model cost from `Usage::cost`, or per 1,000 tokens when prices are
-unknown) and a minimum balance to start. A run checks the balance first. It debits after each
-model call with `allow_debt`, because the call has already happened, and it stops when the
-balance reaches zero. An anonymous caller cannot run a metered agent.
+**Metering an agent.** An agent has an optional **LLM credits** setting, with a rate: units per
+dollar of model cost (from `Usage::cost`), or per 1,000 input and output tokens when the
+model's prices are unknown. A metered run:
+
+1. refuses to start if the caller's balance is below a minimum (an agent setting), and refuses
+   an anonymous caller;
+2. debits after each model call, keyed by the run and the step. The call has already
+   happened, so the debit is allowed to take the balance below zero (debt), and the next grant
+   repays it;
+3. stops at the next step boundary once the balance is zero or below, ending with a
+   reason ("out of credits") the chat UI shows.
+
+Delegated sub-agents debit the same caller. The admin's copilot is never metered.
+
+**One balance, one unit.** There is a single credit unit per instance, not named meters:
+named meters only matter for charging different activities, which is out of scope. Buckets and
+entries are ordinary tables that owners can read (an entry records the run, model and tokens),
+so a balance widget is a REST read and updates live.
 
 **Module (P7).** It is all policy:
 
@@ -288,9 +319,10 @@ balance reaches zero. An anonymous caller cannot run a metered agent.
   charge on the subscription), it charges **the same card** with no checkout page and answers
   `{ status: "paid" }`. If the bank asks for authentication (SCA), or there is no saved card, it
   falls back to a checkout URL. The credit is granted from the webhook, never from the request.
-- **Auto top-up** (optional): when a debit takes the balance below a threshold, buy a pack
-  (rate-limited, at most once per hour).
-- **Postpaid overage** (later): instead of blocking at zero, report usage to the provider's
+- **Auto top-up** (optional): when an agent run's debits take the balance below a threshold,
+  buy a pack (rate-limited, at most once per hour). Core announces the crossing as an insert
+  on `credit_entries` with `kind: "low_balance"`, so the module needs no hook into the agent loop.
+- **Postpaid overage** (later): instead of stopping at zero, report usage to the provider's
   meter and bill it on the next invoice.
 
 ### 6.4 Invoices and payment requests (use case 6)
@@ -350,8 +382,7 @@ So the module supports both:
   (`Linking.openURL`). It is a per-storefront switch, because whether it is allowed depends on
   the storefront, not on our code. The subscription is the web provider's and the role follows
   the user to the app.
-- **In-app purchase** (P9): `apple` and `google_play` adapters (or `revenuecat`, which covers
-  both). The app buys with `expo-iap`, passing the user's id as `appAccountToken` /
+- **In-app purchase** (P9): our own `apple` and `google_play` adapters (§3.11). The app buys with `expo-iap`, passing the user's id as `appAccountToken` /
   `obfuscatedAccountId`. It sends the transaction to `pay_verify_store_purchase`, which checks
   it against the App Store Server API or the Play Developer API. Store server notifications (App
   Store Server Notifications v2, Play RTDN) arrive at the same webhook route. Plans carry store
@@ -376,26 +407,29 @@ the alternatives. This is the most legally involved use case (who is the seller 
 |---|---|---|
 | **C1** | **Module webhooks.** A module declares `webhooks: { name: async (req, ctx) => ({ status, body }) }`, served at `POST /_feldspar/hooks/<module>/<name>/<rest>` on the admin host, as the OAuth callback is (one stable URL to register). `req` has `rawBody` (bytes), `headers` and `rest`. There is no session and no CSRF check. There is a body cap (1 MiB) and a per-IP rate limit. `ctx` is a service's (`db` over the module's own tables, `files`, `log`) plus C4. The bundled card says "Receives webhooks at …". | all |
 | **C2** | **Role grants.** `_fd_role_grants` and one `effective_role(user)` function, used wherever a user is loaded: sessions, API tokens, MCP, the `login` event. `user.role` in formulas, the RLS GUC and `Event.role` are the effective role. `users.role` stays the base role an admin sets. The admin's user page lists grants and can add a time-limited one by hand. | 2, 3 |
-| **C3** | **Credits ledger.** Meters (`_fd_credit_meters`), plus the ordinary tables `credit_buckets` and `credit_entries`, owner-readable and written only by core. `grant`/`debit`/`balance` as in §6.3, a code-body `credits` surface, a `credit_debit` action, and agent metering. | 3 |
-| **C4** | **Module access to C2/C3.** `ctx.roles.grant/revoke` and `ctx.credits.grant/debit` for module actions, services and webhooks. Granting roles is a **permission the admin gives at install**, with a ceiling: "may grant roles 70 to 100". Admin (1) can never be granted by a module. | 2, 3 |
+| **C3** | **LLM credits ledger.** The ordinary tables `credit_buckets` and `credit_entries`, owner-readable and written only by core. `grant` and `balance` as in §6.3; the debit is internal to the agent loop, and agent runs are the only spender. No code-body surface and no action. | 3 |
+| **C4** | **Module access to C2/C3.** `ctx.roles.grant/revoke` and `ctx.credits.grant/balance` (no debit) for module actions, services and webhooks. Granting roles is a **permission the admin gives at install**, with a ceiling: "may grant roles 70 to 100". Admin (1) can never be granted by a module. | 2, 3 |
 | **C5** | **The calling application in `Event`**: its id, public base URL and (for native apps) URL scheme. Checkout success, cancel and portal return URLs need it. | 1, 2, 4 |
-| **C6** | **CSP additions per application.** Embedded elements need `js.stripe.com` in `script-src` and `frame-src`, and `api.stripe.com` in `connect-src`; Paddle.js needs its CDN. A module manifest may *suggest* sources per adapter. The admin turns them on per application (shown on the application's page); they are not added on install. Hosted-checkout redirects need nothing. | 1, 2 (embedded) |
+| **C6** | **CSP additions per application.** Embedded elements need `js.stripe.com` in `script-src` and `frame-src`, and `api.stripe.com` in `connect-src`; Paddle.js would need its CDN. A module manifest may *suggest* sources per adapter. The admin turns them on per application (shown on the application's page); they are not added on install. Hosted-checkout redirects need nothing. | 1, 2 (embedded) |
 | **C7** | **React Native native payments** in `plugins/react-native` (§7a): the dependency, config plugin, generated hook and return URL. Later, `expo-iap` (§7b). | 4 |
 
 The module's `net` permission is **an exact allow-list**: the union of the configured adapters'
-`hosts` (`api.stripe.com`, `api.paddle.com`, `sandbox-api.paddle.com`, …), not `*`.
+`hosts` (`api.stripe.com`, `api.polar.sh`, `sandbox-api.polar.sh`, …), not `*`.
 
 ## 10. Open questions
 
-- **Credits in core** (§3.6, C3): agreed? The alternative, a module-owned ledger, means agents
-  call a module action on every model step.
-- **Second provider**: Paddle (established, conservative) or Polar (open source, credits and
-  meters built in)?
-- **In-app purchase**: our own `apple`/`google_play` adapters (using Apple's official server
-  library), or RevenueCat first (one integration, but a paid third party above $2.5k a month)?
-- **Guest orders**: attach them to an account by email on sign-up, or keep them guest-only?
-- **Delivering digital goods** (licence keys, file downloads after purchase): built in to the
-  module, or left to triggers on `pay_orders`?
+- **Guest orders becoming an account's orders.** A guest order has `user_id` null, so it is
+  invisible to an ownership formula like `user_id === user.id` and does not appear under "My
+  orders". It is reachable only through its token link. If the buyer later creates an account,
+  should those orders join it? Matching by email is the obvious way, but it is unsafe here:
+  password sign-up does not verify the email address, so anybody who signs up as
+  `alice@example.com` would see Alice's orders (her address and what she bought). The options:
+  (a) never attach; (b) attach by email only for a verified address, which needs email
+  verification in core first; (c) a `pay_claim_order({ token })` action: a signed-in user who
+  holds the order's token, for example from the confirmation email, attaches it to their
+  account. Holding the token proves they are the buyer. (c) is a building block in the sense of
+  §3.10 and is safe without verification. The proposal is (c), and the app decides when to
+  call it.
 
 ---
 
@@ -431,7 +465,9 @@ The module's `net` permission is **an exact allow-list**: the union of the confi
 - [ ] **P2.6** Escape hatches: `pay_api` function and the `pay_provider_code` action (`stripe`
   in scope).
 - [ ] **P2.7** `reconcile` service: retry errored events, periodic sync.
-- [ ] **P2.8** Tutorial `docs/tutorial-payments.md` part 1: a React shop with a guest checkout.
+- [ ] **P2.8** Tutorial `docs/tutorial-payments.md` part 1: a React shop with a guest checkout,
+  and **delivering a digital good** with a trigger on `pay_orders` (a paid order of a
+  downloadable product writes a download row the buyer can read, and emails the link).
 
 ## P3 — Role grants (core)
 
@@ -456,23 +492,26 @@ The module's `net` permission is **an exact allow-list**: the union of the confi
   the daily reminder trigger.
 - [ ] **P4.5** Tutorial part 2: a SaaS app with a free tier, two paid tiers and a card-less trial.
 
-## P5 — Second adapter: a merchant of record (Paddle, or Polar per §10)
+## P5 — Second adapter: Polar, a merchant of record
 
 - [ ] **P5.1** Adapter for one-off and subscriptions, with webhook verification and portal.
   Anything in the adapter interface that turns out to be Stripe-shaped is fixed **here**,
   before credits and mobile build on it.
 - [ ] **P5.2** The P2 and P4 test suites run against both adapters (one parametrised suite,
   not a copy).
+- [ ] **P5.3** Find out whether Polar can charge a customer's saved payment method for a
+  one-off purchase. If it can, set `charge_saved_method` so P7's top-ups charge the same card.
+  If it cannot, top-ups on Polar always go through checkout, and the capability says so.
 
-## P6 — Credits ledger (core)
+## P6 — LLM credits ledger (core)
 
-- [ ] **P6.1** Meters, buckets, entries; `grant`/`debit`/`balance` with bucket locking,
+- [ ] **P6.1** Buckets and entries; `grant`/`balance` and the internal debit, with bucket locking,
   soonest-expiring first, debt and repayment, idempotency keys. Tests: concurrent debits
   never overdraw, and a replayed grant does nothing.
-- [ ] **P6.2** Code-body `credits` surface and the `credit_debit` action.
-- [ ] **P6.3** Agent metering: `meter`, rate, minimum balance; a debit per model call; the run
+- [ ] **P6.2** Admin user page: the balance, the entries, and a manual grant.
+- [ ] **P6.3** Agent metering (§6.3): the LLM credits setting, rate, minimum balance; a debit per model call; the run
   stops at zero; anonymous callers are refused.
-- [ ] **P6.4** C4 for credits (`ctx.credits`).
+- [ ] **P6.4** C4 for credits (`ctx.credits.grant/balance`), and the `low_balance` entry.
 
 ## P7 — Use case 3: allowances, rollover, top-ups
 
@@ -518,5 +557,5 @@ The module's `net` permission is **an exact allow-list**: the union of the confi
 
 ## P12 — More adapters, on demand
 
-- [ ] **P12.1** Polar or Paddle (whichever P5 did not do), Mollie (if P10 did not), Lemon
+- [ ] **P12.1** Paddle, Mollie (if P10 did not), Lemon
   Squeezy, Creem, Dodo, PayPal: each one adapter file and a run of the shared suite.
