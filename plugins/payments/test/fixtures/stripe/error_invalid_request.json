@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "url_invalid",
+    "doc_url": "https://stripe.com/docs/error-codes/url-invalid",
+    "message": "Not a valid URL",
+    "param": "success_url",
+    "request_log_url": "https://dashboard.stripe.com/test/logs/req_Ab12Cd34",
+    "type": "invalid_request_error"
+  }
+}

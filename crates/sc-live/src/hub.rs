@@ -994,6 +994,12 @@ impl Connection {
         self.caller.set(user);
     }
 
+    /// Set the guest session the connection's caller has (TODO-payments
+    /// P2.8): what a `table_changes` verdict reads as `session.id`.
+    pub fn set_guest_session(&self, session: Option<String>) {
+        self.caller.set_guest_session(session);
+    }
+
     /// What resolves when the hub closes this connection — a session end.
     /// Owned separately from the connection, so a socket's loop can wait on it
     /// beside everything else the connection is doing.

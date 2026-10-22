@@ -1,0 +1,11 @@
+{
+  "object": "list",
+  "data": [
+    { "id": "evt_new", "object": "event", "created": 1792656062, "livemode": false, "type": "checkout.session.completed",
+      "data": { "object": { "id": "cs_test_a1B2c3D4e5F6g7H8i9J0", "object": "checkout.session" } } },
+    { "id": "evt_old", "object": "event", "created": 1792656061, "livemode": false, "type": "payment_intent.succeeded",
+      "data": { "object": { "id": "pi_3Q9zYxWvUt1Abc2D0aBcDeFg", "object": "payment_intent" } } }
+  ],
+  "has_more": false,
+  "url": "/v1/events"
+}

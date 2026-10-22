@@ -488,6 +488,14 @@ pub struct WebhookManifest {
     /// One line for the module card.
     #[serde(default)]
     pub description: String,
+    /// The HTTP methods it answers: `POST` unless it declares `methods` — a
+    /// test provider's checkout page answers `GET` too (TODO-payments P2.2).
+    #[serde(default = "post_only")]
+    pub methods: Vec<String>,
+}
+
+fn post_only() -> Vec<String> {
+    vec!["POST".to_owned()]
 }
 
 /// An entity type the module exports and this version does not load.

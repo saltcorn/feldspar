@@ -332,11 +332,22 @@ fn typed_bindings(ctx: &ActionContext<'_>) -> EventBindings {
 /// read as its own JSON shape where it does not (a calculated field, a row from a
 /// table since dropped, a value the column cannot hold — which is the event's
 /// problem to report, not this conversion's).
+///
+/// A JSON column holding one number, string or boolean is that value, as a
+/// formula reads it: a key kept in a JSON column (`pay_events.ref_key`, which is
+/// an integer for one table and a UUID for another) compares with the key it
+/// names (`id === row.ref_key`).
 fn typed_value(table: Option<&Table>, field: &str, json: &Json) -> Value {
-    table
+    match table
         .filter(|t| t.field(field).is_some())
         .and_then(|t| rows::column_value(t, field, json).ok())
-        .unwrap_or_else(|| value_from_json(json))
+    {
+        Some(Value::Json(inner)) if !inner.is_object() && !inner.is_array() => {
+            value_from_json(&inner)
+        }
+        Some(value) => value,
+        None => value_from_json(json),
+    }
 }
 
 /// The primary key of a selected row as the string the `rows` layer addresses a

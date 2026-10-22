@@ -1,0 +1,20 @@
+{
+  "id": "evt_3Q9zYxWvUt1Abc2D0kLmNoPq",
+  "object": "event",
+  "api_version": "2026-09-30.preview",
+  "created": 1792656061,
+  "data": {
+    "object": {
+      "id": "pi_3Q9zYxWvUt1Abc2D0aBcDeFg",
+      "object": "payment_intent",
+      "amount": 1150,
+      "currency": "eur",
+      "metadata": { "sc_ref_table": "orders", "sc_ref_key": "12", "sc_user_id": "7" },
+      "status": "succeeded"
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "payment_intent.succeeded"
+}

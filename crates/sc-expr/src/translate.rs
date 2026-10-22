@@ -703,6 +703,10 @@ impl<'a> Translator<'a> {
                 UnaryOp::TypeOf => untranslatable("`typeof`"),
             },
             Ast::Binary { op, l, r } => match op {
+                // JavaScript's `+` joins strings when either side is one. A string
+                // literal on either side is the case a formula can see for certain
+                // (`"Invoice " + number`); without one, `+` is addition.
+                BinaryOp::Add if joins_strings(l) || joins_strings(r) => self.concatenation(l, r),
                 BinaryOp::Add => self.arithmetic(QBinOp::Add, l, r),
                 BinaryOp::Sub => self.arithmetic(QBinOp::Sub, l, r),
                 BinaryOp::Mul => self.arithmetic(QBinOp::Mul, l, r),
@@ -801,6 +805,27 @@ impl<'a> Translator<'a> {
 
     fn arithmetic(&mut self, op: QBinOp, l: &Ast, r: &Ast) -> Result<QExpr, TranslateError> {
         Ok(QExpr::binary(op, self.value(l)?, self.value(r)?))
+    }
+
+    /// `l + r` where one side is a string: SQL's `||` over each side as text. A
+    /// null side is the text `null`, as JavaScript writes it, where SQL's `||`
+    /// would make the whole value null.
+    fn concatenation(&mut self, l: &Ast, r: &Ast) -> Result<QExpr, TranslateError> {
+        let mut text = |ast: &Ast| -> Result<QExpr, TranslateError> {
+            let value = QExpr::Cast {
+                expr: Box::new(self.value(ast)?),
+                type_name: "text".into(),
+            };
+            Ok(match ast {
+                Ast::Str(_) => value,
+                _ => QExpr::Func {
+                    name: "COALESCE".into(),
+                    args: vec![value, QExpr::lit("null")],
+                },
+            })
+        };
+        let (l, r) = (text(l)?, text(r)?);
+        Ok(QExpr::binary(QBinOp::Concat, l, r))
     }
 
     // ---- Ⱶ-join paths ------------------------------------------------------
@@ -1406,6 +1431,19 @@ fn js_truthy(v: &Value) -> bool {
     }
 }
 
+/// Whether `+` over `ast` joins strings: a string literal, or a `+` that does.
+fn joins_strings(ast: &Ast) -> bool {
+    match ast {
+        Ast::Str(_) => true,
+        Ast::Binary {
+            op: BinaryOp::Add,
+            l,
+            r,
+        } => joins_strings(l) || joins_strings(r),
+        _ => false,
+    }
+}
+
 /// A human name for an AST shape, for untranslatable-messages.
 fn describe(ast: &Ast) -> &'static str {
     match ast {
@@ -1972,6 +2010,31 @@ mod tests {
         let (sql, binds) = where_sql("pages % 2 === 0", Operation::Read, &env);
         assert_eq!(sql, "((\"books\".\"pages\" % $1) IS NOT DISTINCT FROM $2)");
         assert_eq!(binds, vec![Value::Int(2), Value::Int(0)]);
+    }
+
+    #[test]
+    fn plus_with_a_string_on_either_side_joins_text() {
+        let env = UserEnv::Inline(None);
+        let (sql, binds) = where_sql("\"No. \" + pages === \"No. 3\"", Operation::Read, &env);
+        assert_eq!(
+            sql,
+            "((CAST($1 AS text) || COALESCE(CAST(\"books\".\"pages\" AS text), $2)) \
+             IS NOT DISTINCT FROM $3)"
+        );
+        assert_eq!(
+            binds,
+            vec![
+                Value::Text("No. ".into()),
+                Value::Text("null".into()),
+                Value::Text("No. 3".into())
+            ]
+        );
+        // A string further along still makes the whole chain text, as in JavaScript.
+        let (sql, _) = where_sql("pages + \"\" + title === \"x\"", Operation::Read, &env);
+        assert!(sql.matches("||").count() == 2, "{sql}");
+        // With no string in sight, `+` is addition.
+        let (sql, _) = where_sql("pages + 1 === 4", Operation::Read, &env);
+        assert!(sql.contains("(\"books\".\"pages\" + $1)"), "{sql}");
     }
 
     #[test]

@@ -392,21 +392,29 @@ pub fn build_router_with_apps(
             crate::oauth::COMPLETE_ROUTE,
             axum::routing::get(crate::oauth::complete),
         )
-        // Module webhooks (TODO-payments P1.1): a provider's events, on the
-        // admin host as the OAuth callback is. A route of their own because the
+        // Module webhooks (TODO-payments P1.1): a provider's events, on every
+        // host as the OAuth routes are. A route of their own because the
         // answer is whatever the module says, bytes and all, and with a body
         // limit of their own: an unauthenticated caller is held to 1 MiB.
         .route(
             crate::webhooks::HOOK_ROUTE,
-            axum::routing::post(crate::webhooks::hook).layer(axum::extract::DefaultBodyLimit::max(
+            axum::routing::on(
+                axum::routing::MethodFilter::GET.or(axum::routing::MethodFilter::POST),
+                crate::webhooks::hook,
+            )
+            .layer(axum::extract::DefaultBodyLimit::max(
                 sc_module::WEBHOOK_MAX_BODY,
             )),
         )
         .route(
             crate::webhooks::HOOK_REST_ROUTE,
-            axum::routing::post(crate::webhooks::hook_rest).layer(
-                axum::extract::DefaultBodyLimit::max(sc_module::WEBHOOK_MAX_BODY),
-            ),
+            axum::routing::on(
+                axum::routing::MethodFilter::GET.or(axum::routing::MethodFilter::POST),
+                crate::webhooks::hook_rest,
+            )
+            .layer(axum::extract::DefaultBodyLimit::max(
+                sc_module::WEBHOOK_MAX_BODY,
+            )),
         )
         .fallback(dispatch)
         // Explicit rather than axum's implicit 2 MiB (TODO F2.5): every `Bytes`
@@ -2403,11 +2411,25 @@ async fn app_live(
         subdomain,
         client_ip,
     };
+    // A visitor's guest session, as the REST API would resolve it (TODO-payments
+    // P2.8). An upgrade is a GET, and a cross-site one is refused above by its
+    // `Origin`, which is what the CSRF check is for on a mutating request.
+    let guest = match guest_session_for(state, &app.app, jar, false, user.is_some()).await {
+        Some(public_id) => jar
+            .get(GUEST_COOKIE)
+            .map(|cookie| crate::live::GuestCaller {
+                token: cookie.value().to_owned(),
+                public_id,
+            }),
+        None => None,
+    };
     // A session is held only when it named somebody: an anonymous caller with
     // a dead cookie has no session to be signed out of.
     let caller = crate::live::LiveCaller {
         session: session.filter(|_| user.is_some()),
         user,
+        guest,
+        origin: sc_catalog::current_origin(),
     };
     crate::live::live_upgrade(ws, env, caller)
 }

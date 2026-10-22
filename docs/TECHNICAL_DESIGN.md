@@ -1138,7 +1138,9 @@ together still fails the test). Null handling is specified once, by the translat
 reified path is normalised to meet it: `===`/`==` render as `IS NOT DISTINCT FROM` (JS's
 two-valued equality — `owner === user.id` on a null `owner` is *false*), ordered comparisons
 and arithmetic are null-guarded so JS's `null → 0` coercion cannot diverge from SQL, and
-`user.x` on an anonymous (null) user reads as null rather than throwing.
+`user.x` on an anonymous (null) user reads as null rather than throwing. `+` with a string literal
+on either side (`"Invoice " + number`, TODO-payments P2.4) is JavaScript's concatenation: SQL
+`||` over each side cast to text, a null side reading `null` as JavaScript writes it.
 
 **Fail closed, everywhere.** A stored formula that no longer validates at load time (a field
 was dropped, a dump restored) grants nothing and the table stays `min_role`-only, with the
@@ -1327,12 +1329,19 @@ signed-in user owns them by `user`.
 - **Signing in from the same browser** (P1.6) ends the guest session — row deleted, cookie
   cleared — and the `login` event's payload is `{ guest_session: <public id> }`, which the
   application's own trigger uses to move the guest's rows to the account (`update_rows` where
-  `session_id === payload.guest_session`). A login from a browser that was nobody's guest has no
-  payload, as before.
-
-Not yet: a live socket opened by a guest does not carry the guest session (its re-checks run on
-tasks outside the request's origin), and a default expression is still allowed only on a required
-field, which a table owned by *either* `user` or `session` needs relaxing (TODO-payments P2.8).
+  `session_id !== null && session_id === payload.guest_session`). A login from a browser that was
+  nobody's guest has no payload, as before — and a field a payload does not have reads as null,
+  so the trigger's first half is what keeps it from matching every row with no session.
+- **The live socket** (P2.8) is resolved like a REST request: the upgrade's cookie names the
+  guest session (an upgrade is a GET, and a cross-site one is refused by its `Origin`), the
+  connection runs inside an origin carrying it, and the connection's `CallerCell` carries its
+  public id to the hub, whose `table_changes` verdicts run inside an origin of their own
+  (`sc_catalog::with_origin`) and share verdicts per (user, role, guest session). Each re-check
+  reads the guest session again; one that has lapsed or ended closes the socket as `signed_out`.
+- **Defaults on nullable fields** (P2.8). A table owned by *either* `user` or `session` defaults
+  both (`user && user.id`, `session && session.id`), and each gives nothing for the other kind of
+  caller, so a default expression is allowed on a nullable field: one that gives nothing leaves
+  it null (on a `NOT NULL` field that fails the insert, naming the field).
 
 ---
 
@@ -11608,9 +11617,12 @@ guessing from the path (a descriptor's own type still wins). `filename` is the e
 
 **Webhooks** (design C1). A module exports `webhooks: { name: { description, handle } }` (or a
 bare function, or a function of its configuration). The server serves each at `POST
-/_feldspar/hooks/<module>/<name>[/<rest>]` on the **admin host only** — one stable URL to register,
-as the OAuth callback is — where `<module>` is the package name without its npm scope
-(`sc_module::hook_segment`); two modules that would share a segment are an error naming both.
+/_feldspar/hooks/<module>/<name>[/<rest>]` — and `GET` too where the webhook declares `methods:
+["GET", "POST"]` (anything else is a 405) — where `<module>` is the package name without its npm
+scope (`sc_module::hook_segment`); two modules that would share a segment are an error naming
+both. The URL to register is the admin host's, which the card shows — one stable URL, as the
+OAuth callback is — but the route answers on **every** host, as the OAuth routes do: a test
+provider's checkout page (TODO-payments P2.2) is a webhook a buyer opens on the shop's own host.
 The request reaches the module as one `webhook_call` on its worker: `req.rawBody` is a `Buffer` of
 the bytes as sent (base64 across the seam), `req.headers` are lower-cased with cookies and
 credentials withheld, `req.rest` is the path after the name. `ctx` is a service's for one call —
@@ -11633,6 +11645,69 @@ attribute, switched on from its settings page, and `AppMounts::app_csp` merges e
 when the policy is served (`CspPolicy::with_sources`: added to what the directive allows now, or
 to `default-src`'s list when the policy does not state the directive, so the application's own
 `'self'` is kept). A key whose module has been uninstalled adds nothing.
+
+**A module action's argument** (TODO-payments P2.1) carries, beside v1's object, what a code body
+has of its event: `app` (`{ id, url, scheme }` of the application whose request ran it, or null),
+`session` (`{ id }` of the caller's guest session, or null), and `db` — the same fluent chain a
+service's and a webhook's `ctx.db` are, over the action's own surfaces, so at the trigger's
+authority unless a chain says `asUser()`. A module's code then reads its own tables one way from
+an action, a service and a webhook.
+
+### 15.1f The payments module (`plugins/payments`, TODO-payments P2)
+
+The design is TODO-payments.md's Part I; what follows is how P2 built it, and where it differs.
+
+**Processing is shared, and idempotent rather than transactional.** A verified delivery
+(`adapter.verifyWebhook` → `[{ id, type, ref, raw }]`) and a sweep (`adapter.listEvents`, the
+same shape) go through one function, `processing.js`'s `processEvents`: the adapter maps the
+provider's type to the module's kinds (`kinds(event)`; none is `other`), the object the event is
+about is **fetched** from the provider (§3.6 — the event says what changed, never what things
+are), the mirror row is upserted by `(account, provider_ref)`, and one `pay_events` row is
+inserted per kind unless `(account, event_id, kind)` is there. The module's `db` has no
+transaction, so nothing spans the steps; each is an upsert or an insert-if-absent, a unique
+violation from a concurrent delivery is read back as "already done", and a failure throws — the
+webhook's 500, which the provider retries and the retry finishes. An application trigger
+therefore fires once per event row, however the deliveries arrive. Events the adapter does not
+map are logged as `other` with the raw event, their object mirrored when it can be fetched.
+
+**Which application row a provider object was for** comes from, in order: its own mirror row as
+`pay_checkout` wrote it; the checkout it belongs to (a payment inherits its checkout's
+`ref_table`, `ref_key`, `user_id`, `email` and `effects`); and the provider's metadata, which the
+module sets on the checkout and its payment (`sc_ref_table`, `sc_ref_key`, `sc_user_id`) for a
+provider such as Stripe that does not link the two. `ref_key` is a **JSON** field holding the key
+as the row has it — a number for an integer key, a string for text or a UUID — and metadata keeps
+it JSON-encoded, because metadata is text. A row action's event bindings read a JSON column's
+scalar as that scalar (`rows_scope::typed_value`), so `id === row.ref_key` translates to a
+comparison with an integer, or with text the driver reads as a UUID — the same answer the
+reified evaluator gives.
+
+**The checkout's amounts are the `db` chain's formula projections.** `pay_checkout` reads the
+source row as the caller (`db.asUser()[table].get(key)`, which carries a guest's session) and
+then evaluates its configured formulas server-side with `select({ alias: formula })` at the
+trigger's authority — on the row for one line, on the child rows for many — so `productⱵprice` is
+a translated correlated subselect and the module has no formula engine of its own. The checkout
+configuration is v1 `configFields`, which the trigger form renders.
+
+**Stripe over `fetch`, not the `stripe` package** (a deviation from §3.5, which put the SDK in
+`pay_provider_code`'s scope). The REST API is form-encoded requests to one host, the package would
+be downloaded by every installation, and an adapter whose transport is one function is tested
+against recorded responses by replacing it. `client(account)` is an authenticated
+`get/post/del/request` over any endpoint, which is what `pay_provider_code` gets as `stripe` and
+what `pay_api` calls.
+
+**`pay_api` reads accounts the service keeps.** A module function is called with nobody's
+authority and no `db` (§15.1), so it cannot read `pay_accounts`. The `reconcile` service — which
+the module needs anyway — loads the accounts at start and again on every change to the table
+(`ctx.onTableChange`), into module memory on the module's worker, where its functions run. The
+sweep itself lists the provider's **events** since the last sweep (`synced_at`, less an hour's
+overlap; the first reaches back 30 days, Stripe's retention) and processes them as deliveries, so
+one already delivered is a duplicate and does nothing.
+
+**The test provider** is an adapter like the others, with its state in the worker's memory. Its
+checkout page is the module's `fake` webhook (GET and POST, served on the application's host,
+its own CSP with no script); paying delivers signed events in-process into the same `events`
+handler a provider's request reaches; an account with `settings.webhooks: "hold"` records them
+undelivered, for a test (or an admin) to `resend` in any order, as often as it likes.
 
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 

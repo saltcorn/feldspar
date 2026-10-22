@@ -55,6 +55,8 @@ mod app_calling_app;
 mod app_code_files;
 #[path = "app_file_access.rs"]
 mod app_file_access;
+#[path = "app_guest_live.rs"]
+mod app_guest_live;
 #[path = "app_guest_sessions.rs"]
 mod app_guest_sessions;
 #[path = "app_i18n.rs"]
@@ -161,6 +163,8 @@ mod other_events;
 mod ownership_enforcement;
 #[path = "ownership_settings_api.rs"]
 mod ownership_settings_api;
+#[path = "payments_module.rs"]
+mod payments_module;
 #[path = "posterior_api.rs"]
 mod posterior_api;
 #[path = "primary_key_api.rs"]
@@ -247,6 +251,8 @@ mod tutorial_code_queries;
 mod tutorial_live;
 #[path = "tutorial_live_documents.rs"]
 mod tutorial_live_documents;
+#[path = "tutorial_payments.rs"]
+mod tutorial_payments;
 #[path = "tutorial_workflows.rs"]
 mod tutorial_workflows;
 #[path = "view_app.rs"]

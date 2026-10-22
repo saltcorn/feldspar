@@ -1,0 +1,11 @@
+{
+  "name": "@feldspar/payments",
+  "version": "0.1.0",
+  "description": "Take payments in applications: provider accounts, a mirror of the provider's objects, and a log of payment events the application's triggers react to.",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

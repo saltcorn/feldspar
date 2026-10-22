@@ -1,0 +1,14 @@
+{
+  "id": "pi_3Q9zYxWvUt1Abc2D1declined",
+  "object": "payment_intent",
+  "amount": 500000,
+  "created": 1792656060,
+  "currency": "isk",
+  "customer": null,
+  "last_payment_error": { "code": "card_declined", "decline_code": "generic_decline", "message": "Your card was declined.", "type": "card_error" },
+  "latest_charge": null,
+  "livemode": false,
+  "metadata": { "sc_ref_table": "bookings", "sc_ref_key": "\"6f1c2d3e-4b5a-4c6d-8e7f-0123456789ab\"" },
+  "receipt_email": "guest@example.com",
+  "status": "requires_payment_method"
+}

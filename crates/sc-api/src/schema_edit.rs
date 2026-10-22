@@ -236,7 +236,8 @@ pub struct FieldSpec {
     pub attributes: Attrs,
     /// A JavaScript expression giving the value when an insert leaves the field
     /// out, with `user` and the row's other values in scope
-    /// ([`DataField::default_expression`]). Only for a `required` field.
+    /// ([`DataField::default_expression`]). On a nullable field, an expression
+    /// that gives nothing leaves the field null.
     pub default_expression: Option<String>,
 }
 
@@ -2433,9 +2434,10 @@ fn validate_ownership(
 }
 
 /// Validate a field's default-value expression against a projected schema: it
-/// must parse and validate over the insert scope (`user` and the row's fields),
-/// and it belongs on a stored `NOT NULL` field only — a nullable field is
-/// already allowed to be left out, and a calculated one is never written.
+/// must parse and validate over the insert scope (`user`, `session` and the
+/// row's fields), and it belongs on a stored field — a calculated one is never
+/// written. A nullable field may have one too: what it gives is used, and
+/// nothing (`user && user.id` for a guest) leaves the field null.
 fn validate_default_expression(
     shape: &sc_expr::SchemaShape,
     table: &str,
@@ -2449,12 +2451,6 @@ fn validate_default_expression(
         return Err(Error::invalid(format!(
             "field `{table}.{name}`: a calculated field is never written, so it cannot \
              have a default value"
-        )));
-    }
-    if !field.required {
-        return Err(Error::invalid(format!(
-            "field `{table}.{name}`: only a required (NOT NULL) field can have a default \
-             value; make it required, or clear its default"
         )));
     }
     let formula = sc_expr::Formula::parse(expression)

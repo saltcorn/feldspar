@@ -1,0 +1,22 @@
+{
+  "id": "cs_test_a1B2c3D4e5F6g7H8i9J0",
+  "object": "checkout.session",
+  "amount_subtotal": 1150,
+  "amount_total": 1150,
+  "client_reference_id": "orders:12",
+  "created": 1792656000,
+  "currency": "eur",
+  "customer": null,
+  "customer_details": null,
+  "customer_email": "ann@example.com",
+  "expires_at": 1792742400,
+  "livemode": false,
+  "metadata": { "sc_ref_table": "orders", "sc_ref_key": "12", "sc_user_id": "7" },
+  "mode": "payment",
+  "payment_intent": null,
+  "payment_status": "unpaid",
+  "status": "open",
+  "success_url": "https://shop.example.com/orders/12/thanks",
+  "cancel_url": "https://shop.example.com/basket",
+  "url": "https://checkout.stripe.com/c/pay/cs_test_a1B2c3D4e5F6g7H8i9J0#fidkdWxOYHwnPyd1blpxYHZxWjA0"
+}

@@ -1,6 +1,7 @@
-//! Default values on `NOT NULL` fields: a JavaScript expression an insert that
-//! leaves the field out (or sends null) takes its value from, with `user` (the
-//! writing user) and the row's other values in scope.
+//! Default values: a JavaScript expression an insert that leaves the field out
+//! (or sends null) takes its value from, with `user` (the writing user) and the
+//! row's other values in scope. On a nullable field, an expression that gives
+//! nothing leaves the field null.
 //!
 //! Through the real formula engine, because the expression is reified: it runs
 //! before the `INSERT`, and the ownership check sees the row with its defaults
@@ -159,7 +160,7 @@ async fn a_left_out_field_takes_its_default_from_the_user_and_the_row() -> Resul
 }
 
 #[tokio::test]
-async fn a_default_is_refused_on_a_nullable_field_and_when_it_does_not_validate() -> Result<()> {
+async fn a_default_is_refused_when_it_does_not_validate() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
     create_notes(&catalog, "true").await?;
@@ -170,36 +171,6 @@ async fn a_default_is_refused_on_a_nullable_field_and_when_it_does_not_validate(
         settings,
     };
     let options = ApplyOptions::default();
-
-    // Not on a nullable field: adding one, or making a defaulted field nullable.
-    let err = schema_edit::apply(
-        &catalog,
-        &[Operation::AddField {
-            table: "notes".into(),
-            field: FieldSpec {
-                default_expression: Some("'x'".into()),
-                ..field("tag", "text")
-            },
-        }],
-        &options,
-    )
-    .await
-    .expect_err("nullable");
-    assert!(err.to_string().contains("only a required"), "{err}");
-    let err = schema_edit::apply(
-        &catalog,
-        &[alter(
-            "owner",
-            FieldSettings {
-                required: Some(false),
-                ..FieldSettings::default()
-            },
-        )],
-        &options,
-    )
-    .await
-    .expect_err("would leave a default on a nullable field");
-    assert!(err.to_string().contains("only a required"), "{err}");
 
     // An expression naming a field the table does not have.
     let err = schema_edit::apply(
@@ -249,6 +220,70 @@ async fn a_default_is_refused_on_a_nullable_field_and_when_it_does_not_validate(
     .await?;
     let owner = catalog.require("notes")?.field("owner").unwrap().clone();
     assert_eq!(owner.default_expression, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_nullable_field_takes_its_default_when_it_gives_one() -> Result<()> {
+    // A basket's two owners (TODO-payments P2.8): the signed-in user, or the guest
+    // session. Each default gives a value for one kind of buyer and nothing for
+    // the other, so both fields are nullable.
+    let db = TestDb::new().await?;
+    let catalog = setup(&db).await?;
+    create_notes(&catalog, "true").await?;
+    schema_edit::apply(
+        &catalog,
+        &[Operation::AddField {
+            table: "notes".into(),
+            field: FieldSpec {
+                default_expression: Some("user && user.email".into()),
+                ..field("tag", "text")
+            },
+        }],
+        &ApplyOptions::default(),
+    )
+    .await?;
+    let notes = catalog.require("notes")?;
+    assert!(!notes.field("tag").unwrap().required);
+    let evaluator = catalog.formula_evaluator();
+    let ada = writer("ada@example.com");
+    let row = sc_api::insert_row_as(
+        &catalog,
+        &notes,
+        &json!({ "title": "Mine", "owner": "ada@example.com" }),
+        40,
+        Some(&ada),
+        evaluator.as_ref(),
+        &[],
+        &Executor::Pooled,
+    )
+    .await?;
+    assert_eq!(row["tag"], json!("ada@example.com"));
+    // Nobody signed in: the default gives nothing, and the field is left null.
+    let row = sc_api::rows::create_row(
+        &catalog,
+        &notes,
+        &json!({ "title": "Nobody's", "owner": "x" }),
+    )
+    .await?;
+    assert_eq!(row["tag"], json!(null));
+    // Making a defaulted field nullable keeps its default.
+    schema_edit::apply(
+        &catalog,
+        &[Operation::AlterField {
+            table: "notes".into(),
+            field: "slug".into(),
+            settings: FieldSettings {
+                required: Some(false),
+                ..FieldSettings::default()
+            },
+        }],
+        &ApplyOptions::default(),
+    )
+    .await?;
+    let slug = catalog.require("notes")?.field("slug").unwrap().clone();
+    assert!(!slug.required);
+    assert!(slug.default_expression.is_some());
     Ok(())
 }
 

@@ -184,6 +184,20 @@ fn v1_arguments(event: &Event, config: &Attrs, trigger: &str) -> Json {
     args.insert("payload".into(), event.payload.clone());
     args.insert("mode".into(), Json::String(event.kind.as_str().to_owned()));
     args.insert("trigger".into(), Json::String(trigger.to_owned()));
+    // Where the event came from (TODO-payments P1.3, P1.5), as a code body
+    // sees it: the application whose request raised it — what a checkout's
+    // return URLs are built on — and the caller's guest session.
+    args.insert(
+        "app".into(),
+        event.app.as_ref().map_or(Json::Null, |a| a.to_json()),
+    );
+    args.insert(
+        "session".into(),
+        event
+            .session
+            .as_ref()
+            .map_or(Json::Null, |id| json!({ "id": id })),
+    );
     // v1 code reads two things off `req`: who is asking, and what they posted.
     // Anything else it reaches for is an Express request, which does not exist
     // here — and an object that answered those too would be pretending.
@@ -220,6 +234,9 @@ mod tests {
         assert_eq!(args["mode"], json!("insert"));
         assert_eq!(args["trigger"], json!("publish a reading"));
         assert_eq!(args["req"]["user"]["id"], json!(7));
+        // No application's request raised it, and nobody is a guest.
+        assert_eq!(args["app"], Json::Null);
+        assert_eq!(args["session"], Json::Null);
     }
 
     #[test]

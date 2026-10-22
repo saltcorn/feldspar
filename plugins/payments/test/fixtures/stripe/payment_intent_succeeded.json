@@ -1,0 +1,26 @@
+{
+  "id": "pi_3Q9zYxWvUt1Abc2D0aBcDeFg",
+  "object": "payment_intent",
+  "amount": 1150,
+  "amount_received": 1150,
+  "created": 1792656060,
+  "currency": "eur",
+  "customer": "cus_Q1w2E3r4T5y6U7",
+  "last_payment_error": null,
+  "latest_charge": {
+    "id": "ch_3Q9zYxWvUt1Abc2D0xYzAbCd",
+    "object": "charge",
+    "amount": 1150,
+    "amount_refunded": 0,
+    "billing_details": { "email": "ann@example.com" },
+    "currency": "eur",
+    "paid": true,
+    "payment_intent": "pi_3Q9zYxWvUt1Abc2D0aBcDeFg",
+    "refunded": false,
+    "status": "succeeded"
+  },
+  "livemode": false,
+  "metadata": { "sc_ref_table": "orders", "sc_ref_key": "12", "sc_user_id": "7" },
+  "receipt_email": null,
+  "status": "succeeded"
+}

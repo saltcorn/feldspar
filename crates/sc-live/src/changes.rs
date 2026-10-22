@@ -204,14 +204,32 @@ impl ChangeCounters {
 
 /// Who a connection is right now, shared with its subscriptions' fan-outs so
 /// a re-read session (a role lowered, a field changed) reaches every verdict
-/// made after it.
+/// made after it — and, for a visitor who is not signed in, the public id of
+/// their guest session (TODO-payments P2.8), which an ownership formula reads
+/// as `session.id`.
 #[derive(Debug, Clone, Default)]
-pub struct CallerCell(Arc<RwLock<Option<User>>>);
+pub struct CallerCell(Arc<RwLock<Option<User>>>, Arc<RwLock<Option<String>>>);
 
 impl CallerCell {
     /// A cell holding `user` (or nobody).
     pub fn new(user: Option<User>) -> CallerCell {
-        CallerCell(Arc::new(RwLock::new(user)))
+        CallerCell(Arc::new(RwLock::new(user)), Arc::default())
+    }
+
+    /// Replace the guest session the connection's caller has.
+    pub fn set_guest_session(&self, session: Option<String>) {
+        match self.1.write() {
+            Ok(mut guard) => *guard = session,
+            Err(poisoned) => *poisoned.into_inner() = session,
+        }
+    }
+
+    /// The public id of the caller's guest session, if they have one.
+    pub fn guest_session(&self) -> Option<String> {
+        match self.1.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// Replace who the connection is.
@@ -283,8 +301,9 @@ impl<'e> Change<'e> {
     }
 }
 
-/// A caller as verdicts are shared: their id (none for anonymous) and role.
-type Who = (Option<Uuid>, u8);
+/// A caller as verdicts are shared: their id (none for anonymous), role and
+/// guest session.
+type Who = (Option<Uuid>, u8, Option<String>);
 
 /// What is known of one caller's verdicts on the old and the new image — each
 /// asked only once its image matched a filter.
@@ -338,20 +357,29 @@ pub(crate) async fn decide(
         });
         let user = subscriber.caller.get();
         let role = user.as_ref().map_or(ROLE_PUBLIC, |user| user.role);
-        let who = (user.as_ref().map(|user| user.id), role);
+        let guest = subscriber.caller.guest_session();
+        // The verdict is asked inside the caller's origin, so that an
+        // ownership formula's `session.id` is their guest session's.
+        let origin = sc_catalog::Origin {
+            app: None,
+            session: guest.clone(),
+        };
+        let who = (user.as_ref().map(|user| user.id), role, guest);
         let known = readable.entry(who).or_insert((None, None));
         let started = Instant::now();
         if matches_old
             && known.0.is_none()
             && let Some(image) = old_image.as_mut()
         {
-            known.0 = Some(verdict(image, subscriber.access, role, user.as_ref()).await);
+            let asked = verdict(image, subscriber.access, role, user.as_ref());
+            known.0 = Some(sc_catalog::with_origin(origin.clone(), asked).await);
         }
         if matches_new
             && known.1.is_none()
             && let Some(image) = new_image.as_mut()
         {
-            known.1 = Some(verdict(image, subscriber.access, role, user.as_ref()).await);
+            let asked = verdict(image, subscriber.access, role, user.as_ref());
+            known.1 = Some(sc_catalog::with_origin(origin, asked).await);
         }
         evaluating += started.elapsed();
         let (readable_old, readable_new) = (known.0.unwrap_or(false), known.1.unwrap_or(false));

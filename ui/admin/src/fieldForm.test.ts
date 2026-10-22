@@ -437,11 +437,10 @@ describe("what the key tick box says about filling the key in", () => {
 });
 
 describe("a default value", () => {
-  it("is offered only on a NOT NULL stored field", () => {
+  it("is offered on every stored field, nullable or not, and never on a calculated one", () => {
     const base = newFieldForm("text");
-    expect(defaultEditable({ ...base, nullable: true })).toBe(false);
+    expect(defaultEditable({ ...base, nullable: true })).toBe(true);
     expect(defaultEditable({ ...base, nullable: false })).toBe(true);
-    // A key column is NOT NULL whatever the box says.
     expect(defaultEditable({ ...base, nullable: true, primaryKey: true })).toBe(true);
     expect(defaultEditable({ ...base, nullable: false, calculated: true })).toBe(false);
   });
@@ -454,16 +453,13 @@ describe("a default value", () => {
     });
   });
 
-  it("is dropped when the field becomes nullable, which on an edit clears it", () => {
+  it("is kept when the field becomes nullable, and cleared by emptying the box", () => {
     const form = {
-      ...fieldForm(field({ nullable: false, required: true, default_expression: "user.id" })),
+      ...fieldForm(field({ nullable: false, required: true, default_expression: "user && user.id" })),
       nullable: true,
     };
-    expect(form.defaultExpression).toBe("user.id");
-    expect(updateFieldBody(form, TEXT)).not.toHaveProperty("default_expression");
-    expect(updateFieldBody({ ...form, nullable: false }, TEXT)).toMatchObject({
-      default_expression: "user.id",
-    });
+    expect(updateFieldBody(form, TEXT)).toMatchObject({ default_expression: "user && user.id" });
+    expect(updateFieldBody({ ...form, defaultExpression: " " }, TEXT)).not.toHaveProperty("default_expression");
   });
 });
 

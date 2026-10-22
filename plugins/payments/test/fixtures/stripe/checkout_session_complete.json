@@ -1,0 +1,36 @@
+{
+  "id": "cs_test_a1B2c3D4e5F6g7H8i9J0",
+  "object": "checkout.session",
+  "amount_subtotal": 1150,
+  "amount_total": 1150,
+  "client_reference_id": "orders:12",
+  "created": 1792656000,
+  "currency": "eur",
+  "customer": "cus_Q1w2E3r4T5y6U7",
+  "customer_details": { "email": "ann@example.com", "name": "Ann Example" },
+  "customer_email": "ann@example.com",
+  "line_items": {
+    "object": "list",
+    "data": [
+      {
+        "id": "li_1", "object": "item", "amount_total": 900, "currency": "eur",
+        "description": "Tea", "quantity": 2,
+        "price": { "id": "price_1", "object": "price", "unit_amount": 450, "currency": "eur" }
+      },
+      {
+        "id": "li_2", "object": "item", "amount_total": 250, "currency": "eur",
+        "description": "Cup", "quantity": 1,
+        "price": { "id": "price_2", "object": "price", "unit_amount": 250, "currency": "eur" }
+      }
+    ],
+    "has_more": false,
+    "url": "/v1/checkout/sessions/cs_test_a1B2c3D4e5F6g7H8i9J0/line_items"
+  },
+  "livemode": false,
+  "metadata": { "sc_ref_table": "orders", "sc_ref_key": "12", "sc_user_id": "7" },
+  "mode": "payment",
+  "payment_intent": "pi_3Q9zYxWvUt1Abc2D0aBcDeFg",
+  "payment_status": "paid",
+  "status": "complete",
+  "url": null
+}

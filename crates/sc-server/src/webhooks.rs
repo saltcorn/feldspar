@@ -1,10 +1,13 @@
 //! **Module webhooks** over HTTP (TODO-payments P1.1, design C1):
 //! `POST /_feldspar/hooks/<module>/<name>[/<rest>]`.
 //!
-//! What a provider is told to call, so it lives where the OAuth callback does —
-//! on the **admin UI's host**, one stable URL however many applications there
-//! are — and answers there only: an application's host is the application's
-//! own, and a request for a webhook on it is a `404`.
+//! What a provider is told to call is the URL on the **admin UI's host** — one
+//! stable URL however many applications there are, as the OAuth callback is —
+//! and that is what the module card shows. The route answers on **every** host,
+//! as the OAuth routes do (`/_feldspar/` is the server's on every host): a test
+//! provider's checkout page (TODO-payments P2.2) is a webhook a buyer's browser
+//! opens, and it is opened on the shop's own host. A webhook answers `POST`
+//! unless it declares `methods`; `GET` is the only other.
 //!
 //! The request carries no session and is checked against no CSRF token: it
 //! comes from a provider's server, not a browser, and a webhook authenticates by
@@ -24,11 +27,10 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Path as AxumPath, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum_extra::extract::CookieJar;
 use sc_module::{WEBHOOK_MAX_BODY, WebhookRequest};
 use sc_ratelimit::Rate;
 
-use crate::router::{AppState, Resolved, json_error, parse_query, request_client_ip, resolve_app};
+use crate::router::{AppState, json_error, parse_query, request_client_ip};
 
 /// The route with no `<rest>`.
 pub const HOOK_ROUTE: &str = "/_feldspar/hooks/{module}/{name}";
@@ -47,7 +49,7 @@ pub const WEBHOOK_RATE: Rate = Rate {
 /// has no business reading a browser's credentials.
 const WITHHELD: &[&str] = &["cookie", "authorization", "x-csrf-token", "csrf-token"];
 
-/// `POST /_feldspar/hooks/{module}/{name}`.
+/// `POST` (or `GET`) `/_feldspar/hooks/{module}/{name}`.
 pub(crate) async fn hook(
     State(state): State<AppState>,
     AxumPath((module, name)): AxumPath<(String, String)>,
@@ -71,7 +73,7 @@ pub(crate) async fn hook(
     .await
 }
 
-/// `POST /_feldspar/hooks/{module}/{name}/{*rest}`.
+/// `POST` (or `GET`) `/_feldspar/hooks/{module}/{name}/{*rest}`.
 pub(crate) async fn hook_rest(
     State(state): State<AppState>,
     AxumPath((module, name, rest)): AxumPath<(String, String, String)>,
@@ -99,11 +101,6 @@ async fn serve(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // The admin host only: an application's host answers for the application.
-    let jar = CookieJar::from_headers(&headers);
-    if !matches!(resolve_app(state, &headers, &jar), Resolved::Admin) {
-        return json_error(StatusCode::NOT_FOUND, "no such route on this host");
-    }
     if let Some(ip) = request_client_ip(state, peer.map(|p| p.0.0), &headers)
         && let Err(limited) = sc_ratelimit::global().hit(&format!("webhook:{ip}"), WEBHOOK_RATE)
     {

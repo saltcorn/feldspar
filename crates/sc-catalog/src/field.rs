@@ -84,8 +84,9 @@ pub struct DataField {
     ///
     /// An overlay fact, unlike [`generated`](DataField::generated): the database
     /// knows nothing of it, and the row layer evaluates it before the `INSERT`,
-    /// with `user` (the writing user) and the row's other values in scope. Only
-    /// a `NOT NULL` field may carry one (`schema_edit` refuses it elsewhere).
+    /// with `user` (the writing user) and the row's other values in scope. On a
+    /// nullable field, an expression that gives nothing leaves the field null;
+    /// on a `NOT NULL` one it fails the insert, naming the field.
     pub default_expression: Option<String>,
     /// What the field references, if anything.
     pub kind: DataFieldKind,

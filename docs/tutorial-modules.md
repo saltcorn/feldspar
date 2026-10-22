@@ -201,6 +201,12 @@ Save it and insert a row. The module's `run` is called with v1's argument object
 old_row, table, configuration, user, payload, mode, req }` — so plugin code written years ago
 sees exactly what it expects.
 
+It also gets what this version adds: `db`, the tables as a code body's `db` chain
+(`await db.my_table.where({ id: 3 }).first()`, at the trigger's authority unless a chain says
+`asUser()`); `app`, the application whose request ran it — `{ id, url, scheme }`, what a link
+back to the app is built on — or `null`; `session`, the caller's guest session `{ id }` or `null`;
+and `files` and `callerFiles` (Step 8).
+
 Nothing was restarted. Installing a module rebuilds the action set the trigger dispatcher runs
 from and revalidates every stored trigger against it, so a trigger you saved *before* installing
 the module (and which was refused as "unknown action") starts working the moment it is there.
@@ -572,11 +578,17 @@ module.exports = {
 };
 ```
 
-It is served at **`POST /_feldspar/hooks/<module>/<name>`** on the admin host, where `<module>` is
-the package's name without its npm scope: `@acme/provider` receives at
-`/_feldspar/hooks/provider/events`. Anything after the name arrives as `req.rest`, so
-`/_feldspar/hooks/provider/events/acct_1` gives `req.rest === "acct_1"`. The installed card shows
-the full URL with a copy button; that is the address to paste into the provider's settings.
+It is served at **`POST /_feldspar/hooks/<module>/<name>`**, where `<module>` is the package's
+name without its npm scope: `@acme/provider` receives at `/_feldspar/hooks/provider/events`.
+Anything after the name arrives as `req.rest`, so `/_feldspar/hooks/provider/events/acct_1` gives
+`req.rest === "acct_1"`. The installed card shows the full URL on the admin host, with a copy
+button; that is the address to paste into the provider's settings. The route answers on an
+application's host too, as the sign-in routes do, which is what lets a webhook serve a page a
+buyer opens from the application.
+
+A webhook answers `POST` only, unless it says `methods: ["GET", "POST"]`; then a `GET` reaches it
+too, with `req.method` saying which. The payments module's test provider serves its checkout page
+this way.
 
 **What `req` has.** `req.rawBody` is a `Buffer` of the body **byte for byte** — a signature is
 computed over those bytes, and a body parsed and re-serialised would not verify. `req.text()` and

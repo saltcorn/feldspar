@@ -222,6 +222,114 @@ fn the_sklearn_module_ships_and_promises_the_download_it_makes() {
     );
 }
 
+/// Run `script` under node with `arg`, answering its stdout — or `None`, said
+/// on stderr, when this machine has no `node`.
+fn node(script: &str, arg: &Path, what: &str) -> Option<String> {
+    let output = match std::process::Command::new("node")
+        .args(["-e", script])
+        .arg(arg)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("{what}: skipped, there is no `node`");
+            return None;
+        }
+        Err(e) => panic!("could not run node: {e}"),
+    };
+    assert!(
+        output.status.success(),
+        "{what}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// TODO-payments P2.1: the payments module ships, declares the three tables
+/// its card lists, the two webhooks and its service, and may reach **exactly**
+/// the hosts its adapters name — an allow-list, never `*` (design §9).
+#[test]
+fn the_payments_module_ships_and_may_reach_only_its_adapters_hosts() {
+    let catalog = catalog();
+    let payments = catalog.get("payments").expect("the payments module ships");
+    assert_eq!(payments.name, "@feldspar/payments");
+    assert_eq!(payments.language, ModuleLanguage::JavaScript);
+    assert_eq!(
+        payments.tables,
+        ["pay_accounts", "pay_objects", "pay_events"]
+    );
+    assert_eq!(payments.webhooks, ["events", "fake"]);
+    assert_eq!(payments.services, ["reconcile"]);
+    assert!(
+        !payments.permissions.any_host(),
+        "{:?}",
+        payments.permissions
+    );
+
+    let script = "const m = require(process.argv[1]); \
+                  console.log(JSON.stringify({ tables: m.tables, \
+                    webhooks: Object.keys(m.webhooks), \
+                    hosts: require(require('path').join(require('path').dirname(process.argv[1]), \
+                      'adapters/index.js')).hosts() }))";
+    let Some(out) = node(
+        script,
+        &payments.directory.join("index.js"),
+        "the payments module",
+    ) else {
+        return;
+    };
+    let declared: serde_json::Value = serde_json::from_str(&out).expect("JSON");
+    let tables: Vec<serde_json::Value> = declared["tables"].as_array().unwrap().clone();
+    let (decls, issues) = sc_module::tables::parse_declarations(&tables);
+    assert!(issues.is_empty(), "{issues:?}");
+    let names: Vec<String> = decls.iter().map(|d| d.name.clone()).collect();
+    assert_eq!(names, payments.tables);
+    assert_eq!(declared["webhooks"], serde_json::json!(payments.webhooks));
+    let mut hosts: Vec<String> = serde_json::from_value(declared["hosts"].clone()).unwrap();
+    hosts.sort();
+    let mut net = payments.permissions.net.clone();
+    net.sort();
+    assert_eq!(
+        net, hosts,
+        "the module's net permission is the union of its adapters' hosts"
+    );
+}
+
+/// The payments module's own tests (`plugins/payments/test`): the money, the
+/// capabilities, the fake provider, the webhook processing, the checkout's
+/// configuration, the Stripe adapter against recorded responses, refunds and
+/// the sweep — run here so `cargo test` runs them, and skipped where there is
+/// no `node`. (The live Stripe test skips itself without a key.)
+#[test]
+fn the_payments_modules_own_tests_pass() {
+    let dir = catalog().get("payments").expect("ships").directory.clone();
+    let tests: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("test"))
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.to_string_lossy().ends_with(".test.mjs"))
+        .collect();
+    assert!(!tests.is_empty());
+    let output = match std::process::Command::new("node")
+        .arg("--test")
+        .args(&tests)
+        .current_dir(&dir)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("the payments module's tests: skipped, there is no `node`");
+            return;
+        }
+        Err(e) => panic!("could not run node: {e}"),
+    };
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn the_mail_module_ships_and_declares_the_tables_its_card_lists() {
     // TODO-imap M7.1. The card promises four tables; the plugin object is what

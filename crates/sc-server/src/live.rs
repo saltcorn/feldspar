@@ -150,6 +150,21 @@ pub(crate) struct LiveCaller {
     /// an anonymous caller who happened to carry a dead cookie is not later
     /// "signed out" of a session they never had.
     pub session: Option<String>,
+    /// A visitor's guest session (TODO-payments P2.8): the cookie's token, to
+    /// re-read it by, and its public id, which ownership reads as `session.id`.
+    /// Their basket is then live as it is over REST.
+    pub guest: Option<GuestCaller>,
+    /// The origin the upgrade request ran in — its application — which every
+    /// read the connection makes runs inside, with the guest session in it.
+    pub origin: sc_catalog::Origin,
+}
+
+/// A guest session a socket was opened with.
+pub(crate) struct GuestCaller {
+    /// The cookie's token, which is never shown to anybody.
+    pub token: String,
+    /// The public id.
+    pub public_id: String,
 }
 
 /// The application a socket is for, followed through remounts.
@@ -227,8 +242,15 @@ enum Event {
 
 type Sender = SplitSink<WebSocket, Message>;
 
-/// Serve one connection until it closes.
+/// Serve one connection until it closes, inside the caller's origin: every
+/// read it makes sees their guest session as `session.id`.
 async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
+    let mut origin = caller.origin.clone();
+    origin.session = caller.guest.as_ref().map(|g| g.public_id.clone());
+    sc_catalog::with_origin(origin, serve_in(socket, env, caller)).await;
+}
+
+async fn serve_in(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
     let (mut sender, mut receiver) = socket.split();
     let limits = env.hub.limits().clone();
     let info = ConnectionInfo {
@@ -247,6 +269,7 @@ async fn serve(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
     // Who the caller is, as a `table_changes` subscription's verdicts read it;
     // replaced at every re-read of the session.
     connection.set_user(caller.user.clone());
+    connection.set_guest_session(caller.guest.as_ref().map(|g| g.public_id.clone()));
     let now = std::time::Instant::now();
     let mut live = Live {
         subs: SubscriptionSet::new(limits.max_subscriptions),
@@ -1672,6 +1695,25 @@ impl Live {
                 message: "this application is no longer served here".to_owned(),
             });
         };
+        // A guest session that has lapsed or ended (its guest signed in) is
+        // nobody's any more: the socket closes, as a signed-in one does when
+        // its session ends, and the page reconnects as whoever it is now.
+        if let Some(guest) = &self.caller.guest {
+            match sc_auth::guest_session(&self.env.catalog, app.app.id.0, &guest.token).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return Err(CloseReason {
+                        code: ErrorCode::SignedOut,
+                        message: "your guest session ended, so this connection is closed"
+                            .to_owned(),
+                    });
+                }
+                Err(e) => sc_log::log_warn!(
+                    "the live socket could not re-read its guest session: {}",
+                    sc_error::format_chain(&e)
+                ),
+            }
+        }
         // The application's own access settings, asked again (TODO F9): a
         // role taken away, or an `access_if` that held an hour ago and no
         // longer does, closes the socket as a sign-out would.

@@ -1886,7 +1886,7 @@ function Fields({
                         onChange={(e) => update({ defaultExpression: e.target.value })}
                       />
                       <Form.Text muted>
-                        <T text="A JavaScript expression used when a new row leaves this field empty. It can use" /> <code>user</code> <T text="(the user writing the row) and the row's other fields." />
+                        <T text="A JavaScript expression used when a new row leaves this field empty. It can use" /> <code>user</code> <T text="(the user writing the row)," /> <code>session</code> <T text="(a guest's session) and the row's other fields. On a nullable field, an expression that gives nothing leaves it empty." />
                       </Form.Text>
                     </Form.Group>
                   )}

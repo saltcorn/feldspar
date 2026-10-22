@@ -494,12 +494,30 @@ impl ModuleServices {
         let Some(loaded) = sc_module::webhook_module(&set, segment)? else {
             return Ok(None);
         };
-        let declared = loaded
+        let Some(declared) = loaded
             .manifest
             .as_ref()
-            .is_some_and(|m| m.webhooks.iter().any(|w| w.name == name));
-        if !declared {
+            .and_then(|m| m.webhooks.iter().find(|w| w.name == name))
+        else {
             return Ok(None);
+        };
+        if !declared
+            .methods
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(&request.method))
+        {
+            let allow = declared.methods.join(", ");
+            return Ok(Some(sc_module::WebhookResponse {
+                status: 405,
+                headers: vec![
+                    ("allow".to_owned(), allow.clone()),
+                    (
+                        "content-type".to_owned(),
+                        "text/plain; charset=utf-8".to_owned(),
+                    ),
+                ],
+                body: format!("this webhook answers {allow}").into_bytes(),
+            }));
         }
         sc_module::run_webhook(
             &self.catalog,

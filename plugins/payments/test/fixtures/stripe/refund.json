@@ -1,0 +1,12 @@
+{
+  "id": "re_3Q9zYxWvUt1Abc2D0rEfUnD1",
+  "object": "refund",
+  "amount": 300,
+  "charge": "ch_3Q9zYxWvUt1Abc2D0xYzAbCd",
+  "created": 1792660000,
+  "currency": "eur",
+  "metadata": {},
+  "payment_intent": "pi_3Q9zYxWvUt1Abc2D0aBcDeFg",
+  "reason": "requested_by_customer",
+  "status": "succeeded"
+}

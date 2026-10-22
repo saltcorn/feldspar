@@ -1,0 +1,18 @@
+{
+  "id": "evt_3Q9zYxWvUt1Abc2D0rFnDeVt",
+  "object": "event",
+  "created": 1792660001,
+  "data": {
+    "object": {
+      "id": "ch_3Q9zYxWvUt1Abc2D0xYzAbCd",
+      "object": "charge",
+      "amount": 1150,
+      "amount_refunded": 300,
+      "currency": "eur",
+      "payment_intent": "pi_3Q9zYxWvUt1Abc2D0aBcDeFg",
+      "refunded": false
+    }
+  },
+  "livemode": false,
+  "type": "charge.refunded"
+}

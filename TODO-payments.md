@@ -306,8 +306,9 @@ mirror row's id. The same configuration shape is shared by `pay_charge_saved` (�
    token in the confirmation email and a code query that reads one order by token.
 6. When the guest **signs up or signs in in the same browser**, the `login` event carries the
    guest session's id (C9). An app trigger moves the guest's orders to the account:
-   `update_rows` on `orders` where `session_id === payload.guest_session`, set
-   `user_id = user.id`. This is safe where matching by email is not: holding the guest session's
+   `update_rows` on `orders` where `session_id !== null && session_id === payload.guest_session`,
+   set `user_id = user.id`. (The first half matters: a sign-in with no guest session has no
+   `guest_session`, which reads as null and would otherwise match every signed-in order.) This is safe where matching by email is not: holding the guest session's
    cookie proves it is the same buyer, while password sign-up does not verify email
    addresses.
 
@@ -560,32 +561,74 @@ Notes from P1, for the milestones that build on it:
 
 ## P2 — The module and use case 1 (shop), on Stripe and `fake`
 
-- [ ] **P2.1** `plugins/payments` skeleton: manifest, the three tables (§5), `pay_accounts` with
+- [x] **P2.1** `plugins/payments` skeleton: manifest, the three tables (§5), `pay_accounts` with
   `Secret` keys, adapter loading, capability checks with named refusals, net allow-list from
   hosts.
-- [ ] **P2.2** `fake` adapter: a local checkout page and self-delivered signed webhooks.
-- [ ] **P2.3** Webhook handler (§6.5): verify, dedupe, fetch-and-upsert the mirror, insert
+- [x] **P2.2** `fake` adapter: a local checkout page and self-delivered signed webhooks.
+
+  Notes from P2.1–P2.2:
+  - The provider events webhook is `POST /_feldspar/hooks/payments/events/<account name>`. It
+    verifies the signature with the account's adapter and answers `{ received: [ids] }`; the
+    processing (dedupe, fetch-and-upsert, `pay_events`) is P2.3's to add there.
+  - The fake provider's checkout page is the module's `fake` webhook, which declares `methods:
+    ["GET", "POST"]` (C1 now allows a webhook to answer `GET`). Webhook routes now answer on
+    every host, like the OAuth routes, so the page is served on the calling application's host
+    (`app.url`, P1.3). The card still shows the admin-host URL to register.
+  - The fake delivers its signed webhooks **in-process**, into the same `events` handler a
+    provider's HTTP request reaches, so it needs no `net` permission and no address for this
+    server. Its objects live in the worker's memory and are lost on a restart.
+  - `pay_account_test` is the one action so far: an admin (or a test) starts a small checkout on
+    an account. `pay_checkout` (P2.4) builds on the same `usableAccount` and capability checks.
+  - Module actions now get `db`, `app` and `session` in their argument (§15.1e).
+- [x] **P2.3** Webhook handler (§6.5): verify, dedupe, fetch-and-upsert the mirror, insert
   normalised events, 500 on failure. Tests: a duplicate event is processed once, out-of-order
   events give the right final state, a bad signature stores nothing, and an unknown provider
   event is logged as `other`.
-- [ ] **P2.4** `pay_checkout` (§6.1): the shared checkout configuration (the source row, line
+- [x] **P2.4** `pay_checkout` (§6.1): the shared checkout configuration (the source row, line
   formulas, currency, customer, tax, shipping, paths, effects), the read check on the source
   row, and a typed payload and answer. Tests against `fake`: an app table's row is paid for,
   and an app trigger on `payment.succeeded` marks it paid with `update_rows`; a payload amount
   is ignored; line formulas read through Ⱶ; a guest checks out their own order through a guest
   session; nobody can check out a row they cannot read.
-- [ ] **P2.5** Stripe adapter, one-off: Checkout Session with ad-hoc prices, Stripe Tax option,
+- [x] **P2.5** Stripe adapter, one-off: Checkout Session with ad-hoc prices, Stripe Tax option,
   shipping, the `managed_payments` flag (refused with shipping), refunds, webhook verification.
   Recorded-response tests; live test-mode test when keys are present.
-- [ ] **P2.6** `pay_refund` (given the source row or a mirror row), and the escape hatches:
+- [x] **P2.6** `pay_refund` (given the source row or a mirror row), and the escape hatches:
   `pay_api` and `pay_provider_code` (`stripe` in scope).
-- [ ] **P2.7** `reconcile` service: the periodic sweep.
-- [ ] **P2.8** Tutorial `docs/tutorial-payments.md` part 1: a React shop with its own
+- [x] **P2.7** `reconcile` service: the periodic sweep.
+- [x] **P2.8** Tutorial `docs/tutorial-payments.md` part 1: a React shop with its own
   `products`, `orders` and `order_lines` tables, the basket as an `open` order owned by the
   user or the guest session, prices read through Ⱶ so the buyer cannot set them, triggers that
   mark orders paid and decrement stock, moving a guest's orders to the account at sign-in, and
   **delivering a digital good** (a paid order
   of a downloadable product writes a download row the buyer can read, and emails the link).
+
+  Notes from P2.3–P2.8, for the milestones that build on them:
+  - Processing (`processing.js`) has no transaction: each step is an upsert or an
+    insert-if-absent, so a retry finishes a delivery that failed half way, and a trigger on
+    `pay_events` fires once per row. The sweep processes the provider's **event log**
+    (`adapter.listEvents`) as if delivered; `list(kind, since)` is there for P4's subscription
+    sync but nothing calls it yet.
+  - `ref_key` is a JSON field (the key with its own type), so `id === row.ref_key` holds for
+    integer, text and UUID keys; a row action reads a JSON column's scalar as itself.
+  - Effects are evaluated and recorded on the checkout's mirror row (and inherited by its
+    payment), but **not applied**: role grants are P3.3's `ctx.roles`, credit grants P6.4/P7.2.
+  - `pay_checkout` takes `mode: "payment"` only; `subscription` is refused by capability (fake)
+    or as not built (Stripe) until P4.1. Stripe's capabilities say what Stripe can do; the
+    actions refuse what is not built.
+  - The Stripe adapter speaks REST over `fetch`, not the `stripe` package: `pay_provider_code`'s
+    `stripe` is an authenticated `get/post/del/request` client (§15.1f). Its fixtures are
+    written to Stripe's documented response shapes; `test/stripe-live.test.mjs` checks the same
+    calls against Stripe's test mode when `STRIPE_TEST_SECRET_KEY` is set (not run here).
+  - `pay_api` is a module function, and a function has no `db`: it reads the accounts the
+    `reconcile` service keeps in the worker's memory, so it fails, by name, until the service
+    has started.
+  - Core changes made for P2: string `+` translates to SQL concatenation; a default expression
+    is allowed on a nullable field; a guest's live socket carries the guest session (verdicts on
+    `table_changes` included), and closes when the guest session ends.
+  - A payload field that is not there reads as null in a translated formula, as `old.x` does on an
+    insert. The tutorial's sign-in trigger guards with `session_id !== null`; a formula comparing
+    a nullable column with an optional payload field needs the same guard.
 
 ## P3 — Role grants (core)
 

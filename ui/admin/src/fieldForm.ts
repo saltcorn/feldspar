@@ -261,12 +261,12 @@ function fieldTypeBody(
 }
 
 /**
- * Whether the form offers a default value: only a NOT NULL stored field has one,
- * because a nullable field may already be left out, and a calculated one is
- * never written. A key column counts as NOT NULL.
+ * Whether the form offers a default value: every stored field does, and a
+ * calculated one, which is never written, does not. On a nullable field a
+ * default that gives nothing (`user && user.id` for a guest) leaves it null.
  */
 export function defaultEditable(form: FieldForm): boolean {
-  return !form.calculated && (!form.nullable || form.primaryKey);
+  return !form.calculated;
 }
 
 /**

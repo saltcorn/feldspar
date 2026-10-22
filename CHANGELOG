@@ -2,6 +2,137 @@
 
 Changes in reverse chronological order.
 
+## Payments P2.3–P2.8: webhooks processed, pay_checkout, Stripe, refunds, the sweep, and the shop tutorial
+
+The rest of TODO-payments.md milestone P2: the payments module takes payments for an
+application's own rows, on the test provider and on Stripe, and the application reacts with its
+own triggers.
+
+**Webhook processing (P2.3).** `processing.js`, shared by the webhook and the sweep. Each verified
+event's object is fetched from the provider and the mirror (`pay_objects`) upserted from it; then
+one `pay_events` row is inserted per kind the adapter maps it to, unless that
+`(account, event_id, kind)` is there. A duplicate does nothing, events out of order end in the
+provider's current state, and an event the module does not know is logged as `other` with its
+raw event. There is no transaction: each step is idempotent, a failure is a 500 the provider
+retries, and the retry finishes the job. A payment inherits the application row it was for from
+its checkout's mirror row, or from the metadata the module put on it. The fake provider can now
+hold its webhooks (`settings.webhooks: "hold"`) and resend any of them, which is how the tests
+deliver duplicates and reorder events.
+
+**`pay_checkout` (P2.4).** A hosted checkout for a row of the application's, configured on the
+trigger (`checkout.js`): the account, the table and where the key comes from, a read check as the
+caller (on by default; a guest passes it through their guest session), one line from formulas
+over the row or a line per child row (`productⱵprice`, `productⱵname`), currency, email, tax
+(none, the provider's, or a merchant of record), shipping, success and cancel paths on the
+calling application's host, and effects (recorded on the mirror; applied once role and credit
+grants exist, P3/P6). The formulas run on the server through the `db` chain's projections; a
+payload amount is never read. It answers `{ id, checkout, url, amount, currency }`.
+`ref_key` is now a JSON field holding the key with its own type, so an application's
+`update_rows` where `id === row.ref_key` finds an integer, text or UUID key.
+
+**Stripe (P2.5).** `adapters/stripe.js`: a Checkout Session with ad-hoc prices, Stripe Tax,
+shipping address collection, Managed Payments (refused with shipping, and only on an account that
+turns it on), refunds with an idempotency key, webhook verification (`Stripe-Signature`, any `v1`
+signature, age, and the mode the event came from), a secret key checked against the account's
+mode, and Stripe's own counting of ISK, UGX and three-decimal currencies. It speaks REST over
+`fetch` to `api.stripe.com`, now the module's whole `net` permission. Tested against responses
+in Stripe's documented shape; `test/stripe-live.test.mjs` runs against Stripe's test mode when
+`STRIPE_TEST_SECRET_KEY` is set. The module suggests Stripe's hosts for its embedded payment
+form (`csp.stripe_elements`).
+
+**Refunds and the escape hatches (P2.6).** `pay_refund` refunds the latest payment for an
+application row (or a mirror row), all of it or a formula's amount, once per click.
+`pay_provider_code` runs an admin's JavaScript with the account's client in scope (`stripe`,
+`client`), never its keys. `pay_api(account, method, path, body)` is a module function for any
+code body; since a function has no `db`, it reads the accounts the reconcile service keeps.
+
+**The reconcile service (P2.7).** Every three hours, each account's provider event log since the
+last sweep (`pay_accounts.synced_at`, less an hour) is processed as if delivered, which catches a
+webhook that never arrived. `pay_sync` does it now.
+
+**The shop tutorial (P2.8).** `docs/tutorial-payments.md` part 1: a React shop with its own
+products, orders and order lines; the basket as an open order owned by the user or the guest
+session, with no price column; checkout; triggers that mark the order paid and take the stock
+down; a download row and an email for a digital good; and a guest's orders moving to their
+account at sign-in. `tests/tutorial_payments.rs` builds exactly that shop and runs it.
+
+**Core changes.**
+- The formula translator turns `+` with a string literal on either side into SQL concatenation
+  (`"Invoice " + number`), where it was arithmetic and failed in Postgres.
+- A default expression is allowed on a nullable field (the schema editor and the admin's field
+  form). One that gives nothing leaves the field null, so `orders` can default both `user_id`
+  (`user && user.id`) and `session_id` (`session && session.id`).
+- A guest's live socket carries their guest session: the connection's reads, and the hub's
+  verdicts on `table_changes`, see it as `session.id`, and the socket closes when the guest
+  session ends (`tests/app_guest_live.rs`).
+- A row action reads a JSON column's single value (a number, string or boolean) as that value,
+  so it compares with a column of that type.
+
+The sign-in trigger is `session_id !== null && session_id === payload.guest_session`. A sign-in
+with no guest session has no `guest_session`, and a missing field reads as null, so without the
+first half the trigger would match every order with no session. TODO-payments §6.1 and the design
+now say so.
+
+## Payments P2.1–P2.2: the payments module, and a fake provider with a checkout page
+
+The bundled module `@feldspar/payments` (TODO-payments.md P2.1, P2.2), in `plugins/payments`. It
+takes no real payments yet: this is its skeleton and its test provider.
+
+**The module (P2.1).**
+- Three tables of its own (§5): `pay_accounts` (one configured provider each, admin-only, with
+  `secret_key` and `webhook_secret` as `Secret` fields), `pay_objects` (the mirror of the
+  provider's objects, readable by its owner) and `pay_events` (the log the application's triggers
+  will react to). `tables.js` lists the event kinds and object kinds.
+- Adapters behind the §4 interface, one file each in `adapters/`. An account names its adapter.
+  `adapterFor` refuses, by name, an adapter the module does not have, a mode other than test or
+  live, a test-only adapter in live mode, and a disabled account.
+- Capabilities (`capabilities.js`): each adapter declares flags, and `requireCapability` refuses
+  with a sentence such as `the fake account "shop" cannot take subscriptions: its adapter does not
+  support it`. `checkDeclaration` checks a new adapter's flags.
+- Money (`money.js`): whole minor units beside an ISO code, with zero- and three-decimal
+  currencies, exact decimal parsing and integer formatting.
+- The module's `net` permission is the union of its adapters' `hosts`, an allow-list and never
+  `*`. It is empty so far, since `fake` reaches nothing. `bundled_catalog` checks the manifest
+  against `adapters/index.js`.
+- `pay_account_test`: an action that starts a small one-off checkout on a named account and
+  answers its URL. It is typed (`payload`, `returns`).
+
+**The fake provider (P2.2).** A payment provider inside this server, for tests and for building
+payment screens before anybody has a provider account.
+- `createCheckout` answers the URL of the fake's own checkout page. The page is served by the
+  module's `fake` webhook on the calling application's host (`app.url`). It has Pay, Fail (a
+  declined card) and Cancel buttons, runs no script, and sets its own CSP.
+- Paying makes a payment and delivers `checkout.completed` and `payment.succeeded`. Fail delivers
+  `payment.failed` and leaves the checkout open.
+- Each event is signed Stripe-style (`fake-signature: t=…,v1=<HMAC-SHA256>`) with the account's
+  webhook secret. It is delivered into the module's `events` handler, which checks the signature
+  over the raw bytes, the secret and the age.
+- The page (or `?format=json`) shows each delivery and the status the handler answered.
+- `fetch` and `list` answer objects' current state for the webhook handler and the sweep (P2.3,
+  P2.7). An account without a webhook secret is refused when the checkout is created.
+- The objects live in the worker's memory and are lost on a restart.
+
+**Core changes.**
+- A module webhook may declare `methods: ["GET", "POST"]`. It answers `POST` only by default, and
+  any other method is a 405.
+- Webhook routes now answer on every host, as the OAuth routes do. The URL to register, shown on
+  the card, is still the admin host's. (P1 had them on the admin host only.)
+- A module action's argument now has `db` (the code body's chain, over the action's own
+  surfaces), `app` and `session`, beside v1's object.
+
+**Tests.**
+- `plugins/payments/test/*.test.mjs` (11, run by `npm test`) cover money, capabilities, the
+  adapter registry and its refusals, signing and verification (tampered, wrong secret, missing,
+  stale, other account), a payment and a declined card, and the page's escaping and CSP.
+- `bundled_catalog.rs` runs that suite when `node` is present. It also checks that the payments
+  manifest's tables and webhooks match the module, and that its `net` permission equals the
+  adapters' hosts.
+- `sc-server`'s `payments_module.rs` installs the bundled module on a running server and checks:
+  the tables, the secret columns sealed at rest, the webhook paths, each refusal by name, a
+  declined card and then a payment through the page on the shop's host with every delivery
+  answered 200, an event signed by hand accepted over HTTP, a forged, unsigned or re-serialised
+  one refused, a missing account 404, `GET` on the events webhook 405, and Cancel sending no event.
+
 ## Payments P1: module webhooks, the calling application, CSP suggestions, guest sessions
 
 The core seams the payments module needs (TODO-payments.md milestone P1, design C1, C5, C6, C9).

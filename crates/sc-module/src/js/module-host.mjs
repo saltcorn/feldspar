@@ -1431,10 +1431,21 @@ async function evalWebhooks(plugin, configuration) {
       );
       continue;
     }
+    // `POST` unless it says otherwise: a provider posts. A webhook that also
+    // answers a browser — a test provider's checkout page — names `GET` too.
+    const methods = Array.isArray(impl.methods)
+      ? impl.methods.map((m) => String(m).toUpperCase())
+      : ["POST"];
+    const unknown = methods.filter((m) => m !== "GET" && m !== "POST");
+    if (unknown.length || !methods.length) {
+      issues.push(`the webhook "${name}" answers GET and POST only, not ${unknown.join(", ") || "nothing"}`);
+      continue;
+    }
     set[name] = impl;
     webhooks.push({
       name,
       description: typeof impl.description === "string" ? impl.description : "",
+      methods: [...new Set(methods)],
     });
   }
   return { webhooks, set, issues };
@@ -2629,6 +2640,11 @@ async function runAction({ module: name, action: actionName, args }) {
     const callId = store.call;
     argument.files = moduleFiles((plan) => askFor(callId, "module_files", plan));
     argument.callerFiles = callerFiles((plan) => askFor(callId, "files", plan));
+    // The tables, as a code body's `db` and a service's `ctx.db` are spelled
+    // (TODO-payments P2.1): the trigger's authority unless a chain says
+    // `asUser()`, over this call's own surfaces. v1's `Table` reaches the same
+    // rows; this is the chain a module shares with its services and webhooks.
+    argument.db = globalThis.__scMakeDb(callId);
   }
   const result = await impl.run(argument);
   return result === undefined ? null : result;
