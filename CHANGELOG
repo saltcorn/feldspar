@@ -2,6 +2,28 @@
 
 Changes in reverse chronological order.
 
+## Row history: design and TODO (H0–H6)
+
+A design for per-table row history, used for undo, audit and restoring deleted rows. Design
+only; no code has changed.
+
+- `docs/ROW_HISTORY.md`: what Saltcorn 1 did and why it wrote several versions for one save, a
+  survey of how other systems track history (django-simple-history, django-reversion, Hibernate
+  Envers, PaperTrail, audited, laravel-auditing, pgMemento, supa_audit, SQL:2011, Directus,
+  Baserow, Airtable, Salesforce), and the decisions taken.
+- TECHNICAL_DESIGN §14.12 (new):
+  - History shares offline sync's change log `_fd_changes`, with one trigger per table and one
+    cleanup job.
+  - Writes are grouped into changesets carried on `CallerContext`/`sc.changeset` through
+    trigger cascades, with at most one entry per row per changeset.
+  - History is off by default, and files of deleted rows are kept until retention ends.
+  - Restore and undo have a conflict check, and there is an `undo` action that steps back
+    through the caller's session, optionally for one table only.
+- TECHNICAL_DESIGN §14.11 and the ER diagram are updated for the shared log: `_fd_changesets`
+  is added, and `fields`, `client_id` and `mutation` move from `_fd_changes` to the changeset.
+- `TODO-history.md` (new). `TODO-offline-sync.md` points S1.4, S2.8 and S5.1 at the shared
+  history tasks.
+
 ## Typed `api.run<Name>()` methods: actions declare their payload and answer
 
 An exposed trigger's client method used to take and answer `unknown`. An action can now declare

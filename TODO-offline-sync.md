@@ -5,6 +5,10 @@ exchanges changes with the server when it can. The design is
 [docs/TECHNICAL_DESIGN.md](./docs/TECHNICAL_DESIGN.md) §14.11. Milestones are prefixed **S**;
 work through them in order.
 
+The change log `_fd_changes` is shared with row history ([TODO-history.md](./TODO-history.md));
+its milestone H0–H1 changes how sync records changes (changesets, merged entries) without
+changing what a pull or push does.
+
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## S1 — Recording changes
@@ -15,6 +19,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [x] S1.3 Tests: insert, update with its changed fields, an update that changes nothing, a
       change of key, delete, and a write made with plain SQL.
 - [ ] S1.4 SQLite: a trigger per table, regenerated whenever the table's columns change.
+      Shared with row history: done as H6.2 in [TODO-history.md](./TODO-history.md).
 
 ## S2 — Pull
 
@@ -33,7 +38,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       restored database whose transaction ids are already past the device's goes unnoticed.
 - [ ] S2.8 A schema change that rewrites a synced table's rows (a column added with a default, a
       type changed, a column dropped or renamed) fires no row trigger; the next pull of that
-      table resets it on every device. Next to `sync_dirty` in `schema_edit.rs`.
+      table resets it on every device. Next to `sync_dirty` in `schema_edit.rs`, the same
+      hook as history's H5.2.
 - [x] S2.9 One pull reads in one `REPEATABLE READ READ ONLY` transaction, with the watermark
       taken inside it: all tables from one moment (a child row never arrives without its parent)
       and nothing sent twice. Needs row reads, the RLS path included, on a given transaction, and
@@ -82,7 +88,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 ## S5 — Cleanup and documentation
 
 - [ ] S5.1 Removing superseded log entries after a retention period; a device older than that
-      reloads its tables.
+      reloads its tables. One cleanup job with row history: done as H5.3 in
+      [TODO-history.md](./TODO-history.md).
 - [ ] S5.2 A tutorial for an offline-first app; TECHNICAL_DESIGN §14.11 brought up to date.
 
 ## Later
