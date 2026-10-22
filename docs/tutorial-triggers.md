@@ -740,6 +740,7 @@ action added by a plugin gets a working form with no change to the admin UI.
 | `run_js_code` | Run a JavaScript body against the event and return what it returns |
 | `send_email` | Send an email whose recipients, subject and body are `{{ }}` templates, optionally attaching a File field of the row |
 | `fit_model` | Fit a model again, and optionally make the new fit active ([tutorial-models.md](tutorial-models.md)) |
+| `undo` | Take back the caller's most recent change in this session, from a table that keeps row history |
 
 `fetch` is the webhook: point it at a URL, give it a JSON body of formulas, and its response
 comes back as the trigger's result — so a `none` trigger exposed on your app can be a typed
@@ -800,6 +801,52 @@ The server in Settings → Email is not held to these rules: your own relay can 
 Microsoft 365 file whatever you send through their SMTP into the account's Sent folder
 themselves. Most other providers (GMX, IONOS, Fastmail, a plain Dovecot/Postfix) do not, and the
 mail will not appear there.
+
+### `undo`, an Undo button for your application
+
+`undo` takes back what the person pressing the button last did, the way an editor's undo does:
+press it again and it steps back one action further. It reads the tables' **row history**, so
+switch that on first: **Tables → tasks → Keep row history** (it is off by default). A change to a
+table without history cannot be undone, because nothing remembers what it was.
+
+**Triggers → New trigger**:
+
+| Field | Value |
+|---|---|
+| Name | `undo_last` |
+| **Minimum role** | `40` |
+| Event | `Only when something asks (no event)` |
+| Action | `undo` |
+| Only in table (action setting) | leave blank |
+
+Tick it in the application's **Triggers** card as in Step 3, and it is
+`POST /api/actions/undo_last`, `runUndoLast({})` in the generated client, and an **Action**
+button in a Saltcorn UI view or page ([tutorial-saltcorn-ui.md](tutorial-saltcorn-ui.md)). Its
+answer is `{"undid": …, "changeset": …, "entries": 2}`: the action it took back, the undo's own
+changeset, and how many rows it put back.
+
+What "the last change" means:
+
+- **One action is one request.** Saving a form that also makes a trigger write to another table
+  is one action, and one undo takes back both writes.
+- **Only this session's.** Changes made by someone else, or by the same person on another device
+  or in another browser, are never picked. A caller who is not signed in has no session, and is
+  refused.
+- **The request pressing the button is not "the last change".** If the same request wrote
+  something before the trigger ran, that write stays; the undo takes back the action before it.
+- **An undo is not undone by the next undo.** Pressing it twice steps back two actions, rather than
+  undoing and redoing the same one.
+- **Only in table** narrows it to one table: it takes back that table's rows from the most recent
+  action that changed any, and leaves the action's other tables alone. A later undo without the
+  setting takes back the rest. The table must keep history, or the trigger is refused on save.
+
+It is refused with a sentence, and nothing is written, when there is nothing left to undo, when
+the caller has no session, or when someone has changed the same fields since ("this cannot be
+undone, because it has been changed since: `title` of row `7` of `tasks` has been changed
+since"). The button never overwrites someone else's later edit; an administrator can, from the
+changeset's page in the admin UI. The undo is a write as the caller, so it is held to the same
+write rules as the original, and the triggers on the rows it writes fire as usual. What those
+triggers did outside the database, such as an email they sent, is not undone.
 
 ## Things that trip people up
 

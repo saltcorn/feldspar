@@ -2059,8 +2059,8 @@ ambient, and `row`/`old` are *out of scope* on an event that has no row (so nami
 run's `context` — §10.3) so an `only_if` and an action's settings cannot disagree about what is
 in scope.
 
-The eight built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_js_code`,
-`run_python_code` (§15.2), `send_email` and `publish` (§14.10), and they live in
+The nine built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_js_code`,
+`run_python_code` (§15.2), `send_email`, `publish` (§14.10) and `undo` (§14.12), and they live in
 **`sc-core-actions`, above the row layer**. That placement is the design's one real constraint on where an action may live: a
 trigger's write goes through `sc-api`'s `rows` module, so it is coerced, validated,
 `File`-field-checked and *observed* exactly like an API caller's write. A second write path would
@@ -11309,6 +11309,17 @@ session (anonymous callers have none), or when the conflict check fails. It does
 `force`. Changesets from other sessions, including the same user's other devices, are never
 picked. Redo is not a separate mechanism: it would be an undo of the session's last undo, and
 is left for later.
+
+**As built (H4).** `sc_core_actions::Undo` finds its changeset with
+`sc_catalog::history::session_undo_target` (the event's changeset gives the session and the id
+of the running request, which is skipped), then calls H3's `Reverser::undo_changeset` as the
+event's caller, without `force`. The undo changeset inherits the session from the ambient
+(request) changeset, so the next press skips it as an undo. "Most recent" is by the
+changeset's `at`, then `txid`; `_fd_changesets (session, at)` is indexed for it. A refusal is an
+`invalid` error carrying the sentence (an exposed trigger answers it as the request's error).
+On success the result is `{ undid, changeset, entries }`. The action has no required setting,
+the one built-in without one. It reaches applications as any action does: a trigger with it,
+exposed by the application, is an API endpoint and a Saltcorn UI button.
 
 #### Files
 

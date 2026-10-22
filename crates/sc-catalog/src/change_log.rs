@@ -123,7 +123,10 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
             "CREATE INDEX IF NOT EXISTS {by_tx} ON {table} (txid, seq);\n\
              CREATE INDEX IF NOT EXISTS {by_row} ON {table} (table_name, row_key, txid);\n\
              CREATE UNIQUE INDEX IF NOT EXISTS {entry} ON {table} (changeset, table_name, row_key);\n\
+             CREATE INDEX IF NOT EXISTS {by_session} ON {sets} (session, at);\n\
              {function}",
+            sets = dialect.quote_ident(CHANGESETS_TABLE),
+            by_session = dialect.quote_ident("_fd_changesets_session"),
             by_tx = dialect.quote_ident("_fd_changes_txid"),
             by_row = dialect.quote_ident("_fd_changes_row"),
             entry = dialect.quote_ident("_fd_changes_entry"),

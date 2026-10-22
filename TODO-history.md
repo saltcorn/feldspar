@@ -94,16 +94,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H4 — The Undo action
 
-- [ ] H4.1 `undo` core action in `sc-core-actions`, with an optional `table` config (must have
+- [x] H4.1 `undo` core action in `sc-core-actions`, with an optional `table` config (must have
       history on, checked when the trigger is saved). With no table, it undoes the session's
       most recent changeset that still has entries not undone, skipping undo changesets and the
       running request's own changeset. With a table, it undoes only that table's entries of the
       session's most recent changeset that has some not yet undone. No `force`.
-- [ ] H4.2 Refused with a sentence when there is nothing to undo, when the caller has no
+- [x] H4.2 Refused with a sentence when there is nothing to undo, when the caller has no
       session, or when there is a conflict.
-- [ ] H4.3 Expose it where actions are offered to applications (Saltcorn UI buttons, exposed
+- [x] H4.3 Expose it where actions are offered to applications (Saltcorn UI buttons, exposed
       triggers) and document it in `tutorial-triggers.md`.
-- [ ] H4.4 Tests: undo twice steps back two actions; another session's changesets are never
+- [x] H4.4 Tests: undo twice steps back two actions; another session's changesets are never
       picked; a table-scoped undo leaves other tables' entries alone, and a later unscoped undo
       reverses the rest; an anonymous caller is refused.
 

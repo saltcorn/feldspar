@@ -2,6 +2,36 @@
 
 Changes in reverse chronological order.
 
+## Row history H4: the Undo action
+
+`undo` is a new core action: a trigger with it, exposed by an application, is an Undo button
+(an API endpoint, and an Action button in a Saltcorn UI view or page) that takes back the
+caller's most recent change in their own session. Pressing it again steps back one more.
+
+- `sc-core-actions::Undo` (new, registered with the built-ins). An optional `table` setting
+  (labelled "Only in table"), which must name a table with history on, checked when the trigger
+  is saved. Without it, the action undoes the session's most recent changeset that still has
+  entries not undone, skipping undo changesets and the running request's own changeset. With
+  it, only that table's entries of the most recent changeset that has some not yet undone. It
+  calls H3's `Reverser::undo_changeset` as the event's caller, never with `force`.
+- Refused with a sentence (an `invalid` error) when the caller is anonymous or has no session,
+  when there is nothing to undo ("there is nothing to undo", or "nothing in `tasks` to undo"),
+  and on a conflict (`UndoOutcome::refusal`). Changesets of other sessions are never picked. The
+  result is `{ undid, changeset, entries }`.
+- `sc-catalog::history::session_undo_target` (new): the query that picks the changeset. A new
+  index `_fd_changesets_session` on `(session, at)`, created by `bootstrap_change_log` (no
+  migration needed: it is `IF NOT EXISTS` on every boot).
+- Docs: `tutorial-triggers.md` has an `undo` row in the action table and a section on the Undo
+  button (switching history on, what "the last change" means, the refusals). §10.1 lists nine
+  built-ins, and §14.12 has "As built (H4)".
+- Tests: `sc-core-actions/tests/undo_action.rs`. Undoing twice steps back two actions, and a
+  request that writes and then runs the action does not undo its own write. Another session's
+  changesets (the same user on another device) are never picked. A table-scoped undo leaves the
+  other table's entries and a later change alone, and later unscoped undos take back the rest.
+  Anonymous and sessionless callers are refused. A conflict is refused with the field named and
+  nothing overwritten. A `table` without history, or that does not exist, is refused on save.
+  The built-in name and settings lists in `lib.rs` include `undo`.
+
 ## Row history H3: restore and undo
 
 A deleted row can be put back, a row set back to one of its versions, and a changeset undone,

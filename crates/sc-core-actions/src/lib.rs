@@ -2,7 +2,7 @@
 //!
 //! Every action Saltcorn ships with, in one crate: [`InsertRow`], [`UpdateRows`],
 //! [`DeleteRows`], [`Fetch`], [`RunJsCode`], [`RunPythonCode`], [`SendEmail`],
-//! [`Publish`] and [`FitModel`]. The set is **deliberately small** — GOALS asks for a
+//! [`Publish`], [`Undo`] and [`FitModel`]. The set is **deliberately small** — GOALS asks for a
 //! minimal one, because control flow belongs to the workflow engine (§10.3)
 //! rather than to a proliferation of actions — and [`builtin_actions`] is the
 //! single constructor that assembles it.
@@ -50,6 +50,7 @@ mod rows_scope;
 mod run_js_code;
 mod run_python_code;
 mod send_email;
+mod undo;
 mod update_rows;
 
 use std::sync::Arc;
@@ -66,6 +67,7 @@ pub use publish::{INTERNAL_STREAMS_QUERY, Publish};
 pub use run_js_code::RunJsCode;
 pub use run_python_code::RunPythonCode;
 pub use send_email::SendEmail;
+pub use undo::Undo;
 pub use update_rows::UpdateRows;
 
 /// The built-in action set a server installs.
@@ -95,6 +97,7 @@ pub fn register_builtin_actions(registry: &mut ActionRegistry) -> Result<()> {
     registry.register(Arc::new(RunPythonCode::new()?))?;
     registry.register(Arc::new(SendEmail))?;
     registry.register(Arc::new(Publish))?;
+    registry.register(Arc::new(Undo))?;
     Ok(())
 }
 
@@ -107,7 +110,7 @@ pub fn register_builtin_actions(registry: &mut ActionRegistry) -> Result<()> {
 /// `sc_core_traits::register_agent_actions` is separate: it holds the model
 /// provider registry a fit is validated against and the seam a fit is started
 /// through, and neither exists until a server has assembled them. A process
-/// with no model support registers the other seven and this one is simply
+/// with no model support registers the other built-ins and this one is simply
 /// absent — which is what makes a trigger naming it report "unknown action"
 /// rather than fail silently.
 pub fn register_model_actions(
@@ -135,17 +138,22 @@ mod tests {
                 "run_js_code",
                 "run_python_code",
                 "send_email",
+                "undo",
                 "update_rows"
             ]
         );
         // Every one of them describes itself and its configuration as data, which
         // is what lets the admin UI render a form it has never heard of — and
-        // every one names something required, so a blank form cannot be saved.
+        // every one but `undo` (whose one setting narrows it, and which means
+        // something with none) names something required, so a blank form
+        // cannot be saved.
         for action in registry.all() {
             assert!(!action.description().is_empty(), "{}", action.name());
             let spec = action.config_spec();
             assert!(!spec.is_empty(), "{}", action.name());
-            assert!(spec.iter().any(|f| f.required), "{}", action.name());
+            if action.name() != "undo" {
+                assert!(spec.iter().any(|f| f.required), "{}", action.name());
+            }
         }
     }
 
@@ -215,6 +223,7 @@ mod tests {
         );
         assert_eq!(names("run_js_code"), vec!["code", "timeout_ms"]);
         assert_eq!(names("publish"), vec!["stream", "topic", "value"]);
+        assert_eq!(names("undo"), vec!["table"]);
         assert_eq!(
             names("send_email"),
             vec![

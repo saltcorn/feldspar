@@ -562,6 +562,48 @@ pub async fn undone(catalog: &Catalog, id: Uuid) -> Result<Undone> {
     Ok(out)
 }
 
+/// The changeset the Undo action would take back for `session` (§14.12 "The
+/// Undo action"): its most recent one with an entry not yet undone (in
+/// `table` only, when given), that is neither an undo nor `except` (the
+/// request running the action). `None` when there is nothing to undo.
+pub async fn session_undo_target(
+    catalog: &Catalog,
+    session: &str,
+    table: Option<&str>,
+    except: Option<Uuid>,
+) -> Result<Option<Uuid>> {
+    let mut binds = vec![
+        Value::Text(session.to_owned()),
+        history_tables(catalog)?,
+        Value::Uuid(except.unwrap_or_default()),
+    ];
+    let in_table = match table {
+        Some(table) => {
+            binds.push(Value::Text(table.to_owned()));
+            " AND c.table_name = $4"
+        }
+        None => "",
+    };
+    let sql = format!(
+        "SELECT s.id FROM {sets} s \
+          WHERE s.session = $1 AND s.source <> 'undo' AND s.id <> $3 \
+            AND EXISTS (SELECT 1 FROM {log} c \
+                         WHERE c.changeset = s.id AND {HAS_VALUES}{in_table} \
+                           AND c.table_name IN (SELECT jsonb_array_elements_text($2::jsonb)) \
+                           AND NOT EXISTS (SELECT 1 FROM {sets} u \
+                                            WHERE u.cause = s.id AND u.source = 'undo' \
+                                              AND (u.undo_table IS NULL \
+                                                   OR u.undo_table = c.table_name))) \
+          ORDER BY s.at DESC, s.txid DESC LIMIT 1",
+        log = quote(catalog, CHANGES_TABLE),
+        sets = quote(catalog, CHANGESETS_TABLE),
+    );
+    Ok(query(catalog, sql, binds)
+        .await?
+        .first()
+        .and_then(|row| uuid_of(row, "id")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
