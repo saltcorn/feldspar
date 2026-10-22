@@ -1,0 +1,13 @@
+{
+  "name": "@feldspar/imap-spike",
+  "version": "0.0.1",
+  "description": "Throwaway: does imapflow, mailparser and nodemailer work inside feldspar's Deno worker? (TODO-imap.md M1.4)",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "imapflow": "2.2.6",
+    "mailparser": "3.9.36",
+    "nodemailer": "10.0.15"
+  }
+}

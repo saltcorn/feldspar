@@ -671,9 +671,38 @@ sign in with. The shared cookie and the lifetime apply to those sign-ins too.
   buttons on the scaffold's `Login.tsx`, the runtime README. Tests: the generated client and the
   scaffold's login screen type-check.
 
+## F9 — Who may use an application
+
+User request: three settings on every application. **`min_role`**: a user with a less privileged
+role (a higher role number) may not use the application at all — no sign-in, no endpoint.
+**`max_role`**: every caller's role is capped at it while they use the application (an admin on
+an app with `max_role` 20 is treated as role 20). **`access_if`**: a formula with `user` in
+scope, as in an ownership formula (`user.department === "Finance"`, or a condition on the time),
+that must hold.
+
+- [x] **F9.1** `Application::{min_role, max_role, access_if}`, stored in three nullable
+  `_fd_applications` columns; `sc_app::admit` (refuse, or admit with the role capped),
+  `validate_access` on save (roles in range; the formula against the users table, no row, no
+  module or `predict` call). Tests: `sc-app` unit tests.
+- [x] **F9.2** Enforcement on every application surface through `router::app_caller`: API
+  providers (a refused caller reaches only `SIGN_IN_ENDPOINTS`), frameworks
+  (`AppRequest::admitted`; Saltcorn UI sends a refused caller to sign in), static directories,
+  upload slots, the live socket and its re-check, the Analytics API. A sign-in as a refused
+  account is refused in `apply_session` before a session exists (REST, rendered forms, OAuth).
+  Tests: `sc-server/tests/app_access.rs`, and one in `saltcorn_ui_render.rs`.
+- [x] **F9.3** The admin API (`min_role`, `max_role`, `access_if` on create, update, list and
+  backup), the application form's "Who may use this application" section, and the MCP tools
+  (`describe_applications` shows `access`; `update_application` changes it with
+  `allow_access_changes`).
+
 ---
 
 ## Open questions
+
+- F9: should a refused but signed-in caller of a Saltcorn UI application be shown "your account
+  may not use this application" with a sign-out button, rather than the sign-in form?
+- F9: the Analytics framework keeps its own `min_role` in its framework settings. Fold it into
+  the application's `min_role`?
 
 - Passing a password in a GET URL puts it in logs and browser history. Should the share
   tutorial show the two-step pattern instead? A POST checks the password and stores a

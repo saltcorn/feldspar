@@ -93,7 +93,10 @@ pub async fn export_table(
     context: Option<&CallerContext>,
 ) -> Result<String> {
     let columns: Vec<&str> = stored_columns(table);
-    let rows = rows::list_rows_ctx(catalog, table, context).await?;
+    let mut rows = rows::list_rows_ctx(catalog, table, context).await?;
+    // A secret is exported as its sentinel, which an import of the same file
+    // reads as "leave it as it is" (TODO-imap M2).
+    sc_catalog::secrets::redact_json(table, &mut rows);
     let Json::Array(rows) = rows else {
         return Err(Error::msg("the row layer did not return an array"));
     };

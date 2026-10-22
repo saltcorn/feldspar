@@ -640,6 +640,11 @@ impl EndpointSet {
         self.endpoints.iter().find(|e| e.name == name)
     }
 
+    /// Find an endpoint by name, to refine its schemas after projection.
+    pub(crate) fn find_mut(&mut self, name: &str) -> Option<&mut Endpoint> {
+        self.endpoints.iter_mut().find(|e| e.name == name)
+    }
+
     /// Record the table behind a group of endpoints already registered here
     /// (see [`ResourceModel`]).
     ///

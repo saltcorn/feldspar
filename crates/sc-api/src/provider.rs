@@ -392,10 +392,29 @@ pub trait ApiProvider: Send + Sync {
     ///
     /// [`AuthRequirement::is_public_role`]: crate::AuthRequirement::is_public_role
     fn open_to_public(&self, method: Method, path: &str) -> bool {
+        self.endpoint_for(method, path)
+            .is_some_and(|ep| ep.auth.is_public_role())
+    }
+
+    /// Whether a `method` request for `path` reaches one of the sign-in
+    /// endpoints ([`SIGN_IN_ENDPOINTS`](crate::SIGN_IN_ENDPOINTS)), found as
+    /// [`open_to_public`](Self::open_to_public) finds its endpoint.
+    ///
+    /// What the router asks of a caller an application does not let in at all
+    /// (TODO F9): such a caller reaches only these.
+    fn is_sign_in(&self, method: Method, path: &str) -> bool {
+        self.endpoint_for(method, path).is_some_and(|ep| {
+            ep.auth == crate::AuthRequirement::Public
+                && crate::SIGN_IN_ENDPOINTS.contains(&ep.name.as_str())
+        })
+    }
+
+    /// The endpoint a `method` request for `path` reaches: the first one
+    /// registered whose method and path match.
+    fn endpoint_for(&self, method: Method, path: &str) -> Option<&crate::Endpoint> {
         self.endpoints()
             .iter()
             .find(|ep| ep.method == method && ep.path.match_path(path).is_some())
-            .is_some_and(|ep| ep.auth.is_public_role())
     }
 
     /// Handle one request. `user` is the authenticated caller, or `None` for an

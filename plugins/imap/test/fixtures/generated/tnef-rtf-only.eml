@@ -1,0 +1,18 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Outlook RTF
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="tnef-only"
+
+--tnef-only
+Content-Type: application/ms-tnef; name="winmail.dat"
+Content-Disposition: attachment; filename="winmail.dat"
+Content-Transfer-Encoding: base64
+
+eJ8+IgEAAQaQCAAEAAAAAAABAAEAAQeQBgAIAAAA5AQAAAAAAADoAAEIgAcAGAAAAElQTS5NaWNy
+b3NvZnQgTWFpbC5Ob3RlADEIAQOQBgB4AAAAAQAAAAIBCRABAAAAZwAAAGMAAAB6AAAATFpGdSAc
+EwMDAAoAcmNwZzEyNV4yAPQB9wKkA+RDB0BpFmIFEAKAfQulMiBIFGVsCQAgA1IgT3UidAkAb2su
+CqNHcghcJ2YA4CdkZmUoIGF1BCBLEuE2bApuEmN9FJAA4xo=
+
+--tnef-only--

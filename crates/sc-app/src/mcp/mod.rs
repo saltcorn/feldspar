@@ -266,7 +266,8 @@ fn describe_apps_description() -> String {
          this disk — its `builder_agent`, the coding agent created to build \
          it, the file stores it is connected to, the store folders it serves \
          (`static_dirs`), its upload slots (`uploads`, each with the `route` a \
-         client uploads to) and its Content-Security-Policy (`csp`).\n\n\
+         client uploads to), its Content-Security-Policy (`csp`) and who may use \
+         it at all (`access`: `min_role`, `max_role`, `access_if`).\n\n\
          Call this before `{TOOL_SAVE_QUERY}`: it tells you the application's \
          subdomain, which API a query goes on, and whether the name you have in \
          mind is already taken. For the tables a query's SQL can read, call \
@@ -342,6 +343,8 @@ fn application_json(app: &Application) -> Result<Json> {
             slot
         }).collect::<Vec<_>>(),
         "csp": update::csp_json(&app.csp),
+        // Who may use it at all (TODO F9).
+        "access": update::access_json(app),
         "apis": apis?,
     }))
 }

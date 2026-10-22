@@ -287,6 +287,21 @@ pub fn column_field(column: impl Into<String>) -> Resolver {
     })
 }
 
+/// A secret column (TODO-imap M2): `null` when it holds nothing, the redaction
+/// sentinel when it holds anything — never the value, which no client reads.
+pub fn secret_field(column: impl Into<String>) -> Resolver {
+    let column = column.into();
+    Box::new(move |ctx| {
+        let column = column.clone();
+        FieldFuture::new(async move {
+            let row = parent_row(&ctx)?;
+            Ok(row
+                .get(&column)
+                .map(|v| FieldValue::value(scalar(&sc_catalog::secrets::redacted(v)))))
+        })
+    })
+}
+
 /// An outgoing `Key` whose target this application exposes: the row on the other
 /// side, built from the leaves the parent query already projected.
 pub fn key_field(column: impl Into<String>, target: impl Into<String>) -> Resolver {

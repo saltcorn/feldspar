@@ -295,14 +295,17 @@ fn node_services(
 // The permission set
 // ---------------------------------------------------------------------------
 
+/// The one `sys` item every module is granted: `os.hostname()`.
+const SYS_HOSTNAME: &str = "hostname";
+
 /// One module's [`PermissionsContainer`], built from its row's allow-lists.
 ///
 /// Everything not named is denied, and nothing here is `Some(vec![])` — which in
 /// Deno's vocabulary means *allow all of this kind* and is exactly the mistake
-/// §2 warns against. The one deliberate global is `ignore_env`, whose meaning is
+/// §2 warns against. The deliberate globals are `ignore_env`, whose meaning is
 /// "an unlisted variable is not there" rather than "every variable is
-/// readable"; a listed one is still granted, because an exact match is checked
-/// before the ignore state.
+/// readable" (a listed one is still granted, because an exact match is checked
+/// before the ignore state), and `sys` for the hostname alone.
 ///
 /// A malformed entry cannot reach here — [`ModulePermissions`] checks every one
 /// when the row is read — but Deno parses them again, and if it disagrees the
@@ -316,9 +319,14 @@ fn container(permissions: &ModulePermissions) -> PermissionsContainer {
         allow_read: some_if_any(&permissions.read),
         allow_write: some_if_any(&permissions.write),
         allow_env: some_if_any(&permissions.env),
-        // The node-compatibility concession, and the only one: an unlisted
-        // variable reads as `undefined` instead of throwing.
+        // The node-compatibility concessions. An unlisted variable reads as
+        // `undefined` instead of throwing.
         ignore_env: Some(Vec::new()),
+        // `os.hostname()`, granted to every module and nothing else of `sys`:
+        // npm calls it on the way in (pino, which imapflow loads, does at
+        // require time) and the machine's name is not a secret. The rest —
+        // `networkInterfaces`, `osRelease`, `uid`, `loadavg` … — stays denied.
+        allow_sys: Some(vec![SYS_HOSTNAME.to_owned()]),
         // No prompting: there is no terminal to answer one, and a module host
         // that blocked on a question nobody could see would hang the worker.
         prompt: false,

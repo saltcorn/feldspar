@@ -90,6 +90,7 @@ import Module from "node:module";
 import * as path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format } from "node:util";
+import { Buffer } from "node:buffer";
 
 const require = createRequire(import.meta.url);
 
@@ -211,12 +212,21 @@ const noCaller = (what) =>
  * `trigger` for a run of another trigger — and the pair crosses as one JSON
  * request, because there is one native function rather than one per seam. */
 function ask(surface, plan) {
+  const store = running.getStore();
+  if (!store || !store.asks) {
+    return Promise.reject(
+      new Error(noCaller(surface === "trigger" ? "run_trigger" : "this database call")),
+    );
+  }
+  return askFor(store.call, surface, plan);
+}
+
+/** One host call on behalf of the call `callId`, named rather than read from the
+ * async context — what a **service's** `ctx` asks through (TODO-imap M5), so a
+ * callback a library fires from somewhere no async context reaches (a socket's
+ * `data` event, a timer a dependency set) still asks as the service. */
+function askFor(callId, surface, plan) {
   return new Promise((resolve, reject) => {
-    const store = running.getStore();
-    if (!store || !store.asks) {
-      reject(new Error(noCaller(surface === "trigger" ? "run_trigger" : "this database call")));
-      return;
-    }
     let text;
     try {
       text = JSON.stringify({ surface, plan });
@@ -228,13 +238,18 @@ function ask(surface, plan) {
     nextAsk += 1;
     asks.set(id, { resolve, reject });
     try {
-      askHost(store.call, id, text);
+      askHost(callId, id, text);
     } catch (e) {
       asks.delete(id);
       reject(e);
     }
   });
 }
+
+/** What the shared `db` builder (`sc_expr::DB_PRELUDE`) sends through: here the
+ * token is the call a plan belongs to — a service's own — and the plan is an
+ * ask on the `db` surface of that call. */
+globalThis.__scDbCall = (token, plan) => askFor(token, "db", plan);
 
 // ---------------------------------------------------------------------------
 // The schema snapshot
@@ -747,6 +762,10 @@ const supportedKeys = new Set([
   "streamproviders",
   "maptools",
   "frameworks",
+  // The tables a module declares (TODO-imap M4): data, created by the server.
+  "tables",
+  // The services a module runs in the background (TODO-imap M5).
+  "services",
   // Saltcorn UI (TODO "Saltcorn UI" §6): view patterns, and the scripts and
   // stylesheets a document rendering them wants.
   "viewtemplates",
@@ -1116,6 +1135,291 @@ async function evalMapTools(plugin, configuration) {
     }
   }
   return { tools, issues };
+}
+
+/** This system's `services` key (TODO-imap M5): what a module runs in the
+ * background, for as long as it is loaded.
+ *
+ * ```js
+ * services: {
+ *   sync: {
+ *     description: "Keeps the mailboxes in step",
+ *     start: async (ctx) => { …; return async () => { … } },   // the stop
+ *   },
+ * }
+ * ```
+ *
+ * An object, or a function of the module's configuration returning one. A bare
+ * function is its own `start`. The manifest carries the names and the
+ * descriptions; the functions stay here, and the server starts each service
+ * with a `service_start` call once the module has loaded. */
+async function evalServices(plugin, configuration) {
+  const exported = plugin.services;
+  let raw = {};
+  const issues = [];
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(configuration || {})) || {};
+    } catch (e) {
+      issues.push(`its services could not be built: ${e.message}`);
+      raw = {};
+    }
+  } else if (exported && typeof exported === "object") {
+    raw = exported;
+  }
+  const services = [];
+  const set = {};
+  if (Array.isArray(raw)) {
+    issues.push("its `services` is a list; it should be an object of services by name");
+    return { services, set, issues };
+  }
+  for (const [name, value] of Object.entries(raw)) {
+    const impl = typeof value === "function" ? { start: value } : value;
+    if (!impl || typeof impl.start !== "function") {
+      issues.push(`the service "${name}" has no start function`);
+      continue;
+    }
+    set[name] = impl;
+    services.push({
+      name,
+      description: typeof impl.description === "string" ? impl.description : "",
+    });
+  }
+  return { services, set, issues };
+}
+
+/** The running services on this worker, by `module + NUL + service`.
+ *
+ * Each is one `service_start` call that has not been answered: the record holds
+ * the call's resolve and reject, so stopping it answers that call — which is
+ * how the server learns the service has stopped — and a failure rejects it,
+ * which is how the server learns to restart it. */
+const services = new Map();
+const serviceKey = (module, service) => `${module}\u0000${service}`;
+
+/** Stop one service: abort its signal, call the `stop` its `start` answered,
+ * forget its subscriptions, and answer its call — with `error` when it is being
+ * stopped because it failed. Idempotent: a second stop waits for the first. */
+async function stopService(record, error) {
+  if (!record.stopping) {
+    record.stopping = (async () => {
+      record.controller.abort();
+      let stop = null;
+      try {
+        stop = await record.started;
+      } catch (_) {
+        // `start` threw: there is nothing to stop, and the throw is the
+        // failure the call was already answered with.
+      }
+      if (typeof stop === "function") {
+        try {
+          await running.run(record.context, () => stop());
+        } catch (e) {
+          speak("error")(`the service ${record.service} failed while stopping: ${(e && e.stack) || e}`);
+        }
+      }
+      record.listeners.length = 0;
+      if (services.get(record.key) === record) services.delete(record.key);
+      if (error) record.reject(error);
+      else record.resolve({ stopped: true });
+    })();
+  }
+  await record.stopping;
+}
+
+/** Stop every service of one module — before it is unloaded or reloaded, so a
+ * service never outlives the module object it closes over. */
+async function stopServicesOf(module) {
+  const stopping = [];
+  for (const record of services.values()) {
+    if (record.module === module) stopping.push(stopService(record, null));
+  }
+  await Promise.all(stopping);
+}
+
+/** The `ctx` a service's `start` is called with.
+ *
+ * Every ask names the service's own call (`askFor`), so it is served by the
+ * supervisor that is awaiting that call, under the module's authority and over
+ * the module's own tables only — whatever async context a library's callback
+ * happens to run in. */
+function serviceContext(record, configuration) {
+  const callId = record.context.call;
+  const ctx = {
+    module: record.module,
+    service: record.service,
+    configuration: configuration || {},
+    /** Aborted when the service is being stopped. */
+    signal: record.controller.signal,
+    /** The tables this module declared, as a code body's `db` — the same
+     * chain (`ctx.db.mail_messages.where({ … }).rows()`), over this service's
+     * call. A table the module did not declare is refused by the server. */
+    db: globalThis.__scMakeDb(callId),
+    /** The module's own file areas (TODO-imap M6): `write`, `read`, `remove`,
+     * `stat`, in the stores and folders its declared file fields name. */
+    files: moduleFiles((plan) => askFor(callId, "module_files", plan)),
+    /** Run another trigger, as `trigger.run(name, payload)` does in a body. */
+    runTrigger: (trigger, payload) =>
+      askFor(callId, "trigger", {
+        trigger,
+        payload: payload === undefined ? {} : payload,
+      }),
+    /** Call `callback({ table, op, row, old, own })` after every committed
+     * write to one of this module's tables. `own` is true when this module
+     * made the write. Answers once the subscription is in place. */
+    onTableChange: async (table, callback) => {
+      if (typeof callback !== "function") {
+        throw new Error("onTableChange(table, callback): the callback is a function");
+      }
+      await askFor(callId, "service", { subscribe: table });
+      record.listeners.push({ table, callback });
+    },
+    /** Report that the service cannot go on: it is stopped (its `stop` is
+     * called) and then restarted by the server, with backoff. */
+    fail: (error) => {
+      const e = error instanceof Error ? error : new Error(String(error));
+      stopService(record, e);
+    },
+  };
+  // Tagged with the module by name rather than through the async context, for
+  // `askFor`'s reason: a library's callback may run outside it.
+  const line = (level) => (...args) => {
+    try {
+      log(level, record.module, format(...args));
+    } catch (_) {
+      // As `speak`: a log line must not become the service's failure.
+    }
+  };
+  ctx.log = Object.assign(line("info"), {
+    info: line("info"),
+    warn: line("warning"),
+    error: line("error"),
+    debug: line("verbose"),
+  });
+  return ctx;
+}
+
+/** `service_start`: run one service until it stops. The call this answers is
+ * the service's whole life — see `stopService`. */
+async function startService({ module: name, service: serviceName }) {
+  const entry = loaded.get(name);
+  if (!entry) throw new Error(`the module ${name} is not loaded in this host`);
+  const impl = entry.services && entry.services[serviceName];
+  if (!impl) throw new Error(`the module ${name} has no service ${serviceName}`);
+  const key = serviceKey(name, serviceName);
+  const previous = services.get(key);
+  if (previous) {
+    // The server runs one of each, so this is a start that crossed a stop:
+    // the old one goes first.
+    await stopService(previous, null);
+  }
+  const context = running.getStore();
+  return await new Promise((resolve, reject) => {
+    const record = {
+      key,
+      module: name,
+      service: serviceName,
+      context,
+      listeners: [],
+      controller: new AbortController(),
+      resolve,
+      reject,
+      stopping: null,
+      started: null,
+    };
+    services.set(key, record);
+    const ctx = serviceContext(record, entry.configuration);
+    record.started = Promise.resolve().then(() => impl.start(ctx));
+    record.started.then(
+      () => {},
+      (e) => {
+        if (services.get(key) === record && !record.stopping) {
+          services.delete(key);
+          record.listeners.length = 0;
+          reject(e);
+        }
+      },
+    );
+  });
+}
+
+/** `service_stop`. */
+async function stopServiceOp({ module: name, service: serviceName }) {
+  const record = services.get(serviceKey(name, serviceName));
+  if (!record) return { stopped: false };
+  await stopService(record, null);
+  return { stopped: true };
+}
+
+/** `service_event`: one committed write, to the callbacks a service registered
+ * for its table. Each runs in the service's own async context, so a v1 `Table`
+ * inside it asks as the service; a callback's failure is logged under the
+ * module's name and does not stop the service. */
+function serviceEvent({ module: name, service: serviceName, event }) {
+  const record = services.get(serviceKey(name, serviceName));
+  if (!record || record.stopping || !event) return { delivered: 0 };
+  let delivered = 0;
+  for (const { table, callback } of record.listeners) {
+    if (table !== event.table) continue;
+    delivered += 1;
+    running.run(record.context, () => {
+      Promise.resolve()
+        .then(() => callback(event))
+        .catch((e) => {
+          speak("error")(
+            `the service ${serviceName}'s onTableChange(${table}) callback failed: ${(e && e.stack) || e}`,
+          );
+        });
+    });
+  }
+  return { delivered };
+}
+
+/** This system's `tables` key (TODO-imap M4): the tables a module keeps its
+ * state in, declared as data and created by the server when the module loads.
+ *
+ * ```js
+ * tables: [{
+ *   name: "mail_folders",
+ *   fields: [{ name: "account", references: "mail_accounts", required: true },
+ *            { name: "path", type: "text", required: true }],
+ *   unique: [["account", "path"]],
+ *   ownership: "accountⱵowner === user.id",
+ * }]
+ * ```
+ *
+ * A list, or a function of the module's configuration returning one. Each
+ * declaration is passed on as JSON and checked by the server
+ * (`sc_module::tables`); one that is not plain data is reported and skipped. */
+async function evalTables(plugin, configuration) {
+  const exported = plugin.tables;
+  let raw = [];
+  const issues = [];
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(configuration || {})) || [];
+    } catch (e) {
+      issues.push(`its tables could not be built: ${e.message}`);
+      raw = [];
+    }
+  } else if (exported) {
+    raw = exported;
+  }
+  if (!Array.isArray(raw)) {
+    issues.push("its `tables` is not a list of table declarations");
+    return { tables: [], issues };
+  }
+  const tables = [];
+  for (const value of raw) {
+    const name = value && typeof value === "object" ? value.name : value;
+    try {
+      if (!value || typeof value !== "object") throw new Error("it is not an object");
+      tables.push(JSON.parse(JSON.stringify(value)));
+    } catch (e) {
+      issues.push(`its table "${name}" is not plain data: ${e.message}`);
+    }
+  }
+  return { tables, issues };
 }
 
 /** The loaded stream provider, or a sentence naming what is missing. */
@@ -1726,6 +2030,9 @@ async function evalFunctions(plugin, configuration) {
 
 /** Load (or reload) one module, and report what it supplies. */
 async function loadModule({ module: name, dir, configuration }) {
+  // A reload replaces the module object a running service closes over, so the
+  // service is stopped first (TODO-imap M5); the server starts it again.
+  await stopServicesOf(name);
   // The library has to be there before the plugin's first line runs: that line
   // is `require("@saltcorn/markup/tags")`, and `require` cannot wait.
   await ensureViewRuntime();
@@ -1795,11 +2102,25 @@ async function loadModule({ module: name, dir, configuration }) {
     } catch (e) {
       issues.push(`the action "${actionName}" could not declare its settings: ${e.message}`);
     }
+    // `payload` and `returns`: what a direct run takes and answers, in a code
+    // query's `returns` type language. Data, so they are passed as they are and
+    // checked by the server; anything that is not JSON is dropped here.
+    const declared = (value) => {
+      if (value === undefined || value === null) return undefined;
+      try {
+        return JSON.parse(JSON.stringify(value));
+      } catch (e) {
+        issues.push(`the action "${actionName}" declares a type that is not JSON: ${e.message}`);
+        return undefined;
+      }
+    };
     actions.push({
       name: actionName,
       description: impl.description || "",
       requireRow: !!impl.requireRow,
       configFields,
+      payload: declared(impl.payload),
+      returns: declared(impl.returns),
     });
   }
 
@@ -1839,6 +2160,16 @@ async function loadModule({ module: name, dir, configuration }) {
   const { tools: mapTools, issues: mapToolIssues } = await evalMapTools(plugin, configuration);
   issues.push(...mapToolIssues);
 
+  const { tables, issues: tableIssues } = await evalTables(plugin, configuration);
+  issues.push(...tableIssues);
+
+  const {
+    services: serviceList,
+    set: serviceSet,
+    issues: serviceIssues,
+  } = await evalServices(plugin, configuration);
+  issues.push(...serviceIssues);
+
   const {
     frameworks,
     set: frameworkSet,
@@ -1870,6 +2201,7 @@ async function loadModule({ module: name, dir, configuration }) {
     streamProviders: streamProviderSet,
     frameworks: frameworkSet,
     viewtemplates: viewPatternSet,
+    services: serviceSet,
     configuration: configuration || {},
   });
   // The registry may hold this module's previous patterns: rebuild it on the
@@ -1886,6 +2218,8 @@ async function loadModule({ module: name, dir, configuration }) {
     model_providers: modelProviders,
     stream_providers: streamProviders,
     map_tools: mapTools,
+    tables,
+    services: serviceList,
     frameworks,
     view_patterns: viewPatterns,
     headers,
@@ -1893,6 +2227,175 @@ async function loadModule({ module: name, dir, configuration }) {
     unsupported,
     issues,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The module's own files (TODO-imap M6)
+// ---------------------------------------------------------------------------
+
+/** How many bytes one ask carries when a module writes or reads a file. The
+ * seam is JSON, so they travel base64: a megabyte is a 1.4 MB string, and a
+ * 20 MB attachment twenty of them rather than one 27 MB string. */
+const FILE_CHUNK = 1024 * 1024;
+
+/** One piece of what `write` was given, as bytes — without a copy when it
+ * already is bytes. */
+function bytesOf(piece) {
+  if (typeof piece === "string") return Buffer.from(piece, "utf8");
+  if (piece instanceof Uint8Array) return piece;
+  if (piece instanceof ArrayBuffer) return new Uint8Array(piece);
+  if (ArrayBuffer.isView(piece)) return new Uint8Array(piece.buffer, piece.byteOffset, piece.byteLength);
+  throw new TypeError(
+    `files.write takes a string, bytes (a Buffer, a Uint8Array, an ArrayBuffer) or a stream of them, not ${
+      piece === null ? "null" : typeof piece
+    }`,
+  );
+}
+
+/** What `write` was given, as pieces of at most `FILE_CHUNK` bytes: a value is
+ * sliced (`subarray`, no copy), and a stream — anything async-iterable, which a
+ * Node `Readable` and a web `ReadableStream` both are — is gathered into pieces
+ * of that size, so a stream of 64 kB chunks is not one ask per chunk. */
+async function* piecesOf(data) {
+  const isStream =
+    data !== null &&
+    typeof data === "object" &&
+    !ArrayBuffer.isView(data) &&
+    !(data instanceof ArrayBuffer) &&
+    (typeof data[Symbol.asyncIterator] === "function" || typeof data[Symbol.iterator] === "function");
+  if (!isStream) {
+    const bytes = bytesOf(data);
+    for (let at = 0; at < bytes.length; at += FILE_CHUNK) yield bytes.subarray(at, at + FILE_CHUNK);
+    return;
+  }
+  let held = [];
+  let size = 0;
+  for await (const chunk of data) {
+    let bytes = bytesOf(chunk);
+    while (size + bytes.length >= FILE_CHUNK) {
+      const take = FILE_CHUNK - size;
+      held.push(bytes.subarray(0, take));
+      yield Buffer.concat(held, FILE_CHUNK);
+      held = [];
+      size = 0;
+      bytes = bytes.subarray(take);
+    }
+    if (bytes.length > 0) {
+      held.push(bytes);
+      size += bytes.length;
+    }
+  }
+  if (size > 0) yield Buffer.concat(held, size);
+}
+
+/** A store-relative path as the server normalises it — what `write` answers,
+ * and what a File field holds. */
+const storePath = (path) =>
+  String(path)
+    .split("/")
+    .filter((s) => s !== "" && s !== ".")
+    .join("/");
+
+/** `ctx.files` of a service and `files` of an action: the module's own file
+ * areas — the stores and folders its declared file fields name — over `send`,
+ * one ask on the `module_files` surface. Paths are store-relative and must lie
+ * in such a folder; the server refuses any other.
+ *
+ *   const path = await files.write("mail_files", `attachments/${id}/a.pdf`,
+ *                                  stream, { contentType: "application/pdf" });
+ *   const bytes = await files.read("mail_files", path);
+ *   await files.remove("mail_files", path);
+ */
+function moduleFiles(send) {
+  const base64 = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+  return {
+    /** Store `data` — a string, bytes, or a stream of either — at `path`,
+     * replacing what is there, and answer the path. A file larger than one
+     * piece is written to a temporary name beside it and renamed into place,
+     * so a reader never sees half of it. */
+    async write(store, path, data, options = {}) {
+      const { contentType, filename } = options || {};
+      const target = storePath(path);
+      const labels = {};
+      if (contentType != null) labels.contentType = String(contentType);
+      if (filename != null) labels.filename = String(filename);
+      const pieces = piecesOf(data)[Symbol.asyncIterator]();
+      const first = await pieces.next();
+      const second = first.done ? first : await pieces.next();
+      if (second.done) {
+        await send({
+          op: "write",
+          store,
+          path: target,
+          base64: first.done ? "" : base64(first.value),
+          overwrite: true,
+          ...labels,
+        });
+        return target;
+      }
+      const temp = `${target}.part-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        await send({ op: "write", store, path: temp, base64: base64(first.value), overwrite: true });
+        await send({ op: "append", store, path: temp, base64: base64(second.value) });
+        for (let next = await pieces.next(); !next.done; next = await pieces.next()) {
+          await send({ op: "append", store, path: temp, base64: base64(next.value) });
+        }
+        await send({ op: "rename", store, path: temp, toPath: target, overwrite: true, ...labels });
+      } catch (e) {
+        try {
+          await send({ op: "delete", store, path: temp });
+        } catch (_) {
+          // The failure that matters is the write's.
+        }
+        throw e;
+      }
+      return target;
+    },
+    /** The file's bytes, as a `Buffer` — or a string, with `{ encoding:
+     * "utf8" }`. Read in pieces, so any size the heap can hold is readable. */
+    async read(store, path, options = {}) {
+      const target = storePath(path);
+      const stat = await send({ op: "stat", store, path: target });
+      if (!stat) throw new Error(`${JSON.stringify(target)} does not exist in file store ${store}`);
+      if (stat.isDirectory) throw new Error(`${JSON.stringify(target)} in file store ${store} is a directory`);
+      const parts = [];
+      let got = 0;
+      for (let offset = 0; offset < stat.size; ) {
+        const answer = await send({ op: "read", store, path: target, offset, length: 4 * FILE_CHUNK });
+        const bytes = Buffer.from(answer.base64, "base64");
+        if (bytes.length === 0) break;
+        parts.push(bytes);
+        got += bytes.length;
+        offset += bytes.length;
+      }
+      const all = Buffer.concat(parts, got);
+      const encoding = options && options.encoding;
+      return encoding ? all.toString(encoding) : all;
+    },
+    /** Delete the file; answers whether there was one. */
+    remove(store, path) {
+      return send({ op: "delete", store, path: storePath(path) });
+    },
+    /** `{ size, modified, … }`, or `null` when nothing is there. */
+    stat(store, path) {
+      return send({ op: "stat", store, path: storePath(path) });
+    },
+  };
+}
+
+/** `callerFiles` of an action (TODO-imap M9.3): the application's file stores,
+ * **read** as the action's caller — the code body's `fs(…).asUser()`, over the
+ * call's own `files` surface. A module that sends a user's file somewhere (the
+ * mail module's `mail_send` attaching one) reads it this way, so the store's
+ * and the path's rules decide, and a file the caller could not download is
+ * one the module cannot read for them. Read and stat only: a module writes to
+ * its own area (`files`) and nowhere else.
+ *
+ *   const bytes = await callerFiles.read("uploads", "quotes/q-17.pdf");
+ */
+function callerFiles(send) {
+  const own = moduleFiles((plan) => send({ ...plan, authority: "user" }));
+  return { read: own.read, stat: own.stat };
 }
 
 /** Run one action of one module, with v1's argument object. */
@@ -1904,7 +2407,16 @@ async function runAction({ module: name, action: actionName, args }) {
   const impl = typeof action === "function" ? { run: action } : action;
   if (typeof impl.run !== "function")
     throw new Error(`the action ${actionName} of module ${name} has no run function`);
-  const result = await impl.run(args || {});
+  const argument = args || {};
+  // The module's own files (TODO-imap M6), asked as this call — captured here
+  // rather than read from the async context, for `askFor`'s reason.
+  const store = running.getStore();
+  if (store && store.asks) {
+    const callId = store.call;
+    argument.files = moduleFiles((plan) => askFor(callId, "module_files", plan));
+    argument.callerFiles = callerFiles((plan) => askFor(callId, "files", plan));
+  }
+  const result = await impl.run(argument);
   return result === undefined ? null : result;
 }
 
@@ -3860,6 +4372,7 @@ async function handle(request) {
       return await pending;
     }
     case "unload":
+      await stopServicesOf(request.module);
       loaded.delete(request.module);
       loading.delete(request.module);
       installedPatternsGeneration = null;
@@ -3934,6 +4447,15 @@ async function handle(request) {
       if (pending) await pending;
       return await callTargetOperation(request);
     }
+    case "service_start": {
+      const pending = loading.get(request.module);
+      if (pending) await pending;
+      return await startService(request);
+    }
+    case "service_stop":
+      return await stopServiceOp(request);
+    case "service_event":
+      return serviceEvent(request);
     // Saltcorn UI's view runtime (TODO "Saltcorn UI" §3). No module to wait
     // on: the runtime is not a module in `loaded`, and imports itself.
     case "view_patterns":

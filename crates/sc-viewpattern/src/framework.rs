@@ -374,6 +374,17 @@ impl Framework for SaltcornUiFramework {
         if let ["auth", action] = segments.as_slice() {
             return self.auth(&req, cat, action).await;
         }
+        // A caller the application does not let in (TODO F9) reaches the sign-in
+        // forms above and the assets they are drawn with, and nothing else:
+        // a page, a view, a post and a store file all go to the sign-in.
+        if !req.admitted
+            && !matches!(
+                segments.as_slice(),
+                ["static_assets", ..] | ["plugins", "public", ..]
+            )
+        {
+            return Ok(self.not_admitted(&req));
+        }
         match req.method {
             Method::Get => {}
             // What v1's `routes/view.ts` and `routes/delete.ts` answer. The CSRF
@@ -1260,6 +1271,23 @@ impl SaltcornUiFramework {
                 &t!(req.locale, "Your role may not see {what}.", what = what),
             ),
         })
+    }
+
+    /// The answer to a caller the application does not let in at all: sent to
+    /// sign in (as somebody who may use it) when navigating, otherwise a 401.
+    fn not_admitted(&self, req: &AppRequest) -> AppResponse {
+        if matches!(req.method, Method::Get) && !is_xhr(req) {
+            return AppResponse::redirect(login_location(req));
+        }
+        self.message(
+            req,
+            401,
+            &t!(req.locale, "Please sign in"),
+            &t!(
+                req.locale,
+                "You need to sign in with an account that may use this application."
+            ),
+        )
     }
 
     /// A short document: a heading and a sentence.

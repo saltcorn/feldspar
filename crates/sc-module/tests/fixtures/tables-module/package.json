@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/tables",
+  "version": "0.1.0",
+  "description": "A module that declares tables, for the declared-tables tests (TODO-imap M4).",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

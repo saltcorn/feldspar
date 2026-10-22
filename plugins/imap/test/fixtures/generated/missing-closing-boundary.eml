@@ -1,0 +1,22 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Truncated
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="open-ended"
+
+This is a multi-part message in MIME format.
+--open-ended
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+First part.
+
+--open-ended
+Content-Type: application/pdf; name="doc.pdf"
+Content-Disposition: attachment; filename="doc.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+

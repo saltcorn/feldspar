@@ -33,6 +33,756 @@ to the server and failed offline.
   its real key at once). `bundled_react_native.rs` and a scaffold unit test check the "…" in
   the generated screens.
 
+## Typed `api.run<Name>()` methods: actions declare their payload and answer
+
+An exposed trigger's client method used to take and answer `unknown`. An action can now declare
+what a direct run takes (`payload`) and answers (`returns`), in the type language a code query's
+`returns` already uses. The generated method is typed from that, for example
+`runMailTestAccount(body?: { account_id?: number | null; … } & Record<string, unknown>):
+Promise<{ imap: boolean; smtp?: boolean | null; error?: string | null }>`.
+
+- `sc-action`: `Action::payload_type` and `Action::returns_type`, both defaulting to `None`
+  (untyped). They return the raw declaration, because the type language lives in `sc-api`.
+- `sc-api`: `rest::action_types` with `ActionTypes` and `action_types(&dyn Action)`. It lowers both
+  through `parse_returns`; a payload must be an `{ object: … }`, and an error names the
+  declaration and where it is wrong. `RestProvider::with_trigger_types` types the exposed
+  triggers' endpoints. The payload becomes the input as an open object (`open_args`, so a caller
+  may send more), and `returns` becomes the output. Nothing is checked at run time.
+  `describe_action` now includes `payload` and `returns` when declared.
+- `sc-app`: `app_providers_with` looks each exposed trigger's action up in the dispatcher's
+  registry and applies its types. A declaration that does not lower leaves that method untyped
+  and does not fail the mount.
+- `sc-module`: an action object's `payload` and `returns` are passed through by the JS host
+  (`ActionManifest`) and held by `ModuleAction` (`with_types`). One that does not lower is
+  reported as a module issue and dropped, and the action still runs. Python modules
+  (`PyModuleAction`) do not read declarations yet.
+- `plugins/imap`: all ten mail actions declare their payload and answer, read from what
+  `actions.js` takes and returns.
+- Docs: `tutorial-modules.md` Step 4, "Typing an action an application calls".
+- Tests: `sc-api` unit tests (lowering and the error wording; a typed trigger's generated
+  TypeScript method beside an untyped one). `sc-module`: the echo fixture's `echo_row` declares
+  both and they reach the registry, while an undeclared action stays untyped. The mail module's
+  ten declarations all lower (evaluated with node).
+
+## Agents can expose triggers on an application: `update_application`'s `triggers` section and `feldspar app triggers`
+
+Before, only the admin form's tick box could expose a trigger, so an agent could create a
+`none` trigger over a module action (`mail_test_account`, `mail_send`, …) but could not make it
+`api.run<Name>()` in its app. Now it can, without anyone using the admin UI.
+
+- `sc-app`: new `exposed_triggers` module. `change_app_triggers` applies `add`/`remove`/`set` to
+  `Application::triggers`. It refuses, naming the trigger and changing nothing, when a newly
+  exposed trigger is missing or not usable (the live set's own reason), has an event other than
+  `none` ("it runs on `daily`…"), or would clash with another exposed trigger's client method. It
+  also refuses a `remove` of a trigger the app does not expose. A trigger that is already exposed
+  is kept as it is, so one deleted since can still be removed. `app_triggers_json` reports each
+  exposed trigger's `name`, `action`, `min_role`, `method` (`runMailSend`) and `route`
+  (`POST /api/actions/mail_send`), with a `note` when `min_role` is unset (admin-only) or the
+  trigger is not callable. `public_triggers` picks out the newly exposed ones with `min_role` 100.
+- MCP `update_application`: a `triggers` section (`add`, `remove`, `set`), saved together with the
+  other sections through the admin's `updateApplication`, which also remounts the app and rewrites
+  `src/feldspar/` at once. The section needs `allow_edit`, the same grant as `tables` and
+  `streams`. Exposing a public trigger (`min_role` 100) also needs `allow_access_changes`. The
+  answer includes `triggers` as above and `was.triggers`. The tool description explains the
+  section and lists what the token's grants refuse.
+- CLI: `feldspar app triggers (add|remove|list) --app SUBDOMAIN [NAME…] [--json]`. It installs the
+  services as `restore` does, so triggers over module actions are in the live set. It applies the
+  same rule, saves, and rewrites the client. A running server serves the change from its next
+  start. The help text and usage line include it.
+- Docs: the generated `SKILL.md` and the external-agent playbook (`sc-server` MCP instructions) now
+  say that a trigger must be exposed with `update_application` before the client has `run…`.
+  Also: `tutorial-mail.md` Step 10 (the agent and CLI routes) and OPERATIONS §7.3.
+- Not done: `save_trigger`'s `applications` shortcut (proposal 3) and typed answers for module
+  actions. The generated `run…` method is still typed `unknown → unknown`.
+- Tests: `sc-app` unit tests (method, route and role in the answer, the admin-only note,
+  missing/`daily`/`insert` refused by name, the public set, the method clash, removing a deleted
+  trigger, `set`). A `sc-server` MCP test covers the full loop: `save_trigger`, then expose two;
+  stored, mounted, `runLogVisit` in the client, in `describe_applications`; an event trigger and
+  a missing one refused; a public one refused without `allow_access_changes` and accepted with
+  it; removing one takes it out of the mount and the client. Plus a `sc-cli` parse test.
+
+## MCP tokens: `allow_all`, stored on the token, and `--allow-all`
+
+A token can now hold every grant, including grants a later version adds, so scripts and launchers
+that mint tokens for agents (such as feldspar-hosted's `feldspar-claude`) no longer have to name
+each grant and no longer under-grant when one is added. Mints already defaulted every grant on;
+this adds the "and future ones" part.
+
+- `sc-api::mcp`: new `ALLOW_ALL` key (`"allow_all"`), stored in the token's `grants` beside the
+  seven explicit flags. `token_flags_from_submitted` always writes it (false unless asked for);
+  `validate_token_flags` accepts it on a mint; `token_flags` reads a stored row so that, with
+  `allow_all` on, a flag the row does not mention is granted. A flag stored `false` stays denied.
+  An `admin_copilot` agent's configuration does not take the key. The admin API's token-grants
+  schema has the field, and `client.ts` is regenerated.
+- `sc-server`: the MCP route reads a token through `token_flags` before building its tool set;
+  `createApiToken` validates with `validate_token_flags`.
+- `sc-cli`: `feldspar mcp-token create --allow-all` (combine with `--no-allow-…`, e.g.
+  `--allow-all --no-allow-drop`). `describe_grants` lists `allow_all` first. The help text no
+  longer says drop and access changes default off.
+- Admin panel (Settings → Development): an **All grants** switch above the seven boxes (off on a
+  fresh form; the boxes still start ticked), sent as `allow_all`; the token list shows an "all"
+  badge, and `grantedKeys` counts a flag the row lacks as held when `allow_all` is on.
+- Docs: OPERATIONS §7.2 (the switch, the `--allow-all` row and a launcher example) and §7.7, and
+  the token paragraph in TECHNICAL_DESIGN.
+- Tests: `sc-api` unit test for a row missing a flag under `allow_all`, CLI parse/describe test,
+  admin API test minting with `allow_all` and refusing a non-boolean one, and panel model tests.
+
+## F9: who may use an application — `min_role`, `max_role`, `access_if`
+
+Every application gets three settings that sit in front of every other rule it has.
+
+- **`min_role`**: a user whose role number is higher may not use the application at all. Their
+  sign-in is refused before a session exists, and a session started elsewhere (a shared cookie)
+  is refused every request. Anonymous callers hold role 100, so they are refused too, except for
+  the sign-in itself.
+- **`max_role`**: a caller who is let in holds at most this role. The cap is applied to the
+  `User` before anything sees it, so endpoint floors, ownership formulas, RLS, code queries and
+  the live socket all see the capped role. An admin on an app with `max_role` 20 gets `role: 20`
+  from `whoami` and a 403 from an admin-only table.
+- **`access_if`**: a formula in the ownership-formula language, with `user` in scope (`null`
+  when nobody is signed in) and no row, such as `user.department === "Finance"` or a condition on
+  `new Date()`. It sees the user's real role. It fails closed (no evaluator, a throw or a timeout
+  refuses). On save it is validated against the users table's fields; a bare identifier, a
+  module function and `predict` are refused.
+
+How it is wired:
+
+- `sc-app`: the fields on `Application`, three nullable `_fd_applications` columns (NULL reads
+  as 100 / 1 / none; `TABLES_RENAME.sql` has the `ALTER TABLE`s), and a new `access` module with
+  `admit`, `cap_role` and `validate_access`, called from `save_application`. A `max_role` less
+  privileged than `min_role` is allowed: only staff get in, and all of them are served as that
+  role.
+- `sc-server`: `router::app_caller` now takes the application, applies the settings and
+  returns an `AppCaller { session, user, refused }`. Every application surface goes through it.
+  - API providers: a refused caller reaches only the sign-in endpoints
+    (`sc_api::SIGN_IN_ENDPOINTS`, through the new `ApiProvider::is_sign_in`), as nobody. They
+    are matched by name, not by `AuthRequirement::Public`, because tables with an ownership
+    formula and GraphQL are `Public` too.
+  - Frameworks: the bundle is served as nobody with the new `AppRequest::admitted = false`.
+    Saltcorn UI then serves only `/auth/*` and its assets, and sends everything else to sign in.
+  - Static directories: served as nobody, so only files open to the public role.
+  - Upload slots and the live socket refuse the caller. The socket's periodic re-check applies
+    the settings again and closes it with `signed_out` when they stop holding.
+  - The Analytics API: only its sign-in endpoints.
+  - `apply_session` refuses `SessionAction::Start` for an account the application refuses
+    (`SessionClient::for_app`). This covers the REST login, Saltcorn UI's form and the OAuth
+    completion; the OAuth completion checks first so it can redirect back with a reason.
+  - An application with none of the settings skips all of this.
+- Admin API: `min_role`, `max_role` and `access_if` on the application schema, create, update,
+  list, and therefore backup and restore. The four checked-in admin clients were regenerated;
+  the builder, IDE and analytics clients also picked up module-type drift that was already
+  there.
+- Admin UI: a "Who may use this application" section on the application form, with two role
+  selects and the formula.
+- MCP: `describe_applications` shows `access`, and `update_application` has an `access` section
+  that needs `allow_access_changes`, as `csp` does.
+- Tests: `sc-app` unit tests (admission, cap, fail-closed, ranges, the MCP section keeping keys
+  it was not given), and `sc-server/tests/app_access.rs`. The server test covers a sign-in
+  refused with no session started, a session from elsewhere refused, an anonymous caller
+  refused a role-100 table but reaching the login, an admin capped to 20, `access_if` on a
+  department column, and save-time refusal of an out-of-scope formula.
+  `saltcorn_ui_render.rs` checks that once `access_if` refuses everybody, a signed-in admin is
+  sent to sign in, the form is still served, and the sign-in is refused with a 403 and no
+  session.
+
+## Mail module M10.1–M10.2: the client tutorial, the catalog, and the live-server matrix
+
+- **M10.1** [docs/tutorial-mail.md](docs/tutorial-mail.md) gets two steps.
+  - **Step 9 (use case C):** "your order has shipped" from `orders@`, through that account's own
+    SMTP server. It is a plain `send_email` trigger on `orders` whose SMTP override settings
+    follow `messageⱵaccountⱵ…`. The password is a Secret at the end of a two-key join, which a
+    `{{ }}` template may open. It notes what `send_email` does not do that `mail_send` does
+    (the Sent copy and threading).
+  - **Step 10 (use cases B and D):** a mail client on the tables. It covers exposing the four
+    tables, two `table_changes` streams and one trigger per action.
+    - `Folder.tsx`: `useLiveRows` on `mail_messages`, bounded to 30 days, because a live read
+      reads everything its filter matches.
+    - `mailHtml.ts` and `Message.tsx`: `body_html` in an iframe `sandbox` with
+      `allow-same-origin` and never `allow-scripts`. A Content-Security-Policy `<meta>` is the
+      frame's first element and allows only `'self'` and `data:` images until "Show images".
+      A `DOMParser` rewrite drops scripts, frames, `<base>`, `<meta>`, `<link>`, `on…`
+      attributes and `javascript:` links, sets remote `src`/`srcset`/`background` aside and
+      counts them, and rewrites `cid:` to `/api/mail_attachments/{id}/file`, after
+      `mail_attachment` has stored a mirror's file.
+    - The page fetches a `headers` body when a message is opened, and marks the message read.
+    - `Reply.tsx`: `mail_send` with `in_reply_to`. Attachments and drafts are explained in text.
+  - `plugins/imap/test/tutorial-client.test.mjs` takes `mailHtml.ts` out of the tutorial and runs
+    it under jsdom: scripts, handlers, refresh/base/link, frames, tracking pixels,
+    protocol-relative and `srcset` images, `cid:` (case and URL-encoding), `data:` kept, links,
+    "Show images", and broken markup. It also checks that the TSX blocks are valid syntax. jsdom
+    and typescript come from `ui/builder`'s dependencies; without them the test is skipped. It
+    found that `<body onload>` survived the first version, which only walked the body's
+    descendants.
+  - **The catalog.** The module was already on the Modules tab (M7.1). README.md,
+    tutorial-modules Step 0 and `plugins/README.md` now name it. `bundled_catalog` gets
+    `every_bundled_module_has_its_row_in_the_plugins_readme`.
+- **M10.2** `plugins/imap/test/live-matrix.mjs` is the manual live-server matrix. It takes a JSON
+  file of accounts and runs the module's own `AccountRunner` and actions, in mirror mode over
+  the in-memory host, against each account. The steps:
+  - login (`mail_test_account`) and sync to `idle`;
+  - `mail_send` to itself, and the mail arriving as a row by IDLE alone (timed);
+  - exactly one copy in Sent on the server, which tells whether `save_sent`'s Gmail/Microsoft 365
+    default is right for that server;
+  - a `\Flagged` set on the server reaching the row by itself (timed), and `mail_set_flags`
+    reaching the server;
+  - the test mail deleted for good (`--keep` keeps it).
+
+  It prints one Markdown row per account for TODO-imap.md's results table. Errors go through
+  `connect.redact`, and an entry may carry `configuration` (trusted servers, CA) for an
+  on-premises Exchange. `test/live-matrix.test.mjs` runs it against the test Dovecot (new user
+  `live`) and the SMTP sink on ports of its own, playing the MTA by APPENDing what the sink got.
+  It checks every check passing, mail within 5 s, the cleanup, a failed login stopping at login,
+  and no password in any output. The local row is recorded. **The real servers are not run
+  yet**: they need accounts, and their rows say "not run yet".
+- `npm test` in `plugins/imap` now runs its files one at a time (`--test-concurrency=1`, about
+  1.5 minutes). Every Dovecot test shares one server, and `ingest.test.mjs`'s reconnect test
+  restarts it. With two more files, Node's default of three files at once put that restart in
+  the middle of `mirror.test.mjs`, and five of its tests failed with ECONNREFUSED.
+
+## Mail module M9: mirror mode and sending
+
+The bundled mail module now does use cases B and D of TODO-imap.md: each user's own accounts kept
+as a two-way **mirror** of every folder, for a mail client built on the tables, and sending from
+an account with a copy in Sent. New sections in [docs/tutorial-mail.md](docs/tutorial-mail.md)
+(Steps 6–8).
+
+- **M9.1** Mirror sync (`plugins/imap/sync.js`, `account.js`).
+  - Every selectable folder is synced. INBOX by IDLE; the others on a 5-minute poll that lists
+    the folders again (new ones synced, vanished ones deleted with their mail) and opens only
+    those whose STATUS (UIDNEXT, count, HIGHESTMODSEQ) changed.
+  - **Newest first:** a folder's first sync stores its newest 50, sets `last_uid` to the top and
+    the new `mail_folders.backfill_uid` below them. A backfill timer then stores 50 older messages
+    every 15 s (200 a minute), INBOX first and Junk and Trash last, until `backfill_uid` is 0.
+  - **`body_days`:** mail received before it is stored from its headers and BODYSTRUCTURE alone
+    (`parse-large.js` `parseHeaders`, `body_state = "headers"`, attachments listed). Attachment
+    files are stored when first opened, not on import.
+  - Expunges, vanished folders and UIDVALIDITY changes **delete** rows, their attachment rows and
+    stored files. A row the application's own data refers to is kept with `uid` cleared.
+  - The runner queues each folder's sync, each backfill batch and each action separately on the
+    account's one connection, so an action waits for one folder, not a whole pass.
+  - The service runs mirror accounts (they were `unsupported`); any other mode is `refused`.
+  - Both modes: when a folder has nothing new, `last_uid` moves up to UIDNEXT−1, so a deleted top
+    message is not searched for on every pass.
+- **M9.2** Actions (`actions.js`): `mail_fetch_body` (a headers-only message fetched whole, its
+  attachment rows rebuilt, keeping stored files), `mail_move` (by path or `role:<role>`, both
+  modes), `mail_delete` (to Trash, or `\Deleted` + UID EXPUNGE when `permanent` or already in
+  Trash), `mail_create_folder` (optionally inside a `parent`), and `mail_save_draft` (APPEND to
+  Drafts with `\Draft`, `replaces` deletes the earlier draft). Missing Trash, Drafts or Sent
+  folders are created when needed. Rows are written inside the queued IMAP work, so the service
+  never imports an action's result twice. The delete, folder, draft and fetch actions refuse
+  ingest accounts.
+- **M9.3** `mail_send` (§5.7): nodemailer through the account's SMTP server under `connect.js`'s
+  rules. From `display_name <email>`, a Message-ID on the account's domain, `In-Reply-To` and
+  `References` from the message answered (which gets `\Answered`), at most 50 recipients and
+  10 attachments / 20 MB. Attachments are `{ store, path }` application files read **as the
+  caller**, or `{ attachment_id }` to forward. The Sent copy keeps the Bcc and is stored as a
+  row; it is skipped for Gmail and Microsoft 365 unless the new `mail_accounts.save_sent` says
+  otherwise, and a failed copy is `save_error`, not a failed send. `draft_id` is deleted after
+  sending. A personal account sends for its owner; a shared one for users at or above
+  `send_role` (admins only when empty); `mail_save_draft` follows the same rule.
+- **M9.4** `thread_key` (already filled by the parser) is indexed. **Core:** a module's table
+  declaration takes `indexes: [[field, …]]`, created with the table and added on upgrade like
+  `unique` (`sc-module/src/tables.rs`; TECHNICAL_DESIGN §15.1b, tutorial-modules Step 7).
+- **M9.3 core:** a module action gets **`callerFiles`** (`read`, `stat`): the application's file
+  stores read with the caller's authority, over the call's `files` surface
+  (`module-host.mjs`; TECHNICAL_DESIGN §15.1d, tutorial-modules Step 8). Tested in
+  `crates/sc-module/tests/module_files.rs`: an open file reads, an admin-only one is refused, and
+  there is no write.
+- **M9.5** Tests.
+  - `npm test` in `plugins/imap`: `test/mirror.test.mjs` against the test Dovecot and a new SMTP
+    sink (`test/servers/smtp-sink.mjs`, on `smtp-server`, a devDependency the installer's
+    `--omit=dev` skips). Covered: newest first, `body_days`, the backfill (by hand and by its
+    timer), `mail_fetch_body`, new mail by IDLE (about 0.6 s) and by poll, the STATUS shortcut,
+    flags both ways, expunges deleting rows and files, a UIDVALIDITY rebuild, folders made and
+    removed on the server, move, delete to Trash and for good, folders, drafts, a reply through
+    SMTP with a UTF-8 password and its threading headers, the Sent copy with Bcc, the answered
+    flag, draft removal, the input limits, `send_role`, and the ingest refusals.
+    `test/parse-large.test.mjs` checks `parseHeaders` on every generated mail.
+  - `crates/sc-module/tests/imap_mirror.rs` (`#[ignore]`: npm, Dovecot, the sink): two users with
+    two mirror accounts each, while new mail arrives for both, never see each other's mail or
+    accounts through the row layer, REST, GraphQL or a live `table_changes` subscription, and no
+    password is in any of them; `mail_send` runs in the worker with an application file, the
+    copy lands in Sent and the question is answered; the actions refuse the other user's mail.
+    Its helpers are shared with `imap_ingest.rs`, whose module setup is now `load_module`.
+  - `test/servers/dovecot.sh` has users `mirror`, `ann1`, `ann2`, `bob1`, `bob2`. The shared test
+    helpers are in `test/dovecot.mjs`; `test/fake-host.mjs` gained `installFakeTable` (v1's
+    `Table` over the fake tables, with the ownership rule).
+- **M9.6** At most two IMAP connections per account: the service's, which every action queues on
+  while it runs, and otherwise the actions' own connections, now one at a time per account
+  (`account.js` `withConnection`). Tested by counting connections under 30 parallel actions.
+- Fixed: `mail_sync_now` with `wait` left a 60-second timer running after the sync answered.
+
+## Mail module M8: ingest mode
+
+The bundled mail module now keeps a shared mailbox in its tables (TODO-imap.md M8, use case A).
+Each enabled `ingest` account has a background connection that IDLEs, so new mail is a
+`mail_messages` row about half a second after delivery, with its attachments stored as files and
+its flags kept in step. A trigger on `mail_messages` turns mail into an application's own rows,
+and actions let the app sync, set flags and fetch attachments. New tutorial:
+[docs/tutorial-mail.md](docs/tutorial-mail.md).
+
+- **M8.1** `plugins/imap/connect.js`: where a connection may go (§5.1), for IMAP, SMTP and
+  `mail_test_account`. IMAP 993/tls or 143/starttls, SMTP 465/587, nothing without TLS. The host
+  is resolved once and every address must be public (`isPublic` is `sc_email::is_public` case for
+  case, IPv4-mapped and NAT64 included). The connection goes to the checked IP, with the name kept
+  for SNI and the certificate. Errors have the passwords taken out (`redact`). Two module settings
+  (a `configuration_workflow`) for admins: **trusted servers** (`host[:port]`, may be private and
+  use that port) and **extra CA certificates**, which apply to the trusted servers only. Adding
+  them to Node's roots would need `tls.rootCertificates`, which is `sys: ca` in the worker.
+- **M8.2** `account.js`: `AccountRunner`, one account's life. LIST with roles by SPECIAL-USE, then
+  by common names in eight languages, upserted into `mail_folders` (`sync` marks the watched
+  ones). **One connection**: IDLE on the first watched folder, passes for new mail, the 2-minute
+  poll and `mail_sync_now`, and actions queued on the same connection (`withFolder`). Reconnect
+  with backoff and jitter (5 s doubling to 10 min). Three login failures in a row set
+  `auth_failed` and stop. A refused server sets `refused` and stops. Status, `last_error` and
+  `last_sync_at` are written as it goes. imapflow's auto-IDLE delay is 500 ms instead of 15 s,
+  which otherwise held new mail back for up to 15 s.
+- **M8.3** `sync.js`: one folder's new mail (§5.2). `UID SEARCH UID last+1:*` (with `SINCE
+  start_from`), filtered to `uid > last`, in batches of 50, each source fetched alone. Above
+  25 MB, `parseLarge` with `BODY.PEEK[part]` and attachments streamed by `download()`. Each
+  message has its own try: a mail that cannot be fetched or parsed, or whose file cannot be
+  written, is stored with `import_error`. **Two-step storage**: inserted as `importing`, files
+  and attachment rows, then the final `body_state`, so a trigger can wait for the attachments.
+  Moves to `processed_folder`/`error_folder` happen after the batch, by UID, and the rows record
+  the new folder and UID. The cursor moves last. Nothing is stored twice after a crash. A
+  UIDVALIDITY change clears the folder's UIDs, and mail is matched to its rows again by
+  Message-ID.
+- **M8.4** Flags (CONDSTORE `CHANGEDSINCE`, else the newest 2,000) and expunges (`UID SEARCH ALL`
+  against the stored UIDs) on each poll and on the server's notifications. A pushed FETCH FLAGS
+  is written at once. Ingest records an expunge by clearing `uid`, and never deletes.
+  `highestmodseq`, `total` and `unread` are kept on the folder.
+- **M8.5** `service.js`: one runner per enabled ingest account. `onTableChange("mail_accounts")`
+  starts, stops and restarts runners (own writes ignored; any change restarts an `auth_failed` or
+  `refused` account). Mirror accounts get `unsupported` until M9. Stop logs out every connection.
+- **M8.6** `actions.js`: `mail_test_account` (unsaved settings, or the saved password via
+  `account_id`; five a minute per user), `mail_sync_now` (`wait` for the pass), `mail_set_flags`
+  (`\Seen`/`\Flagged` by UID, then the rows) and `mail_attachment` (a no-op when stored; else
+  downloaded, or re-parsed for TNEF and `.eml` parts). Each reads as the caller first (v1 `Table`
+  with `forUser`). The module's settings reach the actions through v1's `actions(configuration)`.
+  `index.js` requires the service and the actions only when first used, so it still loads with no
+  `node_modules`.
+- **M8.7** Tests.
+  - `npm test` in `plugins/imap`: `test/connect.test.mjs` (ports, private, loopback, link-local
+    and mixed answers, trusted servers, CAs, redaction), and `test/ingest.test.mjs` against a
+    real Dovecot over an in-memory `ctx` (`test/fake-host.mjs`, which keeps the unique
+    constraints). Covered:
+    - 1,000 existing mails stored once each (about 3 s);
+    - new mail during IDLE in about 0.5 s;
+    - a server restart mid-batch that loses and duplicates nothing;
+    - a UIDVALIDITY reset;
+    - a broken mail moved to the error folder without blocking the batch;
+    - the processed folder;
+    - flags and expunges from another client;
+    - `start_from`;
+    - `auth_failed` after three logins;
+    - an untrusted private server refused;
+    - the service following account changes;
+    - with `IMAP_LONG_IDLE=1`, an IDLE held for 30 minutes.
+  - `test/servers/dovecot.sh` runs a user-level Dovecot 2.4 (no Docker) on 11143/11993 with two
+    users. It can `clean`, `deliver` and `restart`, and stopping now ends the open sessions too.
+    `scripts/build-static.sh` leaves its `run/` out of the artifact, and the spike's `run/` too,
+    which it shipped until now.
+  - `crates/sc-module/tests/imap_ingest.rs` (`#[ignore]`: npm and Dovecot) runs the module on the
+    real host with Postgres. Checked:
+    - staff see the shared mail, a user below `min_role` sees none, and ann sees her personal
+      account only, through the row layer and REST;
+    - no password appears in any REST answer, and the column holds an envelope;
+    - IDLE inside the worker delivers in about 0.6 s;
+    - each action, including its refusals for users who may not see the row, and the rate limit;
+    - disabling an account.
+- **M8.8** The order example: an Update trigger on `mail_messages` with `old.body_state ===
+  "importing" && account === …` makes one `orders` row per mail, with the PDF's file. An Insert
+  trigger fires earlier, before the attachments exist (tested, and explained in
+  `docs/tutorial-mail.md`).
+
+## Mail module M7: the parser
+
+The bundled mail module exists (`plugins/imap/`, `@feldspar/imap`), with its tables declared and
+its parser done (TODO-imap.md M7). The parser turns a mail's source into a `mail_messages` row and
+its `mail_attachments` rows, as a pure function, and is tested on the whole fetched corpus: 6,831
+mails, none of which throws, fails, lacks a body or keeps a NUL, in about 4 s.
+
+- **M7.1** `plugins/imap/`: `package.json` (dependencies pinned), `feldspar-module.json` (four
+  tables, a `sync` service, the actions, `net: ["*"]`), and `index.js`, which declares §3's tables
+  in M4's shape: ownership through `accountⱵowner`, `mail_accounts`' passwords as Secret fields,
+  `mail_attachments.file` in the store `mail_files` under `attachments/`, and `highestmodseq` as
+  text, because a 63-bit MODSEQ is more than a JSON number holds exactly. The service and the
+  actions are M8 and M9. A row in `plugins/README.md`.
+  - **mailparser is not a dependency after all** (§2.1 named it). Its `simpleParser` got six of
+    the generated mails wrong, and none of the six is an option it has: a latin-1 subject read as
+    UTF-8, likewise an unknown charset, an invalid `Date` replaced by the current time, an
+    Exchange journal report's inline message left as an attachment, `winmail.dat` left packed,
+    and no IMAP part numbers. `parse.js` is built from mailparser's own parts instead: its
+    splitter (`@zone-eu/mailsplit`), `libmime`, `iconv-lite` and `html-to-text`, pinned to the
+    versions mailparser 3.9.36 pins.
+  - `bundled_catalog.rs`: a test that the card lists the four tables, and that `index.js`,
+    evaluated with node, declares exactly those in a shape `tables::parse_declarations` reads
+    without an issue.
+  - `scripts/build-static.sh` `stage_plugins` no longer ships a fetched `test/corpus/` (GPL TNEF
+    files and other people's mail) or a `node_modules` deeper than two levels (the spike's).
+- **M7.2** `parse.js`: `parse(source, { internalDate, flags, size }) → { message, attachments }`,
+  every rule of §5.4. It never throws: a failure is a row with `import_error`. Beyond §5.4:
+  - **Body choice is RFC 8621's `parseStructure`** (JMAP's, and Stalwart's). A
+    multipart/alternative gives each view one branch, and a text part beside HTML in a
+    multipart/mixed appears in the HTML view as preformatted text.
+  - **Charsets.** A declared UTF-8 that is not valid UTF-8 falls back as an unknown charset
+    does. Latin-1 is read as windows-1252, as browsers read it. An HTML part with no charset uses
+    its `<meta charset>`. A raw 8-bit header that is not UTF-8 is read in the charset the body
+    declares, which recovers the Korean, Chinese and Turkish subjects of the SpamAssassin corpus.
+    A Q-encoded word with raw 8-bit inside it (Outlook Express) is decoded once, not twice.
+  - **Structure.** A boundary line with transport padding (`--b  `, RFC 2046) is still a
+    boundary; only lines of a declared boundary are touched. A base64-encoded inline
+    `message/rfc822` is opened, its parts numbered `<part>:eml:<n>`. Base64 ignores junk after a
+    line's padding.
+  - **Values.** Line endings are `\n`, lone surrogates are replaced, `format=flowed` is
+    unwrapped, and a nameless part of a type libmime does not know (`audio/mp3`) gets its subtype
+    as the extension. Addresses are `[{ name, address }]` lists. A part unpacked from TNEF is
+    numbered `<part>:tnef:<n>`.
+- **M7.3** `parse-large.js`: `parseLarge(bodyStructure, fetchPart, { headers, … })` builds the
+  same tree from imapflow's `bodyStructure` and runs the same assembly. It downloads only the
+  body parts (at most 4 MB each) and TNEF containers at or below the cap, lists the attachments
+  with `content: null`, and sets `body_state: "too_large"`. A failed download is named in
+  `import_error`. It corrects imapflow's numbering of an embedded single-part message's body
+  (`2`, where IMAP says `2.1`).
+- **M7.4** `tnef.js`: TNEF with compressed RTF (LZFu and MELA), RTF to text, and HTML-in-RTF
+  (`\fromhtml1`) de-encapsulated into `body_html`. Ported from feldspar-mailbridge's `tnef.py`,
+  plus attachments stored as `PR_ATTACH_DATA_OBJ` objects, empty attachments kept as `tnef(1)`
+  keeps them, and multi-valued and unicode MAPI properties. npm's `node-tnef` 1.4.0 was tried
+  first: it misses the names of 4 of the 15 samples, has no RTF body, and depends on `bunyan` and
+  `yargs`. All 15 verdammelt/tnef samples now give the names their `.list` names.
+- **M7.5** `npm test` in `plugins/imap` (113 tests): `parse.test.mjs` asserts every `expect` of
+  the generated mails' `expected.json`; `corpus.test.mjs` runs the fetched corpus and the
+  generated mails (`test/corpus.mjs`, which also prints a report: `node test/corpus.mjs
+  [--python] [--verbose]`). (a)–(c) hold for every mail, with no `import_error` either. (d): the
+  67 field disagreements with Stalwart's expected output are listed one by one in
+  `test/known-differences.md` with their reasons, and the test asserts the set is exactly that.
+  (e): Python's `email` package answers different questions (its first plain part, its idea of
+  an attachment), so its disagreements were sampled by category, and their counts are a ratchet
+  in the same file. Both directions were checked by hand: where they disagree on decoding, ours
+  is the readable one. `tnef.test.mjs` and `parse-large.test.mjs` cover M7.3 and M7.4.
+- **M7.6** The 6,831 mails parse in about 4 s. A 25 MB mail parses in 0.5 s in a child with V8's
+  `--max-heap-size=256`, the worker's bound, and its attachment comes out byte for byte.
+
+## Mail module M6: file writes from JavaScript modules
+
+A JavaScript module can store files, in the places its declared file fields name and nowhere
+else (TODO-imap.md M6). The design is in TECHNICAL_DESIGN §15.1d; the tutorial is under Step 8 of
+`docs/tutorial-modules.md`.
+
+- **M6.1** `ctx.files` in a service, and `files` in a module action's argument object:
+  `write(store, path, data, { contentType, filename }) → path`, `read(store, path, { encoding })`,
+  `remove(store, path)` and `stat(store, path)`.
+  - **Scope.** New `sc_module::files`: `file_areas` reads `(store, folder)` from the module's
+    declared file fields, and `ModuleFiles` wraps `FileStoreHost` at admin authority and refuses
+    any other store, any path outside the folder (`docs-x/` is not in `docs/`), `..`, the
+    `owner`/`minRole` options, a cross-store rename and every operation but `write`, `append`,
+    `read`, `stat`, `delete` and `rename`. Refusals name the areas the module has.
+  - **A new ask surface, `module_files`** (`CallHosts::module_files`, served in
+    `deno/mod.rs`). The service supervisor and `ModuleAction` (`with_file_areas`, set by
+    `ModuleSet::load`) both pass one. The existing `files` surface is unchanged.
+  - **Streaming.** `data` may be a string, bytes, or anything async-iterable (a Node `Readable`,
+    a web `ReadableStream`, a generator). The host script sends it in 1 MB pieces: one piece is
+    one `write`; more go to `<path>.part-<random>` by `write` and `append`, then `rename` over the
+    target, and a failure deletes the temporary. `read` reads in 4 MB pieces by offset.
+  - **Content type.** New `sc_files::CONTENT_TYPE_ATTRIBUTE` (`content_type`) in a file's
+    metadata. `file_response::serve` now serves it before guessing from the path, and reads the
+    metadata once for the type and the name.
+- **M6.2** Tests: `sc-module/tests/module_files.rs` with a new `files-module` fixture. Its
+  service writes a small file with a type and a name, 20 MB from a stream and 20 MB from one
+  buffer, reads 20 MB back intact (inside the worker's 256 MB heap), and is refused another
+  folder, a sibling folder with the same prefix, another store, `..` and the folder itself. The
+  store holds the type and the name and no temporary. Its action writes through `files` and is
+  refused outside the folder. Unit tests in `files.rs` for area containment, path normalisation
+  and reading the areas from declarations; one in `file_response.rs` for the declared type.
+
+## Mail module M5: module services
+
+A module can run **services** in the background (TODO-imap.md M5): code that keeps going after
+the module has loaded, such as IDLE connections that write a row whenever mail arrives. The
+design is in TECHNICAL_DESIGN §15.1c; the tutorial is Step 8 of `docs/tutorial-modules.md`.
+
+- **M5.1** A plugin object's new `services` key: `{ name: { description, start(ctx) } }`, or a
+  function of the configuration that returns one. A bare function is its own `start`. `start`
+  returns the stop function, which is awaited on reload and uninstall.
+  - `ctx.db` is the code body's fluent `db` (`sc_expr::DB_PRELUDE`, now public and no longer
+    behind `eval`), limited to the tables the module declared. Any other table, `db.sql()`,
+    models, `asUser()` and a Ⱶ-path that leaves the module's tables are refused by name. Writes
+    go through the row layer, so triggers and live streams fire.
+  - The authority is the module: the admin role, with `{ module, service }` as the write's user.
+  - Secret values come back decrypted, because the row layer reveals them to server-side readers
+    (M2). So there is no separate `ctx.secrets`.
+  - Also `ctx.runTrigger`, `ctx.onTableChange(table, cb)` (a catalog `TableEvents` listener,
+    after commit, with `own` set for the module's own writes), `ctx.log`, `ctx.fail(error)`,
+    `ctx.signal` and `ctx.configuration`.
+  - `ctx.files` is not there yet: that is M6.
+  - The bundled manifest may list `services`. The bundled card and the installed card say the
+    module "runs in the background and writes to its own tables". No new permission key.
+- **M5.2** A service is one module call (`service_start`) that is answered when the service
+  stops. Its asks travel the existing ask channel, named by call id (`askFor`), so a library
+  callback outside the async context still asks as the service. That call has no wall clock and no
+  call budget (`Bounds::UNBOUNDED` in `deno/mod.rs`); the JS slice and the heap bound still apply.
+  - New `sc_module::ServiceSupervisor`. It runs each service on a task and restarts it with
+    exponential backoff (1 s doubling to 5 min, reset after a run of a minute) when `start` throws,
+    `ctx.fail` is called or the worker dies. Each failure is logged.
+  - `ModuleServices::reload` stops every service before it reloads the modules, and starts them
+    after the catalog and the triggers are reloaded. The host script also stops a module's
+    services before it reloads or unloads that module.
+  - `listModules` returns `services: [{ name, description, state, restarts, last_error }]`, and
+    the card shows each one as Running, Restarting (with the error) or Stopped.
+- **M5.3** A module whose manifest has services gets a **worker of its own**, so its work does
+  not delay other modules' calls, and its slice and heap are not theirs. The first load moves
+  it, as a permission change does, and the pool remembers the name. Such a module's view patterns
+  are an issue on its card. Module-level state survives a service restart on a live worker
+  (tested); sockets surviving between calls was shown by the M1.4 spike.
+- **M5.4** `sc-module/tests/module_services.rs` with a `service-module` fixture that inserts a
+  row every 100 ms. It checks that:
+  - the rows arrive, and a `TableEvents` listener (the seam the live hub uses) sees them, caused
+    by the module;
+  - an undeclared table, `db.sql()` and watching an undeclared table are refused;
+  - `own` is false for another's write;
+  - `ctx.fail` restarts the service on the same worker with the same module state, and
+    `process.exit` restarts it on a fresh worker;
+  - unloading stops it for good, after its stop has written its last row;
+  - `stop_all` awaits the stop.
+
+  There are also unit tests for the bundled `services` list, for Ⱶ-path extraction and, in the
+  admin UI, for the service state badges.
+- **M5.5** "Step 8 — A module that runs in the background" in `docs/tutorial-modules.md`.
+
+## Mail module M4: modules declare tables
+
+A module can declare tables of its own (TODO-imap.md M4), and the server creates them when the
+module loads. They are ordinary tables: triggers, live streams, REST, GraphQL, ownership and
+backups work on them as on any other. The design is in TECHNICAL_DESIGN §15.1b; modules are
+§15, not §11 as the TODO said.
+
+- **M4.1** A plugin object's new `tables` key: a list, or a function of the configuration that
+  returns one.
+  - Each table has `name`, `label`, `description` and `fields`. It may also have jointly-`unique`
+    field lists, an `ownership` formula, `min_role_read` and `min_role_write`.
+  - Each field has `name` and `type`, and may have `label`, `description`, `required`, `unique`,
+    `references`, `secret`, `file_store`, `file_folder` and `default` (a JSON value, or
+    `"=<expression>"`).
+  - `module-host.mjs` passes it through as `ModuleManifest::tables`.
+  - `sc_module::tables` reads it into `TableDecl`/`FieldDecl`. Unknown keys are refused, and so are
+    contradictions: two kinds at once, a missing type, a default on a nullable field, a declared
+    `id`, `_fd_*` or `users`, a name declared twice. A broken table is an issue on the card and
+    costs only that table.
+- **M4.2** `ModuleSet::load` runs `tables::sync` for each loaded module on every load, as one
+  `schema_edit` batch.
+  - It creates missing tables, each with an `id` int primary key that numbers itself, and adds
+    missing fields and unique constraints.
+  - It never drops or alters anything. A declared field whose type or reference disagrees with the
+    database is reported on the module's card.
+  - A field that an upgrade adds is nullable.
+  - Table settings are applied only when the table is created.
+  - Running it again changes nothing.
+  - A table that another module already declared is refused.
+- **M4.3** New `sc_catalog::ModuleTables` (`Catalog::set_module_tables` / `module_tables`). It is
+  installed from `ModuleSet::module_tables()` after every reload.
+  - `schema_edit::apply` refuses dropping a claimed table, or a field the module declared, while
+    the module is installed. This covers the admin API, MCP and agents.
+  - `listTables` etc. return `module` and `module_fields`. `listModules` returns `tables` per
+    module, and per bundled entry.
+  - Admin UI: a module badge in the tables list, and a disabled Delete button on declared fields.
+    The module card lists its tables. A bundled card says "Installing creates the tables …".
+    Generated clients are regenerated.
+- **M4.4** Tested: ownership formulas that join through module tables work as read rules and as
+  write rules.
+  - Shared vs personal accounts, one and two hops (`accountⱵowner`, `messageⱵaccountⱵowner`).
+  - `_read` makes a table readable more widely than it is writable.
+  - Answer to §3's question: a formula grants rows, not fields. The module re-checks its own
+    fields. §3 and §5.6 now say `user.role` (there is no `role_id`).
+- **M4.5** A declared `file_store` names a store. If none of that name exists, a local store is
+  created and connected at `sc_files::suggest_local_dir(name)`. An existing store of that name is
+  used as it is.
+- **M4.6** `feldspar-module.json` may list `tables`. `BundledModules` refuses a listed table that
+  no `supplies` line names. There is a unit test, and the `bundled_catalog` test checks it for
+  every shipped module.
+- Tests:
+  - `crates/sc-module/tests/module_tables.rs` (7 tests): create once then no-op; upgrade adds a
+    field, keeps the admin's field and reports a changed type; drop refused while claimed and
+    allowed after; another module's table left alone; file store reused; ownership through
+    joins; and, on a Deno worker, the `tables-module` fixture installed twice and then upgraded
+    to `tables-module-v2`.
+  - Unit tests in `tables.rs`, `module_tables.rs` and `bundled.rs`.
+  - `modules.test.ts` covers the summary count.
+- Docs: `docs/tutorial-modules.md` Step 7, and `plugins/README.md` (`tables` in the manifest).
+- Not done: Python modules can't declare tables yet. The new UI strings are not translated yet
+  (run `feldspar i18n translate`).
+
+## Mail module M3: SMTP override settings on `send_email`
+
+`send_email` can send through a server other than the installation's (TODO-imap.md M3, use
+case C), for example from orders@ through orders@'s own SMTP server, with the password read
+from a Secret field.
+
+- **M3.1** Five new optional settings: `smtp_host`, `smtp_port`, `smtp_security`, `smtp_user`
+  and `smtp_password`. All are `{{ }}` templates, parsed and validated like the rest.
+  `smtp_password` is declared `secret()`.
+  - Save-time checks: the other settings need a host. A typed port must be 465 or 587, and must
+    match a typed encryption. `none` is refused, and so is a typed private or loopback address.
+- **M3.2** When `smtp_host` renders non-empty, the message goes through
+  `Mailer::send_via(server, email)`, a new trait method; otherwise it goes through `ctx.mailer`
+  as before.
+  - An empty port or encryption is implied by the other one; if both are empty, 587/STARTTLS.
+  - `from` defaults to `smtp_user` when an override is used.
+  - The result carries `smtp_host` (null for the installation's server).
+  - Errors name the trigger and the host, never the password. `EmailSettings`'s `Debug` now
+    redacts the password, and `SmtpMailer`'s send error names its server.
+- **M3.3** The relay rules (`sc_email::relay`): ports 465/587 only, each with its own
+  encryption, and public addresses only. A name with any private address is refused.
+  - The host is resolved once, and the transport connects to the checked IP
+    (`SmtpMailer::pinned`). The name is kept for SNI and the certificate check, and the EHLO
+    name is the sender's domain.
+  - `is_public` moved from the agent fetch guard (`sc-core-traits`) to `sc-email`, and the
+    guard re-exports it.
+  - The installation's own server (Settings → Email) is not checked.
+- **M3.4** `{{ }}` templates in trigger settings can name Secret fields, in their own row and at
+  the end of a Ⱶ-join: `{{ accountⱵsmtp_password }}`.
+  - `sc_action::template_shape` adds Secret fields to the shape templates are validated in, and
+    only those. `render_event_template` decrypts the envelope a join prefetched
+    (`sc_catalog::secrets::reveal_join_value`).
+  - Filters, `only_if`, assignments, ownership rules and calculated fields still cannot name a
+    secret.
+- **Trigger secrets are masked in the admin REST API.** `listTriggers`, `createTrigger` and
+  `updateTrigger` show `••••••••` for every `secret()` setting, and an update that sends it back
+  keeps the stored value (`ActionRegistry::redact_trigger`, `merge_trigger_secrets`). Until now
+  only the MCP trigger tools masked them. The MCP tools now use the same helper. Backups still
+  write the real value.
+- **M3.5** Tests:
+  - `sc-email`: unit tests for ports, encryption and private, loopback and link-local hosts
+    (`relay.rs`). Two wire tests in `smtp_conversation.rs`: a pinned transport whose host is
+    `smtp.example.invalid` still delivers to the checked IP, with EHLO the sender's domain; and
+    `send_via` refuses a loopback server even though one is listening.
+  - `sc-core-actions/tests/send_email_relay.rs`:
+    - the account's server and its Secret password come through a join;
+    - an account with no server sends through the installation's;
+    - `localhost` and port 25 are refused at send time, naming the host and not the password;
+    - typed-in overrides are checked on save;
+    - a trigger on the account table reads its own secret;
+    - the password is masked and kept.
+  - `sc-server/tests/app_trigger_api.rs`: create, list and update through the admin API never
+    return the password, and the stored value survives a save of the mask.
+- **M3.6** Docs: a `send_email` section in `docs/tutorial-triggers.md` covering the override
+  settings, the relay rules and the note that a copy in Sent depends on the provider. A note in
+  `docs/tutorial-ownership.md` Step 8 on templates reading a secret through a join, and a
+  paragraph in TECHNICAL_DESIGN §10.1.
+
+## Mail module M2: the `Secret` field kind
+
+A new field kind for passwords and tokens (TODO-imap.md M2), which the mail module's
+`imap_password` and `smtp_password` need. A Secret is a text column that holds
+`v1:<nonce>:<ciphertext>` envelopes: AES-256-GCM, through `aes-gcm` 0.10, which `deno_crypto`
+already brings, so no crate is added to the tree. Every client reads `null` or `••••••••`, and
+server-side code reads the plaintext.
+
+- **M2.1** `DataFieldKind::Secret` (`sc-catalog`), stored in `_fd_fields` as kind `secret`. The
+  overlay applies only to a text column.
+  - The schema editor refuses a secret that is a primary key, unique, typed other than text,
+    defaulted, or on `users`. It also refuses indexing or constraining one, and turning a field
+    into a secret or back.
+  - Secrets are left out of the formula shape, so ownership rules, calculated fields, defaults and
+    constraints cannot read them. They are also left out of datasets and agents' table tools.
+  - REST, GraphQL and query-string filters and orderings refuse them, as do a code body's
+    `where`, `orderBy` and aggregates.
+- **M2.2** The instance key is `<data dir>/secrets.key`: 32 bytes, mode 0600, created the first
+  time a value is sealed, and hard-linked into place so two processes cannot write different keys
+  (`sc_catalog::secrets`, `Catalog::secret_key`). `serve` refuses to start when the key file is
+  missing and a table holds Secret values, naming the file and the tables.
+  - Hosted: `SC_DATA_DIR` is `/srv/feldspar/<instance>/data`, and `backup-instance.sh` tars the
+    instance's whole home, so the key is already in host backups.
+- **M2.3** The row layer seals a value in `create_row_in` and `update_row_unchecked_in`.
+  - On write: the sentinel is left out, so the stored value is kept; an envelope that opens with
+    the key is kept as it is; anything else is sealed.
+  - Reads return envelopes. Server-side readers reveal the plaintext: trigger events (so
+    templates and action formulas see it), code bodies, module actions and services (`TableHost`),
+    and the row actions.
+  - Client surfaces redact: REST (lists, `select`, write answers; a secret cannot be selected
+    through an embed), GraphQL (`secret_field` resolver), live rows (`api_row`), the admin
+    `listRows`, `createRow`, `updateRow` and `testRunTrigger`, CSV export, `read_rows_as` (agents
+    and offline sync), and Saltcorn UI views (`viewer_only`).
+  - The design is fail-safe: a surface that is missed shows a client ciphertext, never plaintext.
+- **M2.4** The table designer offers `secret` in `listFieldTypes`.
+  - The data grid edits a secret through an empty password input, and leaves the value alone when
+    nothing is typed. So does the row form.
+  - The generated client types a secret as `string | null`, with a write-only doc comment
+    (`ResourceField::write_only`).
+- **M2.5** A backup whose rows hold a Secret field carries `keys/secrets.key`, and its manifest
+  says `secrets_key`.
+  - A restore opens each envelope with the backup's key and seals it again with the target's key,
+    which is never replaced.
+  - A missing or wrong key leaves those values null, with one warning per table.
+  - OPERATIONS §8.2 documents that such a backup can decrypt its secrets, including customer S3
+    backups on hosted.
+- **M2.6** Docs: Step 8 of `docs/tutorial-ownership.md`, "Secret fields" in TECHNICAL_DESIGN §6.2,
+  and `SC_DATA_DIR` in OPERATIONS §5.1.
+- Tests:
+  - `sc-api` `tests/secret_fields.rs` (SQLite): every client surface returns the sentinel and
+    never the plaintext; the column holds an envelope; the sentinel keeps the value; code bodies
+    read the plaintext and views do not; every refusal; the generated type; the start-up check.
+  - `sc-server` `backup_api::secret_fields_are_write_only_and_a_backup_reseals_them_under_the_target_key`:
+    the data editor, a trigger seeing the plaintext, a backup restored into a server with another
+    key, and a backup without its key.
+  - `sc-catalog` unit tests for the envelope and the key file; a UI test for the field form.
+- Known gap: a **workflow** run stores the event that started it in `_fd_runs`, revealed, so a
+  workflow on a table with secrets keeps their plaintext in its run record (and `getRun` shows
+  it). A `fetch` action's default body sends the revealed row, as it would any other server-side
+  value. Both are documented in the tutorial; the first is a follow-up.
+
+## Mail module M1: test corpus, generated mails and the IMAP spike
+
+The groundwork for `@feldspar/imap` (TODO-imap.md M1). `plugins/imap/` has no module yet, only
+`test/` and `spike/`, and it has no `feldspar-module.json`, so the bundled catalog does not list it.
+
+- **M1.1** `plugins/imap/test/fetch-corpus.sh` fetches about 7,400 public test mails into
+  `test/corpus/`, which is git-ignored:
+  - ten repositories, each a sparse, shallow clone: Stalwart, zbateson, mikel/mail, mime4j,
+    cpython, php-mime-mail-parser, flanker, SpamScope, mailparser, and the GPL tnef samples;
+  - the SpamAssassin 2003 corpus.
+
+  `test/corpus.lock` pins every commit and every tarball's sha256. A later run fetches exactly
+  those, and `--update` moves them to the newest.
+- **M1.2** `test/fixtures/generate.mjs` writes 40 awkward mails into `test/fixtures/generated/`,
+  covering every §6 lesson and §5.4 rule the public sets miss. Among them:
+  - charsets: windows-1252 in base64, an unknown charset, raw 8-bit headers;
+  - body choice: single-part HTML; missing From, Date and every other header;
+  - inline next to attached `message/rfc822`; `cid:` references in both quote styles;
+  - NUL bytes; filenames in RFC 2231 and encoded-word form; encrypted, calendar-only and
+    attachments-only mails;
+  - TNEF with RTF only, and TNEF with HTML-in-RTF plus a file. The generator includes a TNEF
+    writer and an LZFu compressor, and the Debian `tnef` tool and Python's `compressed_rtf` both
+    read the output back.
+
+  `expected.json` records, for each mail, the MIME tree and what `parse.js` (M7) must make of it.
+  `test/fixtures/README.md` describes the format.
+- **M1.3** `test/MANUAL-SAMPLES.md` lists 49 mails to send by hand from seven clients (Outlook
+  desktop, Microsoft 365, Outlook web, Gmail, Apple Mail, iOS Mail, Thunderbird), with a file name
+  for each. They go into `test/fixtures/manual/`.
+- **M1.4** The spike, in `plugins/imap/spike/` (throwaway). It installs a scratch module with
+  `net: ["*"]` and runs it on the Deno worker against a local Dovecot 2.4 and an SMTP sink. There
+  is no Docker on the dev host, so `servers/dovecot.sh` runs Debian's Dovecot as an ordinary user.
+  - Results: imapflow logs in with a UTF-8 password over TLS and STARTTLS; IDLE receives
+    `exists` between calls (about 0.5 s after delivery); mailparser parses 20 and 25 MB inside
+    the 256 MB heap; nodemailer sends through 465 and 587; certificates are verified, against
+    `tls.servername` when connecting by IP.
+  - One blocker was found and fixed in the core. imapflow's logger, pino, calls `os.hostname()`
+    when it loads, and the module host refused all of `sys`, so the module would not load at all.
+    The host now grants every module `sys: hostname`, and nothing else of `sys`
+    (`crates/sc-module/src/deno/wiring.rs`); `os.hostname()` returns the real name. Test:
+    `deno_host::a_module_reads_the_hostname_and_nothing_else_of_sys` (the real name comes back,
+    and `os.networkInterfaces()` is still denied). `docs/tutorial-modules.md` Step 3 says so.
+  - The findings, and what M7–M9 must do about them, are in TODO-imap.md under M1.4.
+  - Harness: `crates/sc-module/tests/imap_spike.rs`, `#[ignore]` and skipped without
+    `IMAP_SPIKE_DIR`; `plugins/imap/spike/run-spike.sh` runs it.
+- Tests: `node --test plugins/imap/test/` (6 tests).
+  - The committed mails are byte-for-byte what the generator writes.
+  - Every lesson has a mail.
+  - Python's `email` package parses each mail into the intended tree.
+  - An independent TNEF/LZFu reader (checksums and CRC) finds the RTF and the files.
+  - `corpus.lock` pins every source.
+  - Manual samples are listed.
+
 ## Fix: document edits refused `rate_limited` were lost
 
 Bug report: with TipTap's Collaboration, every keystroke was its own `doc_update`, so a fast

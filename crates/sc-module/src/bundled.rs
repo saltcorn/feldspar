@@ -102,6 +102,15 @@ pub struct BundledModule {
     /// The packages installing it downloads — the dependencies that are
     /// deliberately *not* in the tarball.
     pub installs: Vec<String>,
+    /// The tables it declares (TODO-imap M4), which installing creates and
+    /// uninstalling keeps — said on the card before the click, because a module
+    /// that adds tables to the schema is one an admin should know about first.
+    /// Each must also be named in [`supplies`](Self::supplies).
+    pub tables: Vec<String>,
+    /// The services it runs in the background (TODO-imap M5) — said on the card
+    /// before the click, because a module that is always running is one an
+    /// admin should know about first.
+    pub services: Vec<String>,
     /// What it asks to be allowed to reach. Granted by the install, printed by
     /// the tab beside the button that does it.
     pub permissions: ModulePermissions,
@@ -206,6 +215,13 @@ impl BundledModules {
     }
 }
 
+/// Whether `line` names `word` as a whole word — `mail_messages` in "the
+/// tables mail_accounts, mail_messages", not in "mail_messages_archive".
+fn mentions(line: &str, word: &str) -> bool {
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| w == word)
+}
+
 /// Read one directory's manifest, or say what is wrong with it.
 fn read_manifest(dir: &Path) -> Result<BundledModule> {
     let path = dir.join(MANIFEST_FILE);
@@ -273,14 +289,41 @@ fn read_manifest(dir: &Path) -> Result<BundledModule> {
         )));
     }
 
+    let supplies = lines("supplies")?;
+    let tables = lines("tables")?;
+    for table in &tables {
+        if table.is_empty()
+            || table.starts_with("_fd_")
+            || !table
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(Error::invalid(format!(
+                "{}: `tables` lists `{table}`, which is not a table name a module can declare",
+                where_()
+            )));
+        }
+        // The card's sentence is `supplies`; `tables` is the list the server
+        // checks. A table missing from the sentence is one the admin is not
+        // told about before the click.
+        if !supplies.iter().any(|line| mentions(line, table)) {
+            return Err(Error::invalid(format!(
+                "{}: `tables` lists `{table}`, but no line of `supplies` names it",
+                where_()
+            )));
+        }
+    }
+
     Ok(BundledModule {
         id,
         name: string("name")?,
         language,
         title: string("title")?,
         description: string("description")?,
-        supplies: lines("supplies")?,
+        supplies,
         installs: lines("installs")?,
+        tables,
+        services: lines("services")?,
         permissions,
         directory: dir.to_path_buf(),
     })
@@ -379,6 +422,55 @@ mod tests {
             "{:?}",
             catalog.issues()
         );
+    }
+
+    /// TODO-imap M4.6: the tables a module creates are listed, and the card's
+    /// sentence names every one of them.
+    #[test]
+    fn a_manifests_tables_must_each_be_named_in_what_it_supplies() {
+        let mail = |tables: &str| {
+            format!(
+                r#"{{
+                "name": "@feldspar/imap", "language": "javascript", "title": "Mail",
+                "description": "Mail.",
+                "supplies": ["Tables: mail_accounts, mail_messages", "A service"],
+                "tables": {tables}
+            }}"#
+            )
+        };
+        let (_dir, catalog) = catalog_of(&[
+            ("imap", &mail(r#"["mail_accounts", "mail_messages"]"#)),
+            ("imap2", &mail(r#"["mail_accounts", "mail_folders"]"#)),
+            ("imap3", &mail(r#"["_fd_tables"]"#)),
+            ("imap4", &mail(r#"["mail_account"]"#)),
+        ]);
+        assert_eq!(catalog.modules().len(), 1, "{:?}", catalog.issues());
+        assert_eq!(
+            catalog.get("imap").unwrap().tables,
+            ["mail_accounts", "mail_messages"]
+        );
+        let issues = catalog.issues().join("\n");
+        assert!(
+            issues.contains("lists `mail_folders`, but no line of `supplies` names it"),
+            "{issues}"
+        );
+        assert!(issues.contains("`_fd_tables`, which is not a table name"), "{issues}");
+        // A whole word: `mail_account` is not named by `mail_accounts`.
+        assert!(issues.contains("`mail_account`, but no line"), "{issues}");
+    }
+
+    /// TODO-imap M5: the services a module runs are listed for the card, and a
+    /// manifest without them has none.
+    #[test]
+    fn a_manifest_lists_the_services_it_runs() {
+        let mail = r#"{
+            "name": "@feldspar/imap", "language": "javascript", "title": "Mail",
+            "description": "Mail.", "supplies": ["A service"], "services": ["sync"]
+        }"#;
+        let (_dir, catalog) = catalog_of(&[("imap", mail), ("rss", RSS)]);
+        assert!(catalog.issues().is_empty(), "{:?}", catalog.issues());
+        assert_eq!(catalog.get("imap").unwrap().services, ["sync"]);
+        assert!(catalog.get("rss").unwrap().services.is_empty());
     }
 
     #[test]

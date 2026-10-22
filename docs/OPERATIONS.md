@@ -817,7 +817,7 @@ report the provider as missing until the admin points them at another one.
 | `FELDSPAR_SQLITE` | every command | use this SQLite file as the primary database |
 | `FELDSPAR_CONFIG` | every command | read this configuration file instead of searching. The file must exist |
 | `FELDSPAR_ENV` | every command | which `[environments.NAME]` section to use. As explicit as `--environment` |
-| `SC_DATA_DIR` | the server | base directory for data the server owns: git clones for git-backed file stores, suggested local-store directories, the Python virtual environment, installed modules. Overrides the platform default |
+| `SC_DATA_DIR` | the server | base directory for data the server owns: git clones for git-backed file stores, suggested local-store directories, the Python virtual environment, installed modules, and `secrets.key`, the key Secret fields are encrypted with (§8.2). Overrides the platform default |
 | `HOME` | the server | used to derive the data directory when `SC_DATA_DIR` is unset. On Linux: `$XDG_DATA_HOME/feldspar`, else `~/.local/share/feldspar` |
 | `XDG_CONFIG_HOME` | every command | where the user configuration directory is, for the `feldspar.toml` search |
 | `XDG_DATA_HOME` | the server | where the user data directory is, when `SC_DATA_DIR` is unset |
@@ -1061,8 +1061,9 @@ about proxies first — behind a reverse proxy every peer looks local.
 
 ### 7.2 Minting a token
 
-The panel below those switches. A label, an expiry in days, and seven grants — all
-seven ticked on a fresh form, so untick what this agent should not have:
+The panel below those switches. A label, an expiry in days, an **All grants** switch
+and seven grants — all seven ticked on a fresh form, so untick what this agent should
+not have:
 
 | Grant | What it allows |
 |---|---|
@@ -1078,6 +1079,14 @@ seven ticked on a fresh form, so untick what this agent should not have:
 user of the deployment can reach. `allow_drop` at least announces itself.
 `allow_modules` is the other one: an installed package runs its own code with the
 server's privileges, and a Python one has no sandbox at all.
+
+**All grants** (off on a fresh form) is stored on the token as `allow_all`. A token
+with it also holds every grant a later version of Feldspar adds, without being minted
+again: the token already acts as the administrator who minted it, so a long-lived
+personal token or an agent launcher's token keeps working when a grant appears.
+Without it, a grant added after the mint is not held. A box left unticked beside
+**All grants** stays denied — "everything except dropping" is the switch on and
+`allow_drop` off.
 
 The token is shown **once**, prefixed `fspk_` — which is what makes it
 recognisable in a paste and greppable by a secret scanner — with the registration
@@ -1108,6 +1117,7 @@ feldspar mcp-token create --label "claude-code on my laptop" --admin \
 | `--email EMAIL` | the administrator the token runs as |
 | `--admin` | …or the first administrator. One of the two is required |
 | `--expires-in-days N` | lapse after N days; leave it out for a token that does not expire |
+| `--allow-all` | every grant this binary knows **and every grant a later version adds**, stored on the token as `allow_all` (the panel's **All grants**). Combine with `--no-allow-…` to leave single grants out |
 | `--allow-create` / `--no-allow-create` | create tables, fields, triggers and queries (default **on**) |
 | `--allow-edit` / `--no-allow-edit` | change existing ones (default **on**) |
 | `--allow-drop` / `--no-allow-drop` | drop and delete (default **on**) |
@@ -1120,7 +1130,16 @@ feldspar mcp-token create --label "claude-code on my laptop" --admin \
 
 plus the usual database flags. A grant left out is **granted** — the same as an
 untouched panel, where every box starts ticked; say `--no-allow-…` for each one
-the token should not have. The user must be an administrator; any other user
+the token should not have. A script or launcher that mints tokens for an agent
+should pass `--allow-all` (and `--no-allow-…` for what it withholds) rather than
+naming grants one by one, so it neither breaks nor silently under-grants when a
+release adds one:
+
+```bash
+token=$(feldspar mcp-token create --label agent --admin --allow-all --no-allow-drop)
+```
+
+ The user must be an administrator; any other user
 is refused, since the server would refuse every call the token made.
 
 The **secret is the only thing on stdout**, so it can be captured:
@@ -1170,6 +1189,22 @@ is not connected or not on this machine's disk, a framework with no source tree)
 still listed, with `project_dir: null` and the reason in `error`. Only the JSON is
 on stdout, so `jq -r '.[] | select(.subdomain=="todo") | .project_dir'` works
 directly on it.
+
+The triggers an application exposes (the admin form's **Triggers** tick boxes) are
+changed from the terminal the same way:
+
+```bash
+feldspar app triggers add    --app shop mail_test_account mail_send
+feldspar app triggers remove --app shop mail_send
+feldspar app triggers list   --app shop [--json]
+```
+
+Each exposed trigger is `POST <api mount>/actions/<name>` and `api.run<Name>()` in
+the generated client, which `add` and `remove` rewrite. Only a trigger with no event
+(`none`) can be added; who may call it is the trigger's own minimum role, and the
+listing notes one left unset (admin-only). A server already running on the database
+serves the change from its next start; an agent's `update_application` with a
+`triggers` section changes a running server at once.
 
 Then:
 
@@ -1364,7 +1399,8 @@ credential names a **user**, and it is checked against that user on every call.
 
 ### 7.7 Installing modules over MCP
 
-A token minted with `allow_modules` (on by default for a token, on the panel and as `--allow-modules`) is
+A token minted with `allow_modules` (on by default for a token: ticked on the panel, and granted
+unless `--no-allow-modules` is given; `--allow-all` includes it) is
 offered two more tools:
 
 | Tool | What it does |
@@ -1521,6 +1557,34 @@ HTTPS to the endpoint.
 - Each backup is built in memory and sent whole. Over SFTP it is written under a
   temporary `.partial` name and renamed into place. An S3 upload is a single
   `PUT`, which limits one backup to 5 GB on Amazon S3.
+
+#### Secret fields, their key, and backups
+
+A **Secret** field (an IMAP password, an API token) is stored encrypted with
+AES-256-GCM under one key per instance: 32 random bytes in
+`<data dir>/secrets.key`, mode 0600, created the first time a value is written.
+The key is not in the database, so a database dump alone opens nothing.
+
+- **Keep the key with the data directory.** A server that holds Secret values
+  and finds no `secrets.key` **refuses to start**, naming the file and the tables
+  that need it. Put the file back (from the old data directory, or from a
+  backup's `keys/secrets.key`) rather than deleting the values: a new key opens
+  none of them. A server with no Secret values starts without one.
+- **A backup that holds Secret fields can decrypt them.** When a backed-up
+  table's rows include a Secret field, the zip carries the key as
+  `keys/secrets.key` (the manifest says so under `secrets_key`), so a restore
+  after a disaster needs no password typed in again. Treat such a backup as
+  being as sensitive as the passwords themselves. That holds for automated
+  backups to SFTP and S3 too, and on the hosted service for a customer's own S3
+  backups.
+- **A restore re-seals.** Each value is decrypted with the backup's key and
+  encrypted again with *this* server's key, which is never replaced; restoring
+  into a different instance works the same way. A backup with no key entry, or
+  with the wrong one, restores the rows with those values left empty, and the
+  restore report says so per table.
+- **Hosted:** the key lives in `/srv/feldspar/<instance>/data/` with the rest of
+  `SC_DATA_DIR`, so `backup-instance.sh`'s archive of the instance's home
+  already includes it.
 
 ### 8.3 The bound on a model dataset
 

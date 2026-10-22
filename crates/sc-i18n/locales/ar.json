@@ -242,6 +242,7 @@
   "Write to context key": "الكتابة إلى مفتاح السياق",
   "Write to field": "الكتابة إلى الحقل",
   "You need to sign in to see {what}.": "يجب تسجيل الدخول لرؤية {what}.",
+  "You need to sign in with an account that may use this application.": "يجب أن تسجّل الدخول بحساب مسموح له باستخدام هذا التطبيق.",
   "Your role may not see {what}.": "قد لا يتمكن دورك من رؤية {what}.",
   "a scripted stream, for tests": "تدفّق برمجي للاختبارات",
   "admin UI": "واجهة مستخدم المسؤول",
@@ -251,8 +252,10 @@
   "invalid credentials": "بيانات اعتماد غير صالحة",
   "minting an API token needs a signed-in admin": "يتطلب إصدار رمز API وجود مسؤول مسجّل الدخول",
   "off serves plain HTTP (right behind a TLS-terminating proxy, and for local development). letsencrypt obtains and renews certificates automatically. custom serves the certificate below.": "يقدّم off بروتوكول HTTP عاديًا (مباشرةً خلف وكيل ينهي TLS، وللتطوير المحلي). يتولى letsencrypt الحصول على الشهادات وتجديدها تلقائيًا. يقدّم custom الشهادة أدناه.",
+  "sign in with an account that may use this application": "سجّل الدخول بحساب مسموح له باستخدام هذا التطبيق",
   "starttls connects in the clear and upgrades (port 587). tls is encrypted from the first byte (port 465). none is plain SMTP, which is only reasonable for a relay on a network you trust — credentials are refused with it.": "يتصل starttls دون تشفير ثم يرقّي الاتصال (المنفذ 587). يكون tls مشفّرًا منذ البايت الأول (المنفذ 465). أما none فهو SMTP عادي، ولا يُعد مناسبًا إلا لخادم ترحيل على شبكة تثق بها — إذ تُرفض بيانات الاعتماد معه.",
   "the page {name}": "الصفحة {name}",
   "the view {name}": "العرض {name}",
-  "view_app timeout per action (seconds)": "مهلة view_app لكل إجراء (بالثواني)"
+  "view_app timeout per action (seconds)": "مهلة view_app لكل إجراء (بالثواني)",
+  "your account may not use this application": "لا يُسمح لحسابك باستخدام هذا التطبيق"
 }

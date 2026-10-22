@@ -85,6 +85,31 @@ pub fn step_shape(catalog: &Catalog, channel: Option<&str>) -> Result<SchemaShap
     Ok(action_shape(catalog, channel)?.ambient_fields(Ambient::Context, None::<[String; 0]>))
 }
 
+/// The shape a trigger's **templates** are read in: `shape`, plus every
+/// [Secret](sc_catalog::DataFieldKind::Secret) field of every table (TODO-imap
+/// M3.4).
+///
+/// A secret is left out of the ordinary formula shape on purpose: a filter,
+/// an ordering, an ownership rule or a calculated field over it could only
+/// compare ciphertext, or carry the plaintext out to a client. A template in a
+/// trigger's settings is neither. It is rendered by server-side code into a
+/// message or a request that leaves through the action, which is where
+/// `send_email`'s `{{ accountⱵsmtp_password }}` has to go, and
+/// [`render_event_template`] opens the envelope a join path fetched. A
+/// template is never translated to SQL, so a secret here is never compared.
+pub fn template_shape(catalog: &Catalog, shape: &SchemaShape) -> Result<SchemaShape> {
+    let mut shape = shape.clone();
+    for table in catalog.tables()? {
+        let Some(table_shape) = shape.tables.get_mut(&table.name) else {
+            continue;
+        };
+        for field in table.fields.iter().filter(|f| f.is_secret()) {
+            *table_shape = std::mem::take(table_shape).field(&field.base.name);
+        }
+    }
+    Ok(shape)
+}
+
 /// A required string setting, or an error naming it.
 ///
 /// [`validate_attrs`](sc_types::validate_attrs) has already run by the time an
@@ -496,7 +521,7 @@ pub async fn render_event_template(
     // The scope the *context* asks for when this is a workflow step, so
     // `{{ context.total }}` in a subject line is read the same way the `Set`
     // that wrote it was.
-    let shape = ctx.shape()?;
+    let shape = template_shape(ctx.catalog, &ctx.shape()?)?;
     let analyses = template
         .validate(&shape, template_scope(channel))
         .map_err(named)?;
@@ -521,6 +546,19 @@ pub async fn render_event_template(
             prefetch_bindings(ctx.catalog, table, analysis, &shape, &mut values)
                 .await
                 .map_err(named)?;
+        }
+        // A path that ends on a secret fetched its envelope; open each one
+        // once (two tokens naming one path share one fetched value).
+        let paths: BTreeMap<&str, &[String]> = analyses
+            .iter()
+            .flat_map(|a| &a.join_paths)
+            .map(|path| (path.ident.as_str(), path.segments.as_slice()))
+            .collect();
+        for (ident, segments) in paths {
+            if let Some(value) = values.get_mut(ident) {
+                sc_catalog::secrets::reveal_join_value(ctx.catalog, table, segments, value)
+                    .map_err(named)?;
+            }
         }
     }
     let evaluator = ctx.evaluator()?;

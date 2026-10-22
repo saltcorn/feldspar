@@ -58,7 +58,7 @@ pub use search::{
     find_files, glob_matches, search_store, walk_store,
 };
 pub use serve::ServeFile;
-pub use store::{Entry, FILENAME_ATTRIBUTE, FileMeta, FileStat, FileStore};
+pub use store::{CONTENT_TYPE_ATTRIBUTE, Entry, FILENAME_ATTRIBUTE, FileMeta, FileStat, FileStore};
 pub use stream::{BoxAsyncRead, BoxAsyncWrite, check_range, read_to_bytes};
 
 #[cfg(test)]

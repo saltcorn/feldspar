@@ -1,0 +1,47 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Nested
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="apple-mixed"
+
+--apple-mixed
+Content-Type: multipart/alternative; boundary="apple-alt"
+
+--apple-alt
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+See the picture.
+
+--apple-alt
+Content-Type: multipart/related; type="text/html"; boundary="apple-rel"
+
+--apple-rel
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<p>See the picture.</p><img src="cid:pic-1@feldspar.test">
+
+--apple-rel
+Content-ID: <pic-1@feldspar.test>
+Content-Type: image/png; name=pic.png
+Content-Disposition: inline; filename="pic.png"
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+A8AAAEBAQBbjWoa
+AAAAAElFTkSuQmCC
+
+--apple-rel--
+
+--apple-alt--
+
+--apple-mixed
+Content-Type: application/pdf; name="terms.pdf"
+Content-Disposition: attachment; filename="terms.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+
+--apple-mixed--

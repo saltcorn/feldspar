@@ -50,6 +50,9 @@ module.exports = {
         { name: "times", label: "Times", type: "Integer", default: 1 },
         { name: "loud", type: "Bool" },
       ],
+      // What a direct run takes and answers, for the client's `runEchoRow`.
+      payload: { object: { what: { optional: "string" } } },
+      returns: { object: { greeting: "string", row: "json", mode: { optional: "string" } } },
       run: async ({ row, table, configuration, user, mode }) => ({
         greeting: configuration.greeting,
         row,
@@ -64,6 +67,20 @@ module.exports = {
       // the host has to call it to learn the fields.
       configFields: async () => [{ name: "template", label: "Template", type: "String" }],
       run: async ({ row, configuration }) => interpolate(configuration.template, row),
+    },
+    echo_os: {
+      description: "What node:os answers: the hostname, and whether anything else is refused",
+      run: async () => {
+        const os = require("node:os");
+        let interfaces;
+        try {
+          os.networkInterfaces();
+          interfaces = "allowed";
+        } catch (e) {
+          interfaces = String(e.message);
+        }
+        return { hostname: os.hostname(), interfaces };
+      },
     },
     echo_missing_api: {
       description: "Call an API this version does not have",

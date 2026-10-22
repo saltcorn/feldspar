@@ -121,6 +121,12 @@ pub fn filter_expr(table: &Table, key: &str, spec: &str) -> Result<Expr> {
             table.name
         )));
     }
+    if sc_catalog::secrets::is_secret_column(table, key) {
+        return Err(Error::invalid(format!(
+            "`{}.{key}` is a secret; it cannot be filtered on",
+            table.name
+        )));
+    }
     let Some((op, operand)) = spec.split_once('.') else {
         return Err(Error::invalid(format!(
             "`{key}={spec}` is not a filter: a filter is `column=op.value`, e.g. \
@@ -198,6 +204,12 @@ pub fn order_keys(table: &Table, spec: &str) -> Result<Vec<OrderBy>> {
         if crate::user_rows::visible_field(table, column).is_none() {
             return Err(Error::invalid(format!(
                 "`{}` has no field `{column}` to order by",
+                table.name
+            )));
+        }
+        if sc_catalog::secrets::is_secret_column(table, column) {
+            return Err(Error::invalid(format!(
+                "`{}.{column}` is a secret; it cannot be ordered by",
                 table.name
             )));
         }

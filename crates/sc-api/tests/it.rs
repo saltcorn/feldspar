@@ -65,6 +65,8 @@ mod rest_provider;
 mod rest_query;
 #[path = "rich_type_write_path.rs"]
 mod rich_type_write_path;
+#[path = "secret_fields.rs"]
+mod secret_fields;
 #[path = "sqlite_rows.rs"]
 mod sqlite_rows;
 #[path = "sync_changes.rs"]

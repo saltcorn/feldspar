@@ -1168,6 +1168,62 @@ async fn sign_in(client: &Client, email: &str, password: &str) -> Client {
     browser
 }
 
+/// TODO F9: once the application's `access_if` refuses everybody, a signed-in
+/// admin is sent to sign in rather than shown a view, the sign-in form is still
+/// served, and signing in again is refused without a session.
+#[tokio::test]
+async fn an_application_that_refuses_the_caller_serves_only_its_sign_in() -> sc_error::Result<()> {
+    let Some(bundle) = bundle_dir() else {
+        eprintln!(
+            "skipping: the Saltcorn UI bundle is not built (npm ci && npm run build in ui/saltcorn-ui)"
+        );
+        return Ok(());
+    };
+    let mut server = setup("access", bundle).await?;
+    let mut admin = sign_in(&server.client, ADMIN, PASSWORD).await;
+    let shown = admin.app_get("/view/List%20Books", &[]).await;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+
+    // Refuse everybody, through the admin API as the form saves.
+    let id = booksdb(&server._catalog).await.id.to_string();
+    let (_, list) = server.client.send("GET", "/api/applications", None).await;
+    let mut body = list
+        .as_array()
+        .and_then(|apps| apps.iter().find(|a| a["id"] == json!(id)))
+        .cloned()
+        .expect("listed");
+    body["access_if"] = json!("false");
+    let (status, saved) = server
+        .client
+        .send("PUT", &format!("/api/applications/{id}"), Some(body))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+
+    let refused = admin.app_get("/view/List%20Books", &[]).await;
+    assert_eq!(refused.status, StatusCode::FOUND, "{}", refused.body);
+    assert_eq!(
+        location(&refused),
+        "/auth/login?dest=%2Fview%2FList%2520Books"
+    );
+    assert!(!refused.body.contains("<tr"), "{}", refused.body);
+
+    let mut browser = visitor(&server.client);
+    let form_page = browser.app_get("/auth/login", &[]).await;
+    assert_eq!(form_page.status, StatusCode::OK, "{}", form_page.body);
+    let csrf = browser.cookies.get(CSRF_COOKIE).cloned().expect("a token");
+    let signed = browser
+        .app_post(
+            "/auth/login",
+            FORM,
+            form(&[("_csrf", &csrf), ("email", ADMIN), ("password", PASSWORD)]),
+            &[],
+        )
+        .await;
+    assert_eq!(signed.status, StatusCode::FORBIDDEN, "{}", signed.body);
+    assert!(!browser.cookies.contains_key(SESSION_COOKIE));
+    Ok(())
+}
+
 /// 7.1, 7.3, 7.4 and 7.5: somebody who is not signed in is sent to sign in and
 /// comes back to what they asked for; signing out leaves; sign-up is offered
 /// only when the settings say so; and a view whose table the application no

@@ -841,6 +841,10 @@ pub enum DataFieldKind {
     /// File reference: a relative path within a named file store, optionally restricted to
     /// a folder and/or file types.
     File { store: FileStoreId, folder: Option<String>, mime_allow: Vec<String> },
+    /// A password or token: a text column holding `v1:<nonce>:<ciphertext>` envelopes
+    /// (AES-256-GCM under the instance key, `<data dir>/secrets.key`). Write-only to every
+    /// client surface (TODO-imap M2): see "Secret fields" below.
+    Secret,
 }
 
 /// A field in a form (may derive from a DataField or be standalone).
@@ -857,6 +861,23 @@ pub struct FormField {
 impl DataField { pub fn to_form_field(&self) -> FormField { /* … */ } }
 impl FormField { pub fn to_data_field(&self) -> Option<DataField> { /* … */ } }
 ```
+
+**Secret fields** (`DataFieldKind::Secret`, TODO-imap M2). The row layer stores and reads
+envelopes and nothing else, so a row read from a table carries its secrets sealed. The plaintext
+is produced only where server-side code asks for it (`sc_catalog::secrets::reveal_*`): a trigger's
+event (so `{{ }}` templates and action formulas read `row.password`), a code body's or module's
+`db` reads (`TableHost`, unless it renders a view), and the row actions' own reads. Every client
+surface replaces a value with `SECRET_SENTINEL` and leaves `null` as `null`
+(`secrets::redact_*`): REST (lists, `select`, a write's answer), GraphQL (its own resolver), a
+live change's row (`api_row`), the admin data editor, CSV export, agents' and offline sync's reads
+(`read_rows_as`), and a view. That direction is chosen so a surface that forgets fails safe: it
+shows an envelope, which is useless without the key, never the plaintext. On write, the sentinel
+is dropped (so a client that sends back what it was shown keeps the stored value), an envelope
+that opens with the instance key is kept as it is, and anything else is sealed. A secret is never
+part of a key, a unique constraint, an index, a filter, an ordering, a dataset or a formula (it is
+not in the formula shape), never a default, never on `users`, and a field cannot change into or
+out of being one. A backup carries the envelopes plus `keys/secrets.key`; a restore re-seals each
+value under the target's key.
 
 **`FormField` is also how every configurable extension point declares its settings**, and
 there is deliberately **no separate `AttrSpec` type**. A `Framework` (§13.3), `Action`
@@ -1585,7 +1606,7 @@ erDiagram
     text label
     text description
     text type "rich type name"
-    text kind "Plain | Key | File"
+    text kind "Plain | Key | File | Calc | Secret"
     json attributes "kind parameters, incl. target_table"
   }
   TRIGGERS["_fd_triggers"] {
@@ -2058,7 +2079,13 @@ means something for one provider is a cost paid by everybody.
   *declaration* depends on the channel (`Action::config_spec_for`), which is also what the
   configuration is validated against. The transport is handed in through `ActionContext`,
   exactly as the JavaScript engine is, which is what lets its tests assert *what would have
-  been sent*.
+  been sent*. Five optional `smtp_*` settings (TODO-imap M3) send through **another server**:
+  `Mailer::send_via`, whose default holds the server to the relay rules in `sc_email::relay`
+  (ports 465/587, public addresses only, the host resolved once and the transport pointed at
+  the checked IP with the name kept for TLS). `smtp_password` is a `secret()` setting, masked
+  wherever a trigger is shown (`ActionRegistry::redact_trigger`). Templates, and only templates,
+  are validated in `template_shape`, which adds Secret fields, so `{{ accountⱵsmtp_password }}`
+  is prefetched and then opened (`secrets::reveal_join_value`).
 - `publish` puts one element on an internal stream (§14.10): a stream, a topic formula (blank is
   `user.id` on a stream with a topic per user — the event's user, so a workflow step tells the
   person who started the run) and a formula per declared key. A per-user publish with no user is
@@ -4276,7 +4303,13 @@ all. No existing credential gains it by upgrading. **An MCP token is the excepti
 defaults:** a mint that leaves a flag out grants it (`sc_api::mcp::token_flags_from_submitted`) and
 the panel starts with every box ticked, because a token is minted by an admin, on purpose, for an
 agent they are handing the installation to; the stored `grants` is explicit, so the copilot's
-cautious defaults and the token's generous ones never meet. `installModule` also needs `allow_create`. The
+cautious defaults and the token's generous ones never meet. **One key reaches past the mint:**
+a token may also store `allow_all: true` (`sc_api::mcp::ALLOW_ALL`; the panel's *All grants*
+switch, the CLI's `--allow-all`). It is stored rather than expanded, so a flag added in a later
+version — absent from the row — reads as granted (`sc_api::mcp::token_flags`, applied before
+`grants_from_attrs`/`areas_from_attrs` when the MCP route builds a token's tool set); a flag the
+row stores `false` stays denied. A token without it gets the cautious default for a flag it
+predates. An agent's configuration has no such key. `installModule` also needs `allow_create`. The
 built-in `coding` trait offers the same two acts as `list_modules_<scope>` / `install_module_<scope>`
 behind its own `may_install_modules` checkbox, admin callers only (like the shell), through
 `sc_agent::ModuleManager` — which `sc-server` answers with the same functions the two endpoints
@@ -5196,6 +5229,9 @@ pub struct Application {
     pub apis: Vec<ApiConfig>,            // any number, each on a sub-path, each with its own config
     pub static_dirs: Vec<StaticDir>,     // any number, each served at a sub-path
     pub csp: CspPolicy,                  // strict by default
+    pub min_role: u8,                    // least privileged role let in at all (100: everybody)
+    pub max_role: u8,                    // most privileged role held while using it (1: no cap)
+    pub access_if: String,               // formula over `user` that must hold ("" : none)
     pub attributes: Attrs,               // sparse per-app values (§9 rule)
 }
 
@@ -5269,6 +5305,43 @@ file stores** rather than a text field (`ApplicationForm.tsx`): the set is short
 already on the screen, and a typo in a text field is silent until a 404. A stored value the list
 no longer offers is still shown and still selected, the pattern the framework picker on the same
 form uses, because a form must never silently discard what it was given to edit.
+
+**Who may use an application at all** (TODO F9). Three settings sit in front of every other rule
+an application has, and every surface of it applies them through one function,
+`router::app_caller` → `sc_app::admit`:
+
+- **`min_role`**: a caller whose role number is higher is not let in. Anonymous callers hold
+  the public role (100), so any `min_role` below 100 refuses them too.
+- **`access_if`**: a formula that must hold, in the ownership-formula language with `user` in
+  scope (`null` when nobody is signed in) and no row — so `new Date()` and the like work, and a
+  bare identifier is refused on save. It is validated against the users table's fields, may not
+  call a module function or `predict` (it fails closed, so a module that is down would lock
+  everybody out), and is evaluated per request on the formula isolate. It sees the caller's
+  **real** role: it is a question about the person.
+- **`max_role`**: a caller who is let in holds at most this role. The cap is applied to the
+  `User` value itself before anything else sees it, so endpoint floors, ownership formulas, RLS,
+  code queries, triggers and the live socket all see the capped role without knowing a cap exists.
+
+A caller who is not let in is served as nobody, and reaches only the **sign-in surface**:
+
+| Surface | Refused caller |
+|---|---|
+| API provider | only `SIGN_IN_ENDPOINTS` (`login`, `signup`, `forgotPassword`, `setPassword`), as nobody; anything else is 401 (anonymous) or 403 (signed in). Named rather than read off `AuthRequirement::Public`, which a table with an ownership formula and GraphQL also have. |
+| Framework | served as nobody with `AppRequest::admitted = false`. A bundle is served (it draws the sign-in); Saltcorn UI serves `/auth/*` and its assets and sends everything else to `/auth/login`. |
+| Static directory | served as nobody, so only a file open to the public role. |
+| Live socket, upload slots | refused. The socket's periodic re-check re-applies all three, so a role taken away or an `access_if` that stops holding closes it (`signed_out`). |
+| Analytics API | only its sign-in endpoints. |
+
+**A sign-in as an account the application refuses is refused before a session exists**:
+`apply_session` checks `SessionClient::app` on `SessionAction::Start`, which covers the REST
+login, a rendered Saltcorn UI form and an identity provider's completion alike (the OAuth
+completion checks first, to redirect back with a reason). Because a session cookie may be shared
+across applications, the gate is per request, not per session: a session started on another
+application is refused here as soon as it arrives.
+
+An application with none of the three set (`min_role` 100, `max_role` 1, empty `access_if`) does
+no work for them at all. The columns are nullable because the bootstrap adds them to existing
+rows; `NULL` reads back as those defaults.
 
 **Request bodies and upload slots** (TODO F2.5–F2.7). Every body the server reads into memory
 is bounded by `--max-request-body` (default 2 MiB, an explicit `DefaultBodyLimit` plus the
@@ -8665,7 +8738,8 @@ streamproviders: {
 
 **Poll, not push**, and this is the one place a module provider is shaped differently from a Rust
 one. A module call is request/response on a Deno worker (`ModuleHost::call`); there is no channel
-from a worker back into the host, and building one is a milestone of its own. So `sc-stream`
+from a worker back into the host, and building one is a milestone of its own (a module *service*,
+§15.1c, is a long-lived call rather than such a channel). So `sc-stream`
 supplies the loop: `PollingProvider` wraps a poll-shaped kind, calls it every `interval_s`, carries
 the opaque `cursor` between calls, validates what comes back against the declared element type, and
 lets a poll that throws leave the supervisor to back off rather than spinning. Everything else is
@@ -11248,6 +11322,233 @@ environment one a module that may read every secret this process was started wit
 has the excuse this one has. Python modules request nothing at all, and the manifest reader
 refuses one that tries — there is no sandbox in the interpreter to enforce it (§15.2), and a
 grant nothing enforces is worse than no grant.
+
+### 15.1b Tables a module declares (`sc-module::tables`, TODO-imap M4)
+
+A module with state of its own — the mail module's accounts, folders and messages — needs tables,
+and neither "build these by hand from the README" nor v1's "map each of my fields onto a column of
+yours" is an answer an admin should get. So a plugin object may carry a **`tables`** key, data
+like `maptools`, and the server creates what it declares:
+
+```js
+tables: [{                                   // or (configuration) => [...]
+  name, label, description,
+  fields: [{ name, type, label, description, required, unique,
+             references, secret, file_store, file_folder, default }],
+  unique: [["account", "path"]],             // jointly-unique field lists
+  indexes: [["thread_key"]],                 // indexes, each a field list (TODO-imap M9.4)
+  ownership: "<formula>",                    // §7.3
+  min_role_read, min_role_write,
+}]
+```
+
+`type` is a basic or rich type name, omitted for the three kinds that decide their own storage:
+`references` (a `Key` to that table's primary key — another module table, or `users`), `secret`
+(a `Secret`, M2) and `file_store` (a `File` field). `default` is a JSON value or an `=`-prefixed
+expression, and becomes the field's `default_expression`, so it needs `required`. Python modules
+get the same key later; the declaration is language-neutral data, and everything below is Rust.
+
+**The module's code ships the declaration; the server applies it.** The host script passes
+`tables` on in the load's manifest (`ModuleManifest::tables`, JSON), `sc_module::tables` reads it
+into `TableDecl`s with `deny_unknown_fields` — a typo is an issue on the card, not a silently
+missing column — and `ModuleSet::load` calls `tables::sync` for each loaded module, in the set's
+order, after the actions are registered. `sync` builds **one `schema_edit` batch**: a
+`CreateTable` per missing table, an `AddField` per missing field, an `AddConstraint` per missing
+unique list and per missing index (a `btree` over the listed fields; any index over the same
+fields in the same order counts as there, whoever made it). It goes through the same planner, validation and transaction as an admin's edit or
+an agent's, so a module table is an ordinary table — triggers, live streams, REST, GraphQL,
+ownership, RLS and backups need no knowledge of modules — and a refused batch applies nothing.
+
+The rules, each chosen so that "on every load" is safe:
+
+- **Every module table gets an `id` int primary key** that numbers itself, and a declaration may
+  not name one. One convention means a `references` between module tables never names a column,
+  and a module's code can always address a row as `id`.
+- **Create and add; never drop, never alter.** Not on upgrade, not on uninstall — data outlives
+  the code that wrote it, and an admin's own field on a module table (`mail_messages.handled`) is
+  theirs. A declared field whose type or reference the database disagrees with is reported as an
+  issue on the module's card and left alone: retyping a column with rows in it is a migration, and
+  there is no migration framework (§3.3).
+- **A field an upgrade adds is nullable**, whatever it declares, with no default: the table has
+  rows, and `NOT NULL` on them needs a value nobody declared.
+- **Table settings belong to the creation.** `label`, `ownership` and the minimum roles go into
+  the `CreateTable`; after that they are the admin's, and a reload does not reassert them.
+- **Running it twice is a no-op.** That is what lets it run on every load — install, a reinstall
+  of a newer package (which is how a module is upgraded), a configuration change, a restart — so
+  "install" and "upgrade" are one code path rather than two that drift.
+- A table another loaded module already declared is refused on the later module's card. A name
+  that is a provided or metadata table, `users`, or `_fd_*` is refused.
+
+**The tables are claimed while the module is installed, and nothing is stored to say so.**
+`ModuleSet::module_tables()` is installed on the catalog after every reload
+(`Catalog::set_module_tables`, the same whole-set swap as the module functions), as
+`sc_catalog::ModuleTables`: table → module and declared field names. `schema_edit::apply`
+refuses `DropTable` of a claimed table and `DropField` of a declared field, naming the module —
+so the admin API, the MCP schema tool and an agent are all refused by the one check. Fields the
+admin added are not claimed. `table_json` carries `module` and `module_fields`, which the tables
+list badges and the field list's Delete button reads. Uninstalling removes the module from the
+next set, which releases the claim; the tables become ordinary tables, rows and all.
+
+**File fields name a store; a missing store is created** (M4.5). A declared `file_store` is a
+store *name*. When none of that name exists, `sync` saves and connects a `local` store for it at
+`sc_files::suggest_local_dir(name)` with `create: true` — the data directory, named after the
+store. An admin who wants the files on S3 or another disk creates a store of that name before
+installing, or edits the created one afterwards; a store that is defined but failing to connect is
+left for its own page to explain rather than replaced. That is what M6's `ctx.files` limits a
+module's writes to: the stores its declared file fields name.
+
+**Ownership through the module's own tables works as read and write rules** (M4.4, tested in
+`sc-module/tests/module_tables.rs`). `accountⱵowner === user.id || (accountⱵowner === null &&
+user.role <= accountⱵmin_role)` on `mail_messages`, and its two-hop form on `mail_attachments`,
+translate to correlated sub-selects for reads and are checked against the proposed row for writes
+(a message cannot be inserted into an account the writer does not own). The operation flags make
+a table readable more widely than it is writable: `mail_accounts`' `owner === user.id || (_read &&
+owner === null && user.role <= min_role)` lets staff read a shared account and only its owner
+change it, and refuses a non-admin creating a shared account or one owned by somebody else. The
+user object's field is `role`, not v1's `role_id`.
+
+**A formula grants rows, never fields** — there is no old-row/new-row comparison in the formula
+language, and adding one for this would put a second evaluation per updated row on every
+write path. So "only the service writes `status`, the cursor and the flags" is not something
+ownership can say. The module **re-checks** in its actions (which load rows `asUser()` and then
+write with the module's own authority), and the service treats its own columns as authoritative,
+overwriting a client's write to them on its next sync.
+
+**A bundled manifest lists the tables too.** `feldspar-module.json` may carry `tables: [names]`,
+which the card prints before the click ("Installing creates the tables …"). The catalog reader
+refuses a listed table that no `supplies` line names as a whole word, so the sentence an admin
+reads cannot omit one; `bundled_catalog.rs` asserts it for every shipped module.
+
+### 15.1c Module services (`sc-module::services`, TODO-imap M5)
+
+A module call is request/response: an action runs under its caller's authority, asks the server
+for what it needs while the caller waits, and answers. A mail module needs the other shape — IDLE
+connections held open for hours, writing rows as mail arrives, with nobody waiting. That is a
+**service**:
+
+```js
+services: {                                  // or (configuration) => ({ ... })
+  sync: {
+    description: "Keeps the mailboxes in step",
+    start: async (ctx) => { /* ... */ return async () => { /* stop */ }; },
+  },                                         // a bare function is its own start
+}
+```
+
+**A service is one call that lasts as long as the service.** The supervisor
+(`ServiceSupervisor`, held by `sc-server`'s `ModuleServices`) makes a `service_start` call; the
+host script calls `start(ctx)` and answers that call only when the service stops. Everything else
+follows from the call having an id: each `ctx.db` plan, `ctx.runTrigger` and `ctx.onTableChange`
+is an **ask on that call**, routed by the worker to the future awaiting it (§3's ask channel,
+unchanged), and served there. The asks name the call explicitly (`askFor(callId, …)`) rather than
+reading the async context, because a library's socket callback may run outside it. The call has
+**no wall clock and no call budget** (`Bounds::UNBOUNDED`); the JS slice (10 s) and the heap
+(256 MB) are the worker's and still apply.
+
+`ctx` is:
+
+| | |
+|---|---|
+| `ctx.db` | `sc_expr::DB_PRELUDE`'s fluent `db` — the code body's surface, evaluated once per worker, with `__scDbCall(token, plan)` answered as an ask on the service's call |
+| `ctx.runTrigger(name, payload)` | the `trigger` surface, when the server has a dispatcher |
+| `ctx.onTableChange(table, cb)` | a subscription through the `service` ask surface; `cb({table, op, row, old, own})` after each committed write |
+| `ctx.log(...)`, `.info/.warn/.error/.debug` | the server's log, tagged with the module |
+| `ctx.fail(error)` | stop the service (its `stop` is called) and have it restarted |
+| `ctx.signal` | an `AbortSignal`, aborted when the service is being stopped |
+| `ctx.configuration`, `ctx.module`, `ctx.service` | |
+
+**Authority: the module, over the module's tables.** There is no caller, so a service runs as
+the admin role with `{ "module": <name>, "service": <name> }` as the write's user — which is what a
+trigger fired by its insert sees as `user`, what an RLS policy reads, and what `own` in an
+`onTableChange` event is decided by. What makes that safe without a permission key is
+`ScopedTables`, a `CodeHost` in front of the service's `TableHost`: a plan's table must be one the
+module declared (§15.1b); `db.sql()` (which can name any table), models, `asUser()` (there is no
+user) and a Ⱶ-path whose key leaves the module's tables are refused by name. Writes go through the
+row layer, so triggers and live streams fire. The admin sees "Runs in the background and writes
+to its own tables" on the bundled card (`feldspar-module.json` `services: [names]`) and on the
+installed card.
+
+**Secrets need no second API.** The row layer reveals `Secret` values to server-side readers
+(TODO-imap M2.3), so a service's reads of its own tables return plaintext — which is everything
+`ctx.secrets` was to be. `onTableChange` rows are revealed the same way.
+
+**Lifecycle.** `ModuleServices::reload` stops every service and awaits each (`stop` called, its
+call answered, up to 10 s apiece) *before* it reloads the modules, and starts the new set *after*
+the catalog and the triggers have been reloaded, so a service's first row fires what it should.
+Install, configure, uninstall and Reload are therefore all a stop and a start. The host script
+also stops a module's services itself before it reloads or unloads that module, so a service never
+outlives the module object it closes over. A service whose `start` throws, that calls `ctx.fail`,
+or whose worker dies (a slice or heap trip, `process.exit()`) is logged and restarted with
+exponential backoff — 1 s doubling to 5 min, back to 1 s after a run of a minute or more — on the
+same worker if it is alive (so module-level state survives) or on a fresh one with every load
+replayed. Its state (`running`, `restarting` with the last error, `stopped`) and restart count are
+`module_json`'s `services`, shown on the card.
+
+**Table changes.** `ChangeRouter` is a catalog `TableEvents` listener (key `module-services`)
+that observes only tables a running service subscribed to, so an unwatched table costs a write
+nothing. A write is announced after it commits (a shared transaction's after-commit hook, as the
+live hub does), queued per service, and delivered in order by a task of its own as a short
+`service_event` call; the host script runs each callback in the service's async context and logs
+a failure without stopping the service. Subscriptions are dropped when a run ends, and `start`
+subscribes again.
+
+**Each module with a service has a worker of its own** (M5.3). A worker is one JavaScript thread:
+a module holding a hundred IDLE connections and parsing a 20 MB mail would make every other
+module on its worker wait, and put them inside its slice and heap. So the first load whose
+manifest has `services` moves the module onto a dedicated worker (`WorkerHandle::dedicated`, never
+chosen for another module), as a permission change moves one, and the pool remembers the name so
+later loads go straight there. A module that runs a service cannot also have view patterns (they
+must live on the view runtime's worker); they are an issue on its card. Sockets surviving between
+calls was shown by the spike (TODO-imap M1.4); that they survive a *service* restart on a live
+worker follows from the module not being reloaded, and `tests/module_services.rs` asserts the
+module-level state does.
+
+### 15.1d Module files (`sc-module::files`, TODO-imap M6)
+
+A module keeps files **only where its declared file fields say** (M4.5). Every declared field with
+a `file_store` names an **area**: the store, and its `file_folder` within it (the whole store when
+there is none). `sc_module::files::file_areas` reads them from the declarations, and
+`ModuleFiles` is the module's file host: `FileStoreHost`, at admin authority, behind a check that
+the store is one of the areas' and the normalised path lies under the area's folder (`docs/a.txt`
+is in `docs`; `docs-x/a.txt` and `docs` itself are not). Anything else is refused naming the areas
+there are. No permission key, for `ctx.db`'s reason: the module reaches only what it declared.
+
+**One surface for services and actions.** `ModuleFiles` is served as a sixth ask surface,
+`module_files` (`CallHosts::module_files`), beside the code body's `files`, which a v1 plugin's
+builder image list still uses unchanged. A service's call carries it (`ctx.files`), and so does
+every module action (`files` in v1's argument object, added by the host script when the call can
+ask). Both run as the module: an action's caller decides which rows it may reach, through its
+`Table` reads; the module decides which of its own files those rows need. Who may download a
+stored file is the File field's business.
+
+**The caller's files (TODO-imap M9.3).** An action also gets **`callerFiles`**: `read(store,
+path)` and `stat(store, path)` over the call's ordinary `files` surface with `authority: "user"`,
+which is a code body's `fs(…).asUser()` — the store's floor and every rule up the path decide, as
+for the caller's own download, and a refusal is the same refusal. It is read-only: a module
+writes nowhere but its own areas. The mail module's `mail_send` attaches an application file this
+way, so a user cannot mail themselves a file they could not have downloaded.
+
+**The vocabulary** is four functions, store-relative paths throughout:
+`write(store, path, data, { contentType, filename }) → path`, `read(store, path, { encoding }) →
+Buffer | string`, `remove(store, path) → bool`, `stat(store, path) → {size, …} | null`. The
+operations underneath are `FileStoreHost`'s own (`write`, `append`, `read` with `offset`/`length`,
+`stat`, `delete`, `rename`); any other operation, the `owner`/`minRole` options and a cross-store
+`toStore` are refused.
+
+**Streaming over a JSON seam.** Bytes cross base64, and one operation carries at most
+`--code-max-file-bytes` (8 MB). So the host script cuts what it is given — a string, a
+`Uint8Array`/`Buffer`/`ArrayBuffer`, or anything async-iterable such as a Node `Readable` or a web
+`ReadableStream` — into **1 MB pieces** (slices of a buffer, without copying; a stream's small
+chunks gathered up to 1 MB). One piece is a single `write`. More are written to
+`<path>.part-<random>` with `write` then `append`s, and **renamed** over the target at the end, so
+a reader never sees half a file; a failure deletes the temporary. A 20 MB attachment is twenty
+asks of a 1.4 MB string each, and the test writes 20 MB from a stream and 20 MB from a buffer and
+reads one back inside the worker's 256 MB heap. `read` reads in 4 MB pieces by `offset`.
+
+**Content type.** A file's declared type is kept in its metadata as
+`sc_files::CONTENT_TYPE_ATTRIBUTE` (`content_type`), and `file_response::serve` uses it before
+guessing from the path (a descriptor's own type still wins). `filename` is the existing
+`FILENAME_ATTRIBUTE`. Both are set by `ModuleFiles` after the `write` or the final `rename`.
 
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 

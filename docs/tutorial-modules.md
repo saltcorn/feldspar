@@ -57,7 +57,10 @@ milestone.
 Before the form, look under **Modules that ship with Saltcorn**. A few modules are written and
 maintained in the Saltcorn repository and travel inside the release you are running, so there
 is no package name to look up and nothing to trust that you are not already running. Today that
-is an **RSS feed** table provider and a **Markdown** renderer.
+is an **RSS feed** table provider, a **Markdown** renderer, **scikit-learn** model providers, the
+**Vue** and **React Native** application frameworks, and **Mail (IMAP and SMTP)**: IMAP mailboxes
+kept in four tables of the module's own by a background service, and mail actions
+([tutorial-mail.md](tutorial-mail.md)).
 
 They are still modules: nothing on those cards does anything until you install it. The card
 says what it supplies, what installing downloads and what installing lets it reach, and then
@@ -170,9 +173,12 @@ Four things worth knowing before you use this in anger:
   @saltcorn/mqtt → Permissions
   ```
 
-  With one exception: an environment variable nobody granted reads as `undefined` rather than
-  failing, because half of npm reads `process.env.NODE_ENV` on the way in and a module that
-  cannot be loaded is not a module you can grant anything to.
+  With two exceptions, for the same reason: half of npm does these on the way in, and a
+  module that cannot be loaded is not a module you can grant anything to. An environment
+  variable nobody granted reads as `undefined` rather than failing (`process.env.NODE_ENV`).
+  And every module may read the machine's name, `os.hostname()`, which loggers such as pino
+  record. Nothing else about the machine is readable: `os.networkInterfaces()`,
+  `os.release()`, `os.userInfo()` and the rest are denied, and no list grants them.
 
 And the honest limit, which is the same sentence the tab carries: **`npm install` is not
 sandboxed.** The fence is around a module that is *running*. The install that put it there ran
@@ -198,6 +204,36 @@ sees exactly what it expects.
 Nothing was restarted. Installing a module rebuilds the action set the trigger dispatcher runs
 from and revalidates every stored trigger against it, so a trigger you saved *before* installing
 the module (and which was refused as "unknown action") starts working the moment it is there.
+
+### Typing an action an application calls
+
+An action is also callable from an application: a trigger with event **None** over it, exposed
+on the app (the app's **Triggers** tick boxes, or `update_application` with `triggers`), is
+`api.run<Name>(payload)` in the generated client. By default that method takes and answers
+`unknown`. A module can say what the action takes and answers, beside `run`, in the type
+language a code query's `returns` uses (`"string"`, `"int"`, `"bool"`, `"json"`, …,
+`{ object: { … } }`, `{ array: T }`, `{ optional: T }`, `{ union: [T, …] }`):
+
+```js
+mail_test_account: {
+  description: "Log in to an account's IMAP and SMTP servers with the settings given.",
+  payload: { object: { account_id: { optional: "int" }, email: { optional: "string" } } },
+  returns: { object: { imap: "bool", smtp: { optional: "bool" }, error: { optional: "string" } } },
+  run: async ({ payload, user }) => { … },
+},
+```
+
+```ts
+runMailTestAccount(body?: RunMailTestAccountRequest): Promise<RunMailTestAccountResponse>;
+// RunMailTestAccountRequest = { account_id?: number | null; email?: string | null } & Record<string, unknown>
+// RunMailTestAccountResponse = { imap: boolean; smtp?: boolean | null; error?: string | null }
+```
+
+`payload` is always an `object`: the fields the action reads. They are the typed part of an open
+object, so a caller may still send more. Both declarations are a contract for the client and are
+not checked when the action runs. One that is not a type is reported on the module's card, and
+that action's method stays `unknown`. `describe_action` shows both to an agent. The bundled mail
+module declares them for all ten of its actions.
 
 ## Step 5 — Call its functions
 
@@ -292,6 +328,222 @@ Three things are worth knowing here that are not true in a code body:
   the method and why. A plugin whose `onLoad` reads rows still installs and still loads: the
   throw is an issue on its card, and every action it supplies goes on working.
 
+## Step 7 — A module that keeps its own tables
+
+Step 6's plugin works on a table the admin made. A module that has **state of its own** — a mail
+module's accounts, folders and messages — declares its tables instead, and the server creates
+them when the module loads. Nobody maps the module's fields onto columns of their own:
+
+```js
+module.exports = {
+  sc_plugin_api_version: 1,
+  tables: [
+    {
+      name: "tm_notebooks",
+      label: "Notebooks",
+      fields: [
+        { name: "owner", references: "users" },
+        { name: "title", type: "text", required: true },
+      ],
+      ownership: "owner === user.id",
+    },
+    {
+      name: "tm_notes",
+      fields: [
+        { name: "notebook", references: "tm_notebooks", required: true },
+        { name: "body", type: "text" },
+        { name: "pinned", type: "bool", required: true, default: false },
+        { name: "attachment", file_store: "tm_files", file_folder: "notes" },
+      ],
+      unique: [["notebook", "body"]],
+      ownership: "notebookⱵowner === user.id",
+      min_role_read: 1,
+      min_role_write: 1,
+    },
+  ],
+};
+```
+
+`tables` can also be a function of the module's configuration that returns the list.
+
+**What each field may say.**
+
+| key | meaning |
+|---|---|
+| `name` | the column (required) |
+| `type` | `text`, `int`, `float`, `decimal`, `bool`, `uuid`, `date`, `time`, `timestamp`, `json`, `bytes`, or a rich type's name. Not given for the next three |
+| `references` | a key to that table's primary key: another of the module's tables, or `users` |
+| `secret: true` | a [Secret field](tutorial-ownership.md): stored encrypted, write-only to clients |
+| `file_store`, `file_folder` | a file field, in that store, under that folder |
+| `required`, `unique` | `NOT NULL`, and `UNIQUE` |
+| `default` | the value an insert that leaves the field out gets: a JSON value, or `"=<expression>"`. Only on a `required` field |
+| `label`, `description` | the admin's words for it |
+
+The table itself may give a `label`, a `description`, jointly-`unique` field lists, `indexes`
+(field lists to index, `[["thread_key"]]`, for what a client searches or groups by), an
+`ownership` formula and the two minimum roles.
+
+**What the server does with it.** The tables are created through the same schema editor the
+admin's **Tables** screen uses, so they are ordinary tables: triggers, live streams, REST,
+GraphQL, ownership, RLS and backups treat them like any other.
+
+- **Every module table gets an `id` primary key**, a number that fills itself in. A declaration
+  does not mention it, so a `references` between two module tables never has to say which column.
+- **It happens on every load:** at install, on a reinstall with a newer version, after a
+  configuration change and at every restart. Missing tables are created and missing fields,
+  unique constraints and indexes added. When nothing is missing, nothing happens.
+- **Nothing is ever dropped or changed**, on upgrade or on uninstall. A field the admin added to
+  a module table stays theirs.
+  - If a declared field's type no longer matches the column, that is reported on the module's
+    card and the column is left as it is.
+  - A field that a newer version adds is added **nullable**, whatever it declares. The table
+    has rows already, and nothing says what they should hold.
+- **The settings belong to the creation.** The label, the ownership formula and the minimum roles
+  are applied when a table is created. After that they are the admin's, and an upgrade does not
+  put them back.
+- **A file field's store** is used if one of that name exists. Otherwise a local store is created
+  for it in the data directory, named after it. To keep the files somewhere else (S3, another
+  disk), create a store of that name before installing, or change the one that was created.
+- **While the module is installed**, the tables carry its name as a badge on **Data → Tables**.
+  The tables and the fields the module declared cannot be dropped. You can still add fields,
+  edit rows and set triggers. Uninstalling keeps the tables, which are then ordinary tables.
+- A table name is global, so prefix it with what the module is about (`mail_`, `tm_`). A table
+  another module already declared is refused on the second module's card.
+
+**Ownership across the module's tables.** A formula may follow keys through the module's own
+tables (`notebookⱵowner === user.id`, `messageⱵaccountⱵowner === user.id`). It decides reads and
+writes alike: a user can insert a note only into a notebook they own. Use the operation flags to
+make a table readable more widely than it is writable:
+`owner === user.id || (_read && owner === null && user.role <= min_role)` lets everyone at or
+above `min_role` read a shared row, and only its owner write it.
+
+**A formula grants rows, not fields.** A user who may update a row may update every field of it.
+If some fields should only be written by the module (a sync status, a cursor), its actions must
+re-check them, or its code must overwrite them, because the ownership model cannot make them
+read-only.
+
+**Listing them on a bundled card.** A module that ships in `plugins/` adds the table names to its
+`feldspar-module.json` as `tables`, and names each one in a `supplies` line. The catalog card then
+says "Installing creates the tables …" before the click.
+
+## Step 8 — A module that runs in the background
+
+An action runs when a trigger fires it. Some modules have to run all the time: the mail module
+keeps IDLE connections open and writes each new mail as a row the moment it arrives. Such a module
+exports **`services`**:
+
+```js
+module.exports = {
+  tables: [
+    { name: "tk_ticks", fields: [{ name: "at", type: "timestamp" }, { name: "note", type: "text" }] },
+    { name: "tk_settings", fields: [{ name: "every_s", type: "int" }] },
+  ],
+  services: {
+    ticker: {
+      description: "Writes a row on a timer",
+      start: async (ctx) => {
+        const settings = await ctx.db.tk_settings.first();
+        const every = ((settings && settings.every_s) || 60) * 1000;
+        const timer = setInterval(() => {
+          ctx.db.tk_ticks.insert({ at: new Date().toISOString() }).catch((e) => ctx.log.error(e.message));
+        }, every);
+        // Restart when an admin changes the settings row. `own` is true for this
+        // module's own writes, so it does not react to itself.
+        await ctx.onTableChange("tk_settings", (change) => {
+          if (!change.own) ctx.fail(new Error("the settings changed"));
+        });
+        // What `start` returns is the stop. It is awaited before the module is
+        // reloaded or uninstalled.
+        return async () => {
+          clearInterval(timer);
+          await ctx.db.tk_ticks.insert({ at: new Date().toISOString(), note: "stopped" });
+        };
+      },
+    },
+  },
+};
+```
+
+`services` can also be a function of the module's configuration, and a service can be a bare
+`start` function.
+
+**What `ctx` has.**
+
+| | |
+|---|---|
+| `ctx.db` | the module's own tables, with the same chain a code body's `db` has: `ctx.db.tk_ticks.where({ note: null }).orderBy("at", "desc").limit(10).rows()`, `.insert(row)`, `.where(…).update(values)`, `.where(…).delete()` |
+| `ctx.onTableChange(table, cb)` | calls `cb({ table, op, row, old, own })` after every committed insert, update or delete on one of the module's tables |
+| `ctx.runTrigger(name, payload)` | runs a trigger, as `trigger.run` does in a code body |
+| `ctx.log(…)` | the server's log, tagged with the module; also `ctx.log.warn`, `.error`, `.debug` |
+| `ctx.fail(error)` | gives up: the stop is called, and the service is started again after a delay |
+| `ctx.signal` | an `AbortSignal`, aborted when the service is being stopped |
+| `ctx.configuration` | the module's settings |
+| `ctx.files` | files in the module's own file areas: see below |
+
+**What it may touch.** A service runs as **the module**, not as a user: nobody called it. It may
+read and write **only the tables its module declared** (Step 7). Any other table, `ctx.db.sql()`,
+`asUser()` and a key path out of the module's tables are refused, naming the reason. Its writes
+are ordinary writes, so triggers fire and live pages update. A trigger fired by one sees
+`{ module, service }` as its `user`. Secret fields come back decrypted, because they are the
+module's own.
+
+**When it fails.** If `start` throws, the service calls `ctx.fail`, or its worker stops (a loop
+that never yields, the heap, `process.exit()`), the failure is logged and the service is started
+again after 1 s, then 2 s, 4 s … up to 5 minutes. A service that ran for a minute before failing
+starts again after 1 s. The card lists each service as **Running**, **Restarting** (with the
+error) or **Stopped**, and how many times it has been restarted.
+
+**When it stops.** Installing, configuring, reloading and removing a module all stop its services
+first, wait for each stop (up to 10 s), and then start them again on the new code. Use the stop to
+close connections. Do not rely on it to save state: a worker that dies does not run it.
+
+**Its own worker.** A module that runs a service gets a worker of its own, so a busy service does
+not hold up any other module's actions. Its module-level variables survive a restart of the
+service, but not a restart of the worker. A module that runs a service cannot also supply view
+patterns.
+
+**Files.** A module keeps files where its declared file fields say, and nowhere else. A field
+`{ name: "file", file_store: "mail_files", file_folder: "attachments" }` lets the module write
+under `attachments/` in the store `mail_files`. A service has `ctx.files`, and an action gets the
+same object as `files` in its argument:
+
+```js
+// `data` is a string, a Buffer/Uint8Array/ArrayBuffer, or a stream of them
+// (a Node Readable, a web ReadableStream, an async generator).
+const path = await ctx.files.write("mail_files", `attachments/${id}/${name}`, data, {
+  contentType: "application/pdf", // served as this type, whatever the name
+  filename: name,                  // the name a download is saved as
+});
+await ctx.db.mail_attachments.insert({ message: id, file: path });
+
+const bytes = await ctx.files.read("mail_files", path);              // a Buffer
+const text = await ctx.files.read("mail_files", path, { encoding: "utf8" });
+await ctx.files.stat("mail_files", path);                            // { size, … } or null
+await ctx.files.remove("mail_files", path);                          // true if it was there
+```
+
+Paths are relative to the store and must lie inside the folder; `write` replaces what is there
+and answers the normalised path, which is what a File field holds. A large file is sent in 1 MB
+pieces to a temporary name and renamed into place at the end, so it never has to be one string,
+and a reader never sees half of it. Another store, another folder or `..` is refused, naming the
+places the module may write. Files are written as the module, also from an action: the action's
+own table reads decide what its caller may reach.
+
+**The caller's files.** An action that takes a file the *user* names — an attachment to send, a
+document to convert — reads it with `callerFiles`, also in its argument. It reads anywhere in the
+application's file stores, but **as the caller**: a file they could not download is refused, with
+the same rules as their download. It cannot write.
+
+```js
+run: async ({ payload, callerFiles }) => {
+  const info = await callerFiles.stat("uploads", payload.path); // { size, mimeType, … } or null
+  const bytes = await callerFiles.read("uploads", payload.path); // a Buffer
+}
+```
+
+**On a bundled card**, list the services in `feldspar-module.json` as `services: ["ticker"]`. The
+card then says the module runs in the background and writes to its own tables.
+
 ## Developing a module against a running server
 
 Point the **local directory** source at your checkout. The package is copied into the modules
@@ -341,12 +593,14 @@ gets a fresh worker with every module reloaded into it, and nothing else on the 
 
 **Remove** on the card unloads the module, uninstalls the package and deletes the row, and the
 actions it supplied leave the picker immediately. A trigger still naming one says so rather than
-quietly doing nothing.
+quietly doing nothing. Tables the module declared (Step 7) stay, with their rows: they are
+ordinary tables from then on, and yours to drop.
 
 ## What this is not, yet
 
-- **Only actions, functions, table providers and view patterns.** Types, field views and event
-  types are named in the tab and not loaded.
+- **Only actions, functions, table providers, view patterns, tables and services.** Types, field
+  views and event types are named in the tab and not loaded. Only JavaScript modules have
+  `files` (TODO-imap M6); a Python module cannot declare tables yet, so it has no file area.
 - **Not only JavaScript any more.** The Type dropdown now offers four pairs, because a module can
   also be a `pip`-installable **Python** distribution supplying the same three things — see
   [tutorial-python.md](tutorial-python.md), whose step 7 writes one from an empty directory. What

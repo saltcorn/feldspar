@@ -11,9 +11,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use sc_catalog::Catalog;
 use sc_error::{Error, Result};
+use sc_types::{merge_secrets, redact_attrs};
 
 use crate::action::Action;
+use crate::trigger::Trigger;
 
 /// The actions available to triggers, by name.
 ///
@@ -99,6 +102,55 @@ impl ActionRegistry {
     /// Whether nothing is registered.
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
+    }
+
+    /// `trigger` as a client sees it: every [`secret`](sc_types::FormField::secret)
+    /// setting of its action replaced by the sentinel (§11.1), against the spec
+    /// the trigger's own table gives ([`config_spec_for`](Action::config_spec_for)).
+    ///
+    /// For every surface that shows a trigger to somebody — the admin API, the
+    /// agent's tools — and for none that keeps it: a backup writes the stored
+    /// value, because a restore has nothing else to put back. A workflow body,
+    /// and an action nothing implements, are returned as they are.
+    pub fn redact_trigger(&self, catalog: &Catalog, trigger: &Trigger) -> Trigger {
+        let mut out = trigger.clone();
+        if let (Some(configuration), Some(action)) = (
+            trigger.configuration(),
+            trigger.action().and_then(|a| self.get(a)),
+        ) {
+            let spec = action.config_spec_for(catalog, trigger.channel.as_deref());
+            // Infallible: the body is an action, or there would be no configuration.
+            let _ = out.set_configuration(redact_attrs(&spec, configuration));
+        }
+        out
+    }
+
+    /// The other half of [`redact_trigger`](ActionRegistry::redact_trigger):
+    /// wherever `submitted` sends a secret setting back as the sentinel, put
+    /// back what `stored` holds (or drop it when nothing is stored), so that
+    /// saving a trigger the editor showed masked keeps its password.
+    pub fn merge_trigger_secrets(
+        &self,
+        catalog: &Catalog,
+        stored: Option<&Trigger>,
+        submitted: &mut Trigger,
+    ) -> Result<()> {
+        let Some(action) = submitted.action().and_then(|a| self.get(a)) else {
+            return Ok(());
+        };
+        let Some(configuration) = submitted.configuration() else {
+            return Ok(());
+        };
+        let spec = action.config_spec_for(catalog, submitted.channel.as_deref());
+        // A stored value belongs to the stored *action*: switching a trigger
+        // from one action to another carries no secret across.
+        let previous = stored
+            .filter(|t| t.action() == submitted.action())
+            .and_then(Trigger::configuration)
+            .cloned()
+            .unwrap_or_default();
+        let merged = merge_secrets(&spec, &previous, configuration);
+        submitted.set_configuration(merged)
     }
 }
 

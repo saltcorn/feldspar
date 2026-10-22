@@ -231,6 +231,57 @@ the server-side runtime checks — same verdicts, different mechanism. **Forget 
 table clears the formula and the flag together and disables any policies it was enforcing,
 returning `tasks` to the plain admin-only default.
 
+## Step 8 — Keep a password in a Secret field
+
+Ownership decides *which rows* a user reads. A **Secret** field decides that one column is never
+read by any client at all, owner or not: an SMTP password, an IMAP password, an API token. It is
+written by the people who own it and read only by the server's own code.
+
+On **Tables → tasks → Fields → Add field**, name it `api_token` and pick **secret** in the type
+list (it is a kind, like `key` and `file`, and needs no type: it is stored as text). Then open
+**Data**, double-click the `api_token` cell of a row, and type a token. The editor is a
+password box, and once saved the cell shows `••••••••`.
+
+That is all any client ever gets back:
+
+- **REST** and the generated client: `GET /api/tasks` answers `"api_token": "••••••••"` for a row
+  that has one, and `null` for a row that has none. The generated `TasksRow` types it as
+  `string | null`, with a comment saying it is write-only.
+- **GraphQL**, **live updates** (`useLiveRows`), **CSV export**, the **admin data editor**, an
+  **agent's** table tools and **offline sync**: the same sentinel, or `null`.
+- **Writing** works: `PUT /api/tasks/7` with `{"api_token": "new-token"}` replaces it, and
+  `{"api_token": null}` clears it. A whole-row save that sends `"••••••••"` back, which is what a
+  form showing the row does, **keeps** the stored value.
+
+The server's own code sees the plaintext: a trigger's `{{ row.api_token }}` template and its
+action formulas, a JavaScript or Python code body's `db.tasks` reads, a module's actions and
+services. A view rendered for somebody looking (Saltcorn UI) does not. A `{{ }}` template in a
+trigger's settings also reads a secret **through a join**: `{{ taskⱵapi_token }}` on a trigger
+whose table refers to `tasks`, which is how `send_email` sends through an account's own SMTP
+server ([tutorial-triggers.md](tutorial-triggers.md), "`send_email`, and sending from an
+account's own server"). No other formula can name a secret.
+
+In the database the column holds only an envelope, `v1:<nonce>:<ciphertext>`, encrypted with
+AES-256-GCM under the instance's key in `<data dir>/secrets.key`. `psql` shows the envelope, and
+so does a database dump. A **backup** zip includes the key (`keys/secrets.key`), so a restore
+needs no token typed in again. That also means the backup can decrypt them: keep it as safe as
+the tokens. [OPERATIONS.md](OPERATIONS.md) §8.2 has the details, including what happens when the
+key file goes missing.
+
+Because each value is encrypted with a fresh nonce, equal secrets are different column values, and
+nothing that compares values can work. A Secret field therefore cannot be:
+- a primary key, unique, or part of a constraint or an index;
+- filtered or ordered on (`?api_token=eq.x` is refused);
+- read by a formula: an ownership formula, a calculated field, a default or a row constraint;
+- part of a dataset;
+- a field of the `users` table;
+- made from an existing field, or turned back into a plain one (add a new field and copy the
+  values across).
+
+A trigger on the table sees the plaintext, so anything that trigger writes or sends somewhere
+carries it: a `fetch` action's default body, a log row, the event a **workflow** run stores with
+its run. Do not hand a secret to an action you would not hand the password to.
+
 ## Things that trip people up
 
 - **Ownership widens, it never narrows.** The formula can only *add* access below the role

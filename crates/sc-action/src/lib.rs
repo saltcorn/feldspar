@@ -77,7 +77,7 @@ pub use scope::{
     EVENT_SCOPE, EventBindings, action_shape, check_formula, check_template, config_flag,
     config_str, event_formula_value, formula_map, optional_formula, optional_template,
     render_event_template, required_formula, required_template, step_shape, template_scope,
-    typed_value,
+    template_shape, typed_value,
 };
 pub use store::{
     COL_ACTION, COL_BODY, TRIGGERS_TABLE, bootstrap_triggers, delete_trigger, list_triggers,

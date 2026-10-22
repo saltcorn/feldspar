@@ -63,7 +63,8 @@ pub use ast::{Ast, BinaryOp, MemberProp, UnaryOp};
 #[cfg(feature = "eval")]
 pub use code::CodeRuntime;
 pub use code::{
-    CodeAdapter, CodeCall, CodeHost, CodeHosts, ConsoleLine, ConsoleSink, DEFAULT_CODE_TIMEOUT,
+    CodeAdapter, CodeCall, CodeHost, CodeHosts, ConsoleLine, ConsoleSink, DB_PRELUDE,
+    DEFAULT_CODE_TIMEOUT,
     DEFAULT_CODE_WORKERS, DEFAULT_FETCH_TIMEOUT, DEFAULT_MAX_FETCHES, DEFAULT_MAX_FILE_OPS,
     DEFAULT_MAX_HOST_CALLS, DEFAULT_MAX_INFLIGHT, DEFAULT_MAX_MODULE_CALLS,
     DEFAULT_MAX_TRIGGER_RUNS, DocRequest, FETCH_MARGIN, FetchHost, FileHost, LiveHost, LiveTopics,

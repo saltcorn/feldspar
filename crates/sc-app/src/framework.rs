@@ -73,6 +73,13 @@ pub struct AppRequest {
     /// is — so a framework, a test or a tool that builds a request without
     /// caring about language gets the behaviour it had before there was one.
     pub locale: Locale,
+    /// Whether the application's own access settings (`min_role`, `access_if`;
+    /// TODO F9) let this caller in. `false` is somebody — anonymous, or signed
+    /// in and refused, either way carried here as [`user`](Self::user) `None` —
+    /// who may reach the application's **sign-in surface** and nothing else; a
+    /// framework that serves data or pages must refuse them everything else.
+    /// A framework that serves only a bundle has nothing to refuse.
+    pub admitted: bool,
 }
 
 impl AppRequest {
@@ -93,6 +100,7 @@ impl AppRequest {
             base_url: String::new(),
             csrf_token: String::new(),
             locale: Locale::source(),
+            admitted: true,
         }
     }
 

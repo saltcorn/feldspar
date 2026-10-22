@@ -36,12 +36,14 @@ mod field_meta;
 mod file_stores;
 pub mod inmem;
 mod model_host;
+mod module_tables;
 mod observer;
 mod origin;
 mod prefetch;
 mod projection;
 mod provider;
 mod rls;
+pub mod secrets;
 mod spatial;
 mod sync;
 mod table;
@@ -76,9 +78,9 @@ pub use field::{
 };
 pub use field_meta::{
     FIELD_META_TABLE, FieldMeta, FieldMetaId, KIND_CALC, KIND_FILE, KIND_KEY, KIND_PLAIN,
-    bootstrap_field_meta, delete_field_meta, file_kind_config_spec, key_kind_config_spec,
-    list_field_meta, list_field_meta_for_table, load_field_meta, load_field_meta_by_field,
-    save_field_meta, save_field_meta_row,
+    KIND_SECRET, bootstrap_field_meta, delete_field_meta, file_kind_config_spec,
+    key_kind_config_spec, list_field_meta, list_field_meta_for_table, load_field_meta,
+    load_field_meta_by_field, save_field_meta, save_field_meta_row,
 };
 pub use file_stores::{
     FILE_STORES_TABLE, FileStoreConnections, NEW_LOCAL_FILE_STORE, QUERY_FILE_STORES,
@@ -88,6 +90,7 @@ pub use file_stores::{
     load_file_store_by_name, resolve_options, save_file_store, store_file_settings,
     unique_file_store_name,
 };
+pub use module_tables::{ModuleTableClaim, ModuleTables};
 pub use model_host::{ModelHost, ModelSummary, PredictRows, check_model_calls};
 pub use observer::{ReprojectedApp, SchemaChanged, SchemaObserver};
 pub use origin::PublicOrigin;
@@ -101,6 +104,7 @@ pub use rls::{
     Access, ROLE_GUC, clear_caller_context, disable_rls, disable_rls_sql, enable_rls,
     enable_rls_sql, run_in_context, run_in_context_read_only, set_caller_context,
 };
+pub use secrets::SecretKey;
 pub use spatial::bootstrap_spatial;
 pub use sync::{
     SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, bootstrap_sync, changed_keys,

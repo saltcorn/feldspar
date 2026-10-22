@@ -1,0 +1,56 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Two forwards
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="rfc822-mix"
+
+--rfc822-mix
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Outer text.
+
+--rfc822-mix
+Content-Type: message/rfc822
+Content-Disposition: inline
+
+From: Bo Inner <bo@feldspar.test>
+To: ada@feldspar.test
+Subject: Inline inner
+Date: Mon, 13 Oct 2025 08:00:00 +0000
+Message-ID: <inline-inner@feldspar.test>
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Inline inner body.
+
+--rfc822-mix
+Content-Type: message/rfc822
+Content-Disposition: attachment; filename="forwarded.eml"
+
+From: Bo Inner <bo@feldspar.test>
+To: ada@feldspar.test
+Subject: Attached inner
+Date: Mon, 13 Oct 2025 08:00:00 +0000
+Message-ID: <attached-inner@feldspar.test>
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Attached inner body.
+
+--rfc822-mix
+Content-Type: message/rfc822
+Content-Disposition: attachment
+
+From: Bo Inner <bo@feldspar.test>
+To: ada@feldspar.test
+Subject: Nameless inner
+Date: Mon, 13 Oct 2025 08:00:00 +0000
+Message-ID: <nameless-inner@feldspar.test>
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Nameless inner body.
+
+--rfc822-mix--

@@ -63,6 +63,7 @@ import {
   permissionProblems,
   permissionSummary,
   permissionText,
+  serviceState,
   suppliedSummary,
   toolchainMissing,
   toolchainSentence,
@@ -87,6 +88,8 @@ function module_(overrides: Partial<Module> = {}): Module {
     actions: [{ name: "mqtt_publish", description: "Publish a message", config_spec: [] }],
     functions: [],
     table_providers: [],
+    tables: [],
+    services: [],
     model_providers: [],
     stream_providers: [],
     view_patterns: [],
@@ -120,6 +123,8 @@ function bundled(overrides: Partial<BundledModule> = {}): BundledModule {
     description: "Read an RSS or Atom feed as a table.",
     supplies: ['A table provider, "RSS feed".'],
     installs: ["rss-parser"],
+    tables: [],
+    services: [],
     permissions: { net: ["*"], read: [], write: [], env: [] },
     installed: false,
     ...overrides,
@@ -352,6 +357,12 @@ describe("how an installed module reads", () => {
     expect(suppliedSummary(module_({ view_patterns: ["Mind map"] }))).toBe(
       "1 action and 1 view pattern",
     );
+  });
+
+  it("counts the tables it declares (TODO-imap M4)", () => {
+    expect(
+      suppliedSummary(module_({ tables: ["mail_accounts", "mail_messages"] })),
+    ).toBe("1 action and 2 tables");
   });
 
   it("marks a module that did not load, and one that loaded with a complaint", () => {
@@ -593,5 +604,35 @@ describe("any host", () => {
     expect(isClosed({ net: ["*"], read: [], write: [], env: [] })).toBe(false);
     // And the form does not refuse it on the way in.
     expect(permissionProblem("net", "*")).toBeNull();
+  });
+});
+
+describe("a module's services (TODO-imap M5.2)", () => {
+  const service = (overrides: Partial<Module["services"][number]> = {}) => ({
+    name: "sync",
+    description: "Keeps the mailboxes in step",
+    state: "running",
+    restarts: 0,
+    last_error: null,
+    ...overrides,
+  });
+
+  it("shows a running service green, and a failing one with why", () => {
+    expect(serviceState(service())).toEqual({ label: "Running", tone: "green", detail: null });
+    expect(
+      serviceState(service({ state: "restarting", restarts: 2, last_error: "login refused" })),
+    ).toEqual({ label: "Restarting", tone: "yellow", detail: "it failed: login refused" });
+    expect(serviceState(service({ restarts: 1, last_error: "timeout" })).detail).toBe(
+      "restarted once; last: timeout",
+    );
+    expect(serviceState(service({ state: "stopped" })).tone).toBe("red");
+  });
+
+  it("makes a module whose service is not running yellow, and counts services", () => {
+    const running = module_({ services: [service()] });
+    expect(moduleStatus(running).tone).toBe("green");
+    expect(suppliedSummary(running)).toBe("1 action and 1 service");
+    const failing = module_({ services: [service({ state: "restarting" })] });
+    expect(moduleStatus(failing)).toEqual({ label: "A service is not running", tone: "yellow" });
   });
 });

@@ -9057,8 +9057,11 @@ dependencies = [
 name = "sc-catalog"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
+ "getrandom 0.3.4",
  "sc-db",
  "sc-db-postgres",
  "sc-db-sqlite",
@@ -9194,6 +9197,7 @@ dependencies = [
  "sc-core-actions",
  "sc-db",
  "sc-db-postgres",
+ "sc-email",
  "sc-error",
  "sc-expr",
  "sc-files",
@@ -9467,7 +9471,9 @@ dependencies = [
  "futures",
  "node_resolver",
  "sc-action",
+ "sc-api",
  "sc-app",
+ "sc-auth",
  "sc-catalog",
  "sc-core-actions",
  "sc-db",
@@ -9475,6 +9481,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-live",
  "sc-log",
  "sc-model",
  "sc-query",

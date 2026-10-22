@@ -191,7 +191,7 @@ impl Archive {
 
     /// One entry's bytes, whole. The zip's checksum is checked as the entry is
     /// read to its end, and a mismatch is reported against the entry.
-    fn bytes(&self, path: &str) -> Result<Vec<u8>> {
+    pub(super) fn bytes(&self, path: &str) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         with_entry(self.clone(), path, |reader| {
             reader

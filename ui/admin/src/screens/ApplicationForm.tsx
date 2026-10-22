@@ -37,7 +37,8 @@ import type {
 import { navigate } from "../App";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader, PublicBadge } from "../layout";
-import { isPublic } from "../roles";
+import { isPublic, useRoles } from "../roles";
+import { RoleSelect } from "../roleSelect";
 import { setNotice } from "../notice";
 import {
   SettingsFields,
@@ -175,6 +176,12 @@ export function ApplicationForm({
   // Empty by default: a new app takes its framework's policy (§2.2) unless the
   // admin states one. Editing an app fills this in from what was stored.
   const [csp, setCsp] = useState("");
+  // Who may use the application at all (TODO F9). The defaults let everybody
+  // in as they are, which is what an application without them did.
+  const roles = useRoles();
+  const [minRole, setMinRole] = useState(100);
+  const [maxRole, setMaxRole] = useState(1);
+  const [accessIf, setAccessIf] = useState("");
 
   // Load the frameworks (always) and, when editing, the app to prefill.
   useEffect(() => {
@@ -238,6 +245,9 @@ export function ApplicationForm({
           );
           setUploads(uploadRowsFromApp(existing.uploads));
           setCsp(cspToText(existing.csp));
+          setMinRole(existing.min_role);
+          setMaxRole(existing.max_role);
+          setAccessIf(existing.access_if);
         } else {
           setFrameworkName(fws[0]?.name ?? "");
         }
@@ -330,6 +340,9 @@ export function ApplicationForm({
         // textarea was pre-filled would silently overrule that.
         csp: csp.trim() ? textToCsp(csp) : undefined,
         attributes: {},
+        min_role: minRole,
+        max_role: maxRole,
+        access_if: accessIf.trim(),
       };
       if (appId) {
         await api.updateApplication(appId, body);
@@ -907,6 +920,57 @@ export function ApplicationForm({
               />
               <Form.Text muted>
                 <T text="One directive per line, e.g. `default-src: 'self'`. Leave empty to use the framework's own default policy." />
+              </Form.Text>
+            </Form.Group>
+
+            <h5 className="mt-4">
+              <T text="Who may use this application" />
+            </h5>
+            <Row>
+              <Col md={6}>
+                <RoleSelect
+                  id="appMinRole"
+                  label={t("Minimum role")}
+                  value={minRole}
+                  roles={roles}
+                  onChange={setMinRole}
+                >
+                  <Form.Text muted>
+                    <T text="A user with a less privileged role cannot sign in to this application or call any of its endpoints. Public lets everybody in." />
+                  </Form.Text>
+                </RoleSelect>
+              </Col>
+              <Col md={6}>
+                <RoleSelect
+                  id="appMaxRole"
+                  label={t("Maximum role")}
+                  value={maxRole}
+                  roles={roles}
+                  onChange={setMaxRole}
+                >
+                  <Form.Text muted>
+                    <T text="Nobody holds a more privileged role while using this application: an admin is served as this role. Admin caps nobody." />
+                  </Form.Text>
+                </RoleSelect>
+              </Col>
+            </Row>
+            <Form.Group className="mb-3" controlId="appAccessIf">
+              <Form.Label>
+                <T text="Access condition" />
+              </Form.Label>
+              <Form.Control
+                as="textarea"
+                rows={2}
+                className="font-monospace"
+                value={accessIf}
+                placeholder={t("Example: user.department === \"Finance\"")}
+                onChange={(e) => setAccessIf(e.target.value)}
+              />
+              <Form.Text muted>
+                <T
+                  text="A formula that must hold for anybody to use this application, with {user} in scope as in an ownership formula ({null} when nobody is signed in), or a condition on the time. It sees the user’s own role, before the maximum above. Blank means no condition."
+                  values={{ user: <code>user</code>, null: <code>null</code> }}
+                />
               </Form.Text>
             </Form.Group>
 

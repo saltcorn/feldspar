@@ -1,0 +1,9 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Unknown charset
+MIME-Version: 1.0
+Content-Type: text/plain; charset=x-feldspar-unknown
+Content-Transfer-Encoding: 8bit
+
+Grüße, ein Gruß in UTF-8.

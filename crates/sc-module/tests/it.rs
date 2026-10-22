@@ -33,6 +33,12 @@ mod deno_host;
 mod frameworks;
 #[path = "host.rs"]
 mod host;
+#[path = "imap_ingest.rs"]
+mod imap_ingest;
+#[path = "imap_mirror.rs"]
+mod imap_mirror;
+#[path = "imap_spike.rs"]
+mod imap_spike;
 #[path = "install.rs"]
 mod install;
 #[path = "map_tools.rs"]
@@ -41,8 +47,14 @@ mod map_tools;
 mod model_providers;
 #[path = "module_actions.rs"]
 mod module_actions;
+#[path = "module_files.rs"]
+mod module_files;
+#[path = "module_services.rs"]
+mod module_services;
 #[path = "module_store.rs"]
 mod module_store;
+#[path = "module_tables.rs"]
+mod module_tables;
 #[path = "pg_provider.rs"]
 mod pg_provider;
 #[path = "rss_provider.rs"]

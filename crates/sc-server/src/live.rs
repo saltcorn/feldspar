@@ -1641,14 +1641,12 @@ impl Live {
     /// Re-read the session and re-ask access for every subscription (§3 rule
     /// 6). `Err` closes the connection.
     async fn recheck(&mut self) -> Result<Vec<ServerFrame>, CloseReason> {
+        // The user as the session names them now, before the application's
+        // access settings have had their say; `None` while nobody is signed in.
+        let mut now: Option<User> = None;
         if let Some(token) = &self.caller.session {
             match self.env.sessions.user_for(token).await {
-                Ok(Some(user)) => {
-                    // The next element of every `table_changes` subscription
-                    // is decided as the user is now.
-                    self.connection.set_user(Some(user.clone()));
-                    self.caller.user = Some(user);
-                }
+                Ok(Some(user)) => now = Some(user),
                 Ok(None) => {
                     return Err(CloseReason {
                         code: ErrorCode::SignedOut,
@@ -1674,6 +1672,26 @@ impl Live {
                 message: "this application is no longer served here".to_owned(),
             });
         };
+        // The application's own access settings, asked again (TODO F9): a
+        // role taken away, or an `access_if` that held an hour ago and no
+        // longer does, closes the socket as a sign-out would.
+        let now = match sc_app::admit(&app.app, now, self.env.evaluator.as_deref()).await {
+            sc_app::Admission::Admitted(user) => user,
+            sc_app::Admission::Refused => {
+                return Err(CloseReason {
+                    code: ErrorCode::SignedOut,
+                    message: "your account may no longer use this application, so this \
+                              connection is closed"
+                        .to_owned(),
+                });
+            }
+        };
+        if self.caller.session.is_some() {
+            // The next element of every `table_changes` subscription is
+            // decided as the user is now.
+            self.connection.set_user(now.clone());
+            self.caller.user = now;
+        }
         let names = self.subs.names();
         let mut frames = self.recheck_subs(&app, names).await;
         let kept = self.subs.names();

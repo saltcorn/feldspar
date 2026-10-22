@@ -225,6 +225,8 @@ async fn a_trigger_sends_the_rows_own_values_to_the_address_it_joins_to() -> Res
     assert_eq!(
         result,
         json!({
+            // The installation's own transport: no override was configured.
+            "smtp_host": null,
             "to": ["ada@example.com"],
             "cc": ["audit@example.com"],
             "bcc": [],

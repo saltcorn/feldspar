@@ -1491,10 +1491,21 @@ async fn dispatch_app(
             );
         };
 
-        let (session_token, user) = match app_caller(state, &jar, anonymous).await {
+        let AppCaller {
+            session: session_token,
+            user,
+            refused,
+        } = match app_caller(state, &app.app, &jar, anonymous).await {
             Ok(caller) => caller,
             Err(rejection) => return with_csp(*rejection, &csp),
         };
+        // A caller the application does not let in (TODO F9) reaches its
+        // sign-in endpoints, as nobody, and nothing else.
+        if let Some(refused) = refused
+            && !provider.is_sign_in(api_method, path)
+        {
+            return with_csp(refused.response(), &csp);
+        }
 
         // The declared content type decides how the body reaches the provider:
         // JSON (or an unlabelled body, which every JSON caller before file
@@ -1583,7 +1594,7 @@ async fn dispatch_app(
                     state,
                     jar,
                     session_token,
-                    SessionClient::of(headers),
+                    SessionClient::of(headers).for_app(app),
                     HandlerResponse {
                         body: resp.body,
                         status: resp.status,
@@ -1659,19 +1670,13 @@ async fn dispatch_app(
     // What a server-rendered framework reads (TODO "Saltcorn UI" §8): who is
     // looking, the query, the body, a few headers and the app's own origin. A
     // code framework reads the method and the path and ignores the rest.
-    let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
-    let user = match &session_token {
-        Some(token) => match state.sessions.user_for(token).await {
-            Ok(user) => user,
-            Err(e) => {
-                log_failure("session lookup failed", &e);
-                return with_csp(
-                    json_error(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed"),
-                    &csp,
-                );
-            }
-        },
-        None => None,
+    let AppCaller {
+        session: session_token,
+        user,
+        refused,
+    } = match app_caller(state, &app.app, &jar, false).await {
+        Ok(caller) => caller,
+        Err(rejection) => return with_csp(*rejection, &csp),
     };
     // The locale, negotiated once for this request (§16.1, D8): an application's
     // own pages, its view runtime and anything it fires are served in one
@@ -1685,6 +1690,10 @@ async fn dispatch_app(
         Err(rejection) => return with_csp(*rejection, &csp),
     };
     req.locale = crate::i18n::locale_or_default(&settings, negotiated.as_ref());
+    // A caller the application does not let in is served as nobody, and the
+    // framework is told so: a bundle is served all the same (it is what draws
+    // the sign-in), and a framework that renders data refuses them (TODO F9).
+    req.admitted = refused.is_none();
     // The token the CSRF middleware checked this request against, or minted for
     // it: what a rendered form carries, and what `req.csrfToken()` answers.
     req.csrf_token = csrf
@@ -1702,7 +1711,7 @@ async fn dispatch_app(
             let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::OK);
             // The same session code an API provider's response goes through, so
             // an application's rendered login sets the same cookie the same way.
-            let client = SessionClient::of(headers);
+            let client = SessionClient::of(headers).for_app(app);
             let cookies = match apply_session(state, jar, session_token, client, resp.session).await
             {
                 Ok(cookies) => cookies,
@@ -1755,7 +1764,7 @@ async fn dispatch_app(
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_analytics_api(
     state: &AppState,
-    app: &MountedApp,
+    app: &Arc<MountedApp>,
     api_method: ApiMethod,
     uri: &Uri,
     headers: &axum::http::HeaderMap,
@@ -1785,20 +1794,21 @@ async fn dispatch_analytics_api(
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
     };
     // A request the CSRF middleware let through as anonymous is nobody's.
-    let session_token = jar
-        .get(SESSION_COOKIE)
-        .filter(|_| !anonymous)
-        .map(|c| c.value().to_owned());
-    let user = match &session_token {
-        Some(token) => match state.sessions.user_for(token).await {
-            Ok(u) => u,
-            Err(e) => {
-                log_failure("session lookup failed", &e);
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed");
-            }
-        },
-        None => None,
+    let AppCaller {
+        session: session_token,
+        user,
+        refused,
+    } = match app_caller(state, &app.app, &jar, anonymous).await {
+        Ok(caller) => caller,
+        Err(rejection) => return *rejection,
     };
+    // Signing in and out are open to a caller the application does not let
+    // in; nothing else is (TODO F9).
+    if let Some(refused) = refused
+        && !APP_AUTH_ENDPOINTS.contains(&ep.name.as_str())
+    {
+        return refused.response();
+    }
     let scope = match sc_analytics::app::AppScope::load(
         catalog,
         app.app.id.0,
@@ -1869,7 +1879,14 @@ async fn dispatch_analytics_api(
     };
     let out = match handler(ctx).await {
         Ok(resp) => {
-            apply_response(state, jar, session_token, SessionClient::of(headers), resp).await
+            apply_response(
+                state,
+                jar,
+                session_token,
+                SessionClient::of(headers).for_app(app),
+                resp,
+            )
+            .await
         }
         Err(e) => {
             error_out(
@@ -1947,15 +1964,12 @@ async fn serve_static_dir(
         return missing();
     };
 
-    let user = match jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) {
-        Some(token) => match state.sessions.user_for(&token).await {
-            Ok(user) => user,
-            Err(e) => {
-                log_failure("session lookup failed", &e);
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed");
-            }
-        },
-        None => None,
+    // A caller the application does not let in (TODO F9) is served as nobody:
+    // a file open to the public role is part of the sign-in surface (a page
+    // and the assets it is drawn with), and every other file is refused.
+    let user = match app_caller(state, &app.app, jar, false).await {
+        Ok(caller) => caller.user,
+        Err(rejection) => return *rejection,
     };
     let caller = sc_files::FileCaller::new(
         user.as_ref().map_or(sc_files::ROLE_PUBLIC, |u| u.role),
@@ -2130,26 +2144,32 @@ async fn app_i18n_catalog(
     response
 }
 
-/// Who is calling an application's API: the session token the request carries
-/// and the user it names — **the** function an application authenticates with,
-/// for its REST providers and its live socket alike, so the socket can never
-/// be more permissive than a read.
+/// Who is calling an application: the session token the request carries and
+/// who the request is served as — **the** function an application
+/// authenticates with, for its REST providers, its pages, its static
+/// directories, its uploads and its live socket alike, so no surface can be
+/// more permissive than another.
 ///
 /// A request the CSRF middleware let through without a token, for an endpoint
 /// open to the public role (`anonymous`), is nobody's: its cookie is not read,
 /// so the session it may carry lends it no authority. A token that names no
 /// live session is an anonymous caller, and the token is returned anyway (a
 /// REST response may need to clear its cookie).
+///
+/// The application's own access settings (TODO F9) are applied here: a caller
+/// it does not let in is served as nobody, with [`AppCaller::refused`] saying
+/// so, and a caller it does let in holds at most its `max_role`.
 pub(crate) async fn app_caller(
     state: &AppState,
+    app: &sc_app::Application,
     jar: &CookieJar,
     anonymous: bool,
-) -> std::result::Result<(Option<String>, Option<User>), Box<Response>> {
-    let session_token = jar
+) -> std::result::Result<AppCaller, Box<Response>> {
+    let session = jar
         .get(SESSION_COOKIE)
         .filter(|_| !anonymous)
         .map(|c| c.value().to_owned());
-    let user = match &session_token {
+    let user = match &session {
         Some(token) => state.sessions.user_for(token).await.map_err(|e| {
             log_failure("session lookup failed", &e);
             Box::new(json_error(
@@ -2159,7 +2179,88 @@ pub(crate) async fn app_caller(
         })?,
         None => None,
     };
-    Ok((session_token, user))
+    let (user, refused) = admit_caller(state, app, user).await;
+    Ok(AppCaller {
+        session,
+        user,
+        refused,
+    })
+}
+
+/// [`sc_app::admit`] for a request: `(served as, refused)`. An application
+/// with no access settings costs nothing here.
+pub(crate) async fn admit_caller(
+    state: &AppState,
+    app: &sc_app::Application,
+    user: Option<User>,
+) -> (Option<User>, Option<Refused>) {
+    if !app.is_gated() && !app.caps_role() {
+        return (user, None);
+    }
+    let refused = match &user {
+        Some(_) => Refused::SignedIn,
+        None => Refused::Anonymous,
+    };
+    let evaluator = state.apps.evaluator();
+    match sc_app::admit(app, user, evaluator.as_deref()).await {
+        sc_app::Admission::Admitted(user) => (user, None),
+        sc_app::Admission::Refused => (None, Some(refused)),
+    }
+}
+
+/// The caller of one application request, as [`app_caller`] decided.
+pub(crate) struct AppCaller {
+    /// The session cookie's token, when the request carried one.
+    pub(crate) session: Option<String>,
+    /// Who the request is served as: the user, their role capped at the
+    /// application's `max_role`; `None` when anonymous **or refused**.
+    pub(crate) user: Option<User>,
+    /// `Some` when the application does not let this caller in. They may
+    /// reach its sign-in surface, as nobody, and nothing else.
+    pub(crate) refused: Option<Refused>,
+}
+
+/// Why an application does not let a caller in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// Nobody is signed in, and the application does not admit the public.
+    Anonymous,
+    /// Somebody is signed in whose role or `access_if` the application
+    /// refuses.
+    SignedIn,
+}
+
+impl Refused {
+    /// The answer to a request this caller may not make: a 401 inviting a
+    /// sign-in, or a 403 saying the account may not use the application.
+    pub(crate) fn response(self) -> Response {
+        let locale = crate::i18n::locale_for_user(None);
+        match self {
+            Refused::Anonymous => json_error(
+                StatusCode::UNAUTHORIZED,
+                t!(
+                    locale,
+                    "sign in with an account that may use this application"
+                ),
+            ),
+            Refused::SignedIn => json_error(
+                StatusCode::FORBIDDEN,
+                t!(locale, "your account may not use this application"),
+            ),
+        }
+    }
+}
+
+/// Refuse a sign-in to `app` as `user` when the application does not let them
+/// in (TODO F9): `Some(403)` before any session exists, so an account an
+/// application refuses never holds one started there.
+pub(crate) async fn refuse_sign_in(
+    state: &AppState,
+    app: &sc_app::Application,
+    user: &User,
+) -> Option<Response> {
+    let (_, refused) = admit_caller(state, app, Some(user.clone())).await;
+    refused.map(Refused::response)
 }
 
 /// An application's live socket: `GET {mount}/live` (TODO.md "Live updates"
@@ -2192,10 +2293,18 @@ async fn app_live(
     if !upgrade_origin_allowed(headers) {
         return upgrade_origin_refused();
     }
-    let (session, user) = match app_caller(state, jar, false).await {
+    let AppCaller {
+        session,
+        user,
+        refused,
+    } = match app_caller(state, &app.app, jar, false).await {
         Ok(caller) => caller,
         Err(rejection) => return *rejection,
     };
+    // A socket is not part of anybody's sign-in (TODO F9).
+    if let Some(refused) = refused {
+        return refused.response();
+    }
     let Some(catalog) = state.apps.catalog().cloned() else {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
     };
@@ -2615,6 +2724,14 @@ pub(crate) async fn apply_session(
         jar,
         stale: AppendHeaders(stale()),
     };
+    // An account the application does not let in (TODO F9) is refused here,
+    // before a session exists — whichever way it signed in: a password, a
+    // rendered form, an identity provider.
+    if let (SessionAction::Start(user), Some(app)) = (&session, &client.app)
+        && let Some(refusal) = refuse_sign_in(state, &app.app, user).await
+    {
+        return Err(Box::new(refusal));
+    }
     Ok(match session {
         SessionAction::Keep => SessionCookies {
             jar,
@@ -2697,6 +2814,9 @@ pub(crate) struct SessionClient {
     native: bool,
     /// The request's `Host`, for scoping a shared session cookie.
     host: Option<String>,
+    /// The application the session would be started on, whose access settings
+    /// a sign-in must pass (TODO F9); `None` on the admin host.
+    app: Option<Arc<MountedApp>>,
 }
 
 impl SessionClient {
@@ -2708,7 +2828,14 @@ impl SessionClient {
                 .get(header::HOST)
                 .and_then(|h| h.to_str().ok())
                 .map(str::to_owned),
+            app: None,
         }
+    }
+
+    /// The same client, signing in to `app`.
+    pub(crate) fn for_app(mut self, app: &Arc<MountedApp>) -> SessionClient {
+        self.app = Some(Arc::clone(app));
+        self
     }
 }
 

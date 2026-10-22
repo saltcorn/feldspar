@@ -584,7 +584,16 @@ impl TriggerDispatcher {
         if let Some(channel) = &trigger.channel {
             event = event.on(channel.clone());
         }
-        if let Some(row) = row.filter(|_| trigger.when.is_table_event()) {
+        if let Some(mut row) = row.filter(|_| trigger.when.is_table_event()) {
+            // The row is the stored one; the action sees its secrets' plaintext,
+            // as a real firing's would (TODO-imap M2).
+            if let Some(table) = trigger
+                .channel
+                .as_deref()
+                .and_then(|t| catalog.get(t).ok().flatten())
+            {
+                sc_catalog::secrets::reveal_json(catalog, &table, &mut row)?;
+            }
             // `old` as well on an update, because a body that names it must not
             // find `undefined` where a real firing would have had a row.
             if trigger.when == EventKind::Update {
@@ -649,8 +658,9 @@ impl TableEvents for TriggerDispatcher {
         // In the transaction the write was made in, when it was made in one: a
         // step's cascade is part of the step, and lands where the step lands
         // (§10.3, decision 6).
-        self.fire_in(catalog, &table_event(&write), write.tx.as_ref())
-            .await;
+        let mut event = table_event(&write);
+        reveal_secrets(catalog, write.table, &mut event);
+        self.fire_in(catalog, &event, write.tx.as_ref()).await;
         Ok(())
     }
 }
@@ -673,6 +683,27 @@ fn table_event(write: &TableWrite<'_>) -> Event {
             .caller(caller.role, caller.user.clone())
             .chained(caller.chain.clone()),
         None => event.caller(ROLE_PUBLIC, None),
+    }
+}
+
+/// Reveal the secrets of an event's rows (TODO-imap M2).
+///
+/// A write carries its row as stored, secrets sealed; the event its triggers
+/// see carries them revealed, because an event is what server-side code — a
+/// template, a code body — reads a row through. A secret that cannot be opened
+/// is left sealed and said in the log, rather than dropping the event.
+fn reveal_secrets(catalog: &Catalog, table: &sc_catalog::Table, event: &mut Event) {
+    for row in [event.row.as_mut(), event.old_row.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        if let Err(e) = sc_catalog::secrets::reveal_json(catalog, table, row) {
+            eprintln!(
+                "feldspar: a secret of `{}` could not be revealed to its triggers: {}",
+                table.name,
+                sc_error::format_chain(&e)
+            );
+        }
     }
 }
 

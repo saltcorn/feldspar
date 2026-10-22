@@ -33,8 +33,9 @@ use sc_core_actions::CodeSurfaces;
 use sc_error::{Context, Error, Result};
 use sc_expr::ModuleFnHosts;
 use sc_module::{
-    BundledModules, Installer, ModuleFrameworks, ModuleFunctions, ModuleHost, ModuleModelProviders,
-    ModuleSet, ModuleStreamProviders, ModuleTableProviders, ModuleViewRuntime, bootstrap_modules,
+    Backoff, BundledModules, Installer, ModuleFrameworks, ModuleFunctions, ModuleHost,
+    ModuleModelProviders, ModuleSet, ModuleStreamProviders, ModuleTableProviders,
+    ModuleViewRuntime, ServiceStatus, ServiceSupervisor, bootstrap_modules,
 };
 use sc_python::pymodule::{
     PyModuleFunctions, PyModuleHost, PyModuleModelProviders, PyModuleSet, PyModuleTableProviders,
@@ -84,6 +85,9 @@ pub struct ModuleServices {
     surfaces: Arc<CodeSurfaces>,
     /// The loaded set, replaced whole by [`reload`](ModuleServices::reload).
     loaded: RwLock<Arc<ModuleSet>>,
+    /// The modules' background services (TODO-imap M5): stopped before every
+    /// reload, and started again over the set it loads.
+    supervisor: ServiceSupervisor,
 }
 
 impl ModuleServices {
@@ -148,6 +152,11 @@ impl ModuleServices {
         let view_runtime = saltcorn_ui
             .as_deref()
             .and_then(|dir| sc_viewpattern::require_view_runtime(Some(dir)).ok());
+        let host = Arc::new(
+            ModuleHost::with_workers(&root, workers).with_view_runtime(view_runtime.clone()),
+        );
+        let supervisor = ServiceSupervisor::new(catalog, &host, Backoff::default())?;
+        supervisor.set_dispatcher(Arc::clone(dispatcher));
         let services = Arc::new(ModuleServices {
             catalog: Arc::clone(catalog),
             dispatcher: Arc::clone(dispatcher),
@@ -159,10 +168,9 @@ impl ModuleServices {
             python_host: Arc::new(PyModuleHost::new(Arc::clone(&python))),
             python,
             surfaces: Arc::new(CodeSurfaces::new()?),
-            host: Arc::new(
-                ModuleHost::with_workers(&root, workers).with_view_runtime(view_runtime.clone()),
-            ),
+            host,
             loaded: RwLock::new(Arc::new(ModuleSet::empty())),
+            supervisor,
         });
         services.reload().await?;
         // The view runtime is the bundle's and not a stored module's, so it is
@@ -189,6 +197,10 @@ impl ModuleServices {
     /// delete, and the Reload button — so there is one answer to "what happens
     /// to the live server", and no caller has to remember the four steps.
     pub async fn reload(&self) -> Result<()> {
+        // A module's services first, and awaited (TODO-imap M5): the load
+        // below replaces the module object each one closes over, and a stop
+        // that writes a last row must find its tables still served.
+        self.supervisor.stop_all().await;
         let mut registry = crate::triggers::base_action_registry(&self.agents, &self.models)?;
         let set = ModuleSet::load(
             &self.catalog,
@@ -212,6 +224,10 @@ impl ModuleServices {
         )
         .await?;
         self.dispatcher.set_registry(Arc::new(registry))?;
+        // The tables the modules declared (TODO-imap M4.3), which the load has
+        // just created or brought up to date: claimed on the catalog, so the
+        // schema editor refuses to drop them while their module is installed.
+        self.catalog.set_module_tables(set.module_tables())?;
         // The functions the modules supply, on the catalog (§4a). Installed here
         // rather than beside the registry because they are not actions and their
         // callers are not the dispatcher: a formula hoists one through
@@ -388,6 +404,10 @@ impl ModuleServices {
                 sc_error::format_chain(&e)
             );
         }
+        // And the services, last: their tables exist and are in the catalog,
+        // and the triggers on them are loaded, so the first row a service
+        // writes fires what it should.
+        self.supervisor.start(&set).await;
         // One set from here up: the Modules tab, the endpoints and `module_json`
         // are written once and serve both languages (§8).
         match self.loaded.write() {
@@ -451,6 +471,12 @@ impl ModuleServices {
             Ok(guard) => guard.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         }
+    }
+
+    /// One module's services as they stand — what its card shows beside each
+    /// (TODO-imap M5.2).
+    pub fn service_statuses(&self, module: &str) -> Vec<ServiceStatus> {
+        self.supervisor.statuses_of(module)
     }
 
     /// The loaded set as it stands — what the Modules tab renders.

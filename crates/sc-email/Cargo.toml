@@ -35,6 +35,10 @@ sc-catalog.workspace = true
 # The MJML compiler behind `render_mjml`: an HTML body written as MJML is
 # compiled here, in process, with no Node sidecar (§18.2).
 mrml = { workspace = true }
+# `lookup_host`, for an SMTP override: the host is resolved here, once, and
+# checked, and the transport is pointed at the address that was checked
+# (TODO-imap M3.3) rather than left to resolve the name a second time.
+tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 # `TestSmtp`: a listener that speaks enough of the protocol to accept a message.

@@ -123,6 +123,12 @@ pub struct FileMeta {
 /// path.
 pub const FILENAME_ATTRIBUTE: &str = "filename";
 
+/// The [`FileMeta::attributes`] key a file's declared **content type** is kept
+/// under — what the file routes serve it as, in place of the type guessed from
+/// its path. Written by a module that stored the file with a `contentType`
+/// (TODO-imap M6): an attachment's type is the mail's word, not its name's.
+pub const CONTENT_TYPE_ATTRIBUTE: &str = "content_type";
+
 /// A named directory/object store (technical design §14.1).
 ///
 /// Paths passed to every method are **relative to the store root** and use `/`

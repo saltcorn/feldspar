@@ -52,6 +52,27 @@ fn every_bundled_manifest_reads() {
     }
 }
 
+/// TODO-imap M4.6: a module that creates tables lists them, and its card's
+/// `supplies` names each one — the reader refuses a manifest that does not, so
+/// here it is enough that every entry read, and that each listed table is a
+/// whole word of some `supplies` line.
+#[test]
+fn a_manifests_tables_are_listed_in_what_it_supplies() {
+    let catalog = catalog();
+    assert!(catalog.issues().is_empty(), "{:?}", catalog.issues());
+    for module in catalog.modules() {
+        for table in &module.tables {
+            assert!(
+                module.supplies.iter().any(|line| line
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .any(|w| w == table)),
+                "{}: the table `{table}` is not named in `supplies`",
+                module.id
+            );
+        }
+    }
+}
+
 #[test]
 fn a_manifests_name_is_the_package_s_own() {
     // The one that silently breaks everything: the row, the loaded set and the
@@ -198,6 +219,121 @@ fn the_sklearn_module_ships_and_promises_the_download_it_makes() {
             .all(|line| line.contains("model provider")),
         "{:?}",
         sklearn.supplies
+    );
+}
+
+#[test]
+fn the_mail_module_ships_and_declares_the_tables_its_card_lists() {
+    // TODO-imap M7.1. The card promises four tables; the plugin object is what
+    // the server creates them from, so it must declare exactly those, and in a
+    // shape the table facility reads without an issue.
+    let catalog = catalog();
+    let imap = catalog.get("imap").expect("the mail module ships");
+    assert_eq!(imap.name, "@feldspar/imap");
+    assert_eq!(imap.language, ModuleLanguage::JavaScript);
+    assert!(imap.permissions.any_host(), "{:?}", imap.permissions);
+    for package in ["imapflow", "nodemailer", "@zone-eu/mailsplit"] {
+        assert!(imap.installs.iter().any(|p| p == package), "{:?}", imap.installs);
+    }
+    assert_eq!(
+        imap.tables,
+        ["mail_accounts", "mail_folders", "mail_messages", "mail_attachments"]
+    );
+
+    // `index.js` is JavaScript; node evaluates it (it requires nothing that
+    // `npm install` would have to fetch first).
+    let script = "console.log(JSON.stringify(require(process.argv[1]).tables))";
+    let output = match std::process::Command::new("node")
+        .args(["-e", script])
+        .arg(imap.directory.join("index.js"))
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("the mail module's tables: skipped, there is no `node` to evaluate index.js");
+            return;
+        }
+        Err(e) => panic!("could not run node: {e}"),
+    };
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let declared: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("`tables` is JSON");
+    let (decls, issues) = sc_module::tables::parse_declarations(&declared);
+    assert!(issues.is_empty(), "{issues:?}");
+    let names: Vec<&str> = decls.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, imap.tables);
+}
+
+/// Every mail action declares what an application sends it and gets back, and
+/// each declaration lowers — so `api.runMailSend()` and the rest are typed, and
+/// no declaration is dropped as "not a type" when the module loads.
+#[test]
+fn the_mail_actions_declare_types_that_lower() {
+    let imap = catalog()
+        .get("imap")
+        .expect("the mail module ships")
+        .clone();
+    let script = "const a = require(process.argv[1]).actions({}); \
+                  console.log(JSON.stringify(Object.fromEntries(Object.entries(a) \
+                  .map(([n, x]) => [n, { payload: x.payload, returns: x.returns }]))))";
+    let output = match std::process::Command::new("node")
+        .args(["-e", script])
+        .arg(imap.directory.join("index.js"))
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("the mail actions' types: skipped, there is no `node` to evaluate index.js");
+            return;
+        }
+        Err(e) => panic!("could not run node: {e}"),
+    };
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actions: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("the actions' types are JSON");
+    assert_eq!(actions.len(), 10, "{actions:?}");
+    for (name, types) in &actions {
+        match sc_api::parse_returns(&types["payload"]) {
+            Ok(sc_api::TypeSchema::Struct(_)) => {}
+            other => panic!("{name}'s payload: {other:?}"),
+        }
+        if let Err(e) = sc_api::parse_returns(&types["returns"]) {
+            panic!("{name}'s returns: {e}");
+        }
+    }
+}
+
+/// TODO-imap M10.1: the catalog the Modules tab shows is the one
+/// `plugins/README.md` documents — each bundled module has its row there, with
+/// its directory and its package's name, so a module added to `plugins/` is
+/// not one the docs have never heard of.
+#[test]
+fn every_bundled_module_has_its_row_in_the_plugins_readme() {
+    let catalog = catalog();
+    let readme = read(
+        &catalog
+            .root()
+            .expect("the catalog has a root")
+            .join("README.md"),
+    );
+    for module in catalog.modules() {
+        let row = format!("| `{}/` | `{}` |", module.id, module.name);
+        assert!(
+            readme.lines().any(|line| line.starts_with(&row)),
+            "plugins/README.md has no row starting `{row}`"
+        );
+    }
+    assert!(
+        catalog.get("imap").is_some(),
+        "the mail module is in the catalog"
     );
 }
 

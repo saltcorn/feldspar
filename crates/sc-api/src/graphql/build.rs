@@ -262,6 +262,7 @@ fn row_field_resolver(field: &DataField, names: &SchemaNames) -> resolve::Resolv
             None => resolve::column_field(name),
         },
         DataFieldKind::File { .. } => resolve::file_field(name),
+        DataFieldKind::Secret => resolve::secret_field(name),
         DataFieldKind::Plain | DataFieldKind::Calc { .. } => resolve::column_field(name),
     }
 }
@@ -637,7 +638,7 @@ fn writable_columns<'a>(
 /// door into a file store.
 fn write_scalar(field: &DataField) -> &'static str {
     match field.kind {
-        DataFieldKind::File { .. } => TypeRef::STRING,
+        DataFieldKind::File { .. } | DataFieldKind::Secret => TypeRef::STRING,
         _ => column_scalar(field),
     }
 }

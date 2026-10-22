@@ -4301,10 +4301,14 @@ pub fn admin_endpoints() -> EndpointSet {
 /// Every field is optional on the way *in* and present on the way *out*: a
 /// client may leave a flag to its default, and a stored credential records what
 /// was actually agreed to rather than what a later default would say.
+///
+/// `allow_all` beside them holds every flag, including those a later version
+/// adds (`crate::mcp::ALLOW_ALL`).
 fn api_token_grants_schema() -> TypeSchema {
     TypeSchema::struct_of(
         crate::mcp::FLAG_KEYS
             .into_iter()
+            .chain([crate::mcp::ALLOW_ALL])
             .map(|key| StructField::new(key, TypeSchema::optional(TypeSchema::bool()))),
     )
 }
@@ -4548,6 +4552,17 @@ fn table_schema() -> TypeSchema {
     // Whether this is one of Saltcorn's own metadata tables, added to the list:
     // its rows and settings are editable, its fields and constraints are not.
     fields.push(StructField::new("metadata", TypeSchema::bool()));
+    // The installed module that declared this table (TODO-imap M4.3), or null,
+    // and the fields it declared: the list badges the table, and the field
+    // list refuses to delete those fields while the module is installed.
+    fields.push(StructField::new(
+        "module",
+        TypeSchema::optional(TypeSchema::text()),
+    ));
+    fields.push(StructField::new(
+        "module_fields",
+        TypeSchema::array(TypeSchema::text()),
+    ));
     // The table provider serving its rows, or null for a table in a database
     // (§8.3). Present on every table rather than only on provided ones, so a
     // client never has to read absence as "it is in a database".
@@ -5104,6 +5119,21 @@ fn module_schema() -> TypeSchema {
         // provider *asks for* belongs to the table being created and is on
         // `listTableProviders`.
         StructField::new("table_providers", TypeSchema::array(TypeSchema::text())),
+        // The tables it declares (TODO-imap M4), created when it loaded.
+        StructField::new("tables", TypeSchema::array(TypeSchema::text())),
+        // The services it runs in the background (TODO-imap M5), each with its
+        // state: `running`, `restarting` (after a failure, with `last_error`)
+        // or `stopped`.
+        StructField::new(
+            "services",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("description", TypeSchema::text()),
+                StructField::new("state", TypeSchema::text()),
+                StructField::new("restarts", TypeSchema::int()),
+                StructField::new("last_error", TypeSchema::optional(TypeSchema::text())),
+            ])),
+        ),
         // The model providers it supplies — names only, for the same reason:
         // what a provider *asks for* belongs to the model being fitted and is
         // on `listModelProviders`.
@@ -5159,6 +5189,12 @@ fn bundled_module_schema() -> TypeSchema {
         // What installing it downloads — the dependencies that are deliberately
         // not in the release, so an admin knows the click reaches a registry.
         StructField::new("installs", TypeSchema::array(TypeSchema::text())),
+        // The tables installing it creates (TODO-imap M4.6) and uninstalling
+        // keeps — each also named in `supplies`.
+        StructField::new("tables", TypeSchema::array(TypeSchema::text())),
+        // The services it runs in the background (TODO-imap M5): the card says
+        // so before the click.
+        StructField::new("services", TypeSchema::array(TypeSchema::text())),
         // What it will be granted: the same `{ net, read, write, env }` shape a
         // module's own permissions have, so one renderer draws both. Always
         // closed for a Python module — there is nothing to enforce it (§10).
@@ -5746,6 +5782,12 @@ fn application_fields() -> Vec<StructField> {
         StructField::new("uploads", TypeSchema::array(upload_slot_schema())),
         StructField::new("csp", TypeSchema::json()),
         StructField::new("attributes", TypeSchema::json()),
+        // Who may use the application at all (TODO F9): the least privileged
+        // role let in, the most privileged role held while using it, and a
+        // formula over `user` that must hold (empty for none).
+        StructField::new("min_role", TypeSchema::int()),
+        StructField::new("max_role", TypeSchema::int()),
+        StructField::new("access_if", TypeSchema::text()),
     ]
 }
 

@@ -45,6 +45,10 @@ serde_json.workspace = true
 # is the one thing in this crate that needs a clock.
 tokio = { workspace = true }
 uuid.workspace = true
+# Secret fields (`secrets`): the envelope's cipher, its nonce, its spelling.
+aes-gcm.workspace = true
+getrandom.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 sc-test-harness.workspace = true

@@ -46,7 +46,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::router::{
-    AppState, Resolved, SessionClient, apply_session, log_failure, parse_query, resolve_app,
+    AppState, Resolved, SessionClient, apply_session, log_failure, parse_query, refuse_sign_in,
+    resolve_app,
 };
 
 /// Where every route of the flow lives.
@@ -621,12 +622,31 @@ pub(crate) async fn complete(
     let session_token = jar
         .get(crate::security::SESSION_COOKIE)
         .map(|c| c.value().to_owned());
+    // On an application's host, the sign-in must pass the application's access
+    // settings (TODO F9): refused here with the way back and a reason, rather
+    // than with `apply_session`'s bare 403, which it would otherwise meet.
+    let client = match resolve_app(&state, &headers, &jar) {
+        Resolved::App(app) => {
+            if refuse_sign_in(&state, &app.app, &completion.user)
+                .await
+                .is_some()
+            {
+                return Redirect::to(&with_error(
+                    &completion.return_to,
+                    "your account may not use this application",
+                ))
+                .into_response();
+            }
+            SessionClient::of(&headers).for_app(&app)
+        }
+        _ => SessionClient::of(&headers),
+    };
     let jar = jar.remove(binding_removal());
     let cookies = match apply_session(
         &state,
         jar,
         session_token,
-        SessionClient::of(&headers),
+        client,
         SessionAction::Start(completion.user),
     )
     .await

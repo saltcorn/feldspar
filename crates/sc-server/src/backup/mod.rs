@@ -27,6 +27,7 @@
 //! file-stores/<store>/files/<path>    the bytes, as they are
 //! users/users.json                    { roles, fields } — the admin-added columns
 //! users/rows.ndjson                   the accounts, one per line — hashes included
+//! keys/secrets.key                    the key Secret fields are sealed with, when rows hold any
 //! modules.json                        [ module, … ] — reinstalled from where they came
 //! db-connections.json                 [ connection, … ] — passwords included
 //! analytics/datasets.json             [ dataset, … ]
@@ -140,6 +141,12 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub(crate) const USERS_FILE: &str = "users/users.json";
 /// The user accounts, one per line.
 pub(crate) const USER_ROWS_FILE: &str = "users/rows.ndjson";
+/// The instance key Secret fields are sealed with (TODO-imap M2.5), present
+/// when a backed-up table's rows hold any — the 32 bytes of `secrets.key`. The
+/// manifest names it under [`MANIFEST_SECRETS_KEY`].
+pub(crate) const SECRETS_KEY_FILE: &str = "keys/secrets.key";
+/// The manifest entry that says the backup carries [`SECRETS_KEY_FILE`].
+pub(crate) const MANIFEST_SECRETS_KEY: &str = "secrets_key";
 /// The settings section the SSL choice covers — the one section of `_fd_config`
 /// a backup carries. Named here because the writer picks the keys out of it and
 /// the restorer refuses every key that is not in it: a backup must not be a way to

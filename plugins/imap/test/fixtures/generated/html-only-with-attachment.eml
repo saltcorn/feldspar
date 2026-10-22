@@ -1,0 +1,22 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: HTML only
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mixed-html-only"
+
+--mixed-html-only
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<div>Please find the <i>invoice</i> attached.</div>
+
+--mixed-html-only
+Content-Type: application/pdf; name="invoice.pdf"
+Content-Disposition: attachment; filename="invoice.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+
+--mixed-html-only--

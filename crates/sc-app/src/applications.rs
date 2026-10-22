@@ -81,6 +81,20 @@ pub const COL_STATIC_DIRS: &str = "static_dirs";
 pub const COL_UPLOADS: &str = "uploads";
 /// The content-security policy (JSON object of directive → source list).
 pub const COL_CSP: &str = "csp";
+/// The least privileged role that may use the application (an integer,
+/// `1..=100`).
+///
+/// Nullable for [`COL_TRIGGERS`]' reason: it arrived after the table did, so
+/// [`bootstrap`] adds it to tables that already have rows. `NULL` reads back as
+/// `100`, the public role — nobody refused.
+pub const COL_MIN_ROLE: &str = "min_role";
+/// The most privileged role a caller holds while using the application (an
+/// integer, `1..=100`). Nullable as [`COL_MIN_ROLE`] is; `NULL` reads back as
+/// `1` — nobody capped.
+pub const COL_MAX_ROLE: &str = "max_role";
+/// The formula a caller must satisfy to use the application (text). Nullable;
+/// `NULL` reads back as no condition.
+pub const COL_ACCESS_IF: &str = "access_if";
 
 /// The fields of the `_fd_applications` table, in declaration order.
 ///
@@ -93,6 +107,7 @@ fn applications_fields() -> Vec<DataField> {
     let text = || TypeRef::Basic(BasicType::Text);
     let json = || TypeRef::Basic(BasicType::Json);
     let uuid = || TypeRef::Basic(BasicType::Uuid);
+    let int = || TypeRef::Basic(BasicType::Int);
     vec![
         DataField::plain(COL_ID, uuid()).required().primary_key(),
         DataField::plain(COL_NAME, text()).required(),
@@ -113,6 +128,10 @@ fn applications_fields() -> Vec<DataField> {
         DataField::plain(COL_UPLOADS, json()),
         DataField::plain(COL_CSP, json()).required(),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
+        // Not `required`, for the reason above it: see [`COL_MIN_ROLE`].
+        DataField::plain(COL_MIN_ROLE, int()),
+        DataField::plain(COL_MAX_ROLE, int()),
+        DataField::plain(COL_ACCESS_IF, text()),
     ]
 }
 

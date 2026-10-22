@@ -1258,8 +1258,13 @@ pub(crate) const REQUIRE: &str = "require";
 /// inside it. Each terminal answers a `DbPromise` — see [`SETUP`] — and the
 /// `.then()` that unwraps a reply preserves that class through species, so a
 /// forgotten `await` is a named error wherever the chain ended.
-#[cfg(feature = "eval")]
-pub(crate) const DB_PRELUDE: &str = r#"
+///
+/// **Public, and not behind `eval`**, because a module's **service** (TODO-imap
+/// M5) is handed the same `ctx.db`: the module host evaluates this text on its
+/// own worker and answers `__scDbCall(token, plan)` itself, with the service's
+/// call as the token. One fluent surface, so a module author and a code-body
+/// author write the same chain.
+pub const DB_PRELUDE: &str = r#"
 Object.defineProperty(globalThis, "__scMakeDb", {
   writable: false, configurable: false, enumerable: false,
   // One run's `db`, over one run's token. The token is the factory's argument

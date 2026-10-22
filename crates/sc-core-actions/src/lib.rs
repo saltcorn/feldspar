@@ -217,7 +217,21 @@ mod tests {
         assert_eq!(names("publish"), vec!["stream", "topic", "value"]);
         assert_eq!(
             names("send_email"),
-            vec!["to", "cc", "bcc", "from", "subject", "html", "mjml", "text"]
+            vec![
+                "to",
+                "cc",
+                "bcc",
+                "from",
+                "subject",
+                "html",
+                "mjml",
+                "text",
+                "smtp_host",
+                "smtp_port",
+                "smtp_security",
+                "smtp_user",
+                "smtp_password"
+            ]
         );
     }
 }

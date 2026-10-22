@@ -485,6 +485,29 @@ pub fn app_triggers(
     Ok(resolved)
 }
 
+/// What each exposed trigger's action declares it takes and answers, by
+/// trigger name, for its typed `run…` method ([`sc_api::action_types`]).
+///
+/// A declaration that does not lower leaves its trigger untyped rather than
+/// failing the mount: the module that declared it was told when it loaded, and
+/// an app whose client says `unknown` still works.
+fn trigger_types(
+    triggers: &[Trigger],
+    registry: Option<&sc_action::ActionRegistry>,
+) -> std::collections::HashMap<String, sc_api::ActionTypes> {
+    let Some(registry) = registry else {
+        return Default::default();
+    };
+    triggers
+        .iter()
+        .filter_map(|t| {
+            let action = registry.get(t.action()?)?;
+            let types = sc_api::action_types(action.as_ref()).ok()?;
+            (!types.is_empty()).then(|| (t.name.clone(), types))
+        })
+        .collect()
+}
+
 /// Build the API providers an application enables, each on its own sub-path
 /// (design §13.4).
 ///
@@ -529,11 +552,15 @@ pub fn app_providers_with(
         return Ok(Vec::new());
     }
     let triggers = app_triggers(app, dispatcher)?;
+    let trigger_types = trigger_types(&triggers, dispatcher.map(|d| d.registry()).as_deref());
     app.apis
         .iter()
         .map(|api| match api.provider.as_str() {
             REST_PROVIDER => {
                 let mut provider = RestProvider::project_with(&api.mount, &tables, &triggers)
+                    // Typed `run…` methods, where the action declares its
+                    // payload and answer.
+                    .with_trigger_types(&trigger_types)
                     // The application's own cap on a list read, from its stored
                     // provider configuration.
                     .with_row_cap(rest_row_cap(&api.config))
@@ -974,5 +1001,54 @@ mod mount_tests {
         // …and an app with none says so rather than inventing a place to put it.
         let mut none = Application::new("Blog", "blog", FrameworkRef::new(REACT_FRAMEWORK));
         assert!(select_api(&mut none, None, "--api").is_err());
+    }
+
+    #[test]
+    fn an_exposed_trigger_is_typed_from_its_action_and_a_bad_declaration_is_not() {
+        use sc_action::{Action, ActionContext, ActionRegistry, EventKind};
+        use serde_json::{Value as Json, json};
+
+        struct Typed(&'static str, Json);
+
+        #[async_trait::async_trait]
+        impl Action for Typed {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn config_spec(&self) -> Vec<sc_types::FormField> {
+                Vec::new()
+            }
+            fn returns_type(&self) -> Option<Json> {
+                Some(self.1.clone())
+            }
+            async fn run(&self, _ctx: &mut ActionContext<'_>) -> Result<Json> {
+                Ok(Json::Null)
+            }
+        }
+
+        let mut registry = ActionRegistry::new();
+        registry
+            .register(Arc::new(Typed(
+                "ping",
+                json!({ "object": { "ok": "bool" } }),
+            )))
+            .unwrap();
+        registry
+            .register(Arc::new(Typed("broken", json!({ "array": 3 }))))
+            .unwrap();
+        let triggers = [
+            Trigger::new("ping_now", EventKind::None, "ping"),
+            Trigger::new("broken_now", EventKind::None, "broken"),
+        ];
+        let types = trigger_types(&triggers, Some(&registry));
+        assert!(types["ping_now"].returns.is_some());
+        assert!(
+            !types.contains_key("broken_now"),
+            "untyped, not a failed mount"
+        );
+        assert!(trigger_types(&triggers, None).is_empty());
     }
 }

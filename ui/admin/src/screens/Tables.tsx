@@ -288,6 +288,18 @@ export function Tables() {
                         <T text="metadata" />
                       </StatusBadge>
                     )}
+                    {/* A table an installed module declared (TODO-imap M4.3):
+                        named after the module, because that is who to ask why
+                        it is there and what depends on it. */}
+                    {table.module && (
+                      <StatusBadge
+                        tone="secondary"
+                        className="ms-2"
+                        title={t("Declared by the module {module}, which reads and writes it. You can add fields, edit rows and set triggers; the module's own fields cannot be deleted while it is installed.", { module: table.module })}
+                      >
+                        {table.module}
+                      </StatusBadge>
+                    )}
                     {/* Which database it came from, whenever that is not
                         Saltcorn's own. Unbadged means primary — the common case,
                         and the one an installation with no connections is

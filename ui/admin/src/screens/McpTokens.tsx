@@ -34,6 +34,7 @@ import {
   emptyMint,
   grantFields,
   grantedKeys,
+  holdsAll,
   mcpUrl,
   mintProblem,
   mintRequest,
@@ -212,6 +213,14 @@ export function McpTokensPanel({ enabled }: { enabled: boolean }) {
 
               <fieldset className="mb-3">
                 <legend className="form-label"><T text="This token may" /></legend>
+                <Form.Check
+                  type="switch"
+                  id="mcp-grant-all"
+                  className="mb-2"
+                  label={t("All grants, including any a later version adds (an unticked box below is still left out)")}
+                  checked={form.all}
+                  onChange={(e) => setForm({ ...form, all: e.target.checked })}
+                />
                 {(fields ?? []).map((field) => (
                   <Form.Check
                     key={field.name}
@@ -275,6 +284,9 @@ export function McpTokensPanel({ enabled }: { enabled: boolean }) {
                             <span className={`badge ${badge.tone} ms-1`}>{badge.label}</span>
                           </td>
                           <td>
+                            {holdsAll(token) && (
+                              <span className="badge bg-primary-lt me-1">{t("all")}</span>
+                            )}
                             {grantedKeys(token).map((key) => (
                               <span className="badge bg-secondary-lt me-1" key={key}>
                                 {shortGrantLabel(key)}

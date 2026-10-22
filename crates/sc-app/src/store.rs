@@ -32,9 +32,9 @@ use crate::application::{
     ApiConfig, AppId, Application, CspPolicy, FrameworkRef, StaticDir, StreamRef, TriggerRef,
 };
 use crate::applications::{
-    APPLICATIONS_TABLE, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS,
-    COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN,
-    COL_TABLES, COL_TRIGGERS, COL_UPLOADS,
+    APPLICATIONS_TABLE, COL_ACCESS_IF, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION,
+    COL_EXTRA_FRAMEWORKS, COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_MAX_ROLE, COL_MIN_ROLE,
+    COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN, COL_TABLES, COL_TRIGGERS, COL_UPLOADS,
 };
 use crate::framework::{CFG_STORE, validate_framework_config};
 
@@ -129,6 +129,9 @@ pub async fn save_application(catalog: &Catalog, app: &Application) -> Result<Ap
     // may only be told about rows of a table its application includes (TODO.md
     // "Live updates" §3 rule 3; the socket checks it again on subscribe).
     validate_change_streams(catalog, app).await?;
+    // …and who may use it at all: the two roles in order, and the formula
+    // against the users table's fields.
+    crate::access::validate_access(catalog, app)?;
     // …and each provider's own settings, against the spec that provider
     // declares. An unknown key is refused rather than stored and ignored: the
     // form renders exactly the spec, so a key outside it is a typo or a stale
@@ -294,6 +297,9 @@ fn app_columns() -> Vec<String> {
         COL_UPLOADS,
         COL_CSP,
         COL_ATTRIBUTES,
+        COL_MIN_ROLE,
+        COL_MAX_ROLE,
+        COL_ACCESS_IF,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -339,6 +345,9 @@ fn app_values(app: &Application) -> Result<Vec<Value>> {
         Value::Json(crate::upload_slots_json(&app.uploads)),
         Value::Json(csp_to_json(&app.csp)),
         Value::Json(Json::Object(app.attributes.clone())),
+        Value::Int(i64::from(app.min_role)),
+        Value::Int(i64::from(app.max_role)),
+        Value::Text(app.access_if.trim().to_owned()),
     ])
 }
 
@@ -438,7 +447,29 @@ pub(crate) fn application_from_row(row: &Row) -> Result<Application> {
         },
         csp: csp_from_json(json_column(row, COL_CSP)?)?,
         attributes: object(json_column(row, COL_ATTRIBUTES)?, COL_ATTRIBUTES)?,
+        // Read leniently for `NULL`/absent, as the triggers are: the columns
+        // arrived after the table did.
+        min_role: role_column(row, COL_MIN_ROLE, sc_auth::ROLE_PUBLIC)?,
+        max_role: role_column(row, COL_MAX_ROLE, sc_auth::ROLE_ADMIN)?,
+        access_if: match row.get(COL_ACCESS_IF) {
+            Some(Value::Text(t)) => t.clone(),
+            Some(Value::Null) | None => String::new(),
+            other => return Err(bad_column(COL_ACCESS_IF, "text", other)),
+        },
     })
+}
+
+/// A role column: `NULL`/absent is `default`, anything outside `1..=100` is a
+/// broken row.
+fn role_column(row: &Row, column: &str, default: u8) -> Result<u8> {
+    match row.get(column) {
+        Some(Value::Null) | None => Ok(default),
+        Some(Value::Int(i)) => u8::try_from(*i)
+            .ok()
+            .filter(|r| (sc_auth::ROLE_ADMIN..=sc_auth::ROLE_PUBLIC).contains(r))
+            .ok_or_else(|| bad_column(column, "a role, 1 to 100", row.get(column))),
+        other => Err(bad_column(column, "a role, 1 to 100", other)),
+    }
 }
 
 /// An API row's `config` object — absent or `null` meaning "no settings", the

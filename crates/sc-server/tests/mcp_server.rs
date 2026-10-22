@@ -1721,3 +1721,191 @@ async fn the_module_tools_are_offered_only_to_a_token_given_allow_modules() -> s
     );
     Ok(())
 }
+
+/// The whole loop an agent needs to call a module's action from its app: a
+/// `none` trigger made with `save_trigger`, exposed with `update_application`'s
+/// `triggers` section, and `api.run<Name>()` in the generated client at once —
+/// with no one ticking a box. A trigger with an event, or one that does not
+/// exist, is refused by name; a public one needs `allow_access_changes`; and
+/// removing one takes the method back out of the client.
+#[tokio::test]
+async fn a_trigger_is_exposed_on_an_app_and_removed_over_mcp() -> sc_error::Result<()> {
+    let Harness {
+        mut client,
+        router,
+        catalog,
+        apps,
+        _db,
+    } = setup().await?;
+    enable_mcp(&catalog, true).await?;
+    let dir = TempDir::new("triggers");
+    catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", &dir.0)?))?;
+    let builder = mint(
+        &mut client,
+        "builder",
+        json!({ "allow_access_changes": false, "allow_drop": false }),
+    )
+    .await;
+    let admin = mint(
+        &mut client,
+        "admin",
+        json!({ "allow_access_changes": true }),
+    )
+    .await;
+
+    edit_schema(
+        &router,
+        &builder,
+        json!([{
+            "op": "create_table",
+            "table": "audit",
+            "fields": [
+                { "name": "id", "type": "int", "primary_key": true },
+                { "name": "title", "type": "text" },
+            ],
+        }]),
+    )
+    .await;
+    mount_shop(&catalog, &apps, &["audit"]).await?;
+
+    // The section is advertised, not only accepted: an agent reads the schema.
+    let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+    let (_, listed) = McpRequest::new(&builder, list).send(&router).await;
+    let update = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("update_application"))
+        .expect("update_application is offered");
+    assert!(
+        update["inputSchema"]["properties"]["triggers"]["properties"]["add"].is_object(),
+        "{update}"
+    );
+    assert!(
+        update["description"]
+            .as_str()
+            .unwrap()
+            .contains("`triggers` — the **triggers** it exposes"),
+        "{update}"
+    );
+
+    let insert = json!({ "table": "audit", "values": { "title": "payload.what" } });
+    for (name, when, min_role) in [
+        ("log_visit", "none", Some(80)),
+        ("unset_role", "none", None),
+        ("open_door", "none", Some(100)),
+        ("on_audit", "insert", None),
+    ] {
+        let mut trigger = json!({
+            "name": name,
+            "when": when,
+            "action": "insert_row",
+            "configuration": insert,
+        });
+        if when == "insert" {
+            trigger["table"] = json!("audit");
+        }
+        if let Some(role) = min_role {
+            trigger["min_role"] = json!(role);
+        }
+        let (error, saved) = call_tool(&router, &admin, "save_trigger", trigger).await;
+        assert!(!error, "{saved}");
+    }
+
+    let (error, exposed) = call_tool(
+        &router,
+        &builder,
+        "update_application",
+        json!({ "application": "shop", "triggers": { "add": ["log_visit", "unset_role"] } }),
+    )
+    .await;
+    assert!(!error, "{exposed}");
+    assert_eq!(exposed["was"]["triggers"], json!([]), "{exposed}");
+    let first = &exposed["triggers"][0];
+    assert_eq!(first["name"], json!("log_visit"), "{exposed}");
+    assert_eq!(first["action"], json!("insert_row"), "{exposed}");
+    assert_eq!(first["min_role"], json!(80), "{exposed}");
+    assert_eq!(first["method"], json!("runLogVisit"), "{exposed}");
+    assert_eq!(
+        first["route"],
+        json!("POST /api/actions/log_visit"),
+        "{exposed}"
+    );
+    assert!(first.get("note").is_none(), "{exposed}");
+    // Left admin-only: said so, since that is an easy mistake to make.
+    assert!(
+        exposed["triggers"][1]["note"]
+            .to_string()
+            .contains("only admins"),
+        "{exposed}"
+    );
+    // Stored (the admin's tick box reads this), mounted, and in the client.
+    let stored = sc_app::load_application_by_subdomain(&catalog, "shop")
+        .await?
+        .unwrap();
+    assert!(stored.exposes_trigger("log_visit") && stored.exposes_trigger("unset_role"));
+    assert!(apps.get("shop").unwrap().app.exposes_trigger("log_visit"));
+    let client_ts = dir.0.join("web/src/client.ts");
+    await_client(&client_ts, "runLogVisit").await;
+    let (error, described) = call_tool(&router, &builder, "describe_applications", json!({})).await;
+    assert!(!error, "{described}");
+    assert!(described.to_string().contains("log_visit"), "{described}");
+
+    // Refused by name, and nothing saved: an event trigger, a missing one.
+    for (name, says) in [("on_audit", "insert"), ("no_such", "no_such")] {
+        let (error, refused) = call_tool(
+            &router,
+            &builder,
+            "update_application",
+            json!({ "application": "shop", "triggers": { "add": [name] } }),
+        )
+        .await;
+        assert!(error, "{refused}");
+        let text = refused.to_string();
+        assert!(
+            text.contains(&format!("`{name}`")) && text.contains(says),
+            "{text}"
+        );
+    }
+    // A public trigger opens a route to signed-out callers.
+    let public = json!({ "application": "shop", "triggers": { "add": ["open_door"] } });
+    let (error, refused) = call_tool(&router, &builder, "update_application", public.clone()).await;
+    assert!(
+        error && refused.to_string().contains("allow_access_changes"),
+        "{refused}"
+    );
+    let stored = sc_app::load_application_by_subdomain(&catalog, "shop")
+        .await?
+        .unwrap();
+    assert_eq!(stored.triggers.len(), 2);
+    let (error, opened) = call_tool(&router, &admin, "update_application", public).await;
+    assert!(!error, "{opened}");
+    assert_eq!(opened["triggers"][2]["min_role"], json!(100), "{opened}");
+
+    // Removing it takes the method out of the client and the mount.
+    let (error, removed) = call_tool(
+        &router,
+        &builder,
+        "update_application",
+        json!({ "application": "shop", "triggers": { "remove": ["log_visit"] } }),
+    )
+    .await;
+    assert!(!error, "{removed}");
+    assert_eq!(
+        removed["was"]["triggers"],
+        json!(["log_visit", "unset_role", "open_door"]),
+        "{removed}"
+    );
+    assert!(!apps.get("shop").unwrap().app.exposes_trigger("log_visit"));
+    let mut gone = false;
+    for _ in 0..100 {
+        let text = std::fs::read_to_string(&client_ts).unwrap_or_default();
+        if text.contains("runOpenDoor") && !text.contains("runLogVisit") {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(gone, "the client still has runLogVisit");
+    Ok(())
+}

@@ -242,6 +242,7 @@
   "Write to context key": "Escribir en la clave de contexto",
   "Write to field": "Escribir en el campo",
   "You need to sign in to see {what}.": "Debes iniciar sesión para ver {what}.",
+  "You need to sign in with an account that may use this application.": "Debe iniciar sesión con una cuenta que pueda usar esta aplicación.",
   "Your role may not see {what}.": "Es posible que tu rol no pueda ver {what}.",
   "a scripted stream, for tests": "un flujo con script, para pruebas",
   "admin UI": "interfaz de administración",
@@ -251,8 +252,10 @@
   "invalid credentials": "credenciales no válidas",
   "minting an API token needs a signed-in admin": "crear un token de API requiere un administrador con sesión iniciada",
   "off serves plain HTTP (right behind a TLS-terminating proxy, and for local development). letsencrypt obtains and renews certificates automatically. custom serves the certificate below.": "off sirve HTTP sin cifrar (justo detrás de un proxy que termina TLS y para el desarrollo local). letsencrypt obtiene y renueva los certificados automáticamente. custom sirve el certificado de abajo.",
+  "sign in with an account that may use this application": "inicie sesión con una cuenta que pueda usar esta aplicación",
   "starttls connects in the clear and upgrades (port 587). tls is encrypted from the first byte (port 465). none is plain SMTP, which is only reasonable for a relay on a network you trust — credentials are refused with it.": "starttls se conecta sin cifrar y luego se actualiza (puerto 587). tls está cifrado desde el primer byte (puerto 465). none es SMTP sin cifrar, lo que solo resulta razonable para un relay en una red de confianza; las credenciales se rechazan con esta opción.",
   "the page {name}": "la página {name}",
   "the view {name}": "la vista {name}",
-  "view_app timeout per action (seconds)": "tiempo de espera de view_app por acción (segundos)"
+  "view_app timeout per action (seconds)": "tiempo de espera de view_app por acción (segundos)",
+  "your account may not use this application": "su cuenta no puede usar esta aplicación"
 }

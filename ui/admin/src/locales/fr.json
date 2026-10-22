@@ -954,5 +954,12 @@
   "anonymous": "anonyme",
   "Default value": "Valeur par défaut",
   "A JavaScript expression used when a new row leaves this field empty. It can use": "Une expression JavaScript utilisée lorsqu'une nouvelle ligne laisse ce champ vide. Elle peut utiliser",
-  "(the user writing the row) and the row's other fields.": "(l'utilisateur qui écrit la ligne) et les autres champs de la ligne."
+  "(the user writing the row) and the row's other fields.": "(l'utilisateur qui écrit la ligne) et les autres champs de la ligne.",
+  "Who may use this application": "Qui peut utiliser cette application",
+  "Maximum role": "Rôle maximal",
+  "Access condition": "Condition d’accès",
+  "Example: user.department === \"Finance\"": "Exemple : user.department === \"Finance\"",
+  "A user with a less privileged role cannot sign in to this application or call any of its endpoints. Public lets everybody in.": "Un utilisateur ayant un rôle moins privilégié ne peut ni se connecter à cette application ni appeler aucun de ses points d’accès. Public laisse entrer tout le monde.",
+  "Nobody holds a more privileged role while using this application: an admin is served as this role. Admin caps nobody.": "Personne ne détient un rôle plus privilégié en utilisant cette application : un administrateur est servi avec ce rôle. Administrateur ne limite personne.",
+  "A formula that must hold for anybody to use this application, with {user} in scope as in an ownership formula ({null} when nobody is signed in), or a condition on the time. It sees the user’s own role, before the maximum above. Blank means no condition.": "Une formule qui doit être vraie pour que quiconque utilise cette application, avec {user} disponible comme dans une formule de propriété ({null} quand personne n’est connecté), ou une condition sur l’heure. Elle voit le rôle propre de l’utilisateur, avant le maximum ci-dessus. Vide signifie aucune condition."
 }

@@ -3363,3 +3363,163 @@ async fn large_binary_rows_and_files_stream_through_a_backup_and_restore() -> sc
     );
     Ok(())
 }
+
+/// Secret fields (TODO-imap M2), through the admin API and a backup.
+///
+/// The data editor writes a secret and reads back only its sentinel; a
+/// trigger on the table sees the plaintext. A backup carries the envelopes and
+/// the key that opens them (`keys/secrets.key`, flagged in the manifest) and
+/// no plaintext; restored into a second server with **a key of its own**, each
+/// value is sealed again under that key, which stays. A backup without the key
+/// restores the rows with the secrets left empty, and says so for the table.
+#[tokio::test]
+async fn secret_fields_are_write_only_and_a_backup_reseals_them_under_the_target_key()
+-> sc_error::Result<()> {
+    const PLAINTEXT: &str = "Grüße-€-pässwort";
+    let mut source = setup().await?;
+    source
+        .catalog
+        .set_secret_key(sc_catalog::SecretKey::generate()?);
+    for (table, field) in [
+        (
+            "mailboxes",
+            json!({ "name": "id", "type": "int", "primary_key": true }),
+        ),
+        ("mailboxes", json!({ "name": "label", "type": "text" })),
+        (
+            "mailboxes",
+            json!({ "name": "password", "kind": { "type": "secret" } }),
+        ),
+        (
+            "seen",
+            json!({ "name": "id", "type": "int", "primary_key": true }),
+        ),
+        ("seen", json!({ "name": "password", "type": "text" })),
+    ] {
+        if field["name"] == json!("id") {
+            let (status, body) = source
+                .client
+                .send("POST", "/api/tables", Some(json!({ "name": table })))
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+        }
+        let (status, body) = source
+            .client
+            .send("POST", &format!("/api/tables/{table}/fields"), Some(field))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    // A trigger is server-side code: it sees the plaintext.
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/triggers",
+            Some(json!({
+                "name": "copy_password",
+                "description": "",
+                "when": "insert",
+                "channel": "mailboxes",
+                "action": "insert_row",
+                "configuration": { "table": "seen", "values": { "password": "row.password" } },
+                "min_role": null,
+                "enabled": true,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // The data editor: written, and never read back.
+    let (status, created) = source
+        .client
+        .send(
+            "POST",
+            "/api/tables/mailboxes/rows",
+            Some(json!({ "label": "orders@", "password": PLAINTEXT })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["password"], json!(sc_types::SECRET_SENTINEL));
+    assert!(!created.to_string().contains(PLAINTEXT), "{created}");
+    let (status, listed) = source
+        .client
+        .send("GET", "/api/tables/mailboxes/rows", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed[0]["password"], json!(sc_types::SECRET_SENTINEL));
+    assert!(!listed.to_string().contains(PLAINTEXT), "{listed}");
+    let (_, seen) = source
+        .client
+        .send("GET", "/api/tables/seen/rows", None)
+        .await;
+    assert_eq!(
+        seen[0]["password"],
+        json!(PLAINTEXT),
+        "the trigger saw it: {seen}"
+    );
+
+    // The backup: envelopes and the key, flagged in the manifest.
+    let archive = backup_everything(&mut source).await;
+    let rows = entry(&archive, "tables/mailboxes/rows.ndjson");
+    assert!(!rows.contains(PLAINTEXT) && rows.contains("v1:"), "{rows}");
+    let manifest: Value = serde_json::from_str(&entry(&archive, "manifest.json")).unwrap();
+    assert_eq!(manifest["secrets_key"], json!("keys/secrets.key"));
+    let mut key = Vec::new();
+    zip::ZipArchive::new(std::io::Cursor::new(&archive))
+        .unwrap()
+        .by_name("keys/secrets.key")
+        .unwrap()
+        .read_to_end(&mut key)
+        .unwrap();
+    assert_eq!(key, source.catalog.secret_key()?.to_bytes());
+
+    // Restored into a server with a key of its own: sealed again under it.
+    let mut target = setup().await?;
+    let target_key = sc_catalog::SecretKey::generate()?;
+    target.catalog.set_secret_key(target_key.clone());
+    restore_everything(&mut target, &archive).await;
+    let stored = stored_passwords(&target).await?;
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    let envelope = stored[0].as_deref().expect("a value came back");
+    assert_eq!(target_key.open(envelope)?, PLAINTEXT);
+    assert_eq!(
+        *target.catalog.secret_key()?,
+        target_key,
+        "the target's key is kept"
+    );
+    let (_, listed) = target
+        .client
+        .send("GET", "/api/tables/mailboxes/rows", None)
+        .await;
+    assert_eq!(listed[0]["password"], json!(sc_types::SECRET_SENTINEL));
+
+    // Without the key: the rows come back, the secrets empty, and the report
+    // says so for the table.
+    let keyless = without_entries(&archive, |name| name == "keys/secrets.key");
+    let mut bare = setup().await?;
+    bare.catalog
+        .set_secret_key(sc_catalog::SecretKey::generate()?);
+    let report = restore_everything(&mut bare, &keyless).await;
+    assert!(
+        report_has(
+            &report,
+            "warnings",
+            "secret value(s) of `mailboxes` were left empty"
+        ),
+        "{report}"
+    );
+    assert_eq!(stored_passwords(&bare).await?, vec![None]);
+    Ok(())
+}
+
+/// `mailboxes.password` as the column holds it, past the row layer.
+async fn stored_passwords(server: &Server) -> sc_error::Result<Vec<Option<String>>> {
+    let rows = server
+        .db
+        .client()
+        .await?
+        .query("SELECT password FROM mailboxes", &[])
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    Ok(rows.iter().map(|r| r.get::<_, Option<String>>(0)).collect())
+}

@@ -547,8 +547,10 @@ packages — cannot be installed.
 
 **Some modules come with Saltcorn.** A few are written and maintained in this
 repository (`plugins/`), ship inside the release tarball, and appear on the
-Modules tab as a catalog with an Install button each — an RSS feed table provider
-and a Markdown renderer today. They are still modules: nothing is loaded until an
+Modules tab as a catalog with an Install button each — an RSS feed table provider,
+a Markdown renderer, scikit-learn model providers, Vue and React Native app
+frameworks, and mail (IMAP mailboxes kept in tables, and sending; see
+[tutorial-mail.md](docs/tutorial-mail.md)) today. They are still modules: nothing is loaded until an
 admin installs one. What is *not* shipped is what they depend on, which npm or
 pip fetches at that moment — so a server that installs none of them downloads
 nothing. See [`plugins/README.md`](plugins/README.md) for what is there and how

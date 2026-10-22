@@ -1,0 +1,17 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Invitation: Review
+MIME-Version: 1.0
+Content-Type: text/calendar; charset=utf-8; method=REQUEST
+Content-Transfer-Encoding: 8bit
+
+BEGIN:VCALENDAR
+VERSION:2.0
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:review-1@feldspar.test
+DTSTART:20251020T090000Z
+SUMMARY:Review
+END:VEVENT
+END:VCALENDAR

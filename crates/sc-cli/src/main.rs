@@ -219,6 +219,10 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // it stays listed and editable so the admin can repoint it.
     connect_stored_file_stores(&catalog).await?;
     connect_stored_databases(&catalog).await?;
+    // Secret fields' values open only with the data directory's key: a server
+    // that holds some and has lost the key stops here, naming the file
+    // (TODO-imap M2.2), rather than making a new key that opens none of them.
+    sc_catalog::secrets::check_key_on_start(&catalog).await?;
     // Then any requested with `--file-store NAME=PATH`, which are ephemeral and
     // must not silently shadow a configured store of the same name.
     connect_file_stores(&catalog, &file_store_specs)?;
@@ -1194,7 +1198,7 @@ async fn mcp_token_command(args: &[String]) -> Result<()> {
 }
 
 /// `feldspar mcp-token create --label L (--email E | --admin) [--expires-in-days N]
-/// [--allow-…|--no-allow-…]… [--url ORIGIN] [--name NAME]`.
+/// [--allow-all] [--allow-…|--no-allow-…]… [--url ORIGIN] [--name NAME]`.
 ///
 /// Prints the secret, alone, on stdout — the one time it exists anywhere — and
 /// everything else on stderr.
@@ -1340,15 +1344,99 @@ async fn mcp_token_revoke_command(args: &[String]) -> Result<()> {
 }
 
 /// `feldspar app list [--json]` — every application, with the project directory
-/// its source is in on this machine. See `sc_cli::app`.
+/// its source is in on this machine — and `feldspar app triggers …`, the
+/// triggers it exposes. See `sc_cli::app`.
 async fn app_command(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("list") => app_list_command(&args[1..]).await,
+        Some("triggers") => app_triggers_command(&args[1..]).await,
         Some(other) => Err(sc_error::Error::config(format!(
-            "unknown app subcommand `{other}`; there is `list`"
+            "unknown app subcommand `{other}`; there are `list` and `triggers`"
         ))),
-        None => Err(sc_error::Error::config("app needs a subcommand: list")),
+        None => Err(sc_error::Error::config(
+            "app needs a subcommand: list or triggers",
+        )),
     }
+}
+
+/// `feldspar app triggers (add|remove|list) --app SUBDOMAIN [NAME…] [--json]`:
+/// the triggers an application exposes as `POST {mount}/actions/<name>` and
+/// `api.run<Name>()`, changed by the rule `update_application`'s `triggers`
+/// section uses (`sc_app::change_app_triggers`).
+///
+/// The services are installed as `restore` installs them, because a trigger
+/// over a module's action is in the live set only once the modules are: a
+/// set loaded without them would call `mail_send` not usable.
+async fn app_triggers_command(args: &[String]) -> Result<()> {
+    let (db, rest) = DbConfig::extract(args)?;
+    let (base_domain, rest) = take_option(rest, "--base-domain")?;
+    let (file_stores, rest) = extract_file_stores(rest)?;
+    let parsed = sc_cli::app::parse_triggers(&rest)?;
+    let config = ServerConfig::from_args(serving_defaults(&db).iter())?;
+
+    let (catalog, mut app) =
+        open_app(&parsed.app, &db, &file_stores, base_domain.as_deref()).await?;
+    sc_log::set_log_sql(false);
+    sc_dns::init()?;
+    let Services { triggers, .. } =
+        install_services(&catalog, &config, &ServiceManager::default()).await?;
+    let live = triggers.triggers()?;
+    let require = |name: &str| live.require(name).cloned();
+
+    let change = match parsed.action {
+        sc_cli::app::TriggersAction::List => None,
+        sc_cli::app::TriggersAction::Add(add) => Some(sc_app::TriggerChange {
+            add,
+            ..Default::default()
+        }),
+        sc_cli::app::TriggersAction::Remove(remove) => Some(sc_app::TriggerChange {
+            remove,
+            ..Default::default()
+        }),
+    };
+    if let Some(change) = change {
+        sc_app::change_app_triggers(&mut app, &change, require)?;
+        app = save_application(&catalog, &app).await?;
+        match sc_app::emit_app_client(&catalog, &app, Some(&triggers)).await {
+            Ok(written) if written.is_empty() => {}
+            Ok(written) => eprintln!("feldspar: rewrote {}", written.join(", ")),
+            Err(e) => {
+                eprintln!("feldspar: saved, but the generated client could not be rewritten: {e}")
+            }
+        }
+        eprintln!(
+            "feldspar: saved; a server already running serves the change from its next start"
+        );
+    }
+
+    let out = sc_app::app_triggers_json(&app, require);
+    if parsed.json {
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return Ok(());
+    }
+    let rows = out.as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        println!("application `{}` exposes no triggers", app.subdomain);
+    }
+    for row in &rows {
+        let field = |k: &str| match &row[k] {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Null => "-".to_owned(),
+            other => other.to_string(),
+        };
+        let note = match row.get("note") {
+            Some(serde_json::Value::String(n)) => format!("  ({n})"),
+            _ => String::new(),
+        };
+        println!(
+            "{:<24} {:<8} {:<28} {}{note}",
+            field("name"),
+            field("min_role"),
+            field("method"),
+            field("route"),
+        );
+    }
+    Ok(())
 }
 
 async fn app_list_command(args: &[String]) -> Result<()> {
@@ -2257,6 +2345,7 @@ fn print_usage() {
     eprintln!(
         "  feldspar mcp-token create --label TEXT (--email EMAIL | --admin) [--expires-in-days N]"
     );
+    eprintln!("                      [--allow-all]");
     eprintln!(
         "                      [--allow-create|--no-allow-create] [--allow-edit|--no-allow-edit]"
     );
@@ -2278,6 +2367,9 @@ fn print_usage() {
     eprintln!("  feldspar role add NAME --level N [--description TEXT] [database flags]");
     eprintln!("  feldspar role delete NAME [database flags]");
     eprintln!("  feldspar app list [--json] [database flags]");
+    eprintln!(
+        "  feldspar app triggers (add|remove|list) --app SUBDOMAIN [NAME...] [--json] [database flags]"
+    );
     eprintln!("  feldspar backup FILE [database flags]");
     eprintln!("  feldspar restore FILE [database flags] [server flags]");
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
@@ -2344,9 +2436,10 @@ fn print_usage() {
   mcp-token: mints, lists and revokes the bearer tokens the administration MCP
        server (POST /mcp) accepts — the same tokens Settings → Development
        mints. A token runs as an administrator: name one with --email, or
-       --admin for the first. Each of the six grants has a flag and its --no-
-       form; one left out takes its default (create, edit, triggers and
-       applications on; drop and access changes off). The secret is printed
+       --admin for the first. Each of the seven grants has a flag and its --no-
+       form; one left out is granted. --allow-all also grants every grant a
+       later version adds, stored on the token, and --no-allow-… still takes
+       single ones out (--allow-all --no-allow-drop). The secret is printed
        once, alone on stdout; the id to revoke it by and the `claude mcp add`
        line go to stderr. Turn the server on with `set-cfg mcp_enabled true`.
 
@@ -2386,6 +2479,14 @@ fn print_usage() {
   app list: every application with its framework and the project directory
        its source is in on this machine; --json prints an array of
        {{id, name, subdomain, framework, file_store, source_dir, project_dir}}.
+
+  app triggers: the triggers an application exposes, each as
+       POST <api mount>/actions/<name> and api.run<Name>() in its generated
+       client. add and remove change the list and rewrite the client; only a
+       trigger with no event (when none) can be added. --json prints
+       {{name, action, min_role, method, route, note}} per trigger. A server
+       already running on the database serves the change when it is restarted;
+       update_application over MCP changes a running one at once.
 
   server:"
     );

@@ -916,6 +916,8 @@ pub fn admin_handlers_with(
                 for (name, spec) in [
                     ("key", key_kind_config_spec()),
                     ("file", file_kind_config_spec()),
+                    // A secret takes no parameters (TODO-imap M2).
+                    ("secret", Vec::new()),
                 ] {
                     // Resolve any `server_query` (the File store pick-list) to a
                     // static list before the spec leaves the server.
@@ -941,15 +943,17 @@ pub fn admin_handlers_with(
                 let table = catalog.require(ctx.path_param("table")?)?;
                 let query =
                     sc_api::query_string::row_query(&table, &ctx.query, sc_api::ROW_PAGE_CAP)?;
-                Ok(HandlerResponse::ok(
-                    rows::list_rows_query(
-                        &catalog,
-                        &table,
-                        &query,
-                        Some(&admin_caller(ctx.user.as_ref())),
-                    )
-                    .await?,
-                ))
+                let mut rows = rows::list_rows_query(
+                    &catalog,
+                    &table,
+                    &query,
+                    Some(&admin_caller(ctx.user.as_ref())),
+                )
+                .await?;
+                // The data editor is a client like any other: it may write a
+                // secret, and never reads one back (TODO-imap M2).
+                sc_catalog::secrets::redact_json(&table, &mut rows);
+                Ok(HandlerResponse::ok(rows))
             }
         }
     });
@@ -991,6 +995,8 @@ pub fn admin_handlers_with(
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
+                let mut row = row;
+                sc_catalog::secrets::redact_json(&table, &mut row);
                 Ok(HandlerResponse::ok(row).with_status(201))
             }
         }
@@ -1012,6 +1018,8 @@ pub fn admin_handlers_with(
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
+                let mut row = row;
+                sc_catalog::secrets::redact_json(&table, &mut row);
                 Ok(HandlerResponse::ok(row))
             }
         }
@@ -1977,7 +1985,8 @@ pub fn admin_handlers_with(
                 let loaded = set
                     .get(&module.name)
                     .ok_or_else(|| Error::msg("the saved module is not in the loaded set"))?;
-                Ok(HandlerResponse::ok(module_json(loaded, &ctx.locale)))
+                let statuses = services.service_statuses(&module.name);
+                Ok(HandlerResponse::ok(module_json(loaded, &statuses, &ctx.locale)))
             }
         }
     });
@@ -2675,7 +2684,10 @@ pub fn admin_handlers_with(
                     } else {
                         None
                     };
-                    out.push(trigger_json_with(t, problem, workflow));
+                    // Masked (§11.1): `send_email`'s `smtp_password` is a
+                    // secret setting, and this list is what the editor reads.
+                    let shown = dispatcher.registry().redact_trigger(&catalog, t);
+                    out.push(trigger_json_with(&shown, problem, workflow));
                 }
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
@@ -2690,7 +2702,12 @@ pub fn admin_handlers_with(
             let apps = apps.clone();
             async move {
                 let dispatcher = triggers_of(&apps)?;
-                let trigger = trigger_from_body(TriggerId::new(), &ctx.body)?;
+                let mut trigger = trigger_from_body(TriggerId::new(), &ctx.body)?;
+                // A sentinel with nothing stored under it is dropped, never
+                // saved as the password.
+                dispatcher
+                    .registry()
+                    .merge_trigger_secrets(&catalog, None, &mut trigger)?;
                 check_stream_channel(&catalog, &apps, &trigger).await?;
                 save_trigger(&catalog, &dispatcher.registry(), &trigger).await?;
                 // A workflow body gets **version 1** here, not on the editor's
@@ -2709,7 +2726,8 @@ pub fn admin_handlers_with(
                     .await?;
                 }
                 dispatcher.reload(&catalog).await?;
-                Ok(HandlerResponse::ok(trigger_json(&trigger, None)).with_status(201))
+                let shown = dispatcher.registry().redact_trigger(&catalog, &trigger);
+                Ok(HandlerResponse::ok(trigger_json(&shown, None)).with_status(201))
             }
         }
     });
@@ -2723,12 +2741,19 @@ pub fn admin_handlers_with(
             async move {
                 let dispatcher = triggers_of(&apps)?;
                 let id = parse_trigger_id(ctx.path_param("id")?)?;
-                if load_trigger(&catalog, id).await?.is_none() {
+                let Some(stored) = load_trigger(&catalog, id).await? else {
                     return Err(Error::not_found(format!("no trigger with id {id}")));
-                }
+                };
                 // The id is the path's, not the body's — the row's identity is
                 // not something a payload gets to reassign.
-                let trigger = trigger_from_body(id, &ctx.body)?;
+                let mut trigger = trigger_from_body(id, &ctx.body)?;
+                // The editor was shown the sentinel for a secret setting, and
+                // sends it back for "unchanged": keep the stored value.
+                dispatcher.registry().merge_trigger_secrets(
+                    &catalog,
+                    Some(&stored),
+                    &mut trigger,
+                )?;
                 check_stream_channel(&catalog, &apps, &trigger).await?;
                 save_trigger(&catalog, &dispatcher.registry(), &trigger).await?;
                 // Switching an action body to a workflow one is the other way a
@@ -2748,7 +2773,8 @@ pub fn admin_handlers_with(
                     .await?;
                 }
                 dispatcher.reload(&catalog).await?;
-                Ok(HandlerResponse::ok(trigger_json(&trigger, None)))
+                let shown = dispatcher.registry().redact_trigger(&catalog, &trigger);
+                Ok(HandlerResponse::ok(trigger_json(&shown, None)))
             }
         }
     });
@@ -2839,6 +2865,17 @@ pub fn admin_handlers_with(
                 // testing a trigger is asking what happens, and "it failed, with
                 // this message, having printed this" is a complete answer that a
                 // 400 would have thrown half of away.
+                // The row is shown with its secrets as their sentinel; the run
+                // itself was handed the stored row, which it reveals as any
+                // trigger does.
+                let mut shown_row = row.unwrap_or(Json::Null);
+                if let Some(table) = trigger
+                    .channel
+                    .as_deref()
+                    .and_then(|t| catalog.get(t).ok().flatten())
+                {
+                    sc_catalog::secrets::redact_json(&table, &mut shown_row);
+                }
                 let console: Vec<Json> = run
                     .console
                     .iter()
@@ -2853,7 +2890,7 @@ pub fn admin_handlers_with(
                     "result": result,
                     "error": error,
                     "console": console,
-                    "row": row.unwrap_or(Json::Null),
+                    "row": shown_row,
                 })))
             }
         }
@@ -6765,7 +6802,7 @@ pub fn admin_handlers_with(
                     Some(Json::Object(map)) => map.clone(),
                     Some(_) => return Err(Error::invalid("`grants` must be an object")),
                 };
-                sc_api::mcp::validate_flags(&submitted)?;
+                sc_api::mcp::validate_token_flags(&submitted)?;
                 let grants = sc_api::mcp::token_flags_from_submitted(&submitted);
 
                 let expires_at = match obj.get("expires_in_days") {
@@ -6991,6 +7028,7 @@ fn field_kind_json(kind: &DataFieldKind) -> Json {
             "type": "calc",
             "expression": expression,
         }),
+        DataFieldKind::Secret => json!({ "type": "secret" }),
     }
 }
 
@@ -7015,6 +7053,8 @@ fn parse_field_kind(obj: &Map<String, Json>) -> Result<DataFieldKind> {
         .ok_or_else(|| Error::invalid("`kind` must be an object"))?;
     match str_field(kind, "type")? {
         "plain" => Ok(DataFieldKind::Plain),
+        // A secret (TODO-imap M2): a text column holding encrypted values.
+        "secret" => Ok(DataFieldKind::Secret),
         "file" => Ok(DataFieldKind::File {
             store: FileStoreId(non_empty_str_field(kind, "store")?.to_owned()),
             folder: optional_present_str(kind, "folder"),
@@ -7147,6 +7187,9 @@ pub(crate) fn application_json(app: &Application) -> Json {
         "uploads": sc_app::upload_slots_json(&app.uploads),
         "csp": csp_json(&app.csp),
         "attributes": Json::Object(app.attributes.clone()),
+        "min_role": app.min_role,
+        "max_role": app.max_role,
+        "access_if": app.access_if,
         "source": app_source_json(app),
         // A framework constructed from `sc-app`'s factory registry has nothing
         // to build: saving is its deployment (TODO "Saltcorn UI" 9.3).
@@ -7712,6 +7755,26 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         Some(Json::Object(o)) => o.clone(),
         Some(_) => return Err(Error::invalid("`attributes` must be an object")),
     };
+    // Absent is "let everybody in, as they are": the defaults a new application
+    // has. The ranges and the formula are checked on save.
+    let app_role = |key: &str, default: u8| -> Result<u8> {
+        match obj.get(key) {
+            None | Some(Json::Null) => Ok(default),
+            Some(value) => value
+                .as_u64()
+                .and_then(|r| u8::try_from(r).ok())
+                .ok_or_else(|| {
+                    Error::invalid(format!("`{key}` should be a role number, 1 to 100"))
+                }),
+        }
+    };
+    let min_role = app_role("min_role", sc_auth::ROLE_PUBLIC)?;
+    let max_role = app_role("max_role", sc_auth::ROLE_ADMIN)?;
+    let access_if = match obj.get("access_if") {
+        None | Some(Json::Null) => String::new(),
+        Some(Json::String(formula)) => formula.trim().to_owned(),
+        Some(_) => return Err(Error::invalid("`access_if` should be a formula, as text")),
+    };
 
     Ok(Application {
         id,
@@ -7728,6 +7791,9 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         static_dirs,
         uploads,
         csp,
+        min_role,
+        max_role,
+        access_if,
         attributes,
     })
 }
@@ -8800,7 +8866,7 @@ pub(crate) async fn list_modules_json(services: &crate::ModuleServices, locale: 
     let modules: Vec<Json> = set
         .modules()
         .iter()
-        .map(|m| module_json(m, locale))
+        .map(|m| module_json(m, &services.service_statuses(&m.module.name), locale))
         .collect();
     // Installed is by **package name**, which is what the row is
     // keyed by: a bundled module installed from a checkout, from a
@@ -8939,7 +9005,11 @@ pub(crate) async fn install_module_json(
     let loaded = set
         .get(&module.name)
         .ok_or_else(|| Error::msg("the installed module is not in the loaded set"))?;
-    Ok(module_json(loaded, locale))
+    Ok(module_json(
+        loaded,
+        &services.service_statuses(&module.name),
+        locale,
+    ))
 }
 
 /// One loaded module as JSON (matching `module_schema`): the row, what the
@@ -8950,7 +9020,11 @@ pub(crate) async fn install_module_json(
 /// [`sc_module::config_fields_to_form_fields`] — and a module that failed to
 /// register an action (a name clash) still has settings the tab should show
 /// beside the reason it is not available.
-fn module_json(loaded: &sc_module::LoadedModule, locale: &Locale) -> Json {
+fn module_json(
+    loaded: &sc_module::LoadedModule,
+    statuses: &[sc_module::ServiceStatus],
+    locale: &Locale,
+) -> Json {
     let module = &loaded.module;
     let actions: Vec<Json> = loaded
         .manifest
@@ -9019,6 +9093,33 @@ fn module_json(loaded: &sc_module::LoadedModule, locale: &Locale) -> Json {
         // offers, listed here too because the Modules tab is where an admin
         // finds out what installing a module got them.
         "table_providers": loaded.table_provider_names(),
+        // The tables it declares (TODO-imap M4): created when it loaded, and
+        // kept when it is uninstalled.
+        "tables": loaded.table_names(),
+        // The services it runs in the background (TODO-imap M5), each with
+        // where it is: running, restarting after a failure (and why), or
+        // stopped. A module that declares one whose task has not been started
+        // — a load that failed — lists it as stopped.
+        "services": loaded
+            .manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest
+                    .services
+                    .iter()
+                    .map(|service| {
+                        let status = statuses.iter().find(|s| s.service == service.name);
+                        json!({
+                            "name": service.name,
+                            "description": service.description,
+                            "state": status.map_or(json!("stopped"), |s| json!(s.state)),
+                            "restarts": status.map_or(0, |s| s.restarts),
+                            "last_error": status.and_then(|s| s.last_error.clone()),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
         // And the model providers, for the same reason: installing
         // `feldspar-sklearn` gets an admin five estimators on the model form,
         // and the tab is where they find that out.
@@ -9049,6 +9150,12 @@ fn bundled_json(entry: &sc_module::BundledModule, installed: bool) -> Json {
         "language": entry.language.as_str(),
         "title": entry.title,
         "description": entry.description,
+        // The tables installing it creates (TODO-imap M4.6), said before the
+        // click.
+        "tables": entry.tables,
+        // And the services it runs (TODO-imap M5): the card says it runs in
+        // the background and writes to its own tables.
+        "services": entry.services,
         "supplies": entry.supplies,
         "installs": entry.installs,
         // What installing it grants, in the same shape a module's own
@@ -11291,6 +11398,11 @@ pub(crate) fn table_json(
         // admin could act on wrongly.
         "database": table.database.0,
         "metadata": table.is_metadata(),
+        // The module that declared it and the fields it declared (TODO-imap
+        // M4.3): a badge on the list, and fields the editor will not delete.
+        "module": catalog.module_tables().module_of(&table.name),
+        "module_fields": catalog.module_tables().get(&table.name)
+            .map(|c| c.fields.clone()).unwrap_or_default(),
         // The table provider serving its rows, or null (§8.3).
         "provider": provided_json(catalog, table, locale),
     })

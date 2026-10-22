@@ -138,6 +138,17 @@ pub enum DataFieldKind {
         /// The JavaScript expression, validated at merge time.
         expression: String,
     },
+    /// A **secret** (TODO-imap M2): a `Text` column whose values are stored
+    /// encrypted under the instance key ([`crate::secrets`]), as envelopes.
+    ///
+    /// Server-side code — actions, `{{ }}` templates, code bodies, module
+    /// actions and services — reads the plaintext. Every surface a client
+    /// reads — REST, GraphQL, live updates, the admin data editor — gets
+    /// [`SECRET_SENTINEL`](sc_types::SECRET_SENTINEL) when there is a value
+    /// and `null` when there is none, and may write a new value (write-only).
+    /// A secret can be no part of a key, an index, a unique constraint, a
+    /// filter or an ordering.
+    Secret,
 }
 
 /// What a `File` field does with its stored file when the row is deleted.
@@ -265,6 +276,11 @@ impl DataField {
             DataFieldKind::Calc { expression } => Some(expression),
             _ => None,
         }
+    }
+
+    /// Whether this is a [`Secret`](DataFieldKind::Secret) field.
+    pub fn is_secret(&self) -> bool {
+        matches!(self.kind, DataFieldKind::Secret)
     }
 
     /// Whether this is a non-stored calculated field.

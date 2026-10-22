@@ -140,10 +140,15 @@ async fn answer(
     let Some(catalog) = state.apps.catalog() else {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
     };
-    let (_, user) = match app_caller(state, jar, anonymous).await {
+    let caller = match app_caller(state, &app.app, jar, anonymous).await {
         Ok(caller) => caller,
         Err(rejection) => return *rejection,
     };
+    // An upload is not part of anybody's sign-in (TODO F9).
+    if let Some(refused) = caller.refused {
+        return refused.response();
+    }
+    let user = caller.user;
     let uploader = uploader_of(user.as_ref(), jar);
     let missing = || json_error(StatusCode::NOT_FOUND, "no such upload");
 

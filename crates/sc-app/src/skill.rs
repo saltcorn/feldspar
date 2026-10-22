@@ -296,7 +296,11 @@ pub fn generate_skill(catalog: &Catalog, app: &Application, client_file: &str) -
          connected tables, and the generated client is typed for them alone. For \
          live updates, create the stream with `edit_streams` (`table_changes`, or \
          `document` on a `collab_doc` field) and expose it in the same way: \
-         `update_application` with `streams: {{ add: [...] }}`.\n\
+         `update_application` with `streams: {{ add: [...] }}`. A trigger the client \
+         should run (a module's action such as `mail_send`) is exposed likewise: \
+         `save_trigger` with `when: \"none\"` and a `min_role` (80 for any signed-in \
+         user; unset is admin-only), then `update_application` with \
+         `triggers: {{ add: [...] }}`, which adds `api.run<Name>()` to the client.\n\
          4. Read the result. It names the applications it re-projected and which \
          of them **want a build** — a schema change rewrites the generated client \
          but runs no bundler, so an application with a build is serving one made \

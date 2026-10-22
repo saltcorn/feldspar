@@ -62,6 +62,28 @@ pub struct CallHosts<'a> {
     /// what v1's synchronous `View.findOne` is answered from (TODO "Saltcorn
     /// UI" §4). Sent to a worker once per generation, like the schema.
     pub views: Option<&'a ViewSnapshot>,
+    /// What a module's **service** asks of its supervisor (TODO-imap M5): the
+    /// `service` surface, which only a service's own call carries.
+    pub service: Option<&'a dyn ServiceAsks>,
+    /// The module's own file areas (TODO-imap M6): the `module_files` surface,
+    /// which `ctx.files` in a service and `files` in an action speak — a
+    /// [`crate::files::ModuleFiles`], confined to the stores and folders its
+    /// declared file fields name.
+    pub module_files: Option<&'a dyn sc_expr::FileHost>,
+}
+
+/// The `service` ask surface: what a running service asks of the supervisor
+/// that started it, rather than of the database — today one thing,
+/// `{ "subscribe": "<table>" }`, which is `ctx.onTableChange` (TODO-imap M5,
+/// §5.5).
+///
+/// A trait declared here, beside [`CallHosts`], and implemented in
+/// [`crate::services`]: the worker serves it the way it serves `db`, by handing
+/// the plan to whatever the call carried.
+#[async_trait::async_trait]
+pub trait ServiceAsks: Send + Sync {
+    /// Answer one ask.
+    async fn ask(&self, plan: Json) -> Result<Json>;
 }
 
 impl<'a> CallHosts<'a> {
@@ -73,7 +95,16 @@ impl<'a> CallHosts<'a> {
             hosts,
             schema,
             views: None,
+            service: None,
+            module_files: None,
         }
+    }
+
+    /// The same, with the module's own file surface.
+    #[must_use]
+    pub fn with_module_files(mut self, files: &'a dyn sc_expr::FileHost) -> CallHosts<'a> {
+        self.module_files = Some(files);
+        self
     }
 
     /// The same, carrying an application's view snapshot.
@@ -113,7 +144,11 @@ pub(crate) const HOST_SCRIPT: &str = include_str!("js/module-host.mjs");
     expect(dead_code, reason = "no runtime to run it")
 )]
 pub(crate) fn host_script() -> String {
-    format!("{}\n{HOST_SCRIPT}", sc_expr::V1_API_JS)
+    format!(
+        "{}\n{}\n{HOST_SCRIPT}",
+        sc_expr::V1_API_JS,
+        sc_expr::DB_PRELUDE
+    )
 }
 
 /// What the host script is called on disk.
@@ -136,6 +171,14 @@ pub struct ActionManifest {
     /// [`crate::spec`], never interpreted here.
     #[serde(default, rename = "configFields")]
     pub config_fields: Vec<Json>,
+    /// What a direct run's payload carries, in a code query's `returns` type
+    /// language — an `{ "object": … }` — when the module declared it
+    /// (`sc_action::Action::payload_type`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Json>,
+    /// What the action answers, in the same language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns: Option<Json>,
 }
 
 /// One argument of a module function, as v1 declares it.
@@ -398,6 +441,31 @@ pub struct FrameworkManifest {
     pub targets: Json,
 }
 
+/// One **service** a module runs in the background (TODO-imap M5).
+///
+/// A module exports `services` beside its `actions` and `tables`:
+///
+/// ```js
+/// services: {
+///   sync: {
+///     description: "Keeps the mailboxes in step",
+///     start: async (ctx) => { /* … */ return async () => { /* stop */ }; },
+///   },
+/// }
+/// ```
+///
+/// What crosses is the name and the description. `start` stays in the worker,
+/// and is reached through [`ModuleHost::run_service`] — one call that lasts as
+/// long as the service does.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ServiceManifest {
+    /// The service's name, unique within its module.
+    pub name: String,
+    /// One line for the module card.
+    #[serde(default)]
+    pub description: String,
+}
+
 /// An entity type the module exports and this version does not load.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UnsupportedEntity {
@@ -458,6 +526,15 @@ pub struct ModuleManifest {
     /// patterns wants (11.2).
     #[serde(default)]
     pub headers: Vec<sc_viewpattern::PluginHeader>,
+    /// The tables it declares (TODO-imap M4) — data, read into
+    /// [`TableDecl`](crate::TableDecl)s by [`crate::tables`] and created by the
+    /// server when the module loads.
+    #[serde(default)]
+    pub tables: Vec<Json>,
+    /// The services it runs in the background (TODO-imap M5) — started by
+    /// [`ServiceSupervisor`](crate::ServiceSupervisor) after every load.
+    #[serde(default)]
+    pub services: Vec<ServiceManifest>,
     /// The fields of its `configuration_workflow`'s forms, flattened (§5).
     #[serde(default)]
     pub config_fields: Vec<Json>,
@@ -686,6 +763,68 @@ impl ModuleHost {
         #[cfg(not(feature = "deno-host"))]
         {
             let _ = (module, function, args, call);
+            Err(no_runtime())
+        }
+    }
+
+    /// Run one **service** of one module (TODO-imap M5): call its `start(ctx)`,
+    /// and answer when it has stopped.
+    ///
+    /// One call for the service's whole life, which is what gives it a call
+    /// context of its own — every `ctx.db` read, `ctx.runTrigger` and
+    /// `ctx.onTableChange` is an ask on *this* call, served by this future from
+    /// `call` — and **no wall clock and no call budget**: a service runs until
+    /// it is stopped. The JS slice and the heap bound still apply, because they
+    /// are the worker's.
+    ///
+    /// Answers `Ok` when [`stop_service`](ModuleHost::stop_service) (or an
+    /// unload or reload of the module) stopped it, and `Err` when `start`
+    /// threw, the service called `ctx.fail`, or its worker died — which is what
+    /// [`ServiceSupervisor`](crate::ServiceSupervisor) restarts it after.
+    pub async fn run_service(
+        &self,
+        module: &str,
+        service: &str,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool.run_service(module, service, call).await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, service, call);
+            Err(no_runtime())
+        }
+    }
+
+    /// Stop one running service: call the `stop` its `start` answered, and
+    /// settle its [`run_service`](ModuleHost::run_service) call. Answers
+    /// `{ stopped: false }` for a service that was not running.
+    pub async fn stop_service(&self, module: &str, service: &str) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool.stop_service(module, service).await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, service);
+            Err(no_runtime())
+        }
+    }
+
+    /// Hand one table change to a running service's `ctx.onTableChange`
+    /// callbacks (§5.5). Answers once they have been called, not once they
+    /// have finished: a callback is the service's own work, done in the
+    /// service's own call.
+    pub async fn service_event(&self, module: &str, service: &str, event: Json) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool.service_event(module, service, event).await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, service, event);
             Err(no_runtime())
         }
     }

@@ -18,6 +18,14 @@
 //!   socket. The streams themselves are instance-wide and written by
 //!   `edit_streams`; exposing one is an edit, like connecting a table, since
 //!   the stream's own `min_role` and row checks still decide who receives it.
+//! - **`access`**: who may use the application at all — `min_role`,
+//!   `max_role` and `access_if` (TODO F9).
+//! - **`triggers`**: the triggers it exposes as `POST {mount}/actions/<name>`
+//!   and `api.run<Name>()`. An edit like `tables`, since the trigger's own
+//!   `min_role` decides who may call it — except exposing one whose `min_role`
+//!   is public, which opens a route to signed-out callers and so also needs
+//!   `allow_access_changes`. The rule itself is [`crate::change_app_triggers`],
+//!   shared with `feldspar app triggers`.
 //!
 //! ## A grant per section, checked before anything changes
 //!
@@ -30,7 +38,7 @@
 //! `serve_static_dir`). A CSP **is** a security boundary — it decides what a
 //! page may load and who may frame it — so the `csp` section needs
 //! `allow_access_changes`, the grant that also guards a table's roles and a
-//! query's `min_role`.
+//! query's `min_role`. So does `access`, for the same reason.
 //!
 //! ## Through the admin's own update
 //!
@@ -53,8 +61,8 @@ use serde_json::{Map, Value as Json, json};
 
 use super::{TOOL_DESCRIBE_APPS, TOOL_EDIT_STREAMS, load_app, required_str};
 use crate::{
-    Application, CspPolicy, StaticDir, StreamRef, UploadSlot, app_default_locale, app_locales,
-    set_app_locales,
+    Application, CspPolicy, StaticDir, StreamRef, TriggerChange, UploadSlot, app_default_locale,
+    app_locales, set_app_locales,
 };
 
 /// Changes an application's connected tables, static directories, CSP or locales.
@@ -79,6 +87,11 @@ const ARG_PATH: &str = "path";
 const ARG_LOCALES: &str = "locales";
 const ARG_DEFAULT_LOCALE: &str = "default_locale";
 const ARG_STREAMS: &str = "streams";
+const ARG_ACCESS: &str = "access";
+const ARG_MIN_ROLE: &str = "min_role";
+const ARG_MAX_ROLE: &str = "max_role";
+const ARG_ACCESS_IF: &str = "access_if";
+const ARG_TRIGGERS: &str = "triggers";
 
 struct UpdateApp;
 
@@ -109,8 +122,8 @@ fn update_description(grants: &Grants) -> String {
     let edit = match grants.edit {
         true => "",
         false => {
-            " You may **not** change `tables`, `static_dirs`, `uploads`, `locales` or \
-             `streams`: they need `allow_edit`."
+            " You may **not** change `tables`, `static_dirs`, `uploads`, `locales`, \
+             `streams` or `triggers`: they need `allow_edit`."
         }
     };
     let csp = match grants.access_changes {
@@ -119,14 +132,15 @@ fn update_description(grants: &Grants) -> String {
                  widen, and why, before you do it."
         }
         false => {
-            " You may **not** change `csp`: it needs `allow_access_changes`. Tell \
-                  the person which directive the app needs instead."
+            " You may **not** change `csp` or `access`, or expose a public trigger: \
+                  they need `allow_access_changes`. Tell the person what the app needs \
+                  instead."
         }
     };
     format!(
         "Change an application: the tables it serves, the store folders it serves \
-         as files, its Content-Security-Policy, the languages it is served in, or \
-         the live streams it exposes. \
+         as files, its Content-Security-Policy, the languages it is served in, \
+         the live streams it exposes, or the triggers its client may run. \
          Give only the sections you are \
          changing; one call may change several, and is saved as one, so a refused \
          section changes nothing.\n\n\
@@ -176,7 +190,23 @@ fn update_description(grants: &Grants) -> String {
          app's live socket (`live.<stream>` in the generated client). `{ARG_ADD}`, \
          `{ARG_REMOVE}` and `{ARG_SET}` as for tables; create or change the streams \
          themselves with `{TOOL_EDIT_STREAMS}`. A `table_changes` or `document` \
-         stream needs its table connected too.\n\n\
+         stream needs its table connected too.\n\
+         - `{ARG_ACCESS}` — **who may use the application at all**, in front of \
+         every other rule. `{ARG_MIN_ROLE}`: a user whose role number is higher \
+         (less privileged) cannot sign in to it or call any endpoint; 100 lets \
+         everybody in. `{ARG_MAX_ROLE}`: the most privileged role anyone holds \
+         while using it — an admin on an app with `{ARG_MAX_ROLE}` 20 is served as \
+         role 20 by its endpoints, ownership formulas and code queries; 1 caps \
+         nobody. `{ARG_ACCESS_IF}`: a formula that must hold, with `user` in scope \
+         as in an ownership formula (`user.department === \"Finance\"`), or a \
+         condition on the time; empty for none. Give only the keys you change.\n\
+         - `{ARG_TRIGGERS}` — the **triggers** it exposes, each as `POST \
+         <api mount>/actions/<name>` and `api.run<Name>()` in the generated client, \
+         which is rewritten at once. `{ARG_ADD}`, `{ARG_REMOVE}` and `{ARG_SET}` as \
+         for tables. Only a trigger with no event (`when: \"none\"`) can be exposed; \
+         create it with `save_trigger` first. Who may call it is the trigger's own \
+         `min_role`: one left unset is admin-only, and the answer says so. A public \
+         one (`min_role` 100) also needs `allow_access_changes`.\n\n\
          `{TOOL_DESCRIBE_APPS}` shows what each application has now. The running \
          app serves the change at once; a bundle written against tables it did \
          not have still needs a rebuild.{edit}{csp}"
@@ -299,6 +329,35 @@ fn update_parameters() -> Json {
                 },
                 "additionalProperties": false,
             },
+            ARG_TRIGGERS: {
+                "type": "object",
+                "description": "Change the triggers its client may run.",
+                "properties": {
+                    ARG_ADD: names.clone(),
+                    ARG_REMOVE: names.clone(),
+                    ARG_SET: names.clone(),
+                },
+                "additionalProperties": false,
+            },
+            ARG_ACCESS: {
+                "type": "object",
+                "description": "Change who may use the application at all.",
+                "properties": {
+                    ARG_MIN_ROLE: {
+                        "type": "integer",
+                        "description": "The least privileged role let in: 1 (admin) to 100 (public, everybody).",
+                    },
+                    ARG_MAX_ROLE: {
+                        "type": "integer",
+                        "description": "The most privileged role held while using it: 1 (no cap) to 100.",
+                    },
+                    ARG_ACCESS_IF: {
+                        "type": "string",
+                        "description": "A formula over `user` that must hold; empty for none.",
+                    },
+                },
+                "additionalProperties": false,
+            },
             ARG_LOCALES: {
                 "type": "object",
                 "description": "Change the languages it is served in.",
@@ -329,7 +388,26 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
             ARG_CSP,
             ARG_LOCALES,
             ARG_STREAMS,
+            ARG_ACCESS,
+            ARG_TRIGGERS,
         ],
+    )?;
+    let triggers = section(&args, ARG_TRIGGERS, &[ARG_ADD, ARG_REMOVE, ARG_SET])?
+        .map(|t| -> Result<TriggerChange> {
+            Ok(TriggerChange {
+                add: names(&t, ARG_ADD)?,
+                remove: names(&t, ARG_REMOVE)?,
+                set: match t.contains_key(ARG_SET) {
+                    true => Some(names(&t, ARG_SET)?),
+                    false => None,
+                },
+            })
+        })
+        .transpose()?;
+    let access = section(
+        &args,
+        ARG_ACCESS,
+        &[ARG_MIN_ROLE, ARG_MAX_ROLE, ARG_ACCESS_IF],
     )?;
     let streams = section(&args, ARG_STREAMS, &[ARG_ADD, ARG_REMOVE, ARG_SET])?;
     let uploads = section(&args, ARG_UPLOADS, &[ARG_ADD, ARG_REMOVE])?;
@@ -350,10 +428,13 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         && csp.is_none()
         && locales.is_none()
         && streams.is_none()
+        && access.is_none()
+        && triggers.is_none()
     {
         return Err(Error::invalid(format!(
             "name at least one of `{ARG_TABLES}`, `{ARG_STATIC_DIRS}`, `{ARG_UPLOADS}`, \
-             `{ARG_CSP}`, `{ARG_LOCALES}` and `{ARG_STREAMS}`; nothing was changed"
+             `{ARG_CSP}`, `{ARG_LOCALES}`, `{ARG_STREAMS}`, `{ARG_ACCESS}` and \
+             `{ARG_TRIGGERS}`; nothing was changed"
         )));
     }
     // Every grant before any change: a refused section refuses the call.
@@ -392,10 +473,24 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
             GRANT_EDIT,
         )?;
     }
+    if triggers.is_some() {
+        require_grant(
+            grants.edit,
+            "change which triggers an application exposes",
+            GRANT_EDIT,
+        )?;
+    }
     if csp.is_some() {
         require_grant(
             grants.access_changes,
             "change an application's Content-Security-Policy",
+            GRANT_ACCESS_CHANGES,
+        )?;
+    }
+    if access.is_some() {
+        require_grant(
+            grants.access_changes,
+            "change who may use an application",
             GRANT_ACCESS_CHANGES,
         )?;
     }
@@ -446,6 +541,30 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         was.insert(ARG_STREAMS.to_owned(), streams_json(&app));
         change_streams(ctx.catalog, &mut app, streams).await?;
     }
+    if let Some(access) = &access {
+        was.insert(ARG_ACCESS.to_owned(), access_json(&app));
+        change_access(&mut app, access)?;
+    }
+    if let Some(change) = &triggers {
+        was.insert(ARG_TRIGGERS.to_owned(), json!(exposed_names(&app)));
+        let live = ctx.require_triggers()?.triggers()?;
+        let added = crate::change_app_triggers(&mut app, change, |n| live.require(n).cloned())?;
+        let public = crate::public_triggers(&added);
+        if !public.is_empty() {
+            require_grant(
+                grants.access_changes,
+                &format!(
+                    "expose {}, which anyone may call signed out (min_role 100)",
+                    public
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                GRANT_ACCESS_CHANGES,
+            )?;
+        }
+    }
 
     let saved = save(ctx, &app, &mut out).await?;
     if tables.is_some() {
@@ -467,6 +586,13 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     if streams.is_some() {
         out[ARG_STREAMS] = streams_json(&saved);
         out["live_socket"] = json!(crate::live_socket_path(&saved));
+    }
+    if access.is_some() {
+        out[ARG_ACCESS] = access_json(&saved);
+    }
+    if triggers.is_some() {
+        let live = ctx.require_triggers()?.triggers()?;
+        out[ARG_TRIGGERS] = crate::app_triggers_json(&saved, |n| live.require(n).cloned());
     }
     out["was"] = Json::Object(was);
     Ok(out)
@@ -546,6 +672,52 @@ fn locales_json(app: &Application) -> Result<Json> {
     }))
 }
 
+// --- access -------------------------------------------------------------------
+
+/// Set the keys of the `access` section that were given; the rest are kept.
+/// The ranges and the formula are checked by the save.
+fn change_access(app: &mut Application, section: &Map<String, Json>) -> Result<()> {
+    let role = |key: &str| -> Result<Option<u8>> {
+        match section.get(key) {
+            None | Some(Json::Null) => Ok(None),
+            Some(value) => value
+                .as_u64()
+                .and_then(|r| u8::try_from(r).ok())
+                .map(Some)
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "`{ARG_ACCESS}.{key}` should be a role number, 1 to 100, got {value}"
+                    ))
+                }),
+        }
+    };
+    if let Some(min) = role(ARG_MIN_ROLE)? {
+        app.min_role = min;
+    }
+    if let Some(max) = role(ARG_MAX_ROLE)? {
+        app.max_role = max;
+    }
+    match section.get(ARG_ACCESS_IF) {
+        None => {}
+        Some(Json::Null) => app.access_if.clear(),
+        Some(Json::String(formula)) => app.access_if = formula.trim().to_owned(),
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "`{ARG_ACCESS}.{ARG_ACCESS_IF}` should be a formula or empty, got {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn access_json(app: &Application) -> Json {
+    json!({
+        ARG_MIN_ROLE: app.min_role,
+        ARG_MAX_ROLE: app.max_role,
+        ARG_ACCESS_IF: app.access_if,
+    })
+}
+
 // --- tables -------------------------------------------------------------------
 
 fn change_tables(
@@ -616,6 +788,10 @@ async fn change_streams(
     }
     app.streams = streams.into_iter().map(StreamRef).collect();
     Ok(())
+}
+
+fn exposed_names(app: &Application) -> Vec<String> {
+    app.triggers.iter().map(|t| t.0.clone()).collect()
 }
 
 fn streams_json(app: &Application) -> Json {
@@ -900,6 +1076,10 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
     body["uploads"] = crate::upload_slots_json(&app.uploads);
     body["csp"] = csp_json(&app.csp);
     body["streams"] = streams_json(app);
+    body["triggers"] = json!(exposed_names(app));
+    body["min_role"] = json!(app.min_role);
+    body["max_role"] = json!(app.max_role);
+    body["access_if"] = json!(app.access_if);
     // Where the locales live (§9's column-vs-attributes rule).
     body["attributes"] = Json::Object(app.attributes.clone());
     let updated = host
@@ -1024,14 +1204,38 @@ mod tests {
         let none = update_description(&Grants::none());
         assert!(
             none.contains(
-                "**not** change `tables`, `static_dirs`, `uploads`, `locales` or \
-                 `streams`: they need `allow_edit`"
+                "**not** change `tables`, `static_dirs`, `uploads`, `locales`, \
+                 `streams` or `triggers`: they need `allow_edit`"
             ),
             "{none}"
         );
         assert!(
-            none.contains("**not** change `csp`: it needs `allow_access_changes`"),
+            none.contains(
+                "**not** change `csp` or `access`, or expose a public trigger: they \
+                 need `allow_access_changes`"
+            ),
             "{none}"
         );
+    }
+
+    #[test]
+    fn access_keys_not_given_are_kept() {
+        let mut app = Application::new(
+            "Ledger",
+            "ledger",
+            crate::FrameworkRef {
+                name: "none".into(),
+                config: Default::default(),
+            },
+        )
+        .min_role(40)
+        .access_if("user.department === \"Finance\"");
+        change_access(&mut app, &section(json!({ "max_role": 20 }))).unwrap();
+        assert_eq!((app.min_role, app.max_role), (40, 20));
+        assert_eq!(app.access_if, "user.department === \"Finance\"");
+        change_access(&mut app, &section(json!({ "access_if": "" }))).unwrap();
+        assert!(app.access_if.is_empty());
+        assert!(change_access(&mut app, &section(json!({ "min_role": 400 }))).is_err());
+        assert!(change_access(&mut app, &section(json!({ "min_role": "admin" }))).is_err());
     }
 }

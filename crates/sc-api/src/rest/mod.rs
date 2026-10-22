@@ -70,6 +70,7 @@ use sc_query::Value;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
+pub mod action_types;
 pub mod custom;
 pub mod password;
 mod query;
@@ -255,6 +256,13 @@ const SIGNUP: &str = "signup";
 const INVITE: &str = "invite";
 const FORGOT_PASSWORD: &str = "forgotPassword";
 const SET_PASSWORD: &str = "setPassword";
+
+/// The endpoints that make up an application's **sign-in**: how a caller who
+/// is nobody yet becomes somebody, or gets back to being able to. A caller an
+/// application does not let in at all reaches these and nothing else (TODO
+/// F9) — named rather than read off [`AuthRequirement::Public`], which a table
+/// with an ownership formula has too.
+pub const SIGN_IN_ENDPOINTS: [&str; 4] = [LOGIN, SIGNUP, FORGOT_PASSWORD, SET_PASSWORD];
 
 /// Offline sync's endpoints (§14.11): `POST {mount}/sync/register`, `…/pull`
 /// and `…/push`, projected when one of the app's tables is synced.
@@ -914,6 +922,30 @@ impl RestProvider {
         self
     }
 
+    /// Type the exposed triggers' endpoints from what their actions declare,
+    /// keyed by trigger name ([`action_types::action_types`]). A trigger not in `types`, or
+    /// whose action declared nothing, stays `json` in and out.
+    pub fn with_trigger_types(
+        mut self,
+        types: &HashMap<String, action_types::ActionTypes>,
+    ) -> RestProvider {
+        for (endpoint, trigger) in &self.trigger_routes {
+            let (Some(declared), Some(ep)) =
+                (types.get(trigger), self.endpoints.find_mut(endpoint))
+            else {
+                continue;
+            };
+            if let Some(payload) = &declared.payload {
+                ep.input = payload.clone();
+                ep.open_args = true;
+            }
+            if let Some(returns) = &declared.returns {
+                ep.output = returns.clone();
+            }
+        }
+        self
+    }
+
     /// Inject the trigger dispatcher an exposed trigger's endpoint runs through
     /// — the *same* dispatcher every other event fires on, so a trigger called
     /// over an app's API is the trigger the admin configured, with the same
@@ -1132,10 +1164,10 @@ impl RestProvider {
                 let outcome = match &route.op {
                     RestOp::Create => write_as::create(cat, &table, body, &writer)
                         .await?
-                        .map(|row| ApiResponse::with_status(201, row)),
+                        .map(|row| ApiResponse::with_status(201, client_row(&table, row))),
                     RestOp::Update => write_as::update(cat, &table, id()?, body, &writer)
                         .await?
-                        .map(ApiResponse::ok),
+                        .map(|row| ApiResponse::ok(client_row(&table, row))),
                     _ => write_as::delete(cat, &table, id()?, &writer)
                         .await?
                         .map(|()| deleted()),
@@ -1290,11 +1322,15 @@ impl RestProvider {
             RestOp::List => self.list(cat, table, req, user).await?,
             RestOp::Create => ApiResponse::with_status(
                 201,
-                rows::create_row_ctx(cat, table, body, Some(&ctx)).await?,
+                client_row(
+                    table,
+                    rows::create_row_ctx(cat, table, body, Some(&ctx)).await?,
+                ),
             ),
-            RestOp::Update => ApiResponse::ok(
+            RestOp::Update => ApiResponse::ok(client_row(
+                table,
                 rows::update_row_guarded(cat, table, id()?, body, None, Some(&ctx)).await?,
-            ),
+            )),
             RestOp::Delete => {
                 rows::delete_row_guarded(cat, table, id()?, None, Some(&ctx)).await?;
                 deleted()
@@ -1321,6 +1357,13 @@ impl RestProvider {
             }
         })
     }
+}
+
+/// A written row as the caller gets it back: its secrets as their sentinel
+/// (TODO-imap M2), so a value written through REST is never read back by it.
+fn client_row(table: &Table, mut row: Json) -> Json {
+    sc_catalog::secrets::redact_json(table, &mut row);
+    row
 }
 
 /// The query-string parameters every list endpoint accepts (§13.4), in the order
@@ -2065,6 +2108,7 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
         // A calculated field is read on the way out and refused on the way in
         // (`rows::reject_calc_writes`), so it belongs in a row and in no write.
         rf.read_only = matches!(field.kind, DataFieldKind::Calc { .. });
+        rf.write_only = field.is_secret();
         if let DataFieldKind::Key { target_table, .. } = &field.kind
             && exposed.contains(target_table.0.as_str())
         {
@@ -2791,5 +2835,50 @@ mod tests {
         // And the setting the spec declares is the setting this reads.
         let spec = rest_config_spec();
         assert!(spec.iter().any(|f| f.name() == CFG_ROW_CAP));
+    }
+
+    #[test]
+    fn a_declaring_action_types_its_run_method_and_the_rest_stay_unknown() {
+        use sc_action::{EventKind, Trigger};
+
+        let typed = Trigger::new("mail_test_account", EventKind::None, "mail_test_account");
+        let plain = Trigger::new("send_digest", EventKind::None, "fetch");
+        let declared = action_types::ActionTypes {
+            payload: Some(
+                super::returns::parse_returns(&serde_json::json!({ "object": {
+                    "email": { "optional": "string" },
+                    "account_id": { "optional": "int" },
+                } }))
+                .unwrap(),
+            ),
+            returns: Some(
+                super::returns::parse_returns(&serde_json::json!({ "object": {
+                    "imap": "bool",
+                    "smtp": { "optional": "bool" },
+                    "error": { "optional": "string" },
+                } }))
+                .unwrap(),
+            ),
+        };
+        let types = HashMap::from([("mail_test_account".to_owned(), declared)]);
+        let p = RestProvider::project_with("/api", &[], &[typed, plain]).with_trigger_types(&types);
+
+        let ep = p.endpoints().find("runMailTestAccount").unwrap();
+        assert!(ep.open_args, "the action still reads whatever arrives");
+        assert!(matches!(ep.output, TypeSchema::Struct(ref f) if f.len() == 3));
+        let untyped = p.endpoints().find("runSendDigest").unwrap();
+        assert_eq!(untyped.output, TypeSchema::json());
+
+        let client = crate::generate_client(p.endpoints());
+        let method = client
+            .lines()
+            .find(|l| l.contains("runMailTestAccount("))
+            .unwrap_or_else(|| panic!("no runMailTestAccount in:\n{client}"));
+        assert!(!method.contains("unknown"), "{method}");
+        assert!(
+            client.contains("imap: boolean") && client.contains("error?: string | null"),
+            "{client}"
+        );
+        assert!(client.contains("email?: string | null"), "{client}");
     }
 }

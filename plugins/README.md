@@ -23,6 +23,7 @@ runs nothing extra.
 | `rss/` | `@feldspar/rss` | JavaScript | a table provider: an RSS or Atom feed as a read-only table |
 | `vue/` | `@feldspar/vue` | JavaScript | an application framework: build an app's UI in Vue 3 instead of React |
 | `react-native/` | `@feldspar/react-native` | JavaScript | an application framework: an Expo (React Native) project served on the web, with Android and iOS apps as build targets |
+| `imap/` | `@feldspar/imap` | JavaScript | mail: IMAP mailboxes kept in four tables of its own, a sync service and mail actions (ingest and mirror mode, and sending: see [tutorial-mail.md](../docs/tutorial-mail.md); the live-server matrix is `test/live-matrix.mjs`, and OAuth2 is next in [TODO-imap.md](../TODO-imap.md) M10.3) |
 | `markdown/` | `feldspar-markdown` | Python | two functions: Markdown to HTML, and a plain-text summary |
 | `sklearn/` | `feldspar-sklearn` | Python | five model providers: ridge, gradient boosting, SVM, DBSCAN and t-SNE |
 
@@ -42,9 +43,15 @@ file that puts it in the catalog:
   "description": "One sentence, in the admin's words rather than the author's.",
   "supplies": ["A table provider, \"RSS feed\": …"],
   "installs": ["rss-parser"],       // downloaded at install time, not shipped
-  "permissions": { "net": ["*"] }   // what it needs to work, granted by the click
+  "permissions": { "net": ["*"] },  // what it needs to work, granted by the click
+  "tables": ["rss_items"]            // optional: the tables its package declares
 }
 ```
+
+`tables` is only for a module whose plugin object declares tables of its own
+(`tables: [...]`, see [docs/tutorial-modules.md](../docs/tutorial-modules.md)
+Step 7). It is what the card says installing creates, so each name must also
+appear in a `supplies` line; the reader refuses a manifest where it does not.
 
 `name` must be what the package calls itself — `package.json`'s `name`, or the
 distribution's `name` in `pyproject.toml` — because that is what the installed

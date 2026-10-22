@@ -54,6 +54,11 @@ export const GRANT_KEYS = [
   "allow_modules",
 ] as const;
 
+/** The key a token stores to hold every grant — the seven above and any a later
+ * version adds (`sc_api::mcp::ALLOW_ALL`). A token's own key; the copilot has no
+ * such checkbox. */
+export const ALLOW_ALL = "allow_all";
+
 /** What the checkboxes fall back to when this server registers no
  * `admin_copilot` trait, so there is no label to reuse.
  *
@@ -109,6 +114,10 @@ export function defaultGrants(fields: FieldSpec[]): Record<string, boolean> {
 export type MintForm = {
   label: string;
   grants: Record<string, boolean>;
+  /** The "all grants" toggle: stored on the token as `allow_all`, so it also
+   * holds every grant a later version adds. An unticked box beside it is still
+   * an exception. */
+  all: boolean;
   /** Days, as typed. Empty means a token that does not lapse. */
   expiresInDays: string;
 };
@@ -117,7 +126,7 @@ export type MintForm = {
  * the expiry is the only bound a credential has that does not need somebody to
  * remember it. */
 export function emptyMint(fields: FieldSpec[]): MintForm {
-  return { label: "", grants: defaultGrants(fields), expiresInDays: "90" };
+  return { label: "", grants: defaultGrants(fields), all: false, expiresInDays: "90" };
 }
 
 /** Why this form cannot be submitted yet, in a sentence, or `null`.
@@ -144,6 +153,7 @@ export function mintProblem(form: MintForm): string | null {
 export function mintRequest(form: MintForm, fields: FieldSpec[]): CreateApiTokenRequest {
   const grants: Record<string, boolean> = {};
   for (const field of fields) grants[field.name] = form.grants[field.name] === true;
+  grants[ALLOW_ALL] = form.all;
   const days = form.expiresInDays.trim();
   return {
     label: form.label.trim(),
@@ -200,7 +210,16 @@ export function grantedKeys(token: ApiToken): string[] {
   const grants = token.grants;
   if (!grants || typeof grants !== "object") return [];
   const bag = grants as Record<string, unknown>;
-  return GRANT_KEYS.filter((key) => bag[key] === true);
+  // `allow_all` holds a flag the row does not mention (`sc_api::mcp::token_flags`).
+  const all = bag[ALLOW_ALL] === true;
+  return GRANT_KEYS.filter((key) => bag[key] === true || (all && !(key in bag)));
+}
+
+/** Whether this token was minted with "all grants", so it also holds every grant
+ * a later version adds. */
+export function holdsAll(token: ApiToken): boolean {
+  const grants = token.grants;
+  return !!grants && typeof grants === "object" && (grants as Record<string, unknown>)[ALLOW_ALL] === true;
 }
 
 /** A flag's own word, for a badge: the key without its `allow_` and without its

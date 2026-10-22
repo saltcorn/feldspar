@@ -31,6 +31,7 @@
 //! row held, and "which address was wrong" is the only useful answer.
 
 mod mjml;
+mod relay;
 
 use std::sync::{Arc, Mutex};
 
@@ -44,15 +45,21 @@ use lettre::{
     transport::smtp::authentication::Credentials,
 };
 use sc_catalog::Catalog;
-use sc_config::{EmailSettings, SmtpSecurity};
 use sc_error::{Error, Result};
 
 pub use mjml::render_mjml;
+pub use relay::{
+    SUBMISSION_STARTTLS_PORT, SUBMISSION_TLS_PORT, check_relay, is_public, relay_mailer,
+    resolve_public, security_for_port,
+};
 // The address vocabulary, re-exported: a crate that builds a message should not
 // have to depend on the *settings* crate to name an address. Parsed there, and
 // only there, because the from-address is a setting and a setting is checked
 // where it is declared — this is that one grammar, borrowed.
 pub use sc_config::{Mailbox, parse_mailbox};
+// And the settings a server is described by, for a caller that names one of
+// its own ([`Mailer::send_via`]).
+pub use sc_config::{EmailSettings, SmtpSecurity};
 
 /// One message, independent of how it is sent.
 ///
@@ -172,6 +179,21 @@ pub trait Mailer: Send + Sync {
     /// changes the from-address gets it on the next message, not the next
     /// restart.
     async fn sender(&self) -> Result<Mailbox>;
+
+    /// Send one message through `server` instead of this transport's own —
+    /// `send_email`'s SMTP override (TODO-imap M3), where a trigger names the
+    /// server an account sends through.
+    ///
+    /// On the trait, with the real behaviour as its default, so that what an
+    /// action does with an override is one call whichever transport it was
+    /// handed, and a test can record the server a message *would* have gone
+    /// through ([`RecordingMailer::servers`]) without a public SMTP server to
+    /// send it to. The default holds `server` to the relay rules
+    /// ([`relay_mailer`]): a submission port, public addresses only, and a
+    /// connection to the address that was checked.
+    async fn send_via(&self, server: &EmailSettings, email: &Email) -> Result<()> {
+        relay_mailer(server).await?.send(email).await
+    }
 }
 
 /// Split a rendered recipient string into mailboxes.
@@ -234,6 +256,9 @@ pub struct SmtpMailer {
     /// The configured `email_from`, kept because it is what
     /// [`sender`](Mailer::sender) answers.
     from: Mailbox,
+    /// The server's name, for errors: a trigger that sends through an
+    /// account's server has to say *which* server refused it.
+    host: String,
 }
 
 impl SmtpMailer {
@@ -272,6 +297,7 @@ impl SmtpMailer {
         Ok(SmtpMailer {
             transport: builder.build(),
             from: settings.from.clone(),
+            host: settings.host.clone(),
         })
     }
 }
@@ -291,7 +317,12 @@ impl Mailer for SmtpMailer {
             // "relay denied" and "authentication failed" are three different
             // problems with three different fixes, and no summary this crate
             // could write beats naming which one happened.
-            .map_err(|e| Error::msg(format!("the mail server rejected the message: {e}")))?;
+            .map_err(|e| {
+                Error::msg(format!(
+                    "the mail server `{}` rejected the message: {e}",
+                    self.host
+                ))
+            })?;
         Ok(())
     }
 }
@@ -446,6 +477,9 @@ impl Mailer for SettingsMailer {
 #[derive(Debug)]
 pub struct RecordingMailer {
     sent: Mutex<Vec<Email>>,
+    /// The server each message in `sent` was handed to: `None` for this
+    /// transport's own, the override's settings for [`Mailer::send_via`].
+    servers: Mutex<Vec<Option<EmailSettings>>>,
     /// The identity this stand-in claims — see
     /// [`sending_as`](RecordingMailer::sending_as).
     from: Mailbox,
@@ -455,6 +489,7 @@ impl Default for RecordingMailer {
     fn default() -> RecordingMailer {
         RecordingMailer {
             sent: Mutex::new(Vec::new()),
+            servers: Mutex::new(Vec::new()),
             // `.invalid` is the reserved TLD for exactly this (RFC 2606): a test
             // that does not care what the from-address is gets one that cannot
             // be a real address by construction, so a message that escaped into
@@ -494,6 +529,32 @@ impl RecordingMailer {
         }
     }
 
+    /// The server each message was sent through, in the order of
+    /// [`sent`](RecordingMailer::sent): `None` for this transport's own, and
+    /// the override's settings for one sent with [`Mailer::send_via`].
+    pub fn servers(&self) -> Vec<Option<EmailSettings>> {
+        match self.servers.lock() {
+            Ok(servers) => servers.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Keep `email`, sent through `server`.
+    fn record(&self, email: &Email, server: Option<EmailSettings>) -> Result<()> {
+        // The same checks the real transport runs, so a test against the
+        // recorder cannot pass on a message SMTP would refuse to build.
+        build_message(email)?;
+        match self.sent.lock() {
+            Ok(mut sent) => sent.push(email.clone()),
+            Err(poisoned) => poisoned.into_inner().push(email.clone()),
+        }
+        match self.servers.lock() {
+            Ok(mut servers) => servers.push(server),
+            Err(poisoned) => poisoned.into_inner().push(server),
+        }
+        Ok(())
+    }
+
     /// The one message this mailer was handed, or an error saying how many it
     /// actually got — which is the assertion a test almost always means.
     pub fn only(&self) -> Result<Email> {
@@ -520,14 +581,15 @@ impl Mailer for RecordingMailer {
     }
 
     async fn send(&self, email: &Email) -> Result<()> {
-        // The same checks the real transport runs, so a test against the
-        // recorder cannot pass on a message SMTP would refuse to build.
-        build_message(email)?;
-        match self.sent.lock() {
-            Ok(mut sent) => sent.push(email.clone()),
-            Err(poisoned) => poisoned.into_inner().push(email.clone()),
-        }
-        Ok(())
+        self.record(email, None)
+    }
+
+    /// Recorded rather than sent, after the checks that need no network: the
+    /// port and its encryption ([`check_relay`]). Whether the host is public
+    /// is a DNS question, and a recorder answers none.
+    async fn send_via(&self, server: &EmailSettings, email: &Email) -> Result<()> {
+        check_relay(server)?;
+        self.record(email, Some(server.clone()))
     }
 }
 

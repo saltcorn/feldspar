@@ -691,3 +691,12 @@ ALTER TABLE IF EXISTS "_fd_translations" ALTER COLUMN "application" DROP NOT NUL
 --   DROP TABLE "_fd_translations";
 --   ALTER TABLE "_fd_translations_new" RENAME TO "_fd_translations";
 --   COMMIT;
+
+-- ---------------------------------------------------------------------------
+-- TODO F9: who may use an application. The bootstrap adds these columns by
+-- itself (`Catalog::bootstrap_table`); this is the same change by hand. NULL
+-- reads back as "everybody, uncapped, no condition".
+-- ---------------------------------------------------------------------------
+ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "min_role" bigint;
+ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "max_role" bigint;
+ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "access_if" text;

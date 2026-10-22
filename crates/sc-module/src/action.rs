@@ -26,6 +26,7 @@ use sc_error::Result;
 use sc_types::{Attrs, FormField};
 use serde_json::{Map, Value as Json, json};
 
+use crate::files::{FileArea, ModuleFiles};
 use crate::host::{CallHosts, ModuleHost};
 
 /// One action supplied by one module.
@@ -47,6 +48,13 @@ pub struct ModuleAction {
     /// and a TLS configuration, and one per firing would pay for a handshake
     /// every time a trigger runs.
     surfaces: Arc<CodeSurfaces>,
+    /// Where the module may keep files (TODO-imap M6): what its declared file
+    /// fields name, and what `files` in the argument object reaches.
+    areas: Arc<Vec<FileArea>>,
+    /// What a direct run takes and answers, as the module declared them
+    /// ([`Action::payload_type`], [`Action::returns_type`]).
+    payload: Option<Json>,
+    returns: Option<Json>,
 }
 
 impl ModuleAction {
@@ -74,7 +82,27 @@ impl ModuleAction {
             config_spec,
             host,
             surfaces,
+            areas: Arc::new(Vec::new()),
+            payload: None,
+            returns: None,
         }
+    }
+
+    /// The same action, typed: what its payload carries and what it answers,
+    /// in a code query's `returns` type language. Checked by whoever registers
+    /// it ([`sc_api::action_types`]), which says what is wrong with one.
+    #[must_use]
+    pub fn with_types(mut self, payload: Option<Json>, returns: Option<Json>) -> ModuleAction {
+        self.payload = payload;
+        self.returns = returns;
+        self
+    }
+
+    /// The same action, able to keep files in its module's `areas`.
+    #[must_use]
+    pub fn with_file_areas(mut self, areas: Arc<Vec<FileArea>>) -> ModuleAction {
+        self.areas = areas;
+        self
     }
 
     /// The package this action came from.
@@ -97,18 +125,27 @@ impl Action for ModuleAction {
         self.config_spec.clone()
     }
 
+    fn payload_type(&self) -> Option<Json> {
+        self.payload.clone()
+    }
+
+    fn returns_type(&self) -> Option<Json> {
+        self.returns.clone()
+    }
+
     async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {
         let args = v1_arguments(ctx.event, ctx.config, ctx.trigger);
         // Held for the length of the call: the surfaces borrow from it, and the
         // borrow lives exactly as long as the run — which is also what lets the
         // host serve the module's asks while it waits for the answer.
         let hosts = self.surfaces.build(ctx);
+        let files = ModuleFiles::new(ctx.catalog, &self.module, &self.areas);
         self.host
             .run(
                 &self.module,
                 &self.name,
                 args,
-                CallHosts::new(hosts.surfaces(), hosts.schema()),
+                CallHosts::new(hosts.surfaces(), hosts.schema()).with_module_files(&files),
             )
             .await
     }

@@ -26,7 +26,7 @@ use std::ops::Range;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use sc_files::{BoxAsyncRead, FILENAME_ATTRIBUTE, ServeFile};
+use sc_files::{BoxAsyncRead, CONTENT_TYPE_ATTRIBUTE, FILENAME_ATTRIBUTE, ServeFile};
 
 /// How much of the file one body frame carries.
 const CHUNK: usize = 64 * 1024;
@@ -194,25 +194,36 @@ pub(crate) async fn serve(
         return (StatusCode::NOT_MODIFIED, out).into_response();
     }
 
-    let content_type = file.content_type.clone().unwrap_or_else(|| {
-        sc_files::mime_for_path(&file.path).unwrap_or_else(|| "application/octet-stream".to_owned())
-    });
+    // The file's own metadata, read once when either the type or the name is
+    // left to it.
+    let meta = if file.content_type.is_none() || file.filename.is_none() {
+        store.get_meta(&file.path).await.ok()
+    } else {
+        None
+    };
+    let attribute = |key: &str| {
+        meta.as_ref()
+            .and_then(|meta| meta.attributes.get(key).cloned())
+            .filter(|value| !value.is_empty())
+    };
+    let content_type = file
+        .content_type
+        .clone()
+        .or_else(|| attribute(CONTENT_TYPE_ATTRIBUTE))
+        .unwrap_or_else(|| {
+            sc_files::mime_for_path(&file.path)
+                .unwrap_or_else(|| "application/octet-stream".to_owned())
+        });
     put(header::CONTENT_TYPE, &content_type);
     let name = match &file.filename {
         Some(name) => name.clone(),
-        None => store
-            .get_meta(&file.path)
-            .await
-            .ok()
-            .and_then(|meta| meta.attributes.get(FILENAME_ATTRIBUTE).cloned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| {
-                file.path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&file.path)
-                    .to_owned()
-            }),
+        None => attribute(FILENAME_ATTRIBUTE).unwrap_or_else(|| {
+            file.path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&file.path)
+                .to_owned()
+        }),
     };
     put(
         header::CONTENT_DISPOSITION,
@@ -458,6 +469,26 @@ mod tests {
             .get(name)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
+    }
+
+    #[tokio::test]
+    async fn a_declared_content_type_beats_the_guess_from_the_path() {
+        // A module stored it with `contentType` (TODO-imap M6): the mail's word
+        // for the type, whatever the attachment happens to be called.
+        let mut store = Arc::into_inner(generated(10)).unwrap();
+        store.attributes.insert(
+            CONTENT_TYPE_ATTRIBUTE.to_owned(),
+            "application/pdf".to_owned(),
+        );
+        let store = Arc::new(store);
+        let response = ask(&store, "invoice.dat", "/invoice.dat", &[]).await;
+        assert_eq!(
+            header_of(&response, header::CONTENT_TYPE),
+            "application/pdf"
+        );
+        // Without one, the path decides, as before.
+        let response = ask(&generated(10), "a.png", "/a.png", &[]).await;
+        assert_eq!(header_of(&response, header::CONTENT_TYPE), "image/png");
     }
 
     #[tokio::test]

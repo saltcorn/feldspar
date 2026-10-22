@@ -161,6 +161,11 @@ pub struct Catalog {
     /// [`provider`](Catalog::provider) (layer 4), so the trait is declared here
     /// and installed from above.
     table_providers: RwLock<Option<Arc<dyn crate::provider::TableProviderHost>>>,
+    /// Which tables the installed modules **declared** (TODO-imap M4.3), and
+    /// which of their fields — what refuses dropping them, and what the table
+    /// list badges. Installed whole on every module reload, like the table
+    /// providers; empty in a process with no such module.
+    module_tables: RwLock<Arc<crate::module_tables::ModuleTables>>,
     /// Why a stored provided table is not the table an admin expected, keyed by
     /// table name: a module that is not installed, a provider it does not
     /// supply, a `fields(cfg)` that threw.
@@ -231,6 +236,11 @@ pub struct Catalog {
     ///
     /// [`table_events`]: Catalog::add_table_events
     run_wakeups: crate::RunWakeups,
+    /// The instance key Secret fields are sealed with (TODO-imap M2), read
+    /// from — or created at — [`secret_key_path`](crate::secrets::secret_key_path)
+    /// the first time it is needed, unless one was
+    /// [installed](Catalog::set_secret_key) first.
+    secret_key: RwLock<Option<Arc<crate::SecretKey>>>,
 }
 
 /// Why a **provided** table (§8.3) is not the table an admin expected.
@@ -296,6 +306,7 @@ impl Catalog {
             admin_host: RwLock::new(None),
             formula_evaluator: RwLock::new(None),
             table_providers: RwLock::new(None),
+            module_tables: RwLock::new(Arc::new(crate::module_tables::ModuleTables::new())),
             provided_table_issues: RwLock::new(Vec::new()),
             public_origin: RwLock::new(None),
             host_config: RwLock::new(sc_types::Attrs::new()),
@@ -305,6 +316,7 @@ impl Catalog {
             generation: AtomicU64::new(0),
             code_schema: RwLock::new(None),
             run_wakeups: crate::RunWakeups::new(),
+            secret_key: RwLock::new(None),
         };
         // Whether the database has PostGIS (analytics TODO A5.1). Asking is not
         // installing it — `bootstrap_spatial` does that, on a server's boot —
@@ -1090,6 +1102,47 @@ impl Catalog {
         &self.run_wakeups
     }
 
+    /// The instance key Secret fields are sealed with: the one
+    /// [installed](Catalog::set_secret_key), else the data directory's
+    /// `secrets.key`, created the first time a value needs it.
+    pub fn secret_key(&self) -> Result<Arc<crate::SecretKey>> {
+        if let Some(key) = self
+            .secret_key
+            .read()
+            .map_err(|_| Error::msg("secret key lock poisoned"))?
+            .as_ref()
+        {
+            return Ok(Arc::clone(key));
+        }
+        let mut slot = self
+            .secret_key
+            .write()
+            .map_err(|_| Error::msg("secret key lock poisoned"))?;
+        if let Some(key) = slot.as_ref() {
+            return Ok(Arc::clone(key));
+        }
+        let key = Arc::new(crate::SecretKey::load_or_create(
+            &crate::secrets::secret_key_path()?,
+        )?);
+        *slot = Some(Arc::clone(&key));
+        Ok(key)
+    }
+
+    /// Whether a key is already in hand — installed, or read once already —
+    /// without reading or creating the file.
+    pub fn has_secret_key(&self) -> bool {
+        self.secret_key.read().is_ok_and(|key| key.is_some())
+    }
+
+    /// Use `key` for Secret fields from now on, instead of the data
+    /// directory's: what a test does, so it never writes a key file into the
+    /// developer's own data directory.
+    pub fn set_secret_key(&self, key: crate::SecretKey) {
+        if let Ok(mut slot) = self.secret_key.write() {
+            *slot = Some(Arc::new(key));
+        }
+    }
+
     /// Ensure a system metadata table exists with (at least) `fields`, creating
     /// it if absent and **additively reconciling** it if it is already there.
     ///
@@ -1620,6 +1673,28 @@ impl Catalog {
         self.module_functions.read().ok()?.clone()
     }
 
+    /// Install the tables the modules declare (TODO-imap M4.3) — `sc-server`'s
+    /// `ModuleServices`, after every module reload. Replaces the previous set
+    /// whole, so an uninstalled module's tables stop being claimed at once.
+    pub fn set_module_tables(&self, tables: crate::module_tables::ModuleTables) -> Result<()> {
+        let mut guard = self
+            .module_tables
+            .write()
+            .map_err(|_| Error::msg("catalog module-tables lock poisoned"))?;
+        *guard = Arc::new(tables);
+        Ok(())
+    }
+
+    /// The tables the installed modules declare. Empty where none do; a
+    /// poisoned lock reads as empty too, which costs only the protection
+    /// against dropping a module's table, never a read.
+    pub fn module_tables(&self) -> Arc<crate::module_tables::ModuleTables> {
+        self.module_tables
+            .read()
+            .map(|g| Arc::clone(&g))
+            .unwrap_or_default()
+    }
+
     /// Install live updates' publishing side — `sc-server`'s live hub, at boot.
     ///
     /// Replaces any previous one: a process has one hub, and a test that
@@ -1815,7 +1890,11 @@ pub(crate) fn schema_shape_of_tables<'a>(
         for field in &table.fields {
             // A collaborative document is bytes no formula can read (live
             // updates L5.1): left out, a formula naming it is an unknown field.
-            if field.is_collab_doc() {
+            // A secret (TODO-imap M2) likewise: its column holds envelopes, so a
+            // filter, an ordering, an ownership rule or a calculated field over
+            // it could only compare ciphertext — or, computed on read, carry
+            // the plaintext out to a client.
+            if field.is_collab_doc() || field.is_secret() {
                 continue;
             }
             table_shape = match &field.kind {
@@ -1840,7 +1919,7 @@ pub(crate) fn schema_shape_of_tables<'a>(
             users
                 .fields
                 .iter()
-                .filter(|f| !f.is_collab_doc())
+                .filter(|f| !f.is_collab_doc() && !f.is_secret())
                 .map(|f| f.base.name.as_str())
                 .filter(|name| *name != USERS_PASSWORD_COLUMN),
         );

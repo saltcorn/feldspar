@@ -1729,6 +1729,15 @@ impl TableClient<'_> {
         let _ = writeln!(out, "/** A row of `{name}`, as its columns are today. */");
         let _ = writeln!(out, "export interface {p}Row {{");
         for f in &self.model.fields {
+            if f.write_only {
+                let _ = writeln!(
+                    out,
+                    "  /** A secret, and write-only: a read gives `null` when it is empty and \
+                     `\"{}\"` when it is set, never the value. Send a new \
+                     value to change it; send the sentinel back to keep it. */",
+                    sc_types::SECRET_SENTINEL
+                );
+            }
             let _ = writeln!(out, "  {}: {};", f.name, row_field_type(f));
         }
         out.push_str("}\n\n");
@@ -2058,7 +2067,7 @@ impl TableClient<'_> {
 /// only the second one a read can answer.
 fn row_field_type(f: &ResourceField) -> String {
     let base = f.ty.ts_type();
-    if f.required {
+    if f.required && !f.write_only {
         base.to_owned()
     } else {
         format!("{base} | null")

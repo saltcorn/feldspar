@@ -97,6 +97,34 @@ impl LoadedModule {
             .unwrap_or_default()
     }
 
+    /// The tables this module declares (TODO-imap M4), as read from its
+    /// manifest. A declaration that does not read is left out here and was an
+    /// issue on the card when the module loaded.
+    pub fn table_declarations(&self) -> Vec<crate::tables::TableDecl> {
+        self.manifest
+            .as_ref()
+            .map(|m| crate::tables::parse_declarations(&m.tables).0)
+            .unwrap_or_default()
+    }
+
+    /// The names of the tables this module declares — what the Modules tab
+    /// lists beside its actions.
+    pub fn table_names(&self) -> Vec<String> {
+        self.table_declarations()
+            .into_iter()
+            .map(|d| d.name.trim().to_owned())
+            .collect()
+    }
+
+    /// The services this module runs in the background (TODO-imap M5) — what
+    /// the Modules tab lists, with each one's state beside it.
+    pub fn service_names(&self) -> Vec<String> {
+        self.manifest
+            .as_ref()
+            .map(|m| m.services.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// Whether the module is loaded and contributing.
     pub fn is_loaded(&self) -> bool {
         self.manifest.is_some()
@@ -148,7 +176,24 @@ impl ModuleSet {
             modules.push(load_one(&module, host, installer, surfaces, registry).await);
         }
         resolve_view_patterns(&mut modules);
+        sync_tables(catalog, &mut modules).await;
         Ok(ModuleSet { modules })
+    }
+
+    /// Which tables the loaded modules declare, and which fields — what
+    /// [`Catalog::set_module_tables`] is installed with after every reload, so
+    /// a declared field cannot be dropped while its module is installed.
+    pub fn module_tables(&self) -> sc_catalog::ModuleTables {
+        let declared: Vec<(String, Vec<crate::tables::TableDecl>)> = self
+            .modules
+            .iter()
+            .map(|m| (m.module.name.clone(), m.table_declarations()))
+            .collect();
+        crate::tables::claims(
+            declared
+                .iter()
+                .map(|(module, decls)| (module.as_str(), decls.as_slice())),
+        )
     }
 
     /// Every map tool the modules declare, as `(module, declaration)`: what
@@ -317,20 +362,35 @@ async fn load_one(
         config_fields_to_form_fields(&manifest.config_fields, "this module");
     issues.extend(spec_issues);
 
+    let areas = Arc::new(crate::files::file_areas(
+        &crate::tables::parse_declarations(&manifest.tables).0,
+    ));
     for action in &manifest.actions {
         let (spec, action_issues) = config_fields_to_form_fields(
             &action.config_fields,
             &format!("the action `{}`", action.name),
         );
         issues.extend(action_issues);
-        let registered = ModuleAction::new(
+        let mut registered = ModuleAction::new(
             &module.name,
             &action.name,
             &action.description,
             spec,
             Arc::clone(host),
             Arc::clone(surfaces),
-        );
+        )
+        .with_file_areas(Arc::clone(&areas))
+        .with_types(action.payload.clone(), action.returns.clone());
+        // A type that does not lower is reported and dropped: the action still
+        // runs, and its client method is `unknown` rather than wrong.
+        if let Err(e) = sc_api::action_types(&registered) {
+            issues.push(format!(
+                "the action `{}` declares a type that is not one ({e}); its client \
+                 method is untyped",
+                action.name
+            ));
+            registered = registered.with_types(None, None);
+        }
         if let Err(e) = registry.register(Arc::new(registered)) {
             // The built-in — or the module that got there first — keeps the
             // name. Which implementation answers to `insert_row` must not
@@ -347,6 +407,31 @@ async fn load_one(
         manifest: Some(manifest),
         config_spec,
         issues,
+    }
+}
+
+/// Create and bring up to date every loaded module's declared tables (TODO-imap
+/// M4.2), in the set's order, each module's problems on its own card.
+///
+/// On **every** load rather than on install alone: it is a no-op when nothing
+/// is missing, and it makes install, upgrade (a reinstall with a newer
+/// package), a configuration change and a restart one path.
+async fn sync_tables(catalog: &Catalog, modules: &mut [LoadedModule]) {
+    let mut claimed = sc_catalog::ModuleTables::new();
+    for loaded in modules.iter_mut() {
+        let Some(manifest) = loaded.manifest.as_ref() else {
+            continue;
+        };
+        if manifest.tables.is_empty() {
+            continue;
+        }
+        let (decls, issues) = crate::tables::parse_declarations(&manifest.tables);
+        loaded.issues.extend(issues);
+        let report = crate::tables::sync(catalog, &loaded.module.name, &decls, &claimed).await;
+        loaded.issues.extend(report.issues);
+        for decl in &decls {
+            claimed.claim(decl.name.trim(), &loaded.module.name, Vec::new());
+        }
     }
 }
 
@@ -439,12 +524,16 @@ mod tests {
                 description: String::new(),
                 require_row: false,
                 config_fields: Vec::new(),
+                payload: None,
+                returns: None,
             }],
             functions: Vec::new(),
             table_providers: Vec::new(),
             model_providers: Vec::new(),
             stream_providers: Vec::new(),
             map_tools: Vec::new(),
+            tables: Vec::new(),
+            services: Vec::new(),
             frameworks: Vec::new(),
             view_patterns: Vec::new(),
             headers: Vec::new(),

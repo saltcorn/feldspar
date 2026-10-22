@@ -1,0 +1,29 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Journal report
+X-MS-Journal-Report: 
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="journal"
+
+--journal
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Sender: bo@feldspar.test
+Recipient: ada@feldspar.test
+
+--journal
+Content-Type: message/rfc822
+
+From: Bo Inner <bo@feldspar.test>
+To: ada@feldspar.test
+Subject: Journaled
+Date: Mon, 13 Oct 2025 08:00:00 +0000
+Message-ID: <journaled@feldspar.test>
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+The journaled body.
+
+--journal--

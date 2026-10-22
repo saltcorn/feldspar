@@ -2,7 +2,8 @@
 //! bearer tokens (design §13.6), from a terminal.
 //!
 //! The same three things the **Settings → Development** panel does, over the
-//! same `sc_auth::tokens` functions, with the same seven grants read and written
+//! same `sc_auth::tokens` functions, with the same seven grants (and
+//! `allow_all`, which holds every grant a later version adds) read and written
 //! through `sc_api::mcp` — so a token minted here is indistinguishable from one
 //! minted at the screen, and is listed and revoked there like any other.
 //!
@@ -66,6 +67,16 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
             admin = true;
             continue;
         }
+        // Every grant this binary knows and every one a later version adds,
+        // stored on the token as `allow_all`; `--no-allow-…` still takes single
+        // grants back out.
+        if arg == "--allow-all" {
+            let key = sc_api::mcp::ALLOW_ALL;
+            if grants.insert(key.to_owned(), Json::Bool(true)).is_some() {
+                return Err(Error::config("--allow-all is given more than once"));
+            }
+            continue;
+        }
         for key in sc_api::mcp::FLAG_KEYS {
             let on = grant_flag(key);
             let set = if *arg == on {
@@ -91,7 +102,7 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
             "--name" => &mut name,
             other => {
                 return Err(Error::config(format!(
-                    "unknown mcp-token create argument `{other}`; the grants are {}",
+                    "unknown mcp-token create argument `{other}`; the grants are --allow-all, {}",
                     sc_api::mcp::FLAG_KEYS
                         .iter()
                         .map(|k| grant_flag(k))
@@ -147,10 +158,11 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
     })
 }
 
-/// The seven grants as they will be stored: every key explicit, and a flag not
-/// given defaulting **on**, by the same function the admin API uses.
+/// The grants as they will be stored: every key explicit, a flag not given
+/// defaulting **on**, and `allow_all` if `--allow-all` was given — by the same
+/// function the admin API uses.
 pub fn normalised_grants(submitted: &Attrs) -> Result<Attrs> {
-    sc_api::mcp::validate_flags(submitted)?;
+    sc_api::mcp::validate_token_flags(submitted)?;
     Ok(sc_api::mcp::token_flags_from_submitted(submitted))
 }
 
@@ -160,11 +172,13 @@ pub fn expiry(days: Option<i64>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
 }
 
 /// The grants a token holds, as the flags that would give them: `allow_create
-/// allow_edit` and so on, with the ones it does not hold left out.
+/// allow_edit` and so on, with the ones it does not hold left out — and
+/// `allow_all` first when the token also holds every grant added later.
 pub fn describe_grants(grants: &Attrs) -> String {
-    let held: Vec<&str> = sc_api::mcp::FLAG_KEYS
-        .into_iter()
-        .filter(|key| grants.get(*key).and_then(Json::as_bool) == Some(true))
+    let flags = sc_api::mcp::token_flags(grants);
+    let held: Vec<&str> = std::iter::once(sc_api::mcp::ALLOW_ALL)
+        .chain(sc_api::mcp::FLAG_KEYS)
+        .filter(|key| flags.get(*key).and_then(Json::as_bool) == Some(true))
         .collect();
     match held.is_empty() {
         true => "(none)".to_owned(),
@@ -246,6 +260,44 @@ mod tests {
             describe_grants(&stored),
             "allow_create allow_edit allow_drop allow_access_changes \
              allow_applications allow_modules"
+        );
+    }
+
+    #[test]
+    fn allow_all_is_stored_and_single_grants_can_still_be_taken_out() {
+        let parsed = parse_create(&args(&[
+            "--label",
+            "agent",
+            "--admin",
+            "--allow-all",
+            "--no-allow-drop",
+        ]))
+        .unwrap();
+        let stored = normalised_grants(&parsed.grants).unwrap();
+        assert_eq!(stored["allow_all"], Json::Bool(true));
+        assert_eq!(stored["allow_drop"], Json::Bool(false));
+        assert_eq!(stored["allow_modules"], Json::Bool(true));
+        assert_eq!(
+            describe_grants(&stored),
+            "allow_all allow_create allow_edit allow_access_changes allow_triggers \
+             allow_applications allow_modules"
+        );
+        // Without it, nothing claims the grants a later version adds.
+        let plain = parse_create(&args(&["--label", "x", "--admin"])).unwrap();
+        assert_eq!(
+            normalised_grants(&plain.grants).unwrap()["allow_all"],
+            Json::Bool(false)
+        );
+        // Twice is refused, like any other flag.
+        assert!(
+            parse_create(&args(&[
+                "--label",
+                "x",
+                "--admin",
+                "--allow-all",
+                "--allow-all"
+            ]))
+            .is_err()
         );
     }
 

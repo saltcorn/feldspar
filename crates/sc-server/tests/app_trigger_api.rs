@@ -690,3 +690,75 @@ async fn deleting_an_exposed_trigger_succeeds_and_leaves_the_app_serving() -> sc
     assert_eq!(status, StatusCode::OK);
     Ok(())
 }
+
+/// `send_email`'s `smtp_password` is a secret setting (TODO-imap M3.1): the
+/// admin API masks it in every answer — the create, the list and the update —
+/// and an update that sends the mask back keeps the stored password.
+#[tokio::test]
+async fn a_send_email_triggers_smtp_password_is_masked_and_kept() -> sc_error::Result<()> {
+    const SMTP_PASSWORD: &str = "Grüße-€-pässwort";
+    let server = setup().await?;
+    let mut admin = server.admin_client();
+    admin.admin_login().await;
+
+    let (status, created) = admin
+        .send(
+            "POST",
+            "/api/triggers",
+            Some(json!({
+                "name": "shipped",
+                "when": "none",
+                "action": "send_email",
+                "configuration": {
+                    "to": "ada@example.com",
+                    "subject": "Your order has shipped",
+                    "text": "It is on its way.",
+                    "smtp_host": "smtp.example.com",
+                    "smtp_port": "587",
+                    "smtp_user": "orders@example.com",
+                    "smtp_password": SMTP_PASSWORD,
+                },
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(
+        created["configuration"]["smtp_password"],
+        json!(sc_types::SECRET_SENTINEL)
+    );
+    assert!(!created.to_string().contains(SMTP_PASSWORD), "{created}");
+
+    let (status, listed) = admin.send("GET", "/api/triggers", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert!(!listed.to_string().contains(SMTP_PASSWORD), "{listed}");
+    let shown = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("shipped"))
+        .expect("the trigger")
+        .clone();
+    assert_eq!(
+        shown["configuration"]["smtp_password"],
+        json!(sc_types::SECRET_SENTINEL)
+    );
+
+    // The editor saves back what it was shown, with one other change.
+    let id = shown["id"].as_str().unwrap().to_owned();
+    let mut body = shown.clone();
+    body["configuration"]["subject"] = json!("Shipped!");
+    let (status, updated) = admin
+        .send("PUT", &format!("/api/triggers/{id}"), Some(body))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert!(!updated.to_string().contains(SMTP_PASSWORD), "{updated}");
+
+    // The row still holds the password the admin typed, not the mask.
+    let stored = sc_action::load_trigger_by_name(&server.catalog, "shipped")
+        .await?
+        .expect("stored");
+    let config = stored.configuration().unwrap();
+    assert_eq!(config["smtp_password"], json!(SMTP_PASSWORD));
+    assert_eq!(config["subject"], json!("Shipped!"));
+    Ok(())
+}

@@ -90,6 +90,25 @@ pub trait Action: Send + Sync {
         Ok(())
     }
 
+    /// What a direct run's payload carries — the body of `POST
+    /// {mount}/actions/<trigger>` — in a code query's `returns` type language
+    /// (`sc_api::parse_returns`), always an `{ "object": … }`. It types the
+    /// generated `api.run<Name>()` argument, as the declared part of an open
+    /// object. `None`, the default, is untyped: the argument is `unknown`.
+    ///
+    /// Raw JSON rather than a schema because the type language lives in
+    /// `sc-api`, above this crate; it is lowered, and a bad one refused, there.
+    fn payload_type(&self) -> Option<Json> {
+        None
+    }
+
+    /// What [`run`](Action::run) answers, in the same type language: the
+    /// response type of `api.run<Name>()`. A contract for the client, never
+    /// checked against an answer. `None`, the default, is `unknown`.
+    fn returns_type(&self) -> Option<Json> {
+        None
+    }
+
     /// Run against `ctx`, returning the action's result.
     ///
     /// The result is the response body of a directly-run trigger, and will be a
@@ -150,7 +169,10 @@ impl ConfigCheck<'_> {
 
     /// [`formula`](ConfigCheck::formula), for a template: every token.
     pub async fn template(&self, scope: &str, template: &Template, what: &str) -> Result<()> {
-        for analysis in crate::scope::check_template(self.shape, scope, template, what)? {
+        // The template scope, which sees Secret fields (`template_shape`): the
+        // scope `render_event_template` renders in, so what saves is what runs.
+        let shape = crate::scope::template_shape(self.catalog, self.shape)?;
+        for analysis in crate::scope::check_template(&shape, scope, template, what)? {
             sc_catalog::check_model_calls(self.catalog, scope, &analysis)
                 .await
                 .map_err(|e| Error::invalid(format!("{what}: {e}")))?;

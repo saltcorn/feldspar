@@ -295,8 +295,20 @@ pub fn flags_to_attrs(grants: &Grants, areas: &Areas) -> Attrs {
     out
 }
 
-/// The seven flags a freshly minted API token stores, from what the mint
-/// submitted: an absent flag is **granted**.
+/// The key a token's `grants` stores to hold **every** flag — the seven of
+/// [`FLAG_KEYS`] and any added in a later version.
+///
+/// A token's own key, never an `admin_copilot` agent's: an agent's
+/// configuration keeps the cautious defaults. Stored on the token rather than
+/// expanded at the mint, so a long-lived token given "everything" keeps meaning
+/// everything after an upgrade adds a flag — the token already acts as the full
+/// administrator who minted it, and the flags it was not given are the ones it
+/// was explicitly denied. Those stay denied: a flag stored `false` beside
+/// `allow_all` is an exception, the `--allow-all --no-allow-drop` of the CLI.
+pub const ALLOW_ALL: &str = "allow_all";
+
+/// The flags a freshly minted API token stores, from what the mint submitted:
+/// an absent flag is **granted**, and [`ALLOW_ALL`] is written explicitly too.
 ///
 /// A token is minted by an admin, at a screen or a terminal, for an agent they
 /// are about to hand their installation to; everything on — modules, drops and
@@ -304,14 +316,47 @@ pub fn flags_to_attrs(grants: &Grants, areas: &Areas) -> Attrs {
 /// one click. An `admin_copilot` agent's configuration keeps the cautious
 /// defaults of [`grants_from_attrs`] and [`areas_from_attrs`]; this applies only
 /// at a mint, and the result is written explicitly, so a stored token never
-/// re-reads itself against either set of defaults.
+/// re-reads itself against either set of defaults — except through
+/// [`ALLOW_ALL`], which says on purpose that a flag it has never heard of is on
+/// (read back by [`token_flags`]).
 pub fn token_flags_from_submitted(submitted: &Attrs) -> Attrs {
     let mut out = Attrs::new();
     for key in FLAG_KEYS {
         let on = submitted.get(key).and_then(Json::as_bool).unwrap_or(true);
         out.insert(key.to_owned(), Json::Bool(on));
     }
+    let all = submitted
+        .get(ALLOW_ALL)
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
+    out.insert(ALLOW_ALL.to_owned(), Json::Bool(all));
     out
+}
+
+/// A stored token's flags, as the readers ([`grants_from_attrs`],
+/// [`areas_from_attrs`]) should see them: with [`ALLOW_ALL`] on, every key of
+/// [`FLAG_KEYS`] the row does not mention reads as granted — which is what a
+/// flag added after the mint is. A flag the row stores keeps its stored value.
+pub fn token_flags(stored: &Attrs) -> Attrs {
+    let mut out = stored.clone();
+    if stored.get(ALLOW_ALL).and_then(Json::as_bool) == Some(true) {
+        for key in FLAG_KEYS {
+            out.entry(key.to_owned()).or_insert(Json::Bool(true));
+        }
+    }
+    out
+}
+
+/// What a token mint may submit: the flags of [`validate_flags`], plus
+/// [`ALLOW_ALL`], which only a token takes.
+pub fn validate_token_flags(submitted: &Attrs) -> Result<()> {
+    validate_flags(submitted)?;
+    match submitted.get(ALLOW_ALL) {
+        None | Some(Json::Null) | Some(Json::Bool(_)) => Ok(()),
+        Some(other) => Err(Error::invalid(format!(
+            "`{ALLOW_ALL}` should be true or false, got {other}"
+        ))),
+    }
 }
 
 /// Refuse a flag that is not `true`, `false` or absent, naming it.
@@ -730,7 +775,8 @@ mod tests {
     #[test]
     fn a_token_minted_with_nothing_said_is_granted_everything() {
         let stored = token_flags_from_submitted(&Attrs::new());
-        assert_eq!(stored.len(), FLAG_KEYS.len());
+        // The seven, and `allow_all` written down as off.
+        assert_eq!(stored.len(), FLAG_KEYS.len() + 1);
         assert_eq!(grants_from_attrs(&stored), Grants::all());
         let areas = areas_from_attrs(&stored);
         assert!(areas.triggers && areas.applications && areas.modules);
@@ -742,6 +788,35 @@ mod tests {
         assert_eq!(stored[GRANT_DROP], Json::Bool(false));
         assert_eq!(stored[GRANT_ACCESS_CHANGES], Json::Bool(true));
         assert_eq!(stored[Area::Modules.key()], Json::Bool(true));
+        assert_eq!(stored[ALLOW_ALL], Json::Bool(false));
+    }
+
+    #[test]
+    fn allow_all_on_a_token_grants_flags_added_after_the_mint() {
+        let mut said = Attrs::new();
+        said.insert(ALLOW_ALL.to_owned(), json!(true));
+        said.insert(GRANT_DROP.to_owned(), json!(false));
+        assert!(validate_token_flags(&said).is_ok());
+        let mut stored = token_flags_from_submitted(&said);
+        assert_eq!(stored[ALLOW_ALL], json!(true));
+
+        // A row minted by a version that knew fewer flags: modules (say) is
+        // not in it. `allow_all` reads it as granted; the denied drop stays
+        // denied.
+        stored.remove(Area::Modules.key());
+        let read = token_flags(&stored);
+        assert!(areas_from_attrs(&read).has(Area::Modules));
+        assert!(!grants_from_attrs(&read).drop);
+
+        // Without `allow_all` the same row reads the missing flag at the
+        // cautious default.
+        stored.insert(ALLOW_ALL.to_owned(), json!(false));
+        assert!(!areas_from_attrs(&token_flags(&stored)).has(Area::Modules));
+
+        // Only a boolean is a valid `allow_all`.
+        let mut bad = Attrs::new();
+        bad.insert(ALLOW_ALL.to_owned(), json!("yes"));
+        assert!(validate_token_flags(&bad).is_err());
     }
 
     #[test]

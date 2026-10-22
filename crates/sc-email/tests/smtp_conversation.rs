@@ -153,3 +153,72 @@ async fn a_refused_connection_is_the_transports_own_error() -> sc_error::Result<
     assert!(err.contains("mail server"), "{err}");
     Ok(())
 }
+
+/// An SMTP override's transport connects to **the address that was checked**
+/// and not to wherever its host name resolves (TODO-imap M3.3): the name here
+/// is one that resolves nowhere (`.invalid`, RFC 2606), so the message can
+/// only arrive if the transport never looked it up. The EHLO name is the
+/// sender's domain, not the machine's.
+#[tokio::test]
+async fn a_pinned_transport_connects_to_the_checked_address_not_the_name() -> sc_error::Result<()> {
+    let server = TestSmtp::start().await?;
+    let settings = EmailSettings {
+        host: "smtp.example.invalid".to_owned(),
+        username: "orders@example.com".to_owned(),
+        password: "Grüße-€-pässwort".to_owned(),
+        from: parse_mailbox("Orders <orders@example.com>").unwrap(),
+        ..settings(server.port(), "")
+    };
+    let mailer = SmtpMailer::pinned(&settings, "127.0.0.1".parse().unwrap())?;
+    let mut email = Email::new(settings.from.clone());
+    email.to = vec![parse_mailbox("ada@example.com")?];
+    email.subject = "Your order has shipped".to_owned();
+    email.text = Some("It is on its way.".to_owned());
+    mailer.send(&email).await?;
+
+    let received = server.message().await?;
+    let transcript = received.transcript();
+    assert!(transcript.contains("EHLO example.com"), "{transcript}");
+    assert!(received.authenticated(), "{transcript}");
+    assert!(
+        transcript.contains("MAIL FROM:<orders@example.com>"),
+        "{transcript}"
+    );
+    Ok(())
+}
+
+/// The override's way in, [`Mailer::send_via`], holds the server to the relay
+/// rules before anything is connected to: loopback is refused (a local
+/// listener *is* there, and is not reached), and the error names the host and
+/// never the password.
+#[tokio::test]
+async fn an_override_through_a_loopback_server_is_refused() -> sc_error::Result<()> {
+    let server = TestSmtp::start().await?;
+    let relay = EmailSettings {
+        host: "127.0.0.1".to_owned(),
+        port: 587,
+        security: SmtpSecurity::StartTls,
+        username: "orders@example.com".to_owned(),
+        password: "Grüße-€-pässwort".to_owned(),
+        from: parse_mailbox("orders@example.com").unwrap(),
+    };
+    let recorder = sc_email::RecordingMailer::new();
+    let mut email = Email::new(relay.from.clone());
+    email.to = vec![parse_mailbox("ada@example.com")?];
+    email.text = Some("Hello.".to_owned());
+    // Through the trait's own default: what `SettingsMailer` and `SmtpMailer`
+    // do with an override.
+    let mailer = SmtpMailer::new(&settings(server.port(), ""))?;
+    let err = mailer
+        .send_via(&relay, &email)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("127.0.0.1"), "{err}");
+    assert!(err.contains("private or reserved"), "{err}");
+    assert!(!err.contains("pässwort"), "{err}");
+    // The recorder checks the port and encryption only — DNS is not its to ask.
+    recorder.send_via(&relay, &email).await?;
+    assert_eq!(recorder.servers().len(), 1);
+    Ok(())
+}

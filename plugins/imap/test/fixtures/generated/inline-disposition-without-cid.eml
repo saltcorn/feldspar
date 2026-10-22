@@ -1,0 +1,30 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Inline PDF
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="inline-nocid"
+
+--inline-nocid
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Here it is.
+
+--inline-nocid
+Content-Type: application/pdf; name="Rechnung.pdf"
+Content-Disposition: inline; filename="Rechnung.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+
+--inline-nocid
+Content-Type: image/png; name="photo.png"
+Content-Disposition: inline; filename="photo.png"
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+A8AAAEBAQBbjWoa
+AAAAAElFTkSuQmCC
+
+--inline-nocid--

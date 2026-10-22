@@ -1,0 +1,28 @@
+From: Ada Sender <ada@feldspar.test>
+To: orders@feldspar.test
+Date: Tue, 14 Oct 2025 09:30:00 +0200
+Subject: Outlook with a file
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="tnef-att"
+
+--tnef-att
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+See the report.
+
+--tnef-att
+Content-Type: application/ms-tnef; name="winmail.dat"
+Content-Disposition: attachment; filename="winmail.dat"
+Content-Transfer-Encoding: base64
+
+eJ8+IgEAAQaQCAAEAAAAAAABAAEAAQeQBgAIAAAA5AQAAAAAAADoAAEIgAcAGAAAAElQTS5NaWNy
+b3NvZnQgTWFpbC5Ob3RlADEIAQOQBgCsAAAAAQAAAAIBCRABAAAAmgAAAJYAAADoAAAATFpGdb0m
+T+cDAAoAcmNwZzEyNYIyA0NodG1sMQMwfwEDAfcCpAPkBxMCgAKRKo5cDrIBkA4QOSA8DrIyPhE6
+MzQSEAbgZHk3EnARcwAhIAAAE/UwIGhIZWwJACALgBUQVAhNTC0LgC1SVEbSLhFKMTYTYXITwQqx
+pxPXFQARSTU4EhAvE4RZEUkyNxlxEjR9G3AAAKAoAgKQBgAOAAAAAQD/////AAAAAAAAAAD9AwIQ
+gAEADQAAAFJFUE9SVH4xLlRYVAC5AwIPgAYAHQAAAFF1YXJ0ZXJseSBudW1iZXJzOiAxLCAyLCAz
+Lg0KsggCBZAGAEAAAAACAAAAHgAHNwEAAAAVAAAAcXVhcnRlcmx5IHJlcG9ydC50eHQAAAAAHgAO
+NwEAAAALAAAAdGV4dC9wbGFpbgAAHg0=
+
+--tnef-att--

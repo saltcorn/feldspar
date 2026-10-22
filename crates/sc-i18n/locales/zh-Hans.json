@@ -242,6 +242,7 @@
   "Write to context key": "写入上下文键",
   "Write to field": "写入字段",
   "You need to sign in to see {what}.": "你需要登录才能查看 {what}。",
+  "You need to sign in with an account that may use this application.": "您需要使用有权使用此应用的账户登录。",
   "Your role may not see {what}.": "你的角色可能无权查看 {what}。",
   "a scripted stream, for tests": "用于测试的脚本化流",
   "admin UI": "管理界面",
@@ -251,8 +252,10 @@
   "invalid credentials": "凭据无效",
   "minting an API token needs a signed-in admin": "生成 API 令牌需要已登录的管理员",
   "off serves plain HTTP (right behind a TLS-terminating proxy, and for local development). letsencrypt obtains and renews certificates automatically. custom serves the certificate below.": "off 提供纯 HTTP（适用于 TLS 终止代理后以及本地开发）。letsencrypt 自动获取并续期证书。custom 提供下方的证书。",
+  "sign in with an account that may use this application": "请使用有权使用此应用的账户登录",
   "starttls connects in the clear and upgrades (port 587). tls is encrypted from the first byte (port 465). none is plain SMTP, which is only reasonable for a relay on a network you trust — credentials are refused with it.": "starttls 以明文连接后再升级（端口 587）。tls 从第一个字节起即加密（端口 465）。none 是纯 SMTP，仅适用于在可信网络中的中继——使用此模式时不允许提供凭据。",
   "the page {name}": "页面 {name}",
   "the view {name}": "视图 {name}",
-  "view_app timeout per action (seconds)": "view_app 每个操作的超时时间（秒）"
+  "view_app timeout per action (seconds)": "view_app 每个操作的超时时间（秒）",
+  "your account may not use this application": "您的账户无权使用此应用"
 }

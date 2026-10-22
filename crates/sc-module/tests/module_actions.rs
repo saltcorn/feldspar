@@ -110,6 +110,18 @@ async fn a_modules_actions_reach_the_registry_with_their_declared_settings() {
     assert_eq!(spec[1].default, Some(json!(1)));
     assert_eq!(spec[2].base.type_, TypeRef::Basic(BasicType::Bool));
 
+    // What a direct run takes and answers, passed through as declared and
+    // lowerable — which is what types the client's `runEchoRow`. An action that
+    // declares nothing stays untyped.
+    assert_eq!(
+        action.payload_type(),
+        Some(json!({ "object": { "what": { "optional": "string" } } }))
+    );
+    let types = sc_api::action_types(action.as_ref()).unwrap();
+    assert!(types.payload.is_some() && types.returns.is_some());
+    let untyped = registry.require("echo_interpolate").unwrap();
+    assert!(untyped.payload_type().is_none() && untyped.returns_type().is_none());
+
     // The set knows what it loaded, and has nothing to complain about.
     let loaded = set.get("@saltcorn-test/echo").unwrap();
     assert!(loaded.is_loaded());

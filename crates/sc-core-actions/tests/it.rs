@@ -27,5 +27,7 @@ mod run_js_code;
 mod run_python_code;
 #[path = "send_email.rs"]
 mod send_email;
+#[path = "send_email_relay.rs"]
+mod send_email_relay;
 #[path = "tutorial_triggers.rs"]
 mod tutorial_triggers;

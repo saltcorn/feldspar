@@ -664,6 +664,10 @@ pub async fn create_row_in(
     let mut values = Vec::with_capacity(obj.len());
     for (key, json) in obj {
         let value = column_value(table, key, json)?;
+        // A secret is sealed here and nowhere else, and its sentinel is left out.
+        let Some(value) = sc_catalog::secrets::seal_for_write(catalog, table, key, value)? else {
+            continue;
+        };
         validate_file_write(catalog, table, key, &value)?;
         if !may_attach_file(catalog, table, key, &value, context).await? {
             return Err(not_attachable(key, &value));
@@ -931,6 +935,10 @@ async fn update_row_unchecked_in(
             continue;
         }
         let value = column_value(table, key, json)?;
+        // A secret sent back as its sentinel keeps what is stored.
+        let Some(value) = sc_catalog::secrets::seal_for_write(catalog, table, key, value)? else {
+            continue;
+        };
         validate_file_write(catalog, table, key, &value)?;
         if check_attach && !may_attach_file(catalog, table, key, &value, context).await? {
             // A whole-row save sends the path back as it was, and whoever may
@@ -952,6 +960,23 @@ async fn update_row_unchecked_in(
         assignments.push(Assignment::new(key.clone(), Expr::lit(value)));
     }
     if assignments.is_empty() {
+        // Only secrets sent back as their sentinel: nothing changes, and the
+        // row is answered as it is, rather than as a refusal of a save that
+        // touched nothing.
+        if obj
+            .keys()
+            .any(|k| k != &pk && sc_catalog::secrets::is_secret_column(table, k))
+        {
+            let filter = guarded_filter(table, &pk, id, guard)?;
+            let select = Select::from(Source::table(table.name.clone()))
+                .columns(user_rows::projection(table))
+                .filter(filter);
+            let rows = run_read_in(catalog, table, &select, context, false, executor).await?;
+            let row = rows
+                .first()
+                .ok_or_else(|| Error::not_found(format!("no row with {pk} = {id}")))?;
+            return Ok(row_to_json(row));
+        }
         return Err(Error::invalid("no fields to update"));
     }
     // The pre-image, for the event's `old_row` — read **only when something

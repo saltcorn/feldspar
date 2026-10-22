@@ -1,5 +1,7 @@
 //! `feldspar app list [--json]`: the stored applications, and where each one's
-//! project directory is on this machine.
+//! project directory is on this machine. `feldspar app triggers …` is parsed
+//! here too ([`parse_triggers`]); it changes which triggers an application
+//! exposes.
 //!
 //! The project directory is the one an external coding agent is started in
 //! (`claude mcp add …`, then `claude`, there), so a script that sets up agents
@@ -56,4 +58,117 @@ pub fn app_json(catalog: &Catalog, app: &Application) -> Json {
         }
     }
     out
+}
+
+/// What `app triggers` was asked to do.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TriggersAction {
+    /// `list`: the exposed triggers.
+    List,
+    /// `add NAME…`: expose these too.
+    Add(Vec<String>),
+    /// `remove NAME…`: stop exposing these.
+    Remove(Vec<String>),
+}
+
+/// `app triggers (add|remove|list) --app SUBDOMAIN [NAME…] [--json]`, the
+/// database flags already taken out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TriggersArgs {
+    /// The application, by subdomain.
+    pub app: String,
+    /// What to do.
+    pub action: TriggersAction,
+    /// Print the answer as JSON rather than a table.
+    pub json: bool,
+}
+
+/// Parse `app triggers`'s arguments. `add` and `remove` need at least one name,
+/// `list` takes none.
+pub fn parse_triggers(args: &[String]) -> Result<TriggersArgs> {
+    let usage = "app triggers (add|remove|list) --app SUBDOMAIN [NAME…] [--json]";
+    let (verb, rest) = args
+        .split_first()
+        .ok_or_else(|| Error::config(format!("usage: {usage}")))?;
+    let mut app = None;
+    let mut json = false;
+    let mut names = Vec::new();
+    let mut rest = rest.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--app" => {
+                app = Some(
+                    rest.next()
+                        .ok_or_else(|| Error::config("--app needs a subdomain"))?
+                        .clone(),
+                )
+            }
+            "--json" => json = true,
+            flag if flag.starts_with("--") => {
+                return Err(Error::config(format!(
+                    "unknown app triggers argument `{flag}`; usage: {usage}"
+                )));
+            }
+            name => names.push(name.to_owned()),
+        }
+    }
+    let app = app.ok_or_else(|| Error::config(format!("--app is required; usage: {usage}")))?;
+    let action = match (verb.as_str(), names.is_empty()) {
+        ("list", true) => TriggersAction::List,
+        ("list", false) => {
+            return Err(Error::config("app triggers list takes no trigger names"));
+        }
+        ("add" | "remove", true) => {
+            return Err(Error::config(format!(
+                "app triggers {verb} needs at least one trigger name"
+            )));
+        }
+        ("add", false) => TriggersAction::Add(names),
+        ("remove", false) => TriggersAction::Remove(names),
+        (other, _) => {
+            return Err(Error::config(format!(
+                "unknown app triggers subcommand `{other}`; there are add, remove and list"
+            )));
+        }
+    };
+    Ok(TriggersArgs { app, action, json })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn triggers_subcommands_parse_and_refuse_what_they_cannot_do() {
+        assert_eq!(
+            parse_triggers(&args("add --app shop mail_send mail_test_account")).unwrap(),
+            TriggersArgs {
+                app: "shop".into(),
+                action: TriggersAction::Add(vec!["mail_send".into(), "mail_test_account".into()]),
+                json: false,
+            }
+        );
+        let listed = parse_triggers(&args("list --json --app shop")).unwrap();
+        assert_eq!((listed.action, listed.json), (TriggersAction::List, true));
+        assert_eq!(
+            parse_triggers(&args("remove mail_send --app shop"))
+                .unwrap()
+                .action,
+            TriggersAction::Remove(vec!["mail_send".into()])
+        );
+        for bad in [
+            "",
+            "add --app shop",
+            "list --app shop mail_send",
+            "add mail_send",
+            "tick --app shop x",
+            "add --app shop --force x",
+        ] {
+            assert!(parse_triggers(&args(bad)).is_err(), "{bad}");
+        }
+    }
 }

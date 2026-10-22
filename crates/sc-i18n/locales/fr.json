@@ -242,6 +242,7 @@
   "Write to context key": "Écrire dans la clé de contexte",
   "Write to field": "Écrire dans le champ",
   "You need to sign in to see {what}.": "Vous devez vous connecter pour voir {what}.",
+  "You need to sign in with an account that may use this application.": "Vous devez vous connecter avec un compte autorisé à utiliser cette application.",
   "Your role may not see {what}.": "Votre rôle ne permet pas de voir {what}.",
   "a scripted stream, for tests": "un flux scripté, pour les tests",
   "admin UI": "interface d'administration",
@@ -251,8 +252,10 @@
   "invalid credentials": "identifiants invalides",
   "minting an API token needs a signed-in admin": "la création d'un jeton d'API nécessite un administrateur connecté",
   "off serves plain HTTP (right behind a TLS-terminating proxy, and for local development). letsencrypt obtains and renews certificates automatically. custom serves the certificate below.": "off sert du HTTP en clair (directement derrière un mandataire qui termine TLS, et pour le développement local). letsencrypt obtient et renouvelle les certificats automatiquement. custom sert le certificat ci-dessous.",
+  "sign in with an account that may use this application": "connectez-vous avec un compte autorisé à utiliser cette application",
   "starttls connects in the clear and upgrades (port 587). tls is encrypted from the first byte (port 465). none is plain SMTP, which is only reasonable for a relay on a network you trust — credentials are refused with it.": "starttls se connecte en clair puis bascule (port 587). tls est chiffré dès le premier octet (port 465). none est du SMTP en clair, ce qui n'est raisonnable que pour un relais sur un réseau de confiance — les identifiants y sont refusés.",
   "the page {name}": "la page {name}",
   "the view {name}": "la vue {name}",
-  "view_app timeout per action (seconds)": "délai d'expiration de view_app par action (secondes)"
+  "view_app timeout per action (seconds)": "délai d'expiration de view_app par action (secondes)",
+  "your account may not use this application": "votre compte n’est pas autorisé à utiliser cette application"
 }

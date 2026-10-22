@@ -27,6 +27,7 @@ import {
   emptyMint,
   grantFields,
   grantedKeys,
+  holdsAll,
   mcpEnabled,
   mcpUrl,
   mintProblem,
@@ -204,6 +205,7 @@ describe("minting", () => {
     const form = {
       label: "  claude-code on my laptop  ",
       grants: { allow_create: true, allow_triggers: true },
+      all: false,
       expiresInDays: "90",
     };
     expect(mintRequest(form, fields)).toEqual({
@@ -216,9 +218,20 @@ describe("minting", () => {
         allow_triggers: true,
         allow_applications: false,
         allow_modules: false,
+        allow_all: false,
       },
       expires_in_days: 90,
     });
+  });
+
+  it("sends the all-grants toggle as allow_all, with the unticked boxes beside it", () => {
+    const form = { ...emptyMint(fields), label: "agent", all: true };
+    form.grants = { ...form.grants, allow_drop: false };
+    const request = mintRequest(form, fields);
+    expect(request.grants?.allow_all).toBe(true);
+    expect(request.grants?.allow_drop).toBe(false);
+    expect(request.grants?.allow_modules).toBe(true);
+    expect(emptyMint(fields).all).toBe(false);
   });
 
   it("omits the expiry entirely for a token that never lapses", () => {
@@ -270,6 +283,12 @@ describe("the token list", () => {
       "allow_applications",
     ]);
     expect(grantedKeys(token({ grants: null }))).toEqual([]);
+    // `allow_all` holds a flag the row does not mention, not one it denies.
+    const all = token({ grants: { allow_all: true, allow_drop: false } });
+    expect(holdsAll(all)).toBe(true);
+    expect(grantedKeys(all)).not.toContain("allow_drop");
+    expect(grantedKeys(all)).toContain("allow_modules");
+    expect(holdsAll(token())).toBe(false);
     expect(shortGrantLabel("allow_access_changes")).toBe("access changes");
   });
 

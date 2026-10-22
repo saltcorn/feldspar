@@ -90,6 +90,7 @@ pub use provider::{
     StreamOpening,
 };
 pub use resource::{ResourceField, ResourceFile, ResourceModel, ResourceOps};
+pub use rest::action_types::{ActionTypes, action_types};
 pub use rest::custom::{
     BodyType, CFG_QUERIES as REST_CFG_QUERIES, CustomParam, CustomQuery, DEFAULT_PUBLIC_RATE,
     EffectiveRateLimit, QueryColumn, QueryLanguage, QueryRateLimit, ResponseType, custom_queries,
@@ -103,8 +104,8 @@ pub use rest::returns::{check_returns, parse_returns};
 pub use rest::{
     AUTH_ENDPOINTS, CFG_ALLOW_SIGNUP as REST_CFG_ALLOW_SIGNUP,
     CFG_NEW_USER_ROLE as REST_CFG_NEW_USER_ROLE, DEFAULT_ROW_CAP as REST_DEFAULT_ROW_CAP,
-    REST_PROVIDER, RestProvider, check_rest_config, op_name, rest_config_spec, rest_row_cap,
-    rest_signup_role,
+    REST_PROVIDER, RestProvider, SIGN_IN_ENDPOINTS, check_rest_config, op_name, rest_config_spec,
+    rest_row_cap, rest_signup_role,
 };
 pub use schema::{StructField, TypeSchema, ValueType};
 pub use typescript::{

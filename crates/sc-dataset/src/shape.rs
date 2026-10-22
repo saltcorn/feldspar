@@ -396,6 +396,9 @@ fn table_info(table: &Table, all: &BTreeMap<String, Table>) -> TableInfo {
                     });
                 }
             }
+            // A secret (TODO-imap M2) is no column a dataset can read: it would
+            // be ciphertext to a model and plaintext to nobody.
+            DataFieldKind::Secret => {}
             DataFieldKind::Plain | DataFieldKind::File { .. } => columns.push(StageColumn {
                 name: field.base.name.clone(),
                 ty: ColType::of_type(&field.base.type_),

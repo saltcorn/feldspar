@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 
+use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
 use sc_catalog::{Attrs, FileStoreId, TableId};
 use serde_json::Value as Json;
 use uuid::Uuid;
@@ -512,6 +513,21 @@ pub struct Application {
     pub uploads: Vec<UploadSlot>,
     /// The content-security policy (strict by default).
     pub csp: CspPolicy,
+    /// The least privileged role that may use the application at all
+    /// ([`crate::admit`]): a caller whose role number is higher is refused
+    /// everything — sign-in included. `100` (public) lets everybody in.
+    pub min_role: u8,
+    /// The most privileged role a caller holds **while using this
+    /// application**: an admin (role 1) on an application with `max_role` 20
+    /// is served as role 20 — by its endpoints, its ownership formulas, RLS and
+    /// its code queries alike. `1` caps nobody.
+    pub max_role: u8,
+    /// A formula over `user` (and anything else a formula may read, such as
+    /// the time) that must hold for a caller to use the application at all —
+    /// `user.department === "Finance"`. Empty means no condition. Evaluated
+    /// against the caller's real role, before [`max_role`](Self::max_role)
+    /// caps it, and failing closed.
+    pub access_if: String,
     /// Sparse per-app values that do not warrant a column of their own (the §9
     /// column-vs-attributes rule). A framework's settings do **not** live here —
     /// they belong to the framework, in [`FrameworkRef::config`].
@@ -592,6 +608,9 @@ impl Application {
             static_dirs: Vec::new(),
             uploads: Vec::new(),
             csp: CspPolicy::strict(),
+            min_role: ROLE_PUBLIC,
+            max_role: ROLE_ADMIN,
+            access_if: String::new(),
             attributes: Attrs::new(),
         }
     }
@@ -660,6 +679,24 @@ impl Application {
     /// Replace the CSP policy.
     pub fn csp(mut self, csp: CspPolicy) -> Application {
         self.csp = csp;
+        self
+    }
+
+    /// Set the least privileged role that may use the application.
+    pub fn min_role(mut self, role: u8) -> Application {
+        self.min_role = role;
+        self
+    }
+
+    /// Set the most privileged role a caller holds while using the application.
+    pub fn max_role(mut self, role: u8) -> Application {
+        self.max_role = role;
+        self
+    }
+
+    /// Set the formula a caller must satisfy to use the application.
+    pub fn access_if(mut self, formula: impl Into<String>) -> Application {
+        self.access_if = formula.into();
         self
     }
 

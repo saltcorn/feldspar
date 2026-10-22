@@ -1,0 +1,861 @@
+[
+  {
+    "file": "base64-windows-1252.eml",
+    "covers": [
+      "§6.7",
+      "§5.4 charsets"
+    ],
+    "description": "A base64 text body in windows-1252, with characters only that charset has (€ – „ “).",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "subject": "Preis",
+      "body_text_includes": [
+        "Grüße aus Köln – der Preis beträgt 20 € „netto“."
+      ],
+      "body_html": null
+    }
+  },
+  {
+    "file": "qp-iso-8859-15.eml",
+    "covers": [
+      "§6.7",
+      "§5.4 charsets"
+    ],
+    "description": "A quoted-printable body in iso-8859-15, where 0xA4 is € (in latin-1 it would be ¤).",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "99 €",
+        "fällig"
+      ],
+      "body_text_excludes": [
+        "¤"
+      ]
+    }
+  },
+  {
+    "file": "base64-html-iso-2022-jp.eml",
+    "covers": [
+      "§6.7",
+      "§5.4 charsets"
+    ],
+    "description": "A base64 HTML body and a subject in ISO-2022-JP, a stateful 7-bit charset.",
+    "structure": [
+      "text/html"
+    ],
+    "expect": {
+      "subject": "こんにちは",
+      "body_html_includes": [
+        "<p>こんにちは</p>"
+      ],
+      "body_text_includes": [
+        "こんにちは"
+      ]
+    }
+  },
+  {
+    "file": "unknown-charset-utf8.eml",
+    "covers": [
+      "§5.4 charsets"
+    ],
+    "description": "A charset nobody knows, over bytes that are valid UTF-8: decoded as UTF-8.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "Grüße, ein Gruß in UTF-8."
+      ]
+    }
+  },
+  {
+    "file": "unknown-charset-latin1.eml",
+    "covers": [
+      "§5.4 charsets"
+    ],
+    "description": "A charset nobody knows, over bytes that are not valid UTF-8: decoded as latin-1.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "Grüße aus München."
+      ]
+    }
+  },
+  {
+    "file": "charset-aliases.eml",
+    "covers": [
+      "§5.4 charsets"
+    ],
+    "description": "Charset names as real mailers spell them: utf8 (no dash) and latin1.",
+    "structure": [
+      "multipart/alternative",
+      "text/plain",
+      "text/html"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "Straße in utf8."
+      ],
+      "body_html_includes": [
+        "Straße in latin1."
+      ]
+    }
+  },
+  {
+    "file": "undeclared-8bit-headers-utf8.eml",
+    "covers": [
+      "§5.4 charsets (undeclared 8-bit headers)"
+    ],
+    "description": "Raw UTF-8 bytes in Subject and From, with no encoded words.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "subject": "Grüße aus Köln",
+      "from_name": "Jörg Müller",
+      "from_addr": "joerg@feldspar.test"
+    }
+  },
+  {
+    "file": "undeclared-8bit-headers-latin1.eml",
+    "covers": [
+      "§5.4 charsets (undeclared 8-bit headers)"
+    ],
+    "description": "Raw latin-1 bytes in Subject and From, which are not valid UTF-8.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "subject": "Grüße aus Köln",
+      "from_name": "Jörg Müller",
+      "from_addr": "joerg@feldspar.test"
+    }
+  },
+  {
+    "file": "encoded-word-subject.eml",
+    "covers": [
+      "§5.4 charsets"
+    ],
+    "description": "A subject of B and Q encoded words (whitespace between them dropped), then a malformed one left as it is.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "subject_includes": [
+        "Grüße aus Köln"
+      ]
+    }
+  },
+  {
+    "file": "single-part-html.eml",
+    "covers": [
+      "§6.9",
+      "§5.4 body choice (single-part text/html keeps its markup)"
+    ],
+    "description": "The whole mail is one text/html part, quoted-printable.",
+    "structure": [
+      "text/html"
+    ],
+    "expect": {
+      "body_html_includes": [
+        "<h1>Order 4711</h1>",
+        "<b>blue</b>"
+      ],
+      "body_text_includes": [
+        "Order 4711",
+        "Two blue widgets."
+      ],
+      "body_text_excludes": [
+        "<b>"
+      ]
+    }
+  },
+  {
+    "file": "html-only-with-attachment.eml",
+    "covers": [
+      "§6.8",
+      "§5.4 body choice (HTML only: body_text derived)"
+    ],
+    "description": "multipart/mixed of an HTML part and a PDF, with no text/plain anywhere.",
+    "structure": [
+      "multipart/mixed",
+      "text/html",
+      "application/pdf"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "Please find the invoice attached."
+      ],
+      "body_html_includes": [
+        "<i>invoice</i>"
+      ],
+      "attachments": [
+        {
+          "filename": "invoice.pdf",
+          "content_type": "application/pdf",
+          "inline": false,
+          "size": 77,
+          "sha256": "56c2ac043c28d3543275a6f50b593a6beb0b6888ed8159ac02e3e7f4a32ccb26"
+        }
+      ]
+    }
+  },
+  {
+    "file": "text-only.eml",
+    "covers": [
+      "§6.8",
+      "§5.4 body choice (text only: body_html empty)"
+    ],
+    "description": "A plain text mail with no MIME headers at all.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "Just text."
+      ],
+      "body_html": null,
+      "from_addr": "ada@feldspar.test",
+      "from_name": null
+    }
+  },
+  {
+    "file": "alternative-both.eml",
+    "covers": [
+      "§5.4 body choice (keep both)"
+    ],
+    "description": "multipart/alternative with a text/plain and a text/html that differ.",
+    "structure": [
+      "multipart/alternative",
+      "text/plain",
+      "text/html"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "The plain version."
+      ],
+      "body_html_includes": [
+        "The <em>HTML</em> version."
+      ]
+    }
+  },
+  {
+    "file": "apple-mail-nested.eml",
+    "covers": [
+      "§5.4 body choice",
+      "§5.4 inline images"
+    ],
+    "description": "Apple Mail's shape: mixed[alternative[text, related[html, cid image]], PDF].",
+    "structure": [
+      "multipart/mixed",
+      "multipart/alternative",
+      "text/plain",
+      "multipart/related",
+      "text/html",
+      "image/png",
+      "application/pdf"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "See the picture."
+      ],
+      "body_html_includes": [
+        "src=\"cid:pic-1@feldspar.test\""
+      ],
+      "attachments": [
+        {
+          "filename": "pic.png",
+          "content_type": "image/png",
+          "inline": true,
+          "size": 69,
+          "sha256": "6479678e35e30eb5d9897f1fd9573cd926f23ee0b92a0052d7563ec41f253f24",
+          "cid": "pic-1@feldspar.test"
+        },
+        {
+          "filename": "terms.pdf",
+          "content_type": "application/pdf",
+          "inline": false,
+          "size": 77,
+          "sha256": "56c2ac043c28d3543275a6f50b593a6beb0b6888ed8159ac02e3e7f4a32ccb26"
+        }
+      ]
+    }
+  },
+  {
+    "file": "no-from-no-date.eml",
+    "covers": [
+      "§6.11",
+      "§5.4 every header is optional"
+    ],
+    "description": "No From and no Date: sent_at falls back to INTERNALDATE.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "from_addr": null,
+      "from_name": null,
+      "sent_at": null,
+      "body_text_includes": [
+        "Who sent this?"
+      ]
+    }
+  },
+  {
+    "file": "no-to-no-cc.eml",
+    "covers": [
+      "§6.11"
+    ],
+    "description": "No To and no Cc (a Bcc'd copy).",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "to_addrs": [],
+      "cc_addrs": [],
+      "sent_at": "2025-10-14T07:30:00.000Z"
+    }
+  },
+  {
+    "file": "invalid-date.eml",
+    "covers": [
+      "§5.4 every header is optional (an invalid date)"
+    ],
+    "description": "A Date header that is not a date.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "sent_at": null
+    }
+  },
+  {
+    "file": "no-subject.eml",
+    "covers": [
+      "§5.4 every header is optional (subject falls back to empty)"
+    ],
+    "description": "No Subject header.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "subject": ""
+    }
+  },
+  {
+    "file": "no-headers.eml",
+    "covers": [
+      "§6.11",
+      "§5.4 every header is optional"
+    ],
+    "description": "No headers at all: the mail starts with the blank line.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "subject": "",
+      "from_addr": null,
+      "sent_at": null,
+      "to_addrs": [],
+      "body_text_includes": [
+        "Only a body."
+      ]
+    }
+  },
+  {
+    "file": "rfc822-inline-and-attached.eml",
+    "covers": [
+      "§6.12",
+      "§5.4 message/rfc822"
+    ],
+    "description": "An inline message/rfc822 (recursed into) next to an attached one with a filename and one without.",
+    "structure": [
+      "multipart/mixed",
+      "text/plain",
+      "message/rfc822",
+      "text/plain",
+      "message/rfc822",
+      "text/plain",
+      "message/rfc822",
+      "text/plain"
+    ],
+    "expect": {
+      "subject": "Two forwards",
+      "body_text_includes": [
+        "Outer text.",
+        "Inline inner body."
+      ],
+      "body_text_excludes": [
+        "Attached inner body.",
+        "Nameless inner body."
+      ],
+      "attachment_names": [
+        "forwarded.eml",
+        "part-4.eml"
+      ]
+    }
+  },
+  {
+    "file": "rfc822-forward-only.eml",
+    "covers": [
+      "§6.12",
+      "§5.4 message/rfc822 (an attached body never replaces the outer one)"
+    ],
+    "description": "Forward-as-attachment where the outer mail has no text of its own.",
+    "structure": [
+      "multipart/mixed",
+      "message/rfc822",
+      "text/plain"
+    ],
+    "expect": {
+      "subject": "Fwd: Attached inner",
+      "body_text_excludes": [
+        "The forwarded body."
+      ],
+      "placeholder": "attachments_only",
+      "attachment_names": [
+        "original.eml"
+      ]
+    }
+  },
+  {
+    "file": "journal-report.eml",
+    "covers": [
+      "§6.12",
+      "§5.4 message/rfc822 (inline, e.g. Exchange journal reports)"
+    ],
+    "description": "An Exchange journal report: a text envelope and the journaled mail inline, with no disposition.",
+    "structure": [
+      "multipart/mixed",
+      "text/plain",
+      "message/rfc822",
+      "text/plain"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "Sender: bo@feldspar.test",
+        "The journaled body."
+      ]
+    }
+  },
+  {
+    "file": "cid-images.eml",
+    "covers": [
+      "§6.10",
+      "§5.4 inline images"
+    ],
+    "description": "cid: references in single and double quotes, one image referenced twice, and a Content-ID image the HTML never mentions.",
+    "structure": [
+      "multipart/related",
+      "text/html",
+      "image/png",
+      "image/png",
+      "image/png"
+    ],
+    "expect": {
+      "body_html_includes": [
+        "src='cid:logo@feldspar.test'",
+        "src=\"cid:logo@feldspar.test\"",
+        "src=\"cid:chart@feldspar.test\""
+      ],
+      "body_html_excludes": [
+        "data:image"
+      ],
+      "attachments": [
+        {
+          "filename": "logo.png",
+          "content_type": "image/png",
+          "inline": true,
+          "size": 69,
+          "sha256": "6479678e35e30eb5d9897f1fd9573cd926f23ee0b92a0052d7563ec41f253f24",
+          "cid": "logo@feldspar.test"
+        },
+        {
+          "filename": "part-3.png",
+          "content_type": "image/png",
+          "inline": true,
+          "size": 69,
+          "sha256": "42d611ba48f003145a65922d09185ce506eb9ed26e02eefd3081d125605c656d",
+          "cid": "chart@feldspar.test"
+        },
+        {
+          "filename": "unused.png",
+          "content_type": "image/png",
+          "inline": true,
+          "size": 69,
+          "sha256": "6479678e35e30eb5d9897f1fd9573cd926f23ee0b92a0052d7563ec41f253f24",
+          "cid": "unused@feldspar.test"
+        }
+      ]
+    }
+  },
+  {
+    "file": "inline-disposition-without-cid.eml",
+    "covers": [
+      "§6.10",
+      "§5.4 attachments (a filename and no Content-ID)"
+    ],
+    "description": "Apple Mail's inline PDF and image: disposition inline with a filename, no Content-ID — so attachments, not inline images.",
+    "structure": [
+      "multipart/mixed",
+      "text/plain",
+      "application/pdf",
+      "image/png"
+    ],
+    "expect": {
+      "attachments": [
+        {
+          "filename": "Rechnung.pdf",
+          "content_type": "application/pdf",
+          "inline": false,
+          "size": 77,
+          "sha256": "56c2ac043c28d3543275a6f50b593a6beb0b6888ed8159ac02e3e7f4a32ccb26"
+        },
+        {
+          "filename": "photo.png",
+          "content_type": "image/png",
+          "inline": false,
+          "size": 69,
+          "sha256": "6479678e35e30eb5d9897f1fd9573cd926f23ee0b92a0052d7563ec41f253f24"
+        }
+      ]
+    }
+  },
+  {
+    "file": "nul-byte.eml",
+    "covers": [
+      "§5.4 remove NUL bytes"
+    ],
+    "description": "A NUL byte in the body (8bit) and in the subject (an encoded word).",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "subject": "beforeafter",
+      "body_text_includes": [
+        "text before",
+        "text after"
+      ]
+    }
+  },
+  {
+    "file": "nul-byte-html-base64.eml",
+    "covers": [
+      "§5.4 remove NUL bytes"
+    ],
+    "description": "NUL bytes inside a base64 HTML part.",
+    "structure": [
+      "text/html"
+    ],
+    "expect": {
+      "body_html_includes": [
+        "<p>abc</p>"
+      ]
+    }
+  },
+  {
+    "file": "tnef-rtf-only.eml",
+    "covers": [
+      "§6.13",
+      "§5.4 TNEF (body)"
+    ],
+    "description": "Outlook to Exchange: no text part, a winmail.dat holding only a compressed RTF body.",
+    "structure": [
+      "multipart/mixed",
+      "application/ms-tnef"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "Hello from Outlook.",
+        "Grüße aus Köln."
+      ],
+      "attachments": []
+    },
+    "tnef": {
+      "rtf": "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fswiss Calibri;}}\\f0\\fs22 Hello from Outlook.\\par Gr\\'fc\\'dfe aus K\\'f6ln.\\par}",
+      "attachments": []
+    }
+  },
+  {
+    "file": "tnef-with-attachment.eml",
+    "covers": [
+      "§6.13",
+      "§5.4 TNEF (body and attachments)"
+    ],
+    "description": "A text part, and a winmail.dat with an HTML-in-RTF body and one attached file.",
+    "structure": [
+      "multipart/mixed",
+      "text/plain",
+      "application/ms-tnef"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "See the report."
+      ],
+      "attachments": [
+        {
+          "filename": "quarterly report.txt",
+          "content_type": "text/plain",
+          "inline": false,
+          "size": 29,
+          "sha256": "731c3f0e21f4e5ffaa12399ae038dc5eca1df1369e83c63884faeaa9ccc03fce"
+        }
+      ]
+    },
+    "tnef": {
+      "rtf": "{\\rtf1\\ansi\\ansicpg1252\\fromhtml1 \\deff0{\\fonttbl{\\f0\\fswiss Arial;}}{\\*\\htmltag19 <html>}{\\*\\htmltag34 <body>}\\htmlrtf {\\htmlrtf0 Hello in HTML-in-RTF.{\\*\\htmltag116 <br>}\\par}\\htmlrtf0 {\\*\\htmltag58 </body>}{\\*\\htmltag27 </html>}}",
+      "attachments": [
+        "quarterly report.txt"
+      ]
+    }
+  },
+  {
+    "file": "attachment-missing-params.eml",
+    "covers": [
+      "§6.5",
+      "§5.4 attachments (no name and no type: skipped; no name: part-<path>.<ext>)"
+    ],
+    "description": "A part with a parameterless disposition and no Content-Type, and one with a type but no name.",
+    "structure": [
+      "multipart/mixed",
+      "text/plain",
+      "text/plain",
+      "application/octet-stream"
+    ],
+    "expect": {
+      "attachments": [
+        {
+          "filename": "part-3.bin",
+          "content_type": "application/octet-stream",
+          "inline": false,
+          "size": 16,
+          "sha256": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+        }
+      ]
+    }
+  },
+  {
+    "file": "attachment-filename-encodings.eml",
+    "covers": [
+      "§5.4 attachments (the name is filename, then name)"
+    ],
+    "description": "RFC 2231 filename*, a name only in Content-Type as an encoded word, and an RFC 2231 continuation.",
+    "structure": [
+      "multipart/mixed",
+      "text/plain",
+      "application/pdf",
+      "image/png",
+      "text/plain"
+    ],
+    "expect": {
+      "attachments": [
+        {
+          "filename": "€-Rechnung März.pdf",
+          "content_type": "application/pdf",
+          "inline": false,
+          "size": 77,
+          "sha256": "56c2ac043c28d3543275a6f50b593a6beb0b6888ed8159ac02e3e7f4a32ccb26"
+        },
+        {
+          "filename": "Bild Größe.png",
+          "content_type": "image/png",
+          "inline": false,
+          "size": 69,
+          "sha256": "6479678e35e30eb5d9897f1fd9573cd926f23ee0b92a0052d7563ec41f253f24"
+        },
+        {
+          "filename": "very-long-filename.txt",
+          "content_type": "text/plain",
+          "inline": false,
+          "size": 29,
+          "sha256": "731c3f0e21f4e5ffaa12399ae038dc5eca1df1369e83c63884faeaa9ccc03fce"
+        }
+      ]
+    }
+  },
+  {
+    "file": "binary-attachment.eml",
+    "covers": [
+      "§6.4",
+      "§5.4 attachments (binary-safe)"
+    ],
+    "description": "An attachment holding every byte value four times, which a string round trip would corrupt.",
+    "structure": [
+      "multipart/mixed",
+      "text/plain",
+      "application/octet-stream"
+    ],
+    "expect": {
+      "attachments": [
+        {
+          "filename": "all-bytes.bin",
+          "content_type": "application/octet-stream",
+          "inline": false,
+          "size": 1024,
+          "sha256": "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9"
+        }
+      ]
+    }
+  },
+  {
+    "file": "encrypted-pgp.eml",
+    "covers": [
+      "§5.4 no body part (encrypted)"
+    ],
+    "description": "PGP/MIME: multipart/encrypted.",
+    "structure": [
+      "multipart/encrypted",
+      "application/pgp-encrypted",
+      "application/octet-stream"
+    ],
+    "expect": {
+      "placeholder": "encrypted"
+    }
+  },
+  {
+    "file": "encrypted-smime.eml",
+    "covers": [
+      "§5.4 no body part (encrypted: pkcs7)"
+    ],
+    "description": "S/MIME: a single application/pkcs7-mime part.",
+    "structure": [
+      "application/pkcs7-mime"
+    ],
+    "expect": {
+      "placeholder": "encrypted"
+    }
+  },
+  {
+    "file": "calendar-only.eml",
+    "covers": [
+      "§5.4 no body part (text/calendar only)"
+    ],
+    "description": "An invitation that is nothing but text/calendar.",
+    "structure": [
+      "text/calendar"
+    ],
+    "expect": {
+      "placeholder": "calendar"
+    }
+  },
+  {
+    "file": "attachments-only.eml",
+    "covers": [
+      "§5.4 no body part (attachments only)"
+    ],
+    "description": "multipart/mixed holding one PDF and nothing else.",
+    "structure": [
+      "multipart/mixed",
+      "application/pdf"
+    ],
+    "expect": {
+      "placeholder": "attachments_only",
+      "attachments": [
+        {
+          "filename": "scan.pdf",
+          "content_type": "application/pdf",
+          "inline": false,
+          "size": 77,
+          "sha256": "56c2ac043c28d3543275a6f50b593a6beb0b6888ed8159ac02e3e7f4a32ccb26"
+        }
+      ]
+    }
+  },
+  {
+    "file": "missing-closing-boundary.eml",
+    "covers": [
+      "§5.4 every header is optional (malformed structure)"
+    ],
+    "description": "A multipart whose closing boundary never comes.",
+    "structure": [
+      "multipart/mixed",
+      "text/plain",
+      "application/pdf"
+    ],
+    "expect": {
+      "body_text_includes": [
+        "First part."
+      ],
+      "attachment_names": [
+        "doc.pdf"
+      ]
+    }
+  },
+  {
+    "file": "bare-lf.eml",
+    "covers": [
+      "§6.9"
+    ],
+    "description": "Unix line endings (LF only) throughout, as a mail saved from mbox has.",
+    "structure": [
+      "multipart/alternative",
+      "text/plain",
+      "text/html"
+    ],
+    "expect": {
+      "subject": "Bare LF",
+      "body_text_includes": [
+        "Line one.",
+        "Line two."
+      ],
+      "body_html_includes": [
+        "<br>"
+      ]
+    }
+  },
+  {
+    "file": "reply-threading.eml",
+    "covers": [
+      "M9.4 thread_key"
+    ],
+    "description": "A reply with a folded References header: thread_key is its first entry.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "message_id": "<reply-2@feldspar.test>",
+      "in_reply_to": "<reply-1@feldspar.test>",
+      "references": [
+        "<root-0@feldspar.test>",
+        "<reply-1@feldspar.test>"
+      ],
+      "thread_key": "<root-0@feldspar.test>"
+    }
+  },
+  {
+    "file": "no-message-id.eml",
+    "covers": [
+      "M9.4 thread_key"
+    ],
+    "description": "No Message-ID, In-Reply-To or References.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "message_id": null,
+      "in_reply_to": null,
+      "references": []
+    }
+  },
+  {
+    "file": "long-body.eml",
+    "covers": [
+      "§5.4 size limits"
+    ],
+    "description": "A text body of 410,000 characters, past the 400,000 limit.",
+    "structure": [
+      "text/plain"
+    ],
+    "expect": {
+      "body_text_max_length": 400000,
+      "body_text_includes": [
+        "Lorem ipsum"
+      ]
+    }
+  }
+]

@@ -242,6 +242,7 @@
   "Write to context key": "In Kontextschlüssel schreiben",
   "Write to field": "In Feld schreiben",
   "You need to sign in to see {what}.": "Sie müssen sich anmelden, um {what} zu sehen.",
+  "You need to sign in with an account that may use this application.": "Sie müssen sich mit einem Konto anmelden, das diese Anwendung verwenden darf.",
   "Your role may not see {what}.": "Ihre Rolle darf {what} möglicherweise nicht sehen.",
   "a scripted stream, for tests": "ein skriptgesteuerter Stream, für Tests",
   "admin UI": "Admin-Oberfläche",
@@ -251,8 +252,10 @@
   "invalid credentials": "Ungültige Anmeldedaten",
   "minting an API token needs a signed-in admin": "Zum Erstellen eines API-Tokens ist ein angemeldeter Administrator erforderlich.",
   "off serves plain HTTP (right behind a TLS-terminating proxy, and for local development). letsencrypt obtains and renews certificates automatically. custom serves the certificate below.": "„off“ stellt einfaches HTTP bereit (direkt hinter einem TLS-terminierenden Proxy und für die lokale Entwicklung). „letsencrypt“ bezieht und erneuert Zertifikate automatisch. „custom“ verwendet das unten angegebene Zertifikat.",
+  "sign in with an account that may use this application": "melden Sie sich mit einem Konto an, das diese Anwendung verwenden darf",
   "starttls connects in the clear and upgrades (port 587). tls is encrypted from the first byte (port 465). none is plain SMTP, which is only reasonable for a relay on a network you trust — credentials are refused with it.": "„starttls“ verbindet unverschlüsselt und wechselt anschließend zu einer verschlüsselten Verbindung (Port 587). „tls“ ist ab dem ersten Byte verschlüsselt (Port 465). „none“ ist einfaches SMTP und nur für ein Relay in einem vertrauenswürdigen Netzwerk sinnvoll – Anmeldedaten werden damit abgelehnt.",
   "the page {name}": "die Seite {name}",
   "the view {name}": "die Ansicht {name}",
-  "view_app timeout per action (seconds)": "view_app-Timeout pro Aktion (Sekunden)"
+  "view_app timeout per action (seconds)": "view_app-Timeout pro Aktion (Sekunden)",
+  "your account may not use this application": "Ihr Konto darf diese Anwendung nicht verwenden"
 }

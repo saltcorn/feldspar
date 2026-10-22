@@ -407,6 +407,11 @@ Live updates (pages that update when rows change, collaborative editing, presenc
 code publishes. Then `update_application` with `streams: { add: [...] }` exposes it, and the \
 generated client gets a typed `live.<stream>` accessor.
 
+Server-side actions (a module's `mail_send`, a button that runs something on the server). \
+`save_trigger` with `when: \"none\"` and a `min_role` (80 for any signed-in user; unset is \
+admin-only), then `update_application` with `triggers: { add: [...] }`; the generated client \
+gets `api.run<Name>(payload)` at once.
+
 Translating an application (\"translate this app to German\", \"the German for 'Save' should \
 be …\"). You are the translator; the tools hold the strings and check your work. \
 (1) `describe_translations` lists every string the source wraps in `t()`, the locales the app \
@@ -525,8 +530,11 @@ fn tool_result(outcome: Result<Json>) -> Json {
 /// the catalog behind the descriptions is live — a set built at boot would list
 /// yesterday's tables in `describe_schema`'s prose.
 fn tool_set(state: &AppState, caller: &ApiCaller) -> ToolSet {
-    let grants = grants_from_attrs(&caller.token.grants);
-    let areas = areas_from_attrs(&caller.token.grants);
+    // `token_flags` first: a token stored with `allow_all` holds every flag,
+    // including one added after it was minted.
+    let flags = sc_api::mcp::token_flags(&caller.token.grants);
+    let grants = grants_from_attrs(&flags);
+    let areas = areas_from_attrs(&flags);
     sc_app::mcp::tool_set(grants, areas).with(state.mcp_endpoint_tools.iter().cloned())
 }
 
