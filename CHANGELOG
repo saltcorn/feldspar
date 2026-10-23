@@ -2,6 +2,83 @@
 
 Changes in reverse chronological order.
 
+## Payments P5: Polar, a second adapter
+
+TODO-payments.md milestone P5. The payments module now takes one-off payments and subscriptions
+through **Polar**, a merchant of record. One shared suite runs the shop and subscription
+scenarios against the fake, Stripe and Polar alike.
+
+**The Polar adapter (P5.1)**, `plugins/payments/adapters/polar.js`:
+
+- **API.** Polar's JSON API over `fetch`: the sandbox in test mode, production in live mode,
+  pinned to API version 2026-10 (`api_version` setting).
+- **One-off checkouts.** These charge the account's **one-off product** (a new setting) at an
+  ad-hoc price equal to the lines' total.
+- **Subscriptions.** Each is to a Polar product (`polar_product` in the plan binding), with a
+  trial in days.
+- **Also:** the customer portal (a customer session), plan changes, cancelling at the period's
+  end or now, and refunds.
+- **Webhooks.** Verified as Standard Webhooks with either key Polar's secret stands for (secrets
+  made before 8 September 2026 are used as their UTF-8 bytes).
+- **The sweep.** It reads the webhook endpoint's deliveries (`webhook_endpoint_id` setting) for
+  events never delivered.
+
+Polar is always the merchant of record: no shipping, and the tax setting is ignored. The module's
+`net` permission adds `api.polar.sh` and `sandbox-api.polar.sh`.
+
+**What was Stripe-shaped, and changed:**
+
+- **Proration.** `pay_change_subscription`'s Proration setting is in the module's words:
+  `prorate` (the default), `invoice` or `none`. Each adapter translates them; Polar refuses
+  `none`.
+- **Telling a change apart.** `adapter.kinds(event, { previous })` now gets the mirror row as it
+  was before the event. Polar's `subscription.updated` carries no previous state, so a plan
+  change is told by comparing products.
+- **One delivery, two objects.** A Polar renewal (an order) is two events from one delivery: the
+  payment and the subscription's renewal.
+- **Duplicate success events.** A Polar checkout's success may arrive more than once, so it is
+  logged once per checkout.
+- **Idempotency.** Refunds and saved-card charges look for one already made with the module's
+  key, kept in their metadata, since Polar takes no idempotency keys.
+- **Amounts** are what the buyer paid, tax included. A Polar refund of an amount is converted to
+  Polar's pre-tax amount.
+
+**Stripe bugs found by running the same scenarios on it:**
+
+- **The one-off role effect was never applied on Stripe.** `pay_checkout`'s *grant a role* effect
+  depends on the payment knowing its checkout, and a PaymentIntent does not name its Checkout
+  Session. Processing now hands a checkout's row, user and effects to the payment it names.
+- **Every renewal was logged as `subscription.changed`.** Since API version 2025-03-31 the period
+  is on the subscription item, so `previous_attributes` names `items` on every renewal. A
+  `customer.subscription.updated` is now a change only when the item's price or quantity differs,
+  or a cancellation is undone.
+
+**One suite for every adapter (P5.2).** `test/shared.test.mjs` holds the P2 and P4 scenarios once
+and runs them on three providers, each behind a driver in `test/providers/`:
+
+- the fake provider;
+- a simulated Stripe API;
+- a simulated Polar API.
+
+The simulations answer in each provider's documented shapes, play the buyer, the test clock and
+the portal, and send their own signed webhooks after the request that caused them. The scenarios
+are: a row paid for and its events deduplicated, a decline then a payment, a forged and an unknown
+delivery, a delivery that fails half way, refunds, the sweep, a role pass, and the subscription
+scenarios. The subscription scenarios cover grants, renewals, a failed renewal and its recovery,
+trials, plan changes, cancelling, an unbound price, the role ceiling and the sweep. The fake-only
+copies in `subscriptions.test.mjs` and `processing.test.mjs` were removed. `test/polar.test.mjs`
+checks Polar's requests, both signing schemes, its event mapping and its refunds.
+
+**Saved cards on Polar (P5.3).** Yes, with conditions. Polar's off-session charges (a draft order,
+then finalize) charge a customer's saved card, so `charge_saved_method` is on for Polar. They are
+**in preview, for organisations on a paid plan**. `chargeSavedMethod` answers `paid`, or
+`requires_checkout` when the card is declined, missing, or needs authentication. It refuses by
+name when off-session charges are not enabled. P7 builds `pay_charge_saved` on it.
+
+The tutorials cover a Polar account (part 1, Step 7) and Polar plans (part 2, Step 10). There is
+no live Polar test yet; the adapter is checked against Polar's OpenAPI description through the
+simulation.
+
 ## Payments P4: subscriptions
 
 TODO-payments.md milestone P4: a signed-in user subscribes to a row of the application's own

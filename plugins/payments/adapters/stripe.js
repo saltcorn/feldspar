@@ -24,6 +24,9 @@ const API = "https://api.stripe.com";
 const SIGNATURE_HEADER = "stripe-signature";
 const TOLERANCE_SECONDS = 300;
 
+/** The module's proration choices in Stripe's words. */
+const PRORATION = { prorate: "create_prorations", invoice: "always_invoice", none: "none" };
+
 /** Currencies Stripe counts differently from ISO 4217 (§3.11): ISK and UGX have no minor unit,
  * but Stripe takes them as two-decimal amounts whose decimals are always 00. */
 const STRIPE_TIMES_100 = new Set(["ISK", "UGX"]);
@@ -167,7 +170,9 @@ const KINDS = {
 };
 
 /** What a `customer.subscription.updated` was, from what it changed: past due, canceled (set to
- * end at the period's end), or any other change. */
+ * end at the period's end), a change of plan or quantity, or a cancellation undone. Stripe sends
+ * it for every renewal and every trial's end too, which move only the period and the status:
+ * those are `null`, since the renewal's paid invoice says it. */
 function subscriptionUpdated(event) {
   const data = (event.raw && event.raw.data) || {};
   const sub = data.object || {};
@@ -175,7 +180,29 @@ function subscriptionUpdated(event) {
   if ("status" in before && sub.status === "past_due") return ["subscription.past_due"];
   const canceling = ("cancel_at_period_end" in before && sub.cancel_at_period_end) || ("cancel_at" in before && sub.cancel_at);
   if (canceling) return ["subscription.canceled"];
-  return ["subscription.changed"];
+  const uncanceled = ("cancel_at_period_end" in before && !sub.cancel_at_period_end) || ("cancel_at" in before && !sub.cancel_at);
+  if (uncanceled || planMoved(before, sub)) return ["subscription.changed"];
+  return null;
+}
+
+/** The price and quantity a subscription (or its `previous_attributes`) says it is on: its first
+ * item's, or the old API's `plan`. */
+function planOf(sub) {
+  const item = sub.items && sub.items.data && sub.items.data[0];
+  if (item) return { price: item.price && item.price.id, quantity: item.quantity };
+  if (sub.plan || sub.quantity !== undefined) return { price: sub.plan && sub.plan.id, quantity: sub.quantity };
+  return null;
+}
+
+/** Whether an update moved the subscription to another price or quantity. Since API version
+ * 2025-03-31 the period is on the item, so a renewal changes `items` too: the item's price and
+ * quantity are compared, not the key's presence. */
+function planMoved(before, sub) {
+  if (!("items" in before) && !("plan" in before) && !("quantity" in before)) return false;
+  const was = planOf(before);
+  const now = planOf(sub);
+  if (!was || !now) return true;
+  return (was.price !== undefined && was.price !== now.price) || (was.quantity !== undefined && was.quantity !== now.quantity);
 }
 
 /** The events to choose when adding the webhook endpoint in Stripe's dashboard. */
@@ -531,14 +558,17 @@ module.exports = {
     return { id: session.id, url: session.url };
   },
 
-  /** Move a subscription's one item to another price. Stripe then sends
-   * `customer.subscription.updated`. */
+  /** Move a subscription's one item to another price, prorated as the module says (`prorate`,
+   * `invoice` or `none`). Stripe then sends `customer.subscription.updated`. */
   async changePlan(account, ref, priceRef, { proration } = {}) {
     if (!/^[A-Za-z0-9_]+$/.test(String(priceRef || ""))) throw new Error(`${JSON.stringify(priceRef)} is not a Stripe price id (price_…)`);
     const current = await module.exports.fetch(account, { kind: "subscription", id: ref });
     if (!current.item_ref) throw new Error(`the subscription ${ref} has no item to change`);
     const params = { items: [{ id: current.item_ref, price: priceRef }] };
-    if (proration) params.proration_behavior = proration;
+    if (proration) {
+      if (!PRORATION[proration]) throw new Error(`a plan change is prorated ${Object.keys(PRORATION).join(", ")}, not "${proration}"`);
+      params.proration_behavior = PRORATION[proration];
+    }
     return normaliseSubscription(await request(account, "POST", `/v1/subscriptions/${ref}`, params));
   },
 

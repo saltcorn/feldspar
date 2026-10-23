@@ -11809,6 +11809,66 @@ drive the live test.
 Sign-up does not insert a `users` row through the row layer, so no table trigger sees it; a
 card-less trial is a `grant_role` trigger on the `login` event (sign-up signs the account in)
 with `once`.
+
+**The second adapter: Polar (P5).** `adapters/polar.js` speaks Polar's JSON API over `fetch` to
+`api.polar.sh`, or `sandbox-api.polar.sh` in test mode, pinned with `Polar-Version` (2026-10 unless
+the account says otherwise). Polar is a merchant of record, `merchant_of_record: "always"` and no
+`physical_goods`; `prepareCheckout` treats any tax setting on such an account as
+`merchant_of_record`. Fitting it showed what was Stripe's shape rather than the module's, and each
+was changed here rather than worked around:
+
+- *A checkout has lines.* A Polar checkout sells one product. A one-off checkout charges the
+  account's **one-off product** (a setting) at an ad-hoc price, the lines' total; the lines stay
+  on the mirror row as charged.
+- *A plan is a price.* On Polar it is a product: `price_ref` is "the provider's price or product",
+  and the binding's per-account field (`polar=polar_product`) says which.
+- *Proration in Stripe's words.* `pay_change_subscription` takes the module's own `prorate`,
+  `invoice` and `none`; each adapter translates, and Polar refuses `none` by name.
+- *An event says what changed.* Polar's events carry the object, never `previous_attributes`.
+  `adapter.kinds(event, { previous })` now gets the event's object's mirror row as it was before
+  the event (processing reads it first), and Polar tells a plan change on its catch-all
+  `subscription.updated` by comparing products, ignoring an event older than the mirror. A retry
+  of a delivery that failed after its mirror was written no longer sees the change, so it logs no
+  `subscription.changed`; the grant moves all the same.
+- *One delivery, one object.* A paid renewal is an **order** (`billing_reason:
+  subscription_cycle`). `verifyWebhook` answers two events under the delivery's one id, the
+  payment and the subscription's renewal, each with its own object and kinds; the dedupe key
+  `(account, event_id, kind)` already kept them apart.
+- *One delivery per happening.* Polar may say a checkout succeeded in more than one
+  `checkout.updated`; that event is given the id `<checkout>:succeeded`, so it is logged once.
+- *Idempotency keys.* Polar has none. A refund and a saved-card charge carry the module's key in
+  their metadata, and the adapter looks for one made with it before making another.
+- *Amounts.* `amount` is what the buyer paid (`total_amount`, tax included), as on Stripe. Polar
+  refunds a pre-tax amount, so a refund of an amount is converted in proportion (exactly when
+  there was no tax).
+- *An event log.* Polar's sweep reads the webhook endpoint's deliveries (its id is an account
+  setting) and processes the events never delivered.
+
+Webhooks are Standard Webhooks (`webhook-id`, `-timestamp`, `-signature`). Secrets made before 8
+September 2026 are used as their UTF-8 bytes, later ones as the standard's base64 key after
+`whsec_`; both are tried. **Saved cards (P5.3):** Polar's off-session charges (in preview, for
+organisations on a paid plan) are a draft order for the customer, finalized against their default
+payment method. `chargeSavedMethod` answers `{ status: "paid" }`, or `{ status:
+"requires_checkout", reason }` on Polar's 402 (declined, no card, authentication needed), and
+refuses by name when the organisation cannot charge off-session.
+
+Two Stripe bugs came out of running the same scenarios on it. A PaymentIntent does not name its
+Checkout Session, so a one-off payment never inherited the session's effects: processing now
+passes a checkout's row, user and effects to the payment it names, when that payment does not name
+its checkout, whichever event arrives first. And since the period moved onto the subscription
+item, a renewal's `customer.subscription.updated` has `items` in its `previous_attributes`, so it
+was logged as `subscription.changed`. Now an update is a change only when the item's price or
+quantity differs, or a cancellation is undone; other updates are `null`.
+
+**One suite, every provider (P5.2).** `test/shared.test.mjs` holds the shop's and the
+subscriptions' scenarios once and runs them against each provider through a **driver**
+(`test/providers/`). The fake is driven through its own hooks. Stripe and Polar are **simulations
+of their APIs**, in their documented shapes, put in the adapter's `transport`: they play the buyer,
+the test clock and the portal, and send their own signed events after the request that caused them
+has been answered. Where a provider differs in a way the module shows, the driver says so by a flag
+(`renewalPaymentsKnowTheirRow`: a Stripe renewal's PaymentIntent names no subscription). The fake-only copies of
+those scenarios were removed. An adapter added later is a driver and a simulation, run through the
+same suite.
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 
 The second adapter. It is small for a reason that is structural rather than lucky: the JavaScript

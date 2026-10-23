@@ -232,8 +232,11 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
   // top-up, another plan) is the same customer, with the same saved card (§5).
   const known = signedIn ? await db.pay_objects.where({ account: account.id, kind: "customer", user_id: user.id }).first() : null;
 
-  const tax = configuration.tax || "none";
+  let tax = configuration.tax || "none";
   if (!TAX.includes(tax)) throw new Error(`tax is ${TAX.join(", ")}, not "${tax}"`);
+  // A provider that is always the merchant of record (Polar) works out and pays the tax itself,
+  // whatever the setting says.
+  if (adapter.capabilities && adapter.capabilities.merchant_of_record === "always") tax = "merchant_of_record";
   const shipping = configuration.shipping === true;
   if (tax === "merchant_of_record") {
     const mor = adapter.capabilities && adapter.capabilities.merchant_of_record;

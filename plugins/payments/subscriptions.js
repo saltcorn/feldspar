@@ -19,7 +19,9 @@ const { deliverTo } = require("./webhooks.js");
 /** The statuses of a subscription that can still be changed or canceled. */
 const LIVE = [...plans.GRANTING, ...plans.KEEPING];
 
-const PRORATION = ["create_prorations", "none", "always_invoice"];
+/** How a plan change is charged, in the module's words; each adapter says it in its provider's
+ * (Stripe's `create_prorations`, `always_invoice`, `none`; Polar's `prorate`, `invoice`). */
+const PRORATION = ["prorate", "invoice", "none"];
 
 const blank = (v) => v === undefined || v === null || String(v).trim() === "";
 
@@ -51,9 +53,9 @@ const CHANGE_FIELDS = [
     name: "proration",
     label: "Proration",
     type: "String",
-    default: "create_prorations",
+    default: "prorate",
     attributes: { options: PRORATION },
-    sublabel: "How the provider charges for the rest of the period: prorated on the next invoice, not at all, or invoiced now",
+    sublabel: "How the provider charges for the rest of the period: prorated on the next invoice, invoiced now, or not at all (not every provider can)",
   },
   SUBSCRIPTION_FIELD,
 ];
@@ -138,7 +140,7 @@ async function payChangeSubscription(argument, moduleConfiguration) {
     price = visible[priceField];
   }
   if (blank(price) || typeof price !== "string") throw new Error(`the plan ${JSON.stringify(planKey)} has no price on "${account.name}"`);
-  const proration = configuration.proration || "create_prorations";
+  const proration = configuration.proration || "prorate";
   if (!PRORATION.includes(proration)) throw new Error(`proration is ${PRORATION.join(", ")}, not "${proration}"`);
   const subscription = await callersSubscription(db, account, userId, configuration, payload);
   if (subscription.price_ref === price) throw new Error("the subscription is on that plan already");

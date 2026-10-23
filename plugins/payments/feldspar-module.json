@@ -5,7 +5,7 @@
   "description": "Take payments in your applications through a payment provider, and react to them with your own triggers.",
   "supplies": [
     "Three tables: pay_accounts (one per configured provider, with its keys kept secret), pay_objects (a mirror of the provider's checkouts, payments, customers and subscriptions) and pay_events (one row per thing that happened, for your triggers to react to).",
-    "Payments through Stripe, or through a test provider (\"fake\") with a checkout page and a customer portal of its own, so payment screens can be built before anybody has a provider account.",
+    "Payments through Stripe, through Polar (a merchant of record, which collects and pays the sales tax and VAT itself), or through a test provider (\"fake\") with a checkout page and a customer portal of its own, so payment screens can be built before anybody has a provider account.",
     "Subscriptions to the plans in a table of yours: a subscriber is granted their plan's role for as long as the subscription lasts, and a plan change moves it.",
     "Webhooks for each account's provider events, processed once each into pay_events, and a sweep that catches any the provider failed to deliver.",
     "Actions to take a payment or a subscription for a row of your own tables (pay_checkout), to open the customer portal, change plan or cancel, to refund, to call the provider's API, and to try an account with a small test checkout."
@@ -13,7 +13,9 @@
   "installs": [],
   "permissions": {
     "net": [
-      "api.stripe.com"
+      "api.polar.sh",
+      "api.stripe.com",
+      "sandbox-api.polar.sh"
     ],
     "roles": [
       "50"

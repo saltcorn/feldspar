@@ -12,6 +12,7 @@
  * installed. */
 const ADAPTERS = {
   fake: require("./fake.js"),
+  polar: require("./polar.js"),
   stripe: require("./stripe.js"),
 };
 

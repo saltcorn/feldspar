@@ -33,7 +33,7 @@ const tables = [
     description: "One configured payment provider each: its adapter, its mode and its keys. Admin-only.",
     fields: [
       { name: "name", type: "text", required: true, unique: true, label: "Name", description: "Letters, digits, - and _: it is part of the account's webhook URL" },
-      { name: "adapter", type: "text", required: true, label: "Adapter", description: "The provider: fake (a test provider in this server)" },
+      { name: "adapter", type: "text", required: true, label: "Adapter", description: "The provider: stripe, polar, or fake (a test provider in this server)" },
       { name: "mode", type: "text", required: true, default: "test", label: "Mode", description: "test or live" },
       { name: "secret_key", secret: true, label: "Secret key" },
       { name: "webhook_secret", secret: true, label: "Webhook signing secret" },

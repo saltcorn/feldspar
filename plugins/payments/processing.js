@@ -29,13 +29,14 @@ const plans = require("./plans.js");
 
 const nowIso = () => new Date().toISOString();
 
-/** The kinds an adapter maps a provider event to: its `kinds(event)`, else the event's own type
- * when that already is one of ours (the fake's are). Empty is an event the module does not
- * understand, logged as `other`. `null` is one it understands that says nothing an application
- * reacts to — Stripe's invoice for a subscription's first period, say — whose object is still
- * brought up to date. */
-function kindsOf(adapter, event) {
-  const kinds = typeof adapter.kinds === "function" ? adapter.kinds(event) : EVENT_KINDS.includes(event.type) ? [event.type] : [];
+/** The kinds an adapter maps a provider event to: its `kinds(event, { previous })`, else the
+ * event's own type when that already is one of ours (the fake's are). Empty is an event the module
+ * does not understand, logged as `other`. `null` is one it understands that says nothing an
+ * application reacts to — Stripe's invoice for a subscription's first period, say — whose object
+ * is still brought up to date. `previous` is the mirror row of the event's object before this
+ * event, for a provider whose events do not say what changed (Polar's plan change). */
+function kindsOf(adapter, event, previous = null) {
+  const kinds = typeof adapter.kinds === "function" ? adapter.kinds(event, { previous }) : EVENT_KINDS.includes(event.type) ? [event.type] : [];
   if (kinds === null) return null;
   return (kinds || []).filter((k) => EVENT_KINDS.includes(k) && k !== "other");
 }
@@ -206,9 +207,24 @@ async function applyEffects(ctx, account, current, row) {
 /** Fetch an object's current state, mirror it and apply its effects: what an event about it,
  * and the sweep of an account's live subscriptions, both do. */
 async function syncObject(ctx, account, adapter, ref) {
-  const current = await adapter.fetch(account, ref);
+  return mirrorAndApply(ctx, account, adapter, await adapter.fetch(account, ref));
+}
+
+/** Mirror an object read from the provider and apply its effects. A checkout that names its
+ * payment, at a provider whose payment does not name its checkout (Stripe's PaymentIntent does not
+ * know its Checkout Session), passes the payment what it was for — its row, its user and its
+ * effects — whichever of the two events arrived first. */
+async function mirrorAndApply(ctx, account, adapter, current) {
   const row = await upsertObject(ctx.db, account, current);
-  return applyEffects(ctx, account, current, row);
+  const applied = await applyEffects(ctx, account, current, row);
+  if (current.kind === "checkout" && current.payment_ref) {
+    const payment = await adapter.fetch(account, { kind: "payment", id: current.payment_ref });
+    if (!payment.checkout_ref) {
+      const linked = { ...payment, checkout_ref: current.ref };
+      await applyEffects(ctx, account, linked, await upsertObject(ctx.db, account, linked));
+    }
+  }
+  return applied;
 }
 
 /** Insert one `pay_events` row unless its `(account, event_id, kind)` is there. Answers whether
@@ -239,7 +255,9 @@ function fromObject(object) {
 /**
  * Process the verified events of one delivery, in order. Each is `{ id, type, ref, raw }` as an
  * adapter's `verifyWebhook` answers: `ref` is `{ kind, id }`, the object the event is about, or
- * null. Answers, per event, `{ id, logged: [kinds inserted], object }`. Throws, naming the event,
+ * null. One delivery may be about several objects (Polar's paid renewal order is a payment and
+ * the renewal of its subscription): it is then several events under the one id, each with its
+ * own object and kinds. Answers, per event, `{ id, logged: [kinds inserted], object }`. Throws, naming the event,
  * when an object it is about cannot be fetched: the delivery is then a 500 and the provider
  * tries again.
  */
@@ -247,7 +265,8 @@ async function processEvents(ctx, account, adapter, events) {
   const db = ctx.db;
   const results = [];
   for (const event of events) {
-    const kinds = kindsOf(adapter, event);
+    const previous = event.ref && event.ref.id ? await db.pay_objects.where({ account: account.id, provider_ref: String(event.ref.id) }).first() : null;
+    const kinds = kindsOf(adapter, event, previous);
     const base = { account: account.id, event_id: String(event.id), provider_type: event.type || null, raw: event.raw === undefined ? null : event.raw };
     if (kinds === null) {
       // Understood, and nothing to log: its object is brought up to date all the same.
@@ -295,8 +314,7 @@ async function syncOrThrow(ctx, account, adapter, event) {
   } catch (e) {
     throw new Error(`the ${event.type} event ${event.id} is about ${event.ref.kind} ${event.ref.id}, which could not be read from the provider: ${e.message}`);
   }
-  const row = await upsertObject(ctx.db, account, current);
-  return applyEffects(ctx, account, current, row);
+  return mirrorAndApply(ctx, account, adapter, current);
 }
 
 module.exports = { processEvents, upsertObject, upsertCustomer, applyEffects, syncObject, logEvent, kindsOf, fromMetadata, grantRef };

@@ -7,7 +7,7 @@
 //
 // The parts:
 // - `tables.js`: the three tables;
-// - `adapters/`: one file per provider, behind the interface in §4 (`fake` and `stripe`);
+// - `adapters/`: one file per provider, behind the interface in §4 (`fake`, `stripe` and `polar`);
 // - `capabilities.js`: what an adapter can do, and the refusal naming what it cannot;
 // - `money.js`: amounts as whole minor units beside a currency code (§3.11);
 // - `accounts.js`: the account a caller names, and its adapter;

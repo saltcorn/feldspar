@@ -414,6 +414,38 @@ payment form instead of redirecting: switch on **@feldspar/payments: Stripe's em
 form** under the application's *Sources suggested by modules*. Hosted checkout, as above, needs
 nothing.
 
+### Or Polar, a merchant of record
+
+[Polar](https://polar.sh) is the seller in law: it adds and pays sales tax and VAT wherever the
+buyer is, and handles disputes, for a higher fee than Stripe's. It sells **digital goods only**,
+so it suits the shop's downloads but not its tea: a checkout that collects a shipping address is
+refused on a Polar account, and the **Tax** setting changes nothing there, because Polar always
+does the tax.
+
+Polar charges for a *product*, not for lines. Make one **one-time product** in Polar for the
+shop's checkouts (its name, say "Order", is what the buyer sees), then add the account:
+
+| Field | Value |
+|---|---|
+| Name | `polar` |
+| Adapter | `polar` |
+| Mode | `test` (Polar's sandbox, sandbox.polar.sh), then `live` |
+| Secret key | an organization access token, from Polar's settings |
+| Webhook signing secret | the secret shown on the endpoint below |
+| Settings | `{ "product": "<the product's id>", "webhook_endpoint_id": "<the endpoint's id>" }` |
+
+Each checkout charges that product at the basket's total, worked out by the same formulas. The
+lines stay on the module's `pay_objects` row as they were charged; Polar's page shows the total.
+
+In Polar's settings, add a webhook endpoint at `…/_feldspar/hooks/payments/events/polar` for
+`checkout.updated`, `order.paid` and `order.refunded` (and, for subscriptions, the `subscription.*`
+events). The endpoint's id in the account's settings lets the sweep (Step 9) read back what Polar
+failed to deliver.
+
+The amount on a Polar `pay_events` row is what the buyer paid, **tax included**, so with tax it is
+more than the order's total. A refund of an amount is of what the buyer paid, too; Polar gives the
+tax back with it.
+
 ## Step 8 — Refunds, and anything else the provider does
 
 **`pay_refund`** gives money back. Configure it with the table the payment was for (`orders`,

@@ -1,0 +1,358 @@
+// The shared suite (TODO-payments P5.2): the shop (P2) and the subscriptions (P4) as one set of
+// tests, run against every provider — the fake, Stripe and Polar — through a driver each
+// (`providers/index.mjs`). What a provider does differently is the driver's to play, and where it
+// shows through to the module, the test says so by the driver's flags, not by a copy of the test.
+//
+// Each test runs the module as the server does: its actions (`pay_checkout`, `pay_refund`, …),
+// its webhook handler, the processing behind it and the sweep, over an in-memory `db` and a
+// `roles` that records what the module granted.
+
+import { describe, test, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { fakeDb } from "./fake-db.mjs";
+import { PROVIDERS } from "./providers/index.mjs";
+
+const require = createRequire(import.meta.url);
+const { actionsFor } = require("../actions.js");
+const { events, deliverTo } = require("../webhooks.js");
+const { sweepAll } = require("../service.js");
+const { millis } = require("../plans.js");
+
+const DAY = 86400000;
+const plusDays = (iso, days) => new Date(Date.parse(iso) + days * DAY).toISOString();
+
+/** A `roles` that keeps what it was asked, refusing (as the server does) a role above its ceiling. */
+function recordingRoles(ceiling = 50) {
+  const grants = new Map();
+  return {
+    grants,
+    ceiling,
+    async grant({ user, role, ref, expires_at }) {
+      if (role === 1 || role < this.ceiling) throw new Error(`module asked to grant role ${role}, but it may only grant roles ${this.ceiling} to 99`);
+      grants.set(ref, { user, role, expires_at: expires_at || null, revoked: false });
+      return grants.get(ref);
+    },
+    async revoke(ref) {
+      const g = grants.get(ref);
+      if (g) g.revoked = true;
+      return { revoked: Boolean(g) };
+    },
+  };
+}
+
+const ann = { id: 7, email: "ann@example.com" };
+const bob = { id: 8, email: "bob@example.com" };
+const quiet = Object.assign(() => {}, { warn: () => {}, error: () => {} });
+
+for (const makeDriver of PROVIDERS) {
+  describe(`on ${makeDriver().name}`, () => {
+    let provider;
+    let shop;
+    let held;
+    let store;
+    let roles;
+    let ctx;
+    let actions;
+    /** The deliveries the module's handler failed (a 500 at the server). */
+    let failed;
+    beforeEach(() => {
+      provider = makeDriver();
+      shop = provider.account(1, "shop");
+      held = provider.account(2, "held", { hold: true });
+      const field = provider.priceField;
+      store = fakeDb({
+        pay_accounts: [shop, held].map((a) => ({ ...a })),
+        plans: [
+          { id: 1, name: "Basic", [field]: provider.prices.basic, role: 70 },
+          { id: 2, name: "Pro", [field]: provider.prices.pro, role: 60 },
+          { id: 3, name: "Staff", [field]: provider.prices.staff, role: 40 },
+        ],
+        orders: [{ id: 12, total: 900 }],
+      });
+      roles = recordingRoles();
+      const configuration = { plans_table: "plans", plan_price_field: field, plan_role_field: "role", grace_days: 3 };
+      ctx = { db: store.db, roles, configuration, log: quiet };
+      actions = actionsFor(configuration);
+      failed = [];
+      provider.install([shop, held], (account) => {
+        const deliver = deliverTo(account, ctx);
+        return async (body, headers) => {
+          try {
+            return await deliver(body, headers);
+          } catch (e) {
+            failed.push(e);
+            throw e;
+          }
+        };
+      });
+    });
+    afterEach(() => provider.uninstall());
+
+    const argument = (extra) => ({ row: null, user: ann, app: { id: "a", url: "https://saas.example.com" }, db: store.db, roles, ...extra });
+    const kinds = () => store.tables.pay_events.map((e) => e.kind);
+    const mirror = (row) => store.tables.pay_objects.find((o) => o.id === row.id);
+    const grantOf = (sub, on = shop) => roles.grants.get(`${on.name}:${sub.provider_ref}`);
+    const eventKeys = () => store.tables.pay_events.map((e) => `${e.event_id}/${e.kind}`);
+
+    /** Ann pays for order 12 on `on`'s checkout page. */
+    async function payForOrder(settings = {}, on = shop, outcome = "succeeded") {
+      const started = await actions.pay_checkout.run(
+        argument({ configuration: { account: on.name, table: "orders", key_field: "order", amount: "total", currency: "EUR", read_check: false, ...settings }, payload: { order: 12 } }),
+      );
+      await provider.pay(on, started.checkout, outcome);
+      return started;
+    }
+
+    /** Ann (or `user`) subscribes to `plan` through `pay_checkout`, and pays. */
+    async function subscribe(plan, settings = {}, on = shop, user = ann) {
+      const started = await actions.pay_checkout.run(
+        argument({ user, configuration: { account: on.name, mode: "subscription", table: "plans", key_field: "plan", currency: "EUR", ...settings }, payload: { plan } }),
+      );
+      await provider.pay(on, started.checkout, "succeeded");
+      const sub = store.tables.pay_objects.find((o) => o.kind === "subscription" && o.account === on.id && String(o.user_id) === String(user.id) && o.ref_key === plan);
+      return { started, sub };
+    }
+
+    // ---- P2: the shop ----
+
+    test("a row is paid for, and each event is logged once however often it arrives", async () => {
+      const started = await payForOrder();
+      assert.equal(started.amount, 900);
+      assert.ok(kinds().includes("checkout.completed"), kinds().join());
+      const paid = store.tables.pay_events.find((e) => e.kind === "payment.succeeded");
+      assert.deepEqual([paid.ref_table, paid.ref_key, paid.user_id, paid.amount, paid.currency, paid.status], ["orders", 12, 7, 900, "EUR", "succeeded"]);
+      assert.equal(store.tables.pay_objects.find((o) => o.kind === "checkout").status, "complete");
+      const logged = eventKeys();
+      for (const e of [...provider.events(shop)].reverse()) assert.equal(await provider.redeliver(shop, e.id), 200);
+      for (const e of provider.events(shop)) assert.equal(await provider.redeliver(shop, e.id), 200);
+      assert.deepEqual(eventKeys(), logged);
+    });
+
+    test("a declined card, then a payment: both logged, and the mirror ends as the provider says", async () => {
+      const started = await payForOrder({}, shop, "failed");
+      assert.ok(kinds().includes("payment.failed"), kinds().join());
+      assert.ok(!kinds().includes("payment.succeeded"));
+      await provider.pay(shop, started.checkout, "succeeded");
+      // Everything again, newest first: the mirror still says what the provider says now.
+      for (const e of [...provider.events(shop)].reverse()) await provider.redeliver(shop, e.id);
+      assert.deepEqual(kinds().filter((k) => k.startsWith("payment.")).sort(), ["payment.failed", "payment.succeeded"]);
+      assert.equal(store.tables.pay_objects.find((o) => o.kind === "checkout").status, "complete");
+      const payment = store.tables.pay_objects.find((o) => o.id === store.tables.pay_events.find((e) => e.kind === "payment.succeeded").object);
+      assert.equal(payment.status, "succeeded");
+    });
+
+    test("a forged delivery stores nothing; one the module does not understand is logged as other", async () => {
+      const forged = await events({ ...provider.forged(shop), rest: shop.name, method: "POST", query: {} }, ctx);
+      assert.equal(forged.status, 400);
+      assert.match(forged.body.error, /signature does not match/);
+      assert.equal(store.tables.pay_events.length, 0);
+      const odd = await events({ ...provider.unknown(shop), rest: shop.name, method: "POST", query: {} }, ctx);
+      assert.equal(odd.status, 200);
+      assert.deepEqual(kinds(), ["other"]);
+      assert.ok(store.tables.pay_events[0].raw);
+    });
+
+    test("a delivery that fails half way is a 500, and the provider's retry finishes it", async () => {
+      store.failInsert("pay_events");
+      await payForOrder();
+      // The first event row's insert failed, and so did that delivery (the server's 500).
+      assert.equal(failed.length, 1);
+      assert.match(failed[0].message, /the insert into pay_events failed/);
+      for (const e of provider.events(shop)) await provider.redeliver(shop, e.id);
+      assert.ok(kinds().includes("checkout.completed"));
+      assert.ok(kinds().includes("payment.succeeded"));
+      assert.equal(new Set(eventKeys()).size, eventKeys().length, "nothing logged twice");
+      assert.equal(kinds().filter((k) => k === "checkout.completed").length, 1);
+    });
+
+    test("pay_refund gives money back, and the provider reports it", async () => {
+      await payForOrder();
+      const refund = { source: "row", table: "orders", key_field: "order", read_check: false };
+      const part = await actions.pay_refund.run(argument({ configuration: { ...refund, amount: "300" }, payload: { order: 12 } }));
+      await provider.flush();
+      assert.equal(part.amount, 300);
+      const payment = () => store.tables.pay_objects.find((o) => o.kind === "payment" && o.status !== "failed" && o.ref_key === 12);
+      assert.equal(payment().status, "partially_refunded");
+      await actions.pay_refund.run(argument({ configuration: refund, payload: { order: 12 } }));
+      await provider.flush();
+      assert.equal(payment().status, "refunded");
+      const refunded = store.tables.pay_events.filter((e) => e.kind === "payment.refunded");
+      assert.equal(refunded.length, 2);
+      assert.deepEqual([refunded[1].ref_table, refunded[1].ref_key], ["orders", 12]);
+      await assert.rejects(actions.pay_refund.run(argument({ configuration: refund, payload: { order: 12 } })), /no payment for orders 12 to refund/);
+    });
+
+    test("the sweep processes what was never delivered, once", async () => {
+      await payForOrder({}, held);
+      assert.equal(store.tables.pay_events.length, 0, "held: nothing delivered");
+      await sweepAll(ctx, { only: "held" });
+      assert.ok(kinds().includes("payment.succeeded"), kinds().join());
+      const logged = eventKeys();
+      await sweepAll(ctx, { only: "held" });
+      assert.deepEqual(eventKeys(), logged);
+    });
+
+    test("a one-off payment's role effect is a pass for its days, revoked when refunded", async () => {
+      await payForOrder({ grant_role: 70, role_days: 30 });
+      const payment = store.tables.pay_objects.find((o) => o.kind === "payment" && o.status === "succeeded");
+      const pass = roles.grants.get(`shop:${payment.provider_ref}`);
+      assert.deepEqual([pass.user, pass.role, pass.revoked], [7, 70, false]);
+      // Thirty days from when the provider says the payment was made.
+      const made = millis(payment.provider_data.created === undefined ? payment.provider_data.created_at : payment.provider_data.created);
+      assert.equal(pass.expires_at, new Date(made + 30 * DAY).toISOString());
+      await actions.pay_refund.run(argument({ configuration: { source: "row", table: "orders", key_field: "order", read_check: false }, payload: { order: 12 } }));
+      await provider.flush();
+      assert.equal(roles.grants.get(`shop:${payment.provider_ref}`).revoked, true);
+    });
+
+    // ---- P4: subscriptions ----
+
+    test("a subscription grants its plan's role to the period's end plus grace, and each renewal extends it", async () => {
+      const { started, sub } = await subscribe(1);
+      assert.equal(started.amount, 1000);
+      assert.ok(kinds().includes("subscription.started"), kinds().join());
+      assert.deepEqual(
+        [sub.user_id, sub.ref_table, sub.ref_key, sub.status, sub.price_ref, sub.cancel_at_period_end, sub.issue || null],
+        [7, "plans", 1, "active", provider.prices.basic, false, null],
+      );
+      const customer = store.tables.pay_objects.find((o) => o.kind === "customer");
+      assert.deepEqual([customer.user_id, customer.provider_ref], [7, provider.checkoutCustomer(shop, started.checkout)]);
+      assert.deepEqual(grantOf(sub), { user: 7, role: 70, expires_at: plusDays(sub.current_period_end, 3), revoked: false });
+
+      const firstEnd = sub.current_period_end;
+      await provider.renew(shop, sub.provider_ref, "succeeded");
+      assert.equal(Date.parse(mirror(sub).current_period_end) - Date.parse(firstEnd), 30 * DAY);
+      assert.equal(grantOf(sub).expires_at, plusDays(mirror(sub).current_period_end, 3));
+      assert.equal(kinds().filter((k) => k === "subscription.renewed").length, 1, kinds().join());
+      assert.ok(!kinds().includes("subscription.changed"), "a renewal is no change of plan");
+      if (provider.renewalPaymentsKnowTheirRow) {
+        const renewal = store.tables.pay_events.filter((e) => e.kind === "payment.succeeded").at(-1);
+        assert.deepEqual([renewal.ref_table, renewal.ref_key, renewal.user_id], ["plans", 1, 7]);
+      }
+    });
+
+    test("a failed renewal leaves the grant to run out; a recovery within grace extends it", async () => {
+      const { sub } = await subscribe(1);
+      const paidTo = grantOf(sub).expires_at;
+      await provider.renew(shop, sub.provider_ref, "failed");
+      assert.equal(mirror(sub).status, "past_due");
+      assert.equal(grantOf(sub).expires_at, paidTo);
+      assert.equal(kinds().filter((k) => k === "subscription.past_due").length, 1, kinds().join());
+      await provider.retry(shop, sub.provider_ref, "failed");
+      assert.equal(grantOf(sub).expires_at, paidTo);
+      await provider.retry(shop, sub.provider_ref, "succeeded");
+      assert.equal(mirror(sub).status, "active");
+      assert.equal(grantOf(sub).expires_at, plusDays(mirror(sub).current_period_end, 3));
+      assert.ok(kinds().includes("subscription.renewed"));
+    });
+
+    test("a trial with the card up front is granted to its end, then converts — or is canceled", async () => {
+      const { started, sub } = await subscribe(1, { trial_days: "14" });
+      assert.equal(started.amount, 0, "nothing is charged today");
+      assert.equal(sub.status, "trialing");
+      assert.ok(Math.abs(Date.parse(sub.trial_end) - Date.now() - 14 * DAY) < 5000, sub.trial_end);
+      assert.equal(grantOf(sub).expires_at, plusDays(sub.trial_end, 3));
+      await provider.renew(shop, sub.provider_ref, "succeeded");
+      assert.equal(mirror(sub).status, "active");
+      assert.equal(grantOf(sub).expires_at, plusDays(mirror(sub).current_period_end, 3));
+
+      // Bob's trial, canceled before it ends: kept to the trial's end exactly, then revoked.
+      const bobs = (await subscribe(2, { trial_days: "14" }, shop, bob)).sub;
+      await actions.pay_cancel_subscription.run(argument({ user: bob, configuration: { account: "shop" }, payload: {} }));
+      await provider.flush();
+      assert.equal(mirror(bobs).cancel_at_period_end, true);
+      assert.deepEqual(grantOf(bobs), { user: 8, role: 60, expires_at: bobs.trial_end, revoked: false });
+      await provider.renew(shop, bobs.provider_ref, "succeeded");
+      assert.equal(mirror(bobs).status, "canceled");
+      assert.equal(grantOf(bobs).revoked, true);
+      assert.ok(kinds().includes("subscription.canceled") && kinds().includes("subscription.ended"), kinds().join());
+    });
+
+    test("a plan change, by action or in the provider's portal, moves the role", async () => {
+      const { sub } = await subscribe(1);
+      const changed = await actions.pay_change_subscription.run(argument({ configuration: { account: "shop" }, payload: { plan: 2 } }));
+      await provider.flush();
+      assert.deepEqual([changed.subscription, changed.price_ref], [sub.id, provider.prices.pro]);
+      assert.equal(grantOf(sub).role, 60);
+      assert.equal(kinds().filter((k) => k === "subscription.changed").length, 1, kinds().join());
+      await assert.rejects(actions.pay_change_subscription.run(argument({ configuration: { account: "shop" }, payload: { plan: 2 } })), /on that plan already/);
+      await assert.rejects(actions.pay_change_subscription.run(argument({ configuration: { account: "shop" }, payload: { plan: 99 } })), /no plans row 99 that you can read/);
+      await assert.rejects(
+        actions.pay_change_subscription.run(argument({ user: { id: 8 }, configuration: { account: "shop" }, payload: { plan: 1, subscription: sub.id } })),
+        /you have no subscription/,
+      );
+
+      const { url } = await actions.pay_portal.run(argument({ configuration: { account: "shop", return_path: "/account" } }));
+      assert.match(url, /^https:\/\//);
+      await provider.portalChange(shop, sub.provider_ref, provider.prices.basic);
+      assert.equal(grantOf(sub).role, 70);
+      assert.equal(kinds().filter((k) => k === "subscription.changed").length, 2);
+      await assert.rejects(actions.pay_portal.run(argument({ user: { id: 8 }, configuration: { account: "shop" } })), /not a customer of "shop" yet/);
+    });
+
+    test("cancelling at the period's end keeps the grant to that end; cancelling now revokes it", async () => {
+      const { sub } = await subscribe(1);
+      const later = await actions.pay_cancel_subscription.run(argument({ configuration: { account: "shop", at_period_end: true }, payload: {} }));
+      await provider.flush();
+      assert.deepEqual([later.status, later.cancel_at_period_end], ["active", true]);
+      assert.equal(grantOf(sub).expires_at, mirror(sub).current_period_end);
+      assert.ok(kinds().includes("subscription.canceled"));
+      const now = await actions.pay_cancel_subscription.run(argument({ configuration: { account: "shop", at_period_end: false }, payload: {} }));
+      await provider.flush();
+      assert.equal(now.status, "canceled");
+      assert.equal(grantOf(sub).revoked, true);
+      assert.ok(kinds().includes("subscription.ended"));
+      await assert.rejects(actions.pay_cancel_subscription.run(argument({ configuration: { account: "shop" }, payload: {} })), /no subscription on "shop" to change/);
+    });
+
+    test("a price that is no plan's grants nothing, is reported, and is granted once it is a plan's", async () => {
+      const { sub } = await subscribe(1, { price_ref: JSON.stringify(provider.prices.mystery) });
+      assert.equal(sub.price_ref, provider.prices.mystery);
+      assert.equal(grantOf(sub), undefined);
+      assert.equal(mirror(sub).issue, `its price ${provider.prices.mystery} is no plan's: no row of plans has it as ${provider.priceField}, so it grants no role`);
+      store.tables.plans.push({ id: 4, name: "Mystery", [provider.priceField]: provider.prices.mystery, role: 80 });
+      await sweepAll(ctx, { only: "shop" });
+      assert.equal(grantOf(sub).role, 80);
+      assert.equal(mirror(sub).issue, null);
+      await provider.portalChange(shop, sub.provider_ref, provider.prices.gone);
+      assert.equal(grantOf(sub).role, 80);
+      assert.match(mirror(sub).issue, /is no plan's/);
+    });
+
+    test("a role above the module's ceiling is an issue, granted by the sweep once allowed", async () => {
+      const { sub } = await subscribe(3);
+      assert.equal(grantOf(sub), undefined);
+      assert.match(mirror(sub).issue, /module asked to grant role 40, but it may only grant roles 50 to 99/);
+      roles.ceiling = 40;
+      const [swept] = await sweepAll(ctx, { only: "shop" });
+      assert.equal(swept.subscriptions, 1);
+      assert.equal(grantOf(sub).role, 40);
+      assert.equal(mirror(sub).issue, null);
+    });
+
+    test("the sweep reads live subscriptions again: a renewal never delivered still extends the grant", async () => {
+      const { sub } = await subscribe(1, {}, held);
+      assert.equal(sub, undefined, "held: nothing reached the module");
+      await sweepAll(ctx, { only: "held" });
+      const mirrored = store.tables.pay_objects.find((o) => o.kind === "subscription");
+      assert.equal(grantOf(mirrored, held).role, 70);
+      const first = grantOf(mirrored, held).expires_at;
+      await provider.renew(held, mirrored.provider_ref, "succeeded");
+      assert.equal(grantOf(mirrored, held).expires_at, first, "held: not delivered");
+      await sweepAll(ctx, { only: "held" });
+      assert.equal(grantOf(mirrored, held).expires_at, plusDays(mirror(mirrored).current_period_end, 3));
+    });
+
+    test("a subscription is a signed-in user's, takes no effects, and reuses the customer the user is", async () => {
+      const plan1 = { account: "shop", mode: "subscription", table: "plans", key_field: "plan", currency: "EUR" };
+      await assert.rejects(actions.pay_checkout.run(argument({ user: null, configuration: plan1, payload: { plan: 1 } })), /taken out by a signed-in user/);
+      await assert.rejects(actions.pay_checkout.run(argument({ configuration: { ...plan1, grant_role: 70 }, payload: { plan: 1 } })), /effects are for one-off payments/);
+      await subscribe(1);
+      const again = await actions.pay_checkout.run(argument({ configuration: plan1, payload: { plan: 2 } }));
+      const customers = store.tables.pay_objects.filter((o) => o.kind === "customer");
+      assert.equal(customers.length, 1);
+      assert.equal(provider.checkoutCustomer(shop, again.checkout), customers[0].provider_ref);
+    });
+  });
+}

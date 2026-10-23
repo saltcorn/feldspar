@@ -1,5 +1,7 @@
 // The webhook handler's processing (TODO-payments §6.5, P2.3), over the fake provider and an
-// in-memory `db`: dedupe, fetch-and-upsert, normalised events, and what a failure leaves.
+// in-memory `db`: the row an object was for from the provider's metadata, an object that cannot
+// be read, and the fake's refunds. Dedupe, events out of order, `other`, a forged signature and
+// a delivery failing half way are the shared suite's (`shared.test.mjs`), against every provider.
 
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -36,43 +38,6 @@ async function orderCheckout() {
 const deliver = () => deliverTo(account, ctx);
 const kinds = () => store.tables.pay_events.map((e) => e.kind);
 
-test("each event is logged once, with the application row it is for, however often it arrives", async () => {
-  const created = await orderCheckout();
-  await fake.settle(account, created.id, "succeeded", deliver());
-  const [completed, succeeded] = fake.events(account);
-  for (const id of [completed.id, succeeded.id, succeeded.id, completed.id, succeeded.id]) {
-    assert.equal(((await fake.resend(account, id, deliver())) || {}).status, 200);
-  }
-  assert.deepEqual(kinds(), ["checkout.completed", "payment.succeeded"]);
-  const paid = store.tables.pay_events[1];
-  assert.equal(paid.ref_table, "orders");
-  assert.equal(paid.ref_key, 12);
-  assert.equal(paid.user_id, 7);
-  assert.equal(paid.amount, 900);
-  assert.equal(paid.status, "succeeded");
-  assert.equal(paid.provider_type, "payment.succeeded");
-  assert.equal(paid.raw.id, succeeded.id);
-  // The payment's own mirror row inherits the checkout's application row.
-  const payment = store.tables.pay_objects.find((o) => o.kind === "payment");
-  assert.equal(payment.ref_key, 12);
-  assert.equal(paid.object, payment.id);
-  assert.equal(store.tables.pay_objects.find((o) => o.kind === "checkout").status, "complete");
-});
-
-test("events out of order end in the provider's current state", async () => {
-  const created = await orderCheckout();
-  await fake.settle(account, created.id, "failed", deliver());
-  await fake.settle(account, created.id, "succeeded", deliver());
-  const [failed, completed, succeeded] = fake.events(account);
-  // The success first, the decline last: the mirror says what the provider says now.
-  for (const e of [succeeded, completed, failed]) await fake.resend(account, e.id, deliver());
-  assert.deepEqual(kinds(), ["payment.succeeded", "checkout.completed", "payment.failed"]);
-  const byRef = Object.fromEntries(store.tables.pay_objects.map((o) => [o.provider_ref, o.status]));
-  assert.equal(byRef[created.id], "complete");
-  assert.equal(byRef[succeeded.ref.id], "succeeded");
-  assert.equal(byRef[failed.ref.id], "failed");
-});
-
 test("an object the mirror has never seen takes its row from the provider's metadata", async () => {
   const { fromMetadata } = require("../processing.js");
   assert.deepEqual(fromMetadata({ sc_ref_table: "orders", sc_ref_key: "12", sc_user_id: "7" }), { ref_table: "orders", ref_key: 12, user_id: 7 });
@@ -80,44 +45,17 @@ test("an object the mirror has never seen takes its row from the provider's meta
   assert.deepEqual(fromMetadata({ test: true }), {});
 });
 
-test("an event the module does not understand is logged as other, with the raw event", async () => {
-  const body = Buffer.from(JSON.stringify({ id: "evt_odd", type: "payout.paid", account: "shop", data: { object: null } }));
-  const answer = await events({ rawBody: body, headers: { "fake-signature": fake.sign("whsec_test", body) }, rest: "shop" }, ctx);
-  assert.equal(answer.status, 200);
-  assert.deepEqual(store.tables.pay_events.map((e) => [e.kind, e.provider_type, e.raw.id, e.object]), [["other", "payout.paid", "evt_odd", undefined]]);
-});
-
-test("a bad signature stores nothing; an object the provider cannot read is a failure the retry finishes", async () => {
-  const created = await orderCheckout();
-  await fake.settle(account, created.id, "succeeded", deliver());
-  const [completed, succeeded] = fake.events(account);
-  const forged = await events(
-    { rawBody: Buffer.from(JSON.stringify({ id: "evt_x", type: "payment.succeeded", account: "shop" })), headers: { "fake-signature": "t=1,v1=00" }, rest: "shop" },
-    ctx,
-  );
-  assert.equal(forged.status, 400);
-  assert.equal(store.tables.pay_events.length, 0);
-
-  // The event row's insert fails once: the delivery fails (a 500), and its retry logs it once.
-  store.failInsert("pay_events");
-  const failed = await fake.resend(account, completed.id, deliver());
-  assert.equal(failed.status, 500);
-  assert.match(failed.error, /insert into pay_events failed/);
-  assert.equal(store.tables.pay_events.length, 0);
-  assert.equal((await fake.resend(account, completed.id, deliver())).status, 200);
-  assert.equal((await fake.resend(account, succeeded.id, deliver())).status, 200);
-  assert.deepEqual(kinds(), ["checkout.completed", "payment.succeeded"]);
-
-  // An event about an object the provider does not have (a restarted fake) cannot be processed.
+test("an event about an object the provider cannot read fails, naming the event", async () => {
+  // A restarted fake has forgotten its objects: the delivery is a 500, and nothing is logged.
   const body = Buffer.from(JSON.stringify({ id: "evt_gone", type: "payment.succeeded", account: "shop", data: { object: { kind: "payment", id: "pay_gone" } } }));
   await assert.rejects(
     events({ rawBody: body, headers: { "fake-signature": fake.sign("whsec_test", body) }, rest: "shop" }, ctx),
     /evt_gone is about payment pay_gone, which could not be read/,
   );
-  assert.equal(store.tables.pay_events.length, 2);
+  assert.equal(store.tables.pay_events.length, 0);
 });
 
-test("a refund is an event about the payment", async () => {
+test("the fake refunds once per key, never more than is left, and reports each refund", async () => {
   const created = await orderCheckout();
   await fake.settle(account, created.id, "succeeded", deliver());
   for (const e of fake.events(account)) await fake.resend(account, e.id, deliver());

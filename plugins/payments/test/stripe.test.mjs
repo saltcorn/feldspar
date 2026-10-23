@@ -332,13 +332,13 @@ test("the portal, a plan change and a cancellation, as Stripe receives them", as
   const pro = fixture("subscription");
   pro.items.data[0].price = { ...pro.items.data[0].price, id: "price_1QproMonthly", unit_amount: 4000 };
   answers.push([200, fixture("subscription")], [200, pro]);
-  const changed = await stripe.changePlan(account, "sub_1QaBcDeFgHiJkLmN", "price_1QproMonthly", { proration: "none" });
+  const changed = await stripe.changePlan(account, "sub_1QaBcDeFgHiJkLmN", "price_1QproMonthly", { proration: "invoice" });
   assert.equal(changed.price_ref, "price_1QproMonthly");
   const post = sent[2];
   assert.deepEqual([post.method, post.path], ["POST", "/v1/subscriptions/sub_1QaBcDeFgHiJkLmN"]);
   assert.equal(post.form.get("items[0][id]"), "si_RbCdEfGhIjKlMn");
   assert.equal(post.form.get("items[0][price]"), "price_1QproMonthly");
-  assert.equal(post.form.get("proration_behavior"), "none");
+  assert.equal(post.form.get("proration_behavior"), "always_invoice");
 
   answers.push([200, { ...fixture("subscription"), cancel_at_period_end: true }], [200, { ...fixture("subscription"), status: "canceled" }]);
   const later = await stripe.cancel(account, "sub_1QaBcDeFgHiJkLmN", { at_period_end: true });

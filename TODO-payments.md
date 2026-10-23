@@ -53,7 +53,7 @@ Two kinds of provider, and the difference decides the legal setup, not just the 
 |---|---|---|---|---|---|---|---|---|
 | **Stripe** | PSP, **and** MoR via *Managed Payments* | yes, with ad-hoc prices | yes; trials with or without a card | yes | Meters and credit grants | web, and native in React Native (`@stripe/stripe-react-native`) | Connect | Managed Payments became generally available in 2026: a `managed_payments` flag on Checkout Sessions. It is digital goods only, **Checkout only** (no API-built subscriptions) and **no Connect**. So one adapter covers PSP and MoR. |
 | **Paddle** (Billing) | MoR | yes | yes | yes | one-off charges on a subscription | in its web checkout | no | The established MoR. 5% + 50¢. |
-| **Polar** | MoR | yes | yes | yes | meters, credits | web checkout | no | Open source and aimed at developers. |
+| **Polar** | MoR | yes, one product per checkout (ad-hoc prices) | yes | yes | meters, credits; off-session charges of a saved card (preview, paid plans) | web checkout | no | Open source and aimed at developers. Built in P5. |
 | **Lemon Squeezy** | MoR | yes | yes | yes | usage-based | web checkout | no | Owned by Stripe since 2024. |
 | **Creem**, **Dodo Payments** | MoR | yes | yes | yes | usage-based | web checkout | no | Cheaper (about 4% + 40¢) and younger. Later. |
 | **Mollie** | PSP (EU) | yes | through mandates (the first payment makes one) | no | no | web | Mollie Connect | The European local methods: iDEAL, Bancontact, SEPA. Good for use case 6. |
@@ -205,8 +205,12 @@ module.exports = {
   changePlan(account, subscription, price_ref), cancel(account, subscription, { at_period_end }),
   refund(account, payment, { amount, key }), capture(account, payment, { amount }),
 
-  verifyWebhook(account, { rawBody, headers }),   // → [{ id, type, ref }] or throws
+  verifyWebhook(account, { rawBody, headers }),   // → [{ id, type, ref, raw }] or throws; one
+                                                  //   delivery may be several events (P5)
+  kinds(event, { previous }),                     // → the module's kinds; null: sync only. previous
+                                                  //   is the object's mirror row before it (P5)
   fetch(account, ref),                            // → a normalised object (§5) + provider_data
+  listEvents(account, { since }),                 // what was never delivered, for the sweep
   list(account, kind, { since }),                 // for the reconciliation sweep
 };
 ```
@@ -725,14 +729,50 @@ Notes from P1, for the milestones that build on it:
 
 ## P5 — Second adapter: Polar, a merchant of record
 
-- [ ] **P5.1** Adapter for one-off and subscriptions, with webhook verification and portal.
+- [x] **P5.1** Adapter for one-off and subscriptions, with webhook verification and portal.
   Anything in the adapter interface that turns out to be Stripe-shaped is fixed **here**,
   before credits and mobile build on it.
-- [ ] **P5.2** The P2 and P4 test suites run against both adapters (one parametrised suite,
+- [x] **P5.2** The P2 and P4 test suites run against both adapters (one parametrised suite,
   not a copy).
-- [ ] **P5.3** Find out whether Polar can charge a customer's saved payment method for a
+- [x] **P5.3** Find out whether Polar can charge a customer's saved payment method for a
   one-off purchase. If it can, set `charge_saved_method` so P7's top-ups charge the same card.
   If it cannot, top-ups on Polar always go through checkout, and the capability says so.
+
+  Notes from P5, for the milestones that build on it:
+  - **P5.3's answer: yes.** Polar's off-session charges (`POST /v1/orders/` for a draft order,
+    then `POST /v1/orders/{id}/finalize`) charge a customer's default saved payment method. They
+    are **in preview, for organisations on a paid plan**: Polar answers 403 otherwise, which
+    `chargeSavedMethod` refuses by name. A 402 (declined, no card, or 3-D Secure needed) is
+    `{ status: "requires_checkout", reason }`, which is P7's fallback to checkout. The order takes
+    metadata, but P7 must still record the order's mirror row (row, user, effects) itself when it
+    makes the charge, as `pay_checkout` records its checkout. A draft order carries the module's key, so a
+    retried top-up finalizes the same draft. Polar's own "credits" benefit is not granted for an
+    off-session order (polarsource/polar#15064, fixed on 1 October 2026), and it does not
+    matter here: the module grants credits itself (§3.8).
+  - `chargeSavedMethod(account, { customer, amount, currency, description, key, metadata })`
+    answers `{ status: "paid" | "requires_checkout", reason?, object }`. Only Polar has it. Stripe's
+    (an off-session PaymentIntent) is P7's, in the same shape.
+  - The interface changes made for Polar: `kinds(event, { previous })`; a delivery may answer
+    several events under one id; the module's proration words are `prorate`, `invoice` and `none`.
+    A provider that is always a merchant of record gets `tax: merchant_of_record` whatever the
+    trigger says. §4's sketch is updated.
+  - **Amounts** are what the buyer paid, tax included, on Stripe and Polar alike. An adapter whose
+    provider refunds pre-tax converts (Polar's `refund`). P7's allowance and top-up amounts are
+    credits, not money, so this does not reach them.
+  - P7's allowance is keyed by the renewal's invoice. On Polar the renewal is an order, and its
+    `subscription.renewed` event is the second event of the `order.paid` delivery, so the order id
+    is `event.raw.data.id`. On Stripe it is the invoice, `event.raw.data.object.id`.
+  - The shared suite (`test/shared.test.mjs`) runs the P2 and P4 scenarios on the fake, a Stripe
+    simulation and a Polar simulation (`test/providers/`). P7's top-ups and allowances, P10's bank
+    methods and P12's adapters should be added there, with a driver per provider, rather than as
+    fake-only tests.
+  - Two Stripe bugs were fixed: a one-off payment's *grant a role* effect was never applied (the
+    PaymentIntent does not name its session, so processing now hands a checkout's effects to its
+    payment). A renewal was logged as `subscription.changed`, because since 2025-03-31 the period
+    is on the item.
+  - Polar's live behaviour is checked only against its OpenAPI description (2026-10) and its
+    docs, through the simulation. There is no live Polar test like `stripe-live.test.mjs` yet: one
+    would need a sandbox organisation's token.
 
 ## P6 — LLM credits ledger (core)
 

@@ -350,6 +350,12 @@ Nothing else changes. To keep the test provider for development beside Stripe, g
 own price field, `test_price` and `stripe_price`, and name both in the binding's **Price field**:
 `saas=test_price, stripe=stripe_price`.
 
+**On Polar** a plan is a *product*: make a recurring product per plan, put its id in a
+`polar_product` field of `plans`, and name it for the Polar account in the binding
+(`saas=test_price, polar=polar_product`). Polar's customer portal needs no setting up. A plan
+change through `manage_plan` is prorated on the next invoice or invoiced now (**Proration**
+`prorate` or `invoice`); Polar has no change without proration, so `none` is refused there.
+
 ## Things that trip people up
 
 - **A lower role number is more privileged.** `user.role <= 70` is "Basic or better".
