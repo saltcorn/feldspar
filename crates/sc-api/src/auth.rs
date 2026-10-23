@@ -92,6 +92,48 @@ pub fn user_row_schema() -> TypeSchema {
     ])
 }
 
+/// One role grant as the admin user page shows it (TODO-payments P3.2).
+pub fn role_grant_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("role", TypeSchema::int()),
+        // `admin`, `grant_role`, or the module that made it (`payments`).
+        StructField::new("source", TypeSchema::text()),
+        StructField::new("source_ref", TypeSchema::text()),
+        StructField::new("starts_at", TypeSchema::timestamp()),
+        StructField::new("expires_at", TypeSchema::optional(TypeSchema::timestamp())),
+        StructField::new("revoked_at", TypeSchema::optional(TypeSchema::timestamp())),
+        StructField::new("note", TypeSchema::optional(TypeSchema::text())),
+        // Whether it counts now: started, not ended, not revoked.
+        StructField::new("in_force", TypeSchema::bool()),
+    ])
+}
+
+/// What the admin user page shows about a user's role: the base role an admin
+/// sets, the role they are served at, and every grant they have had.
+pub fn user_role_grants_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("base_role", TypeSchema::int()),
+        StructField::new("effective_role", TypeSchema::int()),
+        StructField::new("grants", TypeSchema::array(role_grant_schema())),
+    ])
+}
+
+/// A grant rendered to [`role_grant_schema`].
+pub fn role_grant_json(grant: &sc_auth::RoleGrant) -> Json {
+    json!({
+        "id": grant.id.to_string(),
+        "role": i64::from(grant.role),
+        "source": grant.source,
+        "source_ref": grant.source_ref,
+        "starts_at": grant.starts_at.to_rfc3339(),
+        "expires_at": grant.expires_at.map(|t| t.to_rfc3339()),
+        "revoked_at": grant.revoked_at.map(|t| t.to_rfc3339()),
+        "note": grant.note,
+        "in_force": grant.in_force_at(chrono::Utc::now()),
+    })
+}
+
 /// A user rendered for the admin users screen, matching [`user_row_schema`].
 ///
 /// The password hash is not in [`User::extra`] to begin with (it is dropped when

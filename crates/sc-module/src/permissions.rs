@@ -56,6 +56,11 @@ pub const PERM_READ: &str = "read";
 pub const PERM_WRITE: &str = "write";
 /// Environment variables.
 pub const PERM_ENV: &str = "env";
+/// The roles the module may grant users (TODO-payments P3.3, design C4): one
+/// entry, the **most privileged** role it may grant — `70` lets it grant 70 to
+/// 99. Not a worker permission at all, but granted the way they are: by an
+/// admin, on the install card and the Modules tab, never by the package.
+pub const PERM_ROLES: &str = "roles";
 
 /// The [`PERM_NET`] entry meaning *any host* — see [`check_host`].
 ///
@@ -82,6 +87,9 @@ pub struct ModulePermissions {
     pub write: Vec<String>,
     /// Environment variable names the module may see.
     pub env: Vec<String>,
+    /// The most privileged role the module may grant (`ctx.roles.grant`), or
+    /// `None` for no role at all. Never 1: no module may make an admin.
+    pub roles: Option<u8>,
 }
 
 impl ModulePermissions {
@@ -92,12 +100,38 @@ impl ModulePermissions {
 
     /// Whether nothing at all is granted.
     pub fn is_closed(&self) -> bool {
-        self.net.is_empty() && self.read.is_empty() && self.write.is_empty() && self.env.is_empty()
+        self.net.is_empty()
+            && self.read.is_empty()
+            && self.write.is_empty()
+            && self.env.is_empty()
+            && self.roles.is_none()
     }
 
     /// How many entries there are across every list — what a badge counts.
     pub fn granted(&self) -> usize {
-        self.net.len() + self.read.len() + self.write.len() + self.env.len()
+        self.net.len()
+            + self.read.len()
+            + self.write.len()
+            + self.env.len()
+            + usize::from(self.roles.is_some())
+    }
+
+    /// The part of the set a **worker** is built with — everything but
+    /// [`roles`](Self::roles), which the server checks when a module asks and
+    /// the isolate never sees. What the pool pins by, so two modules that may
+    /// reach the same hosts share a worker whatever roles they may grant.
+    pub fn sandbox(&self) -> ModulePermissions {
+        ModulePermissions {
+            roles: None,
+            ..self.clone()
+        }
+    }
+
+    /// Whether the module may grant `role`: a role at or below its ceiling in
+    /// privilege, and never the admin's or the public's.
+    pub fn may_grant_role(&self, role: u8) -> bool {
+        self.roles
+            .is_some_and(|ceiling| role >= ceiling && role > 1 && role < 100)
     }
 
     /// Read a stored (or posted) permission set, checking every entry.
@@ -118,10 +152,10 @@ impl ModulePermissions {
             }
         };
         for key in object.keys() {
-            if ![PERM_NET, PERM_READ, PERM_WRITE, PERM_ENV].contains(&key.as_str()) {
+            if ![PERM_NET, PERM_READ, PERM_WRITE, PERM_ENV, PERM_ROLES].contains(&key.as_str()) {
                 return Err(Error::invalid(format!(
                     "`{key}` is not a module permission; the permissions are {PERM_NET}, \
-                     {PERM_READ}, {PERM_WRITE}, {PERM_ENV}"
+                     {PERM_READ}, {PERM_WRITE}, {PERM_ENV}, {PERM_ROLES}"
                 )));
             }
         }
@@ -130,6 +164,7 @@ impl ModulePermissions {
             read: entries(object, PERM_READ, check_path)?,
             write: entries(object, PERM_WRITE, check_path)?,
             env: entries(object, PERM_ENV, check_env)?,
+            roles: role_ceiling(object)?,
         };
         Ok(permissions)
     }
@@ -141,6 +176,12 @@ impl ModulePermissions {
         object.insert(PERM_READ.to_owned(), json!(self.read));
         object.insert(PERM_WRITE.to_owned(), json!(self.write));
         object.insert(PERM_ENV.to_owned(), json!(self.env));
+        // A list like the others, so one form edits all five: empty, or the
+        // one ceiling as text.
+        object.insert(
+            PERM_ROLES.to_owned(),
+            json!(self.roles.map(|r| vec![r.to_string()]).unwrap_or_default()),
+        );
         object
     }
 
@@ -168,6 +209,9 @@ impl ModulePermissions {
         }
         if !self.env.is_empty() {
             lines.push(format!("may read the variables {}", self.env.join(", ")));
+        }
+        if let Some(ceiling) = self.roles {
+            lines.push(format!("may grant users roles {ceiling} to 99"));
         }
         lines
     }
@@ -210,6 +254,60 @@ fn entries(
     out.sort();
     out.dedup();
     Ok(out)
+}
+
+/// The `roles` entry: a list of at most one role number, the most privileged
+/// the module may grant. Written as text by the form and as a number by a
+/// manifest, so both are read.
+fn role_ceiling(object: &Attrs) -> Result<Option<u8>> {
+    let list = match object.get(PERM_ROLES) {
+        None | Some(Json::Null) => return Ok(None),
+        Some(Json::Array(list)) => list,
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "a module's `{PERM_ROLES}` permission should be a list, got {}",
+                kind_of(other)
+            )));
+        }
+    };
+    let mut ceilings = Vec::new();
+    for entry in list {
+        let role = match entry {
+            Json::Number(n) => n.as_u64(),
+            Json::String(s) if s.trim().is_empty() => continue,
+            Json::String(s) => s.trim().parse::<u64>().ok(),
+            _ => None,
+        };
+        let Some(role) = role else {
+            return Err(Error::invalid(format!(
+                "`{entry}` is not a role number; the `{PERM_ROLES}` permission is the most \
+                 privileged role the module may grant, like 70"
+            )));
+        };
+        if role <= 1 {
+            return Err(Error::invalid(
+                "no module may grant the admin role (1); give it the most privileged role it \
+                 may grant, like 70",
+            ));
+        }
+        if role >= 100 {
+            return Err(Error::invalid(format!(
+                "role {role} cannot be granted: the public role is everybody's already, and \
+                 roles run to 100"
+            )));
+        }
+        ceilings.push(role as u8);
+    }
+    ceilings.sort_unstable();
+    ceilings.dedup();
+    match ceilings.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(*one)),
+        _ => Err(Error::invalid(format!(
+            "the `{PERM_ROLES}` permission is one role, the most privileged the module may \
+             grant; it may then grant that role and every less privileged one"
+        ))),
+    }
 }
 
 /// A host, or a host and a port. Not a URL: what the permission checks match is
@@ -403,9 +501,49 @@ mod tests {
             read: vec!["/srv/data".into()],
             write: Vec::new(),
             env: vec!["MQTT_PASSWORD".into()],
+            roles: Some(70),
         };
         let stored = Json::Object(permissions.to_json());
         assert_eq!(ModulePermissions::from_json(&stored).unwrap(), permissions);
+    }
+
+    #[test]
+    fn a_role_ceiling_is_one_role_never_the_admins_and_not_the_workers() {
+        let set = ModulePermissions::from_json(&json!({ "roles": ["70"] })).unwrap();
+        assert_eq!(set.roles, Some(70));
+        assert_eq!(
+            ModulePermissions::from_json(&json!({ "roles": [70] }))
+                .unwrap()
+                .roles,
+            Some(70),
+            "a manifest writes it as a number"
+        );
+        assert!(set.may_grant_role(70) && set.may_grant_role(99));
+        assert!(!set.may_grant_role(60), "above the ceiling");
+        assert!(!set.may_grant_role(1) && !set.may_grant_role(100));
+        assert!(!ModulePermissions::closed().may_grant_role(80));
+        assert_eq!(set.sentences(), ["may grant users roles 70 to 99"]);
+        assert!(!set.is_closed());
+        // The worker never sees it, so it does not split the pool.
+        assert!(set.sandbox().is_closed());
+        for bad in [
+            json!(["1"]),
+            json!(["100"]),
+            json!(["70", "80"]),
+            json!(["admin"]),
+        ] {
+            assert!(
+                ModulePermissions::from_json(&json!({ "roles": bad })).is_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            ModulePermissions::from_json(&json!({ "roles": [""] }))
+                .unwrap()
+                .roles,
+            None,
+            "a blank line in the form is no ceiling"
+        );
     }
 
     #[test]
@@ -548,6 +686,7 @@ mod tests {
             read: Vec::new(),
             write: Vec::new(),
             env: vec!["HOME".into()],
+            roles: None,
         };
         let lines = permissions.sentences();
         assert_eq!(lines.len(), 2);

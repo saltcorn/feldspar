@@ -73,6 +73,7 @@ pub mod module;
 pub mod modules;
 pub mod paths;
 pub mod permissions;
+pub mod roles;
 pub mod services;
 pub mod spec;
 pub mod store;
@@ -106,7 +107,10 @@ pub use module::{
 };
 pub use modules::{LoadedModule, ModuleIssue, ModuleSet, redacted_configuration, unsupported_json};
 pub use paths::default_modules_root;
-pub use permissions::{ANY_HOST, ModulePermissions, PERM_ENV, PERM_NET, PERM_READ, PERM_WRITE};
+pub use permissions::{
+    ANY_HOST, ModulePermissions, PERM_ENV, PERM_NET, PERM_READ, PERM_ROLES, PERM_WRITE,
+};
+pub use roles::ModuleRoles;
 pub use services::{Backoff, SERVICE_EVENTS, ServiceState, ServiceStatus, ServiceSupervisor};
 pub use spec::config_fields_to_form_fields;
 pub use store::{

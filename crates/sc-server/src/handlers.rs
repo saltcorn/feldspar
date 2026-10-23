@@ -6642,6 +6642,98 @@ pub fn admin_handlers_with(
         }
     });
 
+    // Role grants (TODO-payments P3.2). The page shows the base role beside
+    // the effective one, every grant the user has had, and lets an admin add a
+    // time-limited one by hand or revoke one — a subscription's included, which
+    // the provider's next renewal would put back.
+    reg.register("listUserRoleGrants", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_user_id(ctx.path_param("id")?)?;
+                let user = sc_auth::load_base_user(&catalog, id)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no user with id {id}")))?;
+                let effective = sc_auth::effective_role(&catalog, id, user.role).await?;
+                let grants = sc_auth::list_role_grants(&catalog, id).await?;
+                Ok(HandlerResponse::ok(json!({
+                    "base_role": i64::from(user.role),
+                    "effective_role": i64::from(effective.role),
+                    "grants": grants.iter().map(sc_api::auth::role_grant_json).collect::<Vec<_>>(),
+                })))
+            }
+        }
+    });
+
+    reg.register("grantUserRole", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_user_id(ctx.path_param("id")?)?;
+                let obj = require_object(&ctx.body)?;
+                if sc_auth::load_base_user(&catalog, id).await?.is_none() {
+                    return Err(Error::not_found(format!("no user with id {id}")));
+                }
+                let role = int_field(obj, "role")?;
+                let role = u8::try_from(role)
+                    .map_err(|_| Error::invalid(format!("role {role} is not in 1..=99")))?;
+                let expires_at = match obj.get("expires_in_days") {
+                    None | Some(Json::Null) => None,
+                    Some(_) => {
+                        let days = int_field(obj, "expires_in_days")?;
+                        if days < 1 {
+                            return Err(Error::invalid(
+                                "`expires_in_days` must be a positive number of days; \
+                                 leave it out for a grant that lasts until it is revoked",
+                            ));
+                        }
+                        Some(chrono::Utc::now() + chrono::Duration::days(days))
+                    }
+                };
+                let note = optional_str(obj, "note");
+                let grant = sc_auth::grant_role(
+                    &catalog,
+                    sc_auth::NewRoleGrant {
+                        user_id: id,
+                        role,
+                        source: sc_auth::GRANT_SOURCE_ADMIN.to_owned(),
+                        source_ref: uuid::Uuid::new_v4().to_string(),
+                        starts_at: None,
+                        expires_at,
+                        note: (!note.trim().is_empty()).then(|| note.trim().to_owned()),
+                    },
+                )
+                .await?;
+                Ok(HandlerResponse::ok(sc_api::auth::role_grant_json(&grant)))
+            }
+        }
+    });
+
+    reg.register("revokeUserRoleGrant", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_user_id(ctx.path_param("id")?)?;
+                let grant_id = parse_user_id(ctx.path_param("grant")?)?;
+                let not_found = || Error::not_found(format!("user {id} has no grant {grant_id}"));
+                let grant = sc_auth::load_role_grant(&catalog, grant_id)
+                    .await?
+                    .filter(|g| g.user_id == id)
+                    .ok_or_else(not_found)?;
+                if grant.revoked_at.is_none() {
+                    sc_auth::revoke_role_grant_by_id(&catalog, grant.id).await?;
+                }
+                let grant = sc_auth::load_role_grant(&catalog, grant_id)
+                    .await?
+                    .ok_or_else(not_found)?;
+                Ok(HandlerResponse::ok(sc_api::auth::role_grant_json(&grant)))
+            }
+        }
+    });
+
     reg.register("deleteUser", {
         let catalog = catalog.clone();
         move |ctx| {

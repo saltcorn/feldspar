@@ -70,6 +70,20 @@ pub struct CallHosts<'a> {
     /// [`crate::files::ModuleFiles`], confined to the stores and folders its
     /// declared file fields name.
     pub module_files: Option<&'a dyn sc_expr::FileHost>,
+    /// The role grants the module may make (TODO-payments P3.3, design C4): the
+    /// `roles` surface, which `ctx.roles` in a service or a webhook and `roles`
+    /// in an action speak — a [`crate::roles::ModuleRoles`], held to the role
+    /// ceiling an admin granted the module.
+    pub roles: Option<&'a dyn RoleAsks>,
+}
+
+/// The `roles` ask surface: `{ op: "grant" | "revoke" | "get", … }`, answered
+/// by [`crate::roles::ModuleRoles`]. Declared here beside [`ServiceAsks`] for
+/// that trait's reason.
+#[async_trait::async_trait]
+pub trait RoleAsks: Send + Sync {
+    /// Answer one ask.
+    async fn ask(&self, plan: Json) -> Result<Json>;
 }
 
 /// The `service` ask surface: what a running service asks of the supervisor
@@ -97,6 +111,7 @@ impl<'a> CallHosts<'a> {
             views: None,
             service: None,
             module_files: None,
+            roles: None,
         }
     }
 
@@ -104,6 +119,13 @@ impl<'a> CallHosts<'a> {
     #[must_use]
     pub fn with_module_files(mut self, files: &'a dyn sc_expr::FileHost) -> CallHosts<'a> {
         self.module_files = Some(files);
+        self
+    }
+
+    /// The same, with the module's role grants.
+    #[must_use]
+    pub fn with_roles(mut self, roles: &'a dyn RoleAsks) -> CallHosts<'a> {
+        self.roles = Some(roles);
         self
     }
 

@@ -19,6 +19,11 @@
 // in the form. A reset (and a create with a blank password) ends in the one
 // dialog that shows a password in plain text — the only moment it is readable —
 // with a copy button, because it is about to be pasted into a message.
+//
+// **Role grants are beside the role, not in it** (TODO-payments P3.2). The form's
+// role is the base role. A subscription, a trial or an admin's comp is a grant
+// that lasts a while; the row's menu opens them, and the role column says when
+// somebody is served above their base role because of one.
 
 import { useEffect, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -30,13 +35,26 @@ import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
-import type { ListFieldsResponse, ListUsersResponse } from "../client";
+import type {
+  ListFieldsResponse,
+  ListUserRoleGrantsResponse,
+  ListUsersResponse,
+} from "../client";
 import { navigate } from "../App";
 import { IconDots, IconPlus } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { isMultilingual, localeLabel, localeOptions, useLocales, type Locales } from "../locales";
-import { RoleSelect } from "../roleSelect";
+import { OptionalRoleSelect, RoleSelect } from "../roleSelect";
 import { roleLabel, useRoles } from "../roles";
+import {
+  grantBody,
+  grantSourceLabel,
+  grantState,
+  grantStateBadge,
+  newGrantForm,
+  servedAbove,
+  type GrantForm,
+} from "../roleGrants";
 import {
   adminUserFields,
   credentialsText,
@@ -61,6 +79,7 @@ export function Users() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [credentials, setCredentials] = useState<Credentials | null>(null);
+  const [granting, setGranting] = useState<UserRow | null>(null);
   const [busy, setBusy] = useState(false);
   const roles = useRoles();
   const locales = useLocales();
@@ -251,6 +270,9 @@ export function Users() {
                               <T text="Force logout" />
                             </Dropdown.Item>
                             <Dropdown.Item onClick={() => become(u)}><T text="Become user" /></Dropdown.Item>
+                            <Dropdown.Item onClick={() => setGranting(u)}>
+                              <T text="Role grants" />
+                            </Dropdown.Item>
                             <Dropdown.Divider />
                             <Dropdown.Item onClick={() => setDisabled(u, !u.disabled)}>
                               {u.disabled ? "Enable user" : "Disable user"}
@@ -286,6 +308,8 @@ export function Users() {
           credentials={credentials}
           onClose={() => setCredentials(null)}
         />
+
+        <RoleGrantsDialog user={granting} roles={roles} onClose={() => setGranting(null)} />
       </PageBody>
     </>
   );
@@ -463,6 +487,203 @@ function UserDialog({
           </Button>
         </Modal.Footer>
       </Form>
+    </Modal>
+  );
+}
+
+/**
+ * A user's role grants: the base role beside the role they are served at, every
+ * grant they have had, and a form to give one by hand.
+ *
+ * Revoking a subscription's grant is allowed — an admin may need to stop access
+ * now — but the provider's next renewal puts it back, which the confirmation
+ * says.
+ */
+function RoleGrantsDialog({
+  user,
+  roles,
+  onClose,
+}: {
+  user: UserRow | null;
+  roles: ReturnType<typeof useRoles>;
+  onClose: () => void;
+}) {
+  const { t } = useT();
+  const [grants, setGrants] = useState<ListUserRoleGrantsResponse | null>(null);
+  const [form, setForm] = useState<GrantForm>(newGrantForm);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async (id: string) => {
+    try {
+      setGrants(await api.listUserRoleGrants(id));
+    } catch (err) {
+      setError(errorMessage(err, "Could not load the role grants."));
+    }
+  };
+
+  useEffect(() => {
+    setGrants(null);
+    setError(null);
+    setForm(newGrantForm());
+    if (user) void load(user.id);
+  }, [user]);
+
+  const grant = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    const body = grantBody(form);
+    if (typeof body === "string") {
+      setError(body);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.grantUserRole(user.id, body);
+      setForm(newGrantForm());
+      await load(user.id);
+    } catch (err) {
+      setError(errorMessage(err, "Could not grant the role."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (grantId: string, source: string) => {
+    if (!user) return;
+    const warning =
+      source === "admin"
+        ? t("Revoke this grant? It stops counting at once.")
+        : t(
+            "Revoke this grant? It stops counting at once, but {source} may grant it again — a subscription's next renewal does.",
+            { source },
+          );
+    if (!window.confirm(warning)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.revokeUserRoleGrant(user.id, grantId);
+      await load(user.id);
+    } catch (err) {
+      setError(errorMessage(err, "Could not revoke the grant."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal show={user !== null} onHide={onClose} size="lg" scrollable>
+      <Modal.Header closeButton>
+        <Modal.Title className="h4">
+          {t("Role grants for {address}", { address: user?.email ?? "" })}
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {error && <Alert variant="danger">{error}</Alert>}
+        {grants && (
+          <p>
+            {t("Base role: {base}.", { base: roleLabel(grants.base_role, roles) })}{" "}
+            {servedAbove(grants)
+              ? t("Served as {effective} through a grant in force.", {
+                  effective: roleLabel(grants.effective_role, roles),
+                })
+              : t("No grant in force raises it.")}
+          </p>
+        )}
+        <Table responsive className="table-vcenter">
+          <thead>
+            <tr>
+              <th><T text="Role" /></th>
+              <th><T text="Source" /></th>
+              <th><T text="From" /></th>
+              <th><T text="Until" /></th>
+              <th><T text="Status" /></th>
+              <th className="w-1" />
+            </tr>
+          </thead>
+          <tbody>
+            {grants?.grants.length === 0 && (
+              <tr>
+                <td colSpan={6} className="text-muted">
+                  <T text="No grants yet." />
+                </td>
+              </tr>
+            )}
+            {grants?.grants.map((g) => {
+              const state = grantState(g);
+              const badge = grantStateBadge(state);
+              return (
+                <tr key={g.id}>
+                  <td>{roleLabel(g.role, roles)}</td>
+                  <td>
+                    {grantSourceLabel(g)}
+                    {g.note && <div className="text-muted small">{g.note}</div>}
+                  </td>
+                  <td>{new Date(g.starts_at).toLocaleString()}</td>
+                  <td>
+                    {g.expires_at ? new Date(g.expires_at).toLocaleString() : t("Until revoked")}
+                  </td>
+                  <td>
+                    <StatusBadge tone={badge.tone}>{t(badge.label)}</StatusBadge>
+                  </td>
+                  <td>
+                    {(state === "in_force" || state === "pending") && (
+                      <Button
+                        size="sm"
+                        variant="outline-danger"
+                        disabled={busy}
+                        onClick={() => void revoke(g.id, g.source)}
+                      >
+                        <T text="Revoke" />
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </Table>
+
+        <Form onSubmit={grant} className="border-top pt-3">
+          <h4><T text="Grant a role" /></h4>
+          <OptionalRoleSelect
+            id="grantRole"
+            label={t("Role")}
+            blank={t("Choose a role")}
+            roles={(roles ?? []).filter((r) => r.role < 100)}
+            value={form.role}
+            onChange={(role) => setForm({ ...form, role })}
+          />
+          <Form.Group className="mb-3" controlId="grantDays">
+            <Form.Label><T text="Days" /></Form.Label>
+            <Form.Control
+              inputMode="numeric"
+              value={form.days}
+              onChange={(e) => setForm({ ...form, days: e.target.value })}
+            />
+            <Form.Text muted>
+              <T text="How long it lasts from now. Blank lasts until revoked." />
+            </Form.Text>
+          </Form.Group>
+          <Form.Group className="mb-3" controlId="grantNote">
+            <Form.Label><T text="Note" /></Form.Label>
+            <Form.Control
+              value={form.note}
+              placeholder={t("Why, for whoever reads this later")}
+              onChange={(e) => setForm({ ...form, note: e.target.value })}
+            />
+          </Form.Group>
+          <Button type="submit" disabled={busy}>
+            <T text="Grant" />
+          </Button>
+        </Form>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onClose}>
+          <T text="Close" />
+        </Button>
+      </Modal.Footer>
     </Modal>
   );
 }

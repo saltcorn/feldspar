@@ -2,7 +2,7 @@
 //!
 //! Every action Saltcorn ships with, in one crate: [`InsertRow`], [`UpdateRows`],
 //! [`DeleteRows`], [`Fetch`], [`RunJsCode`], [`RunPythonCode`], [`SendEmail`],
-//! [`Publish`] and [`FitModel`]. The set is **deliberately small** — GOALS asks for a
+//! [`Publish`], [`GrantRole`] and [`FitModel`]. The set is **deliberately small** — GOALS asks for a
 //! minimal one, because control flow belongs to the workflow engine (§10.3)
 //! rather than to a proliferation of actions — and [`builtin_actions`] is the
 //! single constructor that assembles it.
@@ -44,6 +44,7 @@ mod code_fetch;
 mod delete_rows;
 mod fetch;
 mod fit_model;
+mod grant_role;
 mod insert_row;
 mod publish;
 mod rows_scope;
@@ -61,6 +62,7 @@ pub use code_body::{CodeSurfaces, Hosts as CodeBodyHosts};
 pub use delete_rows::DeleteRows;
 pub use fetch::Fetch;
 pub use fit_model::FitModel;
+pub use grant_role::{GRANT_ROLE_SOURCE, GrantRole};
 pub use insert_row::InsertRow;
 pub use publish::{INTERNAL_STREAMS_QUERY, Publish};
 pub use run_js_code::RunJsCode;
@@ -95,6 +97,7 @@ pub fn register_builtin_actions(registry: &mut ActionRegistry) -> Result<()> {
     registry.register(Arc::new(RunPythonCode::new()?))?;
     registry.register(Arc::new(SendEmail))?;
     registry.register(Arc::new(Publish))?;
+    registry.register(Arc::new(GrantRole))?;
     Ok(())
 }
 
@@ -130,6 +133,7 @@ mod tests {
             vec![
                 "delete_rows",
                 "fetch",
+                "grant_role",
                 "insert_row",
                 "publish",
                 "run_js_code",
@@ -215,6 +219,18 @@ mod tests {
         );
         assert_eq!(names("run_js_code"), vec!["code", "timeout_ms"]);
         assert_eq!(names("publish"), vec!["stream", "topic", "value"]);
+        assert_eq!(
+            names("grant_role"),
+            vec![
+                "user",
+                "role",
+                "duration_days",
+                "expires_at",
+                "key",
+                "once",
+                "note"
+            ]
+        );
         assert_eq!(
             names("send_email"),
             vec![

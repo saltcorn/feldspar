@@ -19,6 +19,8 @@ mod code_files;
 mod code_run_triggers;
 #[path = "fetch_action.rs"]
 mod fetch_action;
+#[path = "grant_role.rs"]
+mod grant_role;
 #[path = "row_actions.rs"]
 mod row_actions;
 #[path = "run_js_code.rs"]

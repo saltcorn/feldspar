@@ -49,6 +49,8 @@ mod model_providers;
 mod module_actions;
 #[path = "module_files.rs"]
 mod module_files;
+#[path = "module_roles.rs"]
+mod module_roles;
 #[path = "module_services.rs"]
 mod module_services;
 #[path = "module_store.rs"]

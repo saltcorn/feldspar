@@ -59,7 +59,8 @@ use crate::handlers::{
 ///
 /// The `users` table is **not** among the tables: user accounts are the Users
 /// choice, which carries the table's rows (password hashes included) along with
-/// the roles they point at. Offering it twice would let an admin tick "users" and
+/// the roles they point at and the role grants they hold (`role_grants`, which
+/// is left out of the tables for the same reason). Offering it twice would let an admin tick "users" and
 /// untick the `users` table and get something incoherent.
 ///
 /// Tables on another database connection are not among them either: the
@@ -67,7 +68,10 @@ use crate::handlers::{
 pub async fn available(catalog: &Catalog) -> Result<Available> {
     let mut tables = Vec::new();
     for table in catalog.tables()? {
-        if table.is_system() || table.name == sc_auth::USERS_TABLE {
+        if table.is_system()
+            || table.name == sc_auth::USERS_TABLE
+            || table.name == sc_auth::ROLE_GRANTS_TABLE
+        {
             continue;
         }
         // A table on another database is that database's to back up: the
@@ -435,6 +439,19 @@ async fn write_entries<W: Write + Seek>(
         let users_table = catalog.require(sc_auth::USERS_TABLE)?;
         contents.users =
             write_table_rows(source, &users_table, None, zip, super::USER_ROWS_FILE, true).await?;
+        // The grants the accounts hold: a subscription's, a trial's, an
+        // admin's comp. Theirs, so with them.
+        if let Some(grants) = catalog.get(sc_auth::ROLE_GRANTS_TABLE)? {
+            write_table_rows(
+                source,
+                &grants,
+                None,
+                zip,
+                super::ROLE_GRANT_ROWS_FILE,
+                false,
+            )
+            .await?;
+        }
         let roles: Vec<Json> = sc_auth::list_roles(catalog)
             .await?
             .iter()

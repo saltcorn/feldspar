@@ -652,7 +652,13 @@ impl<'a> Translator<'a> {
     /// Ordered comparisons translate operand-for-operand and keep SQL's null
     /// semantics: a null operand yields SQL `NULL`, which grants nothing.
     fn comparison(&mut self, op: QBinOp, l: &Ast, r: &Ast) -> Result<QExpr, TranslateError> {
-        Ok(QExpr::binary(op, self.value(l)?, self.value(r)?))
+        let (l, r) = (self.value(l)?, self.value(r)?);
+        if let (QExpr::Lit(a), QExpr::Lit(b)) = (&l, &r)
+            && let Some(verdict) = fold_comparison(op, a, b)
+        {
+            return Ok(QExpr::lit(verdict));
+        }
+        Ok(QExpr::binary(op, l, r))
     }
 
     // ---- values ------------------------------------------------------------
@@ -1394,6 +1400,34 @@ fn not_pred(p: QExpr) -> QExpr {
 /// A JS number literal as a SQL value: integral f64s (the common case — row
 /// ids, role numbers) become `Int` so they compare cleanly with integer
 /// columns; everything else stays `Float`.
+/// An ordered comparison of two literals, decided here — `user.role <= 60`
+/// under [`UserEnv::Inline`], where `user.role` is already a number. Sent to
+/// the database it would be `$1 <= $2`, two parameters with nothing to type
+/// them by, which Postgres reads as text and then refuses to bind an integer
+/// to (TODO-payments P3.1).
+///
+/// Only two non-null values of one kind (numbers with numbers, text with text):
+/// a null compares as SQL's unknown, which is the database's to decide, and a
+/// mixed pair is JavaScript coercion this translation does not attempt.
+fn fold_comparison(op: QBinOp, a: &Value, b: &Value) -> Option<bool> {
+    use std::cmp::Ordering;
+    let ordering = match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y)?,
+        (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64))?,
+        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y)?,
+        (Value::Text(x), Value::Text(y)) => x.cmp(y),
+        _ => return None,
+    };
+    Some(match op {
+        QBinOp::Lt => ordering == Ordering::Less,
+        QBinOp::Le => ordering != Ordering::Greater,
+        QBinOp::Gt => ordering == Ordering::Greater,
+        QBinOp::Ge => ordering != Ordering::Less,
+        _ => return None,
+    })
+}
+
 fn num_value(n: f64) -> Value {
     const MAX_EXACT_INT: f64 = 9_007_199_254_740_992.0; // 2^53
     if n.fract() == 0.0 && n.abs() <= MAX_EXACT_INT {
@@ -1760,6 +1794,29 @@ mod tests {
         let (sql, binds) = where_sql("owner === user.id", Operation::Read, &env);
         assert_eq!(sql, "(\"books\".\"owner\" IS NOT DISTINCT FROM $1)");
         assert_eq!(binds, vec![Value::Text("u1".into())]);
+    }
+
+    #[test]
+    fn an_inline_users_role_compared_with_a_number_is_decided_here() {
+        // `$1 <= $2` would leave Postgres nothing to type either parameter by.
+        let env = inline_user(&[("role", Value::Int(60))]);
+        let (sql, binds) = where_sql("user.role <= 60", Operation::Read, &env);
+        assert!(
+            binds.iter().all(|b| *b == Value::Bool(true)),
+            "{sql} {binds:?}"
+        );
+        let (sql, binds) = where_sql("user.role < 60", Operation::Read, &env);
+        assert!(
+            binds.iter().all(|b| *b == Value::Bool(false)),
+            "{sql} {binds:?}"
+        );
+        // A column on either side is still the database's to compare.
+        let (sql, _) = where_sql("pages > user.role", Operation::Read, &env);
+        assert!(sql.contains("\"books\".\"pages\" >"), "{sql}");
+        // And a null user field is SQL's unknown, not a verdict made here.
+        let env = inline_user(&[("role", Value::Null)]);
+        let (sql, _) = where_sql("user.role <= 60", Operation::Read, &env);
+        assert!(sql.contains("<="), "{sql}");
     }
 
     #[test]

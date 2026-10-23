@@ -220,6 +220,7 @@ impl ServiceSupervisor {
             let tables: Arc<BTreeSet<String>> =
                 Arc::new(loaded.table_names().into_iter().collect());
             let areas: Arc<Vec<FileArea>> = Arc::new(file_areas(&loaded.table_declarations()));
+            let roles = loaded.module.permissions.roles;
             for service in &manifest.services {
                 let module = loaded.module.name.clone();
                 self.shared.set_status(ServiceStatus {
@@ -237,6 +238,7 @@ impl ServiceSupervisor {
                     service.name.clone(),
                     Arc::clone(&tables),
                     Arc::clone(&areas),
+                    roles,
                     stopped,
                 ));
                 running.push(Running {
@@ -320,6 +322,7 @@ async fn supervise(
     service: String,
     tables: Arc<BTreeSet<String>>,
     areas: Arc<Vec<FileArea>>,
+    roles: Option<u8>,
     mut stop: oneshot::Receiver<()>,
 ) {
     let backoff = shared.backoff;
@@ -327,7 +330,10 @@ async fn supervise(
     loop {
         shared.update_status(&module, &service, |s| s.state = ServiceState::Running);
         let began = Instant::now();
-        let ended = run_once(&shared, &module, &service, &tables, &areas, &mut stop).await;
+        let ended = run_once(
+            &shared, &module, &service, &tables, &areas, roles, &mut stop,
+        )
+        .await;
         shared.router.forget(&module, &service);
         let error = match ended {
             Ended::Asked | Ended::ByItself => {
@@ -368,9 +374,10 @@ async fn run_once(
     service: &str,
     tables: &BTreeSet<String>,
     areas: &[FileArea],
+    roles: Option<u8>,
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
-    let ended = serve_once(shared, module, service, tables, areas, stop).await;
+    let ended = serve_once(shared, module, service, tables, areas, roles, stop).await;
     shared.router.forget(module, service);
     ended
 }
@@ -384,6 +391,7 @@ async fn serve_once(
     service: &str,
     tables: &BTreeSet<String>,
     areas: &[FileArea],
+    roles: Option<u8>,
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
     let catalog = &*shared.catalog;
@@ -425,6 +433,7 @@ async fn serve_once(
         received,
     ));
     let files = ModuleFiles::new(catalog, module, areas);
+    let roles = crate::roles::ModuleRoles::new(catalog, module, roles);
     let schema = schema_snapshot(catalog).ok();
     let call = CallHosts {
         hosts: CodeHosts {
@@ -436,6 +445,7 @@ async fn serve_once(
         views: None,
         service: Some(&asks),
         module_files: Some(&files),
+        roles: Some(&roles),
     };
     let run = shared.host.run_service(module, service, call);
     tokio::pin!(run);

@@ -1282,6 +1282,47 @@ deletable (without admin nobody can administer anything; without public an anony
 no role to be), and a role any user still holds cannot be deleted either — nothing cascades a
 user to a different role.
 
+### 7.4a Role grants and the effective role (`sc_auth::grants`, TODO-payments P3, design C2)
+
+`users.role` is the **base role** an admin sets. A **role grant** is a role a user holds for a
+while beside it: a subscription's, a trial's, a comp an admin gives by hand. Each is a row of
+**`role_grants`** — `(user_id → users, role → _fd_roles, source, source_ref, starts_at,
+expires_at, revoked_at, note, created_at)`, with `(source, source_ref)` jointly unique — and the
+role a user is served at, their **effective role**, is the most privileged of the base role and
+the grants in force (started, not ended, not revoked). A grant never lowers a role.
+
+- **Every way of loading a user serves the effective role**: `load_user`, `load_user_by_email`,
+  `authenticate` (the sign-in, so the `login` event's role), a session's cache miss, an API
+  token, the MCP admin host. Everything downstream reads `User::role` — `user.role` in
+  formulas, `Event.role`, the `sc.role` and `sc.user` settings a policy reads — so it is the
+  effective role there too, with no second code path. `load_base_user` (and `User::from_row`)
+  give the base role, which is what the user editor edits and what "the last enabled admin"
+  counts: a temporary admin is not one of the admins an installation cannot lose.
+- **Lapsing is a read, never a write.** Nothing runs at an expiry; the next read finds no grant
+  in force. A missed renewal ends access on time, never extends it. `effective_role` also
+  answers `changes_at`, the soonest a grant that could matter starts or ends, and a session
+  cache entry is believed no later than that — a grant that ends lapses at once, not up to the
+  60-second freshness TTL later. A grant made or revoked lands within the TTL, as a role change
+  does. A session started at sign-in is cached at the effective role read afresh, so a trial a
+  sign-up's trigger granted is served from the first request.
+- **One grant per source and reference.** `grant_role` upserts on it (a renewal extends the one
+  grant, and a revoked one comes back); `grant_role_once` inserts only if no grant with that key
+  has *ever* existed. Revoking keeps the row (`revoked_at`) for that reason.
+- **An ordinary table**, so an application reads it (a "your trial ends on …" banner, a daily
+  reminder trigger): created with `min_role_read`/`min_role_write` 1 and the ownership formula
+  `_read && user_id === user.id`, which are then the admin's. It is never dropped and its
+  columns are protected, like `users`'. Deleting a user deletes their grants; deleting a role
+  is refused while a grant of it is in force, and clears its ended ones. A backup carries the
+  grants inside the Users choice (`users/role_grants.ndjson`), not as a table, and Clear all
+  empties the table rather than dropping it.
+- **Sources.** `admin` (the user page, a fresh uuid as the reference), `grant_role` (the action,
+  §10.1, with `<user id>:<key>` as the reference), or a module's package name (`ctx.roles`,
+  §15.1e) — a module sees and touches only its own.
+- **The admin user page** shows the base role beside the effective one, every grant, a form to
+  give one for a number of days (or until revoked), and Revoke (`listUserRoleGrants`,
+  `grantUserRole`, `revokeUserRoleGrant`). The public role (100) is never granted: it is
+  everybody's already.
+
 ### 7.5 Guest sessions, and where a request came from (TODO-payments P1.3, P1.5, P1.6)
 
 **The origin.** Two facts about a request matter far below the transport, past signatures that
@@ -2104,8 +2145,11 @@ ambient, and `row`/`old` are *out of scope* on an event that has no row (so nami
 run's `context` — §10.3) so an `only_if` and an action's settings cannot disagree about what is
 in scope.
 
-The eight built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_js_code`,
-`run_python_code` (§15.2), `send_email` and `publish` (§14.10), and they live in
+The nine built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_js_code`,
+`run_python_code` (§15.2), `send_email`, `publish` (§14.10) and `grant_role` (§7.4a: a user
+formula, a role, a duration or an `expires_at` formula, a key formula that is per user, and
+`once`, which grants nothing if a grant with that key ever existed for the user — the card-less
+trial; never the admin role), and they live in
 **`sc-core-actions`, above the row layer**. That placement is the design's one real constraint on where an action may live: a
 trigger's write goes through `sc-api`'s `rows` module, so it is coerced, validated,
 `File`-field-checked and *observed* exactly like an API caller's write. A second write path would
@@ -11309,7 +11353,9 @@ has a sandbox:
   argument, so a module's worker is given exactly what an admin granted it and nothing else:
   four allow-lists on `_fd_modules.permissions` — `net`, `read`, `write`, `env` — where **every
   empty list means nothing, never everything**, and a module installed with nothing declared
-  gets the closed set. A container belongs to an isolate and there is no fence inside one, so
+  gets the closed set. A fifth entry, `roles`, is not the worker's at all: the most privileged
+  role the module may grant users (§15.1e), checked by the server when the module asks, and
+  left out of the set the pool pins by (`ModulePermissions::sandbox`). A container belongs to an isolate and there is no fence inside one, so
   the pool pins **by permission set**: two modules share a worker only when they may reach the
   same things, and editing a module's permissions moves it to a worker that grants what it now
   has, losing its sockets as a restart would. A denial is rewritten into the module's name, what
@@ -11645,6 +11691,16 @@ attribute, switched on from its settings page, and `AppMounts::app_csp` merges e
 when the policy is served (`CspPolicy::with_sources`: added to what the directive allows now, or
 to `default-src`'s list when the policy does not state the directive, so the application's own
 `'self'` is kept). A key whose module has been uninstalled adds nothing.
+
+**Role grants** (TODO-payments P3.3, design C4). `ctx.roles` in a service and a webhook, and
+`roles` on an action's argument, speak the `roles` ask surface (`sc_module::roles::ModuleRoles`):
+`grant({ user, role, ref, expires_at, starts_at, note })` upserts the module's grant `ref` (its
+own name for the thing that grants, a subscription), `revoke(ref)` and `get(ref)`. The grant's
+`source` is the module's package name, so a module reaches only its own. Granting is a
+permission an admin gives, like a host: the `roles` entry of the module's permissions is the
+most privileged role it may grant (`70` allows 70 to 99), set on the Modules tab ("Roles it may
+grant") or requested by a bundled manifest and granted by the install. A role above it, any role
+when there is none, and the admin role always are refused by name.
 
 **A module action's argument** (TODO-payments P2.1) carries, beside v1's object, what a code body
 has of its event: `app` (`{ id, url, scheme }` of the application whose request ran it, or null),

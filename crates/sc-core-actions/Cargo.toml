@@ -57,6 +57,9 @@ reqwest.workspace = true
 # A response that is not text, and a request body that is not text, cross the
 # code seam base64'd: the seam is JSON, and JSON has no bytes.
 base64.workspace = true
+# A role grant's period and its user (TODO-payments P3.4, `grant_role`).
+chrono.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 # Every action is pinned against a real database (principle 4) and, where its

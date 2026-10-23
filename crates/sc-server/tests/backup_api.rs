@@ -823,6 +823,18 @@ async fn a_column_added_to_the_users_table_travels_with_the_accounts() -> sc_err
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    // A role Sam holds for a while (TODO-payments P3): the grant is Sam's, so it
+    // travels with the accounts and still names Sam on the other side.
+    let sam_id = body["user"]["id"].as_str().unwrap().to_owned();
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            &format!("/api/users/{sam_id}/role-grants"),
+            Some(json!({ "role": 1, "expires_in_days": 30, "note": "on call" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let archive = backup_everything(&mut source).await;
 
     let mut target = setup().await?;
@@ -855,6 +867,18 @@ async fn a_column_added_to_the_users_table_travels_with_the_accounts() -> sc_err
         .find(|u| u["email"] == json!("sam@example.com"))
         .unwrap_or_else(|| panic!("the restored account: {users}"));
     assert_eq!(sam["extra"]["nickname"], json!("Sam"));
+    let (status, grants) = target
+        .client
+        .send(
+            "GET",
+            &format!("/api/users/{}/role-grants", sam["id"].as_str().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{grants}");
+    assert_eq!(grants["base_role"], json!(100));
+    assert_eq!(grants["effective_role"], json!(1), "{grants}");
+    assert_eq!(grants["grants"][0]["note"], json!("on call"));
     Ok(())
 }
 

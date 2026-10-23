@@ -632,15 +632,40 @@ Notes from P1, for the milestones that build on it:
 
 ## P3 — Role grants (core)
 
-- [ ] **P3.1** `role_grants` and `effective_role`, used in sessions, tokens, MCP, the
+- [x] **P3.1** `role_grants` and `effective_role`, used in sessions, tokens, MCP, the
   `login` event, `user.role` in formulas and the RLS GUC. Tests: a grant changes what a user
   can read within the session freshness TTL, and an expired grant ends access with no write.
-- [ ] **P3.2** Admin user page: base role, grants in force, add a time-limited grant by hand.
-- [ ] **P3.3** C4 for roles: `ctx.roles.grant/revoke` (upsert by source and ref), with the
+- [x] **P3.2** Admin user page: base role, grants in force, add a time-limited grant by hand.
+- [x] **P3.3** C4 for roles: `ctx.roles.grant/revoke` (upsert by source and ref), with the
   install-time ceiling. Test: a module granting a role above its ceiling, or role 1, is
   refused.
-- [ ] **P3.4** C8, the `grant_role` action, with `once`. Test: a trial granted on sign-up is not
+- [x] **P3.4** C8, the `grant_role` action, with `once`. Test: a trial granted on sign-up is not
   granted again after it expires.
+
+  Notes from P3, for the milestones that build on it:
+  - A module's grant has the module's **package name** as its source (`@feldspar/payments`)
+    and the module's own `ref`, so P4's subscription grant is `ctx.roles.grant({ user, role,
+    ref: "<account>:<subscription id>", expires_at })`, extended by the same call on each
+    renewal and ended by `ctx.roles.revoke(ref)`. `ctx.roles` exists in actions, services and
+    webhooks, so the processing code can grant from both the webhook and the sweep.
+  - The ceiling is the module's `roles` permission (one number: the most privileged role it may
+    grant). The payments manifest does not request one yet. P4.1 should either request it in
+    `feldspar-module.json` (`"permissions": { "roles": [<n>] }`, granted by the install) or tell
+    the admin to set it on the Modules tab. A grant refused for want of a ceiling should then
+    be reported as an issue, like an unbound price.
+  - `pay_checkout`'s *grant a role* effect is still only recorded on the mirror (P2 notes). It
+    can now be applied from processing with `ctx.roles.grant`, keyed by the payment, once the
+    module has a ceiling. That belongs with P4.1, which adds the ceiling.
+  - The `grant_role` action's key is **per user** (stored as `<user id>:<key>`), so the
+    tutorial's trial is `key: "trial"`, `once: true` (P4.5). A daily reminder trigger reads
+    `role_grants` where `source === "grant_role"` and `expires_at` is tomorrow.
+  - `role_grants` is owner-readable, so an application's generated client can show "your trial
+    ends on …" once the app exposes the table.
+  - Only the database session store (`SessionStore::database`, what a server runs) re-reads a
+    user. The in-memory store used by some tests never does, so grant tests use the database
+    store.
+  - Core change made for P3: an ordered comparison of two literals in a translated formula is
+    folded by the translator (`user.role <= 60` under runtime checks used to fail to bind).
 
 ## P4 — Use case 2: subscriptions on Stripe and `fake`
 

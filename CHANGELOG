@@ -2,6 +2,64 @@
 
 Changes in reverse chronological order.
 
+## Payments P3: role grants
+
+TODO-payments.md milestone P3: a user can hold a role for a while beside the one an admin set,
+which is what a subscription, a trial and a comp all are. Nothing here takes a payment; P4 builds
+subscriptions on it.
+
+**Role grants and the effective role (P3.1).** A new ordinary table, `role_grants` (`user_id`,
+`role`, `source`, `source_ref`, `starts_at`, `expires_at`, `revoked_at`, `note`), with
+`(source, source_ref)` unique. A user's **effective role** is the most privileged of
+`users.role` and the grants in force. Every way of loading a user gives the effective role:
+`load_user`, a sign-in, a session, an API token and the MCP admin host. So `user.role` in
+formulas, the event's role and the RLS `sc.role`/`sc.user` settings are effective too.
+`users.role` stays the base role, and `load_base_user` reads it. A grant that ends needs no
+write: the next read finds it no longer in force. A session's cache entry is believed only until
+the next moment a grant could change the role, so an ending grant takes effect at its expiry,
+not up to a minute later. `grant_role` upserts by source and reference, `grant_role_once` grants
+only if that key never existed, and a revocation keeps the row. The table is readable by its
+owner and writable by admins only. It cannot be dropped and its columns are protected.
+Deleting a user deletes their grants. Deleting a role is refused while a grant of it is in force.
+A backup's Users choice now carries the grants too (`users/role_grants.ndjson`, restored after
+the accounts and repointed to an account already on the server), so `role_grants` is not listed
+as a table of its own. Clear all empties it rather than dropping it.
+
+**The admin user page (P3.2).** "Role grants" in a user's menu shows the base role beside the
+effective one and every grant the user has had: its source, period and state. It can give a
+role for some days (or until revoked) with a note, and revoke a grant. New endpoints:
+`listUserRoleGrants`, `grantUserRole` and `revokeUserRoleGrant`; the four admin clients are
+regenerated.
+
+**Modules granting roles (P3.3).** `ctx.roles` in a service or webhook, and `roles` in an
+action, can `grant({ user, role, ref, expires_at })`, `revoke(ref)` and `get(ref)`. A grant's
+source is the module's name, so a module reaches only its own grants. Granting needs a new
+permission, `roles`: the most privileged role the module may grant (`70` allows 70 to 99). An
+admin sets it on the Modules tab ("Roles it may grant"), or a bundled manifest requests it and
+the install grants it. A role above the ceiling is refused by name, so is any role when the
+module has no ceiling, and so is the admin role whatever the ceiling. The worker pool ignores
+the ceiling when grouping modules onto workers, so it never gives a module a worker of its own.
+
+**The `grant_role` action (P3.4).** A ninth built-in action for card-less trials, comps and
+promotions. Its settings are a user formula, a role, a duration in days or an `expires_at`
+formula, a key formula, `once` and a note. The key is per user (stored as `<user id>:<key>`), so
+`"trial"` names each user's own trial. With `once`, nothing is granted if that key ever existed
+for the user, even expired. It never grants the admin role.
+
+**Core change.** An ordered comparison of two literals in a translated formula is now worked
+out by the translator. Under runtime checks `user.role <= 60` became `$1 <= $2`, which Postgres
+typed as text and then refused to bind an integer to, so such an ownership formula failed every
+read.
+
+**Tests.** `sc-auth/tests/role_grants.rs` covers the store, the effective role and the session
+cache, including a lapse at the expiry. `sc-server/tests/role_grants.rs` checks that a grant
+opens a table to an application user within the TTL and that its end closes it with no write,
+that `user.role` reads the effective role under runtime checks and under RLS, and the admin
+endpoints. `sc-module/tests/module_roles.rs` covers a fixture module's grants against its
+ceiling. `sc-core-actions/tests/grant_role.rs` checks that a trial granted on sign-up is not
+granted again after it expires. There are unit tests for the ceiling, the action's settings, the
+translator fold and the admin UI helpers.
+
 ## Payments P2.3–P2.8: webhooks processed, pay_checkout, Stripe, refunds, the sweep, and the shop tutorial
 
 The rest of TODO-payments.md milestone P2: the payments module takes payments for an

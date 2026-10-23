@@ -25,6 +25,8 @@ mod first_user;
 mod login;
 #[path = "role_gate.rs"]
 mod role_gate;
+#[path = "role_grants.rs"]
+mod role_grants;
 #[path = "roles_store.rs"]
 mod roles_store;
 #[path = "user_management.rs"]

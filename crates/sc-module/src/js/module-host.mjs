@@ -1262,6 +1262,9 @@ function serviceContext(record, configuration) {
     /** The module's own file areas (TODO-imap M6): `write`, `read`, `remove`,
      * `stat`, in the stores and folders its declared file fields name. */
     files: moduleFiles((plan) => askFor(callId, "module_files", plan)),
+    /** Role grants (TODO-payments P3.3): `grant`, `revoke`, `get`, up to the
+     * role ceiling an admin allowed this module. */
+    roles: moduleRoles((plan) => askFor(callId, "roles", plan)),
     /** Run another trigger, as `trigger.run(name, payload)` does in a body. */
     runTrigger: (trigger, payload) =>
       askFor(callId, "trigger", {
@@ -1500,7 +1503,7 @@ async function evalCsp(plugin, configuration) {
  * signature is computed over them), `headers` lower-cased, `rest` (the path
  * after the webhook's name), `method` and `query` — plus `text()` and `json()`
  * over the body. `ctx` is a service's: `db` over the module's own tables,
- * `files`, `runTrigger` and `log`, every ask on this call. The answer is
+ * `files`, `roles`, `runTrigger` and `log`, every ask on this call. The answer is
  * `{ status, body, headers }`: a string or bytes body is sent as it is, and
  * anything else as JSON. */
 async function runWebhook({ module: name, webhook: hookName, request }) {
@@ -1534,6 +1537,7 @@ async function runWebhook({ module: name, webhook: hookName, request }) {
     configuration: entry.configuration || {},
     db: globalThis.__scMakeDb(callId),
     files: moduleFiles((plan) => askFor(callId, "module_files", plan)),
+    roles: moduleRoles((plan) => askFor(callId, "roles", plan)),
     runTrigger: (trigger, payload) =>
       askFor(callId, "trigger", {
         trigger,
@@ -2608,6 +2612,46 @@ function moduleFiles(send) {
   };
 }
 
+/** `ctx.roles` of a service or a webhook and `roles` of an action
+ * (TODO-payments P3.3, design C4): role grants this module makes, one row of
+ * `role_grants` per `ref` — the module's own name for the thing that grants
+ * (a subscription), which a renewal names again to extend it and a
+ * cancellation names to revoke it. The server refuses a role above the
+ * ceiling an admin allowed the module, and the admin role always.
+ *
+ *   await roles.grant({ user: userId, role: 70, ref: "stripe:sub_1",
+ *                       expires_at: periodEnd, note: "Pro plan" });
+ *   await roles.revoke("stripe:sub_1");
+ *   const grant = await roles.get("stripe:sub_1");   // or null
+ */
+function moduleRoles(send) {
+  const when = (value) => (value instanceof Date ? value.toISOString() : value);
+  return {
+    /** Grant `role` to `user` (an id or a row) until `expires_at` (a `Date`,
+     * an ISO string or milliseconds; none is until revoked), or extend the
+     * grant `ref` already names. Answers the grant. */
+    grant({ user, role, ref, starts_at, expires_at, note } = {}) {
+      return send({
+        op: "grant",
+        user: user && typeof user === "object" ? user.id : user,
+        role,
+        ref,
+        starts_at: when(starts_at),
+        expires_at: when(expires_at),
+        note,
+      });
+    },
+    /** Revoke the grant `ref` names; answers `{ revoked }`. */
+    revoke(ref) {
+      return send({ op: "revoke", ref });
+    },
+    /** The grant `ref` names, or `null`. */
+    get(ref) {
+      return send({ op: "get", ref });
+    },
+  };
+}
+
 /** `callerFiles` of an action (TODO-imap M9.3): the application's file stores,
  * **read** as the action's caller — the code body's `fs(…).asUser()`, over the
  * call's own `files` surface. A module that sends a user's file somewhere (the
@@ -2640,6 +2684,7 @@ async function runAction({ module: name, action: actionName, args }) {
     const callId = store.call;
     argument.files = moduleFiles((plan) => askFor(callId, "module_files", plan));
     argument.callerFiles = callerFiles((plan) => askFor(callId, "files", plan));
+    argument.roles = moduleRoles((plan) => askFor(callId, "roles", plan));
     // The tables, as a code body's `db` and a service's `ctx.db` are spelled
     // (TODO-payments P2.1): the trigger's authority unless a chain says
     // `asUser()`, over this call's own surfaces. v1's `Table` reaches the same

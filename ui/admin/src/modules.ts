@@ -389,14 +389,22 @@ export const NO_SANDBOX =
 export const PYTHON_RELOAD =
   "Reloading re-imports the package where it can. A distribution with a compiled extension in it, and any version change, takes full effect only when this server restarts.";
 
-/** The four things a module can be granted. The keys are the server's. */
-export type PermissionKind = "net" | "read" | "write" | "env";
+/** The five things a module can be granted. The keys are the server's. The
+ * first four are what its worker may reach; `roles` is the most privileged role
+ * it may grant users (TODO-payments P3.3), checked by the server when it asks. */
+export type PermissionKind = "net" | "read" | "write" | "env" | "roles";
 
 /** A module's permission set as the API sends it. */
 export type ModulePermissionSet = Record<PermissionKind, string[]>;
 
 /** Nothing granted. */
-export const CLOSED_PERMISSIONS: ModulePermissionSet = { net: [], read: [], write: [], env: [] };
+export const CLOSED_PERMISSIONS: ModulePermissionSet = {
+  net: [],
+  read: [],
+  write: [],
+  env: [],
+  roles: [],
+};
 
 /** One kind, as the form asks for it. */
 export type PermissionKindSpec = {
@@ -433,6 +441,12 @@ export const PERMISSION_KINDS: PermissionKindSpec[] = [
     help: "Variable names. One per line. A variable that is not listed reads as undefined rather than failing.",
     placeholder: "MQTT_PASSWORD",
   },
+  {
+    key: "roles",
+    label: "Roles it may grant",
+    help: "The most privileged role it may give users, as a number: 70 lets it grant roles 70 to 99, for as long as a subscription lasts, say. Blank grants none. No module may grant the admin role.",
+    placeholder: "70",
+  },
 ];
 
 /** A module's stored permissions, narrowed from the wire's opaque JSON.
@@ -452,11 +466,15 @@ export function modulePermissions(module: Module): ModulePermissionSet {
 export function permissionSet(raw: unknown): ModulePermissionSet {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return CLOSED_PERMISSIONS;
   const source = raw as Record<string, unknown>;
-  const set: ModulePermissionSet = { net: [], read: [], write: [], env: [] };
+  const set: ModulePermissionSet = { net: [], read: [], write: [], env: [], roles: [] };
   for (const { key } of PERMISSION_KINDS) {
     const list = source[key];
     if (Array.isArray(list)) {
-      set[key] = list.filter((entry): entry is string => typeof entry === "string");
+      // A role ceiling may arrive as a number from a manifest's request; every
+      // other list is strings only.
+      set[key] = list
+        .map((entry) => (key === "roles" && typeof entry === "number" ? String(entry) : entry))
+        .filter((entry): entry is string => typeof entry === "string");
     }
   }
   return set;
@@ -486,6 +504,7 @@ export function permissionSummary(set: ModulePermissionSet): string {
   if (set.read.length > 0) parts.push(`reads ${set.read.join(", ")}`);
   if (set.write.length > 0) parts.push(`writes ${set.write.join(", ")}`);
   if (set.env.length > 0) parts.push(`reads ${set.env.join(", ")}`);
+  if ((set.roles ?? []).length > 0) parts.push(`grants users roles ${set.roles[0]} to 99`);
   return `Reaches only these: ${parts.join("; ")}.`;
 }
 
@@ -525,6 +544,13 @@ export function permissionProblem(kind: PermissionKind, entry: string): string |
   if (kind === "env") {
     return entry.includes("=") ? `${entry} is not a variable name.` : null;
   }
+  if (kind === "roles") {
+    const role = Number(entry);
+    if (!Number.isInteger(role)) return `${entry} is not a role number.`;
+    if (role <= 1) return "No module may grant the admin role (1).";
+    if (role >= 100) return `Role ${role} cannot be granted: the public role is everybody's already.`;
+    return null;
+  }
   return entry.startsWith("/")
     ? null
     : `${entry} is not an absolute path, so it would mean a different directory depending on where the server was started.`;
@@ -538,6 +564,11 @@ export function permissionProblems(set: ModulePermissionSet): string[] {
       const problem = permissionProblem(key, entry);
       if (problem !== null) problems.push(problem);
     }
+  }
+  if (set.roles.length > 1) {
+    problems.push(
+      "Roles it may grant is one role, the most privileged; it may then grant every less privileged one too.",
+    );
   }
   return problems;
 }

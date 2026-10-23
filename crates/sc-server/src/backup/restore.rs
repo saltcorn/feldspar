@@ -45,7 +45,10 @@ use serde_json::{Map, Value as Json};
 
 use super::archive::{Archive, RowReader};
 use super::values;
-use super::{Available, MANIFEST_FILE, SSL_SECTION, Selection, USER_ROWS_FILE, USERS_FILE};
+use super::{
+    Available, MANIFEST_FILE, ROLE_GRANT_ROWS_FILE, SSL_SECTION, Selection, USER_ROWS_FILE,
+    USERS_FILE,
+};
 use crate::apps::AppMounts;
 use crate::handlers::{
     agent_from_body, agents_of, application_from_body, backup_file_meta_from_json,
@@ -452,7 +455,67 @@ async fn restore_users(
         report.did(format!("{restored} users"));
     }
     check_count(report, USER_ROWS_FILE, "users", Some(expected), lines);
+    restore_role_grants(catalog, archive, &repointed, report).await;
     repointed
+}
+
+/// The role grants the restored accounts hold (TODO-payments P3), after the
+/// accounts. A grant already here — the same source and reference — is kept as
+/// it is, and one whose account is here under another id follows the account.
+/// A backup taken before there were grants has no file, and nothing to say.
+async fn restore_role_grants(
+    catalog: &Catalog,
+    archive: &Archive,
+    repointed: &BTreeMap<String, String>,
+    report: &mut RestoreReport,
+) {
+    if !archive.contains(ROLE_GRANT_ROWS_FILE) {
+        return;
+    }
+    let Ok(table) = catalog.require(sc_auth::ROLE_GRANTS_TABLE) else {
+        report.skipped("role grants: this server has no role grants table");
+        return;
+    };
+    let mut restored = 0;
+    let mut reader = archive.rows(ROLE_GRANT_ROWS_FILE);
+    while let Some(batch) = reader.next_batch().await {
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(e) => {
+                report.skipped(format!("role grants: {}", e.causes()));
+                break;
+            }
+        };
+        for bad in &batch.bad {
+            report.skipped(format!("a role grant in `{ROLE_GRANT_ROWS_FILE}`, {bad}"));
+        }
+        let mut fresh = Vec::with_capacity(batch.rows.len());
+        for grant in repoint_users(&table, batch.rows, repointed) {
+            let field = |name: &str| grant.get(name).and_then(Json::as_str).unwrap_or("");
+            let here = sc_auth::find_role_grant(
+                catalog,
+                field(sc_auth::COL_GRANT_SOURCE),
+                field(sc_auth::COL_GRANT_SOURCE_REF),
+            )
+            .await;
+            if matches!(here, Ok(Some(_))) {
+                continue;
+            }
+            fresh.push(grant);
+        }
+        let (inserted, problems) = insert_rows(catalog, &table, &fresh).await;
+        restored += inserted;
+        for (index, problem) in problems {
+            let source = fresh[index]
+                .get(sc_auth::COL_GRANT_SOURCE)
+                .and_then(Json::as_str)
+                .unwrap_or("");
+            report.skipped(format!("a role grant from `{source}`: {problem}"));
+        }
+    }
+    if restored > 0 {
+        report.did(format!("{restored} role grants"));
+    }
 }
 
 /// The accounts already here, by id and by email: either colliding means "this

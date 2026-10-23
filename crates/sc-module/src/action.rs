@@ -51,6 +51,8 @@ pub struct ModuleAction {
     /// Where the module may keep files (TODO-imap M6): what its declared file
     /// fields name, and what `files` in the argument object reaches.
     areas: Arc<Vec<FileArea>>,
+    /// The most privileged role it may grant users (TODO-payments P3.3).
+    roles: Option<u8>,
     /// What a direct run takes and answers, as the module declared them
     /// ([`Action::payload_type`], [`Action::returns_type`]).
     payload: Option<Json>,
@@ -83,6 +85,7 @@ impl ModuleAction {
             host,
             surfaces,
             areas: Arc::new(Vec::new()),
+            roles: None,
             payload: None,
             returns: None,
         }
@@ -95,6 +98,14 @@ impl ModuleAction {
     pub fn with_types(mut self, payload: Option<Json>, returns: Option<Json>) -> ModuleAction {
         self.payload = payload;
         self.returns = returns;
+        self
+    }
+
+    /// The same action, able to grant roles up to `ceiling` (TODO-payments
+    /// P3.3) — the module's [`ModulePermissions::roles`](crate::ModulePermissions::roles).
+    #[must_use]
+    pub fn with_role_ceiling(mut self, ceiling: Option<u8>) -> ModuleAction {
+        self.roles = ceiling;
         self
     }
 
@@ -140,12 +151,15 @@ impl Action for ModuleAction {
         // host serve the module's asks while it waits for the answer.
         let hosts = self.surfaces.build(ctx);
         let files = ModuleFiles::new(ctx.catalog, &self.module, &self.areas);
+        let roles = crate::roles::ModuleRoles::new(ctx.catalog, &self.module, self.roles);
         self.host
             .run(
                 &self.module,
                 &self.name,
                 args,
-                CallHosts::new(hosts.surfaces(), hosts.schema()).with_module_files(&files),
+                CallHosts::new(hosts.surfaces(), hosts.schema())
+                    .with_module_files(&files)
+                    .with_roles(&roles),
             )
             .await
     }

@@ -69,7 +69,8 @@ pub async fn authenticate(catalog: &Catalog, email: &str, password: &str) -> Res
         return Ok(None);
     }
 
-    Ok(Some(user))
+    // Served at the effective role, as every other way of loading a user is.
+    Ok(Some(crate::grants::with_grants(catalog, user).await?.0))
 }
 
 /// Authenticate credentials and require **admin** access — the role gate for the

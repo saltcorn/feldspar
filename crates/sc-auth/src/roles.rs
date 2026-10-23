@@ -282,6 +282,7 @@ pub async fn delete_role(catalog: &Catalog, role: u8) -> Result<bool> {
             existing.name
         )));
     }
+    crate::grants::clear_ended_grants_of_role(catalog, role).await?;
     let delete =
         Delete::from(ROLES_TABLE).filter(Expr::col(COL_ROLE).eq(Expr::lit(i64::from(role))));
     run(catalog, Statement::from(delete)).await?;

@@ -399,6 +399,7 @@ async fn load_one(
             Arc::clone(surfaces),
         )
         .with_file_areas(Arc::clone(&areas))
+        .with_role_ceiling(module.permissions.roles)
         .with_types(action.payload.clone(), action.returns.clone());
         // A type that does not lower is reported and dropped: the action still
         // runs, and its client method is `unknown` rather than wrong.

@@ -420,7 +420,7 @@ async fn a_modules_permissions_are_closed_on_install_and_granted_by_an_admin()
     // as "unknown".
     assert_eq!(
         installed["permissions"],
-        json!({ "net": [], "read": [], "write": [], "env": [] }),
+        json!({ "net": [], "read": [], "write": [], "env": [], "roles": [] }),
         "a module reaches nothing until an admin says otherwise"
     );
 

@@ -1176,6 +1176,9 @@ impl DenoModuleHost {
     /// the worker that has whatever half-loaded state the failure left, rather
     /// than spreading one broken module's wreckage over the pool.
     async fn pin(&self, name: &str, permissions: &ModulePermissions) -> (usize, Option<usize>) {
+        // Pinned by what the worker is built with: a module's role ceiling is
+        // the server's to check, and must not split the pool.
+        let permissions = &permissions.sandbox();
         let mut pool = self.pool.lock().await;
         let mut moved_from = None;
         if let Some(index) = pool.pinned.get(name).copied() {
@@ -1408,7 +1411,8 @@ impl DenoModuleHost {
             || call.hosts.module_fns.is_some()
             || call.hosts.files.is_some()
             || call.service.is_some()
-            || call.module_files.is_some();
+            || call.module_files.is_some()
+            || call.roles.is_some();
         if let Json::Object(map) = &mut request {
             map.insert("asks".to_owned(), Json::Bool(can_ask));
             // The functions this call's modules supply, by name, for v1's
@@ -1449,6 +1453,7 @@ impl DenoModuleHost {
         let files = call.hosts.files;
         let service = call.service;
         let module_files = call.module_files;
+        let roles = call.roles;
         // The run's budget, and the same one a code body's run gets: a module's
         // N+1 costs what a body's N+1 costs, because it is the same bound on the
         // same server doing the same work. A service has none (`None`).
@@ -1510,6 +1515,7 @@ impl DenoModuleHost {
                             files,
                             service,
                             module_files,
+                            roles,
                         };
                         let (ok, text) = match serve(surfaces, ask.request).await {
                             Ok(value) => (
@@ -1585,6 +1591,7 @@ struct Surfaces<'a> {
     files: Option<&'a dyn sc_expr::FileHost>,
     service: Option<&'a dyn crate::host::ServiceAsks>,
     module_files: Option<&'a dyn sc_expr::FileHost>,
+    roles: Option<&'a dyn crate::host::RoleAsks>,
 }
 
 /// One ask, on the surface it names.
@@ -1636,11 +1643,19 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
                 "only a module's running service can ask for this (`ctx.onTableChange`)",
             )),
         },
+        "roles" => match surfaces.roles {
+            Some(roles) => roles.ask(plan).await,
+            None => Err(Error::config(
+                "this module call cannot grant roles: `roles` is there in an action, a \
+                 service and a webhook (TODO-payments P3.3)",
+            )),
+        },
         other => Err(Error::config(format!(
             "`{other}` is not something a module can ask this server for; what a module may \
              reach is the database (`db`), this server's triggers (`trigger`), its modules' \
              functions (`function`), the file stores it was given (`files`), its own \
-             file areas (`module_files`) and, from a service, its supervisor (`service`)"
+             file areas (`module_files`), role grants (`roles`) and, from a service, its \
+             supervisor (`service`)"
         ))),
     }
 }

@@ -179,6 +179,8 @@ mod python_trigger;
 mod query_contracts;
 #[path = "rls_enforcement.rs"]
 mod rls_enforcement;
+#[path = "role_grants.rs"]
+mod role_grants;
 #[path = "router.rs"]
 mod router;
 /// The process-wide registries `ModuleServices` installs into on boot and on

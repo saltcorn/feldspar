@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/roles",
+  "version": "0.1.0",
+  "description": "A module that grants users roles, for the module role-grant tests (TODO-payments P3.3).",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

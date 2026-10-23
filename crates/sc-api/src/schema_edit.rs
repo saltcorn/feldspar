@@ -105,6 +105,9 @@ pub fn key_generator(storage: &TypeRef, kind: &DataFieldKind) -> Option<ColumnGe
 const USERS_TABLE: &str = "users";
 /// The role table, protected for the same reason.
 const ROLES_TABLE: &str = "_fd_roles";
+/// The role grants (TODO-payments P3): an ordinary table, but every session
+/// reads it to decide the role a user is served at.
+const ROLE_GRANTS_TABLE: &str = sc_auth::ROLE_GRANTS_TABLE;
 
 /// The columns of `users` and `_fd_roles` that the rest of the system requires
 /// to exist. Dropping one is refused regardless of grant: authentication reads
@@ -113,6 +116,20 @@ const ROLES_TABLE: &str = "_fd_roles";
 const PROTECTED_COLUMNS: &[(&str, &[&str])] = &[
     (USERS_TABLE, &["id", "email", "password_hash", "role"]),
     (ROLES_TABLE, &["id", "role", "name"]),
+    (
+        ROLE_GRANTS_TABLE,
+        &[
+            sc_auth::COL_GRANT_ID,
+            sc_auth::COL_GRANT_USER,
+            sc_auth::COL_GRANT_ROLE,
+            sc_auth::COL_GRANT_SOURCE,
+            sc_auth::COL_GRANT_SOURCE_REF,
+            sc_auth::COL_GRANT_STARTS_AT,
+            sc_auth::COL_GRANT_EXPIRES_AT,
+            sc_auth::COL_GRANT_REVOKED_AT,
+            sc_auth::COL_GRANT_CREATED_AT,
+        ],
+    ),
 ];
 
 // --- what a batch may do ------------------------------------------------------
@@ -1721,7 +1738,7 @@ impl Plan {
 
     fn drop_table(&mut self, index: usize, op: &Operation, table: &str) -> Result<()> {
         self.require_editable(table)?;
-        if table == USERS_TABLE || table == ROLES_TABLE {
+        if table == USERS_TABLE || table == ROLES_TABLE || table == ROLE_GRANTS_TABLE {
             return Err(Error::invalid(format!(
                 "`{table}` is a built-in table and is never dropped"
             )));

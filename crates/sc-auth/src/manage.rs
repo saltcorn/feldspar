@@ -32,7 +32,7 @@ use sc_query::{
 };
 use uuid::Uuid;
 
-use crate::lookup::load_user;
+use crate::lookup::load_base_user;
 use crate::password::hash_password;
 use crate::roles::load_role;
 use crate::user::User;
@@ -113,7 +113,7 @@ pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Res
     }
 
     if assignments.is_empty() {
-        return load_user(catalog, id)
+        return load_base_user(catalog, id)
             .await?
             .ok_or_else(|| no_such_user(id));
     }
@@ -172,6 +172,8 @@ pub async fn set_user_password(catalog: &Catalog, id: Uuid, password: &str) -> R
 /// Deleting the **last enabled admin** is refused, as disabling it is.
 pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
     refuse_last_admin(catalog, id, "delete").await?;
+    // The grants reference the user; they are the user's and go with them.
+    crate::grants::delete_grants_for_user(catalog, id).await?;
     let delete = Delete {
         returning: vec![Projection::expr(Expr::col(COL_ID))],
         ..Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id)))
@@ -187,7 +189,7 @@ pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
 /// recovered from a terminal (`feldspar modify-user … --enabled`), and that is
 /// not a state any of those callers means to produce.
 pub async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Result<()> {
-    let Some(user) = load_user(catalog, id).await? else {
+    let Some(user) = load_base_user(catalog, id).await? else {
         return Ok(());
     };
     if user.role != ROLE_ADMIN || user.is_disabled() {

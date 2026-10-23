@@ -177,6 +177,7 @@ pub async fn run_webhook(
     let triggers =
         dispatcher.map(|d| TriggerRunHost::new(d, catalog).caused_by(ROLE_ADMIN, Some(user)));
     let files = ModuleFiles::new(catalog, module, &areas);
+    let roles = crate::roles::ModuleRoles::new(catalog, module, loaded.module.permissions.roles);
     let schema = schema_snapshot(catalog).ok();
     let call = CallHosts {
         hosts: CodeHosts {
@@ -188,6 +189,7 @@ pub async fn run_webhook(
         views: None,
         service: None,
         module_files: Some(&files),
+        roles: Some(&roles),
     };
     let answer = host
         .run_webhook(module, webhook, request_json(&request), call)

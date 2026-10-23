@@ -2846,6 +2846,56 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // Role grants (TODO-payments P3.2): roles a user holds for a while beside
+    // the base role `updateUser` sets — a subscription's, a trial's, or one an
+    // admin gives by hand. The effective role is the most privileged of the two.
+    set.register(
+        Endpoint::new(
+            "listUserRoleGrants",
+            Method::Get,
+            api()
+                .lit("users")
+                .param("id", ValueType::Uuid)
+                .lit("role-grants"),
+        )
+        .output(crate::auth::user_role_grants_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "grantUserRole",
+            Method::Post,
+            api()
+                .lit("users")
+                .param("id", ValueType::Uuid)
+                .lit("role-grants"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("role", TypeSchema::int()),
+            // Days from now; left out, the grant lasts until it is revoked.
+            StructField::new("expires_in_days", TypeSchema::optional(TypeSchema::int())),
+            StructField::new("note", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(crate::auth::role_grant_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "revokeUserRoleGrant",
+            Method::Post,
+            api()
+                .lit("users")
+                .param("id", ValueType::Uuid)
+                .lit("role-grants")
+                .param("grant", ValueType::Uuid)
+                .lit("revoke"),
+        )
+        .output(crate::auth::role_grant_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
     // --- API tokens (§13.6) --------------------------------------------------
     //
     // The credential the administration MCP server authenticates with: a bearer

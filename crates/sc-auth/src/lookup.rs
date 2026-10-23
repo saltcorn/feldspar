@@ -15,6 +15,7 @@
 //! the same answer every time — which matters, because a screenshot script that
 //! signed in as a different user on Tuesday is a bug that looks like a flake.
 
+use chrono::{DateTime, Utc};
 use sc_catalog::Catalog;
 use sc_db::Row;
 use sc_error::Result;
@@ -24,7 +25,8 @@ use uuid::Uuid;
 use crate::user::User;
 use crate::users::{COL_EMAIL, COL_ID, COL_ROLE, USERS_TABLE};
 
-/// The user with this id, if the row is still there.
+/// The user with this id, if the row is still there, at their effective role
+/// (the base role and the grants in force, [`crate::effective_role`]).
 pub async fn load_user(catalog: &Catalog, id: Uuid) -> Result<Option<User>> {
     let select = Select::from(Source::table(USERS_TABLE))
         .filter(Expr::col(COL_ID).eq(Expr::lit(id)))
@@ -54,16 +56,48 @@ pub async fn first_user_with_role(catalog: &Catalog, role: u8) -> Result<Option<
     one(catalog, select).await
 }
 
-/// Run a select expected to return at most one user row.
+/// The user with this id at their **base** role — `users.role` as an admin set
+/// it, no grants applied. What the admin's user editor and the last-admin rule
+/// work with: a grant is not the role being edited, and a temporary admin is
+/// not one of the admins an installation cannot lose.
+pub async fn load_base_user(catalog: &Catalog, id: Uuid) -> Result<Option<User>> {
+    let select = Select::from(Source::table(USERS_TABLE))
+        .filter(Expr::col(COL_ID).eq(Expr::lit(id)))
+        .limit(1);
+    base(catalog, select).await
+}
+
+/// [`load_user`], with the moment the user's effective role next changes —
+/// what the session cache holds an entry no longer than.
+pub(crate) async fn load_user_until(
+    catalog: &Catalog,
+    id: Uuid,
+) -> Result<Option<(User, Option<DateTime<Utc>>)>> {
+    let select = Select::from(Source::table(USERS_TABLE))
+        .filter(Expr::col(COL_ID).eq(Expr::lit(id)))
+        .limit(1);
+    match base(catalog, select).await? {
+        Some(user) => Ok(Some(crate::grants::with_grants(catalog, user).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Run a select expected to return at most one user row, and serve the user at
+/// their effective role.
 async fn one(catalog: &Catalog, select: Select) -> Result<Option<User>> {
+    match base(catalog, select).await? {
+        Some(user) => Ok(Some(crate::grants::with_grants(catalog, user).await?.0)),
+        None => Ok(None),
+    }
+}
+
+/// The user row a select finds, at its base role.
+async fn base(catalog: &Catalog, select: Select) -> Result<Option<User>> {
     let rows: Vec<Row> = catalog
         .primary()
         .query(&Statement::from(select))
         .await?
         .try_collect()
         .await?;
-    match rows.first() {
-        Some(row) => Ok(Some(User::from_row(row)?)),
-        None => Ok(None),
-    }
+    rows.first().map(User::from_row).transpose()
 }

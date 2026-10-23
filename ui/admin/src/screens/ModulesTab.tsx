@@ -871,6 +871,7 @@ function PermissionsForm({
     read: parsePermissionText(text.read ?? ""),
     write: parsePermissionText(text.write ?? ""),
     env: parsePermissionText(text.env ?? ""),
+    roles: parsePermissionText(text.roles ?? ""),
   };
   const problems = permissionProblems(edited);
 

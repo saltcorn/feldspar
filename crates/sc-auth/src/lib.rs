@@ -22,9 +22,16 @@
 //! Roles live in [`_fd_roles`](ROLES_TABLE) and `users.role` is a foreign key
 //! onto it (§7.1, §9): a role is a row carrying a name and role-specific
 //! settings, not a bare integer with a convention attached.
+//!
+//! **Role grants** ([`role_grants`](ROLE_GRANTS_TABLE), TODO-payments P3) are
+//! roles held for a while beside that base role. Every way of loading a user
+//! — a session, an API token, a sign-in, [`load_user`] — serves them at their
+//! [`effective_role`]: the most privileged of the base role and the grants in
+//! force.
 
 mod create;
 mod first_user;
+mod grants;
 mod guest;
 mod login;
 mod lookup;
@@ -39,13 +46,20 @@ mod users;
 
 pub use create::{CreatedUser, NewUser, create_user, create_user_with};
 pub use first_user::{any_user_exists, create_first_user};
+pub use grants::{
+    COL_GRANT_CREATED_AT, COL_GRANT_EXPIRES_AT, COL_GRANT_ID, COL_GRANT_NOTE, COL_GRANT_REVOKED_AT,
+    COL_GRANT_ROLE, COL_GRANT_SOURCE, COL_GRANT_SOURCE_REF, COL_GRANT_STARTS_AT, COL_GRANT_USER,
+    EffectiveRole, GRANT_SOURCE_ADMIN, NewRoleGrant, ROLE_GRANTS_OWNERSHIP, ROLE_GRANTS_TABLE,
+    RoleGrant, bootstrap_role_grants, effective_role, find_role_grant, grant_role, grant_role_once,
+    list_role_grants, load_role_grant, revoke_role_grant, revoke_role_grant_by_id,
+};
 pub use guest::{
     DEFAULT_GUEST_SESSION_DAYS, GUEST_SESSIONS_TABLE, GuestSession, StartedGuestSession,
     bootstrap_guest_sessions, end_guest_session, guest_session, start_guest_session,
     sweep_guest_sessions,
 };
 pub use login::{authenticate, authenticate_admin};
-pub use lookup::{first_user_with_role, load_user, load_user_by_email};
+pub use lookup::{first_user_with_role, load_base_user, load_user, load_user_by_email};
 pub use manage::{UserUpdate, delete_user, set_user_disabled, set_user_password, update_user};
 pub use password::{
     RANDOM_PASSWORD_LENGTH, hash_password, is_valid_hash, random_password, verify_password,

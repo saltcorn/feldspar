@@ -31,6 +31,10 @@
 //!   [`User`]'s admin-defined `extra` columns into the session row would freeze
 //!   a snapshot of them for the session's whole 24 hours; reading the row back
 //!   means a role change takes effect within [`CACHE_TTL_SECONDS`] instead.
+//!   The user is read at their **effective role** (the base role and the role
+//!   grants in force, [`crate::effective_role`]), and an entry is believed no
+//!   later than the moment that can next change — a grant that ends lapses on
+//!   time, not up to a TTL later.
 //!
 //! # The cache, and what it costs
 //!
@@ -95,7 +99,7 @@ use sc_types::{BasicType, TypeRef};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::lookup::load_user;
+use crate::lookup::load_user_until;
 use crate::user::User;
 
 /// Default session lifetime: one day.
@@ -376,7 +380,16 @@ impl SessionStore {
                 if due_for_sweep(last_sweep)? {
                     sweep_sessions(catalog).await?;
                 }
-                self.cache_put(&token, &user, expires_at);
+                // Cached as the next request would read it — at the effective
+                // role, until that next changes — rather than as the caller
+                // happened to hold it: a session started straight after a
+                // sign-up whose trigger granted a trial is served the trial.
+                match load_user_until(catalog, user.id).await? {
+                    Some((current, changes_at)) => {
+                        self.cache_put(&token, &current, expires_at, changes_at);
+                    }
+                    None => self.cache_put(&token, &user, expires_at, None),
+                }
             }
         }
         Ok(token)
@@ -434,7 +447,7 @@ impl SessionStore {
                 // being one — see `session_fields`, which leaves the foreign key
                 // out precisely because this check does not need it. A disabled
                 // user is the same case: the row is there, the account is not.
-                let Some(user) = load_user(catalog, user_id).await? else {
+                let Some((user, changes_at)) = load_user_until(catalog, user_id).await? else {
                     self.invalidate(token)?;
                     return Ok(None);
                 };
@@ -442,7 +455,7 @@ impl SessionStore {
                     self.invalidate(token)?;
                     return Ok(None);
                 }
-                self.cache_put(token, &user, expires_at);
+                self.cache_put(token, &user, expires_at, changes_at);
                 Ok(Some(user))
             }
         }
@@ -579,7 +592,16 @@ impl SessionStore {
     }
 
     /// Cache `user` under `token` for one freshness TTL.
-    fn cache_put(&self, token: &str, user: &User, expires_at: DateTime<Utc>) {
+    /// Cache a resolved session, believed for the freshness TTL or until
+    /// `changes_at` — when the user's effective role next changes — whichever
+    /// is sooner.
+    fn cache_put(
+        &self,
+        token: &str,
+        user: &User,
+        expires_at: DateTime<Utc>,
+        changes_at: Option<DateTime<Utc>>,
+    ) {
         if self.cache_ttl.is_zero() {
             return;
         }
@@ -591,7 +613,9 @@ impl SessionStore {
                 Cached {
                     user: user.clone(),
                     expires_at,
-                    fresh_until: Utc::now() + self.cache_ttl,
+                    fresh_until: changes_at.map_or(Utc::now() + self.cache_ttl, |at| {
+                        at.min(Utc::now() + self.cache_ttl)
+                    }),
                 },
             );
         }

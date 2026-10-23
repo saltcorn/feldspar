@@ -283,15 +283,22 @@ fn key_target(field: &DataField) -> Option<&str> {
 }
 
 /// A table the admin made in the primary database: not a system table, not
-/// `users`, and not one a module provides.
+/// `users` or the role grants beside it, and not one a module provides.
 fn is_user_table(table: &Table) -> bool {
     table.database == DbId::primary()
         && !table.is_system()
-        && table.name != sc_auth::USERS_TABLE
+        && !is_kept_ordinary(table)
         && table.provider().is_none()
 }
 
-/// Delete every row of every `_fd_*` table and of `users`.
+/// The two ordinary tables the system itself depends on, which Clear all
+/// empties rather than drops: `users`, and `role_grants` (TODO-payments P3),
+/// which every session reads.
+fn is_kept_ordinary(table: &Table) -> bool {
+    table.name == sc_auth::USERS_TABLE || table.name == sc_auth::ROLE_GRANTS_TABLE
+}
+
+/// Delete every row of every `_fd_*` table, of `users` and of `role_grants`.
 ///
 /// Rows are deleted table by table in whatever order works: a table whose
 /// delete is refused (a foreign key from a table not emptied yet) is tried again
@@ -300,9 +307,7 @@ async fn clear_system_rows(catalog: &Catalog, report: &mut ClearReport) {
     let mut pending: Vec<String> = match catalog.tables() {
         Ok(tables) => tables
             .into_iter()
-            .filter(|t| {
-                t.database == DbId::primary() && (t.is_system() || t.name == sc_auth::USERS_TABLE)
-            })
+            .filter(|t| t.database == DbId::primary() && (t.is_system() || is_kept_ordinary(t)))
             .map(|t| t.name)
             .collect(),
         Err(e) => {

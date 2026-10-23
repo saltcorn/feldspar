@@ -222,6 +222,10 @@ export type SetUserDisabledResponse = { id: string; email: string; role: number;
 export type ForceLogoutUserResponse = { ok: boolean };
 export type BecomeUserResponse = { id: string; email: string; role: number };
 export type SetRandomPasswordResponse = { email: string; password: string };
+export type ListUserRoleGrantsResponse = { base_role: number; effective_role: number; grants: Array<{ id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean }> };
+export type GrantUserRoleRequest = { role: number; expires_in_days?: number | null; note?: string | null };
+export type GrantUserRoleResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
+export type RevokeUserRoleGrantResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
 export type ListApiTokensResponse = Array<{ id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }>;
 export type CreateApiTokenRequest = { label: string; grants?: { allow_create?: boolean | null; allow_edit?: boolean | null; allow_drop?: boolean | null; allow_access_changes?: boolean | null; allow_triggers?: boolean | null; allow_applications?: boolean | null; allow_modules?: boolean | null; allow_all?: boolean | null } | null; expires_in_days?: number | null };
 export type CreateApiTokenResponse = { token: { id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }; secret: string };
@@ -551,6 +555,9 @@ export interface ApiClient {
   forceLogoutUser(id: string): Promise<ForceLogoutUserResponse>;
   becomeUser(id: string): Promise<BecomeUserResponse>;
   setRandomPassword(id: string): Promise<SetRandomPasswordResponse>;
+  listUserRoleGrants(id: string): Promise<ListUserRoleGrantsResponse>;
+  grantUserRole(id: string, body: GrantUserRoleRequest): Promise<GrantUserRoleResponse>;
+  revokeUserRoleGrant(id: string, grant: string): Promise<RevokeUserRoleGrantResponse>;
   listApiTokens(): Promise<ListApiTokensResponse>;
   createApiToken(body: CreateApiTokenRequest): Promise<CreateApiTokenResponse>;
   revokeApiToken(id: string): Promise<RevokeApiTokenResponse>;
@@ -1936,6 +1943,31 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("setRandomPassword", res);
       return (await res.json()) as SetRandomPasswordResponse;
+    },
+    async listUserRoleGrants(id) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listUserRoleGrants", res);
+      return (await res.json()) as ListUserRoleGrantsResponse;
+    },
+    async grantUserRole(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("grantUserRole", res);
+      return (await res.json()) as GrantUserRoleResponse;
+    },
+    async revokeUserRoleGrant(id, grant) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants/${encodeURIComponent(grant)}/revoke`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("revokeUserRoleGrant", res);
+      return (await res.json()) as RevokeUserRoleGrantResponse;
     },
     async listApiTokens() {
       const res = await doFetch(`${baseUrl}/api/api-tokens`, {
