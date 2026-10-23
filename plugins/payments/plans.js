@@ -11,6 +11,13 @@
 // runs to the end of the period paid for, plus a grace period for a renewal whose payment
 // failed, and each renewal extends it. Missing every webhook makes access lapse on time; it
 // never extends it.
+//
+// A plan may also include **LLM credits** each period (§6.3, P7.1): its allowance, granted for
+// every period the subscription enters paid (or trialing) as a bucket that expires at the
+// period's end. The plan's rollover policy says what of the last period's allowance is carried
+// into the new one: `none`, `all`, or `capped` at the plan's cap. The allowance is keyed by the
+// subscription and the period's end, which the subscription's current state says on every
+// provider, so a renewal whose webhook never came is granted by the sweep all the same.
 
 "use strict";
 
@@ -32,6 +39,24 @@ const PLAN_FIELDS = [
   },
   { name: "plan_role_field", label: "Role field", type: "String", default: "role", sublabel: "The plans table's field holding the role a plan gives: role" },
   {
+    name: "plan_allowance_field",
+    label: "LLM credits field",
+    type: "String",
+    sublabel: "The plans table's field holding the LLM credits each period of the plan includes: credits. Leave empty if plans include none",
+  },
+  {
+    name: "plan_rollover_field",
+    label: "Rollover field",
+    type: "String",
+    sublabel: "The plans table's field saying what of a period's unspent credits is carried into the next: none, all or capped. Empty is none",
+  },
+  {
+    name: "plan_rollover_cap_field",
+    label: "Rollover cap field",
+    type: "String",
+    sublabel: "The plans table's field holding the most credits a capped rollover carries: rollover_cap",
+  },
+  {
     name: "grace_days",
     label: "Grace period (days)",
     type: "Integer",
@@ -42,6 +67,9 @@ const PLAN_FIELDS = [
 
 /** The days of grace when the settings give none. */
 const DEFAULT_GRACE_DAYS = 3;
+
+/** What a plan's rollover policy may be (§6.3). */
+const ROLLOVER = ["none", "all", "capped"];
 
 /** A subscription status, and what it does to the grant (§6.2's table). */
 const GRANTING = ["trialing", "active"];
@@ -76,6 +104,9 @@ function planBinding(configuration) {
     table: String(c.plans_table).trim(),
     price_fields: parsePriceFields(c.plan_price_field),
     role_field: blank(c.plan_role_field) ? "role" : String(c.plan_role_field).trim(),
+    allowance_field: blank(c.plan_allowance_field) ? null : String(c.plan_allowance_field).trim(),
+    rollover_field: blank(c.plan_rollover_field) ? null : String(c.plan_rollover_field).trim(),
+    rollover_cap_field: blank(c.plan_rollover_cap_field) ? null : String(c.plan_rollover_cap_field).trim(),
     grace_days: Number.isFinite(grace) && grace >= 0 ? grace : DEFAULT_GRACE_DAYS,
   };
 }
@@ -109,6 +140,45 @@ function planRole(binding, plan) {
     return { problem: `the plan's ${binding.role_field} is ${JSON.stringify(value)}, which is not a role to grant (2 to 99)` };
   }
   return { role };
+}
+
+/** A plan's LLM-credit allowance (§6.3): `{ amount, cap }`, where `cap` is the most a rollover
+ * carries over (null: all of it; 0: none), or null when the plan includes no credits, or
+ * `{ problem }` when its fields say nothing that makes sense. */
+function planAllowance(binding, plan) {
+  if (!binding || !binding.allowance_field) return null;
+  const value = plan[binding.allowance_field];
+  if (blank(value)) return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) {
+    return { problem: `the plan's ${binding.allowance_field} is ${JSON.stringify(value)}, which is not an amount of LLM credits` };
+  }
+  if (amount === 0) return null;
+  const policyValue = binding.rollover_field ? plan[binding.rollover_field] : null;
+  const policy = blank(policyValue) ? "none" : String(policyValue).trim().toLowerCase();
+  if (!ROLLOVER.includes(policy)) {
+    return { problem: `the plan's ${binding.rollover_field} is ${JSON.stringify(policyValue)}; a rollover is ${ROLLOVER.join(", ")}` };
+  }
+  if (policy === "none") return { amount, cap: 0 };
+  if (policy === "all") return { amount, cap: null };
+  const capValue = binding.rollover_cap_field ? plan[binding.rollover_cap_field] : null;
+  const cap = Number(capValue);
+  if (blank(capValue) || !Number.isFinite(cap) || cap < 0) {
+    return {
+      problem: `the plan's rollover is capped, and its ${binding.rollover_cap_field || "rollover cap field (unset in the module's settings)"} is ${JSON.stringify(capValue ?? null)}, which is no cap`,
+    };
+  }
+  return { amount, cap };
+}
+
+/** The period a subscription's allowance is for, now: `{ end }` (an ISO instant) while it is
+ * trialing or active and the period has not ended, else null — a past-due subscription has not
+ * paid for its period yet, and is granted once it has. */
+function allowancePeriod(subscription, now = Date.now()) {
+  if (!GRANTING.includes(subscription.status)) return null;
+  const end = (subscription.status === "trialing" && millis(subscription.trial_end)) || millis(subscription.current_period_end);
+  if (end === null || end <= now) return null;
+  return { end: new Date(end).toISOString() };
 }
 
 /** An instant as milliseconds, from an ISO string, a Date or unix seconds; null for none. */
@@ -149,6 +219,7 @@ function subscriptionGrant(subscription, graceDays) {
 module.exports = {
   PLAN_FIELDS,
   DEFAULT_GRACE_DAYS,
+  ROLLOVER,
   GRANTING,
   KEEPING,
   parsePriceFields,
@@ -156,6 +227,8 @@ module.exports = {
   priceField,
   findPlan,
   planRole,
+  planAllowance,
+  allowancePeriod,
   subscriptionGrant,
   millis,
 };

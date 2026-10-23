@@ -12,6 +12,7 @@ const { requireCapability } = require("./capabilities.js");
 const { currencyCode, requireAmount } = require("./money.js");
 const { CHECKOUT_FIELDS, payCheckout, recordCheckout } = require("./checkout.js");
 const { REFUND_FIELDS, payRefund } = require("./refunds.js");
+const { CHARGE_FIELDS, payChargeSaved } = require("./charge.js");
 const subscriptions = require("./subscriptions.js");
 
 const opt = (t) => ({ optional: t });
@@ -61,6 +62,32 @@ const pay_checkout = (moduleConfiguration) => ({
   payload: { object: { id: { optional: "json" } } },
   returns: { object: { id: "int", checkout: "string", url: "string", amount: opt("int"), currency: "string" } },
   run: (argument) => payCheckout({ ...argument, moduleConfiguration }),
+});
+
+/** `pay_charge_saved` (§6.3, P7.2): the signed-in user's saved card charged for a row — a
+ * top-up — or, where it cannot be, a checkout for it. */
+const pay_charge_saved = (moduleConfiguration) => ({
+  description:
+    "Charge the signed-in user's saved card for a row of one of your tables — a credit pack, " +
+    "say — with no checkout page: the same settings as pay_checkout. Answers { status: \"paid\" } " +
+    "when it was charged; when there is no saved card, the bank asks the buyer to authenticate, " +
+    "or the card is declined, answers { status: \"requires_checkout\", url } for the same lines. " +
+    "Its effects (LLM credits) are granted when the provider reports the payment.",
+  configFields: CHARGE_FIELDS,
+  payload: { object: { id: { optional: "json" }, key: { optional: "json" } } },
+  returns: {
+    object: {
+      status: "string",
+      id: opt("int"),
+      payment: opt("string"),
+      checkout: opt("string"),
+      url: opt("string"),
+      reason: opt("string"),
+      amount: "int",
+      currency: "string",
+    },
+  },
+  run: (argument) => payChargeSaved(argument, moduleConfiguration),
 });
 
 /** `pay_refund` (P2.6): money back for a payment, given the row it was for or its mirror row. */
@@ -157,10 +184,10 @@ const pay_sync = (moduleConfiguration) => ({
     "every few hours. Payload: { account } for one account; all of them otherwise.",
   payload: { object: { account: opt("string") } },
   returns: { object: { swept: { array: "json" } } },
-  run: async ({ payload, db, roles }) => {
+  run: async ({ payload, db, roles, credits }) => {
     const { sweepAll } = require("./service.js");
     const only = payload && payload.account ? String(payload.account) : undefined;
-    return { swept: await sweepAll(subscriptions.actionCtx({ db, roles }, moduleConfiguration), { only }) };
+    return { swept: await sweepAll(subscriptions.actionCtx({ db, roles, credits }, moduleConfiguration), { only }) };
   },
 });
 
@@ -169,6 +196,7 @@ function actionsFor(moduleConfiguration = {}) {
   return {
     pay_account_test,
     pay_checkout: pay_checkout(moduleConfiguration),
+    pay_charge_saved: pay_charge_saved(moduleConfiguration),
     pay_refund: pay_refund(moduleConfiguration),
     pay_portal,
     pay_change_subscription: pay_change_subscription(moduleConfiguration),

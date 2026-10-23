@@ -53,6 +53,7 @@ async fn grant(catalog: &Catalog, user: &User, amount: i64, key: &str) -> Result
             kind: String::new(),
             expires_at: None,
             note: None,
+            rollover: None,
         },
         None,
     )

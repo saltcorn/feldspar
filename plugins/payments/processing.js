@@ -12,15 +12,17 @@
 // when its `(account, event_id, kind)` is not there yet — so a delivery that fails half way is
 // finished by the provider's retry, and no event row (and so no trigger) happens twice.
 //
-// Between the mirror and the log come the only two effects the module applies itself (§3.7):
-// a subscription's role grant, worked out from the subscription's *current* state and its
-// plan (`plans.js`, P4.1), and a one-off payment's *grant a role* effect. Both are upserts by a
-// reference, so they too may happen any number of times. What cannot be done — a price that is
-// no plan's, a role above the module's ceiling — is written on the mirror row as its `issue`,
-// and logged.
+// Between the mirror and the log come the only effects the module applies itself (§3.7):
+// grants of roles and of LLM credits. A subscription's role grant and its plan's credit
+// allowance are worked out from the subscription's *current* state and its plan (`plans.js`,
+// P4.1, P7.1); a one-off payment's *grant a role* and *grant credits* effects from what its
+// checkout (or the charge of a saved card) recorded. Each is keyed — a role grant by its
+// reference, a credit grant by its key — so they too may happen any number of times. What cannot
+// be done — a price that is no plan's, a role above the module's ceiling — is written on the
+// mirror row as its `issue`, and logged.
 //
-// `ctx` is what the caller has of the module: `db`, and, to grant, `roles` (C4) and
-// `configuration` (the module's settings, which hold the plan binding).
+// `ctx` is what the caller has of the module: `db`, and, to grant, `roles` and `credits` (C4)
+// and `configuration` (the module's settings, which hold the plan binding).
 
 "use strict";
 
@@ -59,6 +61,16 @@ function fromMetadata(metadata) {
     const id = Number(m.sc_user_id);
     out.user_id = Number.isSafeInteger(id) ? id : m.sc_user_id;
   }
+  // What a saved card's charge grants once paid (`pay_charge_saved`, P7.2): kept with the payment
+  // at the provider, since its webhook may arrive before the action has written the mirror row.
+  if (typeof m.sc_effects === "string" && m.sc_effects) {
+    try {
+      const effects = JSON.parse(m.sc_effects);
+      if (effects && typeof effects === "object" && !Array.isArray(effects)) out.effects = effects;
+    } catch (_) {
+      // Not the module's own: ignored.
+    }
+  }
   return out;
 }
 
@@ -94,7 +106,9 @@ async function upsertObject(db, account, object) {
     for (const k of Object.keys(origin)) if (origin[k] === null && parent[k] !== null && parent[k] !== undefined) origin[k] = parent[k];
     if (parent.kind === "checkout" && parent.effects && object.kind === "payment") values.effects = parent.effects;
   }
-  for (const [k, v] of Object.entries(fromMetadata(object.metadata))) if (origin[k] === null) origin[k] = v;
+  const meta = fromMetadata(object.metadata);
+  for (const [k, v] of Object.entries(meta)) if (k in origin && origin[k] === null) origin[k] = v;
+  if (meta.effects && object.kind === "payment" && values.effects === undefined && !(existing && existing.effects)) values.effects = meta.effects;
   for (const [k, v] of Object.entries(origin)) {
     if (v !== null && (!existing || existing[k] === null || existing[k] === undefined) && values[k] === undefined) values[k] = v;
   }
@@ -139,7 +153,24 @@ async function upsertCustomer(db, account, ref, { user_id, email }) {
  * payment for a one-off pass. */
 const grantRef = (account, object) => `${account.name}:${object.ref}`;
 
-/** What a subscription's current state does to its role grant (§6.2), and the issue, if any. */
+/** Run each of `steps`, each answering an issue or null, and answer their issues as one: one
+ * that throws is an issue too, and does not stop the others — a role refused above the
+ * module's ceiling still leaves the plan's credits to be granted. */
+async function issuesOf(steps) {
+  const issues = [];
+  for (const [what, step] of steps) {
+    try {
+      const issue = await step();
+      if (issue) issues.push(issue);
+    } catch (e) {
+      issues.push(`${what} could not be granted: ${e.message}`);
+    }
+  }
+  return issues.length ? issues.join("; ") : null;
+}
+
+/** What a subscription's current state does to its role grant (§6.2) and its plan's credit
+ * allowance (§6.3), and the issue, if any. */
 async function subscriptionEffects(ctx, account, current, row) {
   const ref = grantRef(account, current);
   const binding = plans.planBinding(ctx.configuration);
@@ -151,20 +182,67 @@ async function subscriptionEffects(ctx, account, current, row) {
   }
   const found = await plans.findPlan(ctx.db, binding, account, current.price_ref);
   if (found.problem) return found.problem;
-  const role = plans.planRole(binding, found.plan);
-  if (role.problem) return role.problem;
   if (row.user_id === null || row.user_id === undefined) return "the subscription is no user's of this instance, so it grants no role";
-  if (!ctx.roles) return "this delivery could not grant roles";
-  await ctx.roles.grant({ user: row.user_id, role: role.role, ref, expires_at: decision.expires_at, note: `subscription ${current.ref}` });
+  return issuesOf([
+    [
+      "its role",
+      async () => {
+        const role = plans.planRole(binding, found.plan);
+        if (role.problem) return role.problem;
+        if (!ctx.roles) return "this delivery could not grant roles";
+        await ctx.roles.grant({ user: row.user_id, role: role.role, ref, expires_at: decision.expires_at, note: `subscription ${current.ref}` });
+        return null;
+      },
+    ],
+    ["its LLM credits", () => allowanceEffects(ctx, account, current, row, binding, found.plan)],
+  ]);
+}
+
+/**
+ * A plan's LLM-credit allowance for the period the subscription is now in (§6.3, P7.1): granted
+ * once per period, keyed by the subscription and the period's end, expiring at that end, and
+ * rolling over from the last period's grant as the plan says. Nothing while the subscription is
+ * past due: the period is granted once it has been paid. The key granted last is kept on the
+ * mirror row, which is what the next period rolls over from.
+ */
+async function allowanceEffects(ctx, account, current, row, binding, plan) {
+  const allowance = plans.planAllowance(binding, plan);
+  if (!allowance) return null;
+  if (allowance.problem) return allowance.problem;
+  const period = plans.allowancePeriod(current);
+  if (!period) return null;
+  const key = `allowance:${account.id}:${current.ref}:${period.end}`;
+  if (row.allowance_key === key) return null;
+  if (!ctx.credits) return "this delivery could not grant LLM credits";
+  await ctx.credits.grant({
+    user: row.user_id,
+    amount: allowance.amount,
+    key,
+    expires_at: period.end,
+    kind: "allowance",
+    note: `subscription ${current.ref}`,
+    rollover: row.allowance_key ? { from: row.allowance_key, cap: allowance.cap } : null,
+  });
+  await ctx.db.pay_objects.where({ id: row.id }).update({ allowance_key: key });
+  row.allowance_key = key;
   return null;
 }
 
-/** A one-off payment's *grant a role* effect (§6.1): granted, for its days, once it succeeded,
- * and revoked when all of it is refunded. The days are counted from when it was made, so
- * granting it again changes nothing. */
+/** A one-off payment's effects (§6.1): its *grant a role* and its *grant credits*. */
 async function paymentEffects(ctx, account, current, row) {
-  const effect = row.effects && row.effects.role;
-  if (!effect) return null;
+  const effects = row.effects || {};
+  return issuesOf([
+    ["its role", () => (effects.role ? paymentRole(ctx, account, current, row, effects.role) : null)],
+    ["its LLM credits", () => (effects.credits ? paymentCredits(ctx, account, current, row, effects.credits) : null)],
+  ]);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The *grant a role* effect: granted, for its days, once the payment succeeded, and revoked when
+ * all of it is refunded. The days are counted from when it was made, so granting it again
+ * changes nothing. */
+async function paymentRole(ctx, account, current, row, effect) {
   const ref = grantRef(account, current);
   if (current.status === "refunded") {
     if (ctx.roles) await ctx.roles.revoke(ref);
@@ -174,8 +252,23 @@ async function paymentEffects(ctx, account, current, row) {
   if (row.user_id === null || row.user_id === undefined) return "the payment is no user's of this instance, so its role was not granted";
   if (!ctx.roles) return "this delivery could not grant roles";
   const made = plans.millis(current.created || current.updated) || Date.now();
-  const expires_at = effect.days ? new Date(made + effect.days * 24 * 60 * 60 * 1000).toISOString() : null;
+  const expires_at = effect.days ? new Date(made + effect.days * DAY_MS).toISOString() : null;
   await ctx.roles.grant({ user: row.user_id, role: effect.role, ref, expires_at, note: `payment ${current.ref}` });
+  return null;
+}
+
+/** The *grant credits* effect (§6.3, P7.2): a top-up, granted once the payment succeeded, keyed by
+ * the payment so that it is granted once however often its events arrive, and expiring its days
+ * after the payment was made. A refund does not take the credits back: nothing but an agent
+ * run spends them (§3.8). A payment seen for the first time already refunded grants nothing. */
+async function paymentCredits(ctx, account, current, row, effect) {
+  if (current.status !== "succeeded" && current.status !== "partially_refunded") return null;
+  if (row.user_id === null || row.user_id === undefined) return "the payment is no user's of this instance, so its LLM credits were not granted";
+  if (!ctx.credits) return "this delivery could not grant LLM credits";
+  const made = plans.millis(current.created || current.updated) || Date.now();
+  const expires_at = effect.expire_days ? new Date(made + effect.expire_days * DAY_MS).toISOString() : null;
+  if (expires_at && Date.parse(expires_at) <= Date.now()) return `its LLM credits expired on ${expires_at}, before the payment was heard of`;
+  await ctx.credits.grant({ user: row.user_id, amount: effect.amount, key: `payment:${account.id}:${current.ref}`, expires_at, kind: "top_up", note: `payment ${current.ref}` });
   return null;
 }
 
@@ -192,7 +285,7 @@ async function applyEffects(ctx, account, current, row) {
     if (current.kind === "subscription") issue = await subscriptionEffects(ctx, account, current, row);
     else if (current.kind === "payment") issue = await paymentEffects(ctx, account, current, row);
   } catch (e) {
-    issue = `its role could not be granted: ${e.message}`;
+    issue = `its grants could not be made: ${e.message}`;
   }
   if ((row.issue || null) !== issue) {
     await ctx.db.pay_objects.where({ id: row.id }).update({ issue });

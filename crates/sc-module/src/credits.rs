@@ -4,7 +4,8 @@
 //!
 //! ```js
 //! await ctx.credits.grant({ user, amount: 100, key: "invoice:in_123",
-//!                           expires_at: periodEnd, kind: "allowance" });
+//!                           expires_at: periodEnd, kind: "allowance",
+//!                           rollover: { from: "invoice:in_122", cap: 50 } });
 //! const { balance } = await ctx.credits.balance(user);
 //! await ctx.credits.setThreshold(user, 10);
 //! ```
@@ -12,6 +13,10 @@
 //! A module's grants are buckets whose `source` is the module's own name, so
 //! `key` only has to be unique within the module — and a replayed webhook that
 //! grants the same key again does nothing ([`sc_auth::grant_credits`]).
+//! `rollover` names an earlier grant of the module's whose remainder the new
+//! bucket takes over, up to `cap` (all of it when there is none), emptying it
+//! ([`sc_auth::CreditRollover`]): a plan's allowance carried into the next
+//! period (P7.1).
 //!
 //! # No debit
 //!
@@ -77,6 +82,7 @@ impl<'a> ModuleCredits<'a> {
                     .to_owned(),
                 expires_at: instant(plan, "expires_at")?,
                 note: plan.get("note").and_then(Json::as_str).map(str::to_owned),
+                rollover: rollover(plan.get("rollover"))?,
             },
             None,
         )
@@ -89,6 +95,7 @@ impl<'a> ModuleCredits<'a> {
             "repaid": number(grant.repaid),
             "balance": number(grant.balance),
             "replayed": grant.replayed,
+            "carried": number(grant.carried),
         }))
     }
 }
@@ -156,6 +163,28 @@ fn user(plan: &Map<String, Json>, what: &str) -> Result<Uuid> {
     })
 }
 
+/// A grant's `rollover`: `{ from: <an earlier grant's key>, cap }`, `cap`
+/// absent or null carrying all of it. Absent or null is none.
+fn rollover(value: Option<&Json>) -> Result<Option<sc_auth::CreditRollover>> {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let from = match value.get("from") {
+        Some(Json::String(k)) if !k.trim().is_empty() => k.trim().to_owned(),
+        Some(Json::Number(n)) => n.to_string(),
+        _ => {
+            return Err(Error::invalid(
+                "a grant's `rollover` is `{ from, cap }`: `from` is the key of the earlier \
+                 grant to carry over from",
+            ));
+        }
+    };
+    Ok(Some(sc_auth::CreditRollover {
+        from_key: from,
+        cap: amount(value.get("cap"))?,
+    }))
+}
+
 /// An amount as JavaScript sends one: a number or a decimal string. Absent or
 /// null is none.
 fn amount(value: Option<&Json>) -> Result<Option<Decimal>> {
@@ -204,6 +233,22 @@ mod tests {
         assert_eq!(amount(None).unwrap(), None);
         assert!(amount(Some(&json!("lots"))).is_err());
         assert!(amount(Some(&json!(true))).is_err());
+    }
+
+    #[test]
+    fn a_rollover_names_its_earlier_grant() {
+        let r = rollover(Some(&json!({ "from": "a:1", "cap": 50 })))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (r.from_key.as_str(), r.cap),
+            ("a:1", Some(Decimal::from(50)))
+        );
+        let all = rollover(Some(&json!({ "from": "a:1" }))).unwrap().unwrap();
+        assert_eq!(all.cap, None);
+        assert!(rollover(None).unwrap().is_none());
+        assert!(rollover(Some(&Json::Null)).unwrap().is_none());
+        assert!(rollover(Some(&json!({ "cap": 5 }))).is_err());
     }
 
     #[test]

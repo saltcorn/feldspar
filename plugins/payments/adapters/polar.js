@@ -34,7 +34,8 @@
 //   processes the events that were never delivered.
 // - **Saved cards** (P5.3): Polar's off-session charges (in preview, for organisations on a paid
 //   plan) make a draft order for the customer and finalize it against their saved card;
-//   `chargeSavedMethod` answers whether it was paid or needs a checkout instead.
+//   `chargeSavedMethod` answers whether it was paid or needs a checkout instead. Polar keeps a
+//   paying customer's card itself, so a checkout's `save_card` asks nothing more of it.
 
 "use strict";
 

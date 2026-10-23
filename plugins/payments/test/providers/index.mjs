@@ -16,6 +16,8 @@
 // - `priceField` and `prices` (`basic`, `pro`, `staff`, `mystery`, `gone`): the plan binding's
 //   field for the provider, and a price or product id for each plan;
 // - `checkoutCustomer(account, checkout)`: the provider customer a checkout is for;
+// - `setCard(account, customer, card)`: what the customer's saved card does when it is charged
+//   with no page — `ok`, `authenticate` (the bank asks for 3-D Secure), `decline` — or null for none;
 // - what differs at the provider, as flags: `renewalPaymentsKnowTheirRow`.
 
 import { createRequire } from "node:module";
@@ -58,6 +60,7 @@ function fakeDriver() {
       return { rawBody: body, headers: { [fake.SIGNATURE_HEADER]: fake.sign(account.webhook_secret, body) } };
     },
     checkoutCustomer: (account, checkout) => fake.view(account, checkout).checkout.customer,
+    setCard: (account, customer, card) => fake.setCard(account, customer, card),
   };
   return driver;
 }

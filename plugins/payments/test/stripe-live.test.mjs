@@ -136,3 +136,30 @@ test("on a test clock: a trial canceled before it ends runs to its end, then end
     assert.deepEqual(plans.subscriptionGrant(sub, 3), { op: "revoke" });
   });
 });
+
+test("a saved card is charged off-session, and one that asks to authenticate falls back to checkout (P7.2)", { skip }, async () => {
+  const api = stripe.client(account);
+  const customer = await api.post("/v1/customers", { email: "ann@example.com" });
+  try {
+    // No saved card yet.
+    const none = await stripe.chargeSavedMethod(account, { customer: customer.id, amount: 200, currency: "EUR", key: `p7-none-${customer.id}` });
+    assert.deepEqual([none.status, none.reason], ["requires_checkout", "the customer has no saved card"]);
+    // Stripe's test cards: one that pays, one whose bank always asks the buyer to authenticate.
+    const visa = await api.post("/v1/payment_methods/pm_card_visa/attach", { customer: customer.id });
+    await api.post(`/v1/customers/${customer.id}`, { invoice_settings: { default_payment_method: visa.id } });
+    const key = `p7-paid-${customer.id}`;
+    const charge = { customer: customer.id, amount: 200, currency: "EUR", description: "100 credits", key, metadata: { sc_ref_table: "credit_packs", sc_ref_key: "1" } };
+    const paid = await stripe.chargeSavedMethod(account, charge);
+    assert.equal(paid.status, "paid");
+    assert.deepEqual([paid.object.amount, paid.object.currency, paid.object.metadata.sc_ref_table], [200, "EUR", "credit_packs"]);
+    const again = await stripe.chargeSavedMethod(account, charge);
+    assert.equal(again.object.ref, paid.object.ref, "the same key is the same PaymentIntent");
+    const sca = await api.post("/v1/payment_methods/pm_card_authenticationRequired/attach", { customer: customer.id });
+    await api.post(`/v1/customers/${customer.id}`, { invoice_settings: { default_payment_method: sca.id } });
+    const asked = await stripe.chargeSavedMethod(account, { ...charge, key: `p7-sca-${customer.id}` });
+    assert.equal(asked.status, "requires_checkout");
+    assert.ok(asked.object, "the PaymentIntent Stripe made is answered with the refusal");
+  } finally {
+    await api.del(`/v1/customers/${customer.id}`);
+  }
+});

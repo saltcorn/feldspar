@@ -12,7 +12,15 @@ test("the binding is read from the module's settings, with a price field per acc
   assert.equal(plans.planBinding({}), null);
   assert.equal(plans.planBinding({ plans_table: "  " }), null);
   const one = plans.planBinding({ plans_table: "plans", plan_price_field: "stripe_price" });
-  assert.deepEqual(one, { table: "plans", price_fields: { all: "stripe_price", accounts: {} }, role_field: "role", grace_days: 3 });
+  assert.deepEqual(one, {
+    table: "plans",
+    price_fields: { all: "stripe_price", accounts: {} },
+    role_field: "role",
+    allowance_field: null,
+    rollover_field: null,
+    rollover_cap_field: null,
+    grace_days: 3,
+  });
   assert.equal(plans.priceField(one, "anything"), "stripe_price");
   const many = plans.planBinding({
     plans_table: "tiers",
@@ -59,4 +67,31 @@ test("each status does to the grant what §6.2's table says", () => {
   }
   // An active subscription with no period end cannot be granted for, and says so.
   assert.match(plans.subscriptionGrant({ status: "active" }, 3).problem, /says nothing of when its period ends/);
+});
+
+test("a plan's LLM-credit allowance and its rollover, or a sentence", () => {
+  const binding = plans.planBinding({ plans_table: "plans", plan_allowance_field: "credits", plan_rollover_field: "rollover", plan_rollover_cap_field: "cap" });
+  // Nothing included: no allowance, and no issue.
+  assert.equal(plans.planAllowance(plans.planBinding({ plans_table: "plans" }), { credits: 100 }), null);
+  assert.equal(plans.planAllowance(binding, { credits: null }), null);
+  assert.equal(plans.planAllowance(binding, { credits: 0 }), null);
+  // The policy as a cap: none carries nothing, all everything, capped up to the cap.
+  assert.deepEqual(plans.planAllowance(binding, { credits: 100 }), { amount: 100, cap: 0 });
+  assert.deepEqual(plans.planAllowance(binding, { credits: "100", rollover: "none" }), { amount: 100, cap: 0 });
+  assert.deepEqual(plans.planAllowance(binding, { credits: 100, rollover: "All" }), { amount: 100, cap: null });
+  assert.deepEqual(plans.planAllowance(binding, { credits: 100, rollover: "capped", cap: 50 }), { amount: 100, cap: 50 });
+  assert.match(plans.planAllowance(binding, { credits: 100, rollover: "capped" }).problem, /capped, and its cap is null, which is no cap/);
+  assert.match(plans.planAllowance(binding, { credits: 100, rollover: "some" }).problem, /a rollover is none, all, capped/);
+  assert.match(plans.planAllowance(binding, { credits: "lots" }).problem, /not an amount of LLM credits/);
+});
+
+test("an allowance is for the period a trialing or active subscription is in, and none other", () => {
+  const now = Date.parse("2026-10-23T10:00:00.000Z");
+  assert.deepEqual(plans.allowancePeriod({ status: "active", current_period_end: PERIOD_END }, now), { end: PERIOD_END });
+  assert.deepEqual(plans.allowancePeriod({ status: "trialing", trial_end: TRIAL_END, current_period_end: PERIOD_END }, now), { end: TRIAL_END });
+  // Unix seconds, as some providers say it, are the same instant.
+  assert.deepEqual(plans.allowancePeriod({ status: "active", current_period_end: Date.parse(PERIOD_END) / 1000 }, now), { end: PERIOD_END });
+  // Past due: not paid for yet. Canceled: no period. Ended already: nothing to grant for.
+  for (const status of ["past_due", "canceled", "incomplete"]) assert.equal(plans.allowancePeriod({ status, current_period_end: PERIOD_END }, now), null, status);
+  assert.equal(plans.allowancePeriod({ status: "active", current_period_end: "2026-10-01T00:00:00.000Z" }, now), null);
 });

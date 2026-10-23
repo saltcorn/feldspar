@@ -11,9 +11,11 @@
 // collection, Managed Payments (never with shipping: a merchant of record sells digital goods
 // only), refunds, and webhook verification. Subscriptions (P4): a Checkout Session in
 // subscription mode for a Stripe price, with a trial; the subscription's own events and its
-// renewals' invoices; the customer portal; plan changes and cancellation. Saved cards, the
-// native sheet and manual capture are later milestones (P7, P8, P10); its capabilities say what
-// Stripe can do, and the actions refuse what is not built yet.
+// renewals' invoices; the customer portal; plan changes and cancellation. Saved cards (P7): a
+// one-off checkout may keep the card (`setup_future_usage`), and `chargeSavedMethod` charges a
+// customer's saved card with an off-session PaymentIntent. The native sheet and manual capture
+// are later milestones (P8, P10); its capabilities say what Stripe can do, and the actions refuse
+// what is not built yet.
 
 "use strict";
 
@@ -438,6 +440,12 @@ module.exports = {
         quantity: requireAmount(l.quantity === undefined ? 1 : l.quantity, `line ${i + 1}'s quantity`),
       }));
       params.payment_intent_data = { metadata: input.metadata || {} };
+      // Kept for later charges with no page (a top-up): Stripe asks the buyer's consent on the
+      // page, and the card is saved to a customer — a new one, when the buyer is none yet.
+      if (input.save_card) {
+        params.payment_intent_data.setup_future_usage = "off_session";
+        if (!(input.customer && input.customer.ref)) params.customer_creation = "always";
+      }
     }
     if (!params.line_items.length) throw new Error("a checkout charges at least one line");
     // The customer this user already is, so the same card and the same portal; a new one
@@ -579,6 +587,43 @@ module.exports = {
       ? await request(account, "POST", `/v1/subscriptions/${ref}`, { cancel_at_period_end: true })
       : await request(account, "DELETE", `/v1/subscriptions/${ref}`);
     return normaliseSubscription(sub);
+  },
+
+  /**
+   * Charge a customer's saved card with no page (P7.2): an off-session PaymentIntent, confirmed at
+   * once, for the customer's default payment method — or, when it has none, the card it last
+   * saved. Once per `key` (Stripe's idempotency key, kept 24 hours). Answers `{ status: "paid" |
+   * "processing", object }`, or `{ status: "requires_checkout", reason, object }` when there is no
+   * saved card, the bank asks the buyer to authenticate (`authentication_required`), or the card
+   * is declined. Stripe sends the PaymentIntent's events itself.
+   */
+  async chargeSavedMethod(account, { customer, amount, currency, description, key, metadata } = {}) {
+    if (!/^cus_[A-Za-z0-9]+$/.test(String(customer || ""))) throw new Error(`${JSON.stringify(customer)} is not a Stripe customer id`);
+    const code = currencyCode(currency);
+    const value = toStripe(amount, code);
+    if (value === 0) throw new Error("a charge of 0 charges nothing");
+    const found = await request(account, "GET", `/v1/customers/${customer}`);
+    const preferred = found.invoice_settings && found.invoice_settings.default_payment_method;
+    let method = preferred && typeof preferred === "object" ? preferred.id : preferred;
+    if (!method) {
+      const saved = await request(account, "GET", `/v1/customers/${customer}/payment_methods`, { limit: 1 });
+      method = saved.data && saved.data[0] && saved.data[0].id;
+    }
+    if (!method) return { status: "requires_checkout", reason: "the customer has no saved card", object: null };
+    const params = { amount: value, currency: code.toLowerCase(), customer, payment_method: method, off_session: true, confirm: true, metadata: metadata || {} };
+    if (description) params.description = String(description).slice(0, 1000);
+    try {
+      const pi = await request(account, "POST", "/v1/payment_intents", params, { idempotencyKey: key });
+      const object = normalisePayment(pi);
+      if (pi.status === "succeeded") return { status: "paid", object };
+      if (pi.status === "processing") return { status: "processing", object };
+      return { status: "requires_checkout", reason: `the payment is ${pi.status}`, object };
+    } catch (e) {
+      // A card the bank wants confirmed, or one declined: a 402, with the PaymentIntent it made.
+      if (e.status !== 402) throw e;
+      const pi = e.stripe && e.stripe.payment_intent;
+      return { status: "requires_checkout", reason: (e.stripe && e.stripe.message) || e.message, object: pi ? normalisePayment(pi) : null };
+    }
   },
 
   /** Refund `amount` of a PaymentIntent (all of it when none is given), once per `key`. Stripe

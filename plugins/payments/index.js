@@ -14,7 +14,9 @@
 // - `webhooks.js`: each account's provider events, and the fake provider's checkout page;
 // - `processing.js`: what a provider event does — the mirror, and the `pay_events` rows;
 // - `checkout.js`, `refunds.js`: `pay_checkout`'s configuration, and `pay_refund`;
-// - `plans.js`: the plan binding in the module's settings, and what a subscription grants;
+// - `charge.js`: `pay_charge_saved`, a saved card charged with no page (a top-up of LLM credits);
+// - `plans.js`: the plan binding in the module's settings, and what a subscription grants — its
+//   role, and its plan's LLM credits each period;
 // - `subscriptions.js`: `pay_portal`, `pay_change_subscription`, `pay_cancel_subscription`;
 // - `service.js`: the reconcile sweep, which also keeps the accounts for `pay_api`;
 // - `actions.js`: the actions an application calls.
@@ -27,7 +29,7 @@ const { PLAN_FIELDS, planBinding } = require("./plans.js");
 module.exports = {
   sc_plugin_api_version: 1,
   tables,
-  // The module's settings: the plan binding (§6.2).
+  // The module's settings: the plan binding (§6.2), with its LLM-credit allowance (§6.3).
   configuration_workflow: () => ({
     steps: [{ name: "Plans", form: { fields: PLAN_FIELDS } }],
   }),

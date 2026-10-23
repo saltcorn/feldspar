@@ -29,9 +29,14 @@ module.exports = {
         const keyless = await attempt(() => credits.grant({ user, amount: 5 }));
         const threshold = await attempt(() => credits.setThreshold(user, 10));
         const balance = await credits.balance(user);
+        // The next month's allowance, carrying at most 50 of this month's over (P7.1).
+        const twoMonths = new Date(Date.now() + 60 * 24 * 3600 * 1000);
+        const renewed = await attempt(() =>
+          credits.grant({ user, amount: 100, key: "invoice:in_2", expires_at: twoMonths, kind: "allowance", rollover: { from: "invoice:in_1", cap: 50 } }),
+        );
         // There is no debit: only agent runs spend credits.
         const debit = typeof credits.debit;
-        return { granted, replayed, topUp, keyless, threshold, balance, debit };
+        return { granted, replayed, topUp, keyless, threshold, balance, renewed, debit };
       },
     },
   },

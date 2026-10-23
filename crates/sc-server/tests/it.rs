@@ -259,6 +259,8 @@ mod tutorial_live;
 mod tutorial_live_documents;
 #[path = "tutorial_payments.rs"]
 mod tutorial_payments;
+#[path = "tutorial_payments_credits.rs"]
+mod tutorial_payments_credits;
 #[path = "tutorial_payments_saas.rs"]
 mod tutorial_payments_saas;
 #[path = "tutorial_workflows.rs"]

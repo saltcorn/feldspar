@@ -1346,6 +1346,12 @@ metering facility: an application that charges for something else keeps its own 
   `(source, key)` exists does nothing and answers that bucket (`replayed`) — what makes a
   re-delivered webhook harmless. Sources: `admin` (the user page) and a module's package name
   (`ctx.credits`, §15.1e). `agent` is reserved for debits.
+- **Rollover** (TODO-payments P7.1). A grant may name an earlier bucket of its own source
+  (`CreditRollover { from_key, cap }`): in the same locked transaction that bucket is emptied and
+  `min(remaining, cap)` (all of it with no cap) is added to the new bucket, and an entry of kind
+  `rollover` records what that did to the balance. An expired earlier bucket still carries what it
+  held when it expired: nothing spends an expired bucket, and a renewal usually arrives just
+  after the period, and its allowance, has ended. A replayed grant carries nothing again.
 - **`debit_credits`** is called by the agent loop and nothing else: no code body, workflow,
   action or module can spend credits. It takes from the soonest-expiring bucket first (never
   expiring last), and what the buckets do not cover becomes debt: the call has already happened,
@@ -12190,8 +12196,9 @@ when there is none, and the admin role always are refused by name.
 
 **LLM credits** (TODO-payments P6.4, design C4). `ctx.credits` in a service and a webhook, and
 `credits` on an action's argument, speak the `credits` ask surface
-(`sc_module::credits::ModuleCredits`): `grant({ user, amount, key, expires_at, kind, note })`
-grants a bucket under the module's package name, once per `key`; `balance(user)`; and
+(`sc_module::credits::ModuleCredits`): `grant({ user, amount, key, expires_at, kind, note,
+rollover })` grants a bucket under the module's package name, once per `key`, `rollover: { from,
+cap }` carrying over what is left of the module's earlier grant `from` (P7.1); `balance(user)`; and
 `setThreshold(user, amount | null)`. There is **no debit** (§7.4b). Unlike roles, granting
 credits needs no permission: a role is a privilege, while credits only pay for model calls
 through agents the admin configured.

@@ -6954,6 +6954,7 @@ pub fn admin_handlers_with(
                         kind: sc_auth::CREDIT_SOURCE_ADMIN.to_owned(),
                         expires_at,
                         note: (!note.trim().is_empty()).then(|| note.trim().to_owned()),
+                        rollover: None,
                     },
                     Some(&caller),
                 )

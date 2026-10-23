@@ -2,6 +2,77 @@
 
 Changes in reverse chronological order.
 
+## Payments P7: plan allowances, rollover and top-ups of LLM credits
+
+TODO-payments.md milestone P7. The payments module now **grants LLM credits**: a plan's
+allowance for each paid month, and credit packs, bought through a checkout or charged to the
+card the user already gave. Core's ledger (P6) gained rollover.
+
+**Rollover, in the ledger (P7.1).** `sc_auth::grant_credits` takes
+`rollover: Some(CreditRollover { from_key, cap })`. In the grant's locked transaction the
+earlier bucket of the same source is emptied, and `min(remaining, cap)` of it (all of it with no
+cap) is added to the new bucket. A `rollover` entry records what that did to the balance. An
+expired earlier bucket still carries what it held, because renewals arrive just after the period
+ends. Modules pass it as `ctx.credits.grant({ …, rollover: { from, cap } })`, which also answers
+`carried`. Tests: three periods for each of `none`, `all` and `capped`, with replays, and a
+rollover from an expired bucket (`crates/sc-auth/tests/credits.rs`); a module's rollover across
+the JavaScript seam (`crates/sc-module/tests/module_credits.rs`).
+
+**Plan allowances (P7.1).** The plan binding has three more settings: the plans table's **LLM
+credits**, **Rollover** (`none`, `all`, `capped`) and **Rollover cap** fields. For each period a
+subscription enters trialing or active, the module grants the plan's credits, expiring at the
+period's end and rolling over from the last period's grant. A past-due period gets nothing
+until it is paid. The grant is keyed by the subscription and the period's end, not by the
+invoice (§6.3 corrected). That key comes from the subscription's current state, so it is the
+same on Stripe, Polar and the fake. A renewal whose webhook never arrives is granted by the
+sweep. The last key is kept on `pay_objects.allowance_key`, a new column. A plan whose rollover
+makes no sense is an issue on the mirror row. Its role is still granted: grants are now issues
+each, so one refused grant no longer stops the other.
+
+**Top-ups (P7.2).**
+- `pay_checkout`'s **Grant LLM credits** effect is applied: once the payment succeeds, the
+  buyer is granted the formula's credits as a `top_up` bucket, keyed by the payment and expiring
+  its days after the payment. A refund keeps them, since only agent runs spend credits.
+- **`pay_charge_saved`** (`plugins/payments/charge.js`) takes the same configuration and charges
+  the user's saved card with no page. It answers `{ status: "paid" }`, or, when there is no
+  saved card, the bank asks for 3-D Secure, the card is declined, or the adapter cannot, a
+  checkout for the same lines (`{ status: "requires_checkout", url, reason }`). A charge is
+  keyed by the payload's `key`, the trigger's row (a `low_balance` entry), or a new key per
+  call. The credits are granted from the webhook. The effects also travel in the provider's
+  metadata (`sc_effects`), so a webhook that beats the action's own mirror write still grants
+  them.
+- The checkout configuration gained **Which row: fixed** (an auto top-up names its pack) and
+  **Keep the card for later charges**.
+- Stripe: `chargeSavedMethod` is an off-session PaymentIntent for the customer's default (or
+  first) payment method, and a 402 is a fallback to checkout. **Keep the card** sets
+  `setup_future_usage` and makes the buyer a customer.
+- The fake provider keeps saved cards. A test (`setCard`) or the portal page's new **Saved
+  card** buttons make one pay, ask to authenticate, or be declined.
+- Polar's off-session charges (P5.3) are used as they were.
+
+**Tests.** The shared suite (`plugins/payments/test/shared.test.mjs`) runs every P7 scenario on
+the fake, the Stripe simulation and the Polar simulation:
+- three periods for each rollover policy, with every event redelivered and the sweep run;
+- a past-due renewal;
+- a trial, and a renewal that was never delivered;
+- a misconfigured rollover;
+- a pack bought through checkout and refunded;
+- `pay_charge_saved` paying, replaying a key, asking to authenticate, being declined, and
+  falling back for a user with no card.
+
+The Stripe simulation gained saved cards and off-session PaymentIntents. A live test-mode test
+of the off-session charge is in `stripe-live.test.mjs` (not run here: it needs keys).
+
+**Tutorial part 3 (P7.3).** `docs/tutorial-payments-credits.md` builds **Tea Sommelier**:
+- an agent metered in credits;
+- a 5 € plan that includes 100 credits a month, carrying up to 50 over;
+- a `credit_packs` table with a 2 € pack;
+- one-click top-ups;
+- auto top-up, a trigger on `low_balance` entries, switched on by an admin-authority
+  `update_rows` of the user's threshold.
+
+`crates/sc-server/tests/tutorial_payments_credits.rs` builds it on a server and walks it through.
+
 ## Payments P6: the LLM credits ledger
 
 TODO-payments.md milestone P6. A user can now hold **LLM credits**, and an agent can charge the

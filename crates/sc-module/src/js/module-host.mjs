@@ -2716,7 +2716,8 @@ function moduleRoles(send) {
  * debit: only an agent run's model calls spend credits.
  *
  *   await credits.grant({ user: userId, amount: 100, key: "invoice:in_1",
- *                         expires_at: periodEnd, kind: "allowance" });
+ *                         expires_at: periodEnd, kind: "allowance",
+ *                         rollover: { from: "invoice:in_0", cap: 50 } });
  *   const { balance, debt } = await credits.balance(userId);
  *   await credits.setThreshold(userId, 10);   // null: no low-balance notices
  */
@@ -2726,9 +2727,12 @@ function moduleCredits(send) {
   return {
     /** Grant `amount` credits to `user` (an id or a row) until `expires_at`
      * (a `Date`, an ISO string or milliseconds; none is never). Debt is repaid
-     * first. Answers `{ bucket, amount, remaining, repaid, balance, replayed }`. */
-    grant({ user, amount, key, expires_at, kind, note } = {}) {
-      return send({ op: "grant", user: who(user), amount, key, expires_at: when(expires_at), kind, note });
+     * first. `rollover: { from, cap }` takes over what is left of the earlier
+     * grant keyed `from`, up to `cap` (all of it without one), and empties
+     * it. Answers `{ bucket, amount, remaining, repaid, balance, replayed,
+     * carried }`. */
+    grant({ user, amount, key, expires_at, kind, note, rollover } = {}) {
+      return send({ op: "grant", user: who(user), amount, key, expires_at: when(expires_at), kind, note, rollover: rollover ?? null });
     },
     /** `{ balance, available, debt, next_expiry, low_balance_threshold }`. */
     balance(user) {

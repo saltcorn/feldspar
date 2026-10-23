@@ -21,6 +21,10 @@
 // A price is any id: it costs `settings.prices[id].amount` (and lasts `.days`) when the account's
 // settings say, and 10.00 for 30 days otherwise.
 //
+// Saved cards (P7): paying for a subscription, or a checkout that keeps the card, leaves the
+// customer a saved card, which `chargeSavedMethod` charges with no page — unless a test (or the
+// portal's card buttons) has made it one that asks for authentication, or one that is declined.
+//
 // Its objects live in this worker's memory. A restart of the server, or of the module's worker,
 // forgets them — which a test provider may.
 //
@@ -53,6 +57,8 @@ const state = {
   /** Refunds by id, and by the idempotency key they were asked for with. */
   refunds: new Map(),
   refundKeys: new Map(),
+  /** Charges of a saved card, by the idempotency key they were asked for with: the payment. */
+  chargeKeys: new Map(),
   /** Every event made, oldest first: `{ id, type, ref, account, created }`. */
   events: [],
   /** Every delivery attempt, oldest first: `{ event_id, type, account, status, at, error }`. */
@@ -82,6 +88,10 @@ function lookup(account, kind, id) {
 
 /** An instant in unix seconds as the mirror keeps it, or null. */
 const iso = (seconds) => (seconds === null || seconds === undefined ? null : new Date(seconds * 1000).toISOString());
+
+/** What a saved card does when it is charged: `ok` pays, `authenticate` is a bank asking the
+ * buyer to confirm it themselves (3-D Secure), `decline` is refused. */
+const CARDS = ["ok", "authenticate", "decline"];
 
 /** What a price costs on `account`, in `currency`: its settings' `prices[id]`, or the default. */
 function priceOf(account, id, currency) {
@@ -158,6 +168,19 @@ function normaliseSubscription(s) {
 
 function normaliseCustomer(c) {
   return { kind: "customer", ref: c.id, status: null, email: c.email, metadata: c.metadata, updated: c.created, provider_data: { ...c } };
+}
+
+/** The customer a checkout is for — the one it names, or a new one — keeping the card it was paid
+ * with. */
+function customerOf(account, checkout) {
+  let customer = checkout.customer ? state.customers.get(checkout.customer) : null;
+  if (!customer) {
+    customer = { id: newId("cus"), account: account.name, email: checkout.customer_email, metadata: checkout.metadata, card: null, created: now() };
+    state.customers.set(customer.id, customer);
+  }
+  customer.card = "ok";
+  checkout.customer = customer.id;
+  return customer;
 }
 
 function normaliseRefund(r) {
@@ -281,11 +304,7 @@ async function settleSubscription(account, checkout, outcome, deliver) {
     await emit(account, "payment.failed", { kind: "payment", id: declined.id }, deliver);
     return checkout;
   }
-  let customer = checkout.customer ? state.customers.get(checkout.customer) : null;
-  if (!customer) {
-    customer = { id: newId("cus"), account: account.name, email: checkout.customer_email, metadata: checkout.metadata, created: now() };
-    state.customers.set(customer.id, customer);
-  }
+  const customer = customerOf(account, checkout);
   const start = now();
   const trialEnd = plan.trial_days ? start + plan.trial_days * DAY_SECONDS : null;
   const sub = {
@@ -311,7 +330,6 @@ async function settleSubscription(account, checkout, outcome, deliver) {
   };
   state.subscriptions.set(sub.id, sub);
   checkout.status = "complete";
-  checkout.customer = customer.id;
   checkout.subscription = sub.id;
   let payment = null;
   if (!trialEnd) {
@@ -359,6 +377,7 @@ function requireLive(sub) {
 
 module.exports = {
   name: "fake",
+  CARDS,
   testOnly: true,
   capabilities: {
     one_off: true,
@@ -366,7 +385,7 @@ module.exports = {
     subscriptions: true,
     trial_with_card: true,
     portal: true,
-    charge_saved_method: false,
+    charge_saved_method: true,
     native_sheet: false,
     manual_capture: false,
     async_methods: false,
@@ -447,6 +466,7 @@ module.exports = {
       subscription: null,
       customer_email: (input.customer && input.customer.email) || (customer && customer.email) || null,
       metadata: input.metadata || {},
+      save_card: mode === "payment" && input.save_card === true,
       shipping_countries: (input.shipping && input.shipping.countries) || null,
       client_reference: input.client_reference || null,
       success_url: input.success_url || url,
@@ -529,6 +549,8 @@ module.exports = {
     if (!checkout) throw new Error(`the fake provider has no checkout ${id} for "${account.name}"`);
     if (checkout.status !== "open") return checkout;
     if (checkout.mode === "subscription") return settleSubscription(account, checkout, outcome, deliver);
+    // A checkout that keeps the card makes its buyer a customer, as one for a subscription does.
+    const customer = outcome === "succeeded" && checkout.save_card ? customerOf(account, checkout) : null;
     const payment = {
       id: newId("pay"),
       account: account.name,
@@ -536,6 +558,7 @@ module.exports = {
       amount: checkout.amount_total,
       currency: checkout.currency,
       customer_email: checkout.customer_email,
+      customer: customer ? customer.id : checkout.customer,
       checkout: checkout.id,
       metadata: checkout.metadata,
       created: now(),
@@ -685,6 +708,64 @@ module.exports = {
     return normaliseRefund(refund);
   },
 
+  /**
+   * Charge `customer`'s saved card `amount`, with no page (P7.2), once per `key`: asked again with
+   * the same key, it answers what the first charge did. Answers `{ status: "paid", object }`, or
+   * `{ status: "requires_checkout", reason, object? }` when there is no saved card, the card asks
+   * for authentication, or it is declined — a declined charge is a failed payment, and its
+   * `payment.failed` is delivered. A paid one delivers `payment.succeeded`.
+   */
+  async chargeSavedMethod(account, { customer, amount, currency, description, key, metadata } = {}, deliver) {
+    const value = requireAmount(amount, "the amount");
+    if (value === 0) throw new Error("a charge of 0 charges nothing");
+    const code = currencyCode(currency);
+    signingSecret(account);
+    const scoped = key ? `${account.name}:${key}` : null;
+    if (scoped && state.chargeKeys.has(scoped)) {
+      const earlier = state.payments.get(state.chargeKeys.get(scoped));
+      return earlier.status === "failed"
+        ? { status: "requires_checkout", reason: "the card was declined", object: normalisePayment(earlier) }
+        : { status: "paid", object: normalisePayment(earlier) };
+    }
+    const found = customer ? lookup(account, "customer", customer) : null;
+    if (!found || !found.card) return { status: "requires_checkout", reason: "the customer has no saved card", object: null };
+    if (found.card === "authenticate") {
+      return { status: "requires_checkout", reason: "the bank asks the buyer to authenticate this payment", object: null };
+    }
+    const payment = {
+      id: newId("pay"),
+      account: account.name,
+      status: found.card === "ok" ? "succeeded" : "failed",
+      amount: value,
+      currency: code,
+      description: description || null,
+      customer_email: found.email,
+      customer: found.id,
+      checkout: null,
+      metadata: metadata || {},
+      created: now(),
+      updated: now(),
+    };
+    state.payments.set(payment.id, payment);
+    if (scoped) state.chargeKeys.set(scoped, payment.id);
+    const ref = { kind: "payment", id: payment.id };
+    if (payment.status === "succeeded") {
+      await emit(account, "payment.succeeded", ref, deliver);
+      return { status: "paid", object: normalisePayment(payment) };
+    }
+    await emit(account, "payment.failed", ref, deliver);
+    return { status: "requires_checkout", reason: "the card was declined", object: normalisePayment(payment) };
+  },
+
+  /** A test's hand on a customer's saved card: `ok`, `authenticate`, `decline`, or null for none. */
+  setCard(account, customer, card) {
+    const found = lookup(account, "customer", customer);
+    if (!found) throw new Error(`the fake provider has no customer ${customer} for "${account.name}"`);
+    if (card !== null && !CARDS.includes(card)) throw new Error(`a saved card is ${CARDS.join(", ")} or null, not ${JSON.stringify(card)}`);
+    found.card = card;
+    return normaliseCustomer(found);
+  },
+
   /** The checkout a payment (or a refund of one, or a subscription) belongs to. */
   checkoutOf(account, ref) {
     if (!ref) return null;
@@ -744,6 +825,7 @@ module.exports = {
     state.portals.clear();
     state.refunds.clear();
     state.refundKeys.clear();
+    state.chargeKeys.clear();
     state.events.length = 0;
     state.deliveries.length = 0;
   },

@@ -1,7 +1,8 @@
 //! LLM credits from JavaScript modules (TODO-payments P6.4, design C4): a
 //! fixture module's action grants credits through `credits`, keyed so that a
 //! replayed grant does nothing, reads the balance, sets the low-balance
-//! threshold, and has no way to spend them.
+//! threshold, rolls an allowance over into the next (P7.1), and has no way to
+//! spend them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -76,6 +77,10 @@ mod deno {
             10.0
         );
         assert_eq!(num(&result["balance"]["balance"]), 102.5);
+        // 50 of the first allowance's 100 carried into the second.
+        assert_eq!(num(&result["renewed"]["ok"]["carried"]), 50.0, "{result}");
+        assert_eq!(num(&result["renewed"]["ok"]["amount"]), 150.0, "{result}");
+        assert_eq!(num(&result["renewed"]["ok"]["balance"]), 152.5, "{result}");
         assert_eq!(
             result["debit"],
             json!("undefined"),
@@ -84,10 +89,12 @@ mod deno {
 
         // The buckets are the module's, under its own name.
         let balance = credit_balance(&cat, user.id).await.unwrap();
-        assert_eq!(balance.balance, Decimal::new(1025, 1));
+        assert_eq!(balance.balance, Decimal::new(1525, 1));
         assert_eq!(balance.low_balance_threshold, Some(Decimal::from(10)));
         let buckets = list_credit_buckets(&cat, user.id).await.unwrap();
-        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets.len(), 3);
+        let first = buckets.iter().find(|b| b.key == "invoice:in_1").unwrap();
+        assert!(first.remaining.is_zero(), "rolled over, and emptied");
         assert!(buckets.iter().all(|b| b.source == name), "{buckets:?}");
         assert!(
             buckets

@@ -67,6 +67,12 @@ const tables = [
       { name: "lines", type: "json", label: "Lines", description: "The lines as charged" },
       { name: "effects", type: "json", label: "Effects", description: "What the module grants once it is paid" },
       { name: "provider_data", type: "json", label: "Provider data" },
+      {
+        name: "allowance_key",
+        type: "text",
+        label: "Allowance",
+        description: "Subscriptions: the key of the LLM credits last granted for a period, which the next period's allowance rolls over from",
+      },
       { name: "issue", type: "text", label: "Issue", description: "Why the module could not do what it should have for it: a subscription whose price is no plan's, a role it may not grant" },
       { name: "created_at", type: "timestamp", label: "Created" },
       { name: "updated_at", type: "timestamp", label: "Updated" },

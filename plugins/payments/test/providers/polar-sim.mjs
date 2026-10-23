@@ -446,6 +446,8 @@ export function polarSimulation() {
         webhook_secret: `whsec_${Buffer.from(`secret of ${name}`).toString("base64")}`,
         settings: { product: products.oneOff, webhook_endpoint_id: uuid() },
         _hold: hold,
+        // The organisation is on a plan with off-session charges (P5.3).
+        _offSession: true,
       };
     },
     install(accounts, deliverFor) {
@@ -485,6 +487,10 @@ export function polarSimulation() {
     unknown: (account) => signed(account, { type: "benefit.created", timestamp: new Date().toISOString(), api_version: "2026-10", data: { id: uuid(), type: "custom" } }),
     signed,
     checkoutCustomer: (account, checkout) => s.checkouts.get(checkout).customer_id,
+    /** The customer's saved card: `ok`, `authenticate` (3-D Secure), `decline`, or null for none. */
+    setCard(account, customer, card) {
+      s.customers.get(customer)._card = card === "authenticate" ? "3ds" : card;
+    },
   };
   return driver;
 }

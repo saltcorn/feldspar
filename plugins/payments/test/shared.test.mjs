@@ -1,11 +1,11 @@
-// The shared suite (TODO-payments P5.2): the shop (P2) and the subscriptions (P4) as one set of
-// tests, run against every provider — the fake, Stripe and Polar — through a driver each
+// The shared suite (TODO-payments P5.2): the shop (P2), the subscriptions (P4) and the LLM
+// credits (P7) as one set of tests, run against every provider — the fake, Stripe and Polar — through a driver each
 // (`providers/index.mjs`). What a provider does differently is the driver's to play, and where it
 // shows through to the module, the test says so by the driver's flags, not by a copy of the test.
 //
 // Each test runs the module as the server does: its actions (`pay_checkout`, `pay_refund`, …),
-// its webhook handler, the processing behind it and the sweep, over an in-memory `db` and a
-// `roles` that records what the module granted.
+// its webhook handler, the processing behind it and the sweep, over an in-memory `db`, a `roles`
+// that records what the module granted, and a `credits` that keeps a ledger as core does.
 
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -41,6 +41,51 @@ function recordingRoles(ceiling = 50) {
   };
 }
 
+/** A `credits` that keeps buckets as core's ledger does (crates/sc-auth/src/credits.rs, whose
+ * own tests hold it to this): one per key, a replayed key granting nothing, a rollover emptying
+ * the earlier bucket and carrying what it held up to its cap, and spending soonest-expiring
+ * first. */
+function recordingCredits() {
+  const buckets = new Map();
+  const live = (b) => !b.expires_at || Date.parse(b.expires_at) > Date.now();
+  const mine = (user) => [...buckets.values()].filter((b) => String(b.user) === String(user) && live(b));
+  return {
+    buckets,
+    async grant({ user, amount, key, expires_at, kind, rollover }) {
+      if (!key) throw new Error("credits.grant needs `key`");
+      if (!(amount > 0)) throw new Error(`a credit grant gives credits; ${amount} is not more than nothing`);
+      if (buckets.has(key)) return { ...buckets.get(key), replayed: true, carried: 0 };
+      if (expires_at && Date.parse(expires_at) <= Date.now()) throw new Error(`a credit grant that expires at ${expires_at} has already expired`);
+      let carried = 0;
+      const from = rollover && buckets.get(rollover.from);
+      if (from) {
+        carried = rollover.cap === null || rollover.cap === undefined ? from.remaining : Math.min(from.remaining, rollover.cap);
+        from.remaining = 0;
+      }
+      const bucket = { user, amount: amount + carried, remaining: amount + carried, expires_at: expires_at || null, kind: kind || "grant" };
+      buckets.set(key, bucket);
+      return { ...bucket, replayed: false, carried };
+    },
+    async balance(user) {
+      return { balance: this.of(user) };
+    },
+    /** A user's balance now. */
+    of(user) {
+      return mine(user).reduce((t, b) => t + b.remaining, 0);
+    },
+    /** What an agent run's model calls would take: soonest-expiring first. */
+    spend(user, amount) {
+      let owed = amount;
+      for (const b of mine(user).sort((a, b) => (a.expires_at ? Date.parse(a.expires_at) : Infinity) - (b.expires_at ? Date.parse(b.expires_at) : Infinity))) {
+        const take = Math.min(owed, b.remaining);
+        b.remaining -= take;
+        owed -= take;
+      }
+      if (owed > 0) throw new Error(`the test spent ${amount}, more than there was`);
+    },
+  };
+}
+
 const ann = { id: 7, email: "ann@example.com" };
 const bob = { id: 8, email: "bob@example.com" };
 const quiet = Object.assign(() => {}, { warn: () => {}, error: () => {} });
@@ -52,6 +97,7 @@ for (const makeDriver of PROVIDERS) {
     let held;
     let store;
     let roles;
+    let credits;
     let ctx;
     let actions;
     /** The deliveries the module's handler failed (a 500 at the server). */
@@ -69,10 +115,20 @@ for (const makeDriver of PROVIDERS) {
           { id: 3, name: "Staff", [field]: provider.prices.staff, role: 40 },
         ],
         orders: [{ id: 12, total: 900 }],
+        credit_packs: [{ id: 1, name: "100 credits", price: 200, units: 100 }],
       });
       roles = recordingRoles();
-      const configuration = { plans_table: "plans", plan_price_field: field, plan_role_field: "role", grace_days: 3 };
-      ctx = { db: store.db, roles, configuration, log: quiet };
+      credits = recordingCredits();
+      const configuration = {
+        plans_table: "plans",
+        plan_price_field: field,
+        plan_role_field: "role",
+        plan_allowance_field: "credits",
+        plan_rollover_field: "rollover",
+        plan_rollover_cap_field: "rollover_cap",
+        grace_days: 3,
+      };
+      ctx = { db: store.db, roles, credits, configuration, log: quiet };
       actions = actionsFor(configuration);
       failed = [];
       provider.install([shop, held], (account) => {
@@ -89,7 +145,7 @@ for (const makeDriver of PROVIDERS) {
     });
     afterEach(() => provider.uninstall());
 
-    const argument = (extra) => ({ row: null, user: ann, app: { id: "a", url: "https://saas.example.com" }, db: store.db, roles, ...extra });
+    const argument = (extra) => ({ row: null, user: ann, app: { id: "a", url: "https://saas.example.com" }, db: store.db, roles, credits, ...extra });
     const kinds = () => store.tables.pay_events.map((e) => e.kind);
     const mirror = (row) => store.tables.pay_objects.find((o) => o.id === row.id);
     const grantOf = (sub, on = shop) => roles.grants.get(`${on.name}:${sub.provider_ref}`);
@@ -353,6 +409,148 @@ for (const makeDriver of PROVIDERS) {
       const customers = store.tables.pay_objects.filter((o) => o.kind === "customer");
       assert.equal(customers.length, 1);
       assert.equal(provider.checkoutCustomer(shop, again.checkout), customers[0].provider_ref);
+    });
+
+    // ---- P7: LLM credits ----
+
+    /** Plan 1 (Basic) includes `amount` credits a period, rolling over as `rollover` says. */
+    const withCredits = (amount, rollover, cap = null) => Object.assign(store.tables.plans[0], { credits: amount, rollover, rollover_cap: cap });
+    const allowances = () => [...credits.buckets.values()].filter((b) => b.kind === "allowance");
+
+    for (const [policy, cap, balances] of [
+      ["none", null, [70, 70, 70]],
+      ["all", null, [70, 140, 210]],
+      ["capped", 50, [70, 120, 120]],
+    ]) {
+      test(`a plan's credits are granted for each paid period, rolling over ${policy}`, async () => {
+        withCredits(100, policy, cap);
+        const { sub } = await subscribe(1);
+        // Three periods, 30 spent in each.
+        for (let period = 0; period < 3; period++) {
+          if (period) await provider.renew(shop, sub.provider_ref, "succeeded");
+          credits.spend(ann.id, 30);
+          assert.equal(credits.of(ann.id), balances[period], `${policy}, period ${period + 1}`);
+        }
+        // Every event again, newest first, and the sweep: nothing is granted twice.
+        for (const e of [...provider.events(shop)].reverse()) await provider.redeliver(shop, e.id);
+        await sweepAll(ctx, { only: "shop" });
+        assert.equal(credits.of(ann.id), balances[2]);
+        assert.equal(allowances().length, 3);
+        // Each period's allowance lasts to the period's end; only the newest holds anything.
+        assert.equal(allowances().at(-1).expires_at, mirror(sub).current_period_end);
+        assert.deepEqual(allowances().map((b) => b.remaining > 0), [false, false, true]);
+        assert.equal(mirror(sub).issue || null, null);
+      });
+    }
+
+    test("a renewal that is not paid grants no credits until it is", async () => {
+      withCredits(100, "all");
+      const { sub } = await subscribe(1);
+      assert.equal(credits.of(ann.id), 100);
+      await provider.renew(shop, sub.provider_ref, "failed");
+      assert.equal(mirror(sub).status, "past_due");
+      assert.equal(credits.of(ann.id), 100, "past due: the period is not paid for");
+      await provider.retry(shop, sub.provider_ref, "succeeded");
+      assert.equal(credits.of(ann.id), 200, "recovered: granted, the last period's carried over");
+      assert.equal(allowances().length, 2);
+    });
+
+    test("a trial includes its plan's credits, and a renewal never delivered is granted by the sweep", async () => {
+      withCredits(100, "none");
+      const { sub } = await subscribe(1, { trial_days: "14" });
+      assert.equal(credits.of(ann.id), 100);
+      assert.equal(allowances()[0].expires_at, sub.trial_end);
+      await provider.renew(shop, sub.provider_ref, "succeeded");
+      assert.equal(credits.of(ann.id), 100, "the trial's were not carried over");
+      assert.equal(allowances().length, 2);
+
+      await subscribe(1, {}, held, bob);
+      await sweepAll(ctx, { only: "held" });
+      assert.equal(credits.of(bob.id), 100);
+      const bobs = store.tables.pay_objects.find((o) => o.kind === "subscription" && o.account === held.id);
+      await provider.renew(held, bobs.provider_ref, "succeeded");
+      assert.equal(allowances().length, 3, "held: not delivered");
+      await sweepAll(ctx, { only: "held" });
+      assert.equal(allowances().length, 4);
+      assert.equal(credits.of(bob.id), 100);
+    });
+
+    test("a plan whose rollover makes no sense is an issue, and its role is granted all the same", async () => {
+      withCredits(100, "capped");
+      const { sub } = await subscribe(1);
+      assert.equal(grantOf(sub).role, 70);
+      assert.match(mirror(sub).issue, /rollover is capped, and its rollover_cap is null, which is no cap/);
+      assert.equal(credits.of(ann.id), 0);
+      store.tables.plans[0].rollover_cap = 20;
+      await sweepAll(ctx, { only: "shop" });
+      assert.equal(credits.of(ann.id), 100);
+      assert.equal(mirror(sub).issue, null);
+    });
+
+    const pack = { account: "shop", table: "credit_packs", amount: "price", description: "name", currency: "EUR", grant_credits: "units" };
+
+    test("a credit pack paid through checkout grants its credits once, and a refund leaves them", async () => {
+      const started = await actions.pay_checkout.run(argument({ configuration: { ...pack, key_field: "pack", credits_expire_days: 365 }, payload: { pack: 1 } }));
+      assert.equal(started.amount, 200);
+      await provider.pay(shop, started.checkout, "succeeded");
+      assert.equal(credits.of(ann.id), 100);
+      const [bucket] = [...credits.buckets.values()];
+      assert.equal(bucket.kind, "top_up");
+      assert.ok(Math.abs(Date.parse(bucket.expires_at) - Date.now() - 365 * DAY) < 60000, bucket.expires_at);
+      for (const e of [...provider.events(shop)].reverse()) await provider.redeliver(shop, e.id);
+      assert.equal(credits.buckets.size, 1);
+      await actions.pay_refund.run(argument({ configuration: { source: "row", table: "credit_packs", key_field: "pack" }, payload: { pack: 1 } }));
+      await provider.flush();
+      assert.ok(kinds().includes("payment.refunded"));
+      assert.equal(credits.of(ann.id), 100, "only agent runs spend credits");
+    });
+
+    test("pay_charge_saved charges the saved card once per key, and falls back to checkout", async () => {
+      await subscribe(2);
+      const charge = (payload, user = ann) => actions.pay_charge_saved.run(argument({ user, configuration: { ...pack, key_from: "fixed", key_value: "1" }, payload }));
+      const paid = await charge({ key: "low-1" });
+      await provider.flush();
+      assert.deepEqual([paid.status, paid.amount, paid.currency], ["paid", 200, "EUR"]);
+      assert.equal(credits.of(ann.id), 100, "granted from the webhook");
+      const succeeded = store.tables.pay_events.filter((e) => e.kind === "payment.succeeded" && e.ref_table === "credit_packs");
+      assert.deepEqual(succeeded.map((e) => [e.ref_key, e.user_id, e.amount]), [[1, 7, 200]]);
+      // The same key again — a trigger run twice for one notice — charges nothing more.
+      const again = await charge({ key: "low-1" });
+      await provider.flush();
+      assert.deepEqual([again.status, again.payment], ["paid", paid.payment]);
+      assert.equal(credits.of(ann.id), 100);
+      // Another key is another top-up.
+      await charge({ key: "low-2" });
+      await provider.flush();
+      assert.equal(credits.of(ann.id), 200);
+
+      // The bank asks the buyer to authenticate: a checkout for the same lines, which keeps the card.
+      const customer = store.tables.pay_objects.find((o) => o.kind === "customer" && o.user_id === ann.id);
+      provider.setCard(shop, customer.provider_ref, "authenticate");
+      const asked = await charge({ key: "low-3" });
+      await provider.flush();
+      assert.equal(asked.status, "requires_checkout");
+      assert.match(asked.reason, /authenticat|additional user action/i);
+      assert.match(asked.url, /^https:\/\//);
+      assert.equal(credits.of(ann.id), 200);
+      await provider.pay(shop, asked.checkout, "succeeded");
+      assert.equal(credits.of(ann.id), 300, "paid on the page");
+      const kept = await charge({ key: "low-4" });
+      await provider.flush();
+      assert.equal(kept.status, "paid", "the card paid on the page is the saved one now");
+      assert.equal(credits.of(ann.id), 400);
+
+      // A declined card: a checkout, and nothing granted.
+      provider.setCard(shop, customer.provider_ref, "decline");
+      const declined = await charge({ key: "low-5" });
+      await provider.flush();
+      assert.equal(declined.status, "requires_checkout");
+      assert.equal(credits.of(ann.id), 400);
+
+      // Bob has no saved card; a guest has no card at all.
+      const bobs = await charge({ key: "b-1" }, bob);
+      assert.deepEqual([bobs.status, bobs.reason], ["requires_checkout", 'you have no saved card on "shop" yet']);
+      await assert.rejects(charge({ key: "g-1" }, null), /sign in first/);
     });
   });
 }

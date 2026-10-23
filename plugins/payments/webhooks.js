@@ -159,8 +159,12 @@ async function planChoices(ctx, account) {
   }
 }
 
+/** What each of the portal's card buttons makes the customer's saved card. */
+const CARD_LABELS = { ok: "Pays", authenticate: "Asks to authenticate", decline: "Is declined", none: "Remove it" };
+
 /** The portal page: the customer's subscriptions, with what the customer can do to each, and
- * the test clock's buttons beside them. */
+ * the test clock's buttons beside them; and the saved card, with buttons that change what it
+ * does when it is charged without a page. */
 function portalPage(path, view, choices) {
   const { session, customer, subscriptions } = view;
   const button = (sub, action, label) =>
@@ -199,6 +203,11 @@ li{margin-bottom:1rem}form{display:inline-block;margin:.25rem .5rem .25rem 0}but
 <p class="notice">A <strong>test</strong> customer portal: no money moves. The test clock moves a subscription to the end of its period.</p>
 <h1>${esc(customer.email || customer.id)}</h1>
 <ul>${items || "<li>No subscriptions.</li>"}</ul>
+<h2>Saved card</h2>
+<p>When charged without a page: <strong class="card">${esc(customer.card ? CARD_LABELS[customer.card] : "no saved card")}</strong></p>
+<p class="clock">${Object.entries(CARD_LABELS)
+    .map(([card, label]) => `<form method="post" action="${esc(`${path}/card/${card}`)}"><button type="submit">${esc(label)}</button></form>`)
+    .join("")}</p>
 ${session.return_url ? `<p><a href="${esc(session.return_url)}">Back</a></p>` : ""}
 </body></html>`;
 }
@@ -220,6 +229,12 @@ async function fakePortal(req, ctx, account, id, subId, action, base) {
       },
       body: portalPage(path, view, await planChoices(ctx, account)),
     };
+  }
+  if (subId === "card") {
+    if (!(action in CARD_LABELS)) return json(404, { error: `a saved card is made ${Object.keys(CARD_LABELS).join(", ")}` });
+    const changed = fake.setCard(account, view.session.customer, action === "none" ? null : action);
+    if (req.query.format === "json") return json(200, changed);
+    return { status: 303, headers: { location: path, "cache-control": "no-store" } };
   }
   const run = PORTAL_ACTIONS[action];
   if (!subId || !run) return json(404, { error: `"${action}" is not something the portal does; it does ${Object.keys(PORTAL_ACTIONS).join(", ")}` });

@@ -32,10 +32,11 @@ const CHECKOUT_FIELDS = [
     type: "String",
     required: true,
     default: "payload",
-    attributes: { options: ["payload", "row"] },
-    sublabel: "payload: the caller sends the row's key; row: the row this trigger fires on",
+    attributes: { options: ["payload", "row", "fixed"] },
+    sublabel: "payload: the caller sends the row's key; row: the row this trigger fires on; fixed: always the row named here",
   },
   { name: "key_field", label: "Payload field", type: "String", default: "id", showIf: { key_from: "payload" }, sublabel: "The payload field holding the key: order for { order: 12 }" },
+  { name: "key_value", label: "Key", type: "String", showIf: { key_from: "fixed" }, sublabel: "The row's key: the credit pack an auto top-up buys, 2" },
   {
     name: "read_check",
     label: "The caller must be able to read the row",
@@ -75,6 +76,14 @@ const CHECKOUT_FIELDS = [
   { input_type: "section_header", label: "Customer, tax and shipping" },
   { name: "email", label: "Email", type: "String", sublabel: "A formula over the row, for a buyer who is not signed in: email. A signed-in buyer's own address is used otherwise" },
   { name: "tax", label: "Tax", type: "String", required: true, default: "none", attributes: { options: TAX }, sublabel: "none, the provider's calculation, or a merchant of record (digital goods only)" },
+  {
+    name: "save_card",
+    label: "Keep the card for later charges",
+    type: "Bool",
+    default: false,
+    showIf: { mode: "payment" },
+    sublabel: "The buyer's card is saved with the provider, so that pay_charge_saved can charge it again (a top-up) without a checkout page",
+  },
   { name: "shipping", label: "Collect a shipping address", type: "Bool", default: false },
   { name: "shipping_countries", label: "Ship to", type: "String", showIf: { shipping: true }, sublabel: "Two-letter country codes, separated by commas: GB, IE, FR" },
   { input_type: "section_header", label: "Where the buyer goes" },
@@ -103,8 +112,15 @@ function primaryKey(table) {
   return found.pk_name || "id";
 }
 
-/** The key of the row being paid for, from the payload or from the trigger's own row. */
+/** The key of the row being paid for: from the payload, from the trigger's own row, or the
+ * configuration's own. */
 function sourceKey(configuration, payload, row, table, pk) {
+  if (configuration.key_from === "fixed") {
+    const fixed = configuration.key_value;
+    if (blank(fixed)) throw new Error(`the checkout pays for a fixed ${table} row, and its key setting is empty`);
+    // An integer key as the number it is; anything else as written.
+    return /^-?\d+$/.test(String(fixed).trim()) ? Number(fixed) : String(fixed).trim();
+  }
   if ((configuration.key_from || "payload") === "row") {
     if (!row) throw new Error("the checkout pays for the row its trigger fires on, and this event has none");
     if (blank(row[pk])) throw new Error(`the row this trigger fires on has no ${pk}`);
@@ -283,6 +299,7 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
     session: session ? session.id : null,
     tax,
     shipping: shipping ? { countries } : null,
+    save_card: mode === "payment" && configuration.save_card === true,
     success_url: appUrl(app, configuration.success_path, refKey, "path after paying"),
     cancel_url: appUrl(app, configuration.cancel_path, refKey, "path after cancelling"),
     base_url: (app && app.url) || "",
@@ -360,7 +377,11 @@ async function recordCheckout(db, prepared, created) {
 /** `pay_checkout`: a hosted checkout for an application row, answered as its URL. For a
  * subscription the amount is the provider's price, known once the checkout is made. */
 async function payCheckout(argument) {
-  const prepared = await prepareCheckout(argument);
+  return startCheckout(argument.db, await prepareCheckout(argument));
+}
+
+/** The hosted checkout for what `prepareCheckout` worked out, and its mirror row. */
+async function startCheckout(db, prepared) {
   const created = await prepared.adapter.createCheckout(prepared.account, {
     mode: prepared.mode,
     currency: prepared.currency,
@@ -368,6 +389,7 @@ async function payCheckout(argument) {
     customer: prepared.customer,
     tax: prepared.tax,
     shipping: prepared.shipping,
+    save_card: prepared.save_card,
     base_url: prepared.base_url,
     success_url: prepared.success_url,
     cancel_url: prepared.cancel_url,
@@ -378,8 +400,8 @@ async function payCheckout(argument) {
     prepared.total = created.object.amount;
     prepared.currency = created.object.currency || prepared.currency;
   }
-  const mirrored = await recordCheckout(argument.db, prepared, created);
+  const mirrored = await recordCheckout(db, prepared, created);
   return { id: mirrored.id, checkout: created.id, url: created.url, amount: prepared.total, currency: prepared.currency };
 }
 
-module.exports = { CHECKOUT_FIELDS, TAX, prepareCheckout, recordCheckout, payCheckout, appUrl };
+module.exports = { CHECKOUT_FIELDS, TAX, prepareCheckout, recordCheckout, payCheckout, startCheckout, appUrl, primaryKey };

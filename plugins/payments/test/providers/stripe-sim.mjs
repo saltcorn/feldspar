@@ -47,6 +47,8 @@ export function stripeSimulation() {
     subscriptions: new Map(),
     refunds: new Map(),
     refundKeys: new Map(),
+    /** Off-session PaymentIntents by idempotency key: the answer Stripe gave. */
+    intentKeys: new Map(),
     events: [],
     queue: [],
   };
@@ -126,6 +128,7 @@ export function stripeSimulation() {
         payment_intent: null,
         subscription: null,
         metadata: form.metadata || {},
+        customer_creation: form.customer_creation || null,
         success_url: form.success_url,
         cancel_url: form.cancel_url,
         created: now(),
@@ -143,6 +146,7 @@ export function stripeSimulation() {
         session.currency = form.line_items[0].price_data.currency;
         session._lines = form.line_items.map((l) => ({ description: l.price_data.product_data.name, quantity: Number(l.quantity), unit_amount: Number(l.price_data.unit_amount) }));
         session._pi_metadata = (form.payment_intent_data && form.payment_intent_data.metadata) || {};
+        session._save = Boolean(form.payment_intent_data && form.payment_intent_data.setup_future_usage === "off_session");
         session.amount_total = session._lines.reduce((t, l) => t + l.quantity * l.unit_amount, 0);
       }
       s.sessions.set(session.id, session);
@@ -156,6 +160,37 @@ export function stripeSimulation() {
     if (method === "GET" && (m = /^\/v1\/payment_intents\/([^/]+)$/.exec(path))) {
       const pi = mine(s.intents, m[1]);
       return pi ? [200, intentView(pi, expand)] : [404, { error: { message: `No such payment_intent: '${m[1]}'` } }];
+    }
+    if (method === "GET" && (m = /^\/v1\/customers\/([^/]+)\/payment_methods$/.exec(path))) {
+      const c = mine(s.customers, m[1]);
+      if (!c) return [404, { error: { message: `No such customer: '${m[1]}'` } }];
+      const data = c._card ? [{ id: c._pm, object: "payment_method", type: "card", customer: c.id }] : [];
+      return [200, { object: "list", data, has_more: false }];
+    }
+    if (method === "POST" && path === "/v1/payment_intents") {
+      const idem = headers["idempotency-key"];
+      if (idem && s.intentKeys.has(`${key}:${idem}`)) return copy(s.intentKeys.get(`${key}:${idem}`));
+      const c = mine(s.customers, form.customer);
+      if (!c) return [400, { error: { message: `No such customer: '${form.customer}'` } }];
+      if (!c._card || form.payment_method !== c._pm) return [400, { error: { message: `No such PaymentMethod: '${form.payment_method}'` } }];
+      if (form.off_session !== "true" || form.confirm !== "true") return [400, { error: { message: "the simulation takes off-session, confirmed PaymentIntents only" } }];
+      const pi = newIntent(key, { amount: Number(form.amount), currency: form.currency, customer: c.id, metadata: form.metadata, email: c.email, outcome: c._card === "ok" ? "succeeded" : "failed" });
+      pi.description = form.description || null;
+      let answer;
+      if (c._card === "ok") {
+        emit(key, "payment_intent.succeeded", pi);
+        answer = [200, intentView(pi, [])];
+      } else {
+        const error =
+          c._card === "3ds"
+            ? { code: "authentication_required", message: "This payment requires additional user action before it can be completed successfully." }
+            : { code: "card_declined", message: "Your card was declined." };
+        pi.last_payment_error = error;
+        emit(key, "payment_intent.payment_failed", pi);
+        answer = [402, { error: { ...error, type: "card_error", payment_intent: intentView(pi, []) } }];
+      }
+      if (idem) s.intentKeys.set(`${key}:${idem}`, copy(answer));
+      return answer;
     }
     if (method === "GET" && (m = /^\/v1\/customers\/([^/]+)$/.exec(path))) {
       const c = mine(s.customers, m[1]);
@@ -254,6 +289,15 @@ export function stripeSimulation() {
     if (!session || session._key !== key) throw new Error(`Stripe has no session ${sessionId}`);
     if (session.status !== "open") return;
     const email = session.customer_email || (session.customer && s.customers.get(session.customer).email);
+    if (session.mode === "payment" && outcome === "succeeded" && session._save) {
+      // The card is saved to the buyer's customer, made now when Checkout was told to.
+      let buyer = session.customer && s.customers.get(session.customer);
+      if (!buyer && session.customer_creation === "always") buyer = newCustomer(key, email);
+      if (buyer) {
+        saveCard(buyer);
+        session.customer = buyer.id;
+      }
+    }
     if (session.mode === "payment") {
       // A session keeps one PaymentIntent: a decline leaves it to be tried again.
       let pi = session.payment_intent && s.intents.get(session.payment_intent);
@@ -275,11 +319,9 @@ export function stripeSimulation() {
       return;
     }
     if (outcome !== "succeeded") return;
-    let customer = session.customer && s.customers.get(session.customer);
-    if (!customer) {
-      customer = { id: id("cus"), object: "customer", email, metadata: {}, created: now(), _key: key };
-      s.customers.set(customer.id, customer);
-    }
+    const customer = (session.customer && s.customers.get(session.customer)) || newCustomer(key, email);
+    // A subscription's card is kept for its renewals, and for charges with no page.
+    saveCard(customer);
     const plan = session._sub;
     const start = now();
     const trialEnd = plan.trial ? start + plan.trial * DAY : null;
@@ -306,6 +348,18 @@ export function stripeSimulation() {
     emit(key, "customer.subscription.created", sub);
     emit(key, "invoice.paid", invoice(sub, "subscription_create"));
     if (!trialEnd) emit(key, "payment_intent.succeeded", newIntent(key, { amount: session.amount_total, currency: "eur", customer: customer.id, email, outcome: "succeeded" }));
+  }
+
+  function newCustomer(key, email) {
+    const customer = { id: id("cus"), object: "customer", email, metadata: {}, invoice_settings: { default_payment_method: null }, created: now(), _key: key };
+    s.customers.set(customer.id, customer);
+    return customer;
+  }
+
+  /** The customer's card, saved: it pays (`ok`) until a test says otherwise. */
+  function saveCard(customer) {
+    customer._pm = customer._pm || id("pm");
+    customer._card = "ok";
   }
 
   const invoice = (sub, reason) => ({ id: id("in"), object: "invoice", billing_reason: reason, parent: { subscription_details: { subscription: sub.id } }, customer: sub.customer, status: "paid" });
@@ -411,6 +465,11 @@ export function stripeSimulation() {
       return { rawBody: body, headers: { "stripe-signature": `t=${t},v1=${mac}` } };
     },
     checkoutCustomer: (account, checkout) => s.sessions.get(checkout).customer,
+    /** The customer's saved card: `ok`, `authenticate` (3-D Secure), `decline`, or null for none. */
+    setCard(account, customer, card) {
+      const c = s.customers.get(customer);
+      c._card = card === "authenticate" ? "3ds" : card;
+    },
   };
   return driver;
 }

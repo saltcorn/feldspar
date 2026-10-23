@@ -11,17 +11,19 @@
 //!   bucket does not count, with no write at its expiry;
 //! - **debt is repaid** by the next grant before it fills its bucket;
 //! - a debit that takes the balance below the user's threshold writes **one**
-//!   `low_balance` entry, not one per later call.
+//!   `low_balance` entry, not one per later call;
+//! - a grant that **rolls over** an earlier bucket (P7.1) carries what is left
+//!   of it up to a cap, once, and empties it.
 
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
 use sc_auth::{
-    CREDIT_ACCOUNTS_TABLE, CREDIT_BUCKETS_TABLE, CREDIT_ENTRIES_TABLE, CreditDebit,
-    ENTRY_LOW_BALANCE, NewCreditGrant, ROLE_ADMIN, Role, bootstrap, create_user, credit_balance,
-    debit_credits, delete_user, grant_credits, list_credit_buckets, list_credit_entries, save_role,
-    set_low_balance_threshold,
+    CREDIT_ACCOUNTS_TABLE, CREDIT_BUCKETS_TABLE, CREDIT_ENTRIES_TABLE, CreditDebit, CreditRollover,
+    ENTRY_LOW_BALANCE, ENTRY_ROLLOVER, NewCreditGrant, ROLE_ADMIN, Role, bootstrap, create_user,
+    credit_balance, debit_credits, delete_user, grant_credits, list_credit_buckets,
+    list_credit_entries, save_role, set_low_balance_threshold,
 };
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -68,6 +70,7 @@ fn grant(user: Uuid, amount: i64, key: &str) -> NewCreditGrant {
         kind: String::new(),
         expires_at: None,
         note: None,
+        rollover: None,
     }
 }
 
@@ -358,6 +361,134 @@ async fn nonsense_is_refused_and_deleting_the_user_deletes_their_credits() -> Re
         list_credit_entries(&f.catalog, user.id, 10)
             .await?
             .is_empty()
+    );
+    Ok(())
+}
+
+/// A period's allowance, rolling over from the period before (TODO-payments
+/// P7.1).
+fn allowance(user: Uuid, series: &str, period: u32, cap: Option<i64>) -> NewCreditGrant {
+    NewCreditGrant {
+        kind: "allowance".into(),
+        expires_at: Some(Utc::now() + Duration::days(30)),
+        rollover: (period > 1).then(|| CreditRollover {
+            from_key: format!("{series}:{}", period - 1),
+            cap: cap.map(d),
+        }),
+        ..grant(user, 100, &format!("{series}:{period}"))
+    }
+}
+
+#[tokio::test]
+async fn an_allowance_rolls_over_none_all_or_capped_over_three_periods() -> Result<()> {
+    let f = fixture().await?;
+    // Each period: 100 granted, then 30 spent. `none` carries nothing, `all`
+    // everything, and `capped` at most 50.
+    for (policy, cap, balances) in [
+        ("none", Some(0), [70, 70, 70]),
+        ("all", None, [70, 140, 210]),
+        ("capped", Some(50), [70, 120, 120]),
+    ] {
+        let user = create_user(&f.catalog, &format!("{policy}@example.com"), "pw", 80).await?;
+        for period in 1..=3u32 {
+            let granted =
+                grant_credits(&f.catalog, allowance(user.id, policy, period, cap), None).await?;
+            assert!(!granted.replayed);
+            // The renewal's webhook again: nothing granted, nothing carried twice.
+            let again =
+                grant_credits(&f.catalog, allowance(user.id, policy, period, cap), None).await?;
+            assert!(
+                again.replayed && again.carried.is_zero(),
+                "{policy} {period}"
+            );
+            debit_credits(
+                &f.catalog,
+                debit(user.id, d(30), &format!("spend:{policy}:{period}")),
+                None,
+            )
+            .await?;
+            let balance = credit_balance(&f.catalog, user.id).await?.balance;
+            assert_eq!(
+                balance,
+                d(balances[period as usize - 1]),
+                "{policy}, period {period}"
+            );
+        }
+        // Only the newest bucket holds anything; the earlier ones were emptied.
+        let buckets = list_credit_buckets(&f.catalog, user.id).await?;
+        let holding: Vec<_> = buckets.iter().filter(|b| !b.remaining.is_zero()).collect();
+        assert_eq!(holding.len(), 1, "{policy}");
+        assert_eq!(holding[0].key, format!("{policy}:3"));
+        // A rollover entry per renewal, saying what it did to the balance.
+        let entries = list_credit_entries(&f.catalog, user.id, 50).await?;
+        let rollovers: Vec<_> = entries
+            .iter()
+            .filter(|e| e.kind == ENTRY_ROLLOVER)
+            .collect();
+        assert_eq!(rollovers.len(), 2, "{policy}");
+        let last = rollovers
+            .iter()
+            .find(|e| e.key == format!("{policy}:3:rollover"))
+            .unwrap();
+        let (carried, forfeited) = match policy {
+            "none" => (0, 70),
+            "all" => (140, 0),
+            _ => (50, 70),
+        };
+        assert_eq!(last.amount, d(-forfeited), "{policy}: carried {carried}");
+        // The rollover entry and the grant's own add up to the balance.
+        let granted = entries
+            .iter()
+            .find(|e| e.key == format!("{policy}:3"))
+            .unwrap();
+        assert_eq!(granted.amount, d(100));
+        assert_eq!(last.balance + granted.amount, granted.balance);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
+    let f = fixture().await?;
+    let user = create_user(&f.catalog, "late@example.com", "pw", 80).await?;
+    // The period, and its allowance, end just before the renewal arrives.
+    let first = NewCreditGrant {
+        expires_at: Some(Utc::now() + Duration::milliseconds(800)),
+        ..allowance(user.id, "period", 1, None)
+    };
+    grant_credits(&f.catalog, first, None).await?;
+    debit_credits(&f.catalog, debit(user.id, d(40), "s1"), None).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    assert!(credit_balance(&f.catalog, user.id).await?.balance.is_zero());
+
+    let renewed =
+        grant_credits(&f.catalog, allowance(user.id, "period", 2, Some(50)), None).await?;
+    assert_eq!(renewed.carried, d(50));
+    assert_eq!(renewed.balance, d(150));
+    assert_eq!(renewed.bucket.amount, d(150));
+    let entries = list_credit_entries(&f.catalog, user.id, 10).await?;
+    let rollover = entries.iter().find(|e| e.kind == ENTRY_ROLLOVER).unwrap();
+    assert_eq!(rollover.amount, d(50), "the carried credits count again");
+    assert_eq!(
+        rollover.note.as_deref(),
+        Some("50 carried over from period:1, 10 forfeited")
+    );
+
+    // A rollover from the grant's own key, or another user's bucket, is refused.
+    let own = NewCreditGrant {
+        rollover: Some(CreditRollover {
+            from_key: "period:9".into(),
+            cap: None,
+        }),
+        ..allowance(user.id, "period", 9, None)
+    };
+    assert!(grant_credits(&f.catalog, own, None).await.is_err());
+    let other = create_user(&f.catalog, "other@example.com", "pw", 80).await?;
+    assert!(
+        grant_credits(&f.catalog, allowance(other.id, "period", 3, None), None)
+            .await
+            .is_err(),
+        "period:2 is the first user's"
     );
     Ok(())
 }

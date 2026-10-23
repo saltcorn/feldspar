@@ -128,6 +128,10 @@ pub const CREDIT_SOURCE_AGENT: &str = "agent";
 pub const ENTRY_GRANT: &str = "grant";
 /// An entry recording a debit.
 pub const ENTRY_DEBIT: &str = "debit";
+/// An entry recording what a grant took over from an earlier bucket
+/// ([`CreditRollover`]): its amount is what that did to the balance — what was
+/// carried, less what the earlier bucket still counted before it was emptied.
+pub const ENTRY_ROLLOVER: &str = "rollover";
 /// An entry saying a debit took the balance below the user's threshold — what
 /// an application's auto top-up trigger listens for.
 pub const ENTRY_LOW_BALANCE: &str = "low_balance";
@@ -228,6 +232,28 @@ pub struct NewCreditGrant {
     pub expires_at: Option<DateTime<Utc>>,
     /// A word for whoever reads the row.
     pub note: Option<String>,
+    /// The earlier bucket of the same source whose remainder this one takes
+    /// over (TODO-payments P7.1): a plan's allowance rolling over into the
+    /// next period's. `None` takes over nothing.
+    pub rollover: Option<CreditRollover>,
+}
+
+/// What a grant takes over from an earlier bucket of its source: what is left
+/// of that bucket, up to `cap`, is carried into the new one, and the rest is
+/// forfeited. The earlier bucket is emptied either way, in the grant's own
+/// transaction, so it is never counted twice and a replayed grant carries
+/// nothing again.
+///
+/// The earlier bucket's remainder counts even after it has expired: nothing
+/// spends an expired bucket, so what it held at its expiry is still there —
+/// and a renewal's grant usually arrives just after the period, and with it
+/// the allowance, has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreditRollover {
+    /// The earlier bucket's key, within the same source.
+    pub from_key: String,
+    /// The most carried over; `None` carries all of it, zero none.
+    pub cap: Option<Decimal>,
 }
 
 /// What a grant did.
@@ -242,6 +268,9 @@ pub struct CreditGrant {
     pub balance: Decimal,
     /// Whether a grant with this key had already been made, so nothing was.
     pub replayed: bool,
+    /// How much of an earlier bucket it took over ([`CreditRollover`]), on top
+    /// of the amount granted.
+    pub carried: Decimal,
 }
 
 /// A debit to make: one model call of an agent run.
@@ -471,8 +500,10 @@ pub fn credits(amount: Decimal) -> Decimal {
 /// Grant credits: repay any debt first, then fill a new bucket with the rest.
 ///
 /// A grant whose `(source, key)` was already made does nothing and answers the
-/// bucket that one made, with `replayed` set. `caller` is who the events the
-/// writes raise report.
+/// bucket that one made, with `replayed` set. A grant with a
+/// [`CreditRollover`] first empties the earlier bucket it names and adds what
+/// it carries to the new one, which then holds both. `caller` is who the
+/// events the writes raise report.
 pub async fn grant_credits(
     catalog: &Catalog,
     new: NewCreditGrant,
@@ -507,11 +538,18 @@ pub async fn grant_credits(
                     repaid: Decimal::ZERO,
                     balance,
                     replayed: true,
+                    carried: Decimal::ZERO,
                 });
             }
             let now = Utc::now();
             let account = account_in(tx, new.user_id, written).await?;
-            let repaid = account.debt.min(amount).max(Decimal::ZERO);
+            let rolled = match &new.rollover {
+                Some(rollover) => roll_over(tx, &new, rollover, now, written).await?,
+                None => None,
+            };
+            let carried = rolled.as_ref().map_or(Decimal::ZERO, |r| r.carried);
+            let total = amount + carried;
+            let repaid = account.debt.min(total).max(Decimal::ZERO);
             if repaid > Decimal::ZERO {
                 set_debt(tx, &account, account.debt - repaid, written).await?;
             }
@@ -525,8 +563,8 @@ pub async fn grant_credits(
                 vec![
                     (COL_CREDIT_ID, Expr::lit(Uuid::new_v4())),
                     (COL_CREDIT_USER, Expr::lit(new.user_id)),
-                    (COL_CREDIT_AMOUNT, dec(amount)),
-                    (COL_CREDIT_REMAINING, dec(amount - repaid)),
+                    (COL_CREDIT_AMOUNT, dec(total)),
+                    (COL_CREDIT_REMAINING, dec(total - repaid)),
                     (COL_CREDIT_KIND, Expr::lit(kind)),
                     (COL_CREDIT_SOURCE, Expr::lit(new.source.as_str())),
                     (COL_CREDIT_KEY, Expr::lit(new.key.as_str())),
@@ -539,6 +577,37 @@ pub async fn grant_credits(
             let bucket = bucket_from_row(&bucket_row)?;
             written.insert(CREDIT_BUCKETS_TABLE, bucket_row);
             let balance = balance_in(tx, new.user_id).await?.balance;
+            if let Some(rolled) = &rolled {
+                // What the rollover did to the balance, before the grant's own
+                // amount: the carried credits count again if the earlier
+                // bucket had expired; what was forfeited counts no more.
+                let change = rolled.carried - rolled.counted;
+                let note = format!(
+                    "{} carried over from {}{}",
+                    rolled.carried.normalize(),
+                    rolled.from_key,
+                    match rolled.remaining - rolled.carried {
+                        f if f > Decimal::ZERO => format!(", {} forfeited", f.normalize()),
+                        _ => String::new(),
+                    }
+                );
+                let entry_row = insert_entry(
+                    tx,
+                    EntryValues {
+                        user_id: new.user_id,
+                        kind: ENTRY_ROLLOVER,
+                        amount: change,
+                        balance: balance - amount,
+                        source: &new.source,
+                        key: &format!("{}:{ENTRY_ROLLOVER}", new.key),
+                        bucket: Some(bucket.id),
+                        note: Some(&note),
+                        ..EntryValues::default()
+                    },
+                )
+                .await?;
+                written.insert(CREDIT_ENTRIES_TABLE, entry_row);
+            }
             let entry_row = insert_entry(
                 tx,
                 EntryValues {
@@ -560,6 +629,7 @@ pub async fn grant_credits(
                 repaid,
                 balance,
                 replayed: false,
+                carried,
             })
         })
     })
@@ -579,6 +649,62 @@ pub async fn grant_credits(
         }
         Err(e) => Err(e),
     }
+}
+
+/// What a grant's rollover took from the earlier bucket.
+struct RolledOver {
+    from_key: String,
+    /// What the earlier bucket held.
+    remaining: Decimal,
+    /// How much of it still counted toward the balance: all of it while the
+    /// bucket was live, none once it had expired.
+    counted: Decimal,
+    /// How much of it the new bucket takes over.
+    carried: Decimal,
+}
+
+/// Empty the earlier bucket `rollover` names, answering what was carried
+/// from it. A bucket that is not there, or holds nothing, carries nothing.
+/// Only under the lock.
+async fn roll_over(
+    tx: &SharedTx,
+    new: &NewCreditGrant,
+    rollover: &CreditRollover,
+    now: DateTime<Utc>,
+    written: &mut Written,
+) -> Result<Option<RolledOver>> {
+    let Some(old) = find_bucket(tx, &new.source, &rollover.from_key).await? else {
+        return Ok(None);
+    };
+    if old.user_id != new.user_id {
+        return Err(Error::invalid(format!(
+            "the credit key `{}` from `{}` to roll over from is another user's",
+            rollover.from_key, new.source
+        )));
+    }
+    if old.remaining <= Decimal::ZERO {
+        return Ok(None);
+    }
+    let cap = rollover.cap.map(credits).map(|c| c.max(Decimal::ZERO));
+    let carried = cap.map_or(old.remaining, |c| old.remaining.min(c));
+    let updated = update_returning(
+        tx,
+        CREDIT_BUCKETS_TABLE,
+        old.id,
+        vec![Assignment::new(COL_CREDIT_REMAINING, dec(Decimal::ZERO))],
+    )
+    .await?;
+    written.update(CREDIT_BUCKETS_TABLE, updated);
+    Ok(Some(RolledOver {
+        from_key: rollover.from_key.clone(),
+        remaining: old.remaining,
+        counted: if old.live_at(now) {
+            old.remaining
+        } else {
+            Decimal::ZERO
+        },
+        carried,
+    }))
 }
 
 /// Take `debit.amount` from the user's live buckets, soonest-expiring first,
@@ -858,6 +984,18 @@ fn check_grant(catalog: &Catalog, new: &NewCreditGrant) -> Result<()> {
              granting it again does nothing",
         ));
     }
+    if let Some(rollover) = &new.rollover {
+        if rollover.from_key.trim().is_empty() || rollover.from_key == new.key {
+            return Err(Error::invalid(
+                "a credit grant rolls over from an earlier grant's key, which is not its own",
+            ));
+        }
+        if rollover.cap.is_some_and(|c| c < Decimal::ZERO) {
+            return Err(Error::invalid(
+                "a rollover's cap is the most carried over: zero or more",
+            ));
+        }
+    }
     if new.source == CREDIT_SOURCE_AGENT {
         return Err(Error::invalid(
             "`agent` is the source of agent runs' debits; a grant needs another",
@@ -1130,6 +1268,22 @@ async fn find_entry(tx: &SharedTx, source: &str, key: &str) -> Result<Option<Cre
         .await?
         .first()
         .map(entry_from_row)
+        .transpose()
+}
+
+async fn find_bucket(tx: &SharedTx, source: &str, key: &str) -> Result<Option<CreditBucket>> {
+    let select = Select::from(Source::table(CREDIT_BUCKETS_TABLE))
+        .filter(
+            Expr::col(COL_CREDIT_SOURCE)
+                .eq(Expr::lit(source))
+                .and(Expr::col(COL_CREDIT_KEY).eq(Expr::lit(key))),
+        )
+        .limit(1)
+        .for_update();
+    tx.run(None, &Statement::from(select))
+        .await?
+        .first()
+        .map(bucket_from_row)
         .transpose()
 }
 

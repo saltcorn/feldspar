@@ -97,8 +97,8 @@ async function callersSubscription(db, account, userId, configuration, payload) 
 const actionLog = Object.assign((...a) => console.log(...a), { warn: (...a) => console.warn(...a), error: (...a) => console.error(...a) });
 
 /** The `ctx` processing gets when the fake delivers from inside an action: the action's own
- * `db` and `roles`, and the module's settings. */
-const actionCtx = ({ db, roles }, moduleConfiguration) => ({ db, roles, configuration: moduleConfiguration || {}, log: actionLog });
+ * `db`, `roles` and `credits`, and the module's settings. */
+const actionCtx = ({ db, roles, credits }, moduleConfiguration) => ({ db, roles, credits, configuration: moduleConfiguration || {}, log: actionLog });
 
 /** `pay_portal`: the provider's customer portal for the caller, answered as its URL. */
 async function payPortal(argument) {

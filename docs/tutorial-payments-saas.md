@@ -371,3 +371,9 @@ change through `manage_plan` is prorated on the next invoice or invoiced now (**
   recovered.
 - **The test provider forgets** its subscriptions on a restart, as it forgets checkouts. The
   mirror and the grants are kept, and run out on their own dates.
+
+## Next
+
+[Part 3](tutorial-payments-credits.md) sells LLM credits for an agent: a plan that includes credits
+each month, with what is left carried over, and credit packs bought with one click or
+automatically when the balance runs low.

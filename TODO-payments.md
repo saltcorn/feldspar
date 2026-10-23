@@ -200,7 +200,8 @@ module.exports = {
   client(account),                          // the SDK object or an HTTP wrapper: pay_provider_code, pay_api
   createCheckout(account, { lines, mode, customer, success_url, cancel_url, trial, metadata }),
   createPortal(account, { customer, return_url }),
-  chargeSavedMethod(account, { customer, amount, currency, description, key }),   // off-session
+  chargeSavedMethod(account, { customer, amount, currency, description, key, metadata }, deliver),
+                                            // off-session → { status: paid|processing|requires_checkout, reason?, object } (P7)
   createNativeSheet(account, { customer, amount, currency, mode }),               // §7
   changePlan(account, subscription, price_ref), cancel(account, subscription, { at_period_end }),
   refund(account, payment, { amount, key }), capture(account, payment, { amount }),
@@ -394,10 +395,12 @@ so a balance widget is a REST read and updates live.
 
 **Module (P7).**
 
-- **Allowance**, from the plan binding: on each paid renewal (keyed by the invoice) the plan's
-  allowance is granted as a bucket that expires at the period's end. **Rollover**: `none`, `all`,
-  or `capped`, which carries `min(remaining, cap)` into the new bucket. The old bucket is
-  expired by the same key.
+- **Allowance**, from the plan binding: for each period the subscription enters paid (or
+  trialing), keyed by the subscription and the period's end (P7.1: not the invoice, which only
+  some providers' events name and the sweep never sees), the plan's allowance is granted as a
+  bucket that expires at the period's end. **Rollover**: `none`, `all`, or `capped`, which
+  carries `min(remaining, cap)` into the new bucket. The old bucket is emptied by the same grant
+  (core's `rollover: { from, cap }`).
 - **Top-ups** are the app's credit-pack rows paid through `pay_checkout` with a *grant credits*
   effect (§6.1). **`pay_charge_saved`** takes the same configuration but charges **the same
   card** with no checkout page, when the adapter can (`charge_saved_method`: a Stripe
@@ -815,13 +818,52 @@ Notes from P1, for the milestones that build on it:
 
 ## P7 — Use case 3: allowances, rollover, top-ups
 
-- [ ] **P7.1** Allowance and rollover fields in the plan binding; allowances granted on paid
+- [x] **P7.1** Allowance and rollover fields in the plan binding; allowances granted on paid
   renewals; rollover `none`/`all`/`capped`. Tests over three periods for each policy.
-- [ ] **P7.2** The *grant credits* effect on `pay_checkout`, and `pay_charge_saved`: the saved
+- [x] **P7.2** The *grant credits* effect on `pay_checkout`, and `pay_charge_saved`: the saved
   card where the adapter can, falling back to checkout when the bank asks for authentication or
   there is no saved card. The credit is granted from the webhook.
-- [ ] **P7.3** Tutorial part 3: an agent app with a $5 plan including 100 units, a
+- [x] **P7.3** Tutorial part 3: an agent app with a $5 plan including 100 units, a
   `credit_packs` table with a $2 top-up, and auto top-up as a trigger on `low_balance`.
+
+  Notes from P7, for the milestones that build on it:
+  - **Rollover is core's.** `grant` takes `rollover: { from, cap }` (Rust `CreditRollover`): the
+    earlier bucket of the same source is emptied and `min(remaining, cap)` is added to the new
+    one, in the grant's locked transaction, with an entry of kind `rollover`. An expired earlier
+    bucket still carries what it held at its expiry, since renewals arrive just after the period
+    ends. `cap: 0` is `none`, no cap is `all`.
+  - **The allowance key is `allowance:<account id>:<subscription>:<period end>`**, worked out from
+    the subscription's current state, so it is the same on every adapter and from the sweep (a
+    renewal whose webhook never came is granted at the next sweep). The last key granted is on
+    the mirror row's new `allowance_key` column; the next period rolls over from it. Trialing
+    periods get the allowance; past-due ones get nothing until paid; a mid-period plan change
+    waits for the next period.
+  - Grants are now **issues each**: a role refused above the ceiling no longer stops the plan's
+    credits, and the other way round (`processing.issuesOf`).
+  - **`pay_charge_saved`** (`charge.js`) takes the checkout configuration in payment mode. It
+    charges `customer.ref` (the mirror's customer for the user) with `chargeSavedMethod`, keyed by
+    the payload's `key`, the trigger's row id (a `low_balance` entry), or a new key per call.
+    Otherwise it answers a checkout for the same lines, with `save_card`. The effects ride in the
+    provider's metadata as `sc_effects`, because a webhook can arrive before the action writes
+    the mirror row (the fake delivers in-process, before it answers). `processing.fromMetadata`
+    reads them back. P8's `pay_native_sheet` and P10's `pay_request` can do the same.
+  - The checkout configuration gained `key_from: "fixed"` with `key_value` (an auto top-up names
+    its pack) and `save_card` (Stripe: `setup_future_usage: off_session`, with
+    `customer_creation: always` for a buyer who is no customer yet; the fake keeps a card; Polar
+    keeps cards itself).
+  - Stripe's `chargeSavedMethod` uses the customer's default payment method, else the first one
+    listed. A 402 (`authentication_required`, `card_declined`) is `requires_checkout`, with the
+    PaymentIntent Stripe made. Its live test (`stripe-live.test.mjs`) was not run here.
+  - The fake has saved cards (`setCard`, and **Saved card** buttons on its portal page) that pay,
+    ask to authenticate, or are declined. Each driver of the shared suite has `setCard`.
+  - **A refund keeps the credits.** Nothing but an agent run debits the ledger (§3.8), so a
+    refunded pack's credits stay. An app that minds refunds only unused packs.
+  - **Thresholds have no module or user surface yet** beyond `ctx.credits.setThreshold`. The
+    tutorial turns auto top-up on with an admin-authority `update_rows` on `credit_accounts`,
+    which needs the user's first grant to have made their account row.
+  - The tutorial's server test (`tutorial_payments_credits.rs`) stands in for the agent's model
+    calls with `sc_auth::debit_credits` under the user's caller context, as the agent loop calls
+    it.
 
 ## P8 — Use case 4a: Apple Pay and Google Pay in React Native
 

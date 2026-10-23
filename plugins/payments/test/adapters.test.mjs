@@ -35,11 +35,12 @@ test("a capability the adapter lacks is refused by name", () => {
   const fake = ADAPTERS.fake;
   assert.equal(can(fake, "one_off"), true);
   assert.equal(can(fake, "subscriptions"), true);
-  assert.equal(can(fake, "charge_saved_method"), false);
+  assert.equal(can(fake, "charge_saved_method"), true);
+  assert.equal(can(fake, "native_sheet"), false);
   requireCapability({ name: "shop" }, fake, "one_off");
   assert.throws(
-    () => requireCapability({ name: "shop" }, fake, "charge_saved_method"),
-    /^Error: the fake account "shop" cannot charge a saved card without a checkout page: its adapter does not support it$/,
+    () => requireCapability({ name: "shop" }, fake, "manual_capture"),
+    /^Error: the fake account "shop" cannot [^:]+: its adapter does not support it$/,
   );
   assert.throws(() => can(fake, "teleport"), /not a payment capability/);
   assert.ok(Object.keys(CAPABILITIES).length >= 10);
