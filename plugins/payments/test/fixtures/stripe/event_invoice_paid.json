@@ -1,0 +1,25 @@
+{
+  "id": "evt_1QinvoicePaidCycle",
+  "object": "event",
+  "api_version": "2026-09-30.preview",
+  "created": 1795248200,
+  "data": {
+    "object": {
+      "id": "in_1QrenewalInvoice",
+      "object": "invoice",
+      "amount_paid": 1500,
+      "billing_reason": "subscription_cycle",
+      "currency": "eur",
+      "customer": "cus_Q1w2E3r4T5y6U7",
+      "parent": {
+        "type": "subscription_details",
+        "subscription_details": { "subscription": "sub_1QaBcDeFgHiJkLmN", "metadata": {} }
+      },
+      "status": "paid"
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "invoice.paid"
+}

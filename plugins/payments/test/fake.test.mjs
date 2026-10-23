@@ -34,7 +34,7 @@ test("a checkout charges its lines in minor units, on a page under the shop's ho
     fake.createCheckout(account, { currency: "EUR", lines: [{ unit_amount: 9.99 }] }),
     /whole number/,
   );
-  await assert.rejects(fake.createCheckout(account, { mode: "subscription", currency: "EUR", lines: [] }), /one-off/);
+  await assert.rejects(fake.createCheckout(account, { mode: "subscription", currency: "EUR", lines: [] }), /a subscription checkout is for one price/);
   await assert.rejects(
     fake.createCheckout({ ...account, webhook_secret: "" }, { currency: "EUR", lines: [{ unit_amount: 1 }] }),
     /no webhook signing secret/,

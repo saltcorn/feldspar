@@ -48,7 +48,7 @@ const tables = [
   {
     name: "pay_objects",
     label: "Payment objects",
-    description: "A mirror of the provider's checkouts, payments, customers and subscriptions, as the provider last said they were. The module writes it; a user may read their own.",
+    description: "A mirror of the provider's checkouts, payments, customers and subscriptions, as the provider last said they were. The module writes it; a user may read their own, so an application can show when their plan renews.",
     fields: [
       { name: "account", references: "pay_accounts", required: true, label: "Account" },
       { name: "kind", type: "text", required: true, label: "Kind", description: OBJECT_KINDS.join(", ") },
@@ -61,10 +61,13 @@ const tables = [
       { name: "amount", type: "int", label: "Amount", description: "In the currency's smallest unit" },
       { name: "currency", type: "text", label: "Currency" },
       { name: "price_ref", type: "text", label: "Price", description: "Subscriptions: the provider's price or product" },
-      { name: "current_period_end", type: "timestamp", label: "Period ends" },
+      { name: "current_period_end", type: "timestamp", label: "Period ends", description: "Subscriptions: when the period paid for ends — the renewal date" },
+      { name: "trial_end", type: "timestamp", label: "Trial ends", description: "Subscriptions: when a trial ends, or ended" },
+      { name: "cancel_at_period_end", type: "bool", label: "Ends at period end", description: "Subscriptions: canceled, and running to the end of the period paid for" },
       { name: "lines", type: "json", label: "Lines", description: "The lines as charged" },
       { name: "effects", type: "json", label: "Effects", description: "What the module grants once it is paid" },
       { name: "provider_data", type: "json", label: "Provider data" },
+      { name: "issue", type: "text", label: "Issue", description: "Why the module could not do what it should have for it: a subscription whose price is no plan's, a role it may not grant" },
       { name: "created_at", type: "timestamp", label: "Created" },
       { name: "updated_at", type: "timestamp", label: "Updated" },
     ],

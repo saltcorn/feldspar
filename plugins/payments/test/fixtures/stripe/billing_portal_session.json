@@ -1,0 +1,9 @@
+{
+  "id": "bps_1QpOrTaLsEsSiOn",
+  "object": "billing_portal.session",
+  "created": 1792660000,
+  "customer": "cus_Q1w2E3r4T5y6U7",
+  "livemode": false,
+  "return_url": "https://saas.example.com/account",
+  "url": "https://billing.stripe.com/p/session/test_YWNjdF8xUXBPclRh"
+}

@@ -1,0 +1,19 @@
+{
+  "id": "evt_1QsubUpdatedPastDue",
+  "object": "event",
+  "api_version": "2026-09-30.preview",
+  "created": 1795248120,
+  "data": {
+    "object": {
+      "id": "sub_1QaBcDeFgHiJkLmN",
+      "object": "subscription",
+      "cancel_at_period_end": false,
+      "status": "past_due"
+    },
+    "previous_attributes": { "status": "active" }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "customer.subscription.updated"
+}

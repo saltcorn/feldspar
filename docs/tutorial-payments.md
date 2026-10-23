@@ -389,7 +389,10 @@ https://<your admin host>/_feldspar/hooks/payments/events/stripe
 — the last part is the account's name, and the module's card shows the URL with a copy button —
 for the events `checkout.session.completed`, `payment_intent.succeeded`,
 `payment_intent.payment_failed`, `payment_intent.processing`, `charge.refunded`,
-`charge.dispute.created` and `charge.dispute.closed`. Then set the `checkout` trigger's
+`charge.dispute.created` and `charge.dispute.closed` (and, if you sell subscriptions as in
+[part 2](tutorial-payments-saas.md), `customer.subscription.created`,
+`customer.subscription.updated`, `customer.subscription.deleted` and `invoice.paid`). Then set
+the `checkout` trigger's
 **Payment account** to `stripe`. Nothing else changes: the same `pay_events` rows arrive, and the
 same triggers react to them.
 
@@ -468,3 +471,8 @@ wrong order, and nothing happens twice.
 - **A payment that is not your row's** — made in the provider's dashboard, say — is still logged
   in `pay_events`, with an empty `ref_table`. Events the module does not know are logged as
   `other`, with the provider's raw event, for a trigger that wants them.
+
+## Next
+
+[Part 2](tutorial-payments-saas.md) sells subscriptions: plans in a table of your own, a role for
+each, a free tier, and a trial without a card.

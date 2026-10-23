@@ -217,8 +217,7 @@ impl ServiceSupervisor {
             if manifest.services.is_empty() {
                 continue;
             }
-            let tables: Arc<BTreeSet<String>> =
-                Arc::new(loaded.table_names().into_iter().collect());
+            let tables = Arc::new(TableScope::of(loaded));
             let areas: Arc<Vec<FileArea>> = Arc::new(file_areas(&loaded.table_declarations()));
             let roles = loaded.module.permissions.roles;
             for service in &manifest.services {
@@ -320,7 +319,7 @@ async fn supervise(
     shared: Arc<Shared>,
     module: String,
     service: String,
-    tables: Arc<BTreeSet<String>>,
+    tables: Arc<TableScope>,
     areas: Arc<Vec<FileArea>>,
     roles: Option<u8>,
     mut stop: oneshot::Receiver<()>,
@@ -372,7 +371,7 @@ async fn run_once(
     shared: &Shared,
     module: &str,
     service: &str,
-    tables: &BTreeSet<String>,
+    tables: &TableScope,
     areas: &[FileArea],
     roles: Option<u8>,
     stop: &mut oneshot::Receiver<()>,
@@ -389,7 +388,7 @@ async fn serve_once(
     shared: &Shared,
     module: &str,
     service: &str,
-    tables: &BTreeSet<String>,
+    tables: &TableScope,
     areas: &[FileArea],
     roles: Option<u8>,
     stop: &mut oneshot::Receiver<()>,
@@ -421,7 +420,7 @@ async fn serve_once(
         router: &shared.router,
         module,
         service,
-        tables,
+        tables: &tables.own,
         events,
     };
     // Delivered from a task of its own, in order: a change is a short call into
@@ -493,13 +492,33 @@ async fn deliver(
 // The module's own tables
 // ---------------------------------------------------------------------------
 
+/// The tables a module's service or webhook reaches: the ones it declared,
+/// and the application tables its settings name for reading
+/// ([`crate::reads`], TODO-payments P4.1).
+pub(crate) struct TableScope {
+    /// Declared: read and written.
+    pub(crate) own: BTreeSet<String>,
+    /// Named in its settings: read only.
+    pub(crate) reads: BTreeSet<String>,
+}
+
+impl TableScope {
+    pub(crate) fn of(loaded: &crate::LoadedModule) -> TableScope {
+        TableScope {
+            own: loaded.table_names().into_iter().collect(),
+            reads: loaded.read_names().into_iter().collect(),
+        }
+    }
+}
+
 /// A service's `db`: a [`TableHost`] that answers only plans over the tables
-/// its module declared. A webhook's `ctx.db` is the same (TODO-payments P1.1).
+/// its module declared, and reads of the ones its settings name. A webhook's
+/// `ctx.db` is the same (TODO-payments P1.1).
 pub(crate) struct ScopedTables<'a> {
     pub(crate) inner: TableHost<'a>,
     pub(crate) catalog: &'a Catalog,
     pub(crate) module: &'a str,
-    pub(crate) tables: &'a BTreeSet<String>,
+    pub(crate) tables: &'a TableScope,
     /// What is asking, for the refusals: `service` or `webhook`.
     pub(crate) kind: &'static str,
 }
@@ -530,7 +549,11 @@ impl ScopedTables<'_> {
             .get("table")
             .and_then(Json::as_str)
             .ok_or_else(|| Error::invalid("this database request names no table"))?;
-        self.own(table, None)?;
+        let reading = matches!(
+            request.get("op").and_then(Json::as_str),
+            Some("select" | "aggregate")
+        );
+        self.own(table, None, reading)?;
         if request.get("authority").and_then(Json::as_str) == Some("user") {
             return Err(Error::invalid(format!(
                 "a {} of `{}` has no caller to act as, so `asUser()` means nothing \
@@ -551,17 +574,24 @@ impl ScopedTables<'_> {
             }
         }
         for path in paths {
-            self.walk(table, &path)?;
+            self.walk(table, &path, reading)?;
         }
         Ok(())
     }
 
-    /// `table` is one of the module's, or a refusal naming the ones that are.
-    fn own(&self, table: &str, through: Option<&str>) -> Result<()> {
-        if self.tables.contains(table) {
+    /// `table` is one of the module's — or, for a read, one its settings name
+    /// — or a refusal naming the ones that are.
+    fn own(&self, table: &str, through: Option<&str>, reading: bool) -> Result<()> {
+        if self.tables.own.contains(table) || (reading && self.tables.reads.contains(table)) {
             return Ok(());
         }
-        let declared: Vec<String> = self.tables.iter().map(|t| format!("`{t}`")).collect();
+        if self.tables.reads.contains(table) {
+            return Err(Error::invalid(format!(
+                "a {} of `{}` may read `{table}`, which its settings name, but not write it",
+                self.kind, self.module
+            )));
+        }
+        let declared: Vec<String> = self.tables.own.iter().map(|t| format!("`{t}`")).collect();
         Err(Error::invalid(format!(
             "a {} of `{}` may reach only the tables its module declared ({}), and {} \
              `{table}` is not one of them",
@@ -582,7 +612,7 @@ impl ScopedTables<'_> {
     /// Follow one Ⱶ-path from `table`, refusing a step onto a table that is
     /// not the module's. A step that is not a key is left for the table host to
     /// refuse in its own words.
-    fn walk(&self, table: &str, path: &str) -> Result<()> {
+    fn walk(&self, table: &str, path: &str, reading: bool) -> Result<()> {
         if path.contains('Ↄ') {
             return Err(Error::invalid(format!(
                 "a {} of `{}` cannot follow a relation (`{path}`): it reads its module's \
@@ -603,7 +633,7 @@ impl ScopedTables<'_> {
                 return Ok(());
             };
             current = target_table.0.clone();
-            self.own(&current, Some(path))?;
+            self.own(&current, Some(path), reading)?;
         }
         Ok(())
     }

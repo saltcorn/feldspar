@@ -5171,6 +5171,9 @@ fn module_schema() -> TypeSchema {
         StructField::new("table_providers", TypeSchema::array(TypeSchema::text())),
         // The tables it declares (TODO-imap M4), created when it loaded.
         StructField::new("tables", TypeSchema::array(TypeSchema::text())),
+        // The application tables it reads because its settings name them
+        // (TODO-payments P4.1): read only, by its services and webhooks.
+        StructField::new("reads", TypeSchema::array(TypeSchema::text())),
         // The services it runs in the background (TODO-imap M5), each with its
         // state: `running`, `restarting` (after a failure, with `last_error`)
         // or `stopped`.

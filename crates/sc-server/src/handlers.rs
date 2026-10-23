@@ -9192,6 +9192,9 @@ fn module_json(
         // The tables it declares (TODO-imap M4): created when it loaded, and
         // kept when it is uninstalled.
         "tables": loaded.table_names(),
+        // The application tables it reads because its settings name them
+        // (TODO-payments P4.1): a plans table, say. Read only.
+        "reads": loaded.read_names(),
         // The services it runs in the background (TODO-imap M5), each with
         // where it is: running, restarting after a failure (and why), or
         // stopped. A module that declares one whose task has not been started

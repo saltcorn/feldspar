@@ -89,6 +89,7 @@ function module_(overrides: Partial<Module> = {}): Module {
     functions: [],
     table_providers: [],
     tables: [],
+    reads: [],
     services: [],
     webhooks: [],
     csp_sources: [],

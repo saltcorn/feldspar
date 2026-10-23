@@ -768,6 +768,9 @@ const supportedKeys = new Set([
   "services",
   // The webhooks a module receives (TODO-payments P1.1).
   "webhooks",
+  // The application tables a module reads because its settings name them
+  // (TODO-payments P4.1).
+  "reads",
   // The content-security sources a module suggests (TODO-payments P1.4).
   "csp",
   // Saltcorn UI (TODO "Saltcorn UI" §6): view patterns, and the scripts and
@@ -1638,6 +1641,43 @@ async function evalTables(plugin, configuration) {
   return { tables, issues };
 }
 
+/** This system's `reads` key (TODO-payments P4.1): the application tables a
+ * module's services and webhooks read beside its own — a plans table its
+ * settings name, say.
+ *
+ * ```js
+ * reads: (configuration) => (configuration.plans_table ? [configuration.plans_table] : []),
+ * ```
+ *
+ * A list of names, or a function of the module's configuration returning one.
+ * The server admits a name only when the module's stored configuration holds
+ * it (`sc_module::reads`), so what is answered here is a request. */
+async function evalReads(plugin, configuration) {
+  const exported = plugin.reads;
+  const issues = [];
+  let raw = [];
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(configuration || {})) || [];
+    } catch (e) {
+      issues.push(`the tables it reads could not be worked out: ${e.message}`);
+      raw = [];
+    }
+  } else if (exported) {
+    raw = exported;
+  }
+  if (!Array.isArray(raw)) {
+    issues.push("its `reads` is not a list of table names");
+    return { reads: [], issues };
+  }
+  const reads = [];
+  for (const value of raw) {
+    if (typeof value === "string" && value.trim()) reads.push(value.trim());
+    else issues.push(`its \`reads\` names ${JSON.stringify(value)}, which is not a table name`);
+  }
+  return { reads, issues };
+}
+
 /** The loaded stream provider, or a sentence naming what is missing. */
 function requireStreamProvider(name, providerName) {
   const entry = loaded.get(name);
@@ -2396,6 +2436,9 @@ async function loadModule({ module: name, dir, configuration }) {
   const { csp, issues: cspIssues } = await evalCsp(plugin, configuration);
   issues.push(...cspIssues);
 
+  const { reads, issues: readIssues } = await evalReads(plugin, configuration);
+  issues.push(...readIssues);
+
   const {
     frameworks,
     set: frameworkSet,
@@ -2448,6 +2491,7 @@ async function loadModule({ module: name, dir, configuration }) {
     tables,
     services: serviceList,
     webhooks: webhookList,
+    reads,
     csp,
     frameworks,
     view_patterns: viewPatterns,

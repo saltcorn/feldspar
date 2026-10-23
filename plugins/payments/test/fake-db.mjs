@@ -19,6 +19,8 @@ function matches(row, where) {
     if (cond === null) {
       if (value !== null) return false;
     } else if (typeof cond === "object" && !Array.isArray(cond)) {
+      // As the server's chain: one operator per condition; repeat .where() for more.
+      if (Object.keys(cond).length !== 1) throw new Error(`fake db: ${key} has ${Object.keys(cond).length} operators; the server takes one`);
       for (const [op, arg] of Object.entries(cond)) {
         if (op === "in" && !arg.includes(value)) return false;
         if (op === "ne" && value === arg) return false;
@@ -105,7 +107,8 @@ export function fakeDb(seed = {}, { canRead = () => true } = {}) {
     };
   };
   const formulas = (row, formula) => {
-    // The formulas the tests write: a field, or `a * b` over two.
+    // The formulas the tests write: a number, a field, or `a * b` over two.
+    if (/^\s*-?\d+\s*$/.test(formula)) return Number(formula);
     const product = /^\s*(\w+)\s*\*\s*(\w+)\s*$/.exec(formula);
     if (product) return row[product[1]] * row[product[2]];
     if (/^\s*\w+\s*$/.test(formula)) return row[formula.trim()];

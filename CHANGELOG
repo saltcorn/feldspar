@@ -2,6 +2,104 @@
 
 Changes in reverse chronological order.
 
+## Payments P4: subscriptions
+
+TODO-payments.md milestone P4: a signed-in user subscribes to a row of the application's own
+plans table, and is granted that plan's role for as long as the subscription lasts. This works
+on the test provider and on Stripe.
+
+**The plan binding (P4.1).** The payments module now has settings: the plans table, the field
+holding each account's price (`stripe_price`, or `shop=stripe_price, polar=polar_product`), the
+role field and a grace period in days. Its actions are a function of those settings, so
+`pay_checkout` can default a plan's price from them. Whenever the provider reports a
+subscription, processing fetches its current state and looks up the plan by its current price.
+It then upserts one role grant per subscription (`<account>:<subscription>`):
+
+- `trialing` or `active`: the plan's role to the trial's or period's end, plus grace;
+- canceled at the period's end: kept exactly to that end;
+- `past_due`: left alone;
+- anything else: revoked.
+
+A plan changed in the provider's portal moves the role. A price that is no plan's, a role above
+the module's ceiling, or a subscription with no user grants nothing. Instead, the reason goes on
+the mirror row's new `issue` column and is logged. The sweep now also re-reads every live
+subscription in the mirror and re-applies its grant, so fixing a binding or a ceiling takes effect
+at the next sweep or `pay_sync`. The module's manifest asks for the role ceiling 50, which the
+install grants.
+
+`pay_checkout` has a `subscription` mode: a price formula (empty means the binding's field on a
+plan row), quantity and trial days. A guest is refused it, and so are effects. The mirror gains
+`trial_end` and `cancel_at_period_end` columns, and a `customer` row per provider customer with
+its user. A second checkout reuses that customer. The one-off *grant a role* effect is now
+applied, per payment, and revoked when the payment is fully refunded.
+
+**Core: a module reads a table its settings name.** A new module key, `reads` (a list, or a
+function of the configuration). A module's services and webhooks may now **read** the tables it
+lists, never write them, and only those the module's stored settings name. Anything else is an
+issue on the card. The card lists them as `reads`: the schema changed, and the four admin clients
+are regenerated. `module_seams` tests it with the webhook fixture module, which reads a table its
+settings name, is refused a write to it, and is refused `users`.
+
+**Core: literals in a select list carry their type.** `SELECT $1 AS "q"` gave Postgres nothing
+to type the placeholder by, so an integer bound to it was refused (`select({ quantity: "1" })`,
+which is `pay_checkout`'s default quantity). A bare numeric or boolean literal in a projection is
+now rendered as `CAST($1 AS BIGINT)` (or `DOUBLE PRECISION`, `BOOLEAN`).
+
+**Trials with the card up front (P4.2).** *Trial days* on a subscription checkout. The test
+provider's subscriptions have a test clock: renew, renew with a declined card (past due, with the
+period moved on as Stripe moves it), and retry. Tests cover a trial that converts and one that
+is canceled before it ends, and a renewal that fails and then recovers within grace. They run on
+the test provider, and on Stripe test clocks in `stripe-live.test.mjs`, which runs only with
+`STRIPE_TEST_SECRET_KEY`.
+
+**The portal, plan changes and cancelling (P4.3).**
+
+- `pay_portal` answers the provider's customer portal for the signed-in caller.
+- `pay_change_subscription` takes `{ plan }`, a row of the plans table, with a proration
+  setting.
+- `pay_cancel_subscription` cancels at the period's end, or now.
+
+All three act on the caller's own subscription only. The test provider's portal page changes
+plan (offering the binding's prices), cancels, and has the test clock's buttons. Stripe gets
+billing portal sessions, item price changes, and cancellation (scheduled, or `DELETE`). Its new
+events are `customer.subscription.created/updated/deleted` (updated is read by its
+`previous_attributes`) and `invoice.paid` (a renewal when `billing_reason` is
+`subscription_cycle`). `current_period_end` is read from the subscription, or from its item since
+API version 2025-03-31. An adapter's `kinds(event)` may now answer `null`: sync the object, log
+nothing.
+
+**Owner-readable subscriptions (P4.4).** A subscriber reads their own subscription and customer
+rows from `pay_objects` through REST, with the renewal date. Another user reads none of them.
+
+**Tutorial part 2 (P4.5).** `docs/tutorial-payments-saas.md`, Brew Notes:
+
+- a `plans` table, a free tier at role 80, Basic (70) and Pro (60);
+- tables whose ownership formulas are the paywall (`user.role <= 70`);
+- a card-less trial: `grant_role` on `login`, with `once`;
+- the pricing and account pages;
+- the portal, and a daily trial-ending reminder written from building blocks.
+
+Part 1 links to it, and lists the subscription events for Stripe's endpoint. The modules
+tutorial has a step on `reads`.
+
+Tests:
+
+- `plugins/payments/test/plans.test.mjs`: the binding, and §6.2's table row by row.
+- `plugins/payments/test/subscriptions.test.mjs`, on the fake: grants, renewal, failed renewal and
+  recovery, trial with and without conversion, plan change by action and in the portal,
+  cancellation, unbound price, refused grant, the sweep, customer reuse, and the one-off pass.
+- Stripe recorded-response tests for the subscription checkout, both period shapes, the events,
+  processing a renewal, the portal, plan change and cancellation.
+- `payments_module.rs::a_subscription_grants_its_plans_role_and_the_portal_moves_it`, on a real
+  server.
+- `tutorial_payments_saas.rs`, which builds Brew Notes as the tutorial does.
+
+`tutorial_payments.rs` now shares its server boot (`boot`) with part 2.
+
+Corrected in the design: a card-less trial hangs off `login`. Sign-up inserts the user below the
+row layer, so a `users` insert trigger never fires. The code-body `where` takes one operator per
+field condition, and the in-memory test `db` now enforces that too.
+
 ## Payments P3: role grants
 
 TODO-payments.md milestone P3: a user can hold a role for a while beside the one an admin set,

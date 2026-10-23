@@ -14,19 +14,29 @@
 // - `webhooks.js`: each account's provider events, and the fake provider's checkout page;
 // - `processing.js`: what a provider event does — the mirror, and the `pay_events` rows;
 // - `checkout.js`, `refunds.js`: `pay_checkout`'s configuration, and `pay_refund`;
+// - `plans.js`: the plan binding in the module's settings, and what a subscription grants;
+// - `subscriptions.js`: `pay_portal`, `pay_change_subscription`, `pay_cancel_subscription`;
 // - `service.js`: the reconcile sweep, which also keeps the accounts for `pay_api`;
 // - `actions.js`: the actions an application calls.
 
 "use strict";
 
 const { tables } = require("./tables.js");
-
-/** The actions, each `run` requiring `actions.js` when first used. */
-const ACTIONS = require("./actions.js").actions;
+const { PLAN_FIELDS, planBinding } = require("./plans.js");
 
 module.exports = {
   sc_plugin_api_version: 1,
   tables,
+  // The module's settings: the plan binding (§6.2).
+  configuration_workflow: () => ({
+    steps: [{ name: "Plans", form: { fields: PLAN_FIELDS } }],
+  }),
+  // The plans table the binding names, which the webhook and the sweep read to know which role
+  // a subscription's price gives. The server admits it only because the settings name it.
+  reads: (configuration) => {
+    const binding = planBinding(configuration);
+    return binding ? [binding.table] : [];
+  },
   webhooks: {
     events: {
       description: "Each account's provider events, at events/<account name>",
@@ -38,7 +48,7 @@ module.exports = {
       handle: (req, ctx) => require("./webhooks.js").fakeProvider(req, ctx),
     },
   },
-  actions: ACTIONS,
+  actions: (configuration) => require("./actions.js").actionsFor(configuration),
   services: {
     reconcile: {
       description: "Every few hours, processes the provider events that were never delivered",

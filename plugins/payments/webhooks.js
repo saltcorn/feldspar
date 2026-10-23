@@ -6,15 +6,18 @@
 //   stores nothing. What verified is processed (`processing.js`): each object's current state is
 //   fetched into the mirror and the normalised `pay_events` rows inserted, once each. A failure
 //   there throws, which the server answers as a 500 — logged, and retried by the provider.
-// - `fake/<account name>/checkout/<id>[/pay|/fail|/cancel]` and
-//   `fake/<account name>/events/<event id>/resend`: the fake provider's checkout page and its
-//   webhook log, for accounts on the `fake` adapter only.
+// - `fake/<account name>/checkout/<id>[/pay|/fail|/cancel]`,
+//   `fake/<account name>/portal/<session>[/<subscription>/<action>]` and
+//   `fake/<account name>/events/<event id>/resend`: the fake provider's checkout page, its
+//   customer portal (with its test clock), and its webhook log, for accounts on the `fake`
+//   adapter only.
 
 "use strict";
 
 const { usableAccount } = require("./accounts.js");
 const fake = require("./adapters/fake.js");
 const { processEvents } = require("./processing.js");
+const plans = require("./plans.js");
 
 /** `rest` cut into its path segments. */
 const segments = (rest) => String(rest || "").split("/").filter(Boolean);
@@ -38,7 +41,7 @@ async function events(req, ctx) {
     ctx.log.warn(`payments: a webhook for "${name}" was refused: ${e.message}`);
     return json(400, { error: e.message });
   }
-  const results = await processEvents(ctx.db, found.account, found.adapter, received);
+  const results = await processEvents(ctx, found.account, found.adapter, received);
   return json(200, { received: results });
 }
 
@@ -118,10 +121,124 @@ ${sent}
 </body></html>`;
 }
 
-/** `fake/<account>/checkout/<id>[/<action>]` and `fake/<account>/events/<id>/resend`. */
+/** What each button of the portal does: the adapter's call, and its arguments. */
+const PORTAL_ACTIONS = {
+  change: (account, sub, form, deliver) => fake.changePlan(account, sub, form.get("price"), {}, deliver),
+  cancel: (account, sub, form, deliver) => fake.cancel(account, sub, { at_period_end: true }, deliver),
+  cancel_now: (account, sub, form, deliver) => fake.cancel(account, sub, { at_period_end: false }, deliver),
+  renew: (account, sub, form, deliver) => fake.advance(account, sub, "succeeded", deliver),
+  renew_fail: (account, sub, form, deliver) => fake.advance(account, sub, "failed", deliver),
+  retry: (account, sub, form, deliver) => fake.retry(account, sub, "succeeded", deliver),
+  retry_fail: (account, sub, form, deliver) => fake.retry(account, sub, "failed", deliver),
+};
+
+/** A posted form's fields: form-encoded, or JSON. */
+function formOf(req) {
+  const text = Buffer.from(req.rawBody || "").toString("utf8");
+  if (String((req.headers || {})["content-type"] || "").includes("json")) {
+    try {
+      return new Map(Object.entries(JSON.parse(text || "{}")).map(([k, v]) => [k, String(v)]));
+    } catch (_) {
+      return new Map();
+    }
+  }
+  return new Map(new URLSearchParams(text));
+}
+
+/** The prices the portal offers for a plan change: each plan's price for this account, from the
+ * plan binding, when the module's settings have one. */
+async function planChoices(ctx, account) {
+  const binding = plans.planBinding(ctx.configuration);
+  const field = plans.priceField(binding, account.name);
+  if (!field) return [];
+  try {
+    const rows = await ctx.db[binding.table].rows();
+    return rows.map((r) => r[field]).filter((v) => typeof v === "string" && v);
+  } catch (_) {
+    return [];
+  }
+}
+
+/** The portal page: the customer's subscriptions, with what the customer can do to each, and
+ * the test clock's buttons beside them. */
+function portalPage(path, view, choices) {
+  const { session, customer, subscriptions } = view;
+  const button = (sub, action, label) =>
+    `<form method="post" action="${esc(`${path}/${sub.id}/${action}`)}"><button type="submit">${label}</button></form>`;
+  const change = (sub) => {
+    const input = choices.length
+      ? `<select name="price">${choices.map((c) => `<option${c === sub.price ? " selected" : ""}>${esc(c)}</option>`).join("")}</select>`
+      : `<input name="price" value="${esc(sub.price)}" aria-label="Price">`;
+    return `<form method="post" action="${esc(`${path}/${sub.id}/change`)}">${input} <button type="submit">Change plan</button></form>`;
+  };
+  const date = (seconds) => (seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : "");
+  const items = subscriptions
+    .map((sub) => {
+      const live = sub.status !== "canceled";
+      const ends = sub.cancel_at_period_end ? `ends ${date(sub.current_period_end)}` : `renews ${date(sub.current_period_end)}`;
+      const customerButtons = live
+        ? `${change(sub)}${sub.cancel_at_period_end ? "" : button(sub, "cancel", "Cancel at period end")}${button(sub, "cancel_now", "Cancel now")}`
+        : "";
+      const clock = live
+        ? `<p class="clock">Test clock: ${button(sub, "renew", sub.status === "trialing" ? "End the trial (pay)" : "Renew (pay)")}${button(
+            sub,
+            "renew_fail",
+            sub.status === "trialing" ? "End the trial (card declined)" : "Renew (card declined)",
+          )}${sub.status === "past_due" ? `${button(sub, "retry", "Retry (pay)")}${button(sub, "retry_fail", "Retry (declined)")}` : ""}</p>`
+        : "";
+      return `<li><strong>${esc(sub.price)}</strong> × ${esc(sub.quantity)} · ${esc(sub.amount_text)} · <span class="status">${esc(sub.status)}</span>${
+        live ? ` · ${esc(ends)}` : ""
+      }${customerButtons ? `<div>${customerButtons}</div>` : ""}${clock}</li>`;
+    })
+    .join("");
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Test customer portal</title>
+<style>body{font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem}
+.notice{background:#fff3cd;padding:.5rem 1rem;border-radius:.25rem}.clock{color:#555}
+li{margin-bottom:1rem}form{display:inline-block;margin:.25rem .5rem .25rem 0}button{font-size:1rem;padding:.4rem .8rem}</style></head><body>
+<p class="notice">A <strong>test</strong> customer portal: no money moves. The test clock moves a subscription to the end of its period.</p>
+<h1>${esc(customer.email || customer.id)}</h1>
+<ul>${items || "<li>No subscriptions.</li>"}</ul>
+${session.return_url ? `<p><a href="${esc(session.return_url)}">Back</a></p>` : ""}
+</body></html>`;
+}
+
+/** `fake/<account>/portal/<session>[/<subscription>/<action>]`. */
+async function fakePortal(req, ctx, account, id, subId, action, base) {
+  const path = `${base}/portal/${id}`;
+  const view = fake.portal(account, id);
+  if (!view) return json(404, { error: `there is no test portal session ${id}` });
+  if (req.method === "GET") {
+    if (subId) return json(405, { error: "press the button: the portal's actions are posted" });
+    if (req.query.format === "json") return json(200, view);
+    return {
+      status: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        "cache-control": "no-store",
+      },
+      body: portalPage(path, view, await planChoices(ctx, account)),
+    };
+  }
+  const run = PORTAL_ACTIONS[action];
+  if (!subId || !run) return json(404, { error: `"${action}" is not something the portal does; it does ${Object.keys(PORTAL_ACTIONS).join(", ")}` });
+  if (!view.subscriptions.some((s) => s.id === subId)) return json(404, { error: `the subscription ${subId} is not this customer's` });
+  let subscription;
+  try {
+    subscription = await run(account, subId, formOf(req), deliverTo(account, ctx));
+  } catch (e) {
+    return json(409, { error: e.message });
+  }
+  if (req.query.format === "json") return json(200, subscription);
+  return { status: 303, headers: { location: path, "cache-control": "no-store" } };
+}
+
+/** `fake/<account>/checkout/<id>[/<action>]`, `fake/<account>/portal/…` and
+ * `fake/<account>/events/<id>/resend`. */
 async function fakeProvider(req, ctx) {
-  const [name, what, id, action] = segments(req.rest);
-  if (!name || (what !== "checkout" && what !== "events") || !id) return json(404, { error: "no such page of the test provider" });
+  const [name, what, id, action, more] = segments(req.rest);
+  if (!name || !["checkout", "events", "portal"].includes(what) || !id) return json(404, { error: "no such page of the test provider" });
   let found;
   try {
     found = await usableAccount(ctx.db, name);
@@ -133,6 +250,7 @@ async function fakeProvider(req, ctx) {
   const base = `/_feldspar/hooks/payments/fake/${encodeURIComponent(account.name)}`;
   const path = `${base}/checkout/${id}`;
   const back = (location) => ({ status: 303, headers: { location, "cache-control": "no-store" } });
+  if (what === "portal") return fakePortal(req, ctx, account, id, action, more, base);
 
   if (what === "events") {
     if (req.method !== "POST" || action !== "resend") return json(405, { error: "an event is resent with POST …/events/<id>/resend" });
@@ -169,4 +287,4 @@ async function fakeProvider(req, ctx) {
   return back(checkout.status === "complete" ? checkout.success_url : path);
 }
 
-module.exports = { events, deliverTo, fakeProvider, page, pagePolicy };
+module.exports = { events, deliverTo, fakeProvider, page, pagePolicy, portalPage };

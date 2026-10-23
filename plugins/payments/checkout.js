@@ -10,6 +10,7 @@
 const { usableAccount } = require("./accounts.js");
 const { requireCapability } = require("./capabilities.js");
 const { currencyCode, requireAmount } = require("./money.js");
+const plans = require("./plans.js");
 
 const TAX = ["none", "provider", "merchant_of_record"];
 
@@ -52,6 +53,24 @@ const CHECKOUT_FIELDS = [
   { name: "unit_amount", label: "Unit amount", type: "String", showIf: { lines: "children" }, sublabel: "A formula over the child row, in the smallest unit: productⱵprice" },
   { name: "line_description", label: "Line description", type: "String", showIf: { lines: "children" }, sublabel: "A formula over the child row: productⱵname" },
   { name: "item", label: "Item", type: "String", showIf: { lines: "children" }, sublabel: "A formula over the child row naming what is sold: product" },
+  { input_type: "section_header", label: "Subscription" },
+  {
+    name: "price_ref",
+    label: "Price",
+    type: "String",
+    showIf: { mode: "subscription" },
+    sublabel:
+      'A formula over the row giving the provider\'s price: stripe_price on a plan, or planⱵstripe_price, or a literal "price_123". ' +
+      "Empty, when the row is a plan, is the plan binding's price field",
+  },
+  { name: "subscription_quantity", label: "Quantity", type: "String", default: "1", showIf: { mode: "subscription" }, sublabel: "A formula over the row: seats" },
+  {
+    name: "trial_days",
+    label: "Trial days",
+    type: "String",
+    showIf: { mode: "subscription" },
+    sublabel: "A number, or a formula over the row: days of free trial, with the card taken now and charged when it ends",
+  },
   { name: "currency", label: "Currency", type: "String", required: true, sublabel: "A three-letter code (EUR), or a formula over the row: currency" },
   { input_type: "section_header", label: "Customer, tax and shipping" },
   { name: "email", label: "Email", type: "String", sublabel: "A formula over the row, for a buyer who is not signed in: email. A signed-in buyer's own address is used otherwise" },
@@ -151,16 +170,16 @@ async function chargedLines(db, configuration, table, key) {
  * the row it is for. Refuses, by name, an account that cannot be used, a capability its adapter
  * lacks, a row the caller cannot read, and a total of nothing.
  */
-async function prepareCheckout({ configuration = {}, payload, row, user, session, app, db }) {
+async function prepareCheckout({ configuration = {}, payload, row, user, session, app, db, moduleConfiguration }) {
   const { account, adapter } = await usableAccount(db, configuration.account);
   const mode = configuration.mode || "payment";
+  if (mode !== "payment" && mode !== "subscription") throw new Error(`a checkout's mode is payment or subscription, not "${mode}"`);
   if (mode === "subscription") {
     requireCapability(account, adapter, "subscriptions");
-    throw new Error("pay_checkout takes one-off payments so far; subscription checkouts are not built yet");
+  } else {
+    requireCapability(account, adapter, "one_off");
+    requireCapability(account, adapter, "adhoc_prices");
   }
-  if (mode !== "payment") throw new Error(`a checkout's mode is payment or subscription, not "${mode}"`);
-  requireCapability(account, adapter, "one_off");
-  requireCapability(account, adapter, "adhoc_prices");
 
   const table = String(configuration.table || "").trim();
   if (!table) throw new Error("the checkout needs the table setting: the application table whose row is paid for");
@@ -179,13 +198,19 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
   // that the application's `id === row.ref_key` finds the row again (§5).
   const refKey = source[pk] === undefined || source[pk] === null ? key : source[pk];
 
-  const lines = await chargedLines(db, configuration, table, key);
-  let total = 0;
-  for (const l of lines) {
-    total += l.quantity * l.unit_amount;
-    if (!Number.isSafeInteger(total)) throw new Error("the checkout's total is too large to count exactly");
+  let lines;
+  let total = null;
+  if (mode === "subscription") {
+    lines = [await subscriptionLine(db, configuration, table, key, account, adapter, moduleConfiguration)];
+  } else {
+    lines = await chargedLines(db, configuration, table, key);
+    total = 0;
+    for (const l of lines) {
+      total += l.quantity * l.unit_amount;
+      if (!Number.isSafeInteger(total)) throw new Error("the checkout's total is too large to count exactly");
+    }
+    if (total === 0) throw new Error(`there is nothing to pay for ${table} ${JSON.stringify(refKey)}: its lines come to 0`);
   }
-  if (total === 0) throw new Error(`there is nothing to pay for ${table} ${JSON.stringify(refKey)}: its lines come to 0`);
 
   // The row's other formulas, read in one go.
   const select = {};
@@ -199,6 +224,13 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
 
   const signedIn = user && user.id !== undefined && user.id !== null && !user.module;
   const email = signedIn && user.email ? user.email : blank(values.email) ? null : String(values.email);
+  // A subscription is somebody's: its role is granted to the user who took it out.
+  if (mode === "subscription" && !signedIn) {
+    throw new Error("a subscription is taken out by a signed-in user: its role is granted to them, and a guest has no account to grant it to");
+  }
+  // The provider customer this user already is on the account, so that a second checkout (a
+  // top-up, another plan) is the same customer, with the same saved card (§5).
+  const known = signedIn ? await db.pay_objects.where({ account: account.id, kind: "customer", user_id: user.id }).first() : null;
 
   const tax = configuration.tax || "none";
   if (!TAX.includes(tax)) throw new Error(`tax is ${TAX.join(", ")}, not "${tax}"`);
@@ -223,6 +255,9 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
   for (const c of countries) if (!/^[A-Z]{2}$/.test(c)) throw new Error(`"${c}" is not a two-letter country code`);
 
   const effects = {};
+  if (mode === "subscription" && (!blank(configuration.grant_credits) || !blank(configuration.grant_role))) {
+    throw new Error("effects are for one-off payments: a subscription's role and credits come from the plan binding in the payments module's settings");
+  }
   if (!blank(configuration.grant_credits)) {
     effects.credits = { amount: requireAmount(values.credits, "the credits to grant") };
     if (!blank(configuration.credits_expire_days)) effects.credits.expire_days = requireAmount(Number(configuration.credits_expire_days), "the days credits last");
@@ -241,7 +276,7 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
     lines,
     total,
     currency,
-    customer: { email, user_id: signedIn ? user.id : null },
+    customer: { email, user_id: signedIn ? user.id : null, ref: known ? known.provider_ref : null },
     session: session ? session.id : null,
     tax,
     shipping: shipping ? { countries } : null,
@@ -253,6 +288,41 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
     // has never seen still says which row it was for (§5).
     // Provider metadata is text, so the key is kept as JSON: `12` and `"12"` stay apart.
     metadata: { sc_ref_table: table, sc_ref_key: JSON.stringify(refKey), ...(signedIn ? { sc_user_id: String(user.id) } : {}) },
+  };
+}
+
+/** A subscription checkout's one line: the provider's price, from the configuration's formula
+ * over the row — or, when the row is one of the plan binding's plans and no formula is given,
+ * from the binding's price field for this account — its quantity, and its trial. */
+async function subscriptionLine(db, configuration, table, key, account, adapter, moduleConfiguration) {
+  const select = {};
+  const binding = plans.planBinding(moduleConfiguration);
+  if (!blank(configuration.price_ref)) select.price_ref = configuration.price_ref;
+  else if (binding && binding.table === table && plans.priceField(binding, account.name)) select.price_ref = plans.priceField(binding, account.name);
+  else {
+    throw new Error(
+      `a subscription checkout needs the price setting: a formula over the ${table} row giving the provider's price ` +
+        `(or make the row a plan of the plan binding in the payments module's settings)`,
+    );
+  }
+  select.quantity = blank(configuration.subscription_quantity) ? "1" : configuration.subscription_quantity;
+  const trial = blank(configuration.trial_days) ? null : String(configuration.trial_days).trim();
+  if (trial !== null && !/^\d+$/.test(trial)) select.trial_days = trial;
+  if (!blank(configuration.description)) select.description = configuration.description;
+  const values = (await db[table].select(select).get(key)) || {};
+  if (blank(values.price_ref) || typeof values.price_ref !== "string") {
+    throw new Error(`the ${table} row ${JSON.stringify(key)} has no price to subscribe to: its price formula gives ${JSON.stringify(values.price_ref)}`);
+  }
+  const quantity = requireAmount(values.quantity, "the subscription's quantity");
+  if (quantity === 0) throw new Error("a subscription of quantity 0 subscribes to nothing");
+  const trialDays = trial === null ? 0 : requireAmount(/^\d+$/.test(trial) ? Number(trial) : values.trial_days, "the trial's days");
+  if (trialDays > 0) requireCapability(account, adapter, "trial_with_card");
+  return {
+    description: blank(values.description) ? null : String(values.description),
+    price_ref: values.price_ref,
+    quantity,
+    trial_days: trialDays,
+    item: null,
   };
 }
 
@@ -284,7 +354,8 @@ async function recordCheckout(db, prepared, created) {
   return db.pay_objects.insert({ ...key, ...values, created_at: now });
 }
 
-/** `pay_checkout`: a hosted checkout for an application row, answered as its URL. */
+/** `pay_checkout`: a hosted checkout for an application row, answered as its URL. For a
+ * subscription the amount is the provider's price, known once the checkout is made. */
 async function payCheckout(argument) {
   const prepared = await prepareCheckout(argument);
   const created = await prepared.adapter.createCheckout(prepared.account, {
@@ -300,6 +371,10 @@ async function payCheckout(argument) {
     client_reference: `${prepared.table}:${prepared.key}`,
     metadata: prepared.metadata,
   });
+  if (prepared.total === null && created.object && Number.isSafeInteger(created.object.amount)) {
+    prepared.total = created.object.amount;
+    prepared.currency = created.object.currency || prepared.currency;
+  }
   const mirrored = await recordCheckout(argument.db, prepared, created);
   return { id: mirrored.id, checkout: created.id, url: created.url, amount: prepared.total, currency: prepared.currency };
 }

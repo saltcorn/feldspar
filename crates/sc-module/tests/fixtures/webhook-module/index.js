@@ -1,11 +1,26 @@
 // A module that receives webhooks (TODO-payments P1.1): it records what it was
 // sent, byte for byte, in a table of its own, and answers with a status the
-// caller chooses.
+// caller chooses. It also reads a table its settings name (P4.1's `reads`), and
+// asks to read `users`, which no setting names.
 
 const crypto = require("crypto");
 
+/** What `call` did: its answer, or the refusal. */
+const outcome = async (call) => {
+  try {
+    return { ok: await call() };
+  } catch (e) {
+    return { refused: e.message };
+  }
+};
+
 module.exports = {
   sc_plugin_api_version: 1,
+  configuration_workflow: () => ({
+    steps: [{ name: "Lookup", form: { fields: [{ name: "lookup_table", label: "Lookup table", type: "String" }] } }],
+  }),
+  // The table its settings name — and `users`, which they do not, so is not admitted.
+  reads: (configuration) => [configuration.lookup_table, "users"].filter(Boolean),
   tables: [
     {
       name: "hook_deliveries",
@@ -57,6 +72,22 @@ module.exports = {
         ctx.log.info(`delivery ${row.id} of ${req.rawBody.length} bytes`);
         const status = Number(req.headers["x-answer-status"] || 200);
         return { status, body: { received: req.rawBody.length, sha256: sha, method: req.method } };
+      },
+    },
+    // Reads the table its settings name, tries to write it, and tries to read
+    // `users`, answering what each did.
+    lookup: {
+      description: "Reads the lookup table",
+      handle: async (req, ctx) => {
+        const table = ctx.configuration.lookup_table;
+        return {
+          status: 200,
+          body: {
+            read: await outcome(() => ctx.db[table].count()),
+            write: await outcome(() => ctx.db[table].insert({ note: "from the webhook" })),
+            users: await outcome(() => ctx.db.users.count()),
+          },
+        };
       },
     },
     // A bare function is its own handler, and may answer text.

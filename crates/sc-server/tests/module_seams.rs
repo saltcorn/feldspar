@@ -5,6 +5,8 @@
 //!   reaches the module's handler with its body and headers byte for byte, the
 //!   handler writes to its own tables and nowhere else, and the status it
 //!   answers is what the caller gets;
+//! - the application tables it **reads** because its settings name them
+//!   (P4.1): read, never written, and only the ones the settings name;
 //! - the **content-security sources** it suggests (P1.4): listed on its card,
 //!   and in an application's policy only once switched on for it.
 //!
@@ -253,7 +255,7 @@ async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_e
     // P1.2: the installed card lists each webhook with the path it is served
     // at — the package's name without its scope.
     let webhooks = installed["webhooks"].as_array().unwrap();
-    assert_eq!(webhooks.len(), 3, "{installed}");
+    assert_eq!(webhooks.len(), 4, "{installed}");
     let deliver_card = webhooks
         .iter()
         .find(|w| w["name"] == json!("deliver"))
@@ -382,6 +384,68 @@ async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_e
     .await;
     assert_eq!(answer.status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(deliveries(&server.catalog).await.len(), 2);
+
+    // P4.1: a module reads an application table only once its settings name
+    // it. Unconfigured, it asks for `users` alone, and is refused it by name.
+    assert_eq!(installed["reads"], json!([]), "{installed}");
+    let issues = installed["issues"].to_string();
+    assert!(
+        issues.contains("asks to read the table `users`, which its settings do not name"),
+        "{issues}"
+    );
+    sc_api::schema_edit::apply(
+        &server.catalog,
+        &[sc_api::schema_edit::Operation::CreateTable {
+            name: "notes".into(),
+            database: String::new(),
+            settings: sc_api::schema_edit::TableSettings::default(),
+            fields: vec![sc_api::schema_edit::FieldSpec {
+                name: "note".into(),
+                type_name: "text".into(),
+                ..sc_api::schema_edit::FieldSpec::default()
+            }],
+        }],
+        &sc_api::schema_edit::ApplyOptions::default(),
+    )
+    .await?;
+    let notes = server.catalog.require("notes")?;
+    sc_api::rows::create_row(&server.catalog, &notes, &json!({ "note": "kept" })).await?;
+    let id = installed["id"].as_str().unwrap().to_owned();
+    let (status, configured) = server
+        .admin
+        .send(
+            "PUT",
+            &format!("/api/modules/{id}"),
+            Some(json!({ "configuration": { "lookup_table": "notes" } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{configured}");
+    assert_eq!(configured["reads"], json!(["notes"]), "{configured}");
+    let answer = deliver(
+        &server.router,
+        "/_feldspar/hooks/webhook/lookup",
+        &[],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK);
+    let looked: Value = serde_json::from_slice(&answer.body).unwrap();
+    assert_eq!(looked["read"], json!({ "ok": 1 }), "{looked}");
+    let write = looked["write"]["refused"].as_str().unwrap_or_default();
+    assert!(
+        write.contains("may read `notes`, which its settings name, but not write it"),
+        "{looked}"
+    );
+    let users = looked["users"]["refused"].as_str().unwrap_or_default();
+    assert!(users.contains("may reach only the tables"), "{looked}");
+    assert_eq!(
+        sc_api::rows::list_rows(&server.catalog, &notes)
+            .await?
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+        "the webhook wrote a table it may only read"
+    );
     Ok(())
 }
 

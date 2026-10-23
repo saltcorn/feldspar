@@ -7,10 +7,12 @@
 // API is what the package wraps: `client(account)` hands `pay_api` and `pay_provider_code` the
 // same authenticated requests, so any Stripe endpoint is reachable (§3.5).
 //
-// One-off payments so far: a Checkout Session with ad-hoc prices, Stripe Tax, shipping address
+// One-off payments: a Checkout Session with ad-hoc prices, Stripe Tax, shipping address
 // collection, Managed Payments (never with shipping: a merchant of record sells digital goods
-// only), refunds, and webhook verification. Subscriptions, the portal, saved cards, the native
-// sheet and manual capture are later milestones (P4, P7, P8, P10); its capabilities say what
+// only), refunds, and webhook verification. Subscriptions (P4): a Checkout Session in
+// subscription mode for a Stripe price, with a trial; the subscription's own events and its
+// renewals' invoices; the customer portal; plan changes and cancellation. Saved cards, the
+// native sheet and manual capture are later milestones (P7, P8, P10); its capabilities say what
 // Stripe can do, and the actions refuse what is not built yet.
 
 "use strict";
@@ -116,9 +118,24 @@ async function request(account, method, path, params, { idempotencyKey } = {}) {
   return json;
 }
 
+/** The subscription an invoice is for: `subscription` until API version 2025-03-31, and
+ * `parent.subscription_details.subscription` since. */
+function invoiceSubscription(invoice) {
+  const old = invoice.subscription;
+  if (old) return typeof old === "string" ? old : old.id;
+  const details = invoice.parent && invoice.parent.subscription_details;
+  const sub = details && details.subscription;
+  return sub ? (typeof sub === "string" ? sub : sub.id) : null;
+}
+
 /** The object an event is about, as a `{ kind, id }` reference the module fetches. */
 function refOf(type, object) {
   if (!object || typeof object !== "object") return null;
+  if (type.startsWith("customer.subscription.")) return { kind: "subscription", id: object.id };
+  if (type.startsWith("invoice.")) {
+    const sub = invoiceSubscription(object);
+    return sub ? { kind: "subscription", id: sub } : null;
+  }
   if (type.startsWith("checkout.session.")) return { kind: "checkout", id: object.id };
   if (type.startsWith("payment_intent.")) return { kind: "payment", id: object.id };
   if (type.startsWith("charge.dispute.")) return { kind: "dispute", id: object.id };
@@ -127,7 +144,9 @@ function refOf(type, object) {
   return null;
 }
 
-/** Stripe's event types, in the module's words (§5). Anything else is `other`. */
+/** Stripe's event types, in the module's words (§5). Anything else is `other`. A function reads
+ * the event to tell which; it answers `null` for an event that only brings its object up to
+ * date. */
 const KINDS = {
   "checkout.session.completed": ["checkout.completed"],
   "payment_intent.processing": ["payment.processing"],
@@ -136,7 +155,28 @@ const KINDS = {
   "charge.refunded": ["payment.refunded"],
   "charge.dispute.created": ["dispute.opened"],
   "charge.dispute.closed": ["dispute.closed"],
+  "customer.subscription.created": ["subscription.started"],
+  "customer.subscription.updated": subscriptionUpdated,
+  "customer.subscription.deleted": ["subscription.ended"],
+  // A renewal is a paid invoice of a new period (a trial's end included). The first period's
+  // invoice, and a plan change's, say nothing the subscription's own events have not.
+  "invoice.paid": (event) => {
+    const invoice = (event.raw && event.raw.data && event.raw.data.object) || {};
+    return invoice.billing_reason === "subscription_cycle" ? ["subscription.renewed"] : null;
+  },
 };
+
+/** What a `customer.subscription.updated` was, from what it changed: past due, canceled (set to
+ * end at the period's end), or any other change. */
+function subscriptionUpdated(event) {
+  const data = (event.raw && event.raw.data) || {};
+  const sub = data.object || {};
+  const before = data.previous_attributes || {};
+  if ("status" in before && sub.status === "past_due") return ["subscription.past_due"];
+  const canceling = ("cancel_at_period_end" in before && sub.cancel_at_period_end) || ("cancel_at" in before && sub.cancel_at);
+  if (canceling) return ["subscription.canceled"];
+  return ["subscription.changed"];
+}
 
 /** The events to choose when adding the webhook endpoint in Stripe's dashboard. */
 const WEBHOOK_EVENTS = Object.keys(KINDS);
@@ -155,6 +195,7 @@ function normaliseCheckout(s) {
     email: (s.customer_details && s.customer_details.email) || s.customer_email || null,
     payment_ref: typeof s.payment_intent === "string" ? s.payment_intent : s.payment_intent && s.payment_intent.id,
     customer_ref: typeof s.customer === "string" ? s.customer : null,
+    subscription_ref: typeof s.subscription === "string" ? s.subscription : s.subscription && s.subscription.id,
     lines: items.map((i) => ({
       description: i.description,
       quantity: i.quantity,
@@ -201,9 +242,47 @@ function normalisePayment(pi) {
     customer_ref: typeof pi.customer === "string" ? pi.customer : null,
     amount_refunded: fromStripe(charge ? charge.amount_refunded : 0, currency),
     metadata: pi.metadata || {},
+    created: pi.created,
     updated: pi.created,
     provider_data: pi,
   };
+}
+
+/** Unix seconds as the mirror keeps an instant, or null. */
+const isoOf = (seconds) => (seconds ? new Date(seconds * 1000).toISOString() : null);
+
+/** A subscription in the module's words. Its period is on the subscription until API version
+ * 2025-03-31, and on each item since. The module subscribes to one price, so the first item is
+ * the plan. */
+function normaliseSubscription(s) {
+  const item = (s.items && s.items.data && s.items.data[0]) || {};
+  const price = item.price || s.plan || {};
+  const currency = upper(price.currency || s.currency);
+  const quantity = item.quantity === undefined ? s.quantity : item.quantity;
+  const unit = price.unit_amount === undefined ? price.amount : price.unit_amount;
+  return {
+    kind: "subscription",
+    ref: s.id,
+    status: s.status,
+    amount: unit === undefined || unit === null || quantity === undefined || quantity === null ? null : fromStripe(unit * quantity, currency),
+    currency,
+    price_ref: price.id || null,
+    quantity: quantity === undefined ? null : quantity,
+    current_period_end: isoOf(s.current_period_end || item.current_period_end),
+    trial_end: isoOf(s.trial_end),
+    cancel_at_period_end: Boolean(s.cancel_at_period_end),
+    cancel_at: isoOf(s.cancel_at),
+    customer_ref: typeof s.customer === "string" ? s.customer : s.customer && s.customer.id,
+    item_ref: item.id || null,
+    metadata: s.metadata || {},
+    created: s.created,
+    updated: s.created,
+    provider_data: s,
+  };
+}
+
+function normaliseCustomer(c) {
+  return { kind: "customer", ref: c.id, status: c.deleted ? "deleted" : null, email: c.email || null, metadata: c.metadata || {}, updated: c.created, provider_data: c };
 }
 
 function normaliseRefund(r) {
@@ -242,6 +321,8 @@ const OBJECTS = {
   payment: { path: "/v1/payment_intents", expand: ["latest_charge"], normalise: normalisePayment },
   refund: { path: "/v1/refunds", expand: [], normalise: normaliseRefund },
   dispute: { path: "/v1/disputes", expand: [], normalise: normaliseDispute },
+  subscription: { path: "/v1/subscriptions", expand: [], normalise: normaliseSubscription, list: { status: "all" } },
+  customer: { path: "/v1/customers", expand: [], normalise: normaliseCustomer },
 };
 
 /** A return address Stripe can send the buyer to: absolute, so made from the application the
@@ -298,30 +379,44 @@ module.exports = {
     return request(account, method, path, body, options);
   },
 
-  /** A Checkout Session in payment mode, with a price made for each line. */
+  /** A Checkout Session: in payment mode with a price made for each line, or in subscription
+   * mode for one Stripe price, its quantity and its trial. The module's metadata goes on the
+   * payment or the subscription too, since Stripe links neither back to the session. */
   async createCheckout(account, input) {
     const mode = input.mode || "payment";
-    if (mode !== "payment") throw new Error(`the stripe adapter takes one-off payments so far, not mode "${mode}"`);
+    if (mode !== "payment" && mode !== "subscription") throw new Error(`a checkout is in mode payment or subscription, not "${mode}"`);
     const currency = currencyCode(input.currency);
     const tax = input.tax || "none";
     const settings = account.settings || {};
     const params = {
-      mode: "payment",
+      mode,
       success_url: absolute(input.success_url, "address after paying"),
       cancel_url: absolute(input.cancel_url, "address after cancelling"),
-      line_items: (input.lines || []).map((l, i) => ({
+      metadata: input.metadata || {},
+    };
+    if (mode === "subscription") {
+      const [line, ...more] = input.lines || [];
+      if (!line || more.length) throw new Error("a subscription checkout is for one price");
+      if (!/^[A-Za-z0-9_]+$/.test(String(line.price_ref || ""))) throw new Error(`${JSON.stringify(line.price_ref)} is not a Stripe price id (price_…)`);
+      params.line_items = [{ price: line.price_ref, quantity: requireAmount(line.quantity === undefined ? 1 : line.quantity, "the quantity") }];
+      params.subscription_data = { metadata: input.metadata || {} };
+      if (line.trial_days) params.subscription_data.trial_period_days = requireAmount(line.trial_days, "the trial's days");
+    } else {
+      params.line_items = (input.lines || []).map((l, i) => ({
         price_data: {
           currency: currency.toLowerCase(),
           unit_amount: toStripe(l.unit_amount, currency),
           product_data: { name: String(l.description || `Line ${i + 1}`) },
         },
         quantity: requireAmount(l.quantity === undefined ? 1 : l.quantity, `line ${i + 1}'s quantity`),
-      })),
-      metadata: input.metadata || {},
-      payment_intent_data: { metadata: input.metadata || {} },
-    };
+      }));
+      params.payment_intent_data = { metadata: input.metadata || {} };
+    }
     if (!params.line_items.length) throw new Error("a checkout charges at least one line");
-    if (input.customer && input.customer.email) params.customer_email = input.customer.email;
+    // The customer this user already is, so the same card and the same portal; a new one
+    // otherwise, made by Stripe from the email.
+    if (input.customer && input.customer.ref) params.customer = input.customer.ref;
+    else if (input.customer && input.customer.email) params.customer_email = input.customer.email;
     if (input.client_reference) params.client_reference_id = String(input.client_reference).slice(0, 200);
     if (tax === "provider") params.automatic_tax = { enabled: true };
     if (tax === "merchant_of_record") {
@@ -370,9 +465,12 @@ module.exports = {
     return [{ id: event.id, type: event.type, ref: refOf(String(event.type || ""), object), raw: event }];
   },
 
-  /** The module's kinds for a Stripe event. */
+  /** The module's kinds for a Stripe event: `[]` for one it does not know, and `null` for one
+   * that only brings its object up to date. */
   kinds(event) {
-    return KINDS[event.type] || [];
+    const kinds = KINDS[event.type];
+    if (typeof kinds === "function") return kinds(event);
+    return kinds || [];
   },
 
   /** The current state of an object, normalised. */
@@ -391,7 +489,7 @@ module.exports = {
     const out = [];
     let after;
     for (;;) {
-      const params = { limit: 100 };
+      const params = { limit: 100, ...(spec.list || {}) };
       if (since) params.created = { gte: since };
       if (after) params.starting_after = after;
       const page = await request(account, "GET", spec.path, params);
@@ -420,6 +518,37 @@ module.exports = {
     }
     // Stripe lists newest first.
     return out.reverse();
+  },
+
+  /** A customer portal session, answered as `{ id, url }`: Stripe's hosted page where the
+   * customer changes plan, changes card or cancels, configured in Stripe's dashboard. */
+  async createPortal(account, { customer, return_url } = {}) {
+    if (!/^cus_[A-Za-z0-9]+$/.test(String(customer || ""))) throw new Error(`${JSON.stringify(customer)} is not a Stripe customer id`);
+    const session = await request(account, "POST", "/v1/billing_portal/sessions", {
+      customer,
+      return_url: absolute(return_url, "address to go back to"),
+    });
+    return { id: session.id, url: session.url };
+  },
+
+  /** Move a subscription's one item to another price. Stripe then sends
+   * `customer.subscription.updated`. */
+  async changePlan(account, ref, priceRef, { proration } = {}) {
+    if (!/^[A-Za-z0-9_]+$/.test(String(priceRef || ""))) throw new Error(`${JSON.stringify(priceRef)} is not a Stripe price id (price_…)`);
+    const current = await module.exports.fetch(account, { kind: "subscription", id: ref });
+    if (!current.item_ref) throw new Error(`the subscription ${ref} has no item to change`);
+    const params = { items: [{ id: current.item_ref, price: priceRef }] };
+    if (proration) params.proration_behavior = proration;
+    return normaliseSubscription(await request(account, "POST", `/v1/subscriptions/${ref}`, params));
+  },
+
+  /** Cancel a subscription at the end of its period (it runs on until then), or now. */
+  async cancel(account, ref, { at_period_end = true } = {}) {
+    if (!/^sub_[A-Za-z0-9]+$/.test(String(ref || ""))) throw new Error(`${JSON.stringify(ref)} is not a Stripe subscription id`);
+    const sub = at_period_end
+      ? await request(account, "POST", `/v1/subscriptions/${ref}`, { cancel_at_period_end: true })
+      : await request(account, "DELETE", `/v1/subscriptions/${ref}`);
+    return normaliseSubscription(sub);
   },
 
   /** Refund `amount` of a PaymentIntent (all of it when none is given), once per `key`. Stripe

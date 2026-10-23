@@ -593,6 +593,10 @@ pub struct ModuleManifest {
     /// `POST /_feldspar/hooks/<module>/<name>`.
     #[serde(default)]
     pub webhooks: Vec<WebhookManifest>,
+    /// The application tables it asks to read (TODO-payments P4.1) — admitted
+    /// only where its stored configuration names them ([`crate::reads`]).
+    #[serde(default)]
+    pub reads: Vec<String>,
     /// The content-security sources it suggests an application allow
     /// (TODO-payments P1.4) — data, `{ name, description, sources }` each, read
     /// and checked by [`crate::csp::read_suggestions`].

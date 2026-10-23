@@ -1,5 +1,9 @@
 // The module's actions: what a trigger runs, and what an application calls through an exposed
 // trigger (`api.runCheckout({ order })`).
+//
+// They are a function of the module's settings (`actionsFor(configuration)`, v1's `withCfg`):
+// the settings hold the plan binding, which a subscription checkout, a plan change and the
+// processing a fake provider's in-process delivery does all read.
 
 "use strict";
 
@@ -8,6 +12,7 @@ const { requireCapability } = require("./capabilities.js");
 const { currencyCode, requireAmount } = require("./money.js");
 const { CHECKOUT_FIELDS, payCheckout, recordCheckout } = require("./checkout.js");
 const { REFUND_FIELDS, payRefund } = require("./refunds.js");
+const subscriptions = require("./subscriptions.js");
 
 const opt = (t) => ({ optional: t });
 
@@ -43,22 +48,23 @@ const pay_account_test = {
 };
 
 /** `pay_checkout` (§6.1): a hosted checkout for a row of the application's. */
-const pay_checkout = {
+const pay_checkout = (moduleConfiguration) => ({
   description:
-    "Take a payment for a row of one of your tables — an order, an invoice, a booking — through a " +
-    "payment account's hosted checkout. The amounts are formulas over the row (and its child " +
-    "rows), worked out on the server; the caller says only which row. Answers the URL to send " +
-    "the buyer to. When it is paid, pay_events gets a payment.succeeded row naming the row.",
+    "Take a payment for a row of one of your tables — an order, an invoice, a booking, a plan to " +
+    "subscribe to — through a payment account's hosted checkout. The amounts are formulas over " +
+    "the row (and its child rows), worked out on the server; the caller says only which row. " +
+    "Answers the URL to send the buyer to. When it is paid, pay_events gets a payment.succeeded " +
+    "row naming the row; a subscription also gives the subscriber its plan's role.",
   configFields: CHECKOUT_FIELDS,
   // The row's key is in the payload field the configuration names: `id` unless it says
   // otherwise (`{ order: 12 }`), which the open object still takes.
   payload: { object: { id: { optional: "json" } } },
-  returns: { object: { id: "int", checkout: "string", url: "string", amount: "int", currency: "string" } },
-  run: (argument) => payCheckout(argument),
-};
+  returns: { object: { id: "int", checkout: "string", url: "string", amount: opt("int"), currency: "string" } },
+  run: (argument) => payCheckout({ ...argument, moduleConfiguration }),
+});
 
 /** `pay_refund` (P2.6): money back for a payment, given the row it was for or its mirror row. */
-const pay_refund = {
+const pay_refund = (moduleConfiguration) => ({
   description:
     "Refund a payment, all of it or an amount worked out from the row: given the row of your table " +
     "it was for (its latest payment), or a pay_objects row. The provider then reports it, and " +
@@ -66,8 +72,45 @@ const pay_refund = {
   configFields: REFUND_FIELDS,
   payload: { object: { id: { optional: "json" } } },
   returns: { object: { refund: "string", payment: "int", amount: "int", currency: "string", status: "string" } },
-  run: (argument) => payRefund(argument),
+  run: (argument) => payRefund(argument, moduleConfiguration),
+});
+
+/** `pay_portal` (§6.2, P4.3): the provider's customer portal, for the signed-in caller. */
+const pay_portal = {
+  description:
+    "Open the payment provider's customer portal for the signed-in user, where they change plan, " +
+    "change their card or cancel. Answers its URL. What they do there reaches pay_events, and a " +
+    "plan change moves their role.",
+  // No payload: whose portal it is, is the caller.
+  configFields: subscriptions.PORTAL_FIELDS,
+  returns: { object: { url: "string" } },
+  run: (argument) => subscriptions.payPortal(argument),
 };
+
+/** `pay_change_subscription` (P4.3): the caller's subscription moved to another plan. */
+const pay_change_subscription = (moduleConfiguration) => ({
+  description:
+    "Move the signed-in user's subscription to another plan, a row of the plans table the plan " +
+    "binding names: { plan: <its key> }. The provider reports the change, and their role moves " +
+    "with it.",
+  configFields: subscriptions.CHANGE_FIELDS,
+  // `plan` unless the trigger names another field for it, which the open object still takes.
+  payload: { object: { plan: opt("json"), subscription: opt("int") } },
+  returns: { object: { subscription: "int", price_ref: "string", status: "string" } },
+  run: (argument) => subscriptions.payChangeSubscription(argument, moduleConfiguration),
+});
+
+/** `pay_cancel_subscription` (P4.3): the caller's subscription canceled. */
+const pay_cancel_subscription = (moduleConfiguration) => ({
+  description:
+    "Cancel the signed-in user's subscription: at the end of the period paid for (access lasts " +
+    "until then), or now. The provider reports it, as subscription.canceled and, when it ends, " +
+    "subscription.ended.",
+  configFields: subscriptions.CANCEL_FIELDS,
+  payload: { object: { subscription: opt("int") } },
+  returns: { object: { subscription: "int", status: "string", cancel_at_period_end: "bool" } },
+  run: (argument) => subscriptions.payCancelSubscription(argument, moduleConfiguration),
+});
 
 /** `pay_provider_code` (§3.5): a body of the admin's, run in the module's worker with the
  * account's provider client in scope — Stripe's REST client as `stripe` — for anything the
@@ -107,18 +150,32 @@ const pay_provider_code = {
 };
 
 /** `pay_sync` (§6.5): the reconciliation sweep, now, for one account or all of them. */
-const pay_sync = {
+const pay_sync = (moduleConfiguration) => ({
   description:
     "Ask each payment account's provider for the events since the last sweep and process any that " +
-    "were never delivered, as the reconcile service does every few hours. Payload: { account } " +
-    "for one account; all of them otherwise.",
+    "were never delivered, and read each live subscription again, as the reconcile service does " +
+    "every few hours. Payload: { account } for one account; all of them otherwise.",
   payload: { object: { account: opt("string") } },
   returns: { object: { swept: { array: "json" } } },
-  run: async ({ payload, db }) => {
+  run: async ({ payload, db, roles }) => {
     const { sweepAll } = require("./service.js");
     const only = payload && payload.account ? String(payload.account) : undefined;
-    return { swept: await sweepAll(db, { only }) };
+    return { swept: await sweepAll(subscriptions.actionCtx({ db, roles }, moduleConfiguration), { only }) };
   },
-};
+});
 
-module.exports = { actions: { pay_account_test, pay_checkout, pay_refund, pay_provider_code, pay_sync } };
+/** The actions, for the module's settings. */
+function actionsFor(moduleConfiguration = {}) {
+  return {
+    pay_account_test,
+    pay_checkout: pay_checkout(moduleConfiguration),
+    pay_refund: pay_refund(moduleConfiguration),
+    pay_portal,
+    pay_change_subscription: pay_change_subscription(moduleConfiguration),
+    pay_cancel_subscription: pay_cancel_subscription(moduleConfiguration),
+    pay_provider_code,
+    pay_sync: pay_sync(moduleConfiguration),
+  };
+}
+
+module.exports = { actionsFor, actions: actionsFor({}) };

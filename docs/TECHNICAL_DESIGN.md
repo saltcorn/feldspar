@@ -11702,6 +11702,18 @@ most privileged role it may grant (`70` allows 70 to 99), set on the Modules tab
 grant") or requested by a bundled manifest and granted by the install. A role above it, any role
 when there is none, and the admin role always are refused by name.
 
+**Tables a module reads because its settings name them** (TODO-payments P4.1). A service's and
+a webhook's `ctx.db` reach only the module's declared tables (`ScopedTables`). A module whose
+webhook must read one of the application's tables — the payments module's plan binding names a
+`plans` table, and the webhook looks up which plan a subscription's price is — exports `reads`, a
+list of table names or a function of its configuration. The worker reports it in the manifest;
+`sc_module::reads::admitted` keeps only the names that are **values in the module's stored
+configuration** (anything else is an issue on the card), so module code cannot widen its own
+reach and the admin who typed the name into the settings form is the one who granted it. The
+admitted names join `ScopedTables` as `TableScope::reads`: a `select` or `aggregate` on one (and a
+Ⱶ-path through one, on a read) is admitted; a write is refused by name. The card lists them as
+`reads`. An action needs none of this: it already runs at its trigger's authority.
+
 **A module action's argument** (TODO-payments P2.1) carries, beside v1's object, what a code body
 has of its event: `app` (`{ id, url, scheme }` of the application whose request ran it, or null),
 `session` (`{ id }` of the caller's guest session, or null), and `db` — the same fluent chain a
@@ -11765,6 +11777,38 @@ its own CSP with no script); paying delivers signed events in-process into the s
 handler a provider's request reaches; an account with `settings.webhooks: "hold"` records them
 undelivered, for a test (or an admin) to `resend` in any order, as often as it likes.
 
+
+**Subscriptions (P4).** The plan binding is the module's own settings (`configuration_workflow`:
+plans table, price field — one for every account, or `account=field` pairs — role field, grace
+days), read by `plans.js`. The module's actions are a function of those settings (v1's
+`withCfg`), and the webhook and the service have them as `ctx.configuration`; the plans table is
+read through `reads` (above). Processing applies the grant after the mirror is upserted, from the
+subscription's **fetched** state: `trialing`/`active` grant the plan's role to the trial's or
+period's end plus grace (exactly to that end when it is canceled at the period's end),
+`past_due` leaves the grant alone, anything else revokes it — one grant per subscription,
+`ctx.roles.grant` upserted under `<account>:<subscription id>`. A price that is no plan's, a role
+above the module's ceiling (the manifest asks for 50; the install grants it) or a subscription
+with no user writes the reason on the mirror row's `issue` and logs it rather than failing the
+delivery, which a retry could not fix. The sweep, after the provider's event log, reads every
+live subscription in the mirror again and applies its grant, so a fixed binding or ceiling takes
+effect at the next sweep or `pay_sync`. A `pay_checkout` *grant a role* effect is applied the same
+way, per payment, from the payment's own time, and revoked when the payment is fully refunded.
+The mirror also gains a `customer` row per provider customer with its user, which is how
+`pay_portal` finds the caller's account and a second checkout reuses the same customer.
+
+An adapter's `kinds(event)` may answer `null`: an event the module understands that says nothing
+an application reacts to (Stripe's invoice for a subscription's first period), whose object is
+synced and nothing logged. Stripe maps `customer.subscription.updated` by its
+`previous_attributes` (past due, set to cancel, or changed) and a renewal is `invoice.paid` with
+`billing_reason: subscription_cycle`; `current_period_end` is read from the subscription or, since
+API version 2025-03-31, from its item. The fake provider grew customers, subscriptions, a portal
+page (plan change, cancel) and a **test clock** on it (renew, renew with a declined card, retry),
+so trials, renewals and failed renewals run in a test in milliseconds; Stripe's own test clocks
+drive the live test.
+
+Sign-up does not insert a `users` row through the row layer, so no table trigger sees it; a
+card-less trial is a `grant_role` trigger on the `login` event (sign-up signs the account in)
+with `once`.
 ### 15.2 Python: one interpreter, code bodies and plugin modules (`sc-python`)
 
 The second adapter. It is small for a reason that is structural rather than lucky: the JavaScript

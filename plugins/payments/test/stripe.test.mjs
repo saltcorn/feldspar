@@ -186,11 +186,11 @@ test("a Stripe event processed: the payment is mirrored from Stripe's current st
   const body = Buffer.from(JSON.stringify(fixture("event_payment_intent_succeeded")));
   const events = stripe.verifyWebhook(account, { rawBody: body, headers: { "stripe-signature": signed(body) } });
   answers.push([200, fixture("payment_intent_succeeded")]);
-  await processEvents(store.db, account, stripe, events);
+  await processEvents({ db: store.db }, account, stripe, events);
   // A refund arrives as a charge event, about the same payment.
   const refunded = Buffer.from(JSON.stringify(fixture("event_charge_refunded")));
   answers.push([200, { ...fixture("payment_intent_succeeded"), latest_charge: { ...fixture("payment_intent_succeeded").latest_charge, amount_refunded: 300 } }]);
-  await processEvents(store.db, account, stripe, stripe.verifyWebhook(account, { rawBody: refunded, headers: { "stripe-signature": signed(refunded) } }));
+  await processEvents({ db: store.db }, account, stripe, stripe.verifyWebhook(account, { rawBody: refunded, headers: { "stripe-signature": signed(refunded) } }));
   assert.deepEqual(
     store.tables.pay_events.map((e) => [e.kind, e.ref_table, e.ref_key, e.amount, e.status]),
     [
@@ -198,7 +198,9 @@ test("a Stripe event processed: the payment is mirrored from Stripe's current st
       ["payment.refunded", "orders", 12, 1150, "partially_refunded"],
     ],
   );
-  assert.equal(store.tables.pay_objects.length, 1);
+  // The payment, and the customer it names: which provider customer that user is.
+  assert.deepEqual(store.tables.pay_objects.map((o) => o.kind), ["payment", "customer"]);
+  assert.equal(store.tables.pay_objects[1].user_id, store.tables.pay_objects[0].user_id);
 });
 
 test("the sweep reads Stripe's event log, oldest first", async () => {
@@ -209,4 +211,140 @@ test("the sweep reads Stripe's event log, oldest first", async () => {
   assert.equal(sent[0].path, "/v1/events");
   assert.equal(sent[0].query.get("created[gte]"), "1792650000");
   assert.equal(sent[0].query.get("types[0]"), "checkout.session.completed");
+});
+
+test("a subscription checkout is for one Stripe price, its trial, and the customer the user already is", async () => {
+  answers.push([200, fixture("checkout_session_subscription")]);
+  const created = await stripe.createCheckout(account, {
+    mode: "subscription",
+    currency: "EUR",
+    lines: [{ price_ref: "price_1QbasicMonthly", quantity: 1, trial_days: 14 }],
+    customer: { email: "ann@example.com", ref: "cus_Q1w2E3r4T5y6U7" },
+    success_url: "https://saas.example.com/welcome",
+    cancel_url: "https://saas.example.com/pricing",
+    metadata: { sc_ref_table: "plans", sc_ref_key: "1", sc_user_id: "7" },
+  });
+  assert.equal(created.url.startsWith("https://checkout.stripe.com/"), true);
+  const form = sent[0].form;
+  assert.equal(form.get("mode"), "subscription");
+  assert.equal(form.get("line_items[0][price]"), "price_1QbasicMonthly");
+  assert.equal(form.get("line_items[0][quantity]"), "1");
+  assert.equal(form.get("line_items[0][price_data][currency]"), null);
+  assert.equal(form.get("subscription_data[trial_period_days]"), "14");
+  // The subscription carries the module's metadata: Stripe does not link it to the session.
+  assert.equal(form.get("subscription_data[metadata][sc_user_id]"), "7");
+  assert.equal(form.get("payment_intent_data[metadata][sc_ref_table]"), null);
+  assert.equal(form.get("customer"), "cus_Q1w2E3r4T5y6U7");
+  assert.equal(form.get("customer_email"), null);
+  await assert.rejects(stripe.createCheckout(account, { mode: "subscription", currency: "EUR", lines: [{ price_ref: "x y" }], success_url: "https://a.example", cancel_url: "https://a.example" }), /not a Stripe price id/);
+});
+
+test("a subscription is read in either API version's shape", async () => {
+  answers.push([200, fixture("subscription")]);
+  const sub = await stripe.fetch(account, { kind: "subscription", id: "sub_1QaBcDeFgHiJkLmN" });
+  assert.deepEqual(
+    [sub.kind, sub.status, sub.price_ref, sub.quantity, sub.amount, sub.currency, sub.customer_ref, sub.item_ref, sub.cancel_at_period_end],
+    ["subscription", "active", "price_1QbasicMonthly", 1, 1500, "EUR", "cus_Q1w2E3r4T5y6U7", "si_RbCdEfGhIjKlMn", false],
+  );
+  // Since 2025-03-31 the period is on the item.
+  assert.equal(sub.current_period_end, new Date(1795248060 * 1000).toISOString());
+  assert.equal(sent[0].path, "/v1/subscriptions/sub_1QaBcDeFgHiJkLmN");
+  // Before, it was on the subscription.
+  const legacy = fixture("subscription");
+  legacy.current_period_end = 1795000000;
+  delete legacy.items.data[0].current_period_end;
+  legacy.status = "trialing";
+  legacy.trial_end = 1793865660;
+  answers.push([200, legacy]);
+  const old = await stripe.fetch(account, { kind: "subscription", id: "sub_1QaBcDeFgHiJkLmN" });
+  assert.equal(old.current_period_end, new Date(1795000000 * 1000).toISOString());
+  assert.equal(old.trial_end, new Date(1793865660 * 1000).toISOString());
+});
+
+test("Stripe's subscription events in the module's words", () => {
+  const event = (name) => {
+    const body = Buffer.from(JSON.stringify(fixture(name)));
+    return stripe.verifyWebhook(account, { rawBody: body, headers: { "stripe-signature": signed(body) } })[0];
+  };
+  const pastDue = event("event_subscription_updated");
+  assert.deepEqual(pastDue.ref, { kind: "subscription", id: "sub_1QaBcDeFgHiJkLmN" });
+  assert.deepEqual(stripe.kinds(pastDue), ["subscription.past_due"]);
+  const canceling = JSON.parse(JSON.stringify(pastDue));
+  canceling.raw.data.object = { id: "sub_1", status: "active", cancel_at_period_end: true };
+  canceling.raw.data.previous_attributes = { cancel_at_period_end: false };
+  assert.deepEqual(stripe.kinds(canceling), ["subscription.canceled"]);
+  canceling.raw.data.previous_attributes = { items: {} };
+  assert.deepEqual(stripe.kinds(canceling), ["subscription.changed"]);
+  // A renewal is an invoice of a new period; the first period's says nothing new.
+  const paid = event("event_invoice_paid");
+  assert.deepEqual(paid.ref, { kind: "subscription", id: "sub_1QaBcDeFgHiJkLmN" });
+  assert.deepEqual(stripe.kinds(paid), ["subscription.renewed"]);
+  paid.raw.data.object.billing_reason = "subscription_create";
+  assert.equal(stripe.kinds(paid), null);
+  assert.deepEqual(stripe.kinds({ type: "customer.subscription.deleted" }), ["subscription.ended"]);
+  assert.deepEqual(stripe.kinds({ type: "customer.subscription.created" }), ["subscription.started"]);
+  for (const type of ["customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted", "invoice.paid"]) {
+    assert.ok(stripe.WEBHOOK_EVENTS.includes(type), type);
+  }
+  assert.ok(stripe.WEBHOOK_EVENTS.length <= 20, "Stripe's event list filter takes 20 types at most");
+});
+
+test("a renewal from Stripe extends the grant from the subscription's current state", async () => {
+  const store = fakeDb({ pay_accounts: [{ ...account }], plans: [{ id: 1, stripe_price: "price_1QbasicMonthly", role: 70 }] });
+  const granted = [];
+  const ctx = {
+    db: store.db,
+    configuration: { plans_table: "plans", plan_price_field: "stripe_test=stripe_price", grace_days: 2 },
+    roles: { grant: async (g) => granted.push(g), revoke: async () => ({ revoked: true }) },
+  };
+  const body = Buffer.from(JSON.stringify(fixture("event_invoice_paid")));
+  answers.push([200, fixture("subscription")]);
+  await processEvents(ctx, account, stripe, stripe.verifyWebhook(account, { rawBody: body, headers: { "stripe-signature": signed(body) } }));
+  assert.deepEqual(store.tables.pay_events.map((e) => [e.kind, e.ref_table, e.ref_key, e.user_id]), [["subscription.renewed", "plans", 1, 7]]);
+  assert.deepEqual(granted.map((g) => [g.user, g.role, g.ref, g.expires_at]), [
+    [7, 70, "stripe_test:sub_1QaBcDeFgHiJkLmN", new Date((1795248060 + 2 * 86400) * 1000).toISOString()],
+  ]);
+  // The first period's invoice logs nothing, and still brings the subscription up to date.
+  const first = JSON.parse(body.toString());
+  first.id = "evt_first";
+  first.data.object.billing_reason = "subscription_create";
+  const firstBody = Buffer.from(JSON.stringify(first));
+  answers.push([200, fixture("subscription")]);
+  const [result] = await processEvents(ctx, account, stripe, stripe.verifyWebhook(account, { rawBody: firstBody, headers: { "stripe-signature": signed(firstBody) } }));
+  assert.deepEqual(result.logged, []);
+  assert.equal(store.tables.pay_events.length, 1);
+  assert.equal(granted.length, 2);
+  // And the customer is the user's.
+  assert.deepEqual(store.tables.pay_objects.filter((o) => o.kind === "customer").map((o) => [o.provider_ref, o.user_id]), [["cus_Q1w2E3r4T5y6U7", 7]]);
+});
+
+test("the portal, a plan change and a cancellation, as Stripe receives them", async () => {
+  answers.push([200, fixture("billing_portal_session")]);
+  const portal = await stripe.createPortal(account, { customer: "cus_Q1w2E3r4T5y6U7", return_url: "https://saas.example.com/account" });
+  assert.equal(portal.url, "https://billing.stripe.com/p/session/test_YWNjdF8xUXBPclRh");
+  assert.deepEqual([sent[0].method, sent[0].path, sent[0].form.get("customer"), sent[0].form.get("return_url")], [
+    "POST",
+    "/v1/billing_portal/sessions",
+    "cus_Q1w2E3r4T5y6U7",
+    "https://saas.example.com/account",
+  ]);
+
+  const pro = fixture("subscription");
+  pro.items.data[0].price = { ...pro.items.data[0].price, id: "price_1QproMonthly", unit_amount: 4000 };
+  answers.push([200, fixture("subscription")], [200, pro]);
+  const changed = await stripe.changePlan(account, "sub_1QaBcDeFgHiJkLmN", "price_1QproMonthly", { proration: "none" });
+  assert.equal(changed.price_ref, "price_1QproMonthly");
+  const post = sent[2];
+  assert.deepEqual([post.method, post.path], ["POST", "/v1/subscriptions/sub_1QaBcDeFgHiJkLmN"]);
+  assert.equal(post.form.get("items[0][id]"), "si_RbCdEfGhIjKlMn");
+  assert.equal(post.form.get("items[0][price]"), "price_1QproMonthly");
+  assert.equal(post.form.get("proration_behavior"), "none");
+
+  answers.push([200, { ...fixture("subscription"), cancel_at_period_end: true }], [200, { ...fixture("subscription"), status: "canceled" }]);
+  const later = await stripe.cancel(account, "sub_1QaBcDeFgHiJkLmN", { at_period_end: true });
+  assert.equal(later.cancel_at_period_end, true);
+  assert.deepEqual([sent[3].method, sent[3].form.get("cancel_at_period_end")], ["POST", "true"]);
+  const now = await stripe.cancel(account, "sub_1QaBcDeFgHiJkLmN", { at_period_end: false });
+  assert.equal(now.status, "canceled");
+  assert.deepEqual([sent[4].method, sent[4].path], ["DELETE", "/v1/subscriptions/sub_1QaBcDeFgHiJkLmN"]);
 });

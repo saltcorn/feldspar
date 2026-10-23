@@ -39,20 +39,27 @@ use crate::payments_module::{Answer, error_of, have_npm, send};
 const SHOP: &str = "shop.example.com";
 
 /// A browser on the shop, keeping (and dropping) its cookies.
-struct Browser<'a> {
+pub(crate) struct Browser<'a> {
     router: &'a Router,
-    cookies: HashMap<String, String>,
+    host: &'static str,
+    pub(crate) cookies: HashMap<String, String>,
 }
 
 impl<'a> Browser<'a> {
-    fn new(router: &'a Router) -> Browser<'a> {
+    pub(crate) fn new(router: &'a Router) -> Browser<'a> {
+        Browser::on(router, SHOP)
+    }
+
+    /// A browser on another application's host.
+    pub(crate) fn on(router: &'a Router, host: &'static str) -> Browser<'a> {
         Browser {
             router,
+            host,
             cookies: HashMap::new(),
         }
     }
 
-    async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> Answer {
+    pub(crate) async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> Answer {
         let (headers, bytes) = match body {
             Some(b) => (
                 vec![("content-type", "application/json")],
@@ -63,7 +70,7 @@ impl<'a> Browser<'a> {
         let answer = send(
             self.router,
             method,
-            Some(SHOP),
+            Some(self.host),
             path,
             &self.cookies,
             &headers,
@@ -88,7 +95,7 @@ impl<'a> Browser<'a> {
         answer
     }
 
-    async fn ok(&mut self, method: &str, path: &str, body: Option<Value>) -> Value {
+    pub(crate) async fn ok(&mut self, method: &str, path: &str, body: Option<Value>) -> Value {
         let answer = self.send(method, path, body).await;
         assert!(
             answer.status.is_success(),
@@ -347,21 +354,59 @@ impl Drop for Shop {
 
 impl Shop {
     async fn rows(&self, sql: &str) -> Vec<Value> {
-        let wrapped = format!("SELECT coalesce(json_agg(q), '[]'::json) FROM ({sql}) q");
-        let value: Value = self
-            .db
-            .client()
-            .await
-            .unwrap()
-            .query_one(&wrapped, &[])
-            .await
-            .unwrap_or_else(|e| panic!("{sql}: {e}"))
-            .get(0);
-        value.as_array().unwrap().clone()
+        rows_of(&self.db, sql).await
     }
 }
 
-async fn setup() -> sc_error::Result<Shop> {
+/// A server as Step 1 of either part of the tutorial leaves it: the payments module installed
+/// from the Modules tab by a signed-in admin, with a mailer that records what it sends and a
+/// session store that re-reads a user on every request (so a role grant shows at once).
+pub(crate) struct Booted {
+    pub(crate) router: Router,
+    pub(crate) catalog: Arc<Catalog>,
+    pub(crate) mail: Arc<RecordingMailer>,
+    pub(crate) apps: Arc<AppMounts>,
+    pub(crate) dispatcher: Arc<TriggerDispatcher>,
+    pub(crate) root: PathBuf,
+    pub(crate) db: TestDb,
+    pub(crate) admin: HashMap<String, String>,
+    pub(crate) module_id: String,
+    pub(crate) modules: Arc<ModuleServices>,
+    pub(crate) registries: tokio::sync::RwLockReadGuard<'static, ()>,
+}
+
+impl Booted {
+    pub(crate) async fn rows(&self, sql: &str) -> Vec<Value> {
+        rows_of(&self.db, sql).await
+    }
+
+    /// Run one statement that answers no rows: an `UPDATE` standing in for time passing.
+    pub(crate) async fn execute(&self, sql: &str) {
+        self.db
+            .client()
+            .await
+            .unwrap()
+            .execute(sql, &[])
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+}
+
+/// One query's rows, as JSON objects.
+async fn rows_of(db: &TestDb, sql: &str) -> Vec<Value> {
+    let wrapped = format!("SELECT coalesce(json_agg(q), '[]'::json) FROM ({sql}) q");
+    let value: Value = db
+        .client()
+        .await
+        .unwrap()
+        .query_one(&wrapped, &[])
+        .await
+        .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        .get(0);
+    value.as_array().unwrap().clone()
+}
+
+pub(crate) async fn boot(tag: &str) -> sc_error::Result<Booted> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
@@ -371,7 +416,10 @@ async fn setup() -> sc_error::Result<Shop> {
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
-    let root = std::env::temp_dir().join(format!("sc-tutorial-payments-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "sc-tutorial-payments-{}-{tag}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     let goods = root.join("goods");
     std::fs::create_dir_all(&goods).unwrap();
@@ -479,6 +527,35 @@ async fn setup() -> sc_error::Result<Shop> {
     )
     .await;
     assert_eq!(installed.status, StatusCode::CREATED, "{}", installed.text);
+    let module_id = installed.json()["id"].as_str().unwrap().to_owned();
+    Ok(Booted {
+        router,
+        catalog,
+        mail,
+        apps,
+        dispatcher,
+        root,
+        db,
+        admin,
+        module_id,
+        modules,
+        registries,
+    })
+}
+
+async fn setup() -> sc_error::Result<Shop> {
+    let Booted {
+        router,
+        catalog,
+        mail,
+        apps,
+        dispatcher,
+        root,
+        db,
+        modules,
+        registries,
+        ..
+    } = boot("shop").await?;
     sc_api::rows::create_row(
         &catalog,
         &catalog.require("pay_accounts")?,

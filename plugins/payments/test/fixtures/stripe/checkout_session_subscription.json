@@ -1,0 +1,23 @@
+{
+  "id": "cs_test_sUb1B2c3D4e5F6g7H8i9",
+  "object": "checkout.session",
+  "amount_subtotal": 1500,
+  "amount_total": 1500,
+  "client_reference_id": "plans:1",
+  "created": 1792656000,
+  "currency": "eur",
+  "customer": "cus_Q1w2E3r4T5y6U7",
+  "customer_details": null,
+  "customer_email": null,
+  "expires_at": 1792742400,
+  "livemode": false,
+  "metadata": { "sc_ref_table": "plans", "sc_ref_key": "1", "sc_user_id": "7" },
+  "mode": "subscription",
+  "payment_intent": null,
+  "payment_status": "unpaid",
+  "status": "open",
+  "subscription": null,
+  "success_url": "https://saas.example.com/welcome",
+  "cancel_url": "https://saas.example.com/pricing",
+  "url": "https://checkout.stripe.com/c/pay/cs_test_sUb1B2c3D4e5F6g7H8i9#fidkdWxOYHwnPyd1blpxYHZxWjA0"
+}

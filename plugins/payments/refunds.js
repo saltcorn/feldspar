@@ -53,7 +53,7 @@ function keyOf(configuration, payload, row, pk) {
 /** A log for a delivery the fake makes from inside an action, which has no service log. */
 const actionLog = Object.assign((...a) => console.log(...a), { warn: (...a) => console.warn(...a), error: (...a) => console.error(...a) });
 
-async function payRefund({ configuration = {}, payload, row, db }) {
+async function payRefund({ configuration = {}, payload, row, db, roles }, moduleConfiguration = {}) {
   const source = configuration.source || "row";
   const checked = configuration.read_check !== false;
   let payment;
@@ -99,7 +99,7 @@ async function payRefund({ configuration = {}, payload, row, db }) {
   // the payment, what is asked, and how many refunds of it the log has seen so far.
   const before = await db.pay_events.where({ object: payment.id, kind: "payment.refunded" }).count();
   const key = `refund:${payment.provider_ref}:${amount === null ? "rest" : amount}:${before}`;
-  const refund = await adapter.refund(account, payment.provider_ref, { amount, key, reason: configuration.reason || null }, deliverTo(account, { db, log: actionLog }));
+  const refund = await adapter.refund(account, payment.provider_ref, { amount, key, reason: configuration.reason || null }, deliverTo(account, { db, roles, configuration: moduleConfiguration, log: actionLog }));
   return { refund: refund.ref || refund.id, payment: payment.id, amount: refund.amount, currency: refund.currency || payment.currency, status: refund.status };
 }
 

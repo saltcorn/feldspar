@@ -30,12 +30,10 @@
 //!
 //! Nobody signed in, so a webhook runs as **the module** — the admin role, with
 //! `{ "module": <name>, "webhook": <name> }` as its writes' user — over **only
-//! the tables its module declared**: the same [`ScopedTables`] a service's
-//! `ctx.db` is. A webhook is a service's moment rather than a service's life,
+//! the tables its module declared**, and reads of the ones its settings name
+//! ([`crate::reads`]): the same [`ScopedTables`] a service's `ctx.db` is. A webhook is a service's moment rather than a service's life,
 //! so its call is bounded like an action's: the wall clock and the budget of
 //! asks.
-
-use std::collections::BTreeSet;
 
 use base64::Engine;
 use sc_action::TriggerDispatcher;
@@ -164,7 +162,7 @@ pub async fn run_webhook(
             "module `{module}` has no webhook `{webhook}`"
         )));
     }
-    let tables: BTreeSet<String> = loaded.table_names().into_iter().collect();
+    let tables = crate::services::TableScope::of(loaded);
     let areas = file_areas(&loaded.table_declarations());
     let user = webhook_user(module, webhook);
     let scoped = ScopedTables {

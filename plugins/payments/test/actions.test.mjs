@@ -9,7 +9,7 @@ import { fakeDb } from "./fake-db.mjs";
 const require = createRequire(import.meta.url);
 const fake = require("../adapters/fake.js");
 const plugin = require("../index.js");
-const { actions } = plugin;
+const actions = plugin.actions({});
 const { keepAccounts } = require("../accounts.js");
 const { sweepAll } = require("../service.js");
 
@@ -99,13 +99,13 @@ test("pay_api reads the accounts the service keeps, with no db of its own", asyn
 test("the sweep processes what was never delivered, and nothing twice", async () => {
   await paid(held, 12);
   assert.equal(store.tables.pay_events.length, 0);
-  const swept = await sweepAll(store.db);
+  const swept = await sweepAll({ db: store.db });
   assert.deepEqual(swept.map((s) => [s.account, s.events, s.logged]), [["shop", 0, 0], ["held", 2, 2]]);
   assert.deepEqual(kinds(), [["checkout.completed", 12], ["payment.succeeded", 12]]);
   assert.ok(store.tables.pay_accounts.every((a) => a.synced_at));
   // Again: the same events, all of them seen.
-  const again = await sweepAll(store.db, { only: "held" });
+  const again = await sweepAll({ db: store.db }, { only: "held" });
   assert.deepEqual(again.map((s) => s.logged), [0]);
   assert.equal(store.tables.pay_events.length, 2);
-  await assert.rejects(sweepAll(store.db, { only: "nope" }), /there is no payment account "nope"/);
+  await assert.rejects(sweepAll({ db: store.db }, { only: "nope" }), /there is no payment account "nope"/);
 });

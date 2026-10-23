@@ -343,10 +343,10 @@ Everything else is the app's, built from smaller pieces:
 - **Base role and the free tier.** A signed-up user's ordinary `users.role` (say 80) is the free
   tier, or the "must subscribe" state. The app shows a paywall at that role; tables already
   check `user.role`.
-- **Card-less trials** need no payments at all. A trigger on user insert runs core's
-  **`grant_role`** action (C8): role 70 for 14 days, key `trial:<user id>`, `once`, so a second
-  trial is never granted. It works whichever provider the user later pays through, app stores
-  included.
+- **Card-less trials** need no payments at all. A trigger on the `login` event (sign-up signs
+  the new account in; a `users` insert trigger never sees a sign-up, P4 notes) runs core's
+  **`grant_role`** action (C8): role 70 for 14 days, key `trial`, `once`, so a second trial is
+  never granted. It works whichever provider the user later pays through, app stores included.
 - **Trials with the card up front** are the provider's: `trial_days` on the subscription
   checkout. The subscription is `trialing`, and the grant lasts until `trial_end` + grace.
 - **Reminders** ("your trial ends tomorrow") are a daily trigger over core's `role_grants` table
@@ -669,18 +669,59 @@ Notes from P1, for the milestones that build on it:
 
 ## P4 — Use case 2: subscriptions on Stripe and `fake`
 
-- [ ] **P4.1** The plan binding (§6.2) in the module's configuration; subscription mode in
+- [x] **P4.1** The plan binding (§6.2) in the module's configuration; subscription mode in
   `pay_checkout`; subscription sync; grants per §6.2's table, with grace; the plan looked up
   from the current price on every change. Test: an unbound price grants nothing and is
   reported.
-- [ ] **P4.2** Trials with the card up front. Tests with `fake` and Stripe test clocks: a trial
+- [x] **P4.2** Trials with the card up front. Tests with `fake` and Stripe test clocks: a trial
   ends with and without conversion, and a renewal fails then recovers within grace.
-- [ ] **P4.3** `pay_portal`, `pay_change_subscription`, `pay_cancel_subscription`. Test: a tier
+- [x] **P4.3** `pay_portal`, `pay_change_subscription`, `pay_cancel_subscription`. Test: a tier
   change in the portal moves the grant's role.
-- [ ] **P4.4** Owner-readable subscription rows in the mirror, so an app can show the renewal
+- [x] **P4.4** Owner-readable subscription rows in the mirror, so an app can show the renewal
   date.
-- [ ] **P4.5** Tutorial part 2: a SaaS app with its own `plans` table, a free tier, two paid
+- [x] **P4.5** Tutorial part 2: a SaaS app with its own `plans` table, a free tier, two paid
   tiers, a card-less trial with `grant_role`, and a daily trial-ending reminder.
+
+  Notes from P4, for the milestones that build on it:
+  - **A module now reads an application table its settings name** (core, `reads`): the plans
+    table, from the webhook and the sweep, read-only, and only because the stored settings hold
+    its name (TECHNICAL_DESIGN §15.1, "Tables a module reads"). P7's allowance and rollover
+    fields are more fields of the same plan row, so they need no new seam.
+  - The binding is **one** entry, from the settings form; its price field may be per account
+    (`shop=stripe_price, ios=apple_product`), which is what P5 (Polar) and P9 (app stores) fill
+    in. `plans.planBinding` returns one binding; a list, if a second plans table is ever wanted,
+    is a change there and in `findPlan`.
+  - The module asks for the role ceiling 50 in its manifest, granted by the install. A grant it
+    may not make, a price that is no plan's, and a subscription with no user are written on the
+    mirror row's new **`issue`** column (and logged), not thrown: a retried delivery would be
+    refused the same way. The sweep re-reads every **live** subscription in the mirror and
+    re-applies its grant, so fixing the binding or the ceiling takes effect at the next sweep or
+    `pay_sync`. The issue is not on the module's card (a module has no runtime issues there).
+  - `adapter.list(kind, since)` is still unused: Stripe lists subscriptions by creation, not by
+    change, so the sweep re-reads the mirror's live subscriptions instead of listing.
+  - Processing's `ctx` is `{ db, roles, configuration, log }` everywhere (webhook, service,
+    action). An action that makes the fake deliver in-process passes its own `roles` and the
+    module's settings (`subscriptions.actionCtx`).
+  - `adapter.kinds(event)` may answer `null`: understood, object synced, nothing logged (Stripe's
+    first-period `invoice.paid`). P7's allowance grants hang off `subscription.renewed`, which
+    Stripe sends as `invoice.paid` with `billing_reason: subscription_cycle` — keyed by the
+    invoice (the event's object is the invoice; processing currently fetches the subscription, so
+    P7 needs the invoice id from `event.raw` for its key).
+  - Customers are mirror rows (`kind: customer`, with the user) made from the `customer_ref` of a
+    checkout, payment or subscription. `pay_checkout` passes the user's known customer to the
+    provider, so P7's `pay_charge_saved` has the customer to charge.
+  - The `pay_checkout` *grant a role* effect is now applied (per payment, from the payment's own
+    time, revoked on a full refund). The *grant credits* effect is still only recorded (P6/P7).
+  - **§6.2 corrected:** sign-up inserts the `users` row below the row layer, so no table trigger
+    sees it. The tutorial's trial is a `grant_role` trigger on `login` with `once`.
+  - The code-body `db` chain's `where` takes **one operator per field condition**
+    (`{ expires_at: { gte: … } }`); a range is two `.where()` calls. The in-memory test `db`
+    (`test/fake-db.mjs`) now refuses more, as the server does.
+  - Core change made for P4: a bare numeric or boolean literal in a select list is rendered with
+    a cast (`CAST($1 AS BIGINT)`), because Postgres typed its placeholder as text and refused the
+    integer bound to it (`select({ quantity: "1" })`, which `pay_checkout`'s default quantity is).
+  - The Stripe live tests drive subscriptions on a Stripe test clock; they run only with
+    `STRIPE_TEST_SECRET_KEY` and were not run here.
 
 ## P5 — Second adapter: Polar, a merchant of record
 

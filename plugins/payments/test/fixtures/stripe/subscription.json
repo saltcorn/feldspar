@@ -1,0 +1,38 @@
+{
+  "id": "sub_1QaBcDeFgHiJkLmN",
+  "object": "subscription",
+  "billing_cycle_anchor": 1792656060,
+  "cancel_at": null,
+  "cancel_at_period_end": false,
+  "canceled_at": null,
+  "created": 1792656060,
+  "currency": "eur",
+  "customer": "cus_Q1w2E3r4T5y6U7",
+  "ended_at": null,
+  "items": {
+    "object": "list",
+    "data": [
+      {
+        "id": "si_RbCdEfGhIjKlMn",
+        "object": "subscription_item",
+        "current_period_end": 1795248060,
+        "current_period_start": 1792656060,
+        "price": {
+          "id": "price_1QbasicMonthly",
+          "object": "price",
+          "currency": "eur",
+          "recurring": { "interval": "month", "interval_count": 1 },
+          "unit_amount": 1500
+        },
+        "quantity": 1,
+        "subscription": "sub_1QaBcDeFgHiJkLmN"
+      }
+    ],
+    "has_more": false
+  },
+  "livemode": false,
+  "metadata": { "sc_ref_table": "plans", "sc_ref_key": "1", "sc_user_id": "7" },
+  "status": "active",
+  "trial_end": null,
+  "trial_start": null
+}

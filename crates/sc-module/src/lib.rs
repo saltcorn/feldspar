@@ -73,6 +73,7 @@ pub mod module;
 pub mod modules;
 pub mod paths;
 pub mod permissions;
+pub mod reads;
 pub mod roles;
 pub mod services;
 pub mod spec;

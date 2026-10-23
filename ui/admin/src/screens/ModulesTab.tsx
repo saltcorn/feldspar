@@ -711,6 +711,22 @@ function ModuleCard({
           </>
         )}
 
+        {module.reads.length > 0 && (
+          <>
+            <div className="text-secondary mb-1"><T text="Reads" /></div>
+            <ul className="list-unstyled mb-2">
+              {module.reads.map((table) => (
+                <li key={table}>
+                  <code>{table}</code>
+                </li>
+              ))}
+            </ul>
+            <div className="text-secondary mb-2">
+              <T text="Tables of yours that its settings name. Its background services and webhooks may read them, and never write them." />
+            </div>
+          </>
+        )}
+
         {module.services.length > 0 && (
           <>
             <div className="text-secondary mb-1"><T text="Services" /></div>

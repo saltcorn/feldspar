@@ -611,7 +611,39 @@ requests a minute.
 **On a bundled card**, list the webhooks in `feldspar-module.json` as `webhooks: ["events"]`, and
 the card shows the URL each will be served at before it is installed.
 
-## Step 10 — Suggesting content-security sources
+## Step 10 — Reading a table its settings name
+
+A service or a webhook reaches only its module's own tables (Step 8). Some modules need to read
+one of yours as well. The payments module's webhook, for one, has to look up which of your plans
+a subscription's price belongs to, in a plans table you made. A module says so with **`reads`**,
+a list of table names or a function of its settings returning one:
+
+```js
+module.exports = {
+  configuration_workflow: () => ({
+    steps: [{ name: "Plans", form: { fields: [{ name: "plans_table", label: "Plans table", type: "String" }] } }],
+  }),
+  reads: (configuration) => (configuration.plans_table ? [configuration.plans_table] : []),
+  webhooks: {
+    events: {
+      handle: async (req, ctx) => {
+        const plan = await ctx.db[ctx.configuration.plans_table].where({ stripe_price: "price_basic" }).first();
+        // …
+      },
+    },
+  },
+};
+```
+
+What `reads` answers is a request. **The server allows a table only when the module's saved
+settings name it**: when one of the values an admin typed into its settings form is that table's
+name. Module code cannot widen this itself. A `reads` that answers `users`, when nothing in the
+settings says `users`, puts an issue on the card and the read is refused. An allowed table is
+**read-only**: its services and webhooks may read it, and a write is refused by name. The card
+lists the tables under **Reads**. An action needs none of this, because it already runs with its
+trigger's authority.
+
+## Step 11 — Suggesting content-security sources
 
 An application's pages may load scripts, frames and API calls from their own origin only. A module
 whose provider has an embedded form — a payment form in an iframe, say — needs that provider's
@@ -693,8 +725,8 @@ ordinary tables from then on, and yours to drop.
 
 ## What this is not, yet
 
-- **Only actions, functions, table providers, view patterns, tables, services, webhooks and
-  content-security suggestions.** Types, field
+- **Only actions, functions, table providers, view patterns, tables, services, webhooks, tables
+  read through its settings and content-security suggestions.** Types, field
   views and event types are named in the tab and not loaded. Only JavaScript modules have
   `files` (TODO-imap M6); a Python module cannot declare tables yet, so it has no file area.
 - **Not only JavaScript any more.** The Type dropdown now offers four pairs, because a module can

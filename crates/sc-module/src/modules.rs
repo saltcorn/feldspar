@@ -125,6 +125,16 @@ impl LoadedModule {
             .collect()
     }
 
+    /// The application tables this module may read because its settings name
+    /// them (TODO-payments P4.1, [`crate::reads`]): what its services and
+    /// webhooks are admitted to read beside its own tables.
+    pub fn read_names(&self) -> Vec<String> {
+        self.manifest
+            .as_ref()
+            .map(|m| crate::reads::admitted(&m.reads, &self.module.configuration).0)
+            .unwrap_or_default()
+    }
+
     /// The services this module runs in the background (TODO-imap M5) — what
     /// the Modules tab lists, with each one's state beside it.
     pub fn service_names(&self) -> Vec<String> {
@@ -380,6 +390,7 @@ async fn load_one(
         config_fields_to_form_fields(&manifest.config_fields, "this module");
     issues.extend(spec_issues);
     issues.extend(crate::csp::read_suggestions(&module.name, &manifest.csp).1);
+    issues.extend(crate::reads::admitted(&manifest.reads, &module.configuration).1);
 
     let areas = Arc::new(crate::files::file_areas(
         &crate::tables::parse_declarations(&manifest.tables).0,
@@ -555,6 +566,7 @@ mod tests {
             tables: Vec::new(),
             services: Vec::new(),
             webhooks: Vec::new(),
+            reads: Vec::new(),
             csp: Vec::new(),
             frameworks: Vec::new(),
             view_patterns: Vec::new(),
