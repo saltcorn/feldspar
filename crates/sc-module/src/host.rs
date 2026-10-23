@@ -75,6 +75,11 @@ pub struct CallHosts<'a> {
     /// in an action speak — a [`crate::roles::ModuleRoles`], held to the role
     /// ceiling an admin granted the module.
     pub roles: Option<&'a dyn RoleAsks>,
+    /// The LLM credits the module may grant and read (TODO-payments P6.4,
+    /// design C4): the `credits` surface, which `ctx.credits` in a service or a
+    /// webhook and `credits` in an action speak — a
+    /// [`crate::credits::ModuleCredits`]. There is no debit.
+    pub credits: Option<&'a dyn CreditAsks>,
     /// An action's `oauth.begin(…)` (TODO-imap M10.3): the `oauth` surface, a
     /// [`crate::consent::ConsentAsks`] for the action's module and caller.
     pub oauth: Option<&'a dyn OAuthAsks>,
@@ -85,6 +90,14 @@ pub struct CallHosts<'a> {
 /// that trait's reason.
 #[async_trait::async_trait]
 pub trait RoleAsks: Send + Sync {
+    /// Answer one ask.
+    async fn ask(&self, plan: Json) -> Result<Json>;
+}
+
+/// The `credits` ask surface: `{ op: "grant" | "balance" | "threshold", … }`,
+/// answered by [`crate::credits::ModuleCredits`].
+#[async_trait::async_trait]
+pub trait CreditAsks: Send + Sync {
     /// Answer one ask.
     async fn ask(&self, plan: Json) -> Result<Json>;
 }
@@ -123,6 +136,7 @@ impl<'a> CallHosts<'a> {
             service: None,
             module_files: None,
             roles: None,
+            credits: None,
             oauth: None,
         }
     }
@@ -138,6 +152,13 @@ impl<'a> CallHosts<'a> {
     #[must_use]
     pub fn with_roles(mut self, roles: &'a dyn RoleAsks) -> CallHosts<'a> {
         self.roles = Some(roles);
+        self
+    }
+
+    /// The same, with the module's credit grants.
+    #[must_use]
+    pub fn with_credits(mut self, credits: &'a dyn CreditAsks) -> CallHosts<'a> {
+        self.credits = Some(credits);
         self
     }
 

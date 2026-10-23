@@ -46,6 +46,8 @@ serde = { workspace = true }
 serde_json.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+# LLM credits (TODO-payments P6.3): a call's charge, exact as the ledger keeps it.
+rust_decimal.workspace = true
 # `Stream` combinators for the scripted provider's failure stream.
 futures.workspace = true
 # The `pattern` keyword of a tool's argument schema, checked before dispatch.

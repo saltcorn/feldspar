@@ -129,6 +129,8 @@ mod ide_route;
 mod ide_typecheck;
 #[path = "live_mounting.rs"]
 mod live_mounting;
+#[path = "llm_credits.rs"]
+mod llm_credits;
 #[path = "llm_provider_admin_api.rs"]
 mod llm_provider_admin_api;
 #[path = "locale_negotiation.rs"]
@@ -151,10 +153,10 @@ mod model_formulas;
 mod model_handle;
 #[path = "models_without_actions.rs"]
 mod models_without_actions;
-#[path = "module_seams.rs"]
-mod module_seams;
 #[path = "module_consent.rs"]
 mod module_consent;
+#[path = "module_seams.rs"]
+mod module_seams;
 #[path = "modules_api.rs"]
 mod modules_api;
 #[path = "named_datasets.rs"]

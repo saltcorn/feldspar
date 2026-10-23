@@ -291,14 +291,22 @@ fn is_user_table(table: &Table) -> bool {
         && table.provider().is_none()
 }
 
-/// The two ordinary tables the system itself depends on, which Clear all
-/// empties rather than drops: `users`, and `role_grants` (TODO-payments P3),
-/// which every session reads.
+/// The ordinary tables the system itself depends on, which Clear all empties
+/// rather than drops: `users`, `role_grants` (TODO-payments P3), which every
+/// session reads, and the LLM credits ledger (P6), which every metered agent
+/// run reads.
 fn is_kept_ordinary(table: &Table) -> bool {
-    table.name == sc_auth::USERS_TABLE || table.name == sc_auth::ROLE_GRANTS_TABLE
+    [
+        sc_auth::USERS_TABLE,
+        sc_auth::ROLE_GRANTS_TABLE,
+        sc_auth::CREDIT_BUCKETS_TABLE,
+        sc_auth::CREDIT_ENTRIES_TABLE,
+        sc_auth::CREDIT_ACCOUNTS_TABLE,
+    ]
+    .contains(&table.name.as_str())
 }
 
-/// Delete every row of every `_fd_*` table, of `users` and of `role_grants`.
+/// Delete every row of every `_fd_*` table and of the ordinary tables above.
 ///
 /// Rows are deleted table by table in whatever order works: a table whose
 /// delete is refused (a foreign key from a table not emptied yet) is tried again

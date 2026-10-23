@@ -134,6 +134,110 @@ pub fn role_grant_json(grant: &sc_auth::RoleGrant) -> Json {
     })
 }
 
+/// One bucket of a user's LLM credits (TODO-payments P6.2). Amounts are exact
+/// decimal strings: a balance is summed from many small debits, and a float on
+/// the way would make it drift.
+pub fn credit_bucket_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("amount", TypeSchema::text()),
+        StructField::new("remaining", TypeSchema::text()),
+        // `admin`, `allowance`, `top_up`, …: what kind of grant it was.
+        StructField::new("kind", TypeSchema::text()),
+        // `admin`, or the module that granted it.
+        StructField::new("source", TypeSchema::text()),
+        StructField::new("key", TypeSchema::text()),
+        StructField::new("expires_at", TypeSchema::optional(TypeSchema::timestamp())),
+        StructField::new("note", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("created_at", TypeSchema::timestamp()),
+        // Whether what is left still counts: not expired.
+        StructField::new("live", TypeSchema::bool()),
+    ])
+}
+
+/// One entry of a user's LLM credits: a grant, a debit or a low-balance notice.
+pub fn credit_entry_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        // `grant`, `debit` or `low_balance`.
+        StructField::new("kind", TypeSchema::text()),
+        StructField::new("amount", TypeSchema::text()),
+        StructField::new("balance", TypeSchema::text()),
+        StructField::new("source", TypeSchema::text()),
+        StructField::new("key", TypeSchema::text()),
+        StructField::new("run", TypeSchema::optional(TypeSchema::uuid())),
+        StructField::new("agent", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("model", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("input_tokens", TypeSchema::optional(TypeSchema::int())),
+        StructField::new("output_tokens", TypeSchema::optional(TypeSchema::int())),
+        StructField::new("cost", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("note", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("created_at", TypeSchema::timestamp()),
+    ])
+}
+
+/// What the admin user page shows about a user's LLM credits: the balance,
+/// the buckets, and the most recent entries.
+pub fn user_credits_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("balance", TypeSchema::text()),
+        StructField::new("available", TypeSchema::text()),
+        StructField::new("debt", TypeSchema::text()),
+        StructField::new("next_expiry", TypeSchema::optional(TypeSchema::timestamp())),
+        StructField::new(
+            "low_balance_threshold",
+            TypeSchema::optional(TypeSchema::text()),
+        ),
+        StructField::new("buckets", TypeSchema::array(credit_bucket_schema())),
+        StructField::new("entries", TypeSchema::array(credit_entry_schema())),
+    ])
+}
+
+/// A user's credits rendered to [`user_credits_schema`].
+pub fn user_credits_json(
+    balance: &sc_auth::CreditBalance,
+    buckets: &[sc_auth::CreditBucket],
+    entries: &[sc_auth::CreditEntry],
+) -> Json {
+    let now = chrono::Utc::now();
+    let time = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.to_rfc3339());
+    json!({
+        "balance": balance.balance.to_string(),
+        "available": balance.available.to_string(),
+        "debt": balance.debt.to_string(),
+        "next_expiry": time(balance.next_expiry),
+        "low_balance_threshold": balance.low_balance_threshold.map(|t| t.to_string()),
+        "buckets": buckets.iter().map(|b| json!({
+            "id": b.id.to_string(),
+            "amount": b.amount.to_string(),
+            "remaining": b.remaining.to_string(),
+            "kind": b.kind,
+            "source": b.source,
+            "key": b.key,
+            "expires_at": time(b.expires_at),
+            "note": b.note,
+            "created_at": b.created_at.to_rfc3339(),
+            "live": b.live_at(now),
+        })).collect::<Vec<_>>(),
+        "entries": entries.iter().map(|e| json!({
+            "id": e.id.to_string(),
+            "kind": e.kind,
+            "amount": e.amount.to_string(),
+            "balance": e.balance.to_string(),
+            "source": e.source,
+            "key": e.key,
+            "run": e.run.map(|r| r.to_string()),
+            "agent": e.agent,
+            "model": e.model,
+            "input_tokens": e.input_tokens,
+            "output_tokens": e.output_tokens,
+            "cost": e.cost.map(|c| c.to_string()),
+            "note": e.note,
+            "created_at": e.created_at.to_rfc3339(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// A user rendered for the admin users screen, matching [`user_row_schema`].
 ///
 /// The password hash is not in [`User::extra`] to begin with (it is dropped when

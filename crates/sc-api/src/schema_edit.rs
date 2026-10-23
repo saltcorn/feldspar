@@ -108,6 +108,13 @@ const ROLES_TABLE: &str = "_fd_roles";
 /// The role grants (TODO-payments P3): an ordinary table, but every session
 /// reads it to decide the role a user is served at.
 const ROLE_GRANTS_TABLE: &str = sc_auth::ROLE_GRANTS_TABLE;
+/// The LLM credits ledger (TODO-payments P6): ordinary tables, but every
+/// metered agent run reads and writes them by name.
+const CREDIT_TABLES: [&str; 3] = [
+    sc_auth::CREDIT_BUCKETS_TABLE,
+    sc_auth::CREDIT_ENTRIES_TABLE,
+    sc_auth::CREDIT_ACCOUNTS_TABLE,
+];
 
 /// The columns of `users` and `_fd_roles` that the rest of the system requires
 /// to exist. Dropping one is refused regardless of grant: authentication reads
@@ -128,6 +135,50 @@ const PROTECTED_COLUMNS: &[(&str, &[&str])] = &[
             sc_auth::COL_GRANT_EXPIRES_AT,
             sc_auth::COL_GRANT_REVOKED_AT,
             sc_auth::COL_GRANT_CREATED_AT,
+        ],
+    ),
+    (
+        sc_auth::CREDIT_BUCKETS_TABLE,
+        &[
+            sc_auth::COL_CREDIT_ID,
+            sc_auth::COL_CREDIT_USER,
+            sc_auth::COL_CREDIT_AMOUNT,
+            sc_auth::COL_CREDIT_REMAINING,
+            sc_auth::COL_CREDIT_KIND,
+            sc_auth::COL_CREDIT_SOURCE,
+            sc_auth::COL_CREDIT_KEY,
+            sc_auth::COL_CREDIT_EXPIRES_AT,
+            sc_auth::COL_CREDIT_CREATED_AT,
+        ],
+    ),
+    (
+        sc_auth::CREDIT_ENTRIES_TABLE,
+        &[
+            sc_auth::COL_CREDIT_ID,
+            sc_auth::COL_CREDIT_USER,
+            sc_auth::COL_CREDIT_KIND,
+            sc_auth::COL_CREDIT_AMOUNT,
+            sc_auth::COL_ENTRY_BALANCE,
+            sc_auth::COL_CREDIT_SOURCE,
+            sc_auth::COL_CREDIT_KEY,
+            sc_auth::COL_ENTRY_BUCKET,
+            sc_auth::COL_ENTRY_RUN,
+            sc_auth::COL_ENTRY_AGENT,
+            sc_auth::COL_ENTRY_MODEL,
+            sc_auth::COL_ENTRY_INPUT_TOKENS,
+            sc_auth::COL_ENTRY_OUTPUT_TOKENS,
+            sc_auth::COL_ENTRY_COST,
+            sc_auth::COL_CREDIT_CREATED_AT,
+        ],
+    ),
+    (
+        sc_auth::CREDIT_ACCOUNTS_TABLE,
+        &[
+            sc_auth::COL_CREDIT_ID,
+            sc_auth::COL_CREDIT_USER,
+            sc_auth::COL_ACCOUNT_DEBT,
+            sc_auth::COL_ACCOUNT_THRESHOLD,
+            sc_auth::COL_ACCOUNT_UPDATED_AT,
         ],
     ),
 ];
@@ -1919,7 +1970,11 @@ impl Plan {
         table: &str,
     ) -> Result<()> {
         self.require_editable(table)?;
-        if table == USERS_TABLE || table == ROLES_TABLE || table == ROLE_GRANTS_TABLE {
+        if table == USERS_TABLE
+            || table == ROLES_TABLE
+            || table == ROLE_GRANTS_TABLE
+            || CREDIT_TABLES.contains(&table)
+        {
             return Err(Error::invalid(format!(
                 "`{table}` is a built-in table and is never dropped"
             )));

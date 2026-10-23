@@ -776,14 +776,42 @@ Notes from P1, for the milestones that build on it:
 
 ## P6 — LLM credits ledger (core)
 
-- [ ] **P6.1** Buckets and entries; `grant`/`balance` and the internal debit, with bucket locking,
+- [x] **P6.1** Buckets and entries; `grant`/`balance` and the internal debit, with bucket locking,
   soonest-expiring first, debt and repayment, idempotency keys. Tests: concurrent debits
   never overdraw, and a replayed grant does nothing.
-- [ ] **P6.2** Admin user page: the balance, the entries, and a manual grant.
-- [ ] **P6.3** Agent metering (§6.3): the LLM credits setting, rate, minimum balance; a debit
+- [x] **P6.2** Admin user page: the balance, the entries, and a manual grant.
+- [x] **P6.3** Agent metering (§6.3): the LLM credits setting, rate, minimum balance; a debit
   per model call; the run stops at zero; anonymous callers are refused.
-- [ ] **P6.4** C4 for credits (`ctx.credits.grant/balance`), and the `low_balance` entry with a
+- [x] **P6.4** C4 for credits (`ctx.credits.grant/balance`), and the `low_balance` entry with a
   per-user threshold.
+
+  Notes from P6, for the milestones that build on it:
+  - **A third table.** `credit_accounts` (one row per user: `debt`, `low_balance_threshold`)
+    beside `credit_buckets` and `credit_entries`. Debt is not a negative bucket. The balance is
+    the live buckets' `remaining` less the account's `debt`.
+  - **Keys are `(source, key)`, unique on both buckets and entries.** A module's source is its
+    package name, so P7's allowance is `ctx.credits.grant({ user, amount, key:
+    "invoice:in_123", expires_at: period_end, kind: "allowance" })`. A replay answers
+    `replayed: true` with the first bucket.
+  - **Rollover (P7.1) needs one more operation.** "The old bucket is expired by the same key"
+    is not offered yet: P6 has `grant`, `balance` and `setThreshold`, and no way to end a
+    bucket early. P7.1 should add an `expire(key)` (or a `replaces` key on `grant`) to
+    `sc_auth::credits` and to the `credits` surface. It must take `min(remaining, cap)` and zero
+    the old bucket in the same locked transaction.
+  - **Granting credits needs no module permission** (decided here; roles keep their ceiling).
+  - **The low-balance threshold is per user, set by an admin or a module** (`setThreshold`).
+    There is no instance-wide default and no way for the user to set their own. An app that
+    lets users choose their threshold needs either an action of its own that calls a module, or
+    an admin-authority `update_rows` on `credit_accounts`. The account row exists only after a
+    first grant, so `setThreshold` creates it. P7.3's tutorial should set it from the plan or
+    the top-up.
+  - **`low_balance` events carry the run's user as the caller**, and the entry has `user_id`, so
+    P7.2's `pay_charge_saved` can find whom to charge from the row.
+  - **Who is metered.** Only a caller below the admin role with a user. A `run_agent` trigger
+    runs at the admin role and is free. If an application ever needs a triggered run charged to
+    the event's user, `run_agent` needs a "run as the event's user" option first.
+  - A `numeric` column takes decimal strings only (CHANGELOG, P6). The tutorial's triggers must
+    write `String(row.balance)`.
 
 ## P7 — Use case 3: allowances, rollover, top-ups
 

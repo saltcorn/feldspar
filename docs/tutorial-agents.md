@@ -308,6 +308,24 @@ chat where that happened and can expand the summary. Nothing is lost from the re
 transcript is whole, and compaction is an overlay on what the *model* is shown. Only a request
 that is still too big after both passes ends the run, as `over_budget`.
 
+**LLM credits charge the person, not the run.** The next card, **LLM credits**, makes the agent
+charge whoever is using it, out of their balance of LLM credits (an admin grants them from the
+user's menu, **LLM credits**, and the payments module grants them with a plan or a top-up):
+
+| Box | What it does | Blank means |
+|---|---|---|
+| Credits per dollar | credits per unit of the models' priced cost; every model needs a price unless a rate per token is set too | not by the dollar |
+| Credits per 1,000 input tokens | credits per thousand tokens sent, used when a call's cost is unknown (or alone) | not by the token |
+| Credits per 1,000 output tokens | the same for tokens generated | not by the token |
+| Balance needed to start | what a turn needs to begin | anything above 0 |
+
+With no rate set, the agent is free. With one, every model call is debited — the session runs
+it starts and the calls its tools make included — and a run stops before its next call once
+the balance is at or below zero, as `over_budget` with the budget `credits`: the chat says
+"You are out of LLM credits", and the conversation carries on after a top-up. A person who is
+not signed in cannot use a metered agent at all, and **an admin is never charged**, so trying the
+agent yourself costs nothing and neither does the copilot.
+
 So a run has five ways to end, and the chat says which: `answered`, `max_steps`, `stuck`,
 `over_budget` (naming which budget) and `aborted` (you pressed Stop). None of them is an error,
 and all of them leave the transcript intact.

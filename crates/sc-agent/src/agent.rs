@@ -435,6 +435,12 @@ impl Agent {
             .unwrap_or(DEFAULT_MAX_IMAGES)
     }
 
+    /// The LLM credits this agent's runs charge their caller, or `None` when it
+    /// is not metered (TODO-payments P6.3, [`crate::meter`]).
+    pub fn meter(&self) -> Option<crate::meter::Meter> {
+        crate::meter::Meter::of(&self.attributes)
+    }
+
     /// Whether the model may make several tool calls in one turn. Off unless the
     /// agent says so (R§12).
     pub fn parallel_tool_calls(&self) -> bool {

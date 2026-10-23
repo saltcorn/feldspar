@@ -144,6 +144,17 @@ pub(crate) const USER_ROWS_FILE: &str = "users/rows.ndjson";
 /// The role grants the accounts hold (TODO-payments P3), one per line. Part of
 /// the Users choice: a grant is a user's, and names their role.
 pub(crate) const ROLE_GRANT_ROWS_FILE: &str = "users/role_grants.ndjson";
+/// The LLM credits the accounts hold (TODO-payments P6), one file per ledger
+/// table, in the order a restore inserts them: an entry names its bucket. Part
+/// of the Users choice, like the grants.
+pub(crate) const CREDIT_ROWS_FILES: [(&str, &str); 3] = [
+    (
+        sc_auth::CREDIT_ACCOUNTS_TABLE,
+        "users/credit_accounts.ndjson",
+    ),
+    (sc_auth::CREDIT_BUCKETS_TABLE, "users/credit_buckets.ndjson"),
+    (sc_auth::CREDIT_ENTRIES_TABLE, "users/credit_entries.ndjson"),
+];
 /// The instance key Secret fields are sealed with (TODO-imap M2.5), present
 /// when a backed-up table's rows hold any — the 32 bytes of `secrets.key`. The
 /// manifest names it under [`MANIFEST_SECRETS_KEY`].

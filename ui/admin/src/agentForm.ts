@@ -72,7 +72,33 @@ export const BUDGETS = [
   },
 ] as const;
 
-const NUMBER_KEYS: string[] = [...NUMBER_ATTRIBUTES, ...BUDGETS].map((a) => a.key);
+/** What the agent charges the person using it in LLM credits
+ * (`sc_agent::ATTR_CREDITS_PER_DOLLAR` and the rest, TODO-payments P6.3). No
+ * rate set is not metered; an admin is never charged. */
+export const CREDITS = [
+  {
+    key: "credits_per_dollar",
+    label: "Credits per dollar",
+    help: "Per unit of the models' priced cost. Every model the agent uses needs a price, unless a rate per token is set too.",
+  },
+  {
+    key: "credits_per_1k_input",
+    label: "Credits per 1,000 input tokens",
+    help: "Used when a call's cost is unknown, or alone.",
+  },
+  {
+    key: "credits_per_1k_output",
+    label: "Credits per 1,000 output tokens",
+    help: "Used when a call's cost is unknown, or alone.",
+  },
+  {
+    key: "credits_min_balance",
+    label: "Balance needed to start",
+    help: "A run with less does not start. Blank is anything above 0.",
+  },
+] as const;
+
+const NUMBER_KEYS: string[] = [...NUMBER_ATTRIBUTES, ...BUDGETS, ...CREDITS].map((a) => a.key);
 
 /** The role choices stored in an agent's attributes. */
 export function readRoles(attributes: unknown): Record<RoleKey, RoleChoice> {

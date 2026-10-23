@@ -54,6 +54,16 @@ describe("the agent's attributes", () => {
     // A cleared box removes the attribute rather than saving a zero.
     expect("temperature" in saved).toBe(false);
   });
+  it("reads and saves the LLM credits rates like any other number", () => {
+    const metered = { credits_per_dollar: 20, credits_min_balance: 1 };
+    expect(readNumbers(metered)).toEqual({ credits_per_dollar: "20", credits_min_balance: "1" });
+    const saved = agentAttributes(
+      metered,
+      { credits_per_dollar: "", credits_per_1k_output: "0.5", credits_min_balance: "1" },
+      { strong: { provider: "", model: "" }, cheap: { provider: "", model: "" } },
+    );
+    expect(saved).toEqual({ credits_per_1k_output: 0.5, credits_min_balance: 1 });
+  });
 });
 
 describe("the coding trait's shell settings", () => {

@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/credits",
+  "version": "0.1.0",
+  "description": "A module that grants users LLM credits, for the module credits tests (TODO-payments P6.4).",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

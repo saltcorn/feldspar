@@ -13,6 +13,8 @@
 
 #[path = "auth_flow.rs"]
 mod auth_flow;
+#[path = "credits.rs"]
+mod credits;
 #[path = "db_api_tokens.rs"]
 mod db_api_tokens;
 #[path = "db_password_tokens.rs"]

@@ -1413,6 +1413,7 @@ impl DenoModuleHost {
             || call.service.is_some()
             || call.module_files.is_some()
             || call.roles.is_some()
+            || call.credits.is_some()
             || call.oauth.is_some();
         if let Json::Object(map) = &mut request {
             map.insert("asks".to_owned(), Json::Bool(can_ask));
@@ -1455,6 +1456,7 @@ impl DenoModuleHost {
         let service = call.service;
         let module_files = call.module_files;
         let roles = call.roles;
+        let credits = call.credits;
         let oauth = call.oauth;
         // The run's budget, and the same one a code body's run gets: a module's
         // N+1 costs what a body's N+1 costs, because it is the same bound on the
@@ -1524,6 +1526,7 @@ impl DenoModuleHost {
                             service,
                             module_files,
                             roles,
+                            credits,
                             oauth,
                         };
                         let (ok, text) = match serve(surfaces, ask.request).await {
@@ -1628,6 +1631,7 @@ struct Surfaces<'a> {
     service: Option<&'a dyn crate::host::ServiceAsks>,
     module_files: Option<&'a dyn sc_expr::FileHost>,
     roles: Option<&'a dyn crate::host::RoleAsks>,
+    credits: Option<&'a dyn crate::host::CreditAsks>,
     oauth: Option<&'a dyn crate::host::OAuthAsks>,
 }
 
@@ -1687,6 +1691,13 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
                  service and a webhook (TODO-payments P3.3)",
             )),
         },
+        "credits" => match surfaces.credits {
+            Some(credits) => credits.ask(plan).await,
+            None => Err(Error::config(
+                "this module call cannot grant credits: `credits` is there in an action, a \
+                 service and a webhook (TODO-payments P6.4)",
+            )),
+        },
         "oauth" => match surfaces.oauth {
             Some(oauth) => oauth.ask(plan).await,
             None => Err(Error::config(
@@ -1697,7 +1708,8 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
             "`{other}` is not something a module can ask this server for; what a module may \
              reach is the database (`db`), this server's triggers (`trigger`), its modules' \
              functions (`function`), the file stores it was given (`files`), its own \
-             file areas (`module_files`), role grants (`roles`), from a service its \
+             file areas (`module_files`), role grants (`roles`), LLM credits \
+             (`credits`), from a service its \
              supervisor (`service`) and, from an action, a consent flow (`oauth`)"
         ))),
     }

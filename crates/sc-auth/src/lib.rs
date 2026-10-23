@@ -28,8 +28,16 @@
 //! — a session, an API token, a sign-in, [`load_user`] — serves them at their
 //! [`effective_role`]: the most privileged of the base role and the grants in
 //! force.
+//!
+//! **LLM credits** ([`credit_buckets`](CREDIT_BUCKETS_TABLE),
+//! [`credit_entries`](CREDIT_ENTRIES_TABLE) and
+//! [`credit_accounts`](CREDIT_ACCOUNTS_TABLE), TODO-payments P6) are the balance
+//! an agent run's model calls are charged to: [`grant_credits`],
+//! [`credit_balance`], and the debit the agent loop alone calls
+//! ([`debit_credits`]).
 
 mod create;
+mod credits;
 mod first_user;
 mod grants;
 mod guest;
@@ -45,6 +53,18 @@ mod user;
 mod users;
 
 pub use create::{CreatedUser, NewUser, create_user, create_user_with};
+pub use credits::{
+    COL_ACCOUNT_DEBT, COL_ACCOUNT_THRESHOLD, COL_ACCOUNT_UPDATED_AT, COL_CREDIT_AMOUNT,
+    COL_CREDIT_CREATED_AT, COL_CREDIT_EXPIRES_AT, COL_CREDIT_ID, COL_CREDIT_KEY, COL_CREDIT_KIND,
+    COL_CREDIT_NOTE, COL_CREDIT_REMAINING, COL_CREDIT_SOURCE, COL_CREDIT_USER, COL_ENTRY_AGENT,
+    COL_ENTRY_BALANCE, COL_ENTRY_BUCKET, COL_ENTRY_COST, COL_ENTRY_INPUT_TOKENS, COL_ENTRY_MODEL,
+    COL_ENTRY_OUTPUT_TOKENS, COL_ENTRY_RUN, CREDIT_ACCOUNTS_TABLE, CREDIT_BUCKETS_TABLE,
+    CREDIT_DECIMALS, CREDIT_ENTRIES_TABLE, CREDIT_SOURCE_ADMIN, CREDIT_SOURCE_AGENT,
+    CREDITS_OWNERSHIP, CreditBalance, CreditBucket, CreditDebit, CreditDebited, CreditEntry,
+    CreditGrant, ENTRY_DEBIT, ENTRY_GRANT, ENTRY_LOW_BALANCE, NewCreditGrant, bootstrap_credits,
+    credit_balance, credits, debit_credits, grant_credits, list_credit_buckets,
+    list_credit_entries, set_low_balance_threshold,
+};
 pub use first_user::{any_user_exists, create_first_user};
 pub use grants::{
     COL_GRANT_CREATED_AT, COL_GRANT_EXPIRES_AT, COL_GRANT_ID, COL_GRANT_NOTE, COL_GRANT_REVOKED_AT,

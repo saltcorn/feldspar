@@ -35,6 +35,7 @@ use crate::context::{Compaction, ContextVerdict, Elidable, SUMMARY_PERCENT, SUMM
 use crate::delegate::{ATTR_DELEGATED_BY, ATTR_PARENT_RUN, DelegateRequest, Delegated, Delegator};
 use crate::ledger::{ChildLedger, LedgerStep};
 use crate::machine::{AgentLoop, Conclusion, Step, StepMeta, ToolOutcome, trait_state_key};
+use crate::meter::Meter;
 use crate::registry::AgentRegistry;
 use crate::run::{Run, RunId, RunMode};
 use crate::run_store::{load_run, save_run};
@@ -99,6 +100,10 @@ pub struct Runner<'a> {
     /// carries its own on its row.
     mode: RunMode,
     role: ModelRole,
+    /// What this run's model calls cost its caller in LLM credits
+    /// (TODO-payments P6.3): the agent's own rates, or for a sub-agent with
+    /// none, its parent's. `None` is not metered.
+    meter: Option<Meter>,
     /// The agents above this one in the delegation chain, root first — empty for
     /// a run a person or a trigger started.
     ///
@@ -153,6 +158,7 @@ impl<'a> Runner<'a> {
             requests: None,
             mode,
             role: mode.role(),
+            meter: agent.meter(),
             chain: Vec::new(),
         }
     }
@@ -353,6 +359,13 @@ impl<'a> Runner<'a> {
             run.id,
             state.step()
         );
+        // A metered agent needs somebody to charge (TODO-payments P6.3).
+        if let Err(e) = self.payer() {
+            return self.fail(run, &state, state.step(), e).await;
+        }
+        // The agent's minimum balance is what a drive needs to *start*; after
+        // that, anything above zero carries it on to the next call.
+        let mut starting = true;
         loop {
             match state.next_step() {
                 Step::Done(conclusion) => {
@@ -392,6 +405,14 @@ impl<'a> Runner<'a> {
                         run.record(&state);
                         save_run(self.catalog, run).await?;
                         continue;
+                    }
+                    match self.has_credit(starting).await {
+                        Ok(true) => starting = false,
+                        Ok(false) => {
+                            state.out_of_credits();
+                            continue;
+                        }
+                        Err(e) => return self.fail(run, &state, step, e).await,
                     }
                     let began = std::time::Instant::now();
                     // One step on the strong role, when the ladder says so.
@@ -452,14 +473,22 @@ impl<'a> Runner<'a> {
                     state.ledger_mut().add_working(elapsed);
                     match answered {
                         Ok(answer) => {
+                            let usage = answer.usage;
                             let meta = StepMeta {
                                 role,
                                 model: model.provider.model().to_owned(),
-                                cost: answer.usage.cost(&model.prices),
+                                cost: usage.cost(&model.prices),
                                 elapsed,
                                 request_tokens: Some(raw),
                             };
+                            let cost = meta.cost;
                             state.model_answered_with(answer, meta)?;
+                            // Charged once the answer is the run's, keyed by the
+                            // step it now is.
+                            let key = format!("{}:{}", run.id, state.step());
+                            if let Err(e) = self.charge(run.id, key, &model, usage, cost).await {
+                                return self.fail(run, &state, state.step(), e).await;
+                            }
                         }
                         Err(e) => return self.fail(run, &state, step, e).await,
                     }
@@ -510,6 +539,107 @@ impl<'a> Runner<'a> {
             run.record(&state);
             save_run(self.catalog, run).await?;
         }
+    }
+
+    /// The user this run's model calls are charged to, with the rates
+    /// (TODO-payments P6.3). `None` when the agent is not metered or the
+    /// caller is an admin — the admin pays the provider, which keeps the
+    /// copilot and a trigger's run free. An anonymous caller of a metered
+    /// agent is refused: there is nobody to charge.
+    fn payer(&self) -> Result<Option<(&sc_auth::User, Meter)>> {
+        let Some(meter) = self.meter else {
+            return Ok(None);
+        };
+        if self.caller.role <= sc_auth::ROLE_ADMIN {
+            return Ok(None);
+        }
+        match &self.caller.user {
+            Some(user) => Ok(Some((user, meter))),
+            None => Err(Error::auth(format!(
+                "agent `{}` charges LLM credits for its answers, so it needs a signed-in \
+                 user; sign in to use it",
+                self.agent.name
+            ))),
+        }
+    }
+
+    /// Whether the payer may have the next model call: a balance above zero,
+    /// and when the drive is `starting`, at least the agent's minimum. Always
+    /// for a run nobody pays for.
+    async fn has_credit(&self, starting: bool) -> Result<bool> {
+        let Some((user, meter)) = self.payer()? else {
+            return Ok(true);
+        };
+        let balance = sc_auth::credit_balance(self.catalog, user.id)
+            .await?
+            .balance;
+        let enough =
+            balance > rust_decimal::Decimal::ZERO && (!starting || balance >= meter.min_balance);
+        if !enough {
+            sc_log::log_info!(
+                "agent `{}`: user {} has {balance} LLM credits{}, so the run stops",
+                self.agent.name,
+                user.id,
+                if starting && meter.min_balance > rust_decimal::Decimal::ZERO {
+                    format!(" and this agent needs {} to start", meter.min_balance)
+                } else {
+                    String::new()
+                }
+            );
+        }
+        Ok(enough)
+    }
+
+    /// Charge one model call to the payer, under `key` — the run and the step,
+    /// so a step is never charged twice. The call has happened, so the debit
+    /// is made whatever the balance; an agent whose model cannot be priced is
+    /// refused when it is saved, and fails here if its prices went since.
+    async fn charge(
+        &self,
+        run: RunId,
+        key: String,
+        model: &ConnectedModel,
+        usage: sc_llm::Usage,
+        cost: Option<f64>,
+    ) -> Result<()> {
+        let Some((user, meter)) = self.payer()? else {
+            return Ok(());
+        };
+        let amount = meter.charge(&usage, &model.prices).ok_or_else(|| {
+            Error::config(format!(
+                "agent `{}`: the model `{}` has no input and output prices, so its call \
+                 cannot be charged in LLM credits per dollar; set its prices, or charge \
+                 per 1,000 tokens as well",
+                self.agent.name,
+                model.provider.model()
+            ))
+        })?;
+        let debited = sc_auth::debit_credits(
+            self.catalog,
+            sc_auth::CreditDebit {
+                user_id: user.id,
+                amount,
+                key,
+                run: Some(run.0),
+                agent: Some(self.agent.name.clone()),
+                model: Some(model.provider.model().to_owned()),
+                input_tokens: Some(usage.input_tokens),
+                output_tokens: Some(usage.output_tokens),
+                cost: cost
+                    .and_then(|c| rust_decimal::Decimal::try_from(c).ok())
+                    .map(sc_auth::credits),
+                note: None,
+            },
+            Some(&caller_context(&self.caller)),
+        )
+        .await?;
+        sc_log::log_verbose!(
+            "agent `{}` run {run}: charged {amount} LLM credits to user {}, leaving {}",
+            self.agent.name,
+            user.id,
+            debited.balance
+        );
+        Ok(())
     }
 
     /// Build one request: the system prompt with whatever the traits appended,
@@ -729,7 +859,7 @@ impl<'a> Runner<'a> {
         if after.saturating_mul(100) >= budget.saturating_mul(SUMMARY_PERCENT)
             && let Some(cut) = state.context().summary_cut(state.messages())
         {
-            match self.summarise(state, cut).await {
+            match self.summarise(run, state, cut).await {
                 Ok(text) => {
                     after = measure(state, Some((cut, &text)));
                     summary = Some((cut, text));
@@ -760,7 +890,7 @@ impl<'a> Runner<'a> {
 
     /// Have the cheap role summarise the transcript up to `cut`, and record the
     /// call in the ledger.
-    async fn summarise(&self, state: &mut AgentLoop, cut: usize) -> Result<String> {
+    async fn summarise(&self, run: RunId, state: &mut AgentLoop, cut: usize) -> Result<String> {
         let began = std::time::Instant::now();
         let model = self.model(ModelRole::Cheap).await?;
         let request = LlmRequest {
@@ -774,16 +904,25 @@ impl<'a> Runner<'a> {
         let answer = self.ask(&model, request, false).await?;
         let elapsed = began.elapsed();
         let step = state.step() + 1;
+        let cost = answer.usage.cost(&model.prices);
         state.ledger_mut().record_summary(LedgerStep {
             step,
             role: ModelRole::Cheap,
             model: model.provider.model().to_owned(),
             usage: answer.usage,
-            cost: answer.usage.cost(&model.prices),
+            cost,
             elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
             signals: Vec::new(),
             compacted: true,
         });
+        self.charge(
+            run,
+            format!("{run}:{step}:summary"),
+            &model,
+            answer.usage,
+            cost,
+        )
+        .await?;
         let text = answer.content.trim();
         if text.is_empty() {
             return Err(Error::msg("the summary came back empty"));
@@ -1154,6 +1293,9 @@ impl<'a> Runner<'a> {
             requests: self.requests,
             mode: child_mode,
             role: child_role,
+            // The sub-agent's own rates, or this run's: delegating is never a
+            // way round the meter.
+            meter: sub.meter().or(self.meter),
             chain,
         };
 
@@ -1307,11 +1449,30 @@ pub fn stable_prefix(
     })
 }
 
+/// The caller the events a credit debit raises report: the run's user, at the
+/// run's role.
+fn caller_context(caller: &RunCaller) -> sc_catalog::CallerContext {
+    let user = caller.user.as_ref().map(|u| {
+        let mut fields: serde_json::Map<String, Json> = u
+            .extra
+            .iter()
+            .map(|(k, v)| (k.clone(), sc_expr::value_to_json(v)))
+            .collect();
+        fields.insert("id".to_owned(), Json::String(u.id.to_string()));
+        fields.insert("role".to_owned(), Json::from(u.role));
+        Json::Object(fields)
+    });
+    sc_catalog::CallerContext::new(caller.role, user).in_current_origin()
+}
+
 fn conclusion_label(conclusion: &Conclusion) -> String {
     match conclusion {
         Conclusion::Answered { .. } => "answered".to_owned(),
         Conclusion::MaxSteps => "ran out of steps".to_owned(),
         Conclusion::Aborted => "was aborted".to_owned(),
+        Conclusion::OverBudget {
+            budget: crate::machine::Budget::Credits,
+        } => "stopped: the caller is out of LLM credits".to_owned(),
         Conclusion::OverBudget { budget } => format!("ran out of its {budget} budget"),
         Conclusion::Stuck { reason } => format!("was stopped as stuck ({reason})"),
     }
@@ -1397,16 +1558,27 @@ impl Delegator for RunDelegation<'_, '_> {
             ..LlmRequest::default()
         };
         let answer = self.runner.ask(&model, request, false).await?;
+        let cost = answer.usage.cost(&model.prices);
         lock(self.spent).asides.push(LedgerStep {
             step: self.step,
             role,
             model: model.provider.model().to_owned(),
             usage: answer.usage,
-            cost: answer.usage.cost(&model.prices),
+            cost,
             elapsed_ms: u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX),
             signals: Vec::new(),
             compacted: false,
         });
+        // A tool may ask more than once in a step, so each ask is its own key.
+        let key = format!(
+            "{}:{}:aside:{}",
+            self.parent_run,
+            self.step,
+            uuid::Uuid::new_v4()
+        );
+        self.runner
+            .charge(self.parent_run, key, &model, answer.usage, cost)
+            .await?;
         Ok(answer.content.trim().to_owned())
     }
 

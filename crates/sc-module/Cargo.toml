@@ -103,6 +103,8 @@ sc-viewpattern.workspace = true
 async-trait.workspace = true
 # A role grant's period, as a module sends it (TODO-payments P3.3).
 chrono.workspace = true
+# `ctx.credits` amounts, exact as the ledger keeps them (TODO-payments P6.4).
+rust_decimal.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 uuid.workspace = true

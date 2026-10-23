@@ -24,6 +24,11 @@
 // role is the base role. A subscription, a trial or an admin's comp is a grant
 // that lasts a while; the row's menu opens them, and the role column says when
 // somebody is served above their base role because of one.
+//
+// **LLM credits are beside it too** (TODO-payments P6.2): the balance a metered
+// agent's model calls are charged to. The row's menu opens the balance, the
+// buckets and the latest entries, with a form to grant credits by hand and the
+// low-balance threshold an application's auto top-up listens for.
 
 import { useEffect, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -36,10 +41,23 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import type {
+  GetUserCreditsResponse,
   ListFieldsResponse,
   ListUserRoleGrantsResponse,
   ListUsersResponse,
 } from "../client";
+import {
+  bucketSourceLabel,
+  bucketState,
+  bucketStateBadge,
+  creditGrantBody,
+  entryLabel,
+  entryTokens,
+  inDebt,
+  newCreditGrantForm,
+  thresholdBody,
+  type CreditGrantForm,
+} from "../credits";
 import { navigate } from "../App";
 import { IconDots, IconPlus } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
@@ -80,6 +98,7 @@ export function Users() {
   const [editing, setEditing] = useState<Editing | null>(null);
   const [credentials, setCredentials] = useState<Credentials | null>(null);
   const [granting, setGranting] = useState<UserRow | null>(null);
+  const [crediting, setCrediting] = useState<UserRow | null>(null);
   const [busy, setBusy] = useState(false);
   const roles = useRoles();
   const locales = useLocales();
@@ -273,6 +292,9 @@ export function Users() {
                             <Dropdown.Item onClick={() => setGranting(u)}>
                               <T text="Role grants" />
                             </Dropdown.Item>
+                            <Dropdown.Item onClick={() => setCrediting(u)}>
+                              <T text="LLM credits" />
+                            </Dropdown.Item>
                             <Dropdown.Divider />
                             <Dropdown.Item onClick={() => setDisabled(u, !u.disabled)}>
                               {u.disabled ? "Enable user" : "Disable user"}
@@ -310,6 +332,8 @@ export function Users() {
         />
 
         <RoleGrantsDialog user={granting} roles={roles} onClose={() => setGranting(null)} />
+
+        <CreditsDialog user={crediting} onClose={() => setCrediting(null)} />
       </PageBody>
     </>
   );
@@ -676,6 +700,235 @@ function RoleGrantsDialog({
           </Form.Group>
           <Button type="submit" disabled={busy}>
             <T text="Grant" />
+          </Button>
+        </Form>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onClose}>
+          <T text="Close" />
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  );
+}
+
+/**
+ * A user's LLM credits: the balance (and any debt), every bucket, the latest
+ * entries, a form to grant credits by hand, and the low-balance threshold.
+ *
+ * Every answer from the server is the whole view, so the dialog redraws from
+ * what the server now holds after each change.
+ */
+function CreditsDialog({ user, onClose }: { user: UserRow | null; onClose: () => void }) {
+  const { t } = useT();
+  const [credits, setCredits] = useState<GetUserCreditsResponse | null>(null);
+  const [form, setForm] = useState<CreditGrantForm>(newCreditGrantForm);
+  const [threshold, setThreshold] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const show = (view: GetUserCreditsResponse) => {
+    setCredits(view);
+    setThreshold(view.low_balance_threshold ?? "");
+  };
+
+  useEffect(() => {
+    setCredits(null);
+    setError(null);
+    setForm(newCreditGrantForm());
+    setThreshold("");
+    if (!user) return;
+    api
+      .getUserCredits(user.id)
+      .then(show)
+      .catch((err) => setError(errorMessage(err, "Could not load the credits.")));
+  }, [user]);
+
+  const run = async (change: () => Promise<GetUserCreditsResponse>, failure: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      show(await change());
+      return true;
+    } catch (err) {
+      setError(errorMessage(err, failure));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const grant = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    const body = creditGrantBody(form);
+    if (typeof body === "string") {
+      setError(t(body));
+      return;
+    }
+    if (await run(() => api.grantUserCredits(user.id, body), "Could not grant the credits.")) {
+      setForm(newCreditGrantForm());
+    }
+  };
+
+  const saveThreshold = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    const body = thresholdBody(threshold);
+    if (typeof body === "string") {
+      setError(t(body));
+      return;
+    }
+    await run(() => api.setUserCreditThreshold(user.id, body), "Could not set the threshold.");
+  };
+
+  return (
+    <Modal show={user !== null} onHide={onClose} size="lg" scrollable>
+      <Modal.Header closeButton>
+        <Modal.Title className="h4">
+          {t("LLM credits for {address}", { address: user?.email ?? "" })}
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        {error && <Alert variant="danger">{error}</Alert>}
+        {credits && (
+          <p>
+            {t("Balance: {balance} credits.", { balance: credits.balance })}{" "}
+            {inDebt(credits)
+              ? t("That includes a debt of {debt}, which the next grant repays first.", {
+                  debt: credits.debt,
+                })
+              : credits.next_expiry
+                ? t("Some expire on {date}.", {
+                    date: new Date(credits.next_expiry).toLocaleString(),
+                  })
+                : null}
+          </p>
+        )}
+
+        <h4><T text="Buckets" /></h4>
+        <Table responsive className="table-vcenter">
+          <thead>
+            <tr>
+              <th><T text="Left" /></th>
+              <th><T text="Granted" /></th>
+              <th><T text="Source" /></th>
+              <th><T text="Expires" /></th>
+              <th><T text="Status" /></th>
+            </tr>
+          </thead>
+          <tbody>
+            {credits?.buckets.length === 0 && (
+              <tr>
+                <td colSpan={5} className="text-muted">
+                  <T text="No credits granted yet." />
+                </td>
+              </tr>
+            )}
+            {credits?.buckets.map((b) => {
+              const badge = bucketStateBadge(bucketState(b));
+              return (
+                <tr key={b.id}>
+                  <td>{b.remaining}</td>
+                  <td>
+                    {b.amount}
+                    <div className="text-muted small">{b.kind}</div>
+                  </td>
+                  <td>
+                    {t(bucketSourceLabel(b))}
+                    {b.note && <div className="text-muted small">{b.note}</div>}
+                  </td>
+                  <td>{b.expires_at ? new Date(b.expires_at).toLocaleString() : t("Never")}</td>
+                  <td>
+                    <StatusBadge tone={badge.tone}>{t(badge.label)}</StatusBadge>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </Table>
+
+        <h4><T text="Latest entries" /></h4>
+        <Table responsive className="table-vcenter">
+          <thead>
+            <tr>
+              <th><T text="When" /></th>
+              <th><T text="What" /></th>
+              <th><T text="Change" /></th>
+              <th><T text="Balance after" /></th>
+            </tr>
+          </thead>
+          <tbody>
+            {credits?.entries.length === 0 && (
+              <tr>
+                <td colSpan={4} className="text-muted">
+                  <T text="Nothing yet." />
+                </td>
+              </tr>
+            )}
+            {credits?.entries.map((e) => (
+              <tr key={e.id}>
+                <td>{new Date(e.created_at).toLocaleString()}</td>
+                <td>
+                  {t(entryLabel(e))}
+                  {entryTokens(e) && <div className="text-muted small">{entryTokens(e)}</div>}
+                  {e.note && <div className="text-muted small">{e.note}</div>}
+                </td>
+                <td>{e.amount}</td>
+                <td>{e.balance}</td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+
+        <Form onSubmit={grant} className="border-top pt-3">
+          <h4><T text="Grant credits" /></h4>
+          <Form.Group className="mb-3" controlId="creditAmount">
+            <Form.Label><T text="Amount" /></Form.Label>
+            <Form.Control
+              inputMode="decimal"
+              value={form.amount}
+              onChange={(e) => setForm({ ...form, amount: e.target.value })}
+            />
+          </Form.Group>
+          <Form.Group className="mb-3" controlId="creditDays">
+            <Form.Label><T text="Days" /></Form.Label>
+            <Form.Control
+              inputMode="numeric"
+              value={form.days}
+              onChange={(e) => setForm({ ...form, days: e.target.value })}
+            />
+            <Form.Text muted>
+              <T text="How long they last from now. Blank never expires." />
+            </Form.Text>
+          </Form.Group>
+          <Form.Group className="mb-3" controlId="creditNote">
+            <Form.Label><T text="Note" /></Form.Label>
+            <Form.Control
+              value={form.note}
+              placeholder={t("Why, for whoever reads this later")}
+              onChange={(e) => setForm({ ...form, note: e.target.value })}
+            />
+          </Form.Group>
+          <Button type="submit" disabled={busy}>
+            <T text="Grant" />
+          </Button>
+        </Form>
+
+        <Form onSubmit={saveThreshold} className="border-top pt-3 mt-3">
+          <h4><T text="Low-balance threshold" /></h4>
+          <Form.Group className="mb-3" controlId="creditThreshold">
+            <Form.Control
+              inputMode="decimal"
+              value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
+            />
+            <Form.Text muted>
+              <T text="When an agent's call takes the balance below this, a low_balance entry is written for the application's triggers (an automatic top-up, say). Blank for none." />
+            </Form.Text>
+          </Form.Group>
+          <Button type="submit" variant="outline-primary" disabled={busy}>
+            <T text="Save threshold" />
           </Button>
         </Form>
       </Modal.Body>

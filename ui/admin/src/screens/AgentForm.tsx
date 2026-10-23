@@ -41,6 +41,7 @@ import { useRoles } from "../roles";
 import { modelOptions, type ModelItem } from "../llmModels";
 import {
   BUDGETS,
+  CREDITS,
   NUMBER_ATTRIBUTES,
   ROLES,
   agentAttributes,
@@ -374,6 +375,26 @@ export function AgentForm({ agentId }: { agentId?: string }) {
               </p>
               <Row>
                 {BUDGETS.map((attr) => (
+                  <Col md={6} key={attr.key}>
+                    <NumberBox
+                      attr={attr}
+                      value={numbers[attr.key] ?? ""}
+                      onChange={(value) => setNumbers((n) => ({ ...n, [attr.key]: value }))}
+                    />
+                  </Col>
+                ))}
+              </Row>
+            </Card.Body>
+          </Card>
+
+          <Card className="mb-3">
+            <Card.Header><T text="LLM credits" /></Card.Header>
+            <Card.Body>
+              <p className="text-muted small">
+                <T text="Charge the person using this agent for its model calls, from their LLM credits. A run stops when they run out. Blank rates are not metered, and an admin is never charged." />
+              </p>
+              <Row>
+                {CREDITS.map((attr) => (
                   <Col md={6} key={attr.key}>
                     <NumberBox
                       attr={attr}

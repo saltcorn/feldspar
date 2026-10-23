@@ -153,6 +153,7 @@ impl Action for ModuleAction {
         let hosts = self.surfaces.build(ctx);
         let files = ModuleFiles::new(ctx.catalog, &self.module, &self.areas);
         let roles = crate::roles::ModuleRoles::new(ctx.catalog, &self.module, self.roles);
+        let credits = crate::credits::ModuleCredits::new(ctx.catalog, &self.module);
         let oauth = ConsentAsks {
             catalog: ctx.catalog,
             module: &self.module,
@@ -166,6 +167,7 @@ impl Action for ModuleAction {
                 CallHosts::new(hosts.surfaces(), hosts.schema())
                     .with_module_files(&files)
                     .with_roles(&roles)
+                    .with_credits(&credits)
                     .with_oauth(&oauth),
             )
             .await

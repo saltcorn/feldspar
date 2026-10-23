@@ -174,6 +174,7 @@ pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
     refuse_last_admin(catalog, id, "delete").await?;
     // The grants reference the user; they are the user's and go with them.
     crate::grants::delete_grants_for_user(catalog, id).await?;
+    crate::credits::delete_credits_for_user(catalog, id).await?;
     let delete = Delete {
         returning: vec![Projection::expr(Expr::col(COL_ID))],
         ..Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id)))

@@ -1323,6 +1323,46 @@ the grants in force (started, not ended, not revoked). A grant never lowers a ro
   `grantUserRole`, `revokeUserRoleGrant`). The public role (100) is never granted: it is
   everybody's already.
 
+### 7.4b LLM credits (`sc_auth::credits`, TODO-payments P6, design C3)
+
+A user's **LLM credits** are what a metered agent's model calls are charged to (§11.2). The
+ledger has one spender — an agent run's model calls — and is deliberately not a general
+metering facility: an application that charges for something else keeps its own tables.
+
+- **Three ordinary tables.** **`credit_buckets`** — one per grant: `(user_id → users, amount,
+  remaining, kind, source, key, expires_at, note, created_at)`, `(source, key)` unique.
+  **`credit_entries`** — one per thing that happened: `kind` `grant`, `debit` or `low_balance`,
+  the signed `amount`, the `balance` after it, `(source, key)` unique, the `bucket` a grant made,
+  and for a debit the `run`, `agent`, `model`, `input_tokens`, `output_tokens` and `cost`.
+  **`credit_accounts`** — one per user who has had credits: their `debt` and
+  `low_balance_threshold`. Amounts are `numeric`, kept to six decimal places, and travel as
+  decimal strings to the admin client. All three are created with `min_role_read`/`write` 1
+  and `_read && user_id === user.id`, so a balance widget is an owner's REST read; never
+  dropped, columns protected, emptied by Clear all, carried by a backup's Users choice
+  (`users/credit_*.ndjson`), and deleted with their user.
+- **The balance** is what is left in the unexpired buckets less the debt. An expiry is a read,
+  like a role grant's: nothing is written when a bucket lapses.
+- **`grant_credits`** repays debt first, then fills a new bucket with the rest. A grant whose
+  `(source, key)` exists does nothing and answers that bucket (`replayed`) — what makes a
+  re-delivered webhook harmless. Sources: `admin` (the user page) and a module's package name
+  (`ctx.credits`, §15.1e). `agent` is reserved for debits.
+- **`debit_credits`** is called by the agent loop and nothing else: no code body, workflow,
+  action or module can spend credits. It takes from the soonest-expiring bucket first (never
+  expiring last), and what the buckets do not cover becomes debt: the call has already happened,
+  so a debit is never refused. A debit whose key (`<run>:<step>`) exists does nothing.
+- **One writer per user.** Every operation is one transaction that first locks the user's
+  `users` row `FOR UPDATE`; concurrent debits for one user take turns and never overdraw.
+- **The low-balance notice.** A debit that takes the balance from at or above the user's
+  threshold to below it writes a `low_balance` entry — once per fall, not per later call. The
+  threshold is set on the user page or by a module (`ctx.credits.setThreshold`).
+- **Events.** Each ledger write is raised as a table event after the transaction commits
+  (`Catalog::emit_write`), so an application's trigger on `credit_entries` fires (an auto
+  top-up on `low_balance`) and live reads of the buckets update. A debit's events carry the
+  run's user as the caller.
+- **The admin user page** ("LLM credits" in a user's menu) shows the balance and debt, every
+  bucket, the latest 50 entries, a form to grant credits for some days (or for good), and the
+  threshold (`getUserCredits`, `grantUserCredits`, `setUserCreditThreshold`).
+
 ### 7.5 Guest sessions, and where a request came from (TODO-payments P1.3, P1.5, P1.6)
 
 **The origin.** Two facts about a request matter far below the transport, past signatures that
@@ -3809,6 +3849,20 @@ its reason kept**, remaining stored, listed and editable, because editing it is 
   left overnight is not over budget. Only an explicit `context_budget` ends a run for now; the
   working-budget default arrives with compaction (Phase 4). `max_cost` is refused on save unless
   every model the agent may call has input and output prices.
+- **LLM credits** (TODO-payments P6.3, `sc_agent::meter`). An agent is **metered** when it sets
+  `credits_per_dollar` (credits per unit of `Usage::cost`) or `credits_per_1k_input` /
+  `credits_per_1k_output` (for a model with no prices; a call with a known cost is charged by
+  the dollar when both are set). A rate per dollar alone is refused on save unless every model
+  has input and output prices, as `max_cost` is; a call whose only unknown is a cache price is
+  charged at the input price. A metered run is charged to its caller (§7.4b): it refuses an
+  anonymous caller (the run fails, naming why), stops before a model call when the balance is
+  at or below zero — or, at the start of a drive, below `credits_min_balance` — as
+  `OverBudget { budget: credits }`, and debits after **every** model call: steps (`<run>:<step>`),
+  compaction summaries and a tool's own `Delegator::ask`. A delegated run is charged to the same
+  caller at its own rates, or its parent's when it has none. **A caller at the admin role is
+  never charged**: that keeps the admin's copilot (whose caller must be an admin) and a
+  trigger's `run_agent` (which carries the admin role and no user) free. The chat says "You are
+  out of LLM credits" for that conclusion.
 - **Parallel tool calls** are sent as `false` unless the agent's `parallel_tool_calls` attribute
   is set.
 
@@ -12133,6 +12187,14 @@ permission an admin gives, like a host: the `roles` entry of the module's permis
 most privileged role it may grant (`70` allows 70 to 99), set on the Modules tab ("Roles it may
 grant") or requested by a bundled manifest and granted by the install. A role above it, any role
 when there is none, and the admin role always are refused by name.
+
+**LLM credits** (TODO-payments P6.4, design C4). `ctx.credits` in a service and a webhook, and
+`credits` on an action's argument, speak the `credits` ask surface
+(`sc_module::credits::ModuleCredits`): `grant({ user, amount, key, expires_at, kind, note })`
+grants a bucket under the module's package name, once per `key`; `balance(user)`; and
+`setThreshold(user, amount | null)`. There is **no debit** (§7.4b). Unlike roles, granting
+credits needs no permission: a role is a privilege, while credits only pay for model calls
+through agents the admin configured.
 
 **Tables a module reads because its settings name them** (TODO-payments P4.1). A service's and
 a webhook's `ctx.db` reach only the module's declared tables (`ScopedTables`). A module whose

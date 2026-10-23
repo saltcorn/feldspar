@@ -54,6 +54,7 @@ pub mod delegate;
 pub mod driver;
 pub mod ledger;
 pub mod machine;
+pub mod meter;
 pub mod registry;
 pub mod run;
 pub mod run_store;
@@ -97,6 +98,10 @@ pub use ledger::{ChildLedger, Ledger, LedgerStep, RoleTotals};
 pub use machine::{
     AgentLoop, Budget, Budgets, Conclusion, IMAGE_STUB, Step, StepMeta, ToolOutcome,
     trait_state_key,
+};
+pub use meter::{
+    ATTR_CREDITS_MIN_BALANCE, ATTR_CREDITS_PER_1K_INPUT, ATTR_CREDITS_PER_1K_OUTPUT,
+    ATTR_CREDITS_PER_DOLLAR, Meter,
 };
 pub use registry::AgentRegistry;
 pub use run::{ATTR_MODE, ATTR_ROLE, Run, RunId, RunKind, RunMode, RunState};

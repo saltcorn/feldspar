@@ -176,6 +176,7 @@ pub async fn run_webhook(
         dispatcher.map(|d| TriggerRunHost::new(d, catalog).caused_by(ROLE_ADMIN, Some(user)));
     let files = ModuleFiles::new(catalog, module, &areas);
     let roles = crate::roles::ModuleRoles::new(catalog, module, loaded.module.permissions.roles);
+    let credits = crate::credits::ModuleCredits::new(catalog, module);
     let schema = schema_snapshot(catalog).ok();
     let call = CallHosts {
         hosts: CodeHosts {
@@ -188,6 +189,7 @@ pub async fn run_webhook(
         service: None,
         module_files: Some(&files),
         roles: Some(&roles),
+        credits: Some(&credits),
         oauth: None,
     };
     let answer = host

@@ -88,6 +88,26 @@ pub async fn validate_agent(
         }
     }
 
+    // A rate per dollar is kept against the models' prices, the way a cost
+    // budget is; a rate per token is the fallback for a model without them.
+    if let Some(meter) = agent.meter()
+        && meter.needs_prices()
+    {
+        let unpriced: Vec<String> = priced
+            .iter()
+            .filter(|(_, prices)| !prices.is_priced())
+            .map(|(role, _)| format!("`{role}`"))
+            .collect();
+        if !unpriced.is_empty() {
+            return Err(problem(format!(
+                "charging LLM credits per dollar needs every model the agent calls to \
+                 have input and output prices, and the {} model has none; set the prices \
+                 on the model, or charge per 1,000 tokens as well",
+                unpriced.join(" and ")
+            )));
+        }
+    }
+
     if let Some(role) = agent.min_role
         && !(1..=100).contains(&role)
     {

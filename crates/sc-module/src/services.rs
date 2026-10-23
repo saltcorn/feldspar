@@ -433,6 +433,7 @@ async fn serve_once(
     ));
     let files = ModuleFiles::new(catalog, module, areas);
     let roles = crate::roles::ModuleRoles::new(catalog, module, roles);
+    let credits = crate::credits::ModuleCredits::new(catalog, module);
     let schema = schema_snapshot(catalog).ok();
     let call = CallHosts {
         hosts: CodeHosts {
@@ -445,6 +446,7 @@ async fn serve_once(
         service: Some(&asks),
         module_files: Some(&files),
         roles: Some(&roles),
+        credits: Some(&credits),
         oauth: None,
     };
     let run = shared.host.run_service(module, service, call);

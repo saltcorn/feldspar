@@ -486,6 +486,10 @@ export function conclusionNotice(conclusion: Conclusion | null | undefined): str
     case "max_steps":
       return "The agent used all of its steps without finishing.";
     case "over_budget":
+      // The caller's LLM credits are theirs, not the agent's (TODO-payments P6.3).
+      if (conclusion.budget === "credits") {
+        return "You are out of LLM credits. Top up to carry on.";
+      }
       return `The agent ran out of its ${(conclusion.budget ?? "").replace("_", " ")} budget.`;
     case "stuck":
       return `The agent was stopped because it was going round in circles: ${conclusion.reason ?? ""}`;
@@ -501,7 +505,7 @@ export function conclusionLabel(conclusion: Conclusion | null | undefined): stri
     case "max_steps":
       return "out of steps";
     case "over_budget":
-      return "over budget";
+      return conclusion.budget === "credits" ? "out of credits" : "over budget";
     case "stuck":
       return "stuck";
     default:

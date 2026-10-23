@@ -1273,6 +1273,8 @@ function serviceContext(record, configuration) {
     /** Role grants (TODO-payments P3.3): `grant`, `revoke`, `get`, up to the
      * role ceiling an admin allowed this module. */
     roles: moduleRoles((plan) => askFor(callId, "roles", plan)),
+    /** LLM credits (TODO-payments P6.4): `grant`, `balance`, `setThreshold`. */
+    credits: moduleCredits((plan) => askFor(callId, "credits", plan)),
     /** Run another trigger, as `trigger.run(name, payload)` does in a body. */
     runTrigger: (trigger, payload) =>
       askFor(callId, "trigger", {
@@ -1516,7 +1518,7 @@ async function evalCsp(plugin, configuration) {
  * signature is computed over them), `headers` lower-cased, `rest` (the path
  * after the webhook's name), `method` and `query` — plus `text()` and `json()`
  * over the body. `ctx` is a service's: `db` over the module's own tables,
- * `files`, `roles`, `runTrigger` and `log`, every ask on this call. The answer is
+ * `files`, `roles`, `credits`, `runTrigger` and `log`, every ask on this call. The answer is
  * `{ status, body, headers }`: a string or bytes body is sent as it is, and
  * anything else as JSON. */
 async function runWebhook({ module: name, webhook: hookName, request }) {
@@ -1551,6 +1553,7 @@ async function runWebhook({ module: name, webhook: hookName, request }) {
     db: globalThis.__scMakeDb(callId),
     files: moduleFiles((plan) => askFor(callId, "module_files", plan)),
     roles: moduleRoles((plan) => askFor(callId, "roles", plan)),
+    credits: moduleCredits((plan) => askFor(callId, "credits", plan)),
     runTrigger: (trigger, payload) =>
       askFor(callId, "trigger", {
         trigger,
@@ -2706,6 +2709,39 @@ function moduleRoles(send) {
   };
 }
 
+/** `ctx.credits` of a service or a webhook and `credits` of an action
+ * (TODO-payments P6.4, design C4): LLM credits this module grants a user, one
+ * bucket per `key` — the module's own name for the thing that pays for them
+ * (an invoice), so granting the same key again does nothing. There is no
+ * debit: only an agent run's model calls spend credits.
+ *
+ *   await credits.grant({ user: userId, amount: 100, key: "invoice:in_1",
+ *                         expires_at: periodEnd, kind: "allowance" });
+ *   const { balance, debt } = await credits.balance(userId);
+ *   await credits.setThreshold(userId, 10);   // null: no low-balance notices
+ */
+function moduleCredits(send) {
+  const when = (value) => (value instanceof Date ? value.toISOString() : value);
+  const who = (user) => (user && typeof user === "object" ? user.id : user);
+  return {
+    /** Grant `amount` credits to `user` (an id or a row) until `expires_at`
+     * (a `Date`, an ISO string or milliseconds; none is never). Debt is repaid
+     * first. Answers `{ bucket, amount, remaining, repaid, balance, replayed }`. */
+    grant({ user, amount, key, expires_at, kind, note } = {}) {
+      return send({ op: "grant", user: who(user), amount, key, expires_at: when(expires_at), kind, note });
+    },
+    /** `{ balance, available, debt, next_expiry, low_balance_threshold }`. */
+    balance(user) {
+      return send({ op: "balance", user: who(user) });
+    },
+    /** Set the balance below which an agent run's debit writes a
+     * `low_balance` entry, or clear it with `null`. Answers the balance. */
+    setThreshold(user, threshold) {
+      return send({ op: "threshold", user: who(user), threshold: threshold ?? null });
+    },
+  };
+}
+
 /** `callerFiles` of an action (TODO-imap M9.3): the application's file stores,
  * **read** as the action's caller — the code body's `fs(…).asUser()`, over the
  * call's own `files` surface. A module that sends a user's file somewhere (the
@@ -2739,6 +2775,7 @@ async function runAction({ module: name, action: actionName, args }) {
     argument.files = moduleFiles((plan) => askFor(callId, "module_files", plan));
     argument.callerFiles = callerFiles((plan) => askFor(callId, "files", plan));
     argument.roles = moduleRoles((plan) => askFor(callId, "roles", plan));
+    argument.credits = moduleCredits((plan) => askFor(callId, "credits", plan));
     // The tables, as a code body's `db` and a service's `ctx.db` are spelled
     // (TODO-payments P2.1): the trigger's authority unless a chain says
     // `asUser()`, over this call's own surfaces. v1's `Table` reaches the same

@@ -59,8 +59,9 @@ use crate::handlers::{
 ///
 /// The `users` table is **not** among the tables: user accounts are the Users
 /// choice, which carries the table's rows (password hashes included) along with
-/// the roles they point at and the role grants they hold (`role_grants`, which
-/// is left out of the tables for the same reason). Offering it twice would let an admin tick "users" and
+/// the roles they point at, the role grants they hold (`role_grants`) and their
+/// LLM credits (`credit_*`), which are left out of the tables for the same
+/// reason. Offering it twice would let an admin tick "users" and
 /// untick the `users` table and get something incoherent.
 ///
 /// Tables on another database connection are not among them either: the
@@ -71,6 +72,9 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
         if table.is_system()
             || table.name == sc_auth::USERS_TABLE
             || table.name == sc_auth::ROLE_GRANTS_TABLE
+            || super::CREDIT_ROWS_FILES
+                .iter()
+                .any(|(name, _)| table.name == *name)
         {
             continue;
         }
@@ -451,6 +455,12 @@ async fn write_entries<W: Write + Seek>(
                 false,
             )
             .await?;
+        }
+        // Their LLM credits, likewise: a balance is theirs.
+        for (name, path) in super::CREDIT_ROWS_FILES {
+            if let Some(ledger) = catalog.get(name)? {
+                write_table_rows(source, &ledger, None, zip, path, false).await?;
+            }
         }
         let roles: Vec<Json> = sc_auth::list_roles(catalog)
             .await?

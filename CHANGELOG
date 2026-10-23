@@ -2,6 +2,112 @@
 
 Changes in reverse chronological order.
 
+## Payments P6: the LLM credits ledger
+
+TODO-payments.md milestone P6. A user can now hold **LLM credits**, and an agent can charge the
+person using it for its model calls out of them. Nothing here takes a payment: P7 builds plan
+allowances and top-ups on it.
+
+**The ledger (P6.1)**, `sc_auth::credits`:
+
+- **Three ordinary tables**, each user reading their own rows and only an admin writing:
+  - `credit_buckets`: one per grant, with what is left of it and an optional expiry;
+  - `credit_entries`: one per grant, debit or low-balance notice, with the balance after it;
+    a debit's entry records the run, agent, model, tokens and cost;
+  - `credit_accounts`: one per user, holding their debt and their low-balance threshold.
+
+  The design named two tables; the third holds the debt and the threshold, which belong to the
+  user rather than to any bucket. Amounts are exact (`numeric`, six decimal places).
+- **The balance** is what is left in the unexpired buckets, less the debt. A bucket that
+  expires needs no write.
+- **`grant_credits`** repays any debt first, then fills a new bucket. It is idempotent on
+  `(source, key)`: a replayed grant does nothing and answers the bucket it made the first time.
+  A key already used for another user is refused.
+- **`debit_credits`** takes from the soonest-expiring bucket first. What the buckets cannot
+  cover becomes debt, because the model call has already been made. It is idempotent on its key
+  (the run and the step). The agent loop is its only caller: nothing a code body, workflow,
+  action or module can reach spends credits.
+- **Concurrency.** Every operation is one transaction that locks the user's `users` row
+  (`FOR UPDATE`), so concurrent debits never overdraw. The test fails without the lock.
+- **Events.** Each ledger write is raised as a table event once the transaction commits, so an
+  application's triggers on `credit_entries` fire and live reads of `credit_buckets` update.
+- **Housekeeping**, as for `role_grants`:
+  - the tables cannot be dropped and their columns are protected;
+  - Clear all empties them rather than dropping them;
+  - deleting a user deletes their credits;
+  - a backup's Users choice carries them (`users/credit_accounts.ndjson`,
+    `users/credit_buckets.ndjson`, `users/credit_entries.ndjson`). A restore skips rows already
+    there and follows a user who is on the server under another id.
+
+**The admin user page (P6.2).** "LLM credits" in a user's menu opens a dialog that shows:
+
+- the balance, and any debt;
+- every bucket, with its state;
+- the latest 50 entries.
+
+From the dialog an admin can grant credits for some days (or for good) with a note, and set the
+low-balance threshold. New endpoints: `getUserCredits`, `grantUserCredits` and
+`setUserCreditThreshold`. Amounts travel as decimal strings. The four admin clients are
+regenerated.
+
+**Agent metering (P6.3)**, `sc_agent::meter`:
+
+- **Settings.** An agent is metered when it sets one of these rates (the "LLM credits" card on
+  the agent form):
+  - `credits_per_dollar`, credits per unit of the model's priced cost;
+  - `credits_per_1k_input` and `credits_per_1k_output`, credits per 1,000 tokens.
+
+  When both kinds are set, a call with a known cost is charged by the dollar. A rate per dollar
+  alone is refused on save unless every model the agent uses has input and output prices. A call
+  whose only unknown is a cache price is charged at the input price.
+- **Starting and stopping.** A metered run refuses an anonymous caller: the run fails, saying
+  it needs a signed-in user. Before every model call it checks the caller's balance. At or below
+  zero, or below `credits_min_balance` at the start of a turn, the run ends as
+  `OverBudget { budget: credits }`, a new budget. The chat says "You are out of LLM credits.
+  Top up to carry on." The transcript is intact, and the conversation continues after a
+  top-up.
+- **What is charged.** Every model call is debited to the caller: steps, compaction summaries
+  and a tool's own calls to the model. A delegated sub-agent is charged to the same caller, at
+  its own rates or its parent's.
+- **Who is never charged.** A caller at the admin role. That covers the admin's copilot, whose
+  caller must be an admin, and a trigger's `run_agent`, which runs at the admin role with no
+  user.
+
+**Modules (P6.4).** `ctx.credits` in a service and a webhook, and `credits` on an action's
+argument, offer:
+
+- `grant({ user, amount, key, expires_at, kind, note })`, once per key, under the module's
+  package name;
+- `balance(user)`;
+- `setThreshold(user, amount | null)`.
+
+There is no debit. Granting credits needs no permission, unlike roles: a role is a privilege,
+while credits only pay for model calls through agents the admin configured. A debit that takes
+the balance from at or above the user's threshold to below it writes one `low_balance` entry
+per fall, for an application's auto top-up trigger.
+
+**Tests.**
+
+- `sc-auth/tests/credits.rs`: concurrent debits never overdraw, a replayed grant or debit does
+  nothing, soonest-expiring first, expiry with no write, debt repaid by the next grant, one
+  low-balance notice per fall, refusals, and deleting a user.
+- `sc-agent/tests/credits.rs`: a run debits each call and stops in debt; a top-up resumes it;
+  the minimum balance; anonymous callers refused and admins free; a sub-agent and a tool's
+  aside charged to the same caller; the price check on save.
+- `sc-module/tests/module_credits.rs`: a fixture module grants once per key, reads the balance,
+  sets the threshold, and has no `debit`.
+- `sc-server/tests/llm_credits.rs`: the admin endpoints, each user reading only their own
+  buckets through an application, and a `low_balance` entry firing an application trigger
+  once.
+- Unit tests for the meter, the module surface and the admin UI helpers.
+
+`docs/tutorial-agents.md` (Step 5b) documents the agent form's new LLM credits card.
+
+Noticed, not changed: a `numeric` column refuses a JSON number and takes only a decimal string
+(`sc_types::json_to_value`). So a code body copying `row.balance` into an application's own
+numeric column must write `String(row.balance)`. The P7 tutorial should say so, or the
+coercion should accept numbers.
+
 ## Payments P5: Polar, a second adapter
 
 TODO-payments.md milestone P5. The payments module now takes one-off payments and subscriptions

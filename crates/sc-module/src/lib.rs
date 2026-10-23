@@ -61,6 +61,7 @@ pub mod action;
 pub mod bounds;
 pub mod bundled;
 pub mod consent;
+pub mod credits;
 pub mod csp;
 #[cfg(feature = "deno-host")]
 pub mod deno;
@@ -90,6 +91,7 @@ pub use bounds::{
     DEFAULT_CALL_TIMEOUT, DEFAULT_MODULE_JS_SLICE, DEFAULT_MODULE_MAX_HEAP, DEFAULT_MODULE_WORKERS,
 };
 pub use bundled::{BUNDLED_IN_CHECKOUT, BundledModule, BundledModules};
+pub use credits::ModuleCredits;
 pub use csp::{CspSuggestion, SUGGESTIBLE_DIRECTIVES};
 #[cfg(feature = "deno-host")]
 pub use deno::{DenoModuleHost, PoolBounds};

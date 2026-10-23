@@ -32,6 +32,11 @@ serde.workspace = true
 uuid.workspace = true
 # The `_fd_roles` attributes column (role-specific settings, §9).
 serde_json.workspace = true
+# LLM credits are exact (`numeric`): a balance summed from many small debits
+# must not drift (TODO-payments P6).
+rust_decimal.workspace = true
+# A ledger write's table event that could not be dispatched is said in the log.
+sc-log.workspace = true
 
 [dev-dependencies]
 sc-db-postgres.workspace = true

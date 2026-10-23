@@ -3143,6 +3143,60 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // LLM credits (TODO-payments P6.2): the balance an agent run's model calls
+    // are charged to. The page shows the balance, the buckets and the latest
+    // entries, grants credits by hand, and sets the low-balance threshold.
+    // Amounts are exact decimal strings.
+    set.register(
+        Endpoint::new(
+            "getUserCredits",
+            Method::Get,
+            api()
+                .lit("users")
+                .param("id", ValueType::Uuid)
+                .lit("credits"),
+        )
+        .output(crate::auth::user_credits_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "grantUserCredits",
+            Method::Post,
+            api()
+                .lit("users")
+                .param("id", ValueType::Uuid)
+                .lit("credits"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("amount", TypeSchema::text()),
+            // Days from now; left out, the credits never expire.
+            StructField::new("expires_in_days", TypeSchema::optional(TypeSchema::int())),
+            StructField::new("note", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(crate::auth::user_credits_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "setUserCreditThreshold",
+            Method::Post,
+            api()
+                .lit("users")
+                .param("id", ValueType::Uuid)
+                .lit("credits")
+                .lit("threshold"),
+        )
+        .input(TypeSchema::struct_of([
+            // Left out or null: no low-balance notices.
+            StructField::new("threshold", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(crate::auth::user_credits_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
     // --- API tokens (§13.6) --------------------------------------------------
     //
     // The credential the administration MCP server authenticates with: a bearer

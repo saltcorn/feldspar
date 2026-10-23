@@ -131,6 +131,9 @@ pub enum Budget {
     WallTime,
     /// `context_budget`: the size of the context the last request carried.
     Context,
+    /// The caller's LLM credits (TODO-payments P6.3): their balance was at or
+    /// below zero, or below the agent's minimum to start, before a model call.
+    Credits,
 }
 
 impl Budget {
@@ -140,6 +143,7 @@ impl Budget {
             Budget::Cost => "cost",
             Budget::WallTime => "wall_time",
             Budget::Context => "context",
+            Budget::Credits => "credits",
         }
     }
 }
@@ -754,11 +758,24 @@ impl AgentLoop {
 
     /// End the run because its context is over budget even after compacting.
     pub fn context_over_budget(&mut self) {
+        self.over(Budget::Context);
+    }
+
+    /// End the run before its next model call because the caller is out of
+    /// LLM credits (TODO-payments P6.3). The driver decides that — the
+    /// balance is in the database, not in the run — and the run ends as any
+    /// other budget ends it: not an error, the transcript intact, and a later
+    /// message (after a top-up) continues it.
+    pub fn out_of_credits(&mut self) {
+        self.over(Budget::Credits);
+    }
+
+    /// Conclude before the next model call, over `budget`. Only between turns'
+    /// halves: a run waiting on its tools finishes them first.
+    fn over(&mut self, budget: Budget) {
         if matches!(self.phase, Phase::Model) {
             self.phase = Phase::Done {
-                conclusion: Conclusion::OverBudget {
-                    budget: Budget::Context,
-                },
+                conclusion: Conclusion::OverBudget { budget },
             };
         }
     }

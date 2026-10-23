@@ -22,6 +22,7 @@ import {
   applyUserMessage,
   compactionLabel,
   conclusionLabel,
+  conclusionNotice,
   normalizeControls,
   previewPaneOf,
   resolvePaneUrl,
@@ -254,6 +255,12 @@ describe("a loop that stopped on its own says why", () => {
     expect(conclusionLabel({ conclusion: "stuck", reason: "looping" })).toBe("stuck");
     expect(conclusionLabel({ conclusion: "answered" })).toBeNull();
     expect(conclusionLabel(null)).toBeNull();
+  });
+
+  it("tells the person when they, not the agent, are out of credits", () => {
+    const out = { conclusion: "over_budget", budget: "credits" };
+    expect(conclusionNotice(out)).toContain("out of LLM credits");
+    expect(conclusionLabel(out)).toBe("out of credits");
   });
 });
 

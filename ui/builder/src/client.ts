@@ -239,6 +239,11 @@ export type ListUserRoleGrantsResponse = { base_role: number; effective_role: nu
 export type GrantUserRoleRequest = { role: number; expires_in_days?: number | null; note?: string | null };
 export type GrantUserRoleResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
 export type RevokeUserRoleGrantResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
+export type GetUserCreditsResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
+export type GrantUserCreditsRequest = { amount: string; expires_in_days?: number | null; note?: string | null };
+export type GrantUserCreditsResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
+export type SetUserCreditThresholdRequest = { threshold?: string | null };
+export type SetUserCreditThresholdResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
 export type ListApiTokensResponse = Array<{ id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }>;
 export type CreateApiTokenRequest = { label: string; grants?: { allow_create?: boolean | null; allow_edit?: boolean | null; allow_drop?: boolean | null; allow_access_changes?: boolean | null; allow_triggers?: boolean | null; allow_applications?: boolean | null; allow_modules?: boolean | null; allow_history?: boolean | null; allow_all?: boolean | null } | null; expires_in_days?: number | null };
 export type CreateApiTokenResponse = { token: { id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }; secret: string };
@@ -579,6 +584,9 @@ export interface ApiClient {
   listUserRoleGrants(id: string): Promise<ListUserRoleGrantsResponse>;
   grantUserRole(id: string, body: GrantUserRoleRequest): Promise<GrantUserRoleResponse>;
   revokeUserRoleGrant(id: string, grant: string): Promise<RevokeUserRoleGrantResponse>;
+  getUserCredits(id: string): Promise<GetUserCreditsResponse>;
+  grantUserCredits(id: string, body: GrantUserCreditsRequest): Promise<GrantUserCreditsResponse>;
+  setUserCreditThreshold(id: string, body: SetUserCreditThresholdRequest): Promise<SetUserCreditThresholdResponse>;
   listApiTokens(): Promise<ListApiTokensResponse>;
   createApiToken(body: CreateApiTokenRequest): Promise<CreateApiTokenResponse>;
   revokeApiToken(id: string): Promise<RevokeApiTokenResponse>;
@@ -2070,6 +2078,32 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("revokeUserRoleGrant", res);
       return (await res.json()) as RevokeUserRoleGrantResponse;
+    },
+    async getUserCredits(id) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getUserCredits", res);
+      return (await res.json()) as GetUserCreditsResponse;
+    },
+    async grantUserCredits(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("grantUserCredits", res);
+      return (await res.json()) as GrantUserCreditsResponse;
+    },
+    async setUserCreditThreshold(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits/threshold`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("setUserCreditThreshold", res);
+      return (await res.json()) as SetUserCreditThresholdResponse;
     },
     async listApiTokens() {
       const res = await doFetch(`${baseUrl}/api/api-tokens`, {

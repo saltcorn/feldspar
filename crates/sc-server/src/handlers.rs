@@ -6906,6 +6906,78 @@ pub fn admin_handlers_with(
         }
     });
 
+    // LLM credits (TODO-payments P6.2). Every answer is the whole view — the
+    // balance, the buckets and the latest entries — so the page redraws from
+    // what the server now holds rather than guessing at what changed.
+    reg.register("getUserCredits", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_user_id(ctx.path_param("id")?)?;
+                Ok(HandlerResponse::ok(user_credits(&catalog, id).await?))
+            }
+        }
+    });
+
+    reg.register("grantUserCredits", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_user_id(ctx.path_param("id")?)?;
+                let obj = require_object(&ctx.body)?;
+                let amount = credit_amount(obj.get("amount"), "amount")?
+                    .ok_or_else(|| Error::invalid("`amount` is required: the credits to grant"))?;
+                let expires_at = match obj.get("expires_in_days") {
+                    None | Some(Json::Null) => None,
+                    Some(_) => {
+                        let days = int_field(obj, "expires_in_days")?;
+                        if days < 1 {
+                            return Err(Error::invalid(
+                                "`expires_in_days` must be a positive number of days; \
+                                 leave it out for credits that never expire",
+                            ));
+                        }
+                        Some(chrono::Utc::now() + chrono::Duration::days(days))
+                    }
+                };
+                let note = optional_str(obj, "note");
+                let caller = admin_caller(ctx.user.as_ref());
+                sc_auth::grant_credits(
+                    &catalog,
+                    sc_auth::NewCreditGrant {
+                        user_id: id,
+                        amount,
+                        source: sc_auth::CREDIT_SOURCE_ADMIN.to_owned(),
+                        key: uuid::Uuid::new_v4().to_string(),
+                        kind: sc_auth::CREDIT_SOURCE_ADMIN.to_owned(),
+                        expires_at,
+                        note: (!note.trim().is_empty()).then(|| note.trim().to_owned()),
+                    },
+                    Some(&caller),
+                )
+                .await?;
+                Ok(HandlerResponse::ok(user_credits(&catalog, id).await?))
+            }
+        }
+    });
+
+    reg.register("setUserCreditThreshold", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_user_id(ctx.path_param("id")?)?;
+                let obj = require_object(&ctx.body)?;
+                let threshold = credit_amount(obj.get("threshold"), "threshold")?;
+                let caller = admin_caller(ctx.user.as_ref());
+                sc_auth::set_low_balance_threshold(&catalog, id, threshold, Some(&caller)).await?;
+                Ok(HandlerResponse::ok(user_credits(&catalog, id).await?))
+            }
+        }
+    });
+
     reg.register("deleteUser", {
         let catalog = catalog.clone();
         move |ctx| {
@@ -11847,6 +11919,37 @@ fn provided_configuration(table: &Table) -> sc_types::Attrs {
 /// the row editor must work on a FORCE'd table.
 fn admin_caller(user: Option<&sc_auth::User>) -> sc_catalog::CallerContext {
     sc_api::caller_context_at(ROLE_ADMIN, user)
+}
+
+/// A user's LLM credits as the admin user page shows them: the balance, every
+/// bucket, and the latest entries.
+async fn user_credits(catalog: &Catalog, id: uuid::Uuid) -> Result<Json> {
+    /// The entries the page lists; older ones are a REST read of the table.
+    const RECENT_ENTRIES: u64 = 50;
+    if sc_auth::load_base_user(catalog, id).await?.is_none() {
+        return Err(Error::not_found(format!("no user with id {id}")));
+    }
+    let balance = sc_auth::credit_balance(catalog, id).await?;
+    let buckets = sc_auth::list_credit_buckets(catalog, id).await?;
+    let entries = sc_auth::list_credit_entries(catalog, id, RECENT_ENTRIES).await?;
+    Ok(sc_api::auth::user_credits_json(
+        &balance, &buckets, &entries,
+    ))
+}
+
+/// An amount of credits from a body: a decimal string (what the admin client
+/// sends, exactly) or a number. Absent or null is `None`.
+fn credit_amount(value: Option<&Json>, key: &str) -> Result<Option<rust_decimal::Decimal>> {
+    let parsed = match value {
+        None | Some(Json::Null) => return Ok(None),
+        Some(Json::String(text)) if text.trim().is_empty() => return Ok(None),
+        Some(Json::String(text)) => text.trim().parse::<rust_decimal::Decimal>().ok(),
+        Some(Json::Number(n)) => n.to_string().parse::<rust_decimal::Decimal>().ok(),
+        Some(_) => None,
+    };
+    parsed
+        .map(Some)
+        .ok_or_else(|| Error::invalid(format!("`{key}` must be an amount of credits, like 12.5")))
 }
 
 /// A required role field of an object body: an integer on the `1..=100` scale.
