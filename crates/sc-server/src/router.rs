@@ -1537,6 +1537,16 @@ async fn dispatch_app(
         );
     }
 
+    // An exposed agent (§11.7), beside the endpoint set for the live socket's
+    // reason: `{mount}/_agents/…` sits under a provider's mount.
+    if let Some(request) = sc_app::agent_route(&app.app, path) {
+        return with_csp(
+            crate::app_agents::handle(state, app, request, &method, uri, &jar, anonymous, body)
+                .await,
+            &csp,
+        );
+    }
+
     // The app's catalogue, in the same place and for the same reason
     // (`{mount}/i18n/{locale}.json`, §16.1 D7). An application with no locales
     // never reaches the store: the guard is the first thing
@@ -3388,7 +3398,7 @@ fn map_method(method: &str) -> Option<ApiMethod> {
 /// (bad configuration or app code the admin must fix — e.g. a failed build,
 /// carrying the bundler's diagnostics) is a client-fixable `422`, while a
 /// **System** error (a bug or infrastructure failure to report) is a `500`.
-fn error_status(err: &Error) -> StatusCode {
+pub(crate) fn error_status(err: &Error) -> StatusCode {
     match err.repr() {
         Repr::NotFound(_) => StatusCode::NOT_FOUND,
         Repr::Invalid(_) => StatusCode::BAD_REQUEST,

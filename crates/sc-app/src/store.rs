@@ -32,9 +32,10 @@ use crate::application::{
     ApiConfig, AppId, Application, CspPolicy, FrameworkRef, StaticDir, StreamRef, TriggerRef,
 };
 use crate::applications::{
-    APPLICATIONS_TABLE, COL_ACCESS_IF, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION,
-    COL_EXTRA_FRAMEWORKS, COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_MAX_ROLE, COL_MIN_ROLE,
-    COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN, COL_TABLES, COL_TRIGGERS, COL_UPLOADS,
+    APPLICATIONS_TABLE, COL_ACCESS_IF, COL_AGENTS, COL_APIS, COL_ATTRIBUTES, COL_CSP,
+    COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS, COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_MAX_ROLE,
+    COL_MIN_ROLE, COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN, COL_TABLES, COL_TRIGGERS,
+    COL_UPLOADS,
 };
 use crate::framework::{CFG_STORE, validate_framework_config};
 
@@ -125,6 +126,9 @@ pub async fn save_application(catalog: &Catalog, app: &Application) -> Result<Ap
     // …and the upload slots, against the same store subset and the app's own
     // code queries, which a hook must be one of (TODO F2, §2.3).
     crate::validate_upload_slots(app)?;
+    // …and the exposed agents, for their shape; whether each one exists is
+    // checked where a person changes the application (§11.7).
+    crate::validate_agent_exposures(app)?;
     // …and a stream of a table's changes, against the table subset: a page
     // may only be told about rows of a table its application includes (TODO.md
     // "Live updates" §3 rule 3; the socket checks it again on subscribe).
@@ -295,6 +299,7 @@ fn app_columns() -> Vec<String> {
         COL_APIS,
         COL_STATIC_DIRS,
         COL_UPLOADS,
+        COL_AGENTS,
         COL_CSP,
         COL_ATTRIBUTES,
         COL_MIN_ROLE,
@@ -343,6 +348,7 @@ fn app_values(app: &Application) -> Result<Vec<Value>> {
                 .collect(),
         )),
         Value::Json(crate::upload_slots_json(&app.uploads)),
+        Value::Json(crate::agent_exposures_json(&app.agents)),
         Value::Json(csp_to_json(&app.csp)),
         Value::Json(Json::Object(app.attributes.clone())),
         Value::Int(i64::from(app.min_role)),
@@ -444,6 +450,13 @@ pub(crate) fn application_from_row(row: &Row) -> Result<Application> {
                 .map_err(|e| Error::invalid(format!("{APPLICATIONS_TABLE}.{COL_UPLOADS}: {e}")))?,
             Some(Value::Null) | None => Vec::new(),
             other => return Err(bad_column(COL_UPLOADS, "json", other)),
+        },
+        // …and so are the exposed agents (§11.7).
+        agents: match row.get(COL_AGENTS) {
+            Some(Value::Json(json)) => crate::agent_exposures_from_json(Some(json))
+                .map_err(|e| Error::invalid(format!("{APPLICATIONS_TABLE}.{COL_AGENTS}: {e}")))?,
+            Some(Value::Null) | None => Vec::new(),
+            other => return Err(bad_column(COL_AGENTS, "json", other)),
         },
         csp: csp_from_json(json_column(row, COL_CSP)?)?,
         attributes: object(json_column(row, COL_ATTRIBUTES)?, COL_ATTRIBUTES)?,

@@ -78,6 +78,13 @@ import {
   uploadRowsToRequest,
   type UploadRow,
 } from "../uploadSlots";
+import {
+  agentOptions,
+  agentRowsFromApp,
+  agentRowsToRequest,
+  blankAgentRow,
+  type AgentRow,
+} from "../agentExposures";
 import { CustomQueries } from "./CustomQueries";
 import { ApplicationTabs } from "./ApplicationViews";
 import { appTabs, settingsOnOwnTab } from "../views";
@@ -184,6 +191,9 @@ export function ApplicationForm({
   const [allStreams, setAllStreams] = useState<StreamItem[]>([]);
   const [allTables, setAllTables] = useState<TableItem[]>([]);
   const [allFileStores, setAllFileStores] = useState<FileStoreItem[]>([]);
+  // …and the server's agents, so an exposed agent is picked from the ones
+  // there are (§11.7).
+  const [allAgents, setAllAgents] = useState<string[]>([]);
   // The API providers this server registers, for the same reason: a provider name
   // is the one field of an application whose typo survives the save and turns up
   // later as "unknown API provider" from a mount that failed.
@@ -213,6 +223,7 @@ export function ApplicationForm({
   ]);
   const [staticDirs, setStaticDirs] = useState<StaticRow[]>([]);
   const [uploads, setUploads] = useState<UploadRow[]>([]);
+  const [agents, setAgents] = useState<AgentRow[]>([]);
   // Empty by default: a new app takes its framework's policy (§2.2) unless the
   // admin states one. Editing an app fills this in from what was stored.
   const [csp, setCsp] = useState("");
@@ -263,6 +274,12 @@ export function ApplicationForm({
         const suggestions = await api
           .listModules()
           .then(cspSuggestionsOf, () => [] as CspSuggestion[]);
+        // A server without agents answers with an error: the picker is empty,
+        // and an application that already exposes one keeps it.
+        const agentNames = await api
+          .listAgents()
+          .then((list) => list.map((a) => a.name))
+          .catch(() => [] as string[]);
         let existing: AppItem | undefined;
         if (appId) {
           existing = (await api.listApplications()).find((a) => a.id === appId);
@@ -279,6 +296,7 @@ export function ApplicationForm({
         setAllTables(tbls);
         setAllFileStores(stores);
         setCspSuggestions(suggestions);
+        setAllAgents(agentNames);
         if (existing) {
           setStored(existing);
           setName(existing.name);
@@ -299,6 +317,7 @@ export function ApplicationForm({
             })),
           );
           setUploads(uploadRowsFromApp(existing.uploads));
+          setAgents(agentRowsFromApp(existing.agents));
           setCsp(cspToText(existing.csp));
           setCspSources(cspSourcesOf(existing.attributes));
           const attributes = attributesOf(existing.attributes);
@@ -395,6 +414,7 @@ export function ApplicationForm({
         apis: apiRowsToRequest(apis, allProviders),
         static_dirs: staticDirsToRequest(staticDirs),
         uploads: uploadRowsToRequest(uploads),
+        agents: agentRowsToRequest(agents),
         // An empty box means "no opinion", and is sent as no field at all so the
         // *framework's* default policy applies (§2.2) — a React app gets the one
         // fitted to what Vite emits. Sending `default-src 'self'` because a
@@ -974,6 +994,65 @@ export function ApplicationForm({
                 text="A client uploads a large file to {route} in resumable chunks (the tus protocol), with no size cap but the slot's own. It lands in the folder owned by the uploader, so only they (and admins) may read it. An empty size is the server's limit; empty types accept any. The hook is one of this application's code queries, called first with the file's name, size and type: it may refuse, or choose the path."
                 values={{
                   route: <code>{"{api mount}"}/_upload/{"{name}"}</code>,
+                }}
+              />
+            </Form.Text>
+
+            <RepeatableRows
+              title={t("Agents")}
+              rows={agents}
+              columns={[
+                {
+                  key: "name",
+                  label: t("Agent"),
+                  options: (value) =>
+                    agentOptions(allAgents, value).map((o) => ({
+                      value: o.value,
+                      label: o.known ? o.value : t("{name} (no such agent)", { name: o.value }),
+                    })),
+                  emptyText: t("There are no agents yet. Create one under Agents."),
+                },
+                {
+                  key: "use",
+                  label: t("Use"),
+                  options: () => [
+                    { value: "both", label: t("Chat and prompts") },
+                    { value: "chat", label: t("Chat") },
+                    { value: "prompt", label: t("Prompts") },
+                  ],
+                },
+                {
+                  key: "anonymous",
+                  label: t("Signed out"),
+                  options: () => [
+                    { value: "no", label: t("Not allowed") },
+                    { value: "yes", label: t("Allowed") },
+                  ],
+                },
+                {
+                  key: "tools",
+                  label: t("Tools shown"),
+                  options: () => [
+                    { value: "names", label: t("Names") },
+                    { value: "none", label: t("None") },
+                    { value: "full", label: t("In full") },
+                  ],
+                },
+                {
+                  key: "prompt_template",
+                  label: t("Prompt template"),
+                  placeholder: "Summarise order {{order}}",
+                },
+              ]}
+              onChange={setAgents}
+              blank={blankAgentRow()}
+            />
+            <Form.Text muted className="d-block mb-3">
+              <T
+                text="The application's pages talk to an agent at {route}: conversations, streamed and kept as each person's own history, or single prompts. Who may use it is the agent's own minimum role, and its tools run as that person. Signed-out use also needs the agent's minimum role to be public. A prompt template makes a prompt take the values of its {placeholder} placeholders instead of free text."
+                values={{
+                  route: <code>{"{api mount}"}/_agents/{"{name}"}</code>,
+                  placeholder: <code>{"{{key}}"}</code>,
                 }}
               />
             </Form.Text>

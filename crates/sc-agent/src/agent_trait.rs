@@ -338,11 +338,13 @@ pub struct TraitCheck<'a> {
 
 /// Who a run's tools execute as (decision 5).
 ///
-/// Two shapes, and only two: a **user**, which is a chat turn — the person is
-/// there, and every tool is their read or their write — and the **system**, which
-/// is a trigger-started run carrying the trigger's own authority. There is no
-/// third, and in particular no default: [`Run::new`](crate::Run::new) takes one,
-/// so a run that never decided cannot exist.
+/// Three shapes: a **user**, which is a chat turn — the person is there, and
+/// every tool is their read or their write — the **system**, which is a
+/// trigger-started run carrying the trigger's own authority, and an
+/// **anonymous** visitor of an application that exposes an agent to people who
+/// are not signed in, who holds the public role and nothing more. There is no
+/// default: [`Run::new`](crate::Run::new) takes one, so a run that never decided
+/// cannot exist.
 ///
 /// The two fields are what a trait hands to the row layer:
 /// `sc_api::caller_context_at(caller.role, caller.user.as_ref())` is the whole
@@ -350,10 +352,10 @@ pub struct TraitCheck<'a> {
 /// `sc-api` is above this crate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunCaller {
-    /// The user every tool runs as, or `None` for a system run.
+    /// The user every tool runs as, or `None` for a system or anonymous run.
     pub user: Option<User>,
-    /// The role every tool's access is checked at — the user's own, or admin for
-    /// a system run.
+    /// The role every tool's access is checked at — the user's own, admin for
+    /// a system run, public for an anonymous one.
     pub role: u8,
 }
 
@@ -375,6 +377,19 @@ impl RunCaller {
         RunCaller {
             user: None,
             role: 1,
+        }
+    }
+
+    /// A run for somebody who is not signed in: no user, the public role.
+    ///
+    /// Only an application that exposes an agent with `anonymous` set makes
+    /// one. Every tool then sees exactly what a signed-out request to the same
+    /// table would see, which is the point: being anonymous must not be a way
+    /// to borrow anybody's authority, least of all the system's.
+    pub fn anonymous() -> RunCaller {
+        RunCaller {
+            user: None,
+            role: 100,
         }
     }
 
@@ -649,6 +664,17 @@ mod tests {
         // A trigger's authority reaches everything a role floor could ask for.
         assert!(caller.meets_role(None));
         assert!(caller.meets_role(Some(80)));
+    }
+
+    #[test]
+    fn an_anonymous_run_is_public_with_no_user() {
+        let caller = RunCaller::anonymous();
+        assert_eq!(caller.role, 100);
+        assert!(caller.user.is_none());
+        // Only a floor of public is met: anything signed in is out of reach.
+        assert!(caller.meets_role(Some(100)));
+        assert!(!caller.meets_role(Some(80)));
+        assert!(!caller.meets_role(None));
     }
 
     #[test]

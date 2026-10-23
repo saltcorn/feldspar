@@ -6275,6 +6275,21 @@ fn upload_slot_schema() -> TypeSchema {
     ])
 }
 
+/// An agent an application exposes to its client (§11.7): for chat, single
+/// prompts or both, to signed-in callers or — with `anonymous` — to anybody the
+/// agent's own floor admits, showing its tools to the extent `tools` says
+/// (`none` | `names` | `full`). `prompt_template` null takes free text.
+fn agent_exposure_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("chat", TypeSchema::bool()),
+        StructField::new("prompt", TypeSchema::bool()),
+        StructField::new("anonymous", TypeSchema::bool()),
+        StructField::new("tools", TypeSchema::text()),
+        StructField::new("prompt_template", TypeSchema::optional(TypeSchema::text())),
+    ])
+}
+
 /// The fields common to an application on the wire — everything but its id. The
 /// nested `csp` and `attributes` are opaque JSON (a directive→sources map and a
 /// sparse bag respectively), matching how they are stored (§13.2).
@@ -6299,6 +6314,7 @@ fn application_fields() -> Vec<StructField> {
         StructField::new("apis", TypeSchema::array(api_config_schema())),
         StructField::new("static_dirs", TypeSchema::array(static_dir_schema())),
         StructField::new("uploads", TypeSchema::array(upload_slot_schema())),
+        StructField::new("agents", TypeSchema::array(agent_exposure_schema())),
         StructField::new("csp", TypeSchema::json()),
         StructField::new("attributes", TypeSchema::json()),
         // Who may use the application at all (TODO F9): the least privileged

@@ -23,6 +23,7 @@ use sc_catalog::{Attrs, FileStoreId, TableId};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
+use crate::exposed_agents::AgentExposure;
 use crate::uploads::UploadSlot;
 
 /// Identifies an application within the server: the UUID primary key of its
@@ -294,7 +295,7 @@ impl StaticDir {
 
 /// Decode a path segment's `%XX` escapes, as UTF-8. A malformed escape stays as
 /// it is; `+` is a plus, because it is a space only in a query.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     if !s.contains('%') {
         return s.to_owned();
     }
@@ -319,7 +320,7 @@ fn percent_decode(s: &str) -> String {
 /// Encode a path segment for a URL, keeping the RFC 3986 unreserved characters
 /// and `~`. The inverse of [`percent_decode`], so a name with a space or a `#`
 /// in it survives the round trip through a request path.
-fn percent_encode(segment: &str) -> String {
+pub(crate) fn percent_encode(segment: &str) -> String {
     let mut out = String::with_capacity(segment.len());
     for byte in segment.bytes() {
         match byte {
@@ -565,6 +566,14 @@ pub struct Application {
     /// Named places a client may upload a large file to, resumably, at
     /// `{mount}/_upload/{name}` (TODO F2, §2.3).
     pub uploads: Vec<UploadSlot>,
+    /// The agents the app exposes to its client, for chat and single prompts,
+    /// at `{mount}/_agents/{name}` (§11.7).
+    ///
+    /// The same **opt-in subset** the triggers and streams are: an agent the
+    /// app does not name has no route. Who may use a named one is the agent's
+    /// own `min_role`, plus the exposure's `anonymous` switch for people who are
+    /// not signed in.
+    pub agents: Vec<AgentExposure>,
     /// The content-security policy (strict by default).
     pub csp: CspPolicy,
     /// The least privileged role that may use the application at all
@@ -661,6 +670,7 @@ impl Application {
             apis: Vec::new(),
             static_dirs: Vec::new(),
             uploads: Vec::new(),
+            agents: Vec::new(),
             csp: CspPolicy::strict(),
             min_role: ROLE_PUBLIC,
             max_role: ROLE_ADMIN,
@@ -721,6 +731,12 @@ impl Application {
     /// Declare an upload slot.
     pub fn with_upload(mut self, slot: UploadSlot) -> Application {
         self.uploads.push(slot);
+        self
+    }
+
+    /// Expose an agent to the app's client (§11.7).
+    pub fn with_agent(mut self, exposure: AgentExposure) -> Application {
+        self.agents.push(exposure);
         self
     }
 

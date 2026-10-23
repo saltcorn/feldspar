@@ -686,7 +686,8 @@ fn generated_bytes_and_uploads_client_type_checks() -> std::io::Result<()> {
         name: name.to_owned(),
         path: format!("/api/_upload/{name}"),
     });
-    let client_ts = sc_api::generate_app_client(ApiProvider::endpoints(&provider), &[], &uploads);
+    let client_ts =
+        sc_api::generate_app_client(ApiProvider::endpoints(&provider), &[], &uploads, &[]);
     assert!(
         client_ts.contains("dotUrl(query?: DotQuery): string"),
         "{client_ts}"
@@ -696,6 +697,89 @@ fn generated_bytes_and_uploads_client_type_checks() -> std::io::Result<()> {
         "{client_ts}"
     );
     type_check("bytes-uploads", &client_ts, BYTES_USAGE_TS)
+}
+
+/// What a page does with an application's exposed agents (§11.7): stream a
+/// chat turn into messages, read the history back, and prompt — by free text,
+/// or by a template's values, each typed.
+const AGENTS_USAGE_TS: &str = r#"
+import {
+  applyAgentEvent,
+  createClient,
+  userMessage,
+  type AgentAnswer,
+  type AgentMessage,
+  type AgentRunSummary,
+} from "./client";
+
+export async function exercise(): Promise<void> {
+  const api = createClient({});
+  const stop = new AbortController();
+  let messages: AgentMessage[] = [userMessage("Where is my order?")];
+  let run: string | undefined;
+  for await (const event of api.agents.helpdesk.chat("Where is my order?", { signal: stop.signal })) {
+    if (event.type === "run") run = event.run;
+    messages = applyAgentEvent(messages, event);
+  }
+  const history: AgentRunSummary[] = await api.agents.helpdesk.runs.list();
+  if (run) {
+    const again = await api.agents.helpdesk.runs.get(run);
+    const parts: number = again.messages.flatMap((m) => m.parts).length;
+    await api.agents.helpdesk.runs.rename(run, `Order ${parts}`);
+    await api.agents.helpdesk.runs.delete(run);
+  }
+  const answer: AgentAnswer = await api.agents.helpdesk.prompt("Tidy my tasks");
+  console.log(history.length, answer.answer, messages.length);
+
+  const summary = await api.agents["order summary"].prompt({ order: 42, audience: "the customer" });
+  for await (const event of api.agents["order summary"].promptStream({ order: 1, audience: "me" })) {
+    if (event.type === "done") console.log(event.answer, summary.run);
+  }
+  // @ts-expect-error a templated agent takes its values, not free text
+  await api.agents["order summary"].prompt("free text");
+  // @ts-expect-error `audience` is one of the template's values
+  await api.agents["order summary"].prompt({ order: 42 });
+  // @ts-expect-error a prompt-only agent has no conversations
+  api.agents["order summary"].chat("hi");
+  // @ts-expect-error there is no such agent
+  api.agents.copilot;
+}
+"#;
+
+#[test]
+fn generated_agents_client_type_checks() -> std::io::Result<()> {
+    use sc_api::AgentExport;
+
+    let agents = [
+        AgentExport {
+            name: "helpdesk".to_owned(),
+            path: "/api/_agents/helpdesk".to_owned(),
+            chat: true,
+            prompt: true,
+            template_keys: Vec::new(),
+        },
+        AgentExport {
+            name: "order summary".to_owned(),
+            path: "/api/_agents/order%20summary".to_owned(),
+            chat: false,
+            prompt: true,
+            template_keys: vec!["order".to_owned(), "audience".to_owned()],
+        },
+    ];
+    let provider = RestProvider::project("/api", &[]);
+    let client_ts =
+        sc_api::generate_app_client(ApiProvider::endpoints(&provider), &[], &[], &agents);
+    assert!(
+        client_ts.contains(
+            "\"order summary\": AgentPromptApi<{ order: AgentInputValue; audience: AgentInputValue }>;"
+        ),
+        "{client_ts}"
+    );
+    assert!(
+        client_ts.contains("\"helpdesk\": agentApi(doFetch, `${baseUrl}/api/_agents/helpdesk`),"),
+        "{client_ts}"
+    );
+    type_check("agents", &client_ts, AGENTS_USAGE_TS)
 }
 
 #[test]

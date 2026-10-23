@@ -451,7 +451,7 @@ async fn stop(ctx: &ChatContext, run: &mut Run) -> Result<()> {
 }
 
 /// The `done` event for a turn the loop concluded.
-fn done_event(run: &Run, conclusion: &Conclusion) -> Json {
+pub(crate) fn done_event(run: &Run, conclusion: &Conclusion) -> Json {
     let mut event = json!({
         "type": "done",
         "run": run.id.0.to_string(),
@@ -490,7 +490,7 @@ enum Turn {
 /// floor, and the check is still made here rather than assumed, because an agent
 /// exposed to a role is exactly the thing that must not be reachable by way of a
 /// surface that forgot to ask.
-fn may_chat(caller: &RunCaller, agent: &Agent) -> Result<()> {
+pub(crate) fn may_chat(caller: &RunCaller, agent: &Agent) -> Result<()> {
     if caller.meets_role(agent.min_role) {
         return Ok(());
     }
@@ -501,7 +501,7 @@ fn may_chat(caller: &RunCaller, agent: &Agent) -> Result<()> {
 }
 
 /// The first line of a message, cut to fit a list.
-fn summarise(text: &str) -> String {
+pub(crate) fn summarise(text: &str) -> String {
     let line = text.trim().lines().next().unwrap_or("").trim();
     match line.char_indices().nth(DESCRIPTION_CHARS) {
         Some((cut, _)) => format!("{}…", &line[..cut]),
@@ -510,7 +510,7 @@ fn summarise(text: &str) -> String {
 }
 
 /// An `error` event, the one thing that can arrive at any point in a turn.
-fn error_event(message: impl std::fmt::Display) -> Json {
+pub(crate) fn error_event(message: impl std::fmt::Display) -> Json {
     json!({ "type": "error", "message": message.to_string() })
 }
 

@@ -61,8 +61,8 @@ use serde_json::{Map, Value as Json, json};
 
 use super::{TOOL_DESCRIBE_APPS, TOOL_EDIT_STREAMS, load_app, required_str};
 use crate::{
-    Application, CspPolicy, StaticDir, StreamRef, TriggerChange, UploadSlot, app_default_locale,
-    app_locales, set_app_locales,
+    AgentExposure, Application, CspPolicy, StaticDir, StreamRef, TriggerChange, UploadSlot,
+    app_default_locale, app_locales, set_app_locales,
 };
 
 /// Changes an application's connected tables, static directories, CSP or locales.
@@ -92,6 +92,7 @@ const ARG_MIN_ROLE: &str = "min_role";
 const ARG_MAX_ROLE: &str = "max_role";
 const ARG_ACCESS_IF: &str = "access_if";
 const ARG_TRIGGERS: &str = "triggers";
+const ARG_AGENTS: &str = "agents";
 
 struct UpdateApp;
 
@@ -123,7 +124,7 @@ fn update_description(grants: &Grants) -> String {
         true => "",
         false => {
             " You may **not** change `tables`, `static_dirs`, `uploads`, `locales`, \
-             `streams` or `triggers`: they need `allow_edit`."
+             `streams`, `triggers` or `agents`: they need `allow_edit`."
         }
     };
     let csp = match grants.access_changes {
@@ -132,7 +133,8 @@ fn update_description(grants: &Grants) -> String {
                  widen, and why, before you do it."
         }
         false => {
-            " You may **not** change `csp` or `access`, or expose a public trigger: \
+            " You may **not** change `csp` or `access`, or expose a public trigger or an \
+                  agent to people who are not signed in: \
                   they need `allow_access_changes`. Tell the person what the app needs \
                   instead."
         }
@@ -140,7 +142,8 @@ fn update_description(grants: &Grants) -> String {
     format!(
         "Change an application: the tables it serves, the store folders it serves \
          as files, its Content-Security-Policy, the languages it is served in, \
-         the live streams it exposes, or the triggers its client may run. \
+         the live streams it exposes, the triggers its client may run, or the \
+         agents its pages may talk to. \
          Give only the sections you are \
          changing; one call may change several, and is saved as one, so a refused \
          section changes nothing.\n\n\
@@ -206,7 +209,23 @@ fn update_description(grants: &Grants) -> String {
          for tables. Only a trigger with no event (`when: \"none\"`) can be exposed; \
          create it with `save_trigger` first. Who may call it is the trigger's own \
          `min_role`: one left unset is admin-only, and the answer says so. A public \
-         one (`min_role` 100) also needs `allow_access_changes`.\n\n\
+         one (`min_role` 100) also needs `allow_access_changes`.\n\
+         - `{ARG_AGENTS}` — the **agents** its pages may talk to, as \
+         `api.agents[\"<name>\"]` in the generated client: `chat(message, {{ run }})` \
+         streams a turn of a conversation (events `run`, `text`, `tool_call`, \
+         `tool_result`, `error`, `done`; fold them into messages with \
+         `applyAgentEvent`), `runs.list/get/rename/delete` is the person's own \
+         history, and `prompt(input)` asks once and resolves to `{{ answer, run }}` — \
+         for a button whose point is what the agent's tools do. `{ARG_ADD}` lists \
+         `{{ name, chat, prompt, anonymous, tools, prompt_template }}` (a name in \
+         use is replaced); `{ARG_REMOVE}` lists names. `chat` and `prompt` default \
+         to true. Who may use it is the **agent's** own `min_role`, and its tools \
+         run as the person using it. `anonymous: true` also lets people who are \
+         not signed in use it — the agent's `min_role` must then be 100, and it \
+         needs `allow_access_changes`. `tools` is how much of its tools the client \
+         sees: `none`, `names` (default) or `full` (arguments and results). \
+         `prompt_template` (e.g. `\"Summarise order {{{{order}}}}\"`) makes `prompt` \
+         take `{{ order: … }}` instead of free text.\n\n\
          `{TOOL_DESCRIBE_APPS}` shows what each application has now. The running \
          app serves the change at once; a bundle written against tables it did \
          not have still needs a rebuild.{edit}{csp}"
@@ -339,6 +358,49 @@ fn update_parameters() -> Json {
                 },
                 "additionalProperties": false,
             },
+            ARG_AGENTS: {
+                "type": "object",
+                "description": "Change the agents its pages may talk to.",
+                "properties": {
+                    ARG_ADD: {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "The agent's name.",
+                                },
+                                "chat": {
+                                    "type": "boolean",
+                                    "description": "Conversations and their history (default true).",
+                                },
+                                "prompt": {
+                                    "type": "boolean",
+                                    "description": "Single prompts (default true).",
+                                },
+                                "anonymous": {
+                                    "type": "boolean",
+                                    "description": "Usable by people who are not signed in (default false).",
+                                },
+                                "tools": {
+                                    "type": "string",
+                                    "enum": ["none", "names", "full"],
+                                    "description": "How much of its tools the client sees (default `names`).",
+                                },
+                                "prompt_template": {
+                                    "type": ["string", "null"],
+                                    "description": "A prompt with `{{key}}` placeholders, filled from `prompt`'s `input`.",
+                                },
+                            },
+                            "required": ["name"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    ARG_REMOVE: names.clone(),
+                },
+                "additionalProperties": false,
+            },
             ARG_ACCESS: {
                 "type": "object",
                 "description": "Change who may use the application at all.",
@@ -390,6 +452,7 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
             ARG_STREAMS,
             ARG_ACCESS,
             ARG_TRIGGERS,
+            ARG_AGENTS,
         ],
     )?;
     let triggers = section(&args, ARG_TRIGGERS, &[ARG_ADD, ARG_REMOVE, ARG_SET])?
@@ -411,6 +474,7 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     )?;
     let streams = section(&args, ARG_STREAMS, &[ARG_ADD, ARG_REMOVE, ARG_SET])?;
     let uploads = section(&args, ARG_UPLOADS, &[ARG_ADD, ARG_REMOVE])?;
+    let agents = section(&args, ARG_AGENTS, &[ARG_ADD, ARG_REMOVE])?;
     let tables = section(&args, ARG_TABLES, &[ARG_ADD, ARG_REMOVE, ARG_SET])?;
     let static_dirs = section(&args, ARG_STATIC_DIRS, &[ARG_ADD, ARG_REMOVE])?;
     let locales = section(
@@ -430,11 +494,12 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         && streams.is_none()
         && access.is_none()
         && triggers.is_none()
+        && agents.is_none()
     {
         return Err(Error::invalid(format!(
             "name at least one of `{ARG_TABLES}`, `{ARG_STATIC_DIRS}`, `{ARG_UPLOADS}`, \
-             `{ARG_CSP}`, `{ARG_LOCALES}`, `{ARG_STREAMS}`, `{ARG_ACCESS}` and \
-             `{ARG_TRIGGERS}`; nothing was changed"
+             `{ARG_CSP}`, `{ARG_LOCALES}`, `{ARG_STREAMS}`, `{ARG_ACCESS}`, \
+             `{ARG_TRIGGERS}` and `{ARG_AGENTS}`; nothing was changed"
         )));
     }
     // Every grant before any change: a refused section refuses the call.
@@ -477,6 +542,13 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         require_grant(
             grants.edit,
             "change which triggers an application exposes",
+            GRANT_EDIT,
+        )?;
+    }
+    if agents.is_some() {
+        require_grant(
+            grants.edit,
+            "change which agents an application exposes",
             GRANT_EDIT,
         )?;
     }
@@ -565,6 +637,24 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
             )?;
         }
     }
+    if let Some(change) = &agents {
+        was.insert(
+            ARG_AGENTS.to_owned(),
+            crate::agent_exposures_json(&app.agents),
+        );
+        let signed_out = change_agents(&mut app, change)?;
+        if !signed_out.is_empty() {
+            require_grant(
+                grants.access_changes,
+                &format!(
+                    "expose {} to people who are not signed in",
+                    quoted(&signed_out)
+                ),
+                GRANT_ACCESS_CHANGES,
+            )?;
+        }
+        crate::check_exposed_agents(ctx.catalog, &app).await?;
+    }
 
     let saved = save(ctx, &app, &mut out).await?;
     if tables.is_some() {
@@ -593,6 +683,9 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     if triggers.is_some() {
         let live = ctx.require_triggers()?.triggers()?;
         out[ARG_TRIGGERS] = crate::app_triggers_json(&saved, |n| live.require(n).cloned());
+    }
+    if agents.is_some() {
+        out[ARG_AGENTS] = agents_json(&saved);
     }
     out["was"] = Json::Object(was);
     Ok(out)
@@ -954,6 +1047,77 @@ fn change_uploads(
     Ok(connected)
 }
 
+// --- agents -------------------------------------------------------------------
+
+/// Apply the section, returning the agents newly usable signed out — which
+/// need `allow_access_changes`, as a public trigger does.
+fn change_agents(app: &mut Application, section: &Map<String, Json>) -> Result<Vec<String>> {
+    let remove = names(section, ARG_REMOVE)?;
+    for name in &remove {
+        if !app.agents.iter().any(|a| &a.name == name) {
+            return Err(Error::invalid(format!(
+                "application `{}` does not expose agent `{name}`; it exposes {}. Nothing \
+                 was changed.",
+                app.subdomain,
+                match app.agents.is_empty() {
+                    true => "none".to_owned(),
+                    false => quoted(
+                        &app.agents
+                            .iter()
+                            .map(|a| a.name.clone())
+                            .collect::<Vec<_>>()
+                    ),
+                }
+            )));
+        }
+    }
+    app.agents.retain(|a| !remove.contains(&a.name));
+    let added = match section.get(ARG_ADD) {
+        None | Some(Json::Null) => Vec::new(),
+        Some(Json::Array(items)) => items
+            .iter()
+            .map(|item| {
+                AgentExposure::from_json(item)
+                    .map_err(|e| Error::invalid(format!("`{ARG_AGENTS}.{ARG_ADD}`: {e}")))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "`{ARG_AGENTS}.{ARG_ADD}` should be a list of exposed agents, got {other}"
+            )));
+        }
+    };
+    let mut signed_out = Vec::new();
+    for exposure in added {
+        let was_anonymous = app
+            .agents
+            .iter()
+            .any(|a| a.name == exposure.name && a.anonymous);
+        if exposure.anonymous && !was_anonymous {
+            signed_out.push(exposure.name.clone());
+        }
+        app.agents.retain(|a| a.name != exposure.name);
+        app.agents.push(exposure);
+    }
+    crate::validate_agent_exposures(app)?;
+    Ok(signed_out)
+}
+
+/// The exposed agents as the answer reports them: each with the route its
+/// client calls.
+pub(crate) fn agents_json(app: &Application) -> Json {
+    Json::Array(
+        app.agents
+            .iter()
+            .map(|a| {
+                let mut out = a.to_json();
+                out["route"] = json!(crate::agent_path(app, &a.name));
+                out
+            })
+            .collect(),
+    )
+}
+
 // --- csp ----------------------------------------------------------------------
 
 /// `csp` with the requested directives replaced or removed.
@@ -1074,6 +1238,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
             .collect::<Vec<_>>()
     );
     body["uploads"] = crate::upload_slots_json(&app.uploads);
+    body["agents"] = crate::agent_exposures_json(&app.agents);
     body["csp"] = csp_json(&app.csp);
     body["streams"] = streams_json(app);
     body["triggers"] = json!(exposed_names(app));
@@ -1205,17 +1370,63 @@ mod tests {
         assert!(
             none.contains(
                 "**not** change `tables`, `static_dirs`, `uploads`, `locales`, \
-                 `streams` or `triggers`: they need `allow_edit`"
+                 `streams`, `triggers` or `agents`: they need `allow_edit`"
             ),
             "{none}"
         );
         assert!(
             none.contains(
-                "**not** change `csp` or `access`, or expose a public trigger: they \
-                 need `allow_access_changes`"
+                "**not** change `csp` or `access`, or expose a public trigger or an \
+                 agent to people who are not signed in: they need `allow_access_changes`"
             ),
             "{none}"
         );
+    }
+
+    #[test]
+    fn exposing_an_agent_signed_out_is_reported_for_the_grant() {
+        let mut app = Application::new(
+            "Shop",
+            "shop",
+            crate::FrameworkRef {
+                name: "none".into(),
+                config: Default::default(),
+            },
+        )
+        .with_agent(AgentExposure::new("greeter").anonymous(true));
+        let section = |v: Json| v.as_object().unwrap().clone();
+        // A new signed-out agent is what needs `allow_access_changes`…
+        let signed_out = change_agents(
+            &mut app,
+            &section(json!({ "add": [
+                { "name": "helpdesk" },
+                { "name": "faq", "anonymous": true, "tools": "none" },
+            ] })),
+        )
+        .unwrap();
+        assert_eq!(signed_out, vec!["faq".to_owned()]);
+        assert_eq!(app.agents.len(), 3);
+        // …and one that already was is not asked about again.
+        let again = change_agents(
+            &mut app,
+            &section(json!({ "add": [{ "name": "greeter", "anonymous": true, "chat": false }] })),
+        )
+        .unwrap();
+        assert!(again.is_empty());
+        assert!(
+            !app.agents
+                .iter()
+                .find(|a| a.name == "greeter")
+                .unwrap()
+                .chat
+        );
+        // Removing one the app does not expose changes nothing.
+        let err = change_agents(&mut app, &section(json!({ "remove": ["nope"] })))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nope") && err.contains("helpdesk"), "{err}");
+        change_agents(&mut app, &section(json!({ "remove": ["faq"] }))).unwrap();
+        assert_eq!(app.agents.len(), 2);
     }
 
     #[test]

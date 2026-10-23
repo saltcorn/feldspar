@@ -106,8 +106,8 @@ pub use meter::{
 pub use registry::AgentRegistry;
 pub use run::{ATTR_MODE, ATTR_ROLE, Run, RunId, RunKind, RunMode, RunState};
 pub use run_store::{
-    RUNS_TABLE, abort_run, bootstrap_runs, delete_run, list_live_children, list_runs, load_run,
-    note_wakeup, require_run, run_insert, run_update, save_run,
+    RUNS_TABLE, abort_run, bootstrap_runs, delete_run, list_live_children, list_runs,
+    list_runs_for, load_run, note_wakeup, require_run, run_insert, run_update, save_run,
 };
 pub use store::{
     AGENTS_TABLE, bootstrap_agents, delete_agent, list_agents, load_agent, load_agent_by_name,

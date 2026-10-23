@@ -219,7 +219,7 @@ async fn answer(
 /// a hash of the cookie the browser carries — never the cookie itself, which
 /// is a credential and has no business in a table. A request with neither has
 /// nobody to continue it.
-fn uploader_of(user: Option<&User>, jar: &CookieJar) -> Option<String> {
+pub(crate) fn uploader_of(user: Option<&User>, jar: &CookieJar) -> Option<String> {
     if let Some(user) = user {
         return Some(format!("user:{}", user.id));
     }

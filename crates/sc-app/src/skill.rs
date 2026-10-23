@@ -300,7 +300,11 @@ pub fn generate_skill(catalog: &Catalog, app: &Application, client_file: &str) -
          should run (a module's action such as `mail_send`) is exposed likewise: \
          `save_trigger` with `when: \"none\"` and a `min_role` (80 for any signed-in \
          user; unset is admin-only), then `update_application` with \
-         `triggers: {{ add: [...] }}`, which adds `api.run<Name>()` to the client.\n\
+         `triggers: {{ add: [...] }}`, which adds `api.run<Name>()` to the client. \
+         An agent the pages should talk to — a chat, or a button whose prompt sets \
+         the agent's tools to work — is exposed with `update_application` and \
+         `agents: {{ add: [{{ name }}] }}`, which adds `api.agents[\"<name>\"]`; its \
+         own `min_role` decides who may use it, and its tools run as that person.\n\
          4. Read the result. It names the applications it re-projected and which \
          of them **want a build** — a schema change rewrites the generated client \
          but runs no bundler, so an application with a build is serving one made \

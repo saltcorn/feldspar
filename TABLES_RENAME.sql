@@ -853,3 +853,7 @@ END $fd$;
 -- Row history H5 / sync S5.1: when each sync key pair was made, so the change log's cleanup
 -- can remove pairs older than sync's retention. (Bootstrap adds it too.)
 ALTER TABLE IF EXISTS "_fd_sync_keys" ADD COLUMN IF NOT EXISTS "at" timestamptz DEFAULT now();
+
+-- §11.7 exposed agents: the agents an application's client may talk to. (Bootstrap adds it too;
+-- NULL reads back as "exposes no agents".)
+ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "agents" jsonb;

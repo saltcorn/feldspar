@@ -75,6 +75,7 @@ function application(
     apis: [],
     static_dirs: [],
     uploads: [],
+    agents: [],
     csp: null,
     attributes: {},
     min_role: 100,

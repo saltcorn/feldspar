@@ -4818,6 +4818,89 @@ staged **AppConstructor** (describe → clarify → research → requirements �
 feedback → self-heal). For users who prefer an external coding agent, the copilot can emit a
 `SKILL.md` describing the app.
 
+### 11.7 Agents in an application's pages
+
+An application's React pages talk to agents in two ways. A **chat** is a multi-turn conversation
+that streams as it is generated and is kept, so the person can reopen and continue it. A
+**single prompt** is a call from a button whose point is usually what the agent's tools do; the
+page shows the answer in a toast, or ignores it. Both go through one mechanism.
+
+**An application exposes an agent**, as it exposes a trigger or a stream: `Application::agents`
+is an opt-in subset of `AgentExposure { name, chat, prompt, anonymous, tools, prompt_template }`,
+stored in the nullable `_fd_applications.agents` column. An agent the application does not name has
+no route, and a request for one is a 404. The routes sit beside the endpoint set under the first API
+mount, as the live socket and the upload slots do (`sc_app::agent_route`):
+
+| Route | |
+|---|---|
+| `POST {mount}/_agents/{name}/chat` | `{ message, run? }` → one turn, as `text/event-stream` |
+| `POST …/prompt` | `{ prompt }` or `{ input }` → `{ run, state, answer, conclusion, tools }`; `?stream=1` streams it |
+| `GET …/runs` | the caller's own conversations with it, without transcripts |
+| `GET / PATCH / DELETE …/runs/{id}` | one of them with its transcript; rename (`{ title }`); delete |
+
+**Who may use it.** The agent's own `min_role`, which is the one floor on who may talk to an agent
+wherever it is reached from, and the application's admission rules in front of it. Every tool runs
+as the caller (`RunCaller::user`), capped at the application's `max_role`, so ownership formulas and
+RLS apply to what the agent does exactly as to the page's own requests. People who are not signed
+in are refused unless the exposure says `anonymous`. That takes **two** opt-ins: the agent's
+`min_role` must be public (100), and the application must say so. The admin API and the MCP tool
+refuse an anonymous exposure of a non-public agent when it is saved (`check_exposed_agents`), and
+the MCP tool also requires `allow_access_changes`, as it does for a public trigger. An anonymous run
+is `RunCaller::anonymous()`: no user, the public role. It is never the system caller, which is admin.
+
+**Transport: SSE over `POST`, not the admin chat's WebSocket.** A turn is one message up and a
+stream down. As a request it passes through the application's session, CSRF check, admission and
+body limit with nothing new, and the client stops it by aborting the `fetch`. The events are the
+admin socket's (`text`, `reasoning`, `tool_call`, `tool_result`, `error`, `done`), with `run`
+first so a new conversation has its id at once. The turn runs in its own task and watches its
+channel. **When the response is dropped, the agent stops** and the run is written `aborted`, which
+is the admin socket's rule for a closed connection. A turn that keeps running for a client that
+has gone, and can be rejoined later, is left for when it is needed. It would need the turn detached
+from the request, plus the message bus to rejoin it from another node.
+
+**Whose a run is.** A run started here carries `attributes.app`, `attributes.app_mode` (`chat` |
+`prompt`) and `attributes.owner`. The owner is `user:<id>`, or for an anonymous caller a hash of
+the browser's cookie, as an upload's uploader is. Only the owner, in the same application and
+mode, sees a run through these routes. Anybody else gets the 404 a missing run gets. Prompt runs are
+kept for audit and are never listed as conversations. A turn may not start, and a run may not be
+renamed or deleted, while the run is `running` (409): the turn writes the row after every step and
+would undo the change. Deleting or renaming an agent that an application exposes is refused, naming
+the applications.
+
+**What the client sees.** `tools` is `none`, `names` (the default: which tool ran and whether it
+failed) or `full` (its arguments and result too). It applies to the streamed events and to the
+stored transcript alike. A transcript (`GET …/runs/{id}`) is projected from the loop's messages into
+the client's message shape: each user message, followed by one assistant message holding the
+agent's text and tool parts. A tool part is settled by its result. The system prompt, compaction
+summaries and the vendors' replay items stay on the server.
+
+**A prompt template** (`"Summarise order {{order}} for {{audience}}"`) makes `…/prompt` take
+`{ input: { order, audience } }` instead of free text. A missing key and an extra key are both
+refused. A button then sends its values, and nobody else gets a free-form line to the agent. The
+generated client types `input` from the placeholders.
+
+**The client is a toolkit, not a component.** This follows the shape of the AI SDK's `useChat`,
+assistant-ui's runtime and LangGraph's `useStream`: events per turn, a reducer from events to
+messages made of parts, a separate thread list, and abort through the request. The page draws
+everything itself.
+
+- The helper (`helper.ts`) has the types `AgentEvent`, `AgentMessage`, `AgentPart`, `AgentRun` and
+  `AgentAnswer`, the reducer `applyAgentEvent(messages, event)`, `userMessage(text)`, and
+  `agentApi`, which reads server-sent events out of a `fetch`.
+- The generated client has `api.agents["<name>"]`, typed to what the exposure opens: `chat` and
+  `runs.list/get/rename/delete`, and `prompt` and `promptStream`.
+- The React scaffold writes `src/useAgentChat.ts` once. It is a hook giving `messages`, `status`,
+  `error`, `run`, `send`, `stop` and `load`. It belongs to the developer, and is a starting point
+  rather than the API.
+
+Deliberately not built yet:
+
+- **Client-side tools and human approval of a tool call.** Both need a run that waits on the
+  browser. The event protocol leaves room for a `tool_call` the client answers.
+- **Rejoining a turn still in progress after a reload.**
+- **Model-generated titles, and attachments.**
+- **An adapter for the AI SDK's own `useChat` transport.**
+
 ---
 
 ## 12. Admin UI, CSP, and the form runtime (`ui/admin`, `ui/form-runtime`)
@@ -5428,6 +5511,7 @@ pub struct Application {
     pub file_stores: Vec<FileStoreId>,
     pub triggers: Vec<TriggerRef>,       // the triggers it exposes, by name
     pub streams: Vec<StreamRef>,         // the streams it may observe, by name (§14.3)
+    pub agents: Vec<AgentExposure>,      // the agents its pages may talk to (§11.7)
     pub apis: Vec<ApiConfig>,            // any number, each on a sub-path, each with its own config
     pub static_dirs: Vec<StaticDir>,     // any number, each served at a sub-path
     pub csp: CspPolicy,                  // strict by default

@@ -111,9 +111,9 @@ pub use rest::{
 };
 pub use schema::{StructField, TypeSchema, ValueType};
 pub use typescript::{
-    CLIENT_HELPER_FILE, StreamExport, StreamTopics, UploadExport, client_helper, client_property,
-    client_runtime, generate_app_client, generate_client, generate_client_with_streams,
-    has_offline_sync,
+    AgentExport, CLIENT_HELPER_FILE, StreamExport, StreamTopics, UploadExport, client_helper,
+    client_property, client_runtime, generate_app_client, generate_client,
+    generate_client_with_streams, has_offline_sync,
 };
 pub use user_rows::api_row;
 

@@ -282,7 +282,7 @@ async fn run_bridged(
     driver: &str,
     args: &[&str],
 ) -> Result<Json> {
-    let client_ts = sc_api::generate_app_client(ApiProvider::endpoints(&f.api), &[], &[]);
+    let client_ts = sc_api::generate_app_client(ApiProvider::endpoints(&f.api), &[], &[], &[]);
     let dir = std::env::temp_dir().join(format!("sc-api-sync-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("client.ts"), runnable(&client_ts)).unwrap();
@@ -355,7 +355,7 @@ async fn a_device_works_on_its_copy_offline_and_syncs_it() -> Result<()> {
     )
     .await?;
 
-    let client_ts = sc_api::generate_app_client(ApiProvider::endpoints(&f.api), &[], &[]);
+    let client_ts = sc_api::generate_app_client(ApiProvider::endpoints(&f.api), &[], &[], &[]);
     assert!(
         client_ts.contains("offline.table(\"notes\""),
         "a synced table is kept offline:\n{client_ts}"

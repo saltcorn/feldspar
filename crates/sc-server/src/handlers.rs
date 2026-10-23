@@ -2286,12 +2286,17 @@ pub fn admin_handlers_with(
             async move {
                 let services = agents_of(&apps)?;
                 let id = parse_agent_id(ctx.path_param("id")?)?;
-                if sc_agent::load_agent(&catalog, id).await?.is_none() {
+                let Some(stored) = sc_agent::load_agent(&catalog, id).await? else {
                     return Err(Error::not_found(format!("no agent with id {id}")));
-                }
+                };
                 // The id is the path's, not the body's — the row's identity is
                 // not something a payload gets to reassign.
                 let agent = agent_from_body(id, &ctx.body)?;
+                // An application exposes it by name (§11.7), so a rename would
+                // leave that application exposing nothing.
+                if agent.name != stored.name {
+                    refuse_if_exposed(&catalog, &stored.name, "renamed").await?;
+                }
                 sc_agent::save_agent(&catalog, services.registry(), &agent).await?;
                 Ok(HandlerResponse::ok(agent_json(&agent, None)))
             }
@@ -2365,6 +2370,9 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let id = parse_agent_id(ctx.path_param("id")?)?;
+                if let Some(stored) = sc_agent::load_agent(&catalog, id).await? {
+                    refuse_if_exposed(&catalog, &stored.name, "deleted").await?;
+                }
                 if !sc_agent::delete_agent(&catalog, id).await? {
                     return Err(Error::not_found(format!("no agent with id {id}")));
                 }
@@ -5309,6 +5317,9 @@ pub fn admin_handlers_with(
                 // stores made for it go too: the admin corrects the form and
                 // presses Create again, and a leftover store would make that
                 // second attempt create `todo1` beside an orphaned `todo`.
+                // An exposed agent must exist, and one exposed signed out must
+                // be public: refused here, in front of the admin (§11.7).
+                sc_app::check_exposed_agents(&catalog, &created).await?;
                 let new_stores = create_requested_file_stores(&catalog, &mut created).await?;
                 let app = match save_application(&catalog, &created).await {
                     Ok(app) => app,
@@ -5384,6 +5395,7 @@ pub fn admin_handlers_with(
                 check_app_subdomain(&apps, &updated.subdomain)?;
                 merge_framework_secrets(&stored, &mut updated);
                 framable_by_the_admin(&mut updated, &ctx.body, &apps);
+                sc_app::check_exposed_agents(&catalog, &updated).await?;
                 let app = save_application(&catalog, &updated).await?;
                 // A save is an API-definition change: a table added to the
                 // subset, an endpoint's role, a custom query. The generated
@@ -7530,6 +7542,27 @@ fn merge_framework_secrets(stored: &Application, submitted: &mut Application) {
 
 /// An [`Application`] as the API returns it (matching `application_schema`): the
 /// id plus every field, with the nested framework/CSP/attributes as plain JSON.
+/// Refuse to delete or rename agent `name` while an application exposes it
+/// (§11.7), naming the applications — the way deleting an LLM provider an
+/// agent names is refused.
+async fn refuse_if_exposed(catalog: &Catalog, name: &str, verb: &str) -> Result<()> {
+    let using = sc_app::applications_exposing_agent(catalog, name).await?;
+    if using.is_empty() {
+        return Ok(());
+    }
+    Err(Error::invalid(format!(
+        "agent `{name}` cannot be {verb}: application{} {} expose{} it; stop exposing it \
+         there first",
+        if using.len() == 1 { "" } else { "s" },
+        using
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        if using.len() == 1 { "s" } else { "" },
+    )))
+}
+
 pub(crate) fn application_json(app: &Application) -> Json {
     json!({
         "id": app.id.to_string(),
@@ -7545,6 +7578,7 @@ pub(crate) fn application_json(app: &Application) -> Json {
         "apis": app.apis.iter().map(|a| json!({ "provider": a.provider, "mount": a.mount, "config": Json::Object(a.config.clone()) })).collect::<Vec<_>>(),
         "static_dirs": app.static_dirs.iter().map(|d| json!({ "mount": d.mount, "store": d.store.0, "path": d.path })).collect::<Vec<_>>(),
         "uploads": sc_app::upload_slots_json(&app.uploads),
+        "agents": sc_app::agent_exposures_json(&app.agents),
         "csp": csp_json(&app.csp),
         "attributes": Json::Object(app.attributes.clone()),
         "min_role": app.min_role,
@@ -8109,6 +8143,8 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         .collect::<Result<_>>()?;
     // Absent is "no upload slots", read as the triggers are.
     let uploads = sc_app::upload_slots_from_json(obj.get("uploads"))?;
+    // …and so are the exposed agents (§11.7).
+    let agents = sc_app::agent_exposures_from_json(obj.get("agents"))?;
     let csp = parse_csp(obj.get("csp"), &framework.name)?;
     let attributes = match obj.get("attributes") {
         None | Some(Json::Null) => Attrs::new(),
@@ -8150,6 +8186,7 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         apis,
         static_dirs,
         uploads,
+        agents,
         csp,
         min_role,
         max_role,

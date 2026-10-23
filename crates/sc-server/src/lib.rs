@@ -21,8 +21,10 @@
 
 mod admin_host;
 mod agents;
+// An application's exposed agents: chat, prompts and history (§11.7).
 mod analytics;
 mod analytics_app;
+mod app_agents;
 mod apps;
 mod backup;
 mod browser;

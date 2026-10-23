@@ -1683,3 +1683,233 @@ export async function upload(
     if (known !== null) offset = known;
   }
 }
+
+/** One piece of an agent's message, in the order it happened. A tool part's
+ * `arguments` and `result` are present only where the application shows its
+ * agent's tools in full. */
+export type AgentPart =
+  | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      state: "running" | "done" | "error";
+      arguments?: unknown;
+      result?: string;
+    }
+  | { type: "error"; text: string };
+
+/** A message of a conversation with an agent: what the person said, or
+ * everything the agent did in answer to it. */
+export interface AgentMessage {
+  id: string;
+  role: "user" | "assistant";
+  parts: AgentPart[];
+}
+
+/** What a turn streams, in order: `run` first (so a new conversation can be
+ * put in a history list at once), then deltas, tool calls and their results,
+ * and `done` last. An `error` may arrive at any point before `done`. */
+export type AgentEvent =
+  | { type: "run"; run: string }
+  | { type: "text"; delta: string }
+  | { type: "reasoning"; delta: string }
+  | { type: "tool_call"; id: string; name: string; arguments?: unknown }
+  | { type: "tool_result"; id: string; name: string; content?: string; is_error: boolean }
+  | { type: "error"; message: string }
+  | {
+      type: "done";
+      run: string | null;
+      state: "done" | "failed" | "aborted" | "running" | "waiting";
+      answer: string;
+      conclusion?: "answered" | "max_steps" | "aborted" | "over_budget" | "stuck";
+    };
+
+/** A conversation in a history list. */
+export interface AgentRunSummary {
+  id: string;
+  title: string;
+  state: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A conversation with its transcript. */
+export interface AgentRun extends AgentRunSummary {
+  messages: AgentMessage[];
+}
+
+/** What a single prompt came to. */
+export interface AgentAnswer {
+  run: string;
+  state: string;
+  answer: string;
+  conclusion: string | null;
+  /** The tools it ran, as far as the application shows them. */
+  tools: Array<{ name: string; is_error: boolean }>;
+}
+
+/** A value a prompt template's placeholder is filled with. */
+export type AgentInputValue = string | number | boolean | Record<string, unknown> | unknown[];
+
+/** How a chat turn is sent. */
+export interface AgentChatOptions {
+  /** The conversation to continue; a new one is started without it. */
+  run?: string;
+  /** Stops the turn. The server stops the agent, and the run is `aborted`. */
+  signal?: AbortSignal;
+}
+
+/** Chat with an agent, and the history of the conversations. */
+export interface AgentChatApi {
+  /** One turn: send `message`, and iterate over what the agent does in answer. */
+  chat(message: string, options?: AgentChatOptions): AsyncGenerator<AgentEvent>;
+  runs: {
+    /** The caller's own conversations with this agent, newest first. */
+    list(): Promise<AgentRunSummary[]>;
+    /** One of them, with its transcript. */
+    get(id: string): Promise<AgentRun>;
+    /** Give one a title of the caller's choosing. */
+    rename(id: string, title: string): Promise<AgentRunSummary>;
+    delete(id: string): Promise<{ deleted: true }>;
+  };
+}
+
+/** Send an agent a single prompt: `In` is free text, or the values of the
+ * application's prompt template. */
+export interface AgentPromptApi<In> {
+  /** Ask, and wait for the answer. */
+  prompt(input: In, options?: { signal?: AbortSignal }): Promise<AgentAnswer>;
+  /** Ask, and iterate over what the agent does, as a chat turn streams it. */
+  promptStream(input: In, options?: { signal?: AbortSignal }): AsyncGenerator<AgentEvent>;
+}
+
+/** A message the person is sending, to show before the agent answers. */
+export function userMessage(text: string): AgentMessage {
+  return { id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "user", parts: [{ type: "text", text }] };
+}
+
+/** `messages` with `event` folded in: deltas extend the agent's last message
+ * (starting one if the last message is the person's), a tool call adds a tool
+ * part and its result settles it. `run` and `done` change no message — they
+ * are the caller's to keep. A new array; the input is not changed. */
+export function applyAgentEvent(messages: AgentMessage[], event: AgentEvent): AgentMessage[] {
+  if (event.type === "run" || event.type === "done") return messages;
+  const out = messages.slice();
+  let last = out[out.length - 1];
+  if (!last || last.role !== "assistant") {
+    last = { id: `local-${out.length}-${Date.now()}`, role: "assistant", parts: [] };
+    out.push(last);
+  } else {
+    last = { ...last, parts: last.parts.slice() };
+    out[out.length - 1] = last;
+  }
+  const parts = last.parts;
+  const tail = parts[parts.length - 1];
+  switch (event.type) {
+    case "text":
+    case "reasoning":
+      if (tail && tail.type === event.type) {
+        parts[parts.length - 1] = { type: event.type, text: tail.text + event.delta };
+      } else {
+        parts.push({ type: event.type, text: event.delta });
+      }
+      break;
+    case "tool_call":
+      parts.push({ type: "tool", id: event.id, name: event.name, state: "running", arguments: event.arguments });
+      break;
+    case "tool_result": {
+      const at = parts.findIndex((p) => p.type === "tool" && p.id === event.id);
+      const settled: AgentPart = {
+        type: "tool",
+        id: event.id,
+        name: event.name,
+        state: event.is_error ? "error" : "done",
+        ...(at >= 0 && parts[at].type === "tool" && "arguments" in parts[at] ? { arguments: (parts[at] as { arguments?: unknown }).arguments } : {}),
+        ...(event.content !== undefined ? { result: event.content } : {}),
+      };
+      if (at >= 0) parts[at] = settled;
+      else parts.push(settled);
+      break;
+    }
+    case "error":
+      parts.push({ type: "error", text: event.message });
+      break;
+  }
+  return out;
+}
+
+/** The events of a `text/event-stream` response, one `data:` JSON each. */
+async function* agentEvents(op: string, res: Response): AsyncGenerator<AgentEvent> {
+  if (!res.ok) throw await clientError(op, res);
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let cut: number;
+      while ((cut = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, cut);
+        buffer = buffer.slice(cut + 2);
+        const data = frame
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (data) yield JSON.parse(data) as AgentEvent;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** The calls of one exposed agent at `url` (`{mount}/_agents/{name}`). What
+ * `api.agents["<name>"]` is. */
+export function agentApi(doFetch: typeof fetch, url: string): AgentChatApi & AgentPromptApi<string | Record<string, AgentInputValue>> {
+  const json = async <T>(op: string, method: string, path: string, body?: unknown): Promise<T> => {
+    const res = await doFetch(`${url}${path}`, {
+      method,
+      headers: requestHeaders(method, body !== undefined),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) throw await clientError(op, res);
+    return (await res.json()) as T;
+  };
+  const stream = async function* (op: string, path: string, body: unknown, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
+    const headers = requestHeaders("POST", true);
+    headers["accept"] = "text/event-stream";
+    const res = await doFetch(`${url}${path}`, { method: "POST", headers, body: JSON.stringify(body), signal });
+    yield* agentEvents(op, res);
+  };
+  const promptBody = (input: string | Record<string, AgentInputValue>) => (typeof input === "string" ? { prompt: input } : { input });
+  return {
+    chat(message, options = {}) {
+      return stream("chat", "/chat", { message, run: options.run }, options.signal);
+    },
+    runs: {
+      list: () => json<AgentRunSummary[]>("runs.list", "GET", "/runs"),
+      get: (id) => json<AgentRun>("runs.get", "GET", `/runs/${encodeURIComponent(id)}`),
+      rename: (id, title) => json<AgentRunSummary>("runs.rename", "PATCH", `/runs/${encodeURIComponent(id)}`, { title }),
+      delete: (id) => json<{ deleted: true }>("runs.delete", "DELETE", `/runs/${encodeURIComponent(id)}`),
+    },
+    async prompt(input, options = {}) {
+      const res = await doFetch(`${url}/prompt`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(promptBody(input)),
+        signal: options.signal,
+      });
+      if (!res.ok) throw await clientError("prompt", res);
+      return (await res.json()) as AgentAnswer;
+    },
+    promptStream(input, options = {}) {
+      return stream("prompt", "/prompt?stream=1", promptBody(input), options.signal);
+    },
+  };
+}

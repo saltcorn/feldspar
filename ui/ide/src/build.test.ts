@@ -33,6 +33,7 @@ function application(
     apis: [],
     static_dirs: [],
     uploads: [],
+    agents: [],
     csp: null,
     attributes: null,
     min_role: 100,

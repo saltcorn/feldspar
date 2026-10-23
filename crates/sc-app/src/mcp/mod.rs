@@ -342,6 +342,8 @@ fn application_json(app: &Application) -> Result<Json> {
             slot["route"] = json!(crate::upload_path(app, &s.name));
             slot
         }).collect::<Vec<_>>(),
+        // The agents its pages may talk to (§11.7), each with its route.
+        "agents": update::agents_json(app),
         "csp": update::csp_json(&app.csp),
         // Who may use it at all (TODO F9).
         "access": update::access_json(app),

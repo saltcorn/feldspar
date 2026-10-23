@@ -47,6 +47,8 @@ mod analytics_spa_typecheck;
 mod api_token_admin_api;
 #[path = "app_access.rs"]
 mod app_access;
+#[path = "app_agents.rs"]
+mod app_agents;
 #[path = "app_builder_agent.rs"]
 mod app_builder_agent;
 #[path = "app_calling_app.rs"]

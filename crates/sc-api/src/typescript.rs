@@ -175,6 +175,7 @@ export function requestHeaders(method: string, hasBody: boolean): Record<string,
     out.push_str(LIVE_TYPES);
     out.push_str(LIVE_ROWS);
     out.push_str(UPLOAD_HELPERS);
+    out.push_str(AGENT_HELPERS);
     out
 }
 
@@ -382,6 +383,248 @@ export async function upload(
 }
 "#;
 
+/// The client half of an application's exposed agents (§11.7): the events a
+/// turn streams, the message shape a transcript is read back in, the one
+/// reducer that folds the first into the second, and the calls themselves.
+///
+/// Deliberately **not** a chat component, and not tied to React: a page draws
+/// its own transcript, its own composer and its own history, and what every
+/// page would otherwise rewrite — reading server-sent events out of a `fetch`,
+/// and turning deltas into messages — is what lives here. The scaffold's
+/// `useAgentChat` hook is a starting point built on it, in the project, for the
+/// developer to change.
+const AGENT_HELPERS: &str = r#"
+/** One piece of an agent's message, in the order it happened. A tool part's
+ * `arguments` and `result` are present only where the application shows its
+ * agent's tools in full. */
+export type AgentPart =
+  | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      state: "running" | "done" | "error";
+      arguments?: unknown;
+      result?: string;
+    }
+  | { type: "error"; text: string };
+
+/** A message of a conversation with an agent: what the person said, or
+ * everything the agent did in answer to it. */
+export interface AgentMessage {
+  id: string;
+  role: "user" | "assistant";
+  parts: AgentPart[];
+}
+
+/** What a turn streams, in order: `run` first (so a new conversation can be
+ * put in a history list at once), then deltas, tool calls and their results,
+ * and `done` last. An `error` may arrive at any point before `done`. */
+export type AgentEvent =
+  | { type: "run"; run: string }
+  | { type: "text"; delta: string }
+  | { type: "reasoning"; delta: string }
+  | { type: "tool_call"; id: string; name: string; arguments?: unknown }
+  | { type: "tool_result"; id: string; name: string; content?: string; is_error: boolean }
+  | { type: "error"; message: string }
+  | {
+      type: "done";
+      run: string | null;
+      state: "done" | "failed" | "aborted" | "running" | "waiting";
+      answer: string;
+      conclusion?: "answered" | "max_steps" | "aborted" | "over_budget" | "stuck";
+    };
+
+/** A conversation in a history list. */
+export interface AgentRunSummary {
+  id: string;
+  title: string;
+  state: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A conversation with its transcript. */
+export interface AgentRun extends AgentRunSummary {
+  messages: AgentMessage[];
+}
+
+/** What a single prompt came to. */
+export interface AgentAnswer {
+  run: string;
+  state: string;
+  answer: string;
+  conclusion: string | null;
+  /** The tools it ran, as far as the application shows them. */
+  tools: Array<{ name: string; is_error: boolean }>;
+}
+
+/** A value a prompt template's placeholder is filled with. */
+export type AgentInputValue = string | number | boolean | Record<string, unknown> | unknown[];
+
+/** How a chat turn is sent. */
+export interface AgentChatOptions {
+  /** The conversation to continue; a new one is started without it. */
+  run?: string;
+  /** Stops the turn. The server stops the agent, and the run is `aborted`. */
+  signal?: AbortSignal;
+}
+
+/** Chat with an agent, and the history of the conversations. */
+export interface AgentChatApi {
+  /** One turn: send `message`, and iterate over what the agent does in answer. */
+  chat(message: string, options?: AgentChatOptions): AsyncGenerator<AgentEvent>;
+  runs: {
+    /** The caller's own conversations with this agent, newest first. */
+    list(): Promise<AgentRunSummary[]>;
+    /** One of them, with its transcript. */
+    get(id: string): Promise<AgentRun>;
+    /** Give one a title of the caller's choosing. */
+    rename(id: string, title: string): Promise<AgentRunSummary>;
+    delete(id: string): Promise<{ deleted: true }>;
+  };
+}
+
+/** Send an agent a single prompt: `In` is free text, or the values of the
+ * application's prompt template. */
+export interface AgentPromptApi<In> {
+  /** Ask, and wait for the answer. */
+  prompt(input: In, options?: { signal?: AbortSignal }): Promise<AgentAnswer>;
+  /** Ask, and iterate over what the agent does, as a chat turn streams it. */
+  promptStream(input: In, options?: { signal?: AbortSignal }): AsyncGenerator<AgentEvent>;
+}
+
+/** A message the person is sending, to show before the agent answers. */
+export function userMessage(text: string): AgentMessage {
+  return { id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "user", parts: [{ type: "text", text }] };
+}
+
+/** `messages` with `event` folded in: deltas extend the agent's last message
+ * (starting one if the last message is the person's), a tool call adds a tool
+ * part and its result settles it. `run` and `done` change no message — they
+ * are the caller's to keep. A new array; the input is not changed. */
+export function applyAgentEvent(messages: AgentMessage[], event: AgentEvent): AgentMessage[] {
+  if (event.type === "run" || event.type === "done") return messages;
+  const out = messages.slice();
+  let last = out[out.length - 1];
+  if (!last || last.role !== "assistant") {
+    last = { id: `local-${out.length}-${Date.now()}`, role: "assistant", parts: [] };
+    out.push(last);
+  } else {
+    last = { ...last, parts: last.parts.slice() };
+    out[out.length - 1] = last;
+  }
+  const parts = last.parts;
+  const tail = parts[parts.length - 1];
+  switch (event.type) {
+    case "text":
+    case "reasoning":
+      if (tail && tail.type === event.type) {
+        parts[parts.length - 1] = { type: event.type, text: tail.text + event.delta };
+      } else {
+        parts.push({ type: event.type, text: event.delta });
+      }
+      break;
+    case "tool_call":
+      parts.push({ type: "tool", id: event.id, name: event.name, state: "running", arguments: event.arguments });
+      break;
+    case "tool_result": {
+      const at = parts.findIndex((p) => p.type === "tool" && p.id === event.id);
+      const settled: AgentPart = {
+        type: "tool",
+        id: event.id,
+        name: event.name,
+        state: event.is_error ? "error" : "done",
+        ...(at >= 0 && parts[at].type === "tool" && "arguments" in parts[at] ? { arguments: (parts[at] as { arguments?: unknown }).arguments } : {}),
+        ...(event.content !== undefined ? { result: event.content } : {}),
+      };
+      if (at >= 0) parts[at] = settled;
+      else parts.push(settled);
+      break;
+    }
+    case "error":
+      parts.push({ type: "error", text: event.message });
+      break;
+  }
+  return out;
+}
+
+/** The events of a `text/event-stream` response, one `data:` JSON each. */
+async function* agentEvents(op: string, res: Response): AsyncGenerator<AgentEvent> {
+  if (!res.ok) throw await clientError(op, res);
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let cut: number;
+      while ((cut = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, cut);
+        buffer = buffer.slice(cut + 2);
+        const data = frame
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (data) yield JSON.parse(data) as AgentEvent;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** The calls of one exposed agent at `url` (`{mount}/_agents/{name}`). What
+ * `api.agents["<name>"]` is. */
+export function agentApi(doFetch: typeof fetch, url: string): AgentChatApi & AgentPromptApi<string | Record<string, AgentInputValue>> {
+  const json = async <T>(op: string, method: string, path: string, body?: unknown): Promise<T> => {
+    const res = await doFetch(`${url}${path}`, {
+      method,
+      headers: requestHeaders(method, body !== undefined),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) throw await clientError(op, res);
+    return (await res.json()) as T;
+  };
+  const stream = async function* (op: string, path: string, body: unknown, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
+    const headers = requestHeaders("POST", true);
+    headers["accept"] = "text/event-stream";
+    const res = await doFetch(`${url}${path}`, { method: "POST", headers, body: JSON.stringify(body), signal });
+    yield* agentEvents(op, res);
+  };
+  const promptBody = (input: string | Record<string, AgentInputValue>) => (typeof input === "string" ? { prompt: input } : { input });
+  return {
+    chat(message, options = {}) {
+      return stream("chat", "/chat", { message, run: options.run }, options.signal);
+    },
+    runs: {
+      list: () => json<AgentRunSummary[]>("runs.list", "GET", "/runs"),
+      get: (id) => json<AgentRun>("runs.get", "GET", `/runs/${encodeURIComponent(id)}`),
+      rename: (id, title) => json<AgentRunSummary>("runs.rename", "PATCH", `/runs/${encodeURIComponent(id)}`, { title }),
+      delete: (id) => json<{ deleted: true }>("runs.delete", "DELETE", `/runs/${encodeURIComponent(id)}`),
+    },
+    async prompt(input, options = {}) {
+      const res = await doFetch(`${url}/prompt`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(promptBody(input)),
+        signal: options.signal,
+      });
+      if (!res.ok) throw await clientError("prompt", res);
+      return (await res.json()) as AgentAnswer;
+    },
+    promptStream(input, options = {}) {
+      return stream("prompt", "/prompt?stream=1", promptBody(input), options.signal);
+    },
+  };
+}
+"#;
+
 /// One stream an application exposes to its pages (TODO "Streams" §10, TODO.md
 /// "Live updates"), as the client generator needs it: what it is called, where
 /// the live socket is, and what an element's `value` looks like.
@@ -508,7 +751,7 @@ pub fn generate_client(set: &EndpointSet) -> String {
 /// one [`LiveConnection`](LIVE_TYPES), so a page that watches three streams
 /// holds one socket.
 pub fn generate_client_with_streams(set: &EndpointSet, streams: &[StreamExport]) -> String {
-    generate_app_client(set, streams, &[])
+    generate_app_client(set, streams, &[], &[])
 }
 
 /// One upload slot an application declares (TODO F2.11, §2.3), as the client
@@ -522,13 +765,54 @@ pub struct UploadExport {
     pub path: String,
 }
 
+/// One agent an application exposes (§11.7), as the client generator needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentExport {
+    /// The agent's name: the key under `api.agents`.
+    pub name: String,
+    /// `{mount}/_agents/{name}`, the name percent-encoded.
+    pub path: String,
+    /// Whether it may be chatted with (`chat`, `runs`).
+    pub chat: bool,
+    /// Whether it may be sent a single prompt (`prompt`, `promptStream`).
+    pub prompt: bool,
+    /// The prompt template's placeholders: the keys of `prompt`'s `input`
+    /// object. Empty when the prompt is free text.
+    pub template_keys: Vec<String>,
+}
+
+impl AgentExport {
+    /// The type of `api.agents["<name>"]`: the calls the exposure allows.
+    fn api_type(&self) -> String {
+        let input = if self.template_keys.is_empty() {
+            "string".to_owned()
+        } else {
+            format!(
+                "{{ {} }}",
+                self.template_keys
+                    .iter()
+                    .map(|k| format!("{k}: AgentInputValue"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        };
+        match (self.chat, self.prompt) {
+            (true, true) => format!("AgentChatApi & AgentPromptApi<{input}>"),
+            (true, false) => "AgentChatApi".to_owned(),
+            (false, _) => format!("AgentPromptApi<{input}>"),
+        }
+    }
+}
+
 /// [`generate_client_with_streams`] plus `uploads.{name}(file, options)` per
 /// upload slot the application declares (TODO F2.11): a resumable tus upload
-/// resolving to the stored file's `{ path, url }`.
+/// resolving to the stored file's `{ path, url }` — and `agents["<name>"]` per
+/// agent it exposes (§11.7).
 pub fn generate_app_client(
     set: &EndpointSet,
     streams: &[StreamExport],
     uploads: &[UploadExport],
+    agents: &[AgentExport],
 ) -> String {
     let mut out = String::new();
 
@@ -563,11 +847,14 @@ pub fn generate_app_client(
     let fetches = set.iter().any(|ep| !ep.stream_output);
     if fetches {
         values.extend(["clientError", "requestHeaders", "trackCsrf"]);
-    } else if !uploads.is_empty() {
+    } else if !uploads.is_empty() || !agents.is_empty() {
         values.push("trackCsrf");
     }
     if !uploads.is_empty() {
         values.push("upload");
+    }
+    if !agents.is_empty() {
+        values.push("agentApi");
     }
     if !streams.is_empty() {
         values.extend(["LiveConnection", "liveUrl"]);
@@ -622,6 +909,18 @@ pub fn generate_app_client(
     }
     if !uploads.is_empty() {
         types.extend(["UploadOptions", "UploadResult"]);
+    }
+    if agents.iter().any(|a| a.chat) {
+        types.push("AgentChatApi");
+    }
+    if agents.iter().any(|a| a.prompt) {
+        types.push("AgentPromptApi");
+    }
+    if agents
+        .iter()
+        .any(|a| a.prompt && !a.template_keys.is_empty())
+    {
+        types.push("AgentInputValue");
     }
     if !tables.is_empty() {
         types.push("Selected");
@@ -679,6 +978,14 @@ pub fn generate_app_client(
     }
     if !uploads.is_empty() {
         out.push_str("export type { UploadOptions, UploadResult } from \"./helper\";\n");
+    }
+    if !agents.is_empty() {
+        out.push_str(
+            "export { applyAgentEvent, userMessage } from \"./helper\";\n\
+             export type { AgentAnswer, AgentChatApi, AgentChatOptions, AgentEvent, \
+             AgentInputValue, AgentMessage, AgentPart, AgentPromptApi, AgentRun, \
+             AgentRunSummary } from \"./helper\";\n",
+        );
     }
     if !streams.is_empty() {
         out.push_str(
@@ -845,13 +1152,28 @@ pub fn generate_app_client(
         }
         out.push_str("  };\n");
     }
+    if !agents.is_empty() {
+        out.push_str(
+            "  /** The agents this application exposes: conversations, single prompts, or both. */\n  agents: {\n",
+        );
+        for agent in agents {
+            let _ = writeln!(
+                out,
+                "    /** Agent `{}`. */\n    {}: {};",
+                agent.name.replace("*/", "*\\/"),
+                serde_json::Value::String(agent.name.clone()),
+                agent.api_type()
+            );
+        }
+        out.push_str("  };\n");
+    }
     out.push_str("}\n\n");
 
     // An application that enables no API provider has an empty endpoint set, and
     // a client with nothing to call: the factory is still there, so the code
     // importing it still compiles, and it returns nothing because there is
     // nothing to return.
-    if set.is_empty() && streams.is_empty() && uploads.is_empty() {
+    if set.is_empty() && streams.is_empty() && uploads.is_empty() && agents.is_empty() {
         out.push_str(
             "export function createClient(_options: ClientOptions = {}): ApiClient {\n             \x20 // This application enables no API provider, so it has no endpoints.\n             \x20 return {};\n             }\n",
         );
@@ -862,7 +1184,7 @@ pub fn generate_app_client(
     out.push_str("  const baseUrl = options.baseUrl ?? \"\";\n");
     // An application that exposes only streams never calls `fetch`, and an
     // unused binding is a `noUnusedLocals` error in somebody else's project.
-    if fetches || !uploads.is_empty() {
+    if fetches || !uploads.is_empty() || !agents.is_empty() {
         out.push_str("  const doFetch = trackCsrf(options.fetch ?? fetch);\n");
     }
     // One connection for every stream, opened on the first `subscribe`: a page
@@ -970,6 +1292,18 @@ pub fn generate_app_client(
                 out,
                 "      {}: (file: Blob, opts?: UploadOptions) => upload(doFetch, `${{baseUrl}}{}`, file, opts),",
                 slot.name, slot.path
+            );
+        }
+        out.push_str("    },\n");
+    }
+    if !agents.is_empty() {
+        out.push_str("    agents: {\n");
+        for agent in agents {
+            let _ = writeln!(
+                out,
+                "      {}: agentApi(doFetch, `${{baseUrl}}{}`),",
+                serde_json::Value::String(agent.name.clone()),
+                agent.path
             );
         }
         out.push_str("    },\n");

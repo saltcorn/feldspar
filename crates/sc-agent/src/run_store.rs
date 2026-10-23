@@ -188,6 +188,33 @@ pub async fn list_runs(catalog: &Catalog, subject: &str) -> Result<Vec<Run>> {
         .collect()
 }
 
+/// The runs of `subject` on behalf of `user`, newest first — or, for `None`,
+/// the runs of it that record no user (anonymous and triggered ones alike, which
+/// a caller tells apart by the run's attributes).
+///
+/// The user is in the query rather than filtered afterwards, because an
+/// application's chat history is one person's runs of an agent many people
+/// use, and reading everybody's transcripts to show one person theirs would be
+/// the expensive half of the answer.
+pub async fn list_runs_for(
+    catalog: &Catalog,
+    subject: &str,
+    user: Option<uuid::Uuid>,
+) -> Result<Vec<Run>> {
+    let by_user = match user {
+        Some(user) => Expr::col(COL_USER).eq(Expr::lit(user)),
+        None => Expr::unary(sc_query::UnOp::IsNull, Expr::col(COL_USER)),
+    };
+    let mut select = Select::from(Source::table(RUNS_TABLE))
+        .filter(Expr::col(COL_SUBJECT).eq(Expr::lit(subject)).and(by_user));
+    select.order = vec![OrderBy::desc(Expr::col(COL_CREATED_AT))];
+    rows(catalog, select)
+        .await?
+        .iter()
+        .map(run_from_row)
+        .collect()
+}
+
 /// The live runs whose [`ATTR_PARENT_RUN`](crate::ATTR_PARENT_RUN) is `parent`,
 /// oldest first.
 pub async fn list_live_children(catalog: &Catalog, parent: RunId) -> Result<Vec<Run>> {

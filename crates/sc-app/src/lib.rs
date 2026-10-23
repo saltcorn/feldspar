@@ -54,6 +54,8 @@ mod code_libraries;
 // written down as data instead of compiled.
 mod declared;
 mod diagnostics;
+// The agents an application exposes to its client (§11.7).
+mod exposed_agents;
 mod exposed_triggers;
 // Frameworks written in Rust above this crate (Saltcorn UI): named constructors.
 mod factory;
@@ -88,9 +90,9 @@ pub use application::{
     TriggerRef, allow_admin_framing, follow_admin_host,
 };
 pub use applications::{
-    APPLICATIONS_TABLE, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS,
-    COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN,
-    COL_TABLES, COL_TRIGGERS, COL_UPLOADS, bootstrap,
+    APPLICATIONS_TABLE, COL_AGENTS, COL_APIS, COL_ATTRIBUTES, COL_CSP, COL_DESCRIPTION,
+    COL_EXTRA_FRAMEWORKS, COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_NAME, COL_STATIC_DIRS,
+    COL_STREAMS, COL_SUBDOMAIN, COL_TABLES, COL_TRIGGERS, COL_UPLOADS, bootstrap,
 };
 pub use build::{
     AppSource, BuildReport, TargetInfo, TargetReadiness, TargetReport, app_output_dir,
@@ -119,6 +121,11 @@ pub use declared::{
     installed_frameworks,
 };
 pub use diagnostics::{Diagnostic, build_diagnostics, parse_diagnostics};
+pub use exposed_agents::{
+    AGENTS_SEGMENT, AgentExposure, AgentRequest, AgentRoute, ToolDetail, agent_exports,
+    agent_exposures_from_json, agent_exposures_json, agent_path, agent_route,
+    applications_exposing_agent, check_exposed_agents, validate_agent_exposures,
+};
 pub use exposed_triggers::{
     TriggerChange, app_triggers_json, change_app_triggers, public_triggers,
 };

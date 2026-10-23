@@ -2,6 +2,70 @@
 
 Changes in reverse chronological order.
 
+## Agents in an application's pages: chat, single prompts and history (§11.7)
+
+React applications can now use agents in two ways. A **chat** is a ChatGPT-style conversation that
+streams as it is generated and is kept, so the person can reopen and continue it. A **single
+prompt** is a call made from a button for what the agent's tools do. An application exposes an
+agent as it exposes a trigger or a stream, and the agent's tools run as the person using the page.
+
+- **The record** (`sc-app`):
+  - `Application::agents` is a list of `AgentExposure { name, chat, prompt, anonymous, tools,
+    prompt_template }`, stored in the new nullable `_fd_applications.agents` column. Bootstrap adds
+    the column, and `TABLES_RENAME.sql` has the same `ALTER`.
+  - Save checks each exposure's shape. `check_exposed_agents` checks that the agent exists and
+    that an anonymous exposure names a public agent. The admin API and MCP run it on create and
+    update.
+  - Deleting or renaming an agent that an application exposes is refused, naming the applications.
+- **Who may use it.** The agent's own `min_role` decides, behind the application's admission
+  rules. Each tool runs with the caller's authority, capped at the app's `max_role`.
+- **Signed-out use is opt-in twice.** The exposure must set `anonymous`, and the agent's
+  `min_role` must be public (100). Such a run uses the new `RunCaller::anonymous()`: no user, the
+  public role. Through MCP it also needs `allow_access_changes`.
+- **Routes** (`sc-server`, `app_agents.rs`), at `{mount}/_agents/{name}/`:
+  - `POST chat` streams one turn as server-sent events. `run` comes first, then the admin chat's
+    events: `text`, `reasoning`, `tool_call`, `tool_result`, `error`, `done`.
+  - `POST prompt` answers `{ run, state, answer, conclusion, tools }`, or streams the same events
+    with `?stream=1`.
+  - `GET runs` and `GET`/`PATCH`/`DELETE runs/{id}` are the caller's own history: list, read with
+    the transcript, rename, delete.
+- **Stopping and ownership.**
+  - Closing the response, by aborting the `fetch` or leaving the page, stops the agent and marks
+    the run `aborted`.
+  - A run records its app, its mode and its owner: the user, or a hash of the browser's cookie.
+    Anyone else asking for it gets a 404.
+  - Changing a conversation while a turn is running is a 409.
+- **What the client sees.** `tools` is `none`, `names` (the default) or `full`. It controls how
+  much of the agent's tool calls the stream and the transcript show. The transcript never contains
+  the system prompt.
+- **`prompt_template`** (`"Summarise order {{order}}"`) makes `prompt` take `{ input: { order } }`
+  instead of free text.
+- **The client** (`sc-api`):
+  - `helper.ts` gains the agent event and message types, `applyAgentEvent` (events → messages
+    made of text, reasoning, tool and error parts), `userMessage` and `agentApi`, which reads SSE
+    from `fetch`.
+  - The generated client has `api.agents["<name>"]`, typed to what the exposure allows. A
+    template's placeholders type `prompt`'s input.
+  - The checked-in admin clients and helpers are regenerated.
+- **The scaffold.**
+  - New React projects get `src/useAgentChat.ts`, a hook the developer owns (`messages`,
+    `status`, `error`, `run`, `send`, `stop`, `load`).
+  - `AGENTS.md` gains "Talking to an agent", and the generated `SKILL.md` says how to expose one.
+- **Admin UI.** The application form has an **Agents** section: the agent, chat/prompts, signed-out
+  use, tools shown, and the prompt template (`agentExposures.ts`).
+- **MCP.** `update_application` has an `agents` section (`add`/`remove`). `describe_applications`
+  lists each exposed agent with its route.
+- **Not built yet.** Client-side tools, approving a tool call, rejoining a turn after a reload,
+  generated titles, and an AI SDK `useChat` adapter. §11.7 says why.
+- **Tests:**
+  - `sc-server/tests/app_agents.rs`: a streamed turn, continue/list/read/rename/delete, isolation
+    between users and from anonymous callers, anonymous templated prompts, tool detail, and
+    abort-on-disconnect.
+  - Unit tests for the exposure record, routes and templates, the transcript projection and the
+    observer's filtering, `RunCaller::anonymous`, and the MCP section.
+  - A `tsc` check of a generated client that exposes agents.
+  - Vitest coverage of the form rows.
+
 ## Payments P7: plan allowances, rollover and top-ups of LLM credits
 
 TODO-payments.md milestone P7. The payments module now **grants LLM credits**: a plan's

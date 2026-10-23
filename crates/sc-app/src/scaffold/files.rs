@@ -376,7 +376,12 @@ pub fn common_runtime_files(
     };
     let mut files = vec![GeneratedFile::new(
         at(client_file),
-        generate_app_client(ctx.endpoints, ctx.streams, &crate::upload_exports(ctx.app)),
+        generate_app_client(
+            ctx.endpoints,
+            ctx.streams,
+            &crate::upload_exports(ctx.app),
+            &crate::agent_exports(ctx.app),
+        ),
     )];
     // `helper.ts`, and the offline runtime for a synced table: what the client
     // imports.
@@ -467,6 +472,7 @@ pub fn project_files(ctx: &ProjectContext<'_>) -> Vec<GeneratedFile> {
         GeneratedFile::new("src/App.tsx", app_tsx(project, auth)),
         GeneratedFile::new("src/routes.tsx", routes_tsx(&exposed, auth)),
         GeneratedFile::new("src/app.css", APP_CSS),
+        GeneratedFile::new("src/useAgentChat.ts", USE_AGENT_CHAT_TS),
     ];
     if auth {
         files.push(GeneratedFile::new("src/auth.tsx", AUTH_TSX));
@@ -1295,6 +1301,28 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          ends or downgrades the page at once (`error.code` is `revoked`). Never \
          keep a second copy of the document or poll for changes.\n\
          \n\
+         ## Talking to an agent\n\
+         \n\
+         An agent the application exposes (`update_application` with `agents`; \
+         `describe_applications` lists them) is `api.agents[\"<name>\"]` in the \
+         client. Its tools run as the person using the page, under that person's \
+         access rules, and what they change reaches other pages through the live \
+         streams as any other change does.\n\
+         \n\
+         - **A chat**: `src/useAgentChat.ts` is a starting point — \
+         `const chat = useAgentChat(api.agents.helpdesk)` gives `messages`, \
+         `status`, `send(text)`, `stop()`, the conversation's `run` id, and \
+         `load(id)` to reopen one from `api.agents.helpdesk.runs.list()`. A \
+         message is a list of `parts` (`text`, `reasoning`, `tool`, `error`); draw \
+         them as this app needs. Under it, `chat(message, {{ run, signal }})` \
+         streams events (`run`, `text`, `reasoning`, `tool_call`, `tool_result`, \
+         `error`, `done`) and `applyAgentEvent(messages, event)` folds one in. \
+         Aborting the `signal` stops the agent.\n\
+         - **A single prompt**, where what matters is what the agent's tools do: \
+         `const {{ answer }} = await api.agents.tidy.prompt(\"Tidy my tasks\")` — or, \
+         for an agent exposed with a `prompt_template`, its values: \
+         `prompt({{ order: 42 }})`. Show the answer in a toast, or ignore it.\n\
+         \n\
          ## When the API you need is missing\n\
          \n\
          Do not hand-write a `fetch`. An untyped call beside a generated client is \
@@ -1398,6 +1426,96 @@ save it with the MCP tool `save_code_library` (a body assigning to \
 with the importing query's own `db`, `fs` and `user`; this app's own library \
 of a name wins over an instance-wide one; `describe_code_libraries` says what \
 exists and who imports it.\n";
+
+/// A conversation with one of the application's agents, as a React hook
+/// (§11.7): written once by the scaffold and the developer's from then on.
+///
+/// Built only on the helper (`applyAgentEvent`, `userMessage`,
+/// `AgentChatApi`), which every client has, so it compiles in an application
+/// that exposes no agent yet.
+const USE_AGENT_CHAT_TS: &str = r#"// A conversation with one of this application's agents. Written once by the
+// scaffold: it is yours to change — the transcript's shape, how errors show,
+// whether a new conversation starts on mount.
+import { useCallback, useEffect, useRef, useState } from "react";
+import { applyAgentEvent, userMessage, type AgentChatApi, type AgentMessage } from "./feldspar/helper";
+
+export type AgentChatStatus = "idle" | "loading" | "streaming" | "error";
+
+/** `useAgentChat(api.agents.helpdesk)`: the messages of one conversation, and
+ * `send` / `stop` / `load` to drive it. `initialRun` reopens a conversation
+ * from `api.agents.helpdesk.runs.list()`. */
+export function useAgentChat(agent: AgentChatApi, initialRun?: string) {
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [run, setRun] = useState<string | undefined>(initialRun);
+  const [status, setStatus] = useState<AgentChatStatus>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const turn = useRef<AbortController | null>(null);
+
+  /** Open conversation `id`, or start a new one with `undefined`. */
+  const load = useCallback(
+    async (id: string | undefined) => {
+      turn.current?.abort();
+      setError(null);
+      setRun(id);
+      if (!id) {
+        setMessages([]);
+        setStatus("idle");
+        return;
+      }
+      setStatus("loading");
+      try {
+        setMessages((await agent.runs.get(id)).messages);
+        setStatus("idle");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus("error");
+      }
+    },
+    [agent],
+  );
+
+  useEffect(() => {
+    if (initialRun) void load(initialRun);
+  }, [initialRun, load]);
+  // Leaving the page stops the agent rather than leaving it answering nobody.
+  useEffect(() => () => turn.current?.abort(), []);
+
+  /** Say `text`, and stream the agent's answer into `messages`. */
+  const send = useCallback(
+    async (text: string) => {
+      if (!text.trim() || turn.current) return;
+      const controller = new AbortController();
+      turn.current = controller;
+      setError(null);
+      setStatus("streaming");
+      setMessages((m) => [...m, userMessage(text)]);
+      try {
+        for await (const event of agent.chat(text, { run, signal: controller.signal })) {
+          if (event.type === "run") setRun(event.run);
+          if (event.type === "error") setError(event.message);
+          setMessages((m) => applyAgentEvent(m, event));
+        }
+        setStatus("idle");
+      } catch (e) {
+        if (controller.signal.aborted) {
+          setStatus("idle");
+        } else {
+          setError(e instanceof Error ? e.message : String(e));
+          setStatus("error");
+        }
+      } finally {
+        turn.current = null;
+      }
+    },
+    [agent, run],
+  );
+
+  /** Stop the agent's answer where it is. */
+  const stop = useCallback(() => turn.current?.abort(), []);
+
+  return { messages, run, status, error, send, stop, load };
+}
+"#;
 
 /// `AGENTS.md`'s CSP paragraph (TODO F1.7): where the policy is and how to
 /// widen it, because an agent that cannot find it edits `index.html`.

@@ -577,6 +577,8 @@ pub async fn emit_client(
         endpoints,
         &crate::stream_exports(app, &streams),
         &crate::upload_exports(app),
+        // …and its exposed agents (§11.7): `api.agents["<name>"]`.
+        &crate::agent_exports(app),
     );
     store.write(path, Bytes::from(client.into_bytes())).await?;
     let mut written = vec![path.clone()];
