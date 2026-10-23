@@ -547,6 +547,36 @@ run: async ({ payload, callerFiles }) => {
 }
 ```
 
+**The caller's consent.** An action that needs a token from an OAuth 2.0 provider in the
+caller's name — the mail module connecting an Outlook.com mailbox, which refuses passwords —
+asks the server with `oauth.begin`, also in its argument. The server runs the provider's consent
+page in the caller's browser and writes the tokens into a row of the module's own table; the
+action answers the address the application sends the browser to:
+
+```js
+run: async ({ payload, user, oauth }) => {
+  // …read the row as the caller first, to check it is theirs…
+  return oauth.begin({
+    authorization_url: "https://login.example.com/authorize",
+    token_url: "https://login.example.com/token",
+    client_id, client_secret, scope: "mail offline_access",
+    params: { login_hint: row.email },        // anything else the provider is told
+    return_to: payload.return_to || "/",      // a path in the application
+    store: {
+      table: "my_accounts", id: row.id,       // a table the module declares…
+      fields: { access_token: "access_token", refresh_token: "refresh_token", expires_at: "expires_at" },
+      set: { auth: "oauth2" },                // …and other fields it declares
+    },
+  }); // { url: "/_feldspar/oauth/consent/…", expires_in: 600 }
+}
+```
+
+The token fields must be `secret: true`. Only the user whose call began the flow can finish it,
+in the browser that started it; the browser comes back to `return_to`, with `oauth_error=…` in
+the query when something failed. The provider's redirect address is the server's one OAuth
+callback, `https://<admin host>/_feldspar/oauth/callback`. Renewing the token later is the
+module's own work, at the provider's token endpoint.
+
 **On a bundled card**, list the services in `feldspar-module.json` as `services: ["ticker"]`. The
 card then says the module runs in the background and writes to its own tables.
 

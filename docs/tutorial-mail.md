@@ -28,13 +28,30 @@ What may actually be reached is narrower than "any host", and is the module's ow
   without TLS.
 - **Public addresses only.** A server name that resolves to a private, loopback or link-local
   address is refused, so a user cannot point an account at your intranet. The connection goes to
-  the address that was checked, and the certificate is always verified against the name.
+  the address that was checked, and the certificate is verified against the name.
 
 If your mail server *is* inside your network (an Exchange on the LAN), the module's **Settings**
 has two fields only an admin can fill in: **Trusted servers**, one `host` or `host:port` per
 line, which may resolve to a private address (and use that port), and **Extra CA certificates**:
 your internal CA, which the trusted servers' certificates are checked against instead of the
-public CAs.
+public CAs. Two more loosen the certificate check for one server, and only an admin can set
+them either:
+
+- **Certificate names**, one `host name` per line (`188.65.204.58 mail.example.com`): for a
+  server an account names by IP address. Its certificate is issued for a name, not the IP, so
+  checked against the IP it fails (`IP: 188.65.204.58 is not in the cert's list`). Listed here,
+  it is checked against the name instead, and the check is still complete.
+- **Servers whose certificate is not checked**, one `host` or `host:port` per line: for a
+  self-signed certificate that no CA issued, which the right name does not fix. Any certificate
+  is accepted from these servers. The connection is still encrypted, but anyone who can intercept
+  it can pose as the server and read the password, so use it only on a network you trust. (A
+  self-signed server inside your network can be checked properly instead: make it a trusted
+  server and put its certificate under Extra CA certificates.)
+
+A last field, **Headers to keep**, names the header fields stored with each message
+(Step 6). Saving the settings reloads the module and restarts its service, so they apply at
+once; a coding agent changes them with the MCP tool `updateModule` (modules area). Writing
+`_fd_modules.configuration` directly does not reload anything.
 
 ## Step 2 — The account
 
@@ -68,14 +85,21 @@ and Archive, and `mail_messages` fills with the mail that is already there, olde
 | `idle` | connected and up to date; `last_sync_at` says when |
 | `syncing` | importing, or re-reading flags |
 | `error` | something went wrong; `last_error` says what, and it reconnects by itself (5 s, doubling to 10 min) |
-| `auth_failed` | the login failed three times in a row. It stops trying, because repeated bad logins can lock an account. Fix the password and save the row |
+| `auth_failed` | the login failed three times in a row. It stops trying, because repeated bad logins can lock an account. Fix the password and save the row. For an OAuth account (Step 11), connect it again |
 | `refused` | the server is not allowed (Step 1's rules). Change the row, or have an admin trust the server |
 | `disabled` | `enabled` is off |
 
 **Who sees the mail.** The tables carry the module's ownership rule: a shared account's mail is
 readable by every user at or above its `min_role`, and a personal account's (one with an
 `owner`) by its owner only. That holds for REST, GraphQL, live updates and code that uses
-`db.asUser()`. A user can never make a shared account, nor change one: only an admin can.
+`db.asUser()`. A user can never make a shared account, nor change one: only an admin can. The
+owner of a personal account may read and change their own row, through the REST API
+(`PUT /api/mail_accounts/<id>`, with a password left as `••••••••` to keep it) as anywhere
+else.
+
+**Outlook.com, Hotmail and Microsoft 365** refuse passwords altogether (the server answers
+`LOGINDISABLED`), and Gmail needs an app password for one. Step 11 connects such an account
+with the provider's sign-in instead.
 
 ## Step 3 — Orders from mail
 
@@ -157,7 +181,7 @@ module's action, and minimum role user, and name it in the application:
 
 | action | payload | does |
 |---|---|---|
-| `mail_sync_now` | `{ account_id, wait }` | sync the account now, rather than at the next notification or 2-minute poll |
+| `mail_sync_now` | `{ account_id, wait }` | list the account's folders again and sync them now, rather than at the next notification or poll. A folder made or deleted by another mail program is seen at once |
 | `mail_set_flags` | `{ message_ids, seen, flagged }` | mark mail read/unread, flagged/not, on the server and in the table |
 | `mail_attachment` | `{ attachment_id }` | the attachment's File path, storing the file first if it is not stored yet |
 | `mail_test_account` | the account's connection fields, or `{ account_id }` | log in to IMAP (and SMTP, if set) and answer `{ imap, smtp, error }`. At most five a minute per user |
@@ -208,6 +232,20 @@ message's own Message-ID, and it is indexed. Group a conversation with
 `where: { account, thread_key }`, across folders: a reply in Sent has the same `thread_key` as the
 question in INBOX.
 
+**Sorting.** `(folder, sent_at)` and `(folder, internal_date)` are indexed, so a folder of tens
+of thousands of messages lists quickly either way. `sent_at` is the mail's `Date` header (when it
+was written), `internal_date` when the server received it. They differ a lot after a mailbox was
+copied or restored: most clients sort by `internal_date`.
+
+**Labels and headers.** `keywords` holds a message's other flags, sorted: Thunderbird's colour
+labels `$label1` … `$label5`, `$Forwarded`, `$Junk`, `NonJunk`, and whatever another client set.
+They follow the server like `seen` and `flagged`. `headers` holds the header fields the module's
+**Headers to keep** names (Step 1), by lower-case name: by default `list-id`,
+`list-unsubscribe`, `list-unsubscribe-post` (one-click unsubscribe), `authentication-results`,
+every `x-spam-*`, `precedence` and `auto-submitted`. A header that appears more than once
+(`Authentication-Results` usually does) has its values joined by a newline. A changed setting
+applies to mail stored from then on.
+
 ## Step 7 — The client's actions
 
 As in Step 5, each action is a trigger with event **None** that the application names. Each reads
@@ -220,12 +258,13 @@ what it touches as the caller, so another user's message is "not found".
 | `mail_set_flags` | `{ message_ids, seen, flagged }` | as in Step 5 | |
 | `mail_move` | `{ message_ids, target }` | moves to `target`: a folder path, or `role:trash`, `role:archive`, `role:spam`, … Also on ingest accounts | `{ moved, missing, not_on_server }` |
 | `mail_delete` | `{ message_ids, permanent }` | moves to Trash; deletes for good when `permanent`, or when the mail is in Trash already | `{ trashed, deleted, missing, not_on_server }` |
-| `mail_create_folder` | `{ account_id, name, parent }` | makes a folder (inside `parent`, a path, if given) | `{ id, path }` |
+| `mail_create_folder` | `{ account_id, name, parent }` | makes a folder (inside `parent`, a path, if given). One named like a role the account has no folder for (`Archive`, `Sent`) gets that role | `{ id, path, role }` |
+| `mail_delete_folder` | `{ folder_id }` or `{ account_id, path }` | deletes the folder on the server, with its messages and their stored attachments. Not INBOX, nor a folder with folders inside it | `{ id, path, deleted }` |
 | `mail_save_draft` | as `mail_send`, plus `replaces` | saves the message in Drafts; `replaces` (a draft's row id) is deleted | `{ id, uid, message_id, replaced }` |
 | `mail_send` | Step 8 | | |
 
-`mail_delete`, `mail_create_folder`, `mail_save_draft` and `mail_fetch_body` are for mirror
-accounts; an ingest account keeps every mail and refuses them. A Trash, Drafts or Sent folder the
+`mail_delete`, `mail_create_folder`, `mail_delete_folder`, `mail_save_draft` and
+`mail_fetch_body` are for mirror accounts; an ingest account keeps every mail and refuses them. A Trash, Drafts or Sent folder the
 server does not have is created when an action first needs it.
 
 An action's changes are on the server and in the rows when it answers, so a live list
@@ -252,6 +291,7 @@ await post("/api/actions/send_mail", {
     { store: "uploads", path: "quotes/q-17.pdf" },   // a file of your application's
     { attachment_id: 89 },                           // a mail attachment, to forward
   ],
+  calendar: { method: "REQUEST", content: ics },  // optional: an invitation, see below
 });
 // → { message_id, id, saved, save_error, accepted, rejected }
 ```
@@ -265,6 +305,13 @@ await post("/api/actions/send_mail", {
   Microsoft 365 file sent mail into Sent themselves, so for an account on those servers the copy
   is left out, unless `save_sent` says otherwise (`true` or `false` decides it for any server). A
   copy that cannot be saved does not undo the send: `saved` is false and `save_error` says why.
+- **Invitations** (`calendar`): `content` is a whole iCalendar object (`BEGIN:VCALENDAR` …) and
+  `method` its iTIP method (`REQUEST` to invite, `REPLY` to accept or decline, `CANCEL`, …),
+  which must match the object's own `METHOD`. It is sent as a `text/calendar; method=…`
+  alternative to the text and HTML, plus an `invite.ics` attachment (`filename` changes the
+  name), which is what makes a mail client offer Accept and Decline.
+- **Addresses** must have a dot in the domain, so a typo like `bob@gmail` is caught before
+  anything is sent; `…@localhost` is allowed too, for a local test server.
 - **Who may send.** From a personal account, its owner. From a shared account (Step 2), a user at
   or above its `send_role`; an admin only, when that is empty. `mail_save_draft` follows the same
   rule.
@@ -631,3 +678,57 @@ upload into it with `api.outgoing.file.upload(row.id, f.name, f)`, and pass
 password in the app: the client only ever sees `••••••••` in `imap_password`. Writing a field
 the service owns (`status`, `seen`, the folder state) through REST is overwritten at the next
 sync. Change flags, folders and mail through the actions, which do it on the server first.
+
+## Step 11 — Outlook.com, Microsoft 365 and Gmail: signing in with the provider
+
+`outlook.office365.com` accepts no password at all: it offers only `AUTH=XOAUTH2`, a login with
+an **access token** that Microsoft grants after the mailbox's owner consents on Microsoft's own
+page. Gmail does the same (and takes an app password besides). An account with
+`auth = "oauth2"` logs in this way, to IMAP and to SMTP.
+
+**Once, as an admin: the provider's app.** The tokens are granted to an app you register:
+
+- **Microsoft**: in Microsoft Entra (portal.azure.com → App registrations → New registration),
+  supported account types *personal Microsoft accounts* (for Outlook.com) or *any organizational
+  directory and personal accounts* (both), a **Web** redirect URI
+  `https://<your admin host>/_feldspar/oauth/callback`, a client secret (Certificates & secrets),
+  and the delegated API permissions `IMAP.AccessAsUser.All`, `SMTP.Send` and `offline_access`
+  (Office 365 Exchange Online). For Microsoft 365, SMTP AUTH must also be on for the mailbox.
+- **Google**: in Google Cloud, an OAuth client of type *Web application* with the same redirect
+  URI, and the scope `https://mail.google.com/` on the consent screen.
+
+The redirect URI is the one the server's own sign-in uses (Settings → Authentication shows it).
+Then **Modules → Mail → Settings → Sign-in providers**: the client id and secret of each, and for
+Microsoft the tenant — `consumers` for Outlook.com, Hotmail and Live only; `common` (the default)
+for those and Microsoft 365; or your organization's tenant id.
+
+**In the app: connect an account.** Make the account row as usual (Step 2 or 6) with its
+`email`; the IMAP and SMTP servers may stay empty, and are filled with the provider's. Expose the
+action `mail_oauth_start` as a trigger (Step 10), and send the browser where it says:
+
+```tsx
+const connect = async (accountId: number) => {
+  const { url } = (await api.runMailOauthStart({
+    account_id: accountId,
+    return_to: "/settings/mail", // a path in this app
+    // provider: "microsoft" | "google" — found from the address when left out
+  })) as { url: string };
+  window.location.assign(url);
+};
+
+// back on /settings/mail:
+const failed = new URLSearchParams(window.location.search).get("oauth_error");
+```
+
+The user signs in at Microsoft or Google and consents; the browser comes back to `return_to`
+(with `oauth_error=…` if they declined, or something failed), and the account's row now has
+`auth = "oauth2"`, `oauth_provider`, and the tokens in the Secret fields `oauth_access_token`
+and `oauth_refresh_token`, with `oauth_expires_at`. The service connects within a second or two.
+Only the account's owner may connect it (an admin, for a shared account), and only in their own
+signed-in browser: a link to somebody else's consent flow is refused.
+
+**Afterwards.** An access token lasts about an hour. The module renews it with the refresh token
+before it connects or sends, and writes the new one back; you do nothing. If the user withdraws
+the consent, changes their password, or Microsoft lets the refresh token lapse (after 90 days
+unused), the renewal is refused: the account goes to `auth_failed`, with `last_error` saying to
+connect it again, which is `mail_oauth_start` once more.

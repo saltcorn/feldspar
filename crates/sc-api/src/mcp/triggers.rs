@@ -364,7 +364,9 @@ fn describe_action_description() -> String {
          table can be missing settings that exist and offering settings that will \
          be refused.\n\n\
          Many settings hold a formula or a template over the event rather than a \
-         literal — `row`, `old`, `user` and `payload` are what is in scope — and \
+         literal — `row`, `old`, `user` and `payload` are what is in scope, \
+         `row` and `old` only for `insert`/`update`/`delete`; a `none` trigger \
+         run through `POST /actions/<name>` gets the request body as `payload` — and \
          which ones do is said in each setting's own description. If you get this \
          wrong, `{TOOL_SAVE_TRIGGER}` says so and names the setting; it does not \
          save a trigger that cannot run.\n\n\
@@ -530,6 +532,10 @@ fn save_description(grants: &Grants) -> String {
          as `code_api` (and `{TOOL_DESCRIBE_CODE_API}` alone). Read it before \
          writing one — rows are changed with `db.t.where({{ id: row.id }}).update({{ … }})`, \
          and there is no `db.t.update(id, values)`.\n\n\
+         A trigger belongs to **no application**, even one an application \
+         exposes: its body's `lib(name)` imports **instance-wide** code \
+         libraries only, never an application's own. Code a trigger shares with \
+         an application's queries goes in an instance-wide library.\n\n\
          {permitted} {access}"
     )
 }
@@ -988,6 +994,19 @@ mod tests {
         // A trigger is named, and nothing else is compulsory: an edit sends what
         // it is changing.
         assert_eq!(params["required"], json!([ARG_NAME]));
+    }
+
+    #[test]
+    fn the_descriptions_say_what_a_body_can_reach() {
+        // A trigger sees instance-wide libraries only, said where one is saved.
+        let text = save_description(&Grants::all());
+        assert!(text.contains("instance-wide** code"), "{text}");
+        // A `none` trigger's input is `payload`, said where an action is read.
+        let text = describe_action_description();
+        assert!(
+            text.contains("gets the request body as `payload`"),
+            "{text}"
+        );
     }
 
     #[test]

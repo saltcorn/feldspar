@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/oauth",
+  "version": "0.1.0",
+  "description": "A module whose action asks for its caller's consent at an OAuth provider, for the consent-flow tests (TODO-imap M10.3).",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

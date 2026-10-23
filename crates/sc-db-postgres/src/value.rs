@@ -94,6 +94,34 @@ impl PgParam<'_> {
             Value::Text(v) if *ty == Type::UUID => {
                 parse_text(v, ty, |s| Uuid::parse_str(s).ok())?.to_sql_checked(ty, out)
             }
+            // A code body's `db.sql("… where account = $1::bigint", ["10"])`:
+            // the cast in the SQL decides the placeholder's type, and Postgres
+            // reads the same text as an untyped literal there, so it is read
+            // the same way here rather than refused for its JavaScript type.
+            Value::Text(v) if *ty == Type::INT2 => {
+                parse_text(v, ty, |s| s.parse::<i16>().ok())?.to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::INT4 => {
+                parse_text(v, ty, |s| s.parse::<i32>().ok())?.to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::INT8 => {
+                parse_text(v, ty, |s| s.parse::<i64>().ok())?.to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::FLOAT4 => {
+                parse_text(v, ty, |s| s.parse::<f32>().ok())?.to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::FLOAT8 => {
+                parse_text(v, ty, |s| s.parse::<f64>().ok())?.to_sql_checked(ty, out)
+            }
+            Value::Text(v) if *ty == Type::NUMERIC => parse_text(v, ty, |s| {
+                s.parse::<Decimal>()
+                    .ok()
+                    .or_else(|| Decimal::from_scientific(s).ok())
+            })?
+            .to_sql_checked(ty, out),
+            Value::Text(v) if *ty == Type::BOOL => {
+                parse_text(v, ty, parse_bool)?.to_sql_checked(ty, out)
+            }
             Value::Text(v) => v.to_sql_checked(ty, out),
             Value::Bytes(v) => v.to_sql_checked(ty, out),
             Value::Json(v) => v.to_sql_checked(ty, out),
@@ -114,6 +142,15 @@ fn parse_text<T>(
     parse: impl Fn(&str) -> Option<T>,
 ) -> std::result::Result<T, BoxError> {
     parse(text.trim()).ok_or_else(|| BoxError::from(format!("{text:?} is not a {}", ty.name())))
+}
+
+/// A boolean in the spellings Postgres accepts for one.
+fn parse_bool(text: &str) -> Option<bool> {
+    match text.to_ascii_lowercase().as_str() {
+        "t" | "true" | "y" | "yes" | "on" | "1" => Some(true),
+        "f" | "false" | "n" | "no" | "off" | "0" => Some(false),
+        _ => None,
+    }
 }
 
 /// A date, or the date of an instant written in full.
@@ -376,6 +413,45 @@ mod tests {
         assert_eq!(
             parse_instant("2024-02-01").map(|t| t.to_rfc3339()),
             Some("2024-02-01T00:00:00+00:00".to_owned())
+        );
+    }
+
+    /// `db.sql("… where account = $1::bigint", ["10"])`: text into a
+    /// placeholder the SQL cast to a number or a boolean is read as Postgres
+    /// reads an untyped literal there, not refused for being a string.
+    #[test]
+    fn text_encodes_into_numeric_and_boolean_placeholders() {
+        let mut out = BytesMut::new();
+        let text = |s: &str| Value::Text(s.to_owned());
+        for (value, ty) in [
+            (text("10"), Type::INT8),
+            (text(" -7 "), Type::INT4),
+            (text("3"), Type::INT2),
+            (text("2.5"), Type::FLOAT8),
+            (text("2.5"), Type::FLOAT4),
+            (text("12.50"), Type::NUMERIC),
+            (text("1e3"), Type::NUMERIC),
+            (text("true"), Type::BOOL),
+            (text("f"), Type::BOOL),
+        ] {
+            assert!(
+                PgParam(&value).to_sql_checked(&ty, &mut out).is_ok(),
+                "{value:?} into {ty}"
+            );
+        }
+        let mut out = BytesMut::new();
+        PgParam(&text("10"))
+            .to_sql_checked(&Type::INT8, &mut out)
+            .unwrap();
+        assert_eq!(&out[..], &10i64.to_be_bytes());
+        let Err(err) = PgParam(&text("ten")).to_sql_checked(&Type::INT8, &mut out) else {
+            panic!("\"ten\" is not an int8");
+        };
+        assert!(err.to_string().contains("\"ten\" is not a int8"), "{err}");
+        assert!(
+            PgParam(&text("70000"))
+                .to_sql_checked(&Type::INT2, &mut out)
+                .is_err()
         );
     }
 }

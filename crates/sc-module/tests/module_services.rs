@@ -268,4 +268,67 @@ mod deno {
         host.shutdown().await;
         let _ = std::fs::remove_dir_all(installer.root());
     }
+
+    /// A module reload while its service runs — what the Modules tab's Reload
+    /// and saving a module's settings do on a serving server: the services are
+    /// stopped, the module is loaded again, and they start over the new load.
+    /// The load must not wait out the call timeout on the old service.
+    #[tokio::test]
+    async fn a_module_reloads_promptly_while_its_service_runs() {
+        skip_without!(have_npm(), "npm is not on the PATH");
+        let db = TestDb::new().await.unwrap();
+        let cat = catalog(&db).await;
+        let (installer, host, names) =
+            installed("module-services-reload", &["service-module"]).await;
+        save_module(
+            &cat,
+            &Module::new(&names[0], ModuleSource::Local, &names[0]),
+        )
+        .await
+        .unwrap();
+        let load = || async {
+            ModuleSet::load(
+                &cat,
+                &host,
+                &installer,
+                &surfaces(),
+                &mut ActionRegistry::new(),
+            )
+            .await
+            .unwrap()
+        };
+        let set = load().await;
+        let supervisor = ServiceSupervisor::new(&cat, &host, Backoff::default()).unwrap();
+        for round in 0..2 {
+            supervisor.start(&set).await;
+            if round == 1 {
+                until(&db, "ticks", |rows| rows.len() >= 2).await;
+            }
+            supervisor.stop_all().await;
+            // Nothing was left running: a stop that overtook its start (round
+            // 0 stops at once) would leave the service registered in the host,
+            // running with nobody to stop it.
+            let left =
+                tokio::time::timeout(Duration::from_secs(5), host.stop_service(MODULE, "ticker"))
+                    .await
+                    .unwrap_or_else(|_| panic!("round {round}: a stop is still waiting"))
+                    .unwrap();
+            assert_eq!(left, json!({ "stopped": false }), "round {round}");
+            let began = std::time::Instant::now();
+            let again = tokio::time::timeout(Duration::from_secs(20), load())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("round {round}: the reload waited on the stopped service")
+                });
+            assert!(again.issues().is_empty(), "{:?}", again.issues());
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "{:?}",
+                began.elapsed()
+            );
+        }
+        supervisor.stop_all().await;
+        host.shutdown().await;
+        let _ = std::fs::remove_dir_all(installer.root());
+    }
 }

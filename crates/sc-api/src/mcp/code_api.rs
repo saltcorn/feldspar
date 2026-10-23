@@ -88,6 +88,19 @@ mod tests {
     }
 
     #[test]
+    fn the_reference_says_what_each_trigger_event_puts_in_scope() {
+        // A `none` trigger run through `POST /api/actions/<name>` reads its
+        // input from `payload`; naming `row` there is a ReferenceError.
+        for taught in [
+            "| `none` | — | — | what it was run with: the JSON body of `POST /api/actions/<name>`",
+            "| `delete` | the deleted row, as it was |",
+            "a `none` trigger reads its input\nfrom `payload`, never `row`",
+        ] {
+            assert!(JS_CODE_API.contains(taught), "missing `{taught}`");
+        }
+    }
+
+    #[test]
     fn the_reference_teaches_the_web_globals_status_codes_and_where_logic_goes() {
         // TODO F1.1–F1.5, F1.10.
         for taught in [

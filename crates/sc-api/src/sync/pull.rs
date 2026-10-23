@@ -77,9 +77,17 @@ pub(crate) async fn pull(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     body: &Json,
 ) -> Result<Json> {
-    let request = PullRequest::parse(body)?;
+    let mut request = PullRequest::parse(body)?;
     let devices = devices_table(cat)?;
-    check_device(cat, &devices, request.client_id, application, user).await?;
+    let last_pull = check_device(cat, &devices, request.client_id, application, user).await?;
+    // The watermark is from the device's last pull. Older than sync's
+    // retention, the log may no longer hold what the device missed, so it
+    // starts over (§14.11 "Cleanup").
+    let horizon =
+        chrono::Utc::now() - chrono::Duration::days(sc_catalog::retention::SYNC_KEEP_DAYS);
+    if last_pull.is_some_and(|at| at < horizon) {
+        request.watermark = None;
+    }
 
     let synced: Vec<Table> = exposed
         .iter()

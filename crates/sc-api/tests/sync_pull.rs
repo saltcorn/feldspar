@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use sc_api::{ApiProvider, ApiRequest, ApiResponse, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
-use sc_catalog::{Catalog, bootstrap_field_meta, bootstrap_sync, bootstrap_table_meta};
+use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
@@ -47,7 +47,7 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
-    bootstrap_sync(&cat).await?;
+    bootstrap_change_log(&cat).await?;
     cat.reload().await?;
 
     let settings = |formula: &str| schema_edit::TableSettings {
@@ -340,5 +340,36 @@ async fn a_watermark_that_is_not_one_is_refused() -> Result<()> {
         .unwrap_err();
         assert!(err.to_string().contains("`watermark`"), "{bad}: {err}");
     }
+    Ok(())
+}
+
+/// A device whose last pull is older than sync's retention starts over: the
+/// cleanup may have removed what it missed (§14.11 "Cleanup").
+#[tokio::test]
+async fn a_device_not_seen_within_the_retention_reloads_its_tables() -> Result<()> {
+    let db = TestDb::new().await?;
+    let f = fixture(&db).await?;
+    let ann = f.ann.id;
+    sql(
+        &db,
+        &format!("INSERT INTO notes (title, owner) VALUES ('ann 1', '{ann}');"),
+    )
+    .await?;
+    let device = register(&f, &f.ann).await?;
+    let first = pull(&f, &f.ann, &device, &Json::Null).await?;
+    let recent = pull(&f, &f.ann, &device, &first["watermark"]).await?;
+    assert_eq!(notes(&recent), (false, set(&[]), set(&[])));
+
+    sql(
+        &db,
+        &format!(
+            "UPDATE _fd_sync_clients SET last_seen = now() - interval '{} days' \
+             WHERE id = '{device}';",
+            sc_catalog::retention::SYNC_KEEP_DAYS + 1
+        ),
+    )
+    .await?;
+    let stale = pull(&f, &f.ann, &device, &recent["watermark"]).await?;
+    assert_eq!(notes(&stale), (true, set(&["ann 1"]), set(&[])));
     Ok(())
 }

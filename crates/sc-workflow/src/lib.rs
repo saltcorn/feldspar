@@ -73,9 +73,9 @@ pub use ops::{
 };
 pub use queue::{DEFAULT_BATCH, DatabaseQueue, WorkQueue};
 pub use run::{
-    ATTR_CHAIN, ATTR_EVENT, ATTR_WORKFLOW, StoredEvent, mark_aborted, new_run, record, release,
-    run_chain, run_current_step, run_event, run_pending_form, run_state, run_version,
-    run_workflow_id,
+    ATTR_CHAIN, ATTR_CHANGESET, ATTR_EVENT, ATTR_WORKFLOW, StoredEvent, mark_aborted, new_run,
+    record, release, run_chain, run_changeset, run_current_step, run_event, run_pending_form,
+    run_state, run_version, run_workflow_id,
 };
 pub use scope::{WORKFLOW_SCOPE, workflow_shape};
 pub use traces::{

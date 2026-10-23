@@ -33,6 +33,22 @@ into a second query: put it in a **code library** (below) and `lib()` it from bo
   anywhere else is a `ReferenceError`). `old` — the row before an update, `null` on insert.
 - `user` — the person who caused the event (`id`, `role`, `email`, …), or `null`.
 - `payload` — what a directly-run or scheduled trigger was called with, or `null`.
+
+What a **trigger's** body has, by its event:
+
+| event | `row` | `old` | `payload` |
+|---|---|---|---|
+| `insert` | the new row | `null` | `null` |
+| `update` | the row as it now is | the row before | `null` |
+| `delete` | the deleted row, as it was | `null` | `null` |
+| `none` | — | — | what it was run with: the JSON body of `POST /api/actions/<name>` (or `api.run<Name>(…)`), or the argument of `trigger("name").run(…)` (`null` or `{}` when given nothing) |
+| `often`, `hourly`, `daily`, `weekly` | — | — | `null` |
+| `login`, `startup` | — | — | `null` (`login`'s person is `user`) |
+| `error` | — | — | `{ kind, message, method, path }` |
+| `stream` | — | — | the element: `{ stream, value, received_at, source? }` |
+
+"—" means not defined: naming it is a `ReferenceError`, so a `none` trigger reads its input
+from `payload`, never `row`. `user` is in scope for every event.
 - `context` — in a **workflow step** only: the run's context so far.
 - `body`, `query`, `user` — in a **custom API query** only: the request's JSON body, its
   query string, and the caller. There is no `row` or `payload` there. The app's generated

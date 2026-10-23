@@ -228,6 +228,9 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
         // database that will refuse it, once per conversation.
         "rls_available": rls_available,
         "sync_enabled": table.sync_enabled(),
+        "history_enabled": table.history_enabled(),
+        "history_min_role": sc_catalog::history::history_min_role(&table.attributes),
+        "history_keep_days": sc_catalog::retention::history_keep_days(&table.attributes),
         "fields": fields,
         "references": references,
         "referenced_by": referenced_by,
@@ -408,6 +411,15 @@ fn edit_parameters() -> Json {
                                 "The field's name. Required for `add_field`, \
                                  `alter_field` and `drop_field`.",
                         },
+                        "rename_to": {
+                            "type": "string",
+                            "description":
+                                "Rename the field (`alter_field`): its column, its \
+                                 settings and its row history follow. Refused while \
+                                 a calculated field, a constraint, the ownership \
+                                 formula or another table's key names it. Views, \
+                                 pages and code that name it must be updated.",
+                        },
                         "type": {
                             "type": "string",
                             "description":
@@ -533,6 +545,32 @@ fn edit_parameters() -> Json {
                                 "Record the table's changes for offline sync. Needs \
                                  a primary key of one column; offline inserts need \
                                  a uuid key.",
+                        },
+                        "history_enabled": {
+                            "type": "boolean",
+                            "description":
+                                "Keep every version of the table's rows, so a row's \
+                                 history can be listed and an old version restored. \
+                                 Off by default; needs a primary key of one column.",
+                        },
+                        "history_min_role": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description":
+                                "The least-privileged role that may read the \
+                                 table's history; 1 (admin only) by default. Each \
+                                 row is still checked against the read rule. Kept \
+                                 only while history is on; needs the access-rules \
+                                 permission.",
+                        },
+                        "history_keep_days": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description":
+                                "How many days the table's history keeps a change \
+                                 (and a deleted row's files); 0, the default, keeps \
+                                 it forever. Kept only while history is on.",
                         },
                     },
                     "required": ["op", "table"],
@@ -869,12 +907,25 @@ fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
         ownership_formula: optional_string(obj, "ownership_formula")?,
         rls_enabled: optional_bool(obj, "rls_enabled")?,
         sync_enabled: optional_bool(obj, "sync_enabled")?,
+        history_enabled: optional_bool(obj, "history_enabled")?,
+        history_min_role: optional_role(obj, "history_min_role")?,
+        history_keep_days: match obj.get("history_keep_days") {
+            None | Some(Json::Null) => None,
+            Some(days) => Some(
+                days.as_u64()
+                    .and_then(|d| u32::try_from(d).ok())
+                    .ok_or_else(|| {
+                        Error::invalid("`history_keep_days` must be a whole number of days")
+                    })?,
+            ),
+        },
     })
 }
 
 fn parse_field_settings(obj: &Map<String, Json>) -> Result<FieldSettings> {
     let kind = field_kind(obj)?;
     Ok(FieldSettings {
+        name: optional_string(obj, "rename_to")?,
         label: optional_string(obj, "label")?,
         description: optional_string(obj, "description")?,
         type_name: optional_string(obj, "type")?,
@@ -1166,6 +1217,23 @@ mod tests {
         assert_eq!(settings.ownership_formula, None);
         assert_eq!(settings.rls_enabled, None);
         assert_eq!(settings.label, None);
+    }
+
+    #[test]
+    fn the_history_switch_reaches_agents_beside_sync() {
+        let Operation::AlterTable { settings, .. } = parse_operation(&json!({
+            "op": "alter_table", "table": "clients", "history_enabled": true,
+        }))
+        .unwrap() else {
+            panic!("an alter_table");
+        };
+        assert_eq!(settings.history_enabled, Some(true));
+        assert_eq!(settings.sync_enabled, None);
+        // And the tool's schema offers it, or the model never learns to ask.
+        let params = edit_parameters();
+        let props = &params["properties"][ARG_OPERATIONS]["items"]["properties"];
+        assert_eq!(props["history_enabled"]["type"], json!("boolean"));
+        assert_eq!(props["sync_enabled"]["type"], json!("boolean"));
     }
 
     #[test]

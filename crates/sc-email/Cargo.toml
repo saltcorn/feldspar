@@ -46,6 +46,13 @@ tokio = { workspace = true, features = ["net"] }
 # correctly, and the harness is where it lives because `sc-server` needs it too.
 sc-test-harness.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
+# The TLS in front of `TestSmtp` in `smtp_certificates.rs`: a CA, certificates
+# issued for a name and not for the address that is dialled, and a self-signed
+# one — the certificate settings are only tested by a real handshake. All three
+# are already in the tree (`rustls` pinned, `tokio-rustls` via `reqwest`).
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 
 [lints]
 workspace = true

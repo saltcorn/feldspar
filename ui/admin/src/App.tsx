@@ -70,6 +70,7 @@ import { StreamObserve } from "./screens/StreamObserve";
 import { Streams } from "./screens/Streams";
 import { Tables } from "./screens/Tables";
 import { TableData } from "./screens/TableData";
+import { ChangesetDetail, Changesets } from "./screens/Changesets";
 import { TableDetail } from "./screens/TableDetail";
 import { RunDetail } from "./screens/RunDetail";
 import { Triggers } from "./screens/Triggers";
@@ -192,7 +193,9 @@ export const NAV: NavItem[] = [
     // The database connections list is part of this section rather than one of
     // its own, the way LLM providers hang off Agents: a connection exists to put
     // tables in the tables list, and the way to it is a button on that screen.
-    matches: ["/tables", "/db-connections"],
+    // And so is the changeset browser: row history is a property of tables,
+    // reached from the tables list and a table's data.
+    matches: ["/tables", "/db-connections", "/changesets"],
   },
   {
     href: "#/file-stores",
@@ -565,6 +568,13 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   const tableDataMatch = path.match(/^\/tables\/([^/]+)\/data$/);
   if (tableDataMatch) {
     return <TableData table={decodeURIComponent(tableDataMatch[1])} />;
+  }
+  const changesetMatch = path.match(/^\/changesets\/([^/]+)$/);
+  if (changesetMatch) {
+    return <ChangesetDetail key={route} id={decodeURIComponent(changesetMatch[1])} />;
+  }
+  if (path === "/changesets") {
+    return <Changesets key={route} initialTable={query.get("table") ?? undefined} />;
   }
   const tableMatch = path.match(/^\/tables\/([^/]+)$/);
   if (tableMatch) {

@@ -691,7 +691,10 @@ throws when called, naming itself and why — never a quiet `undefined`.
 | `Field.create`, `field.update`, `field.delete` | refused | Likewise |
 | `field.alter_sql_type`, `field.toggle_not_null`, `field.enable_fkey_constraint` | refused | Likewise |
 | `field.add_unique_constraint`, `field.remove_unique_constraint` | refused | Likewise |
-| `table.get_history`, `table.insert_history_row`, `table.restore_row_version`, `table.undo_row_changes`, `table.redo_row_changes`, `table.compress_history` | refused | This server keeps no row history to read, restore or compress |
+| `table.get_history` | different | The table must have history on ([tutorial-history.md](tutorial-history.md)). Takes the row's id, which v1 did not require: every version oldest first, each the whole row just after it, with `_version`, `_time`, `_userid`, and `_deleted`, `_op`, `_changeset`, `_source` |
+| `table.restore_row_version` | implemented | A write through the row layer in a `restore` changeset; a row deleted since is inserted again, and a row already as it was is left alone |
+| `table.undo_row_changes`, `table.redo_row_changes` | implemented | Step the row back one version and forward again, as v1 did; each step is a restore, and nothing to step to does nothing |
+| `table.insert_history_row`, `table.compress_history` | refused | History is recorded by the database itself, merged as it is written and expired by `keep_days` |
 | `table.latestSyncInfo`, `table.latestSyncInfos` | refused | v1's mobile offline sync has no counterpart here |
 | `table.update_stored_calculateds`, `table.recalculate_for_stored` | refused | Calculated fields are recomputed by the server, on read; there is nothing to drive by hand |
 | `Table.create_from_csv`, `table.import_csv_file`, `table.import_json_file`, `table.dump_to_json` | refused | Import and export are this server's own, through the API and the admin UI |
@@ -740,6 +743,7 @@ action added by a plugin gets a working form with no change to the admin UI.
 | `run_js_code` | Run a JavaScript body against the event and return what it returns |
 | `send_email` | Send an email whose recipients, subject and body are `{{ }}` templates, optionally attaching a File field of the row |
 | `fit_model` | Fit a model again, and optionally make the new fit active ([tutorial-models.md](tutorial-models.md)) |
+| `undo` | Take back the caller's most recent change in this session, from a table that keeps row history |
 
 `fetch` is the webhook: point it at a URL, give it a JSON body of formulas, and its response
 comes back as the trigger's result — so a `none` trigger exposed on your app can be a typed
@@ -790,16 +794,70 @@ come from a row a user wrote:
 - **public addresses only.** A host that resolves to a loopback, private or link-local address, or
   to a mix of public and private ones, is refused. The connection goes to the address that was
   checked, so a DNS server cannot answer differently the second time. The certificate is
-  still verified against the host's name.
+  still verified against the host's name, always: Settings → Email's certificate settings do
+  not apply to an override.
 - a host, port or encryption **typed into the form** is checked when you save. A templated one is
   checked when it renders. Either way the error names the host and never the password.
 
 The server in Settings → Email is not held to these rules: your own relay can be on `localhost`.
+That server also has two certificate settings. **Certificate name** is for a host given as an IP
+address: the certificate is checked against this name instead of the IP, which a certificate
+issued for a name does not carry (`certificate not valid for name "188.65.204.58"`).
+**Certificate check** `accept_any` accepts any certificate, such as a self-signed one. The
+connection is still encrypted, but nothing proves it reaches your server.
 
 **A copy in Sent depends on the server.** `send_email` only submits the message. Gmail and
 Microsoft 365 file whatever you send through their SMTP into the account's Sent folder
 themselves. Most other providers (GMX, IONOS, Fastmail, a plain Dovecot/Postfix) do not, and the
 mail will not appear there.
+
+### `undo`, an Undo button for your application
+
+`undo` takes back what the person pressing the button last did, the way an editor's undo does:
+press it again and it steps back one action further. It reads the tables' **row history**, so
+switch that on first: **Tables → tasks → Keep row history** (it is off by default). A change to a
+table without history cannot be undone, because nothing remembers what it was. Reading a row's
+history, restoring deleted rows and undoing an action from the admin screens are in
+[tutorial-history.md](tutorial-history.md).
+
+**Triggers → New trigger**:
+
+| Field | Value |
+|---|---|
+| Name | `undo_last` |
+| **Minimum role** | `40` |
+| Event | `Only when something asks (no event)` |
+| Action | `undo` |
+| Only in table (action setting) | leave blank |
+
+Tick it in the application's **Triggers** card as in Step 3, and it is
+`POST /api/actions/undo_last`, `runUndoLast({})` in the generated client, and an **Action**
+button in a Saltcorn UI view or page ([tutorial-saltcorn-ui.md](tutorial-saltcorn-ui.md)). Its
+answer is `{"undid": …, "changeset": …, "entries": 2}`: the action it took back, the undo's own
+changeset, and how many rows it put back.
+
+What "the last change" means:
+
+- **One action is one request.** Saving a form that also makes a trigger write to another table
+  is one action, and one undo takes back both writes.
+- **Only this session's.** Changes made by someone else, or by the same person on another device
+  or in another browser, are never picked. A caller who is not signed in has no session, and is
+  refused.
+- **The request pressing the button is not "the last change".** If the same request wrote
+  something before the trigger ran, that write stays; the undo takes back the action before it.
+- **An undo is not undone by the next undo.** Pressing it twice steps back two actions, rather than
+  undoing and redoing the same one.
+- **Only in table** narrows it to one table: it takes back that table's rows from the most recent
+  action that changed any, and leaves the action's other tables alone. A later undo without the
+  setting takes back the rest. The table must keep history, or the trigger is refused on save.
+
+It is refused with a sentence, and nothing is written, when there is nothing left to undo, when
+the caller has no session, or when someone has changed the same fields since ("this cannot be
+undone, because it has been changed since: `title` of row `7` of `tasks` has been changed
+since"). The button never overwrites someone else's later edit; an administrator can, from the
+changeset's page in the admin UI. The undo is a write as the caller, so it is held to the same
+write rules as the original, and the triggers on the rows it writes fire as usual. What those
+triggers did outside the database, such as an email they sent, is not undone.
 
 ## Things that trip people up
 

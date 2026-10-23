@@ -25,7 +25,7 @@ mod row;
 mod schema;
 mod spatial;
 
-pub use capabilities::DbCapabilities;
+pub use capabilities::{DbCapabilities, TX_SETTINGS_TABLE};
 pub use driver::{DatabaseDriver, Transaction};
 pub use row::{Row, RowStream};
 pub use schema::{

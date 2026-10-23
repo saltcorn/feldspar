@@ -407,7 +407,7 @@ fn the_mail_actions_declare_types_that_lower() {
     );
     let actions: serde_json::Map<String, serde_json::Value> =
         serde_json::from_slice(&output.stdout).expect("the actions' types are JSON");
-    assert_eq!(actions.len(), 10, "{actions:?}");
+    assert_eq!(actions.len(), 12, "{actions:?}");
     for (name, types) in &actions {
         match sc_api::parse_returns(&types["payload"]) {
             Ok(sc_api::TypeSchema::Struct(_)) => {}

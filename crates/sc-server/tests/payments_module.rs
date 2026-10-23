@@ -394,6 +394,9 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
         None,
     )
     .await?;
+    // As `serve` does once it is up: the reconcile service keeps the accounts a
+    // module function (`pay_api`) reads.
+    modules.start_services().await;
     let apps = Arc::new(
         AppMounts::new(catalog.clone())
             .with_evaluator(evaluator)

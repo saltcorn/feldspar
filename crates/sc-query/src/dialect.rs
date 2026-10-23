@@ -68,6 +68,13 @@ pub trait SqlDialect {
         Some(" FOR UPDATE")
     }
 
+    /// Whether this is SQLite's spelling of SQL. The renderer never asks; the
+    /// few hand-written statements whose functions differ between the two
+    /// backends (the change log's JSON handling, §14.12) do.
+    fn is_sqlite(&self) -> bool {
+        false
+    }
+
     /// Render a statement to a SQL string plus its ordered bind values.
     ///
     /// The returned `Vec<Value>` is exactly the parameters the SQL placeholders

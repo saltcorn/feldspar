@@ -136,6 +136,36 @@ async fn the_bodys_sql_runs_as_written_with_its_arguments_bound() -> Result<()> 
 }
 
 #[tokio::test]
+async fn a_string_argument_takes_the_type_the_sql_casts_it_to() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    let host = as_reader(&cat, "ada@example.com");
+
+    // A route parameter arrives as text; the SQL says what it is. Postgres
+    // would take `'412'::bigint` as a literal, and so does a bind.
+    let rows = host
+        .call(json!({
+            "op": "sql",
+            "sql": "select title from books where pages = $1::bigint or pages > $2",
+            "params": ["412", "500"],
+        }))
+        .await?;
+    assert_eq!(titles(&rows), vec!["Dune", "Ilium"]);
+
+    // Text that is not the number is the binding's error, naming both.
+    let err = host
+        .call(json!({
+            "op": "sql",
+            "sql": "select title from books where pages = $1::bigint",
+            "params": ["many"],
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("\"many\" is not a int8"), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_delegated_statement_runs_where_the_policies_can_see_it() -> Result<()> {
     let db = TestDb::new().await?;
     let cat = setup(&db).await?;

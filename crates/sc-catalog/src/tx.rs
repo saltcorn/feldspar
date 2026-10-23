@@ -101,10 +101,11 @@ enum Applied {
     /// Nothing has been applied yet: the next statement must say who it is,
     /// whoever that is.
     Unknown,
-    /// Explicitly nobody — [`clear_caller_context`].
-    Nobody,
-    /// This `(role, user JSON)` pair.
-    Caller(u8, Option<String>),
+    /// Explicitly nobody — [`clear_caller_context`] — in this ambient
+    /// changeset (its GUC text).
+    Nobody(String),
+    /// This `(role, user JSON, changeset GUC text)`.
+    Caller(u8, Option<String>, String),
 }
 
 /// Something to do once the transaction has committed
@@ -143,10 +144,10 @@ pub struct SharedTx {
     /// The database this transaction is on: a statement for any other database
     /// does not belong here (see [`serves`](SharedTx::serves)).
     database: DbId,
-    /// Whether the backend has row-level security, which is the whole of what
-    /// the caller GUCs are for. A backend without it is not asked to `SET LOCAL`
-    /// something it does not have.
-    row_level_security: bool,
+    /// Whether the backend has row-level security or change-log triggers,
+    /// which are the whole of what the caller GUCs are for. A backend with
+    /// neither is not asked to `SET LOCAL` something it does not have.
+    caller_gucs: bool,
 }
 
 impl std::fmt::Debug for SharedTx {
@@ -204,7 +205,7 @@ impl SharedTx {
             pending: Arc::new(SyncMutex::new(Pending::default())),
             driver: driver.clone(),
             database,
-            row_level_security: driver.capabilities().row_level_security,
+            caller_gucs: crate::rls::takes_caller_gucs(driver.as_ref()),
         }
     }
 
@@ -228,10 +229,16 @@ impl SharedTx {
     /// probe-free reading [`run_in_context`](crate::run_in_context) gives it.
     pub async fn run(&self, caller: Option<&CallerContext>, stmt: &Statement) -> Result<Vec<Row>> {
         let mut open = self.inner.lock().await;
-        if self.row_level_security {
+        if self.caller_gucs {
             let wanted = match caller {
-                Some(caller) => Applied::Caller(caller.role, caller.user_json()),
-                None => Applied::Nobody,
+                Some(caller) => {
+                    Applied::Caller(caller.role, caller.user_json(), caller.changeset_json())
+                }
+                None => Applied::Nobody(
+                    crate::changeset::current()
+                        .map(|c| c.guc_value(None))
+                        .unwrap_or_default(),
+                ),
             };
             if open.applied != wanted {
                 let tx = open.handle(&self.driver).await?;
@@ -327,6 +334,9 @@ impl SharedTx {
     /// it does in SQL.
     pub async fn rollback_to_savepoint(&self, name: &str) -> Result<()> {
         self.batch(&format!("ROLLBACK TO SAVEPOINT {name}")).await?;
+        // A `SET LOCAL` made since the savepoint is undone with it, so which
+        // caller's GUCs are in force is no longer known.
+        self.inner.lock().await.applied = Applied::Unknown;
         let mut pending = lock(&self.pending);
         if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| n == name) {
             let mark = pending.savepoints[at].1;

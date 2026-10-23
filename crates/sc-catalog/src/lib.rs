@@ -27,6 +27,9 @@ mod admin_host;
 mod calc;
 mod caller;
 mod catalog;
+mod change_log;
+pub mod change_log_sqlite;
+pub mod changeset;
 mod code_libraries;
 mod constraint;
 mod db_connections;
@@ -34,6 +37,7 @@ mod events;
 mod field;
 mod field_meta;
 mod file_stores;
+pub mod history;
 pub mod inmem;
 mod model_host;
 mod module_tables;
@@ -42,6 +46,7 @@ mod origin;
 mod prefetch;
 mod projection;
 mod provider;
+pub mod retention;
 mod rls;
 pub mod secrets;
 mod spatial;
@@ -54,6 +59,12 @@ mod wakeups;
 pub use admin_host::{AdminCall, AdminHost};
 pub use caller::{CallerContext, CallingApp, Origin, current_origin, with_origin};
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
+pub use change_log::{
+    CHANGES_TABLE, ChangeLogFeature, as_text_sql, bootstrap_change_log, change_log_enabled,
+    change_log_key, disable_change_log_sql, enable_change_log_sql, history_enabled,
+    json_distinct_array_sql, json_texts_sql, row_json_sql, set_history_enabled,
+};
+pub use changeset::{CHANGESETS_TABLE, Changeset, ChangesetSource};
 pub use code_libraries::{
     CODE_LIBRARIES_TABLE, CodeLibrary, bootstrap_code_libraries, check_code_library_saveable,
     delete_application_code_libraries, delete_code_library, list_code_libraries, load_code_library,
@@ -107,9 +118,8 @@ pub use rls::{
 pub use secrets::SecretKey;
 pub use spatial::bootstrap_spatial;
 pub use sync::{
-    SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, bootstrap_sync, changed_keys,
-    disable_sync_sql, enable_sync_sql, mark_sync_device, set_sync_enabled, sync_enabled, sync_key,
-    sync_watermark,
+    SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_keys, set_sync_enabled,
+    sync_enabled, sync_watermark,
 };
 pub use table::{AccessRules, FieldMergeIssue, Table, TableSource};
 pub use table_meta::{

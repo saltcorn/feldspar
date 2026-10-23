@@ -56,6 +56,8 @@ const LIMITS = {
   content_type: 200,
   cid: 300,
   import_error: 1000,
+  /** One extra header's value (`extraHeaders`), all its occurrences together. */
+  header: 4000,
 };
 
 /** What `body_text` says when a mail has no body part (§5.4). */
@@ -307,8 +309,56 @@ function flagSet(flags) {
   return new Set([...(flags || [])].map((f) => String(f).toLowerCase()));
 }
 
+/** Every occurrence of a header, each unfolded and with its encoded words decoded. */
+function headerValues(headers, key, charset) {
+  if (!headers) return [];
+  let lines;
+  try {
+    lines = headers.getList().filter((h) => h.key === key);
+  } catch {
+    return [];
+  }
+  return lines.map((h) => {
+    // `rawHeader` reads the first occurrence; each line is read the same way here.
+    const one = { getList: () => [h] };
+    return noNul(decodeWords(rawHeader(one, key, charset)));
+  });
+}
+
+/**
+ * The `headers` column: the extra header fields asked for (the module's "Headers to keep"
+ * setting), by lower-case name, each the text of its occurrences joined by a newline
+ * (`Authentication-Results` and `Received` come more than once). A header the mail does not
+ * have is left out; `null` when nothing is asked for.
+ */
+function extraHeaderFields(headers, names, charset) {
+  if (!names || !names.length) return null;
+  const out = {};
+  let present = [];
+  try {
+    present = headers ? [...new Set(headers.getList().map((h) => h.key))] : [];
+  } catch {}
+  for (const name of names) {
+    const pattern = String(name).trim().toLowerCase();
+    if (!pattern) continue;
+    // `x-spam-*` keeps every header that starts with `x-spam-`.
+    const keys = pattern.endsWith("*") ? present.filter((k) => k.startsWith(pattern.slice(0, -1))) : [pattern];
+    for (const key of keys) {
+      if (key in out) continue;
+      const values = headerValues(headers, key, charset);
+      if (values.length) out[key] = cut(values.join("\n"), LIMITS.header);
+    }
+  }
+  return out;
+}
+
+/** The keywords among a message's flags: every flag without a backslash, sorted. */
+function keywordList(flags) {
+  return [...new Set([...(flags || [])].map(String).filter((x) => x && !x.startsWith("\\")))].sort();
+}
+
 /** The header columns of a row, from the root's headers. */
-function headerFields(headers, { internalDate, flags, charset }) {
+function headerFields(headers, { internalDate, flags, charset, extraHeaders }) {
   const from = addresses(headers, "from", 1, charset)[0] || addresses(headers, "sender", 1, charset)[0] || null;
   const messageId = messageIds(rawHeader(headers, "message-id"))[0] || null;
   const inReplyTo = messageIds(rawHeader(headers, "in-reply-to"))[0] || null;
@@ -334,6 +384,8 @@ function headerFields(headers, { internalDate, flags, charset }) {
     flagged: f.has("\\flagged"),
     answered: f.has("\\answered"),
     draft: f.has("\\draft"),
+    keywords: keywordList(flags),
+    headers: extraHeaderFields(headers, extraHeaders, charset),
   };
 }
 
@@ -508,8 +560,8 @@ const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt
  * @param {object} headers  the root's headers (a mailsplit `Headers`)
  * @param {Container|Leaf} tree
  */
-function assemble(headers, tree, { internalDate, flags, size, bodyState = "full" }) {
-  const message = headerFields(headers, { internalDate, flags, charset: textCharset(tree) });
+function assemble(headers, tree, { internalDate, flags, size, bodyState = "full", extraHeaders }) {
+  const message = headerFields(headers, { internalDate, flags, charset: textCharset(tree), extraHeaders });
   const textParts = [];
   const htmlParts = [];
   const others = [];
@@ -702,14 +754,15 @@ async function openEncodedMessages(container, depth = 0) {
  * Parse a mail's whole source (§5.4, at or below the size cap).
  *
  * @param {Buffer} source
- * @param {{ internalDate?: Date|string, flags?: Iterable<string>, size?: number }} [opts]
+ * @param {{ internalDate?: Date|string, flags?: Iterable<string>, size?: number, extraHeaders?: string[] }} [opts]
+ *   `extraHeaders` names the header fields kept in the row's `headers`
  * @returns {Promise<{ message: object, attachments: object[] }>} `message` is a
  *   `mail_messages` row without `account`, `folder` and `uid`; each attachment is a
  *   `mail_attachments` row without `message` and `file`, plus `content`, its bytes.
  */
-async function parse(source, { internalDate, flags, size } = {}) {
+async function parse(source, { internalDate, flags, size, extraHeaders } = {}) {
   const buf = Buffer.isBuffer(source) ? source : Buffer.from(source || "");
-  const opts = { internalDate, flags, size: size ?? buf.length };
+  const opts = { internalDate, flags, size: size ?? buf.length, extraHeaders };
   let nodes;
   try {
     nodes = await split(stripBoundaryPadding(buf));

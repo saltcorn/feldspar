@@ -86,8 +86,15 @@ pub struct ModuleServices {
     /// The loaded set, replaced whole by [`reload`](ModuleServices::reload).
     loaded: RwLock<Arc<ModuleSet>>,
     /// The modules' background services (TODO-imap M5): stopped before every
-    /// reload, and started again over the set it loads.
+    /// reload, and started again over the set it loads — once
+    /// [`start_services`](ModuleServices::start_services) has said this process
+    /// runs them.
     supervisor: ServiceSupervisor,
+    /// Whether this process runs the services: set by `serve` alone, for the
+    /// scheduler's reason. A `build-app` or an `app triggers` loads the modules
+    /// to know the actions, and must not open a second IMAP connection beside
+    /// the server's and write the same rows.
+    run_services: std::sync::atomic::AtomicBool,
 }
 
 impl ModuleServices {
@@ -171,6 +178,7 @@ impl ModuleServices {
             host,
             loaded: RwLock::new(Arc::new(ModuleSet::empty())),
             supervisor,
+            run_services: std::sync::atomic::AtomicBool::new(false),
         });
         services.reload().await?;
         // The view runtime is the bundle's and not a stored module's, so it is
@@ -407,7 +415,9 @@ impl ModuleServices {
         // And the services, last: their tables exist and are in the catalog,
         // and the triggers on them are loaded, so the first row a service
         // writes fires what it should.
-        self.supervisor.start(&set).await;
+        if self.run_services.load(std::sync::atomic::Ordering::SeqCst) {
+            self.supervisor.start(&set).await;
+        }
         // One set from here up: the Modules tab, the endpoints and `module_json`
         // are written once and serve both languages (§8).
         match self.loaded.write() {
@@ -471,6 +481,15 @@ impl ModuleServices {
             Ok(guard) => guard.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         }
+    }
+
+    /// Start the loaded modules' services, and every reload's after it: what
+    /// `serve` calls once it is up. Every other command that installs the
+    /// modules leaves them stopped.
+    pub async fn start_services(&self) {
+        self.run_services
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.supervisor.start(&self.modules()).await;
     }
 
     /// One module's services as they stand — what its card shows beside each

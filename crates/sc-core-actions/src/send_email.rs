@@ -579,6 +579,8 @@ async fn relay_settings(
             name: None,
             address: String::new(),
         },
+        certificate_name: None,
+        accept_any_certificate: false,
     }))
 }
 

@@ -1,8 +1,9 @@
 // **One folder's mail, into the tables** (TODO-imap.md §5.2, §5.3; M8.3, M8.4).
 //
 // Called with the folder selected and its mailbox lock held (`account.js` does both), with an
-// `env` of `{ client, db, files, account, log, signal }`: an imapflow client, the service's
-// `ctx.db` and `ctx.files`, the account row, and where to say what happened.
+// `env` of `{ client, db, files, account, log, signal, extraHeaders }`: an imapflow client, the
+// service's `ctx.db` and `ctx.files`, the account row, where to say what happened, and the
+// header fields kept in `mail_messages.headers` (the module's "Headers to keep").
 //
 //   await syncFolder(env, folderRow, { flags: true });
 //
@@ -21,6 +22,10 @@
 //   inserted, and then `body_state` is set to what the parser said (`full`, `too_large`). An
 //   Insert trigger sees the whole message but not yet its attachments. A trigger that needs
 //   them listens for the update where `old.body_state === "importing"` (M8.8).
+// - **A message deleted meanwhile is skipped.** Its attachment rows are inserted in one
+//   statement; when that fails because the message row is gone (deleted by an action or by a
+//   sync of the same folder on another path), the message counts as not stored, and the
+//   folder's next sync looks at it again. It does not fail the batch.
 // - **Nothing is stored twice.** A row already there for `(folder, uid)` is skipped; one left
 //   at `importing` by a crash has its attachment rows written again. A row whose `uid` was
 //   cleared (an expunge, a UIDVALIDITY reset) is matched again by `message_id` and given the
@@ -33,10 +38,17 @@
 // Flags and expunges (§5.3)
 // -------------------------
 // With CONDSTORE, the flags that changed since `highestmodseq`; without it, the flags of the
-// newest 2,000 messages. Expunges by `UID SEARCH ALL` against the stored UIDs. In ingest mode an
+// newest 2,000 messages. Keywords (`$label1`, `$Junk`, any flag without a backslash) are kept in
+// `keywords`, sorted. Expunges by `UID SEARCH ALL` against the stored UIDs. In ingest mode an
 // expunged message's row is never deleted: its `uid` is cleared, which records that the mail is
 // no longer in that folder on the server. In mirror mode it is deleted, with its attachment rows
 // and stored files.
+//
+// The selected folder
+// -------------------
+// Every step checks that the folder it was given is the one selected (`requireSelected`)
+// before it searches, and again before it deletes what the search did not find: a UID SEARCH
+// answered by another folder would make every row of this one look expunged.
 //
 // Mirror mode (§4, M9.1)
 // ----------------------
@@ -68,10 +80,45 @@ const CHUNK = 500;
 const FILE_STORE = "mail_files";
 const FILE_FOLDER = "attachments";
 
-/** A message's flags as row values. */
+/** A message's flags as row values: the four system flags, and its keywords. */
 function flagValues(flags) {
   const f = new Set([...(flags || [])].map((x) => String(x).toLowerCase()));
-  return { seen: f.has("\\seen"), flagged: f.has("\\flagged"), answered: f.has("\\answered"), draft: f.has("\\draft") };
+  return {
+    seen: f.has("\\seen"),
+    flagged: f.has("\\flagged"),
+    answered: f.has("\\answered"),
+    draft: f.has("\\draft"),
+    keywords: keywordsOf(flags),
+  };
+}
+
+/** The keywords among a message's flags (`$label1`, `$Forwarded`, `NonJunk`): every flag that
+ * is not a system flag, sorted. `\Recent` and the other backslash flags are not keywords. */
+function keywordsOf(flags) {
+  return [...new Set([...(flags || [])].map(String).filter((x) => x && !x.startsWith("\\")))].sort();
+}
+
+/** A stored `keywords` value (an array, or JSON text) as a sorted array. */
+function storedKeywords(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value) {
+    try {
+      const list = JSON.parse(value);
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/** Throw unless `folder` is the one selected on the connection. */
+function requireSelected(env, folder) {
+  const selected = env.client && env.client.mailbox && env.client.mailbox.path;
+  const same = (a, b) => a === b || (/^inbox$/i.test(a || "") && /^inbox$/i.test(b || ""));
+  if (!same(selected, folder.path)) {
+    throw new Error(`${folder.path} was to be synced, but ${selected || "no folder"} is selected; the sync of ${folder.path} stopped`);
+  }
 }
 
 /** A name that is safe as one path segment of a stored file. */
@@ -99,6 +146,19 @@ async function bytesOf(stream) {
 /** The folder row's numbers, as numbers. */
 const num = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
 
+/** The header fields kept in `mail_messages.headers` when the module's "Headers to keep" is
+ * empty: what a client needs for unsubscribe links, sender checks and spam marks. */
+const DEFAULT_HEADERS = ["list-id", "list-unsubscribe", "list-unsubscribe-post", "authentication-results", "x-spam-*", "precedence", "auto-submitted"];
+
+/** The module's "Headers to keep" (`extra_headers`): one name per line or comma-separated, a
+ * trailing `*` for a prefix; empty for the defaults, `-` for none. */
+function headerNames(configuration) {
+  const text = String((configuration && configuration.extra_headers) || "").trim();
+  if (!text) return DEFAULT_HEADERS;
+  if (text === "-") return [];
+  return [...new Set(text.split(/[\s,]+/).map((n) => n.trim().replace(/:$/, "").toLowerCase()).filter((n) => /^[!-9;-~]+$/.test(n)))];
+}
+
 /** Whether an account is a two-way mirror (§4) rather than an ingest mailbox. */
 const isMirror = (account) => Boolean(account) && account.mode === "mirror";
 
@@ -111,20 +171,26 @@ function bodyCutoff(account, now = Date.now()) {
 
 // ------------------------------------------------------------------------------ deleting
 
+/** Remove the stored files of attachment rows. */
+async function removeFiles(env, attachments) {
+  const { files, log } = env;
+  for (const a of attachments) {
+    if (a.file && files && files.remove) {
+      await files.remove(FILE_STORE, a.file).catch((e) => log.warn(`could not remove ${a.file}: ${e.message}`));
+    }
+  }
+}
+
 /** Delete messages' rows, with their attachment rows and stored files (mirror mode, and the
  * mirror actions). A row the database will not delete — the application's own data refers to
  * it — keeps existing with its `uid` cleared, as ingest mode keeps one, and is logged. */
 async function deleteMessages(env, ids) {
-  const { db, files, log } = env;
+  const { db, log } = env;
   let deleted = 0;
   for (let i = 0; i < ids.length; i += CHUNK) {
     const part = ids.slice(i, i + CHUNK);
     const attachments = await db.mail_attachments.where({ message: { in: part } }).rows();
-    for (const a of attachments) {
-      if (a.file && files && files.remove) {
-        await files.remove(FILE_STORE, a.file).catch((e) => log.warn(`could not remove ${a.file}: ${e.message}`));
-      }
-    }
+    await removeFiles(env, attachments);
     if (attachments.length) await db.mail_attachments.where({ message: { in: part } }).delete();
     try {
       await db.mail_messages.where({ id: { in: part } }).delete();
@@ -218,8 +284,8 @@ async function fetchRawPart(client, uid, part, maxBytes) {
 
 /** One message, parsed: the whole source at or below the cap, the structure above it, and
  * (`headersOnly`, mirror mode's older mail) the headers and structure alone. */
-async function fetchAndParse(client, meta, { headersOnly = false } = {}) {
-  const opts = { internalDate: meta.internalDate, flags: meta.flags, size: meta.size };
+async function fetchAndParse(client, meta, { headersOnly = false, extraHeaders } = {}) {
+  const opts = { internalDate: meta.internalDate, flags: meta.flags, size: meta.size, extraHeaders };
   if (headersOnly) {
     let { bodyStructure, headers } = meta;
     if (!bodyStructure) {
@@ -241,6 +307,7 @@ async function fetchAndParse(client, meta, { headersOnly = false } = {}) {
     internalDate: meta.internalDate,
     flags: meta.flags,
     size: meta.size,
+    extraHeaders,
   });
 }
 
@@ -263,6 +330,7 @@ async function storeMessage(env, folder, meta, parsed, existing) {
   const problems = [];
   // Mirror mode stores an attachment's file when it is first opened (§4), ingest on import.
   const storeFiles = !isMirror(env.account) && files;
+  const rows = [];
   for (let i = 0; i < attachments.length; i++) {
     const a = attachments[i];
     let file = null;
@@ -283,7 +351,7 @@ async function storeMessage(env, folder, meta, parsed, existing) {
         problems.push(`attachment ${a.filename || a.part}: ${e.message}`);
       }
     }
-    await db.mail_attachments.insert({
+    rows.push({
       message: row.id,
       part: a.part,
       filename: a.filename,
@@ -293,6 +361,16 @@ async function storeMessage(env, folder, meta, parsed, existing) {
       inline: !!a.inline,
       file,
     });
+  }
+  if (rows.length) {
+    try {
+      await db.mail_attachments.insert(rows);
+    } catch (e) {
+      // Deleted in the meantime (its folder reset, an action): nothing to attach them to.
+      if (await db.mail_messages.where({ id: row.id }).first()) throw e;
+      await removeFiles(env, rows);
+      return null;
+    }
   }
   const done = { body_state: finalState };
   if (problems.length) done.import_error = [message.import_error, ...problems].filter(Boolean).join("; ").slice(0, 1000);
@@ -359,13 +437,17 @@ async function importBatch(env, folder, uids) {
       let parsed;
       try {
         const old = mirror && meta.internalDate && new Date(meta.internalDate).getTime() < cutoff;
-        parsed = await fetchAndParse(client, meta, { headersOnly: Boolean(old) });
+        parsed = await fetchAndParse(client, meta, { headersOnly: Boolean(old), extraHeaders: env.extraHeaders });
         if (!parsed) continue; // gone in the meantime
       } catch (e) {
         if (!client.usable) throw e; // the connection went: retried after the reconnect
         parsed = errorRow(meta, e);
       }
       const row = await storeMessage(env, folder, meta, parsed, existing);
+      if (!row) {
+        log.info(`${folder.path} UID ${uid}: its row was deleted while it was being stored; skipped`);
+        continue;
+      }
       if (row.import_error) log.warn(`${folder.path} UID ${uid}: ${row.import_error}`);
       stored.push({ uid, row });
     } catch (e) {
@@ -478,14 +560,17 @@ async function applyFlags(env, folder, changes) {
     const part = changes.slice(i, i + CHUNK);
     const rows = await db.mail_messages
       .where({ folder: folder.id, uid: { in: part.map((c) => c.uid) } })
-      .select("id", "uid", "seen", "flagged", "answered", "draft")
+      .select("id", "uid", "seen", "flagged", "answered", "draft", "keywords")
       .rows();
     const byUid = new Map(rows.map((r) => [Number(r.uid), r]));
     for (const change of part) {
       const row = byUid.get(change.uid);
       if (!row) continue;
       const values = flagValues(change.flags);
-      if (Object.keys(values).some((k) => !!row[k] !== values[k])) {
+      const changed =
+        ["seen", "flagged", "answered", "draft"].some((k) => !!row[k] !== values[k]) ||
+        JSON.stringify(storedKeywords(row.keywords)) !== JSON.stringify(values.keywords);
+      if (changed) {
         await db.mail_messages.where({ id: row.id }).update(values);
         updated += 1;
       }
@@ -497,6 +582,7 @@ async function applyFlags(env, folder, changes) {
 /** Flags and expunges of the selected folder (§5.3). Answers `{ flags, expunged }`. */
 async function syncFlags(env, folder) {
   const { client, db } = env;
+  requireSelected(env, folder);
   const mailbox = client.mailbox;
   const last = num(folder.last_uid) || 0;
   const present = ((await client.search({ all: true }, { uid: true })) || []).filter((u) => u <= last).sort((a, b) => a - b);
@@ -515,7 +601,9 @@ async function syncFlags(env, folder) {
   }
   const flags = await applyFlags(env, folder, changes.map((m) => ({ uid: m.uid, flags: m.flags })));
 
-  // Expunges: stored UIDs the server no longer has. Recorded by clearing the UID; never deleted.
+  // Expunges: stored UIDs the server no longer has. Recorded by clearing the UID (ingest), or
+  // deleted (mirror). Only when the search above was this folder's.
+  requireSelected(env, folder);
   const have = new Set(present);
   let expunged = 0;
   let after = 0;
@@ -595,6 +683,7 @@ const backfillPending = (folder) => (num(folder.backfill_uid) || 0) > 1;
  */
 async function backfill(env, folder, limit = BATCH) {
   const { client, db } = env;
+  requireSelected(env, folder);
   if (!(await checkValidity(env, folder)) || !backfillPending(folder)) return 0;
   const below = num(folder.backfill_uid);
   if (!folder.backlog) {
@@ -643,6 +732,7 @@ async function checkValidity(env, folder) {
  * @param {{ flags?: boolean }} [opts] also re-read flags and look for expunges
  */
 async function syncFolder(env, folder, opts = {}) {
+  requireSelected(env, folder);
   await checkValidity(env, folder);
   let stored = 0;
   if (isMirror(env.account) && (folder.backfill_uid === null || folder.backfill_uid === undefined)) {
@@ -673,6 +763,10 @@ module.exports = {
   isMirror,
   bodyCutoff,
   flagValues,
+  keywordsOf,
+  requireSelected,
+  headerNames,
+  DEFAULT_HEADERS,
   watchedFolders,
   safeName,
   downloadable,

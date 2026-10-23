@@ -700,3 +700,156 @@ ALTER TABLE IF EXISTS "_fd_translations" ALTER COLUMN "application" DROP NOT NUL
 ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "min_role" bigint;
 ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "max_role" bigint;
 ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "access_if" text;
+
+-- ---------------------------------------------------------------------------
+-- TODO-history H0: the change-log trigger is shared by offline sync and row
+-- history, so it is renamed from `_fd_sync` to `_fd_changes` (2026-10-22).
+-- Postgres only (SQLite has no change-log triggers yet).
+-- ---------------------------------------------------------------------------
+--
+-- Renames the trigger on every table that has it. A table that already has a
+-- `_fd_changes` trigger keeps it, and its stale `_fd_sync` is dropped.
+-- Re-running it is a no-op.
+
+DO $fd$
+DECLARE
+  t record;
+BEGIN
+  FOR t IN
+    SELECT c.oid, n.nspname, c.relname
+      FROM pg_trigger g
+      JOIN pg_class c ON c.oid = g.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE g.tgname = '_fd_sync' AND NOT g.tgisinternal
+  LOOP
+    IF EXISTS (SELECT 1 FROM pg_trigger
+                WHERE tgrelid = t.oid AND tgname = '_fd_changes') THEN
+      EXECUTE format('DROP TRIGGER %I ON %I.%I', '_fd_sync', t.nspname, t.relname);
+    ELSE
+      EXECUTE format('ALTER TRIGGER %I ON %I.%I RENAME TO %I',
+                     '_fd_sync', t.nspname, t.relname, '_fd_changes');
+    END IF;
+  END LOOP;
+END $fd$;
+
+-- ---------------------------------------------------------------------------
+-- TODO-history H1: change-log entries belong to changesets and carry the
+-- changed values (2026-10-22). Postgres only.
+-- ---------------------------------------------------------------------------
+--
+-- Run it with the server stopped, and start the new release afterwards: the
+-- old trigger function writes the columns this drops, and the new one is
+-- installed at boot.
+--
+-- Creates `_fd_changesets`, adds `changeset`, `old_values` and `new_values`
+-- to `_fd_changes`, and gives every existing entry a changeset: one per
+-- device change (`client_id`, `mutation`), one per transaction for the rest.
+-- An update's changed field names are kept as the keys of `new_values` (their
+-- values were never recorded, so they are null). Entries for one row in one
+-- changeset are collapsed into one, with the net operation, and then the old
+-- columns are dropped. Re-running it is a no-op.
+
+CREATE TABLE IF NOT EXISTS "_fd_changesets" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "at" timestamptz NOT NULL DEFAULT now(),
+  "txid" bigint NOT NULL,
+  "user_id" uuid,
+  "session" text,
+  "source" text NOT NULL,
+  "application" uuid,
+  "description" text,
+  "cause" uuid,
+  "undo_table" text,
+  "client_id" uuid,
+  "mutation" bigint
+);
+
+DO $fd$
+BEGIN
+  IF to_regclass('_fd_changes') IS NULL THEN
+    RETURN;
+  END IF;
+  ALTER TABLE "_fd_changes" ADD COLUMN IF NOT EXISTS "changeset" uuid;
+  ALTER TABLE "_fd_changes" ADD COLUMN IF NOT EXISTS "old_values" jsonb;
+  ALTER TABLE "_fd_changes" ADD COLUMN IF NOT EXISTS "new_values" jsonb;
+
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_schema = current_schema() AND table_name = '_fd_changes'
+                AND column_name = 'fields') THEN
+    CREATE TEMP TABLE "_fd_changeset_map" ON COMMIT DROP AS
+      SELECT gen_random_uuid() AS id, client_id, mutation, NULL::bigint AS tx,
+             min(txid) AS txid, min(at) AS at
+        FROM "_fd_changes" WHERE client_id IS NOT NULL AND changeset IS NULL
+       GROUP BY client_id, mutation
+      UNION ALL
+      SELECT gen_random_uuid(), NULL, NULL, txid, txid, min(at)
+        FROM "_fd_changes" WHERE client_id IS NULL AND changeset IS NULL
+       GROUP BY txid;
+
+    INSERT INTO "_fd_changesets" (id, at, txid, source, client_id, mutation)
+    SELECT id, at, txid, CASE WHEN client_id IS NULL THEN 'sql' ELSE 'sync' END,
+           client_id, mutation
+      FROM "_fd_changeset_map"
+    ON CONFLICT (id) DO NOTHING;
+
+    UPDATE "_fd_changes" c SET changeset = m.id
+      FROM "_fd_changeset_map" m
+     WHERE c.changeset IS NULL
+       AND ((c.client_id IS NOT NULL AND m.client_id = c.client_id
+             AND m.mutation IS NOT DISTINCT FROM c.mutation)
+         OR (c.client_id IS NULL AND m.client_id IS NULL AND m.tx = c.txid));
+
+    UPDATE "_fd_changes"
+       SET new_values = (SELECT jsonb_object_agg(f, NULL)
+                           FROM jsonb_array_elements_text(fields) f)
+     WHERE fields IS NOT NULL AND jsonb_typeof(fields) = 'array'
+       AND jsonb_array_length(fields) > 0 AND new_values IS NULL;
+
+    -- One entry per row per changeset: the last one is kept, with the net
+    -- operation and every field any of them changed.
+    WITH dup AS (
+      SELECT changeset, table_name, row_key, max(seq) AS keep, max(txid) AS txid,
+             (array_agg(op ORDER BY seq))[1] AS first_op,
+             (array_agg(op ORDER BY seq DESC))[1] AS last_op
+        FROM "_fd_changes"
+       GROUP BY changeset, table_name, row_key
+      HAVING count(*) > 1
+    ), net AS (
+      SELECT dup.*,
+             CASE WHEN first_op = 'i' THEN 'i'
+                  WHEN first_op = 'd' AND last_op = 'd' THEN 'd'
+                  WHEN first_op = 'd' THEN 'u'
+                  WHEN last_op = 'd' THEN 'd'
+                  ELSE 'u' END AS op
+        FROM dup
+    )
+    UPDATE "_fd_changes" c
+       SET op = net.op, txid = net.txid,
+           old_values = NULL,
+           new_values = CASE WHEN net.op = 'u' THEN
+             (SELECT jsonb_object_agg(k, NULL)
+                FROM (SELECT DISTINCT jsonb_object_keys(coalesce(e.new_values, '{}')) AS k
+                        FROM "_fd_changes" e
+                       WHERE e.changeset = net.changeset AND e.table_name = net.table_name
+                         AND e.row_key = net.row_key) keys)
+             END
+      FROM net
+     WHERE c.seq = net.keep;
+
+    DELETE FROM "_fd_changes" c
+     USING "_fd_changes" k
+     WHERE k.changeset = c.changeset AND k.table_name = c.table_name
+       AND k.row_key = c.row_key AND k.seq > c.seq;
+
+    ALTER TABLE "_fd_changes" ALTER COLUMN "changeset" SET NOT NULL;
+    ALTER TABLE "_fd_changes" DROP COLUMN "fields", DROP COLUMN "client_id",
+                              DROP COLUMN "mutation";
+  END IF;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS "_fd_changes_entry"
+    ON "_fd_changes" (changeset, table_name, row_key);
+END $fd$;
+
+-- Row history H5 / sync S5.1: when each sync key pair was made, so the change log's cleanup
+-- can remove pairs older than sync's retention. (Bootstrap adds it too.)
+ALTER TABLE IF EXISTS "_fd_sync_keys" ADD COLUMN IF NOT EXISTS "at" timestamptz DEFAULT now();

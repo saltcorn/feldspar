@@ -52,7 +52,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -249,6 +249,17 @@ impl Watchdog {
     fn tick(&self) {
         let now = u64::try_from(self.base.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.tick.store(now, Ordering::SeqCst);
+    }
+
+    /// Hold the slice until the next [`tick`](Watchdog::tick): the stamp is put
+    /// out of reach, so no elapsed time is over it. What `Host::start` holds it
+    /// over is the host script coming up — this binary's own JavaScript and
+    /// `deno_node`'s, no module's — which can take longer than a slice on a
+    /// machine that is busy (a build and a reload at once). A slice trip there
+    /// stops the isolate mid-load, which is the `Uncaught null` a start then
+    /// fails with. The heap is still watched.
+    fn hold(&self) {
+        self.tick.store(u64::MAX, Ordering::SeqCst);
     }
 
     /// Stop the isolate, and remember why. The first reason wins: a heap trip
@@ -481,8 +492,7 @@ impl Host {
         // and a stale copy from an older version would be a bug nobody would
         // look for.
         let script = config.root.join(HOST_SCRIPT_NAME);
-        std::fs::write(&script, host_script())
-            .map_err(|e| Error::config(format!("writing {}: {e}", script.display())))?;
+        write_host_script(&script, config.index)?;
         let cwd = std::env::current_dir()
             .map_err(|e| Error::config(format!("the server has no working directory: {e}")))?;
         let url = deno_core::resolve_path(script.to_string_lossy().as_ref(), &cwd)
@@ -539,10 +549,15 @@ impl Host {
         // three functions off the global and hold them.
         install_seam(&mut worker, config.view_runtime.as_deref())?;
 
+        watchdog.hold();
+        let started = worker.execute_main_module(&url).await;
         watchdog.tick();
-        worker
-            .execute_main_module(&url)
-            .await
+        if let Some(Trip::Heap) = watchdog.took_fired() {
+            return Err(Error::config(
+                "the module host script would not start: it exhausted the worker's heap",
+            ));
+        }
+        started
             .map_err(|e| Error::config(format!("the module host script would not start: {e}")))?;
         let entry = global_function(&mut worker, "__scModuleHost")?;
         let answer = global_function(&mut worker, "__scAnswer")?;
@@ -928,6 +943,28 @@ async fn serve(config: WorkerConfig, mut rx: tokio::sync::mpsc::UnboundedReceive
     }
 }
 
+/// Write the host script where the workers load it from, unless it is already
+/// there as this binary has it.
+///
+/// Every worker of every process over this modules directory (the server, and a
+/// `feldspar` command run beside it) writes the same file as it starts, so a
+/// plain write — truncate, then fill — can be read half-written by a worker
+/// starting at that moment. Writing a file of this worker's own and renaming it
+/// over the shared one is atomic: a reader sees the old script or the new one.
+fn write_host_script(script: &Path, index: usize) -> Result<()> {
+    let wanted = host_script();
+    if std::fs::read(script).is_ok_and(|have| have == wanted.as_bytes()) {
+        return Ok(());
+    }
+    let staged = script.with_extension(format!("mjs.{}-{index}.tmp", std::process::id()));
+    std::fs::write(&staged, wanted)
+        .and_then(|()| std::fs::rename(&staged, script))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&staged);
+            Error::config(format!("writing {}: {e}", script.display()))
+        })
+}
+
 /// Name what stopped a worker, in a sentence an admin can act on.
 fn ending_reason(host: &Host, ended: &End, slice: Duration) -> String {
     if let Some(trip) = host.watchdog.took_fired() {
@@ -1085,5 +1122,55 @@ fn dispatch(
                 sc_log::log_error!("feldspar: replaying the load of `{name}` failed: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The host script's own start is not a module's slice: held, the
+    /// watchdog lets any amount of time pass, and the next tick re-arms it.
+    #[test]
+    fn a_held_watchdog_does_not_trip_until_it_is_ticked_again() {
+        let mut runtime = deno_core::JsRuntime::new(Default::default());
+        let dog = Watchdog::start(
+            runtime.v8_isolate().thread_safe_handle(),
+            Duration::from_millis(40),
+        );
+        dog.hold();
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(!dog.tripped(), "a held slice tripped");
+        dog.tick();
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(dog.tripped(), "the slice was not re-armed by the tick");
+        dog.halt();
+    }
+
+    /// Workers starting together never read a half-written host script: it is
+    /// renamed into place, and left alone when it is already this binary's.
+    #[test]
+    fn the_host_script_is_replaced_whole_and_only_when_it_differs() {
+        let dir = std::env::temp_dir().join(format!("sc-host-script-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join(HOST_SCRIPT_NAME);
+        std::fs::write(&script, "// an older binary's").unwrap();
+
+        write_host_script(&script, 0).unwrap();
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), host_script());
+        let written = std::fs::metadata(&script).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        write_host_script(&script, 1).unwrap();
+        assert_eq!(
+            std::fs::metadata(&script).unwrap().modified().unwrap(),
+            written,
+            "an identical script was rewritten"
+        );
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, vec![std::ffi::OsString::from(HOST_SCRIPT_NAME)]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

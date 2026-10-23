@@ -13,6 +13,12 @@
 //      "smtp_host": "smtp.fastmail.com", "smtp_port": 465, "smtp_security": "tls",
 //      "smtp_user": "me@fastmail.com", "smtp_password": "app password" }]
 //
+// An OAuth2 account (Outlook.com, Microsoft 365, Gmail without an app password: TODO-imap M10.3)
+// has `"auth": "oauth2"`, `"oauth_provider": "microsoft"` (or `google`) and an
+// `"oauth_refresh_token"` instead of passwords, and its entry's `"configuration"` has the
+// provider app's `microsoft_client_id`, `microsoft_client_secret` and `microsoft_tenant` (or
+// `google_…`): the access token is renewed from the refresh token before the first login.
+//
 // An account on a server inside the network (Exchange on-premises) also needs the module's
 // settings: add `"configuration": { "trusted_servers": "mail.corp.example", "ca_certificates":
 // "-----BEGIN CERTIFICATE-----…" }` to its entry.
@@ -46,6 +52,7 @@ const { AccountRunner } = require("../account.js");
 const service = require("../service.js");
 const { actions } = require("../actions.js");
 const { connectionSettings, imapTarget, imapOptions, redact } = require("../connect.js");
+const { fresh, isOAuth } = require("../oauth.js");
 
 /** The checks, in the order they run and are reported. */
 export const CHECKS = ["login", "sync", "send", "new", "sent", "flags"];
@@ -143,15 +150,18 @@ export async function checkAccount(spec, options = {}) {
 
   try {
     // 1. login
-    const tested = await act("mail_test_account", account);
+    const tested = await act("mail_test_account", isOAuth(account) ? { account_id: account.id } : account);
     if (!record("login", tested.imap && tested.smtp === true, tested.error ? { note: tested.error } : {})) return result;
 
+    // The login above renewed an OAuth2 account's token in its row: this copy uses it too.
+    for (const key of ["oauth_access_token", "oauth_refresh_token", "oauth_expires_at"]) account[key] = fake.tables.mail_accounts[0][key];
+    await fresh(account, configuration, fake.db);
     other = await otherClient(account, settings);
     result.capabilities = [...other.capabilities.keys()].filter((c) => /^(IDLE|CONDSTORE|QRESYNC|SPECIAL-USE|UIDPLUS|MOVE|ENABLE|UTF8=ACCEPT|COMPRESS=DEFLATE)$/.test(c)).sort();
 
     // 2. sync
     let started = Date.now();
-    runner = new AccountRunner({ db: fake.db, files, log, settings }, account, { backfillMs: 24 * 3600_000, mirrorPollMs: 24 * 3600_000, pollMs: 24 * 3600_000 });
+    runner = new AccountRunner({ db: fake.db, files, log, settings, configuration }, account, { backfillMs: 24 * 3600_000, mirrorPollMs: 24 * 3600_000, pollMs: 24 * 3600_000 });
     service.runners.set(account.id, runner);
     runner.start();
     const synced = await until(() => runner.state === "idle" && !runner.passing, timeouts.syncMs);

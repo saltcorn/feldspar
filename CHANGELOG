@@ -457,6 +457,523 @@ Tests:
   endpoint is projected only when on), `sc-app` (the CSP merge), `sc-module` (suggestion checks,
   webhook addressing, the bundled manifest) and `sc-auth`.
 
+## Mail: self-signed certificates and SMTP hosts given as an IP address
+
+The test message failed with `invalid peer certificate: certificate not valid for name
+"188.65.204.58"; certificate is only valid for DnsName(…)` when the SMTP host was entered as an
+IP address (field report). That is one of two separate problems. In this one the certificate may
+be perfectly good, but it is issued for a DNS name and checked against the IP that was dialled,
+which it does not carry. In the other, a self-signed certificate fails whatever name it is checked
+against, because no trusted CA issued it. Each now has a setting.
+
+- **Settings → Email** (`sc-config`, `sc-email`):
+  - `smtp_certificate_name` checks the certificate against this name instead of the host. The
+    connection still goes to the host, and the check is still complete.
+  - `smtp_certificate_check` is `verify` (the default) or `accept_any`. `accept_any` accepts
+    any certificate: self-signed, expired, or for another name.
+  - `EmailSettings` carries both, and `SmtpMailer` builds its TLS from them in one place
+    (`tls_for`), for the installation's server and a pinned override alike.
+  - lettre's `dangerous_accept_invalid_certs` alone still checks the name, despite its
+    documentation, so `accept_any` also sets `dangerous_accept_invalid_hostnames`.
+  - A certificate error now ends with which setting fixes it.
+  - A certificate name that is an IP, or not a host name, is refused when the settings are saved.
+- **`send_email` overrides always verify.** `check_relay` refuses `accept_any`, because an
+  override's host can come from a row a user wrote.
+- **The mail module** (`connect.js`) has two new admin settings:
+  - `certificate_names`, one `host name` (or `host:port name`) per line, sets the name used for
+    the certificate check and SNI.
+  - `unverified_servers`, one `host` or `host:port` per line, turns `rejectUnauthorized` off for
+    those servers only.
+  - As with trusted servers, an account cannot set either.
+  - A certificate error in `last_error` or from `mail_test_account` names the setting that
+    fixes it. Because nodemailer replaces Node's error code with `ESOCKET`, the hint is chosen
+    by code or by message.
+- **Tests:**
+  - `crates/sc-email/tests/smtp_certificates.rs` runs real TLS handshakes against a TLS listener
+    in front of `TestSmtp`, using a generated CA installed as `SSL_CERT_FILE`. It covers four
+    cases: an IP host refused a CA-issued certificate for `mail.test`; accepted with the
+    certificate name; still refused with a wrong name; and a self-signed certificate refused,
+    then accepted with `accept_any`.
+  - Unit tests cover reading and checking the settings and refusing them in a relay. The
+    settings API test lists the two new fields.
+  - `plugins/imap/test/connect.test.mjs` parses the settings and runs nodemailer against
+    `smtp-server` with two new test certificates from `certs.sh` (`name.crt` for `mail.test`
+    only, and a self-signed `self.crt`): refused, then accepted through each setting.
+
+## Mail: Outlook.com, Microsoft 365 and Gmail with OAuth2 (TODO-imap M10.3)
+
+`outlook.office365.com` answers `LOGINDISABLED` and offers only `AUTH=XOAUTH2`, so personal
+Outlook.com, Hotmail and Live mailboxes could not be used at all (field report from PaddiMail).
+A mail account can now log in with a token from Microsoft or Google.
+
+- **Consent flows for modules (core).** A module action's argument has `oauth.begin(request)`
+  (a new `oauth` ask surface: `sc_module::consent`, `CallHosts::oauth`). It asks for the
+  *caller's* consent at an OAuth 2.0 provider, for tokens kept in a row of the module's own
+  table, and answers `{ url: "/_feldspar/oauth/consent/<id>" }` for the application to send the
+  browser to. The request is checked first: a signed-in caller; `https` (or loopback) provider
+  addresses; `params` may not set the request's own parameters; the table must be one the
+  module declared, the token fields its declared Secret fields, and `set` its declared fields;
+  `return_to` a local path.
+- **The browser's half is the sign-in flow's** (`sc_server::oauth`). The new route
+  `GET /_feldspar/oauth/consent/{id}` refuses any session but the caller's, then sets the
+  binding cookie and redirects to the provider with PKCE. The shared callback (on the admin
+  host, the same redirect address sign-in registers) exchanges the code. The completion, in the
+  browser that started, writes the tokens through the row layer: sealed, and seen by the
+  module's service as a change. It then leaves for `return_to`, with `oauth_error=…` when
+  anything failed. The module never sees the code, and the application never sees a token.
+  `Pending`/`Completion` now carry a `Purpose`/`Outcome`, and the token exchange is shared with
+  sign-in (`exchange`).
+- **The mail module.** New action `mail_oauth_start { account_id, provider, return_to }` →
+  `{ url, provider }`, for the owner of a personal account or an admin for a shared one.
+  `provider` (`microsoft` or `google`) is found from the address when left out, and empty IMAP
+  and SMTP servers get the provider's. New `mail_accounts` columns: `oauth_provider`,
+  `oauth_access_token` and `oauth_refresh_token` (Secret), `oauth_expires_at`. A new settings
+  step, **Sign-in providers**, takes the Microsoft client id, secret and tenant (`common` by
+  default, `consumers` for Outlook.com only) and the Google client id and secret.
+- **Renewal** (`oauth.js`): before every connection (service and actions) and every send, a
+  token expiring within 5 minutes is renewed at the provider and written back, one renewal at a
+  time per account. Microsoft's rotated refresh token is kept too. A login refused with a token
+  that looked good renews once and reconnects at once. A renewal refused with `invalid_grant`
+  (or a bad client) sets `auth_failed` straight away, saying to connect the account again;
+  other failures retry with the usual backoff. imapflow gets `auth: { user, accessToken }`,
+  nodemailer `{ type: "OAuth2", user, accessToken }`, and `redact` takes tokens out of errors.
+  Token changes are not part of an account's fingerprint: renewed tokens are handed to the
+  running runner rather than restarting it.
+- **Docs:** tutorial-mail Step 11 (registering the Microsoft and Google apps, the settings,
+  connecting from an app, what happens afterwards); tutorial-modules ("The caller's consent");
+  TECHNICAL_DESIGN §15.1d; `plugins/imap/README.md`. `test/live-matrix.mjs` takes OAuth2
+  entries.
+- **Tests:** `plugins/imap/test/oauth.test.mjs` (the request, renewal and its refusals, and a
+  runner and the actions logging in against a fake IMAP server that knows only XOAUTH2 and an
+  SMTP server with XOAUTH2 only); `sc-module` `module_consent` (what `oauth.begin` keeps and
+  what it refuses); `sc-server` `module_consent` (the whole flow against a fake provider: PKCE
+  and the client secret checked, tokens sealed in the row, a stranger's session and another
+  browser refused).
+
+## Field report fixes: `db.sql` casts, trigger scope, `build-app`, module services
+
+From a second round of feedback on the PaddiMail application.
+
+- **`db.sql` string arguments take the SQL's cast.** `where account = $1::bigint` with `["10"]`
+  failed ("cannot convert between … String and … int8"). A text bind into an `int2`, `int4`,
+  `int8`, `float4`, `float8`, `numeric` or `bool` placeholder is now read the way Postgres
+  reads an untyped literal there (`PgParam`). Text that does not parse says so ("\"ten\" is not
+  a int8"). Uuid and date/time placeholders already worked this way.
+- **What a trigger's body has in scope, per event.** The code API reference (`describe_code_api`,
+  and `describe_action`'s `code_api`) has a table: `row`/`old`/`payload` for `insert`, `update`,
+  `delete`, `none`, the scheduled events, `login`/`startup`, `error` and `stream`. A `none`
+  trigger run through `POST /api/actions/<name>` gets the body as `payload`, and naming `row`
+  there is a `ReferenceError`. `describe_action` says this too.
+- **`save_trigger` says a trigger sees instance-wide code libraries only**, not an
+  application's own, even when an application exposes it.
+- **`feldspar build-app` builds an app that exposes triggers.** It loads the live trigger set
+  (with the modules, as `app triggers` does) when the app exposes any, instead of refusing with
+  "no trigger set is available in this context".
+- **Module services run only in `serve`.** Every command that installs the modules (`build-app`,
+  `app triggers`, `restore`) used to start their services too, so an IMAP sync ran beside the
+  server's for as long as the command did. `ModuleServices::start_services` is now called by
+  `serve` once it is up; module reloads restart services only after that.
+- **A module reload with a running service no longer hangs for 120 s and drops the module.**
+  Two causes, both fixed. (1) A call's asks were failed only when its loop ended. A call whose
+  future was dropped (a service whose stop outlasted the 10 s grace) left them unanswered, so
+  the module's promises never settled, and the next load's `stopServicesOf` waited on them
+  until the call timeout. A drop guard (`PendingAsks`) now refuses every outstanding and queued
+  ask. (2) A stop could overtake its start: `service_start` waits a microtask on the module's
+  `loading` promise, so a `service_stop` right behind it found nothing and the service started
+  with nobody to stop it. The stop now waits for a start in flight (`startingServices`), and the
+  supervisor polls the start before the stop.
+- **Module host start (the "Uncaught null" after a reload).** The host script's own start is no
+  longer under the module JS slice (`Watchdog::hold`). A slice trip during a slow start, such as
+  a build and a reload at once, terminated the isolate mid-load, which reads as
+  `Uncaught null at loadExtScript`. The heap is still watched, and a heap trip there is named.
+  `module-host.mjs` is written atomically (temp file and rename) and only when it changed, so a
+  worker starting beside another never reads it half-written. Not reproduced; these are the two
+  causes found in the code.
+- **TODO-imap M10.3 (OAuth2/XOAUTH2)** is no longer "later" and lists what the report asks
+  for: Outlook.com and Microsoft 365 refuse password login (`LOGINDISABLED`, XOAUTH2 only).
+
+## Mail module: the first real use's field report (TODO-imap M11)
+
+Fixes and additions from moving a six-account mail client onto `@feldspar/imap` (mirror mode).
+
+- **Rows deleted by a sync of the wrong folder (fix, M11.1).** After a reconnect, the old
+  connection's pass carried on with the new connection, while `session()` ran its LIST and
+  SELECT outside the queue. A folder's expunge check could then search another folder, and in
+  mirror mode delete rows that were still on the server. The field report saw this as
+  `mail_attachments_message_fkey` errors on a large Gmail account. Passes, backfill steps and
+  folder syncs are now bound to the connection they started on (`AccountRunner.current`), and
+  the first LIST and SELECT are queued. `sync.js` checks the selected folder before each search
+  and before deleting (`requireSelected`). A message's attachment rows are one insert. A message
+  deleted in the meantime is skipped (its stored files removed), not a failed sync. A pass that
+  a stop interrupted no longer writes `status = error`.
+- **Folders (M11.2).** `mail_sync_now` lists the account's folders again before syncing.
+  `discoverFolders` reads the table again: a folder gone from the server is forgotten, not just
+  deleted, and a folder row somebody deleted is made again. `mail_create_folder` gives a folder
+  named like a role nobody has (`Archive`) that role and answers it. New action
+  `mail_delete_folder` (`{ folder_id }` or `{ account_id, path }`, mirror accounts) deletes on
+  the server, then the messages, stored attachments and row. It refuses INBOX and a folder with
+  folders inside it.
+- **Module settings over MCP (M11.4).** `updateModule` is tagged for MCP in the modules area,
+  needing `allow_edit`. It saves the settings and/or permissions and reloads the module, which
+  restarts its services. Writing `_fd_modules.configuration` directly does not.
+- **Keywords and headers (M11.5).** `mail_messages.keywords` (json): the flags without a
+  backslash (`$label1`, `$Forwarded`, …), sorted, updated with the other flags.
+  `mail_messages.headers` (json): the header fields the new module setting **Headers to keep**
+  names, by lower-case name, with repeats joined by a newline. A trailing `*` is a prefix. The
+  default is `list-id`, `list-unsubscribe`, `list-unsubscribe-post`, `authentication-results`,
+  `x-spam-*`, `precedence` and `auto-submitted`; `-` keeps none.
+- **Invitations (M11.5).** `mail_send` takes `calendar: { method, content, filename? }`, sent as
+  a `text/calendar; method=…` alternative plus an .ics attachment. The method must be an iTIP
+  one and match the calendar's `METHOD`.
+- **Small things (M11.6).** Addresses at `localhost` are accepted. `mail_messages` has indexes
+  on `(folder, sent_at)` and `(folder, internal_date)`. New `plugins/imap/README.md` for
+  application authors (modes, ownership, calling the actions, columns, settings).
+  `docs/tutorial-mail.md` is updated.
+- **Not reproduced (M11.3).** An owner's `PUT /api/mail_accounts/<id>` answering "not found". A
+  new test (`module_tables::an_owner_may_update_their_own_account`) has the owner update their
+  row through the row layer and through `RestProvider`, a single field and the whole row with
+  the password sentinel, and it passes. The account table's description now says owners may
+  edit their accounts.
+- Tests: `plugins/imap/test/field-report.test.mjs` (no server). One new Dovecot test in
+  `mirror.test.mjs`. `fake-host.mjs` now enforces the module's foreign keys and takes
+  array inserts.
+
+## Row history H6: code, SQLite, documentation
+
+History is now reachable from code bodies in both languages and Saltcorn 1's `Table`, and works
+on a SQLite primary database. Offline sync records changes on SQLite too (its S1.4).
+
+- **Code bodies (H6.1).** `db`'s host takes `op: "history"` requests
+  (`sc_api::code_host::history`), through H2's `HistoryReader` and H3's `Reverser` at the
+  plan's authority (admin by default, `asUser()`/`as_user()` for the caller). New terminals on
+  `db.<table>` in JavaScript and Python: `history(key)`, `deleted()` (paged by
+  `.limit()`/`.offset()`), `asOf(key, when)` / `as_of(key, when)`, `restore(key)` and
+  `revert(key, version)`. v1's `table.get_history(id)` (every version oldest first, the whole
+  row after each, with `_version`, `_time`, `_userid`, `_deleted`, `_op`, `_changeset`,
+  `_source`; the id is required), `restore_row_version`, `undo_row_changes` and
+  `redo_row_changes` are implemented and off `v1_api.js`'s refusal list. Undo and redo step
+  through versions the way v1's `_restore_of_version` did, inferring which version a restore
+  went back to. `insert_history_row` and `compress_history` stay refused, with new reasons.
+  `Reverser::revert_row_if_changed` answers nothing for a row already at that version. A
+  restore from inside a workflow step's transaction is refused.
+- **Write floor (fix).** `write_as` now accepts the write floor when the role of the context the
+  write runs under meets it, as well as the user's role. A code body restoring a row with the
+  admin's authority on behalf of a role-40 caller, or of nobody, was refused as that caller.
+- **SQLite capture (H6.2).** `sc_catalog::change_log_sqlite`: per table, three triggers
+  (`_fd_changes_{table}_ins/_upd/_del`) generated from its columns turn the row into JSON and
+  insert it into the view `_fd_record_change`, whose `INSTEAD OF` trigger does the changeset
+  handling and Postgres's merge. A merge moves the entry's `seq` forward (`seq` is the sync
+  watermark there, and `AUTOINCREMENT` so no number is reused). The changeset reaches the
+  trigger through `_fd_tx_settings` (`sc_db::TX_SETTINGS_TABLE`): SQLite's `set_local` writes
+  rows there and deletes them before commit. The design's connection-local temp table cannot
+  work, because a main-schema trigger cannot read `temp`. A write from another program is one
+  `sql` changeset per row. SQLite's `change_triggers` capability is now on.
+- **Triggers follow the schema.** `Catalog::apply_schema_batch_in`, `create_field` and
+  `drop_field` drop a table's change-log triggers before a change to it and regenerate them
+  after, from `pragma_table_info`. Without that, SQLite would refuse to drop a column the
+  triggers name, and a table rebuild would bring them back stale. `enable_change_log_sql` now
+  takes the table.
+- **Portable readers.** The history reads, `session_undo_target`, the changeset list, undo's
+  row reads and key checks, the emails lookup, the cleanup job (no data-modifying CTEs:
+  `DELETE … RETURNING`), the rename rewrite (`json_set`/`json_remove` on SQLite) and sync's
+  watermark and changed keys (`seq` on SQLite) run on both backends. New helpers
+  `row_json_sql`, `as_text_sql`, `json_texts_sql`, `json_distinct_array_sql` and
+  `SqlDialect::is_sqlite`.
+- **SQLite read-only fix.** A read-only SQLite transaction that committed left `query_only` on
+  its pooled connection, so the next writer on it failed. `finish` now turns it off.
+- **Docs (H6.3).** New `docs/tutorial-history.md`: switching history on, reading a row's
+  history, restoring deleted rows, undoing a changeset, opening history to a role, history in
+  code, the Undo action, schema changes, SQLite. `tutorial-triggers.md`'s v1 compatibility table
+  is updated and links it. Design §14.12 "As built (H6)", §14.11 and the ER diagram (now with
+  `_fd_sync_keys` and `_fd_tx_settings`) are updated.
+- Tests: `sc-api/tests/v1_table_history.rs` (versions oldest first; undo/redo stepping; restore
+  to a version, to the current version, and of a deleted row); `sc-python/tests/
+  python_db_live.rs` (history, deleted, as_of, restore and revert from Python, refused below the
+  admin, and the same reads from JavaScript); `sc-api/tests/history_sqlite.rs` (one entry per
+  row per changeset, insert+update, insert+delete, no-op update, a write from outside, the
+  settings left empty; a merge moves `seq` so a pull in between sees it; reading, `as_of`,
+  changesets, undo across two tables, delete and restore; triggers following add, rename and
+  drop of a field and dropped when history goes off; the cleanup job and `seq` not reused);
+  `sync_changes.rs` (SQLite records a synced table); `sc-db-sqlite` (a setting lives as long as
+  its transaction; read-only keeps none and leaves the connection writable); unit tests for
+  version rebuilding and undo/redo targets.
+
+## Row history H5: files, schema edits and retention
+
+History now keeps what a restore needs and lets go of it on schedule, and survives column
+renames.
+
+- **Files.** On a table with history on, deleting a row no longer removes its `remove_file`
+  files (`rows.rs`). The cleanup job removes a file when its delete entry expires, unless a row
+  of the table (read as the admin) or a remaining entry still names the path. A restore gets the
+  file back. `Table::files_removed_on_delete` is shared by both.
+- **Retention.** A new `history_keep_days` table setting (`PATCH` table settings, the admin
+  table screen's "Keep history for (days)", MCP `alter_table`; 0 keeps forever), stored as
+  `attributes.history.keep_days`.
+- **One cleanup job** for sync and history (sync's S5.1): `sc_catalog::retention::
+  clean_change_log`, run hourly by the server (`change_log_cleanup.rs`). An entry goes once
+  both features are done with it (history: past `keep_days`, or off; sync: superseded and past
+  `SYNC_KEEP_DAYS` = 30, or off), entries of tables no longer in the catalog go, then expired
+  files, then changesets left empty (after a day's grace), then `_fd_sync_keys` pairs older than
+  sync's retention. `_fd_sync_keys` gained an `at` column (bootstrap adds it;
+  `TABLES_RENAME.sql` too). A device whose last pull is older than sync's retention gets its
+  tables whole on its next pull.
+- **Renaming a field** (new): the `name` setting of `alter_field` (MCP `rename_to`, `name` on
+  the admin API's `updateField`; admin clients regenerated). `SchemaChange::RenameColumn` on
+  Postgres and SQLite, the overlay row follows, and the batch's new `change_log_edits` rewrite
+  the key in the table's change-log entries in the same transaction. Refused while a calculated
+  field, a constraint, the ownership formula, another table's key or a module names the field;
+  renaming the key column re-creates the change-log trigger. The answer notes that views, pages
+  and code naming the old name need updating. There is no rename control in the admin UI yet.
+- **Dropping a table** deletes its change-log entries and sync key pairs in the drop's batch,
+  so a later table of the same name starts with no history. The drop confirmation says so
+  when the table has history or sync on.
+- Docs: §14.12 "As built (H5)".
+- Tests: `sc-api/tests/history_retention.rs` (a file survives the delete and comes back with a
+  restore, and goes at once with history off; expiry removes entries, files and empty
+  changesets but keeps a file a row or a kept entry names; retention with sync and history both
+  on, history kept forever, sync key pairs, and both switched off; a rename keeps history and
+  `as_of` readable and a drop forgets it; renaming the key keeps recording);
+  `sync_pull.rs` (a device not seen within the retention reloads); `sc-server` `field_api.rs`
+  (rename over HTTP) and `table_settings_api.rs` (`history_keep_days` round trip); render tests
+  for `RENAME COLUMN` in both drivers; unit tests for `keep_days`; `history.test.ts` for the
+  drop confirmation.
+
+## Row history H4: the Undo action
+
+`undo` is a new core action: a trigger with it, exposed by an application, is an Undo button
+(an API endpoint, and an Action button in a Saltcorn UI view or page) that takes back the
+caller's most recent change in their own session. Pressing it again steps back one more.
+
+- `sc-core-actions::Undo` (new, registered with the built-ins). An optional `table` setting
+  (labelled "Only in table"), which must name a table with history on, checked when the trigger
+  is saved. Without it, the action undoes the session's most recent changeset that still has
+  entries not undone, skipping undo changesets and the running request's own changeset. With
+  it, only that table's entries of the most recent changeset that has some not yet undone. It
+  calls H3's `Reverser::undo_changeset` as the event's caller, never with `force`.
+- Refused with a sentence (an `invalid` error) when the caller is anonymous or has no session,
+  when there is nothing to undo ("there is nothing to undo", or "nothing in `tasks` to undo"),
+  and on a conflict (`UndoOutcome::refusal`). Changesets of other sessions are never picked. The
+  result is `{ undid, changeset, entries }`.
+- `sc-catalog::history::session_undo_target` (new): the query that picks the changeset. A new
+  index `_fd_changesets_session` on `(session, at)`, created by `bootstrap_change_log` (no
+  migration needed: it is `IF NOT EXISTS` on every boot).
+- Docs: `tutorial-triggers.md` has an `undo` row in the action table and a section on the Undo
+  button (switching history on, what "the last change" means, the refusals). §10.1 lists nine
+  built-ins, and §14.12 has "As built (H4)".
+- Tests: `sc-core-actions/tests/undo_action.rs`. Undoing twice steps back two actions, and a
+  request that writes and then runs the action does not undo its own write. Another session's
+  changesets (the same user on another device) are never picked. A table-scoped undo leaves the
+  other table's entries and a later change alone, and later unscoped undos take back the rest.
+  Anonymous and sessionless callers are refused. A conflict is refused with the field named and
+  nothing overwritten. A `table` without history, or that does not exist, is refused on save.
+  The built-in name and settings lists in `lib.rs` include `undo`.
+
+## Row history H3: restore and undo
+
+A deleted row can be put back, a row set back to one of its versions, and a changeset undone,
+in the admin API, the admin UI and as MCP tools. Each is an ordinary write as the caller, in one
+transaction and a changeset of its own, so it is recorded and can be undone in turn.
+
+- `sc-api::undo` (new): `Reverser` with `restore_row`, `revert_row` and `undo_changeset`. The
+  writes go through `write_as` (write rules, ownership, validation, triggers) on a `SharedTx`
+  over the primary database, in a `restore` or `undo` changeset whose `cause` is what it
+  reverses (the delete, the row's latest change, the undone changeset). The new changeset keeps
+  the calling one's `session` and `application`, for H4's Undo action.
+  - Restore inserts the deleted image with its key. Revert sets each column to its value as of
+    the version (one update, or an insert if the row is gone), and refuses the row's deletion and
+    the version it is at. Both need the history to be readable by the caller.
+  - Undo applies each entry's inverse, skipping entries already undone (`undo_table` null or
+    the entry's table). It is ordered: rows put back parents first by foreign-key depth, then
+    updates, then rows removed children first. The conflict check compares each entry's
+    `new_values` with the row now. A refusal is an answer, not an error: `UndoOutcome::Refused`
+    with each conflict (table, key, field, expected, actual, reason), and nothing is written.
+    `force` (admins only) overwrites. Below the admin, a caller may undo only their own
+    changesets.
+  - Each written row's key fields are checked inside the transaction first, so a missing
+    parent refuses with a sentence that names it. Dropped columns are left out and reported as
+    `dropped`. Calculated and document columns are not written back.
+- `sc-catalog`: `history::undone` / `Undone` (what has been undone of a changeset) and
+  `Changeset::undoing_table`.
+- Admin API: `restoreRow` (`POST /api/tables/{table}/deleted/{id}/restore`), `revertRow`
+  (`POST /api/tables/{table}/rows/{id}/revert`, `{ version }`) and `undoChangeset`
+  (`POST /api/changesets/{id}/undo`, `{ table?, force? }`, answering `{ undone, changeset,
+  entries, dropped, conflicts }`). These are admin-only, and also MCP tools in the
+  `allow_history` area: restore and revert need `allow_edit`, undo needs `allow_edit` and
+  `allow_drop`. `client.ts` is regenerated (admin, ide, builder, analytics).
+- Admin UI: a **Restore** button on each row of the Deleted tab. **Set back to this version** on
+  older versions in the History tab (it closes the form and reloads the grid, as Save does). An
+  **Undo** panel on a changeset's page, with a table picker when the changeset spans tables. It
+  says that triggers run and that external effects are not undone. On a refusal it lists the
+  conflicts (row, field, value left, value now) and offers "Undo anyway, overwriting them". A
+  finished undo opens the undo's own changeset, which can be undone in turn. New helpers in
+  `history.ts`: `canRevert`, `droppedNote`, `conflictPlace`.
+- Docs: §14.12 "As built (H3)", the MCP areas in §13.6 and OPERATIONS.md.
+- Tests: `sc-api/tests/history_undo.rs`: undo across two tables, recorded as an `undo`
+  changeset, refused when done already, and undoing the undo puts the change back. A
+  conflict refuses and names the field, and nothing is written. `force` overwrites, and is
+  refused below the admin. Insert and delete order follows the foreign key (checked to fail
+  when the order is reversed). A one-table undo leaves the rest for a later full undo. A
+  restore is refused while its parent is gone, then succeeds, reporting a dropped column. Revert
+  to a version, and the refusals. `sc-server`: the three routes over HTTP, including a refused
+  and a forced undo, admin-only after logout (`table_settings_api.rs`); the tools offered with
+  `allow_history` and an undo through MCP (`mcp_server.rs`). Vitest covers the new
+  `history.ts` helpers.
+
+## Row history H2: reading
+
+A table's history can now be read: a row's versions, the deleted rows, a row as it was, and
+the changesets, in the admin API, the admin UI and as MCP tools.
+
+- `sc-catalog::history` (new): the log queries. `row_history` (a row's entries, newest first,
+  each with its version number), `deleted_rows` (rows whose last entry is a delete and whose key
+  is not in the table now), `deleted_image`, `row_as_of` (start from the row now, or nothing,
+  and undo the later entries newest first; `AsOf` is a time, a date or an entry's `seq`),
+  `list_changesets` (filter by user, table, source and since) and `changeset_entries`. Entries
+  without values are skipped. Changesets show only entries of tables with history on.
+  `history_min_role` / `set_history_min_role` handle `attributes.history.min_role`.
+- `sc-api::history::HistoryReader` (new) holds the access rule. A table must have history on.
+  Reading it needs the admin, or the table's `history.min_role`. Below the admin, each row is
+  checked too: a row that exists now against the read rule (`row_readable_as`), and a deleted
+  row against its deleted image (`RowImage`, reified). The deleted list is bounded after that
+  check. Secrets are the sentinel everywhere, including old values. Changesets are the admin's
+  only. A reader below the admin sees who made a change by user id, not by email.
+- Admin API: `getRowHistory` (`GET /api/tables/{table}/rows/{id}/history`), `listDeletedRows`
+  (`…/deleted`), `getRowAsOf` (`GET /api/tables/{table}/rows/{id}?as_of=`), `listChangesets`
+  (`GET /api/changesets?user=&table=&source=&since=&limit=&offset=`) and `getChangeset`.
+  **Deviation:** the routes are admin-only, like the admin API's row CRUD and per the
+  "every projected endpoint is admin-only" rule (§13.6). `history.min_role` takes effect
+  through `HistoryReader`, which H6's code API will use. The design doc (§14.12 "As built")
+  says so.
+- `history_min_role` is a table setting: `TableSettings`, the `PUT /api/tables/:name` body
+  (optional, absent means admin), the table listing and orphan settings, the MCP schema tool
+  (it needs `allow_access_changes`), and backup restore. It is kept only while history is on.
+- MCP: the five endpoints are tools in a new area, **`allow_history`**. Like `allow_modules`,
+  it is off unless granted (a fresh token gets it, as it gets every flag). History is row data,
+  which the schema tools do not show. `FLAG_KEYS` now has eight keys; the token panel, the CLI
+  and OPERATIONS.md list it.
+- Admin UI: the row form has a **History** tab (versions newest first; each shows who, when,
+  source and the fields before and after, with `removed` on dropped columns). The table data
+  screen has a **Deleted** tab. There is a **changeset browser** (`#/changesets`, filters for
+  user, table, source and date) with a detail page per changeset, reached from the Tables list
+  and a table's data. The table screen has a "Minimum role to read the history" picker under
+  the history switch. `client.ts` is regenerated, and the ide/builder/analytics copies with it.
+- Tests: `sc-api/tests/history_read.rs` covers: admin-only by default, then `min_role` plus the
+  read rule for live and deleted rows (and the bound applied after the check); a table without
+  history is refused; `as_of` rebuilds a row across several changesets, by `seq` and by time,
+  including after a delete; a dropped column shows as removed in an entry, a rebuilt row and a
+  deleted row; secrets are the sentinel in every answer; changesets are listed, filtered and
+  read. `sc-server`: the five routes over HTTP, which are admin-only after logout
+  (`table_settings_api.rs`), and the tools offered only with `allow_history`
+  (`mcp_server.rs`). There are unit tests for `AsOf` and `history.min_role`, and vitest for
+  `history.ts`.
+
+## Row history H1: capture (Postgres)
+
+Every change to a table with sync or history on is now recorded with its values, in the
+**changeset** (the user-level action) it belongs to, one entry per row per changeset.
+
+- `sc-catalog::changeset` (new): `Changeset` (id, `source`, `session`, `application`, `cause`,
+  `description`, `undo_table`, `client_id`, `mutation`) and `ChangesetSource`. A task-local
+  **ambient** changeset (`changeset::scope`, `scope_if`, `current`) is picked up by
+  `CallerContext::new`, so the many places that build a caller need no changes.
+- `_fd_changesets` (new, created by `bootstrap_change_log`). `_fd_changes` gains `changeset`,
+  `old_values` and `new_values`, and the unique index `_fd_changes_entry` on
+  `(changeset, table_name, row_key)`. `fields`, `client_id` and `mutation` are gone.
+- `CallerContext.changeset` / `in_changeset`; `Event.changeset` / `in_changeset`.
+  `set_caller_context` sets `sc.changeset` to a JSON object (changeset fields plus the writer's
+  `user_id`, and `session` only when there is a user). `clear_caller_context` sets the ambient
+  changeset. The GUCs are applied where the backend has RLS **or** change triggers. A write to a
+  change-logged table always goes through a caller-context transaction, so the GUC reaches the
+  trigger. `SharedTx` tracks the changeset with the role and user. A savepoint rollback now
+  forgets which GUCs are in force, because the rollback undoes them.
+- Dispatch runs each trigger's action inside the event's changeset. A table event carries its
+  writer's changeset.
+- Minted per HTTP request (router middleware, session key derived from the cookie's token hash
+  by `sc_auth::changeset_session_key`; an app request also records its application), per CSV
+  import (`source = import`), per MCP tool call (`mcp`, keyed by `changeset_token_key` of the
+  bearer token's id) and per workflow run (kept in the run's `attributes.changeset`, with
+  `cause` = the starting event's changeset; each step runs in it).
+- The trigger function `_fd_record_change` and a new helper `_fd_merge_change`: record
+  `old_values`/`new_values`, mint a `sql` changeset for writes with no context, write the
+  `_fd_changesets` row with the first entry, and merge per §14.12 (earlier old value wins, later
+  new value wins, net op, drop unchanged columns). `txid` moves forward. An emptied entry is
+  removed only when its changeset began in this transaction, otherwise it is kept without
+  values. `sc.change_log = 'off'` skips recording, and backup restore now inserts rows with it.
+- Sync push opens one `sync` changeset per device change (device, change number, session,
+  application). `mark_sync_device` and the `sc.sync_client` / `sc.sync_mutation` GUCs are removed.
+- H1.6, the history switch: `history_enabled` is in the admin table settings (`PUT
+  /api/tables/:name`, the listing and orphan settings), with `history_available` beside
+  `sync_available`; a "Keep row history" switch on the admin table screen, off by default; the
+  MCP schema-edit tool; and backup restore, which defers it like `sync_enabled`. The generated
+  `client.ts` files are regenerated. This also brings the stale ide/builder/analytics copies up
+  to date.
+- `TABLES_RENAME.sql`: creates `_fd_changesets` and migrates `_fd_changes`. It gives one
+  changeset per device change and one per transaction for the rest, keeps changed field names
+  as `new_values` keys with null values, collapses duplicates to the net op, and drops the old
+  columns. Run it with the server stopped.
+- Docs: §14.12 describes the JSON GUC, the ambient changeset and the stricter removal check.
+  TODO-offline-sync S3.3 points at the new places.
+- Tests: `sc-api/tests/history_capture.rs`. It covers: a request whose trigger updates the same
+  row and writes a second table is one changeset with two entries, recorded under the requesting
+  user although the trigger wrote as admin; insert+update is one `i` with the final row;
+  insert+delete in one transaction leaves nothing; a no-op update records nothing; `psql`
+  writes get one `sql` changeset per transaction; a pull between two transactions of one
+  changeset sees the second, and a reversal leaves an empty entry the pull still sees;
+  `sc.change_log = off`; the migration script, run twice. `sync_changes` and `sync_push` were
+  updated to the new log shape (the device is found on the changeset). There are unit tests for
+  `Changeset` and the workflow run's changeset, and the H1.6 tests are in
+  `sc-server/tests/table_settings_api.rs` and `mcp/schema.rs`.
+
+## Row history H0: one change log for sync and history
+
+The change-recording code that offline sync owned is now shared with row history. Sync behaves
+as it did before; history has a switch but records nothing new yet (H1).
+
+- `sc-catalog`: the new `change_log` module holds the log `_fd_changes`, the trigger function
+  and the trigger DDL. `sync.rs` keeps only what is sync's own: devices, watermarks, `changed_keys`
+  and `mark_sync_device`. Renames: `sync_key` → `change_log_key(catalog, table, feature)`, which
+  names the feature that asked ("offline sync" / "row history"); `enable_sync_sql` /
+  `disable_sync_sql` → `enable_change_log_sql` / `disable_change_log_sql`; `bootstrap_sync` →
+  `bootstrap_change_log` (which also creates `_fd_sync_clients`); and the trigger `_fd_sync` →
+  `_fd_changes`. The driver capability `sync_triggers` is now `change_triggers`.
+- New: `history_enabled` / `set_history_enabled` on `attributes.history` (switching on keeps
+  `keep_days`), `change_log_enabled`, and `Table::history_enabled` /
+  `Table::change_log_enabled`.
+- `schema_edit::TableSettings.history_enabled`. A batch keeps the trigger while sync **or**
+  history is on and drops it only when both are off, and it checks the key for each feature
+  that is on. The PATCH body, the MCP tool and the admin screen do not carry the switch yet
+  (H1.6).
+- `TABLES_RENAME.sql`: an idempotent block that renames `_fd_sync` to `_fd_changes` on every
+  table that has it, and drops the old trigger where both exist.
+- Tests (`sc-api/tests/sync_changes.rs`): switching sync off while history is on keeps the
+  trigger, and it keeps recording; both off drops it; history is refused with its own name;
+  the rename script moves an old trigger and can be run twice. There are also unit tests for
+  the history attribute. The existing sync tests pass; the only change to them is the
+  bootstrap's new name.
+
+## Row history: design and TODO (H0–H6)
+
+A design for per-table row history, used for undo, audit and restoring deleted rows. Design
+only; no code has changed.
+
+- `docs/ROW_HISTORY.md`: what Saltcorn 1 did and why it wrote several versions for one save, a
+  survey of how other systems track history (django-simple-history, django-reversion, Hibernate
+  Envers, PaperTrail, audited, laravel-auditing, pgMemento, supa_audit, SQL:2011, Directus,
+  Baserow, Airtable, Salesforce), and the decisions taken.
+- TECHNICAL_DESIGN §14.12 (new):
+  - History shares offline sync's change log `_fd_changes`, with one trigger per table and one
+    cleanup job.
+  - Writes are grouped into changesets carried on `CallerContext`/`sc.changeset` through
+    trigger cascades, with at most one entry per row per changeset.
+  - History is off by default, and files of deleted rows are kept until retention ends.
+  - Restore and undo have a conflict check, and there is an `undo` action that steps back
+    through the caller's session, optionally for one table only.
+- TECHNICAL_DESIGN §14.11 and the ER diagram are updated for the shared log: `_fd_changesets`
+  is added, and `fields`, `client_id` and `mutation` move from `_fd_changes` to the changeset.
+- `TODO-history.md` (new). `TODO-offline-sync.md` points S1.4, S2.8 and S5.1 at the shared
+  history tasks.
+
 ## Offline sync: rows with integer keys can be created offline
 
 Tables whose integer key the server hands out (`serial`, identity) can now get new rows on a

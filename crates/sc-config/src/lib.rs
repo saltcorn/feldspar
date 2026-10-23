@@ -66,9 +66,10 @@ pub use development::{
     mcp_settings, mcp_settings_from,
 };
 pub use email::{
-    DEFAULT_SMTP_PORT, EMAIL_FROM, EmailSettings, Mailbox, SECURITY_NONE, SECURITY_STARTTLS,
-    SECURITY_TLS, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_SECURITY, SMTP_USERNAME, SmtpSecurity,
-    email_section, parse_mailbox,
+    CERTIFICATE_ACCEPT_ANY, CERTIFICATE_VERIFY, DEFAULT_SMTP_PORT, EMAIL_FROM, EmailSettings,
+    Mailbox, SECURITY_NONE, SECURITY_STARTTLS, SECURITY_TLS, SMTP_CERTIFICATE_CHECK,
+    SMTP_CERTIFICATE_NAME, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_SECURITY, SMTP_USERNAME,
+    SmtpSecurity, email_section, parse_mailbox,
 };
 pub use localisation::{
     DEFAULT_LOCALE, ENABLED_LOCALES, apply_localisation_settings, localisation_section,

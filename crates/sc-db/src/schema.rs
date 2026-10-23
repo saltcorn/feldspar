@@ -234,6 +234,15 @@ pub enum SchemaChange {
         #[serde(default)]
         if_exists: bool,
     },
+    /// Rename a column, keeping its data, type and constraints.
+    RenameColumn {
+        /// The table to alter.
+        table: String,
+        /// The column's current name.
+        from: String,
+        /// Its new name.
+        to: String,
+    },
     /// Make these columns the table's primary key, replacing the key it has.
     ///
     /// A table is created with the key its columns declare, and a table created

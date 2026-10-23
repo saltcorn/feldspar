@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use sc_api::{ApiProvider, ApiRequest, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
-use sc_catalog::{Catalog, bootstrap_field_meta, bootstrap_sync, bootstrap_table_meta};
+use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
@@ -53,7 +53,7 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
-    bootstrap_sync(&cat).await?;
+    bootstrap_change_log(&cat).await?;
     cat.reload().await?;
 
     let settings = |formula: &str, sync: bool| schema_edit::TableSettings {
@@ -220,13 +220,19 @@ async fn a_device_uploads_what_it_did_offline() -> Result<()> {
     // The change-log knows each change came from this device, and which one.
     let log = query(
         &db,
-        "SELECT table_name || ' ' || op || ' ' || mutation FROM _fd_changes \
-          WHERE client_id::text = (SELECT id::text FROM _fd_sync_clients) ORDER BY seq",
+        "SELECT c.table_name || ' ' || c.op || ' ' || s.mutation || ' ' || s.source \
+           FROM _fd_changes c JOIN _fd_changesets s ON s.id = c.changeset \
+          WHERE s.client_id::text = (SELECT id::text FROM _fd_sync_clients) ORDER BY c.seq",
     )
     .await?;
     assert_eq!(
         log,
-        vec!["notes i 1", "items i 2", "notes u 3", "items d 4"]
+        vec![
+            "notes i 1 sync",
+            "items i 2 sync",
+            "notes u 3 sync",
+            "items d 4 sync"
+        ]
     );
     Ok(())
 }

@@ -445,10 +445,16 @@ async fn serve_once(
         service: Some(&asks),
         module_files: Some(&files),
         roles: Some(&roles),
+        oauth: None,
     };
     let run = shared.host.run_service(module, service, call);
     tokio::pin!(run);
     let ended = tokio::select! {
+        // `run` first, so its `service_start` is on its way to the worker
+        // before a stop that is already waiting can send `service_stop`: a
+        // stop that overtook the start would find nothing to stop, and the
+        // service would start after it with nobody left to stop it.
+        biased;
         outcome = &mut run => match outcome {
             Ok(_) => Ended::ByItself,
             Err(e) => Ended::Failed(e),

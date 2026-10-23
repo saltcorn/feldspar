@@ -89,14 +89,14 @@ function leavesOf(node, out = []) {
  *
  * @param {object} bodyStructure  imapflow's `bodyStructure` of the message
  * @param {(part: string, opts: { maxBytes?: number }) => Promise<Buffer>} fetchPart
- * @param {{ headers?: Buffer, internalDate?: Date|string, flags?: Iterable<string>, size?: number }} opts
+ * @param {{ headers?: Buffer, internalDate?: Date|string, flags?: Iterable<string>, size?: number, extraHeaders?: string[] }} opts
  *   `headers` is the raw header block (`BODY.PEEK[HEADER]`)
  * @returns {Promise<{ message: object, attachments: object[] }>} as `parse` returns, with
  *   `body_state` `"too_large"` and each attachment's `content` null. A part that could not be
  *   downloaded is named in `import_error`; the row is written all the same.
  */
-async function parseLarge(bodyStructure, fetchPart, { headers, internalDate, flags, size } = {}) {
-  const opts = { internalDate, flags, size, bodyState: "too_large" };
+async function parseLarge(bodyStructure, fetchPart, { headers, internalDate, flags, size, extraHeaders } = {}) {
+  const opts = { internalDate, flags, size, bodyState: "too_large", extraHeaders };
   let rootHeaders = null;
   try {
     if (headers && headers.length) {
@@ -146,10 +146,10 @@ async function parseLarge(bodyStructure, fetchPart, { headers, internalDate, fla
  * above the cap, with `content` null, so a client can show a paper clip and offer them.
  *
  * @param {object} bodyStructure  imapflow's `bodyStructure`
- * @param {{ headers?: Buffer, internalDate?: Date|string, flags?: Iterable<string>, size?: number }} opts
+ * @param {{ headers?: Buffer, internalDate?: Date|string, flags?: Iterable<string>, size?: number, extraHeaders?: string[] }} opts
  */
-async function parseHeaders(bodyStructure, { headers, internalDate, flags, size } = {}) {
-  const opts = { internalDate, flags, size, bodyState: "headers" };
+async function parseHeaders(bodyStructure, { headers, internalDate, flags, size, extraHeaders } = {}) {
+  const opts = { internalDate, flags, size, bodyState: "headers", extraHeaders };
   let rootHeaders = null;
   let result;
   try {

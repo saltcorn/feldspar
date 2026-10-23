@@ -11,22 +11,32 @@
 //   globally routable, and the connection goes to the address that was checked: `host` is the IP,
 //   and the name is kept for SNI and the certificate check (`servername`). This is
 //   `sc_email::relay_mailer` (M3.3), case for case; `isPublic` is `sc_email::is_public`.
-// - **Certificates are always verified.** `ca_certificates` in the module's settings are the CAs
-//   of the trusted servers (below), used for them in place of the public roots; every other server
-//   is checked against the public roots alone. They never turn verification off. (Reading Node's
-//   own roots to add to them, `tls.rootCertificates`, needs `sys` access in feldspar's worker,
-//   which a module is not granted.)
+// - **Certificates are verified**, unless the admin says otherwise for one server. `ca_certificates`
+//   in the module's settings are the CAs of the trusted servers (below), used for them in place of
+//   the public roots; every other server is checked against the public roots alone. (Reading
+//   Node's own roots to add to them, `tls.rootCertificates`, needs `sys` access in feldspar's
+//   worker, which a module is not granted.)
+// - **Certificate names.** A server dialled by IP address is checked against that IP, which a
+//   certificate issued for a DNS name does not carry. The admin's `certificate_names` setting lists
+//   `host name` (or `host:port name`), one per line: the certificate of `host` is checked against
+//   `name` instead — still a full check.
+// - **Unverified servers.** The admin's `unverified_servers` setting lists `host` or `host:port`
+//   whose certificate is not checked at all: a self-signed one, say. The connection is encrypted,
+//   but nothing proves it reaches that server. Like the trusted servers, these are the admin's
+//   settings, never an account's.
 // - **Trusted servers.** The module's `trusted_servers` setting lists `host` or `host:port`, one
 //   per line: servers inside the admin's own network, such as an Exchange on the LAN. Such a host
 //   may resolve to private addresses, and with a port it may use that port as well as the
 //   standard ones. It is the admin's setting, not an account's: a user who types `10.0.0.5` into
 //   their own account is still refused.
-// - **Passwords never appear** in a log, an error or `last_error`: see `redact`.
+// - **Passwords never appear** in a log, an error or `last_error`: see `redact`. Nor do an OAuth2
+//   account's tokens (`oauth.js`), which log in in place of its passwords.
 
 "use strict";
 
 const dns = require("node:dns");
 const net = require("node:net");
+const { authOf } = require("./oauth.js");
 
 /** The standard ports, by protocol and security (§5.1). */
 const PORTS = {
@@ -122,25 +132,39 @@ function isPublic(ip) {
 
 // ------------------------------------------------------------------------------ settings
 
+/** `host`, `host:port`, `[v6]:port` or a bare IPv6 address, as `{ host, port }`. */
+function hostPort(entry) {
+  const bracket = entry.match(/^\[([^\]]+)\](?::(\d+))?$/);
+  if (bracket) return { host: bracket[1].toLowerCase(), port: bracket[2] ? Number(bracket[2]) : null };
+  const m = entry.match(/^([^:]+):(\d+)$/);
+  if (m) return { host: m[1].toLowerCase(), port: Number(m[2]) };
+  return { host: entry.toLowerCase(), port: null };
+}
+
 /** The module's settings that bear on connections, from its configuration:
- * `{ trusted: [{ host, port }], ca: [pem] }`. */
+ * `{ trusted: [{ host, port }], ca: [pem], names: [{ host, port, name }], unverified: [{ host, port }] }`. */
 function connectionSettings(configuration) {
   const cfg = configuration || {};
-  const lines = (value) =>
-    (Array.isArray(value) ? value : String(value || "").split(/[\n,]/))
+  const lines = (value, separators = /[\n,]/) =>
+    (Array.isArray(value) ? value : String(value || "").split(separators))
       .map((l) => String(l).trim())
       .filter(Boolean);
-  const trusted = lines(cfg.trusted_servers).map((entry) => {
-    // `host`, `host:port`, `[v6]:port` or a bare IPv6 address.
-    const bracket = entry.match(/^\[([^\]]+)\](?::(\d+))?$/);
-    if (bracket) return { host: bracket[1].toLowerCase(), port: bracket[2] ? Number(bracket[2]) : null };
-    const m = entry.match(/^([^:]+):(\d+)$/);
-    if (m) return { host: m[1].toLowerCase(), port: Number(m[2]) };
-    return { host: entry.toLowerCase(), port: null };
-  });
+  const trusted = lines(cfg.trusted_servers).map(hostPort);
   const pem = String(cfg.ca_certificates || "");
   const ca = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || [];
-  return { trusted, ca };
+  // `host name`, `host = name` or `host:port name`; a line with no name is no entry.
+  const names = lines(cfg.certificate_names, /\n/)
+    .map((line) => line.split(/\s*=\s*|\s+/).filter(Boolean))
+    .filter((parts) => parts.length === 2)
+    .map(([server, name]) => ({ ...hostPort(server), name: name.toLowerCase().replace(/\.$/, "") }));
+  const unverified = lines(cfg.unverified_servers).map(hostPort);
+  return { trusted, ca, names, unverified };
+}
+
+/** The entries of a host list that apply to `host` on `port`: the host's own, with no port or
+ * that port. */
+function entriesFor(list, host, port) {
+  return (list || []).filter((e) => e.host === host && (e.port === null || e.port === port));
 }
 
 // ------------------------------------------------------------------------------ resolve
@@ -201,6 +225,7 @@ async function resolveTarget(server, settings = {}) {
       );
     }
   }
+  const certificateName = entriesFor(settings.names, host, port).map((e) => e.name)[0];
   return {
     kind,
     host,
@@ -209,17 +234,22 @@ async function resolveTarget(server, settings = {}) {
     port,
     security,
     secure: security === "tls",
-    // An IP needs no SNI, and the certificate is checked against the IP itself.
-    servername: net.isIP(host) ? undefined : host,
+    // The name the certificate is checked against, and the SNI: the admin's certificate name for
+    // this server, or the host. An IP needs no SNI, and is checked against the IP itself.
+    servername: certificateName || (net.isIP(host) ? undefined : host),
+    verify: entriesFor(settings.unverified, host, port).length === 0,
   };
 }
 
 // ------------------------------------------------------------------------------ options
 
-/** The TLS options both libraries take: verification on, the name we resolved, and for a
- * trusted server the admin's CAs. */
+/** The TLS options both libraries take: verification on (unless the admin listed the server as
+ * unverified), the name the certificate is checked against, and for a trusted server the admin's
+ * CAs. */
 function tlsOptions(target, settings) {
-  const tls = { rejectUnauthorized: true, minVersion: "TLSv1.2" };
+  // With `rejectUnauthorized` off, Node still runs the chain and name checks but goes on whatever
+  // they say — so a self-signed certificate on an IP host passes too.
+  const tls = { rejectUnauthorized: target.verify !== false, minVersion: "TLSv1.2" };
   if (target.servername) tls.servername = target.servername;
   if (target.trusted && settings && settings.ca && settings.ca.length) tls.ca = [...settings.ca];
   return tls;
@@ -235,7 +265,7 @@ function imapOptions(account, target, settings, extra = {}) {
     doSTARTTLS: target.secure ? undefined : true,
     servername: target.servername,
     tls: tlsOptions(target, settings),
-    auth: { user: account.imap_user || account.email || "", pass: account.imap_password || "" },
+    auth: authOf(account, account.imap_user || account.email || "", "imap"),
     logger: false,
     connectionTimeout: TIMEOUTS.connection,
     greetingTimeout: TIMEOUTS.greeting,
@@ -260,7 +290,7 @@ function smtpOptions(account, target, settings) {
     requireTLS: !target.secure,
     name: domainOf(account.email) || domainOf(account.smtp_user) || target.host,
     tls: tlsOptions(target, settings),
-    auth: { user: account.smtp_user || account.email || "", pass: account.smtp_password || "" },
+    auth: authOf(account, account.smtp_user || account.email || "", "smtp"),
     logger: false,
     debug: false,
     connectionTimeout: TIMEOUTS.connection,
@@ -281,7 +311,7 @@ function smtpTarget(account, settings) {
 
 // ------------------------------------------------------------------------------ errors
 
-/** An error's message with the account's passwords taken out, cut to a length a status column
+/** An error's message with the account's passwords and tokens taken out, cut to a length a status column
  * holds. Includes the server's own response text when imapflow has one, which is what says
  * *why* a login failed. */
 function redact(error, account) {
@@ -289,10 +319,34 @@ function redact(error, account) {
   if (error && typeof error === "object" && error.responseText && !text.includes(error.responseText)) {
     text += `: ${error.responseText}`;
   }
-  for (const secret of [account && account.imap_password, account && account.smtp_password]) {
+  const secrets = ["imap_password", "smtp_password", "oauth_access_token", "oauth_refresh_token"].map((k) => account && account[k]);
+  for (const secret of secrets) {
     if (typeof secret === "string" && secret.length >= 1) text = text.split(secret).join("•••");
   }
+  const hint = certificateHint(error, text);
+  if (hint) text += `. ${hint}`;
   return text.replace(/\0/g, "").slice(0, 1000);
+}
+
+/** What an admin can do about a certificate Node refused, by its error code. */
+const NAME_HINT =
+  "If the server's certificate is issued for another name, as it is when the host is an IP address, " +
+  "an admin can give that name under the mail module's certificate names";
+const UNTRUSTED_HINT =
+  "If the server's certificate is self-signed or from your own CA, an admin can add the CA under the mail module's " +
+  "extra CA certificates (for a trusted server) or list the server under servers whose certificate is not checked";
+/** The hint for a certificate Node refused: by its code, or by its message, because nodemailer
+ * replaces the code with its own (`ESOCKET`). */
+function certificateHint(error, text) {
+  const code = error && typeof error === "object" ? error.code : undefined;
+  if (code === "ERR_TLS_CERT_ALTNAME_INVALID" || /does not match certificate's altnames/.test(text)) return NAME_HINT;
+  if (
+    ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "UNABLE_TO_GET_ISSUER_CERT"].includes(code) ||
+    /self[- ]signed certificate|unable to verify the first certificate|unable to get (local )?issuer certificate/.test(text)
+  ) {
+    return UNTRUSTED_HINT;
+  }
+  return null;
 }
 
 module.exports = {
@@ -305,6 +359,7 @@ module.exports = {
   smtpTarget,
   imapOptions,
   smtpOptions,
+  tlsOptions,
   domainOf,
   redact,
   refusal,

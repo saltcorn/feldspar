@@ -40,6 +40,19 @@ pub const SMTP_USERNAME: &str = "smtp_username";
 pub const SMTP_PASSWORD: &str = "smtp_password";
 /// The address messages are sent from — a mailbox, with or without a name.
 pub const EMAIL_FROM: &str = "email_from";
+/// The name the server's certificate is checked against, when it is not the
+/// host — a host given as an IP address. Empty means the host.
+pub const SMTP_CERTIFICATE_NAME: &str = "smtp_certificate_name";
+/// Whether the server's certificate is checked: `verify` or `accept_any`.
+pub const SMTP_CERTIFICATE_CHECK: &str = "smtp_certificate_check";
+
+/// `smtp_certificate_check = "verify"`: the certificate must be issued by a
+/// trusted CA for the host (or the certificate name).
+pub const CERTIFICATE_VERIFY: &str = "verify";
+/// `smtp_certificate_check = "accept_any"`: any certificate is accepted —
+/// self-signed, expired, or for another name. The connection is encrypted but
+/// nothing proves it reaches the right server.
+pub const CERTIFICATE_ACCEPT_ANY: &str = "accept_any";
 
 /// `smtp_security = "starttls"`: connect in the clear, then upgrade.
 pub const SECURITY_STARTTLS: &str = "starttls";
@@ -97,6 +110,24 @@ pub fn email_section() -> ConfigSection {
                 "What messages say they are from — either a bare address \
                  (saltcorn@example.com) or a name and one (Saltcorn <saltcorn@example.com>). \
                  Most providers refuse to relay a from-address they do not host.",
+            ),
+            ConfigDef::help(
+                FormField::new(SMTP_CERTIFICATE_NAME, BasicType::Text).label("Certificate name"),
+                "Only needed when the SMTP host is an IP address, or a name the server's \
+                 certificate is not issued for: the name the certificate is issued for, e.g. \
+                 mail.example.com. The connection still goes to the SMTP host; the certificate \
+                 is checked against this name instead. Leave empty to check it against the host.",
+            ),
+            ConfigDef::help(
+                FormField::new(SMTP_CERTIFICATE_CHECK, BasicType::Text)
+                    .label("Certificate check")
+                    .options([CERTIFICATE_VERIFY, CERTIFICATE_ACCEPT_ANY])
+                    .default_value(CERTIFICATE_VERIFY),
+                "verify accepts only a certificate from a trusted CA, issued for the host (or the \
+                 certificate name). accept_any accepts any certificate — self-signed, expired or \
+                 for another name: the connection is still encrypted, but anyone who can \
+                 intercept it can pose as the server and read the password. Use it only for a \
+                 server on a network you trust.",
             ),
         ],
     }
@@ -267,6 +298,12 @@ pub struct EmailSettings {
     pub password: String,
     /// What messages say they are from.
     pub from: Mailbox,
+    /// The name the certificate is checked against in place of
+    /// [`host`](EmailSettings::host), when the host is an IP address or a name
+    /// the certificate does not carry.
+    pub certificate_name: Option<String>,
+    /// Accept any certificate: self-signed, expired, or for another name.
+    pub accept_any_certificate: bool,
 }
 
 impl std::fmt::Debug for EmailSettings {
@@ -285,6 +322,8 @@ impl std::fmt::Debug for EmailSettings {
                 },
             )
             .field("from", &self.from)
+            .field("certificate_name", &self.certificate_name)
+            .field("accept_any_certificate", &self.accept_any_certificate)
             .finish()
     }
 }
@@ -331,6 +370,17 @@ impl EmailSettings {
             Some(Json::String(s)) if !s.trim().is_empty() => SmtpSecurity::parse(s.trim())?,
             _ => SmtpSecurity::StartTls,
         };
+        let accept_any_certificate = match text(SMTP_CERTIFICATE_CHECK).as_str() {
+            "" | CERTIFICATE_VERIFY => false,
+            CERTIFICATE_ACCEPT_ANY => true,
+            other => {
+                return Err(Error::invalid(format!(
+                    "unknown `{SMTP_CERTIFICATE_CHECK}` `{other}`; expected \
+                     {CERTIFICATE_VERIFY} or {CERTIFICATE_ACCEPT_ANY}"
+                )));
+            }
+        };
+        let certificate_name = Some(text(SMTP_CERTIFICATE_NAME)).filter(|name| !name.is_empty());
         let raw_from = text(EMAIL_FROM);
         if raw_from.is_empty() {
             return Err(Error::invalid(format!(
@@ -351,6 +401,8 @@ impl EmailSettings {
             },
             from: parse_mailbox(&raw_from)
                 .map_err(|e| Error::invalid(format!("`{EMAIL_FROM}` is not a mailbox: {e}")))?,
+            certificate_name,
+            accept_any_certificate,
         };
         settings.check()?;
         Ok(Some(settings))
@@ -384,6 +436,17 @@ impl EmailSettings {
                  would send `{SMTP_PASSWORD}` over the network in the clear. Use \
                  `{SECURITY_STARTTLS}` or `{SECURITY_TLS}`, or drop the credentials if the \
                  relay does not need them"
+            )));
+        }
+        if let Some(name) = &self.certificate_name
+            && (name.parse::<std::net::IpAddr>().is_ok()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-.*".contains(c)))
+        {
+            return Err(Error::invalid(format!(
+                "`{SMTP_CERTIFICATE_NAME}` `{name}` is not a host name: it is the DNS name the \
+                 server's certificate is issued for, e.g. mail.example.com"
             )));
         }
         Ok(())
@@ -492,6 +555,51 @@ mod tests {
         // …and `none` with no credentials is fine: an unauthenticated relay on a
         // trusted network is the case that mode exists for.
         assert!(with(&[(SMTP_SECURITY, json!(SECURITY_NONE))]).is_ok());
+    }
+
+    /// The two certificate settings: an IP host checked against a name, and a
+    /// server whose certificate is not checked at all. Unset, the certificate is
+    /// checked against the host.
+    #[test]
+    fn the_certificate_settings_are_read_and_checked() {
+        let with = |extra: &[(&str, Json)]| {
+            let mut pairs = vec![
+                (SMTP_HOST, json!("188.65.204.58")),
+                (EMAIL_FROM, json!("saltcorn@example.com")),
+            ];
+            pairs.extend_from_slice(extra);
+            EmailSettings::from_config(&attrs(&pairs))
+        };
+        let plain = with(&[]).unwrap().unwrap();
+        assert_eq!(plain.certificate_name, None);
+        assert!(!plain.accept_any_certificate);
+
+        let named = with(&[
+            (SMTP_CERTIFICATE_NAME, json!(" mail.example.com ")),
+            (SMTP_CERTIFICATE_CHECK, json!(CERTIFICATE_VERIFY)),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(named.certificate_name.as_deref(), Some("mail.example.com"));
+        assert!(!named.accept_any_certificate);
+
+        let any = with(&[(SMTP_CERTIFICATE_CHECK, json!(CERTIFICATE_ACCEPT_ANY))])
+            .unwrap()
+            .unwrap();
+        assert!(any.accept_any_certificate);
+
+        let err = with(&[(SMTP_CERTIFICATE_CHECK, json!("lenient"))])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(SMTP_CERTIFICATE_CHECK), "{err}");
+        // The name is a DNS name: an IP there is the mistake the setting exists
+        // to fix, and a URL is a paste of the wrong thing.
+        for bad in ["188.65.204.58", "https://mail.example.com", "mail example"] {
+            let err = with(&[(SMTP_CERTIFICATE_NAME, json!(bad))])
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(SMTP_CERTIFICATE_NAME), "{bad}: {err}");
+        }
     }
 
     #[test]

@@ -57,11 +57,18 @@ pub(crate) struct Caller<'a> {
 
 /// The ownership formula that decides for this caller, `Ok(None)` when the
 /// floor already allows, or [`Denied::Floor`].
+///
+/// The floor is met by the user's role or by the role of the context the write
+/// runs under. Those are the same for a request; they differ for a code body,
+/// which writes with the admin's authority on behalf of the event's caller
+/// (or of nobody, for a scheduled trigger).
 fn formula<'t>(
     table: &'t Table,
-    user: Option<&User>,
+    caller: &Caller<'_>,
 ) -> std::result::Result<Option<&'t Formula>, Denied> {
-    if ownership::meets(user, table.access.min_role_write) {
+    if ownership::meets(caller.user, table.access.min_role_write)
+        || caller.context.role <= table.access.min_role_write
+    {
         return Ok(None);
     }
     table.ownership.as_ref().map(Some).ok_or(Denied::Floor)
@@ -85,7 +92,7 @@ pub(crate) async fn create(
         )
         .await?));
     }
-    let formula = match formula(table, caller.user) {
+    let formula = match formula(table, caller) {
         Ok(formula) => formula,
         Err(denied) => return Ok(Err(denied)),
     };
@@ -141,7 +148,7 @@ pub(crate) async fn update(
         )
         .await?));
     }
-    let f = match formula(table, caller.user) {
+    let f = match formula(table, caller) {
         Ok(None) => {
             return Ok(Ok(rows::update_row_guarded_in(
                 cat,
@@ -204,7 +211,7 @@ pub(crate) async fn delete(
     let guard = if table.rls_enabled {
         None
     } else {
-        match formula(table, caller.user) {
+        match formula(table, caller) {
             Ok(None) => None,
             Ok(Some(f)) => {
                 owned_row(cat, table, f, Operation::Delete, caller, id).await?;

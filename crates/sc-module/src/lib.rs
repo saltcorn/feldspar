@@ -60,6 +60,7 @@
 pub mod action;
 pub mod bounds;
 pub mod bundled;
+pub mod consent;
 pub mod csp;
 #[cfg(feature = "deno-host")]
 pub mod deno;
@@ -96,7 +97,7 @@ pub use frameworks::ModuleFrameworks;
 pub use functions::ModuleFunctions;
 pub use host::{
     ActionManifest, CallHosts, FrameworkManifest, FunctionArg, FunctionManifest,
-    ModelProviderManifest, ModuleHost, ModuleManifest, ServiceAsks, ServiceManifest,
+    ModelProviderManifest, ModuleHost, ModuleManifest, OAuthAsks, ServiceAsks, ServiceManifest,
     TableProviderManifest, UnsupportedEntity, WebhookManifest, prime_v8,
 };
 pub use install::{

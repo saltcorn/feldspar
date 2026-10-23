@@ -22,10 +22,18 @@
 // ----------------------
 // - **Every folder** is synced. INBOX by IDLE; the others every 5 minutes, when a STATUS says
 //   something changed (a new UIDNEXT, a different count, a new HIGHESTMODSEQ).
-// - **Folders are listed again** at every poll: a new one is synced, and one gone from the
-//   server is deleted with its messages.
+// - **Folders are listed again** at every poll and on `mail_sync_now`: a new one is synced, and
+//   one gone from the server is deleted with its messages. The table is read again too, so a
+//   folder row somebody deleted is made again rather than synced into.
 // - **Backfill** (`sync.js` `backfill`): every 15 s, one batch of 50 older messages of the
 //   first folder that has some left, INBOX first and Trash and Junk last.
+//
+// One connection's work
+// ---------------------
+// Everything that selects a folder runs on the queue, the first LIST and SELECT of a new
+// connection included. A pass, a backfill step and a folder's sync are bound to the connection
+// they started on: after a reconnect, work left over from the old connection stops instead of
+// running on the new one, where another folder may be selected under it.
 //
 // Failures
 // --------
@@ -35,6 +43,10 @@
 // - **Three login failures in a row** set `status = auth_failed` and stop the runner, because
 //   repeated bad logins can get an account locked. The service starts it again when somebody
 //   changes the row (§5.5).
+// - **OAuth2 accounts** (`oauth.js`): the access token is renewed before each connection when
+//   it expires within 5 minutes. A login refused with a token that looked good renews it once
+//   and connects again at once; a renewal the provider refuses sets `auth_failed` straight away,
+//   because only a new consent mends it.
 // - **A refused server** (a private address, a wrong port: `connect.js`) is not retried either;
 //   it sets `status = refused` and waits for the row to change.
 // - Errors written to `last_error` have the passwords taken out (`connect.redact`).
@@ -46,6 +58,7 @@
 
 const { ImapFlow } = require("imapflow");
 const { imapTarget, imapOptions, redact } = require("./connect.js");
+const { fresh, isOAuth } = require("./oauth.js");
 const { syncFolder, folderRow, watchedFolders, applyFlags, backfill, backfillPending, deleteFolder, isMirror } = require("./sync.js");
 
 const DEFAULTS = {
@@ -153,8 +166,9 @@ function nextBackoff(previous, opts) {
 
 class AccountRunner {
   /**
-   * @param {{ db, files, log, settings, now?: () => Date }} host the service's `ctx.db`,
-   *   `ctx.files`, `ctx.log`, and the connection settings (`connect.connectionSettings`)
+   * @param {{ db, files, log, settings, configuration, now?: () => Date }} host the service's
+   *   `ctx.db`, `ctx.files`, `ctx.log`, the connection settings (`connect.connectionSettings`)
+   *   and the module's configuration (an OAuth2 account's provider, `oauth.js`)
    * @param {object} account the `mail_accounts` row, secrets revealed
    * @param {object} [options] overrides of `DEFAULTS`, for tests
    */
@@ -166,6 +180,9 @@ class AccountRunner {
     this.client = null;
     this.state = "stopped";
     this.authFailures = 0;
+    /** An OAuth2 login was refused: renew the token before the next connection, whatever its
+     * expiry says. */
+    this.forceRefresh = false;
     this.queue = Promise.resolve();
     this.folders = new Map();
     this.due = emptyDue();
@@ -211,16 +228,25 @@ class AccountRunner {
     await this.setStatus("stopped").catch(() => {});
   }
 
-  /** Sync every folder now (`mail_sync_now`). A poll passes `quick`: a mirror then lists the
-   * folders again, and skips a folder whose STATUS says nothing changed. */
-  wake({ quick = false } = {}) {
+  /** Sync every folder now. A poll passes `quick`: a mirror then lists the folders again, and
+   * skips a folder whose STATUS says nothing changed. `discover` lists the folders again in
+   * either mode first (`mail_sync_now`, `mail_create_folder`). */
+  wake({ quick = false, discover = false } = {}) {
     for (const path of this.syncedPaths()) {
       this.due.new.add(path);
       this.due.flags.add(path);
       if (quick) this.due.quick.add(path);
     }
-    if (this.mirror && quick) this.due.discover = true;
+    if ((this.mirror && quick) || discover) this.due.discover = true;
     this.schedulePass(0);
+  }
+
+  /** Forget a folder that was deleted (`mail_delete_folder`): not synced again. */
+  forgetFolder(path) {
+    this.folders.delete(path);
+    this.due.new.delete(path);
+    this.due.flags.delete(path);
+    this.due.quick.delete(path);
   }
 
   /** The folders this account syncs: an ingest account's watched folders, or (mirror) every
@@ -266,10 +292,22 @@ class AccountRunner {
           this.host.log.warn(`${this.label}: ${message}`);
           return;
         }
+        if (e.reconnect) {
+          await this.setStatus("auth_failed", message).catch(() => {});
+          this.host.log.warn(`${this.label}: ${message}`);
+          return;
+        }
+        if (e.authenticationFailed && isOAuth(this.account) && !this.forceRefresh && !e.refreshed) {
+          // Revoked early, or the clock is off: one renewal and another try, now.
+          this.forceRefresh = true;
+          this.host.log.info(`${this.label}: the access token was refused; renewing it`);
+          continue;
+        }
         if (e.authenticationFailed) {
           this.authFailures += 1;
           if (this.authFailures >= this.opts.maxAuthFailures) {
-            await this.setStatus("auth_failed", `login failed ${this.authFailures} times in a row; fix the password and save the account to try again: ${message}`).catch(() => {});
+            const fix = isOAuth(this.account) ? "connect the account to its provider again" : "fix the password and save the account to try again";
+            await this.setStatus("auth_failed", `login failed ${this.authFailures} times in a row; ${fix}: ${message}`).catch(() => {});
             this.host.log.warn(`${this.label}: login failed ${this.authFailures} times; not retrying until the account changes`);
             return;
           }
@@ -288,6 +326,11 @@ class AccountRunner {
   async session() {
     const settings = this.host.settings || {};
     const target = await imapTarget(this.account, settings);
+    const forced = this.forceRefresh;
+    if (isOAuth(this.account)) {
+      await fresh(this.account, this.host.configuration, this.host.db, { force: forced });
+      this.forceRefresh = false;
+    }
     const client = new ImapFlow(
       imapOptions(this.account, target, settings, {
         maxIdleTime: this.opts.maxIdleMs,
@@ -319,10 +362,19 @@ class AccountRunner {
     });
     this.client = client;
     try {
-      await client.connect();
+      try {
+        await client.connect();
+      } catch (e) {
+        // A token renewed just now and refused all the same: not worth renewing again.
+        if (forced && e && typeof e === "object") e.refreshed = true;
+        throw e;
+      }
       this.authFailures = 0;
-      await this.discoverFolders();
-      await client.mailboxOpen(this.idleFolder);
+      // On the queue, behind whatever an action or the last connection's pass left there.
+      await this.enqueue(async () => {
+        await this.discoverFolders(client);
+        await client.mailboxOpen(this.idleFolder);
+      });
       this.wake();
       this.pollTimer = setInterval(() => this.wake({ quick: true }), this.mirror ? this.opts.mirrorPollMs : this.opts.pollMs);
       if (this.mirror) this.backfillTimer = setInterval(() => this.backfillStep(), this.opts.backfillMs);
@@ -345,28 +397,45 @@ class AccountRunner {
 
   /** What a sync needs: the connection, the service's tables and files, the account. */
   env(client) {
-    return { client, db: this.host.db, files: this.host.files, account: this.account, log: this.host.log, signal: this.controller.signal };
+    return {
+      client,
+      db: this.host.db,
+      files: this.host.files,
+      account: this.account,
+      log: this.host.log,
+      signal: this.controller.signal,
+      extraHeaders: this.host.extraHeaders,
+    };
+  }
+
+  /** Whether `client` is still this runner's connection, and up. */
+  current(client) {
+    return Boolean(client) && client === this.client && client.usable;
   }
 
   // ---------------------------------------------------------------------------- folders
 
   /** LIST, roles, and an upserted `mail_folders` row for each folder (§7). A mirror deletes
-   * the folders that are gone from the server, with their messages. */
-  async discoverFolders() {
+   * the folders that are gone from the server, with their messages, and forgets them. A folder
+   * whose row is gone from the table gets a new one. Runs on the queue. */
+  async discoverFolders(client = this.client) {
     const { db } = this.host;
-    const client = this.client;
-    if (!client || !client.usable) return;
+    if (!this.current(client)) return;
     const entries = (await client.list()).filter((e) => !(e.flags && e.flags.has && (e.flags.has("\\Noselect") || e.flags.has("\\NonExistent"))));
     const roles = assignRoles(entries);
     const watched = new Set(watchedFolders(this.account));
+    const listed = new Set(entries.map((e) => e.path));
+    const stored = await db.mail_folders.where({ account: this.account.id }).rows();
+    const storedPaths = new Map(stored.map((r) => [r.path, r]));
     if (this.mirror) {
-      const listed = new Set(entries.map((e) => e.path));
-      for (const row of await db.mail_folders.where({ account: this.account.id }).rows()) {
+      for (const row of stored) {
         if (listed.has(row.path)) continue;
         this.host.log.info(`${this.label}: the folder ${row.path} is gone from the server`);
         await deleteFolder(this.env(client), row);
-        this.folders.delete(row.path);
+        storedPaths.delete(row.path);
+        this.forgetFolder(row.path);
       }
+      for (const path of [...this.folders.keys()]) if (!listed.has(path)) this.forgetFolder(path);
     }
     for (const entry of entries) {
       const values = {
@@ -375,8 +444,14 @@ class AccountRunner {
         delimiter: entry.delimiter || null,
         sync: this.mirror || watched.has(entry.path),
       };
-      const known = this.folders.get(entry.path);
-      let row = known || (await folderRow(db, this.account, entry.path, values));
+      let known = this.folders.get(entry.path);
+      const row0 = storedPaths.get(entry.path);
+      if (known && (!row0 || row0.id !== known.id)) {
+        // Its row was deleted (or made again) by somebody else: the table's is the one.
+        this.forgetFolder(entry.path);
+        known = null;
+      }
+      let row = known || row0 || (await folderRow(db, this.account, entry.path, values));
       if (["name", "role", "delimiter", "sync"].some((k) => row[k] !== values[k])) {
         await db.mail_folders.where({ id: row.id }).update(values);
         Object.assign(row, values);
@@ -418,6 +493,9 @@ class AccountRunner {
   }
 
   passFailed(e) {
+    // Stopped meanwhile: the connection was closed under the sync on purpose, and the account's
+    // status is the service's to write now.
+    if (this.controller.signal.aborted) return;
     const message = redact(e, this.account);
     this.host.log.warn(`${this.label}: sync failed: ${message}`);
     this.setStatus("error", message).catch(() => {});
@@ -443,30 +521,31 @@ class AccountRunner {
   }
 
   async runPass() {
+    // The connection this pass started on: after a reconnect, the new one runs its own.
+    const client = this.client;
     let synced = false;
     for (;;) {
-      const client = this.client;
-      if (!client || !client.usable) return;
+      if (!this.current(client)) return;
       const due = this.due;
       this.due = emptyDue();
-      if (due.discover) await this.enqueue(() => this.discoverFolders());
+      if (due.discover) await this.enqueue(() => this.discoverFolders(client));
       const paths = this.syncedPaths().filter((p) => due.new.has(p) || due.flags.has(p));
       if (!paths.length) break;
       if (!synced) await this.setStatus("syncing");
       synced = true;
       for (const path of paths) {
-        await this.enqueue(() => this.syncPath(path, { flags: due.flags.has(path), quick: due.quick.has(path) }));
+        await this.enqueue(() => this.syncPath(client, path, { flags: due.flags.has(path), quick: due.quick.has(path) }));
       }
     }
-    if (!synced) return;
-    await this.enqueue(() => this.returnToIdle());
+    if (!synced || !this.current(client)) return;
+    await this.enqueue(() => this.returnToIdle(client));
     await this.setStatus("idle", null);
   }
 
-  /** One folder's sync, on the queue. */
-  async syncPath(path, { flags, quick }) {
-    const client = this.client;
-    if (!client || !client.usable) throw new Error("the connection was closed");
+  /** One folder's sync, on the queue, on the connection its pass started on. */
+  async syncPath(client, path, { flags, quick }) {
+    // Left over from a connection that is gone: the next one syncs every folder anyway.
+    if (!this.current(client)) return;
     const folder = this.folders.get(path);
     if (!folder) return;
     if (quick && this.mirror && path !== this.idleFolder && !(await this.changedOnServer(client, folder))) return;
@@ -501,9 +580,8 @@ class AccountRunner {
   }
 
   /** Select the IDLE folder again, where imapflow IDLEs once the connection is quiet. */
-  async returnToIdle() {
-    const client = this.client;
-    if (client && client.usable && (!client.mailbox || client.mailbox.path !== this.idleFolder)) {
+  async returnToIdle(client = this.client) {
+    if (this.current(client) && (!client.mailbox || client.mailbox.path !== this.idleFolder)) {
       await client.mailboxOpen(this.idleFolder);
     }
   }
@@ -516,9 +594,9 @@ class AccountRunner {
       .find((f) => f && backfillPending(f));
     if (!folder) return null;
     this.backfilling = true;
+    const client = this.client;
     return this.enqueue(async () => {
-      const client = this.client;
-      if (!client || !client.usable) return;
+      if (!this.current(client) || this.folders.get(folder.path) !== folder) return;
       const lock = await client.getMailboxLock(folder.path);
       try {
         const stored = await backfill(this.env(client), folder, this.opts.backfillBatch);
@@ -526,7 +604,7 @@ class AccountRunner {
       } finally {
         lock.release();
       }
-      await this.returnToIdle();
+      await this.returnToIdle(client);
     })
       .catch((e) => this.passFailed(e))
       .finally(() => {

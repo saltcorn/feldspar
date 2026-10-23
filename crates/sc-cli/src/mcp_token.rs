@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(
             describe_grants(&stored),
             "allow_create allow_edit allow_drop allow_access_changes \
-             allow_applications allow_modules"
+             allow_applications allow_modules allow_history"
         );
     }
 
@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(
             describe_grants(&stored),
             "allow_all allow_create allow_edit allow_access_changes allow_triggers \
-             allow_applications allow_modules"
+             allow_applications allow_modules allow_history"
         );
         // Without it, nothing claims the grants a later version adds.
         let plain = parse_create(&args(&["--label", "x", "--admin"])).unwrap();

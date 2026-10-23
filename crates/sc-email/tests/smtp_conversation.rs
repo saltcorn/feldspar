@@ -32,6 +32,8 @@ fn settings(port: u16, username: &str) -> EmailSettings {
             "hunter2".to_owned()
         },
         from: parse_mailbox("Saltcorn <saltcorn@example.com>").unwrap(),
+        certificate_name: None,
+        accept_any_certificate: false,
     }
 }
 
@@ -201,6 +203,8 @@ async fn an_override_through_a_loopback_server_is_refused() -> sc_error::Result<
         username: "orders@example.com".to_owned(),
         password: "Grüße-€-pässwort".to_owned(),
         from: parse_mailbox("orders@example.com").unwrap(),
+        certificate_name: None,
+        accept_any_certificate: false,
     };
     let recorder = sc_email::RecordingMailer::new();
     let mut email = Email::new(relay.from.clone());

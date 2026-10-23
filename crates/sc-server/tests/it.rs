@@ -153,6 +153,8 @@ mod model_handle;
 mod models_without_actions;
 #[path = "module_seams.rs"]
 mod module_seams;
+#[path = "module_consent.rs"]
+mod module_consent;
 #[path = "modules_api.rs"]
 mod modules_api;
 #[path = "named_datasets.rs"]

@@ -4,9 +4,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const { isPublic, resolveTarget, connectionSettings, imapOptions, smtpOptions, redact } = require("../connect.js");
+const nodemailer = require("nodemailer");
+const { SMTPServer } = require("smtp-server");
+
+const here = dirname(fileURLToPath(import.meta.url));
+const certs = join(here, "servers", "run", "certs");
 
 /** A resolver that answers from a table, so no test touches DNS. */
 const resolver = (table) => async (host) => {
@@ -45,7 +54,7 @@ test("allowed ports and security", async () => {
   const ok = async (kind, port, security) => resolveTarget({ kind, host: "mail.example.com", port, security }, { lookup: dns });
   assert.deepEqual(
     { ...(await ok("imap", 993, "tls")) },
-    { kind: "imap", host: "mail.example.com", trusted: false, address: "93.184.216.34", port: 993, security: "tls", secure: true, servername: "mail.example.com" },
+    { kind: "imap", host: "mail.example.com", trusted: false, address: "93.184.216.34", port: 993, security: "tls", secure: true, servername: "mail.example.com", verify: true },
   );
   assert.equal((await ok("imap", 143, "starttls")).secure, false);
   assert.equal((await ok("smtp", 465, "tls")).secure, true);
@@ -148,4 +157,97 @@ test("passwords never appear in an error", () => {
   assert.ok(!text.includes("Grüße-€-pässwort") && !text.includes("s3cret"), text);
   assert.match(text, /LOGIN ••• failed: bad •••/);
   assert.equal(redact("x\0y", {}), "xy");
+});
+
+// ------------------------------------------------------------------------------ certificates
+
+test("certificate names and unverified servers are read per host and port", async () => {
+  const settings = connectionSettings({
+    certificate_names: "188.65.204.58 Mail.Example.com\n10.0.0.5:465 = smtp.lan\njunk\n",
+    unverified_servers: "self.example.com\n188.65.204.59:993",
+  });
+  assert.deepEqual(settings.names, [
+    { host: "188.65.204.58", port: null, name: "mail.example.com" },
+    { host: "10.0.0.5", port: 465, name: "smtp.lan" },
+  ]);
+  const at = (host, port) => resolveTarget({ kind: "imap", host, port, security: "tls" }, { ...settings, lookup: dns });
+  // An IP is checked against the IP, unless the admin named the certificate's host.
+  const named = await at("188.65.204.58", 993);
+  assert.equal(named.servername, "mail.example.com");
+  assert.equal(named.address, "188.65.204.58", "the connection still goes to the IP");
+  assert.equal(imapOptions({}, named, settings).tls.servername, "mail.example.com");
+  assert.equal(imapOptions({}, named, settings).tls.rejectUnauthorized, true, "and the check is still a full one");
+  assert.equal((await at("188.65.204.60", 993)).servername, undefined);
+  // Unverified: for that host (and port) only.
+  assert.equal((await at("188.65.204.59", 993)).verify, false);
+  assert.equal(imapOptions({}, await at("188.65.204.59", 993), settings).tls.rejectUnauthorized, false);
+  assert.equal((await at("mail.example.com", 993)).verify, true);
+  const self = await resolveTarget({ kind: "smtp", host: "self.example.com", port: 465 }, { ...settings, lookup: resolver({ "self.example.com": ["93.184.216.35"] }) });
+  assert.equal(smtpOptions({}, self, settings).tls.rejectUnauthorized, false);
+});
+
+/** An SMTP server on 127.0.0.1 with implicit TLS, presenting the test certificate `name`. */
+async function tlsSmtp(name) {
+  const server = new SMTPServer({
+    secure: true,
+    key: readFileSync(join(certs, `${name}.key`)),
+    cert: readFileSync(join(certs, `${name}.crt`)),
+    authOptional: true,
+    logger: false,
+  });
+  server.on("error", () => {});
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  return { port: server.server.address().port, close: () => new Promise((r) => server.close(r)) };
+}
+
+/** Connect nodemailer to the server under the module settings `extra`, as the module does. */
+async function verifyAgainst(server, extra) {
+  const configuration = {
+    trusted_servers: `127.0.0.1:${server.port}`,
+    ca_certificates: readFileSync(join(certs, "ca.crt"), "utf8"),
+    ...extra,
+  };
+  const settings = connectionSettings(configuration);
+  const account = { email: "ada@example.com", smtp_host: "127.0.0.1", smtp_port: server.port, smtp_security: "tls" };
+  const target = await resolveTarget({ kind: "smtp", host: "127.0.0.1", port: server.port, security: "tls" }, settings);
+  const transport = nodemailer.createTransport({ ...smtpOptions(account, target, settings), auth: undefined });
+  try {
+    await transport.verify();
+    return null;
+  } catch (e) {
+    return e;
+  } finally {
+    transport.close();
+  }
+}
+
+test("a server dialled by IP with a certificate for a name: refused, then checked against the name", async () => {
+  execFileSync(join(here, "servers", "certs.sh"), [certs]);
+  const server = await tlsSmtp("name");
+  try {
+    const refused = await verifyAgainst(server, {});
+    assert.ok(refused, "the IP is not in the certificate");
+    assert.match(refused.message, /does not match certificate's altnames/);
+    assert.match(redact(refused, {}), /certificate names/);
+    assert.equal(await verifyAgainst(server, { certificate_names: "127.0.0.1 mail.test" }), null);
+    // A name the certificate is not issued for is still refused: the check is a check.
+    assert.ok(await verifyAgainst(server, { certificate_names: "127.0.0.1 other.test" }));
+  } finally {
+    await server.close();
+  }
+});
+
+test("a self-signed certificate: refused, unless the server is listed as unverified", async () => {
+  execFileSync(join(here, "servers", "certs.sh"), [certs]);
+  const server = await tlsSmtp("self");
+  try {
+    const refused = await verifyAgainst(server, {});
+    assert.ok(refused, "no trusted CA issued it");
+    assert.match(redact(refused, {}), /not checked/, refused.message);
+    assert.equal(await verifyAgainst(server, { unverified_servers: `127.0.0.1:${server.port}` }), null);
+    // Listed for another port, it is still checked.
+    assert.ok(await verifyAgainst(server, { unverified_servers: "127.0.0.1:1" }));
+  } finally {
+    await server.close();
+  }
 });

@@ -680,3 +680,121 @@ return {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Row history (TODO-history H6.1)
+// ---------------------------------------------------------------------------
+
+impl Live {
+    /// Switch history on for `table`, the way the admin's table settings do.
+    async fn history_on(&self, table: &str) -> Result<()> {
+        bootstrap_table_meta(&self.catalog).await?;
+        sc_catalog::bootstrap_field_meta(&self.catalog).await?;
+        sc_catalog::bootstrap_change_log(&self.catalog).await?;
+        self.catalog.reload().await?;
+        let op = sc_api::schema_edit::Operation::AlterTable {
+            table: table.to_owned(),
+            settings: sc_api::schema_edit::TableSettings {
+                history_enabled: Some(true),
+                ..Default::default()
+            },
+        };
+        sc_api::schema_edit::apply(
+            &self.catalog,
+            &[op],
+            &sc_api::schema_edit::ApplyOptions::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn sql(&self, statements: &str) -> Result<()> {
+        self.db
+            .client()
+            .await?
+            .batch_execute(statements)
+            .await
+            .map_err(|e| Error::database(e.to_string()))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rows_history_is_read_and_put_back_in_both_languages() -> Result<()> {
+    let live = Live::new().await?;
+    live.history_on("notes").await?;
+    // Three writes from outside, each its own changeset.
+    live.sql("UPDATE notes SET what = 'ada one, again' WHERE id = 1")
+        .await?;
+    live.sql("UPDATE notes SET what = 'ada one, third' WHERE id = 1")
+        .await?;
+    live.sql("DELETE FROM notes WHERE id = 2").await?;
+
+    let python = live
+        .run(
+            r#"
+import saltcorn as sc
+history = db.notes.history(1)
+deleted = db.notes.deleted()
+then = db.notes.as_of(1, history[1]["seq"])
+restored = db.notes.restore(2)
+reverted = db.notes.revert(1, 1)
+try:
+    db.as_user().notes.history(1)
+    refused = None
+except sc.DbError as e:
+    refused = str(e)
+return {
+    "versions": [h["version"] for h in history],
+    "latest": history[0]["changes"],
+    "deleted": [d["key"] for d in deleted],
+    "then": then["row"]["what"],
+    "restored": restored["row"]["what"],
+    "reverted": reverted["row"]["what"],
+    "refused": refused,
+}
+"#,
+        )
+        .await?;
+    assert_eq!(python["versions"], json!([2, 1]));
+    assert_eq!(
+        python["latest"],
+        json!([{ "field": "what", "old": "ada one, again", "new": "ada one, third",
+                 "removed": false }])
+    );
+    assert_eq!(python["deleted"], json!(["2"]));
+    assert_eq!(python["then"], json!("ada one, again"));
+    assert_eq!(python["restored"], json!("bob one"));
+    assert_eq!(python["reverted"], json!("ada one, again"));
+    assert!(
+        python["refused"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("may not read the history of `notes`"),
+        "{python}"
+    );
+    assert_eq!(
+        live.column("SELECT what FROM notes ORDER BY id").await?,
+        vec!["ada one, again", "bob one", "ada two"]
+    );
+
+    // The same surface in JavaScript is the same plan: the revert is the
+    // row's third version, and nothing is deleted any more.
+    let javascript = live
+        .run_js(
+            r#"
+const history = await db.notes.history(1);
+return {
+  versions: history.map((h) => h.version),
+  source: history[0].changeset.source,
+  deleted: await db.notes.deleted(),
+  first: (await db.notes.asOf(1, history[2].seq)).row.what,
+};
+"#,
+        )
+        .await?;
+    assert_eq!(javascript["versions"], json!([3, 2, 1]));
+    assert_eq!(javascript["source"], json!("restore"));
+    assert_eq!(javascript["deleted"], json!([]));
+    assert_eq!(javascript["first"], json!("ada one, again"));
+    Ok(())
+}

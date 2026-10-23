@@ -94,11 +94,12 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_catalog::bootstrap_field_meta(&catalog)
         .await
         .context("ensuring the field overlay table exists")?;
-    // Offline sync's change-log and the trigger function synced tables share
-    // (§14.11). Nothing is recorded until a table's sync is switched on.
-    sc_catalog::bootstrap_sync(&catalog)
+    // The change log and trigger function offline sync and row history share
+    // (§14.11, §14.12). Nothing is recorded until a table's sync or history is
+    // switched on.
+    sc_catalog::bootstrap_change_log(&catalog)
         .await
-        .context("ensuring the offline sync change-log exists")?;
+        .context("ensuring the change log exists")?;
     sc_llm::bootstrap_llm_providers(&catalog)
         .await
         .context("ensuring the LLM providers table exists")?;

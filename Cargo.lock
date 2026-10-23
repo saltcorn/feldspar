@@ -9306,11 +9306,14 @@ dependencies = [
  "async-trait",
  "lettre",
  "mrml",
+ "rcgen",
+ "rustls",
  "sc-catalog",
  "sc-config",
  "sc-error",
  "sc-test-harness",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

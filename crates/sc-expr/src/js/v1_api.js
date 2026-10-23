@@ -49,7 +49,12 @@
   const SCHEMA =
     "this server introspects the schema it is given, so a table is created and " +
     "altered in the database itself rather than through the API";
-  const HISTORY = "this server keeps no row history to read, restore or compress";
+  const HISTORY_CAPTURED =
+    "row history is recorded by the database itself, for every write to a table " +
+    "with history on, so there is no history row to insert by hand";
+  const HISTORY_COMPRESSED =
+    "row history is merged as it is written (one entry per row per user action) " +
+    "and expired by the table's keep_days setting, so there is nothing to compress";
   const SYNC =
     "the mobile offline sync of Saltcorn 1 has no counterpart on this server";
   const STORED =
@@ -121,13 +126,11 @@
     "field.add_unique_constraint": SCHEMA,
     "field.remove_unique_constraint": SCHEMA,
 
-    // Row history.
-    "table.get_history": HISTORY,
-    "table.insert_history_row": HISTORY,
-    "table.restore_row_version": HISTORY,
-    "table.undo_row_changes": HISTORY,
-    "table.redo_row_changes": HISTORY,
-    "table.compress_history": HISTORY,
+    // Row history: `get_history`, `restore_row_version`, `undo_row_changes` and
+    // `redo_row_changes` are answered (TODO-history H6.1); these two are
+    // Saltcorn 1's shadow table talking to itself.
+    "table.insert_history_row": HISTORY_CAPTURED,
+    "table.compress_history": HISTORY_COMPRESSED,
 
     // Offline sync.
     "table.latestSyncInfo": SYNC,
@@ -1619,6 +1622,74 @@
         if (authority !== null) plan.authority = authority;
         return ships("deleteRows", plan).then(() => undefined);
       },
+      // ---------------------------------------------------------------------
+      // Row history (§14.12, TODO-history H6.1)
+      // ---------------------------------------------------------------------
+
+      // v1's `get_history(id)`: every version of the row, **oldest first**, each
+      // the whole row as it was just after that version, with v1's `_version`,
+      // `_time` and `_userid` and this server's `_deleted` (the version that
+      // deleted it), `_op`, `_changeset` and `_source`. The table must have
+      // history on.
+      //
+      // v1 answered every row's history when called without an id. Here a row's
+      // versions are rebuilt from the change log, one row at a time, so the id
+      // is required; what one action did across rows is a changeset, which the
+      // admin's changeset browser shows.
+      get_history: (id) => {
+        if (id === undefined || id === null) {
+          throw new Error(
+            "`get_history` takes the primary key of the row whose versions to read; " +
+            "this server rebuilds a row's versions from its change log one row at a time"
+          );
+        }
+        pkWhere(spec, id, "get_history");
+        return ships("get_history", {
+          op: "history", what: "versions", table: spec.name, key: id,
+        }).then((versions) =>
+          versions.map((v) => Object.assign({}, v, { _time: new Date(v._time) }))
+        );
+      },
+      // v1's `restore_row_version(id, version, user)`: the row set back to how it
+      // was just after `version`, as one write through the row layer (so write
+      // rules and triggers apply), in a `restore` changeset of its own. A row
+      // deleted since is inserted again. A row already as it was is left alone,
+      // as v1's write of the same values would.
+      restore_row_version: (id, version, user) => {
+        pkWhere(spec, id, "restore_row_version");
+        if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+          throw new Error(
+            "`restore_row_version` takes the version to go back to, a number from " +
+            "the row's `get_history`"
+          );
+        }
+        const plan = {
+          op: "history", what: "restore_version", table: spec.name, key: id,
+          version: version,
+        };
+        const authority = asUserArg(user, "restore_row_version");
+        if (authority !== null) plan.authority = authority;
+        return ships("restore_row_version", plan).then(() => undefined);
+      },
+      // v1's `undo_row_changes(id, user)` and `redo_row_changes(id, user)`: step
+      // the row back one version, and forward again, as v1 did with its
+      // `_restore_of_version`. Each step is a restore. Nothing to step to is not
+      // an error, as it was not in v1.
+      undo_row_changes: (id, user) => {
+        pkWhere(spec, id, "undo_row_changes");
+        const plan = { op: "history", what: "undo_row", table: spec.name, key: id };
+        const authority = asUserArg(user, "undo_row_changes");
+        if (authority !== null) plan.authority = authority;
+        return ships("undo_row_changes", plan).then(() => undefined);
+      },
+      redo_row_changes: (id, user) => {
+        pkWhere(spec, id, "redo_row_changes");
+        const plan = { op: "history", what: "redo_row", table: spec.name, key: id };
+        const authority = asUserArg(user, "redo_row_changes");
+        if (authority !== null) plan.authority = authority;
+        return ships("redo_row_changes", plan).then(() => undefined);
+      },
+
       // v1's `toggleBool(id, field, user)`: the boolean at the other value.
       //
       // **Two round trips, not one statement.** v1 writes `SET f = NOT f`, and

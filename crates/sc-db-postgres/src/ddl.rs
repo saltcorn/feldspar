@@ -84,6 +84,14 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
                 dialect.quote_ident(column)
             )
         }
+        SchemaChange::RenameColumn { table, from, to } => {
+            format!(
+                "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                dialect.quote_ident(table),
+                dialect.quote_ident(from),
+                dialect.quote_ident(to)
+            )
+        }
         SchemaChange::SetPrimaryKey { table, columns } => {
             // Two statements, because a table may already have a key and
             // Postgres has no `ALTER PRIMARY KEY`. The old constraint is dropped
@@ -782,6 +790,18 @@ mod tests {
                 if_exists: true,
             }),
             "ALTER TABLE \"member\" DROP COLUMN IF EXISTS \"note\""
+        );
+    }
+
+    #[test]
+    fn rename_column() {
+        assert_eq!(
+            render_ok(&SchemaChange::RenameColumn {
+                table: "member".into(),
+                from: "note".into(),
+                to: "remark".into(),
+            }),
+            "ALTER TABLE \"member\" RENAME COLUMN \"note\" TO \"remark\""
         );
     }
 }

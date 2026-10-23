@@ -5,6 +5,10 @@ exchanges changes with the server when it can. The design is
 [docs/TECHNICAL_DESIGN.md](./docs/TECHNICAL_DESIGN.md) §14.11. Milestones are prefixed **S**;
 work through them in order.
 
+The change log `_fd_changes` is shared with row history ([TODO-history.md](./TODO-history.md));
+its milestone H0–H1 changes how sync records changes (changesets, merged entries) without
+changing what a pull or push does.
+
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## S1 — Recording changes
@@ -14,7 +18,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       its trigger; refused for a table without a single-column primary key. Admin UI and MCP.
 - [x] S1.3 Tests: insert, update with its changed fields, an update that changes nothing, a
       change of key, delete, and a write made with plain SQL.
-- [ ] S1.4 SQLite: a trigger per table, regenerated whenever the table's columns change.
+- [x] S1.4 SQLite: a trigger per table, regenerated whenever the table's columns change.
+      Shared with row history: done as H6.2 in [TODO-history.md](./TODO-history.md).
 
 ## S2 — Pull
 
@@ -33,7 +38,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       restored database whose transaction ids are already past the device's goes unnoticed.
 - [ ] S2.8 A schema change that rewrites a synced table's rows (a column added with a default, a
       type changed, a column dropped or renamed) fires no row trigger; the next pull of that
-      table resets it on every device. Next to `sync_dirty` in `schema_edit.rs`.
+      table resets it on every device. Next to `change_log_dirty` in `schema_edit.rs`, the same
+      hook as history's H5.2.
 - [x] S2.9 One pull reads in one `REPEATABLE READ READ ONLY` transaction, with the watermark
       taken inside it: all tables from one moment (a child row never arrives without its parent)
       and nothing sent twice. Needs row reads, the RLS path included, on a given transaction, and
@@ -50,7 +56,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [ ] S3.3 Field-wise merge, server wins on a field changed on both sides. Delete against change:
       a device's delete of a row changed on the server since the device saw it is refused (the
       device gets the row back); a device's change of a row deleted on the server is refused (the
-      device removes it). The answer lists accepted, merged and refused changes.
+      device removes it). The answer lists accepted, merged and refused changes. "Changed on
+      the server" is read from `_fd_changes`: an update's changed fields are the keys of
+      `new_values` (history H1).
 - [x] S3.4 Refused for now, and reported: a change of a row's primary key from a device; a row
       pointing at a row that no longer exists (deleted meanwhile); a delete the database's foreign
       keys forbid.
@@ -82,9 +90,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## S5 — Cleanup and documentation
 
-- [ ] S5.1 Removing superseded log entries after a retention period; a device older than that
+- [x] S5.1 Removing superseded log entries after a retention period; a device older than that
       reloads its tables. The same for `_fd_sync_keys`: a pair is only needed until the device
-      has the upload's answer, so it can go with the same retention.
+      has the upload's answer, so it can go with the same retention. One cleanup job with row
+      history: done as H5.3 in [TODO-history.md](./TODO-history.md).
 - [ ] S5.2 A tutorial for an offline-first app; TECHNICAL_DESIGN §14.11 brought up to date.
 
 ## Later

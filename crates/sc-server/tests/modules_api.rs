@@ -1077,3 +1077,43 @@ async fn a_backed_up_module_is_reinstalled_with_its_settings_and_permissions()
     );
     Ok(())
 }
+
+/// A module's background service runs only once the serving process says so:
+/// `feldspar build-app` and `app triggers` install the modules to know their
+/// actions, and must not start a second IMAP sync beside the server's.
+#[tokio::test]
+async fn a_modules_service_waits_for_start_services() -> sc_error::Result<()> {
+    let mut server = setup("service-gate").await?;
+    let (status, body) = server
+        .client
+        .send(
+            "POST",
+            "/api/modules",
+            Some(json!({
+                "source": "local",
+                "location": fixture("service-module").display().to_string(),
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let module = "@saltcorn-test/service";
+    assert_eq!(server.modules.service_statuses(module), vec![]);
+
+    server.modules.start_services().await;
+    let statuses = server.modules.service_statuses(module);
+    assert_eq!(statuses.len(), 1, "{statuses:?}");
+    assert_eq!(statuses[0].service, "ticker");
+
+    // From here every reload restarts them — promptly, which it did not
+    // while a stop could overtake the start it was stopping.
+    let began = std::time::Instant::now();
+    server.modules.reload().await?;
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        began.elapsed()
+    );
+    assert_eq!(server.modules.modules().issues(), vec![]);
+    assert_eq!(server.modules.service_statuses(module).len(), 1);
+    Ok(())
+}

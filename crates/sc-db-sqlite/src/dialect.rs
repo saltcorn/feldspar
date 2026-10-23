@@ -58,6 +58,10 @@ impl SqlDialect for SqliteDialect {
         format!("?{position}")
     }
 
+    fn is_sqlite(&self) -> bool {
+        true
+    }
+
     /// SQLite has no row locks: a write transaction (`BEGIN IMMEDIATE`) holds
     /// the whole database already.
     fn row_lock(&self) -> Option<&'static str> {

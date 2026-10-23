@@ -309,6 +309,12 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // process.
     let (_scheduler, _scheduler_task) = sc_server::start_scheduler(&catalog, &triggers);
 
+    // The modules' background services (an IMAP sync), for the scheduler's
+    // reason: only the serving process runs them.
+    if let Some(modules) = apps.modules() {
+        modules.start_services().await;
+    }
+
     // And the workflow engine's (§10.3): from here a trigger whose body is a
     // workflow starts a durable run, a suspended run's timer fires, and a run a
     // crashed node was holding is picked up when its lease runs out. Started
@@ -737,7 +743,22 @@ async fn build_app_command(args: &[String]) -> Result<()> {
         app.name, subdomain
     );
     let source = app_source_from_config(&app.framework)?;
-    let report = build_application(&catalog, &app, &source, None).await?;
+    // An app that exposes triggers projects `api.run<Name>()` from the live
+    // trigger set, which a trigger over a module's action is in only once the
+    // modules are — so the services come up as `app triggers` brings them up.
+    // An app with none builds without them, as it always has.
+    let triggers = match app.triggers.is_empty() {
+        true => None,
+        false => {
+            let config = ServerConfig::from_args(serving_defaults(&db).iter())?;
+            sc_log::set_log_sql(false);
+            sc_dns::init()?;
+            let Services { triggers, .. } =
+                install_services(&catalog, &config, &ServiceManager::default()).await?;
+            Some(triggers)
+        }
+    };
+    let report = build_application(&catalog, &app, &source, triggers.as_ref()).await?;
 
     // The tool output is the point of running this here rather than clicking
     // Build, so it goes to stdout whole — not the tail an error message can

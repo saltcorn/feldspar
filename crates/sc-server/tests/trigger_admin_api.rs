@@ -817,6 +817,7 @@ async fn the_actions_describe_their_own_settings() -> sc_error::Result<()> {
             "run_js_code",
             "run_python_code",
             "send_email",
+            "undo",
             "update_rows"
         ]
     );

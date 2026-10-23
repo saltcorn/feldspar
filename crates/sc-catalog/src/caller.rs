@@ -19,6 +19,12 @@
 //!   to bound a cascade (`Event::firing`, §10.2's `MAX_DEPTH`). A write made by a
 //!   request rather than by a trigger carries an empty chain, which is what makes
 //!   depth 0 the ordinary case.
+//! - **Which action?** [`changeset`](CallerContext::changeset) — the user-level
+//!   action the write belongs to (§14.12), which the change-log trigger records
+//!   it under. A trigger's write carries the changeset of the event that fired
+//!   it, so the user's edit and its trigger's follow-up are one action.
+
+use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
@@ -88,6 +94,8 @@ pub async fn with_origin<F: std::future::Future>(origin: Origin, fut: F) -> F::O
     ORIGIN.scope(origin, fut).await
 }
 
+use crate::changeset::{self, Changeset};
+
 /// The caller one row operation runs as.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CallerContext {
@@ -105,10 +113,14 @@ pub struct CallerContext {
     /// The guest session's public id, if the caller has one — what the
     /// `sc.session` GUC carries.
     pub session: Option<String>,
+    /// The changeset this write belongs to. `None` lets the change-log trigger
+    /// mint one of its own (`source = 'sql'`), as for a write from outside.
+    pub changeset: Option<Arc<Changeset>>,
 }
 
 impl CallerContext {
-    /// A context for `role` carrying `user`'s fields.
+    /// A context for `role` carrying `user`'s fields, in the ambient changeset
+    /// ([`changeset::current`]) when the task runs inside one.
     pub fn new(role: u8, user: Option<Json>) -> CallerContext {
         CallerContext {
             role,
@@ -116,6 +128,7 @@ impl CallerContext {
             chain: Vec::new(),
             app: None,
             session: None,
+            changeset: changeset::current(),
         }
     }
 
@@ -149,6 +162,21 @@ impl CallerContext {
     pub fn chained(mut self, chain: Vec<String>) -> CallerContext {
         self.chain = chain;
         self
+    }
+
+    /// Put this write in `changeset` instead of the one it was built with.
+    pub fn in_changeset(mut self, changeset: Option<Arc<Changeset>>) -> CallerContext {
+        self.changeset = changeset;
+        self
+    }
+
+    /// What the `sc.changeset` GUC carries for this writer: empty when there
+    /// is no changeset, so the trigger mints one.
+    pub(crate) fn changeset_json(&self) -> String {
+        self.changeset
+            .as_ref()
+            .map(|c| c.guc_value(self.user.as_ref()))
+            .unwrap_or_default()
     }
 
     /// The user's fields as the JSON text the `sc.user` GUC carries.

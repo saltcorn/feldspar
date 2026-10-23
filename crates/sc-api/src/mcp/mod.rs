@@ -116,6 +116,11 @@ pub enum Area {
     /// no permission model at all. So no existing token or agent gains it by
     /// upgrading; somebody has to tick it.
     Modules,
+    /// Reading **row history**: a row's versions, deleted rows, a row as it
+    /// was, and changesets (§14.12). Off unless granted, like modules: history
+    /// is row data, and an agent that may change the schema is not thereby one
+    /// that may read customer rows.
+    History,
 }
 
 impl Area {
@@ -127,6 +132,7 @@ impl Area {
             Area::Triggers => "allow_triggers",
             Area::Applications => "allow_applications",
             Area::Modules => "allow_modules",
+            Area::History => "allow_history",
         }
     }
 }
@@ -176,7 +182,8 @@ impl Grant {
 }
 
 /// Which parts of the surface this caller was given. Triggers and applications
-/// default on; modules default **off** (see [`Area::Modules`]).
+/// default on; modules and history default **off** (see [`Area::Modules`],
+/// [`Area::History`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Areas {
     /// Whether the trigger tools are offered at all.
@@ -185,6 +192,8 @@ pub struct Areas {
     pub applications: bool,
     /// Whether the module tools are offered at all.
     pub modules: bool,
+    /// Whether the row-history tools are offered at all.
+    pub history: bool,
 }
 
 impl Default for Areas {
@@ -193,13 +202,14 @@ impl Default for Areas {
             triggers: true,
             applications: true,
             modules: false,
+            history: false,
         }
     }
 }
 
 impl Areas {
     /// What an unconfigured caller gets: triggers and applications. Not
-    /// modules, which are only ever offered when ticked.
+    /// modules or history, which are only ever offered when ticked.
     pub fn all() -> Areas {
         Areas::default()
     }
@@ -210,6 +220,7 @@ impl Areas {
             triggers: false,
             applications: false,
             modules: false,
+            history: false,
         }
     }
 
@@ -219,17 +230,18 @@ impl Areas {
             Area::Triggers => self.triggers,
             Area::Applications => self.applications,
             Area::Modules => self.modules,
+            Area::History => self.history,
         }
     }
 }
 
-/// Every key the seven flags are stored under, in the order an admin ticks them.
+/// Every key the eight flags are stored under, in the order an admin ticks them.
 ///
 /// One list, because there are two things that write these — an
 /// `admin_copilot` agent's configuration and an API token's `grants` column —
-/// and a seventh key invented by one of them would be a flag the other silently
+/// and a ninth key invented by one of them would be a flag the other silently
 /// ignores.
-pub const FLAG_KEYS: [&str; 7] = [
+pub const FLAG_KEYS: [&str; 8] = [
     GRANT_CREATE,
     GRANT_EDIT,
     GRANT_DROP,
@@ -237,6 +249,7 @@ pub const FLAG_KEYS: [&str; 7] = [
     Area::Triggers.key(),
     Area::Applications.key(),
     Area::Modules.key(),
+    Area::History.key(),
 ];
 
 /// The four grants as a stored configuration has them; an absent flag reads as
@@ -256,8 +269,8 @@ pub fn grants_from_attrs(config: &Attrs) -> Grants {
     }
 }
 
-/// The three areas as a stored configuration has them; an absent flag reads as
-/// its default — on for triggers and applications, off for modules.
+/// The four areas as a stored configuration has them; an absent flag reads as
+/// its default — on for triggers and applications, off for modules and history.
 pub fn areas_from_attrs(config: &Attrs) -> Areas {
     let defaults = Areas::default();
     let flag = |area: Area| {
@@ -270,10 +283,11 @@ pub fn areas_from_attrs(config: &Attrs) -> Areas {
         triggers: flag(Area::Triggers),
         applications: flag(Area::Applications),
         modules: flag(Area::Modules),
+        history: flag(Area::History),
     }
 }
 
-/// The seven flags written back out, every key present and explicit.
+/// The eight flags written back out, every key present and explicit.
 ///
 /// What a token's `grants` column is made of. Explicit rather than sparse
 /// because the column is the record of *what an admin agreed to* — a missing key
@@ -289,13 +303,14 @@ pub fn flags_to_attrs(grants: &Grants, areas: &Areas) -> Attrs {
         (Area::Triggers.key(), areas.triggers),
         (Area::Applications.key(), areas.applications),
         (Area::Modules.key(), areas.modules),
+        (Area::History.key(), areas.history),
     ] {
         out.insert(key.to_owned(), Json::Bool(value));
     }
     out
 }
 
-/// The key a token's `grants` stores to hold **every** flag — the seven of
+/// The key a token's `grants` stores to hold **every** flag — the eight of
 /// [`FLAG_KEYS`] and any added in a later version.
 ///
 /// A token's own key, never an `admin_copilot` agent's: an agent's
@@ -756,6 +771,7 @@ mod tests {
                     triggers: false,
                     applications: true,
                     modules: true,
+                    history: false,
                 },
             ),
         ] {
@@ -775,11 +791,11 @@ mod tests {
     #[test]
     fn a_token_minted_with_nothing_said_is_granted_everything() {
         let stored = token_flags_from_submitted(&Attrs::new());
-        // The seven, and `allow_all` written down as off.
+        // The eight, and `allow_all` written down as off.
         assert_eq!(stored.len(), FLAG_KEYS.len() + 1);
         assert_eq!(grants_from_attrs(&stored), Grants::all());
         let areas = areas_from_attrs(&stored);
-        assert!(areas.triggers && areas.applications && areas.modules);
+        assert!(areas.triggers && areas.applications && areas.modules && areas.history);
 
         // What was said is kept; only the silence defaults on.
         let mut said = Attrs::new();

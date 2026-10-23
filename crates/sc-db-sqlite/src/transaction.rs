@@ -15,7 +15,7 @@
 //! turns that into an ordinary wait at the start, covered by the busy timeout.
 
 use async_trait::async_trait;
-use sc_db::{RowStream, SchemaChange, Transaction};
+use sc_db::{RowStream, SchemaChange, TX_SETTINGS_TABLE, Transaction};
 use sc_error::{Error, Result};
 use sc_query::Statement;
 
@@ -28,6 +28,13 @@ pub(crate) struct SqliteTransaction {
     /// dropped. `None` after any of those.
     connection: Option<PooledConnection>,
     dialect: SqliteDialect,
+    /// Whether [`set_read_only`](Transaction::set_read_only) was called: such a
+    /// transaction writes nothing, so it has no settings to keep.
+    read_only: bool,
+    /// Whether this transaction keeps settings in [`TX_SETTINGS_TABLE`]:
+    /// `None` until the first [`set_local`](Transaction::set_local), then
+    /// whether the table exists. Rows kept are deleted before the commit.
+    settings: Option<bool>,
 }
 
 impl SqliteTransaction {
@@ -39,6 +46,8 @@ impl SqliteTransaction {
         let mut tx = SqliteTransaction {
             connection: Some(connection),
             dialect,
+            read_only: false,
+            settings: None,
         };
         // The transaction verbs are logged like any other statement: a SQL log
         // in which the statements appear but the `BEGIN` that groups them does
@@ -83,10 +92,20 @@ impl SqliteTransaction {
     /// Finish the transaction with `verb`, releasing its connection.
     async fn finish(mut self: Box<Self>, verb: &'static str) -> Result<()> {
         let connection = self.take()?;
-        tokio::task::spawn_blocking(move || crate::exec::run_batch(connection.connection()?, verb))
-            .await
-            .map_err(|e| Error::database(format!("sqlite worker: {e}")))?
-            .map_err(|e| Error::database(format!("{} transaction: {e}", verb.to_lowercase())))
+        let read_only = self.read_only;
+        tokio::task::spawn_blocking(move || {
+            let conn = connection.connection()?;
+            let finished = crate::exec::run_batch(conn, verb);
+            // `query_only` is the connection's, and the connection goes back to
+            // the pool: left on, it would make the next writer fail.
+            if read_only {
+                crate::exec::run_batch(conn, "PRAGMA query_only = OFF")?;
+            }
+            finished
+        })
+        .await
+        .map_err(|e| Error::database(format!("sqlite worker: {e}")))?
+        .map_err(|e| Error::database(format!("{} transaction: {e}", verb.to_lowercase())))
     }
 }
 
@@ -101,13 +120,56 @@ impl Transaction for SqliteTransaction {
         Ok(RowStream::from_rows(rows))
     }
 
-    // `set_local` is deliberately not implemented: SQLite has no
-    // transaction-local settings, so the trait's default — an error saying so —
-    // is the honest answer. Nothing asks for one, because the authorization
-    // strategy that reads them is row-level security, which this backend does
-    // not advertise.
+    /// SQLite has no transaction-local settings, so they are rows of
+    /// [`TX_SETTINGS_TABLE`], which is what the change-log triggers read the
+    /// writer's changeset from (§14.12). Rows left by a transaction that never
+    /// cleared them are deleted first, and this transaction's are deleted
+    /// before it commits — it is the only writer while it is open, so nobody
+    /// else sees them.
+    ///
+    /// Nothing is kept where nothing can read it: in a read-only transaction,
+    /// or in a database whose change log was never set up (no table).
+    async fn set_local(&mut self, name: &str, value: &str) -> Result<()> {
+        if self.read_only {
+            return Ok(());
+        }
+        if self.settings.is_none() {
+            let exists = self
+                .on_connection(|conn| {
+                    let found: i64 = conn
+                        .query_row(
+                            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                            [TX_SETTINGS_TABLE],
+                            |row| row.get(0),
+                        )
+                        .map_err(|e| Error::database(format!("reading the schema: {e}")))?;
+                    if found > 0 {
+                        crate::exec::run_batch(conn, &format!("DELETE FROM {TX_SETTINGS_TABLE}"))?;
+                    }
+                    Ok(found > 0)
+                })
+                .await?;
+            self.settings = Some(exists);
+        }
+        if self.settings != Some(true) {
+            return Ok(());
+        }
+        let (name, value) = (name.to_owned(), value.to_owned());
+        self.on_connection(move |conn| {
+            let sql = format!(
+                "INSERT INTO {TX_SETTINGS_TABLE} (name, value) VALUES (?1, ?2) \
+                 ON CONFLICT (name) DO UPDATE SET value = excluded.value"
+            );
+            sc_log::log_sql(&sql, crate::exec::NO_BINDS);
+            conn.execute(&sql, [name.as_str(), value.as_str()])
+                .map(|_| ())
+                .map_err(|e| Error::database(format!("set {name}: {e}")))
+        })
+        .await
+    }
 
     async fn set_read_only(&mut self) -> Result<()> {
+        self.read_only = true;
         // `query_only` is a *connection* setting rather than a transaction one,
         // so it is cleared again when the transaction finishes and hands its
         // connection back — see `finish` and `Drop`. Without that it would
@@ -143,7 +205,13 @@ impl Transaction for SqliteTransaction {
             .await
     }
 
-    async fn commit(self: Box<Self>) -> Result<()> {
+    async fn commit(mut self: Box<Self>) -> Result<()> {
+        if self.settings == Some(true) {
+            self.on_connection(|conn| {
+                crate::exec::run_batch(conn, &format!("DELETE FROM {TX_SETTINGS_TABLE}"))
+            })
+            .await?;
+        }
         self.finish("COMMIT").await
     }
 

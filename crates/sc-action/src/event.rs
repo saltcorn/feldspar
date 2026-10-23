@@ -23,7 +23,9 @@
 //! [`MAX_DEPTH`], naming the whole chain. A depth counter alone would have caught
 //! the loop but left the admin to find it; the chain *is* the diagnosis.
 
-use sc_catalog::{CallerContext, CallingApp, Origin};
+use std::sync::Arc;
+
+use sc_catalog::{CallerContext, CallingApp, Changeset, Origin};
 use sc_error::{Error, ErrorKind, Result};
 use serde_json::{Map, Value as Json};
 
@@ -216,6 +218,10 @@ pub struct Event {
     /// formula sees as `session.id`. `None` for a signed-in caller and for
     /// anybody with no guest session.
     pub session: Option<String>,
+    /// The changeset of the write that raised it (§14.12), which the writes
+    /// of the triggers it fires join: the user's edit and its trigger's
+    /// follow-up are one action. `None` for an event no changeset led to.
+    pub changeset: Option<Arc<Changeset>>,
 }
 
 impl Event {
@@ -233,6 +239,7 @@ impl Event {
             chain: Vec::new(),
             app: None,
             session: None,
+            changeset: None,
         }
     }
 
@@ -337,13 +344,14 @@ impl Event {
 
     /// Set everything about who caused this event from the caller context of
     /// the write or the run that raised it: the role, the user, the chain, the
-    /// application and the guest session.
+    /// application, the guest session and the changeset.
     pub fn caused_by(mut self, caller: &CallerContext) -> Event {
         self.role = caller.role;
         self.user = caller.user.clone();
         self.chain = caller.chain.clone();
         self.app = caller.app.clone();
         self.session = caller.session.clone();
+        self.changeset = caller.changeset.clone();
         self
     }
 
@@ -366,6 +374,12 @@ impl Event {
     /// [`firing`](Event::firing) handed the action that caused it.
     pub fn chained(mut self, chain: Vec<String>) -> Event {
         self.chain = chain;
+        self
+    }
+
+    /// Set the changeset the event belongs to.
+    pub fn in_changeset(mut self, changeset: Option<Arc<Changeset>>) -> Event {
+        self.changeset = changeset;
         self
     }
 

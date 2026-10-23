@@ -684,6 +684,7 @@ async fn the_two_callers_of_one_tool_set_are_offered_identical_tools() -> Result
                 triggers: false,
                 applications: true,
                 modules: false,
+                history: false,
             },
         ),
         (
@@ -692,6 +693,7 @@ async fn the_two_callers_of_one_tool_set_are_offered_identical_tools() -> Result
                 triggers: true,
                 applications: false,
                 modules: false,
+                history: false,
             },
         ),
     ];

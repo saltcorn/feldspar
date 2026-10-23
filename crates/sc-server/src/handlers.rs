@@ -28,8 +28,10 @@ use sc_action::{
 };
 use sc_api::auth::{credentials, user_row_json, user_summary_json};
 use sc_api::csv as csv_rows;
+use sc_api::history::HistoryReader;
 use sc_api::rows::{self, require_object};
 use sc_api::schema_edit;
+use sc_api::undo::Reverser;
 use sc_api::{ApiRequest, GRAPHQL_PROVIDER, Method as ApiMethod};
 use sc_app::{
     ApiConfig, AppId, Application, CspPolicy, FrameworkRef, StaticDir, StreamRef, TriggerRef,
@@ -601,6 +603,9 @@ pub fn admin_handlers_with(
                             "ownership_formula": meta.ownership_formula().unwrap_or(""),
                             "rls_enabled": meta.rls_enabled(),
                             "sync_enabled": sc_catalog::sync_enabled(&meta.attributes),
+                            "history_enabled": sc_catalog::history_enabled(&meta.attributes),
+                            "history_min_role": sc_catalog::history::history_min_role(&meta.attributes),
+                            "history_keep_days": sc_catalog::retention::history_keep_days(&meta.attributes),
                         })
                     })
                     .collect();
@@ -754,7 +759,15 @@ pub fn admin_handlers_with(
                 let description = optional_str(obj, "description").trim().to_owned();
                 // Whole-object, like `updateTable`: the admin UI edits a field it
                 // has loaded, so an omitted value means cleared.
+                // Omitted, like the key below, leaves the name as it is.
+                let rename = obj
+                    .get("name")
+                    .and_then(Json::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned);
                 let settings = schema_edit::FieldSettings {
+                    name: rename.clone(),
                     label: Some(optional_str(obj, "label")),
                     description: Some(description.clone()),
                     type_name: Some(optional_str(obj, "type")),
@@ -787,6 +800,7 @@ pub fn admin_handlers_with(
                     &schema_edit::ApplyOptions::default(),
                 )
                 .await?;
+                let field_name = rename.unwrap_or(field_name);
                 let table = catalog.require(&table_name)?;
                 let updated = table.field(&field_name).ok_or_else(|| {
                     Error::msg(format!("field `{field_name}` missing after update"))
@@ -1058,6 +1072,164 @@ pub fn admin_handlers_with(
                     sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
                 }
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
+            }
+        }
+    });
+
+    // --- row history (§14.12 "Reading") -------------------------------------
+    //
+    // Admin-only routes, read through `sc_api::history` all the same, so the
+    // table must keep history and secrets are the sentinel here as everywhere.
+
+    reg.register("getRowHistory", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let out = reader
+                    .row_history(ctx.path_param("table")?, ctx.path_param("id")?)
+                    .await?;
+                Ok(HandlerResponse::ok(out))
+            }
+        }
+    });
+
+    reg.register("listDeletedRows", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let limit = optional_query_u64(&ctx, "limit")?;
+                let offset = optional_query_u64(&ctx, "offset")?.unwrap_or(0);
+                let out = reader
+                    .deleted_rows(ctx.path_param("table")?, limit, offset)
+                    .await?;
+                Ok(HandlerResponse::ok(out))
+            }
+        }
+    });
+
+    reg.register("getRowAsOf", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let as_of = ctx.query_get("as_of").ok_or_else(|| {
+                    Error::invalid("`as_of` is required: a time or an entry's number")
+                })?;
+                let out = reader
+                    .row_as_of(ctx.path_param("table")?, ctx.path_param("id")?, as_of)
+                    .await?;
+                Ok(HandlerResponse::ok(out))
+            }
+        }
+    });
+
+    reg.register("listChangesets", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), None);
+                let filter = sc_api::history::changeset_filter(&ctx.query)?;
+                Ok(HandlerResponse::ok(reader.list_changesets(filter).await?))
+            }
+        }
+    });
+
+    reg.register("getChangeset", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), None);
+                Ok(HandlerResponse::ok(
+                    reader.changeset(ctx.path_param("id")?).await?,
+                ))
+            }
+        }
+    });
+
+    // --- restore and undo (§14.12 "Restore and undo") ----------------------
+    //
+    // Writes as the caller through `sc_api::undo`, each in one transaction and
+    // a changeset of its own.
+
+    reg.register("restoreRow", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let restored = reverser
+                    .restore_row(ctx.path_param("table")?, ctx.path_param("id")?)
+                    .await?;
+                Ok(HandlerResponse::ok(restored.to_json()))
+            }
+        }
+    });
+
+    reg.register("revertRow", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let version = int_field(require_object(&ctx.body)?, "version")?;
+                let restored = reverser
+                    .revert_row(ctx.path_param("table")?, ctx.path_param("id")?, version)
+                    .await?;
+                Ok(HandlerResponse::ok(restored.to_json()))
+            }
+        }
+    });
+
+    reg.register("undoChangeset", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let evaluator = apps.evaluator();
+                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let id = ctx.path_param("id")?;
+                let id: uuid::Uuid = id
+                    .parse()
+                    .map_err(|_| Error::not_found(format!("there is no changeset `{id}`")))?;
+                // Both fields are optional, so an empty body is an undo of all.
+                let empty = Map::new();
+                let obj = match &ctx.body {
+                    Json::Null => &empty,
+                    body => require_object(body)?,
+                };
+                let table = match obj.get("table") {
+                    None | Some(Json::Null) => None,
+                    Some(Json::String(t)) if t.is_empty() => None,
+                    Some(Json::String(t)) => Some(t.as_str()),
+                    Some(_) => return Err(Error::invalid("`table` must be a table's name")),
+                };
+                let force = optional_bool(obj, "force")?;
+                let outcome = reverser.undo_changeset(id, table, force).await?;
+                Ok(HandlerResponse::ok(outcome.to_json()))
             }
         }
     });
@@ -7223,6 +7395,25 @@ pub(crate) fn table_settings_from_body(
         ownership_formula: Some(str_field(obj, "ownership_formula")?.to_owned()),
         rls_enabled: Some(bool_field(obj, "rls_enabled")?),
         sync_enabled: Some(bool_field(obj, "sync_enabled")?),
+        // Absent reads as off, like every other omitted value of this body.
+        // Optional on the wire only so a body written before the switch existed
+        // (an older backup's `table.json`) still restores.
+        history_enabled: Some(optional_bool(obj, "history_enabled")?),
+        // Absent is the admin's, the default (§14.12).
+        history_min_role: Some(match obj.get("history_min_role") {
+            None | Some(Json::Null) => ROLE_ADMIN,
+            Some(_) => role_field(obj, "history_min_role")?,
+        }),
+        // Absent keeps history forever, the default.
+        history_keep_days: Some(match obj.get("history_keep_days") {
+            None | Some(Json::Null) => 0,
+            Some(days) => days
+                .as_u64()
+                .and_then(|d| u32::try_from(d).ok())
+                .ok_or_else(|| {
+                    Error::invalid("`history_keep_days` must be a whole number of days")
+                })?,
+        }),
     })
 }
 
@@ -11515,7 +11706,14 @@ pub(crate) fn table_json(
         "rls_enabled": table.rls_enabled,
         "sync_enabled": table.sync_enabled(),
         // The same rule a save is refused by, so the switch is never a trap.
-        "sync_available": sc_catalog::sync_key(catalog, table).is_ok(),
+        "sync_available": sc_catalog::change_log_key(catalog, table, sc_catalog::ChangeLogFeature::Sync)
+            .is_ok(),
+        "history_enabled": table.history_enabled(),
+        "history_min_role": sc_catalog::history::history_min_role(&table.attributes),
+        "history_keep_days": sc_catalog::retention::history_keep_days(&table.attributes),
+        // Row history needs the same one-column key on Saltcorn's own database.
+        "history_available": sc_catalog::change_log_key(catalog, table, sc_catalog::ChangeLogFeature::History)
+            .is_ok(),
         // The backend's capability *and* whose database this is: RLS is DDL
         // against the primary driver, so it is never available on a table a
         // connection contributed, nor on a **provided** table, whose rows are
@@ -11761,6 +11959,17 @@ fn int_field(obj: &Map<String, Json>, key: &str) -> Result<i64> {
     obj.get(key)
         .and_then(Json::as_i64)
         .ok_or_else(|| Error::invalid(format!("missing or non-integer field `{key}`")))
+}
+
+/// An optional whole-number query parameter; absent or empty is `None`.
+fn optional_query_u64(ctx: &crate::HandlerCtx, name: &str) -> Result<Option<u64>> {
+    match ctx.query_get(name) {
+        None | Some("") => Ok(None),
+        Some(raw) => raw
+            .parse()
+            .map(Some)
+            .map_err(|_| Error::invalid(format!("`{name}` must be a whole number"))),
+    }
 }
 
 /// A required boolean field of an object body.

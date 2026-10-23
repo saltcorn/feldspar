@@ -43,6 +43,8 @@ const MESSAGE = {
   account_id: "int", to: ADDRESSES, cc: ADDRESSES, bcc: ADDRESSES, subject: opt("string"),
   text: opt("string"), html: opt("string"), attachments: ATTACHMENTS, in_reply_to: opt("int"),
 };
+/** An iCalendar part (iTIP): a `text/calendar; method=…` alternative to the text and HTML. */
+const CALENDAR = opt({ object: { method: "string", content: "string", filename: opt("string") } });
 const ACCOUNT = Object.fromEntries(
   ["email", "imap_host", "imap_security", "imap_user", "imap_password", "smtp_host", "smtp_security", "smtp_user", "smtp_password"]
     .map((k) => [k, opt("string")])
@@ -57,7 +59,7 @@ const ACTIONS = {
     returns: { object: { imap: "bool", smtp: opt("bool"), error: opt("string") } },
   },
   mail_sync_now: {
-    description: "Sync an account now. Payload: { account_id, wait }.",
+    description: "List an account's folders again and sync them now. Payload: { account_id, wait }.",
     payload: { object: { account_id: "int", wait: opt("bool") } },
     returns: { object: { queued: "bool", status: opt("string"), error: opt("string") } },
   },
@@ -89,16 +91,28 @@ const ACTIONS = {
   mail_create_folder: {
     description: "Create a folder on a mirror account's server. Payload: { account_id, name, parent }.",
     payload: { object: { account_id: "int", name: "string", parent: opt("string") } },
-    returns: { object: { id: "int", path: "string" } },
+    returns: { object: { id: "int", path: "string", role: opt("string") } },
+  },
+  mail_delete_folder: {
+    description: "Delete a folder of a mirror account, on the server and with its messages in the table. Payload: { folder_id } or { account_id, path }.",
+    payload: { object: { folder_id: opt("int"), account_id: opt("int"), path: opt("string") } },
+    returns: { object: { id: "int", path: "string", deleted: "bool" } },
   },
   mail_save_draft: {
     description: "Save a draft in the account's Drafts folder, replacing an earlier one. Payload: { account_id, to, cc, bcc, subject, text, html, attachments, in_reply_to, replaces }.",
     payload: { object: { ...MESSAGE, replaces: opt("int") } },
     returns: { object: { id: opt("int"), uid: opt("int"), message_id: "string", replaced: opt("int") } },
   },
+  mail_oauth_start: {
+    description:
+      "Connect an account to Microsoft (Outlook.com, Microsoft 365) or Google (Gmail) instead of a password: answers { url }, where the application sends the browser for the user's consent. The browser comes back to return_to, with oauth_error=… if it failed. Payload: { account_id, provider, return_to }.",
+    payload: { object: { account_id: "int", provider: opt("string"), return_to: opt("string") } },
+    returns: { object: { url: "string", provider: "string" } },
+  },
   mail_send: {
-    description: "Send a message through the account's SMTP server and keep a copy in Sent. Payload: { account_id, to, cc, bcc, subject, text, html, attachments, in_reply_to, draft_id }.",
-    payload: { object: { ...MESSAGE, draft_id: opt("int") } },
+    description:
+      "Send a message through the account's SMTP server and keep a copy in Sent. Payload: { account_id, to, cc, bcc, subject, text, html, attachments, in_reply_to, draft_id, calendar }; calendar is { method, content } for an invitation or a reply to one (iTIP).",
+    payload: { object: { ...MESSAGE, draft_id: opt("int"), calendar: CALENDAR } },
     returns: {
       object: {
         message_id: "string", id: opt("int"), saved: "bool", save_error: opt("string"),
@@ -127,7 +141,8 @@ const tables = [
   {
     name: "mail_accounts",
     label: "Mail accounts",
-    description: "IMAP and SMTP accounts. An account with no owner is shared, and readable by every user at or above its minimum role.",
+    description:
+      "IMAP and SMTP accounts. A personal account is readable and writable by its owner; one with no owner is shared, readable by every user at or above its minimum role, and changed by an admin.",
     fields: [
       { name: "owner", references: "users", label: "Owner", description: "Empty for a shared account" },
       { name: "min_role", type: "int", label: "Minimum role to read", description: "Shared accounts: the least role that can read its mail" },
@@ -146,7 +161,18 @@ const tables = [
       { name: "smtp_security", type: "text", label: "SMTP security", description: "tls (465) or starttls (587)" },
       { name: "smtp_user", type: "text", label: "SMTP user" },
       { name: "smtp_password", secret: true, label: "SMTP password" },
-      { name: "auth", type: "text", required: true, default: "password", label: "Authentication" },
+      {
+        name: "auth",
+        type: "text",
+        required: true,
+        default: "password",
+        label: "Authentication",
+        description: "password, or oauth2: a token from Microsoft or Google, set by mail_oauth_start",
+      },
+      { name: "oauth_provider", type: "text", label: "OAuth provider", description: "microsoft or google" },
+      { name: "oauth_access_token", secret: true, label: "OAuth access token" },
+      { name: "oauth_refresh_token", secret: true, label: "OAuth refresh token" },
+      { name: "oauth_expires_at", type: "timestamp", label: "OAuth token expires" },
       { name: "folders", type: "json", label: "Folders", description: 'Ingest: the folders to watch (default ["INBOX"])' },
       { name: "processed_folder", type: "text", label: "Move imported mail to" },
       { name: "error_folder", type: "text", label: "Move failed mail to" },
@@ -219,12 +245,19 @@ const tables = [
       { name: "flagged", type: "bool", label: "Flagged" },
       { name: "answered", type: "bool", label: "Answered" },
       { name: "draft", type: "bool", label: "Draft" },
+      { name: "keywords", type: "json", label: "Keywords", description: "The message's other flags ($label1, $Forwarded, NonJunk, …), sorted" },
+      {
+        name: "headers",
+        type: "json",
+        label: "Headers",
+        description: "The header fields the module's \"Headers to keep\" names, by lower-case name (List-Unsubscribe, Authentication-Results, …)",
+      },
       { name: "body_state", type: "text", label: "Body", description: "full, headers (mirror mode's older mail, until opened) or too_large" },
       { name: "import_error", type: "text", label: "Import error" },
     ],
     unique: [["folder", "uid"]],
-    // A client groups conversations by `thread_key` (M9.4).
-    indexes: [["thread_key"]],
+    // A client groups conversations by `thread_key` (M9.4), and lists a folder by date.
+    indexes: [["thread_key"], ["folder", "sent_at"], ["folder", "internal_date"]],
     ownership: viaAccount("account"),
     min_role_read: 1,
     min_role_write: 1,
@@ -269,8 +302,69 @@ const configuration_workflow = () => ({
             label: "Extra CA certificates",
             type: "String",
             fieldview: "textarea",
-            sublabel: "PEM certificates of your internal CA, used to check the trusted servers above instead of the public ones. Certificates are always checked.",
+            sublabel: "PEM certificates of your internal CA, used to check the trusted servers above instead of the public ones.",
           },
+          {
+            name: "certificate_names",
+            label: "Certificate names",
+            type: "String",
+            fieldview: "textarea",
+            sublabel:
+              "For a server given by IP address, whose certificate is issued for a name: host name, one per line, " +
+              "e.g. 188.65.204.58 mail.example.com (or 188.65.204.58:465 mail.example.com). The certificate is checked " +
+              "against that name instead of the IP — still a full check.",
+          },
+          {
+            name: "unverified_servers",
+            label: "Servers whose certificate is not checked",
+            type: "String",
+            fieldview: "textarea",
+            sublabel:
+              "host or host:port, one per line: any certificate is accepted from these, self-signed, expired or for " +
+              "another name. The connection is still encrypted, but anyone who can intercept it can pose as the server " +
+              "and read the password. Only for servers on a network you trust.",
+          },
+          {
+            name: "extra_headers",
+            label: "Headers to keep",
+            type: "String",
+            fieldview: "textarea",
+            sublabel:
+              "Header fields stored in each message's headers column, one per line; a name ending in * keeps every header that starts so. " +
+              "Empty: List-Id, List-Unsubscribe, List-Unsubscribe-Post, Authentication-Results, X-Spam-*, Precedence and Auto-Submitted. A single - keeps none. " +
+              "Applies to mail stored from then on.",
+          },
+        ],
+      },
+    },
+    {
+      name: "Sign-in providers",
+      form: {
+        fields: [
+          {
+            name: "microsoft_client_id",
+            label: "Microsoft client ID",
+            type: "String",
+            sublabel:
+              "For Outlook.com and Microsoft 365 accounts, which refuse passwords: the Application (client) ID of an app registered in Microsoft Entra, " +
+              "with the redirect address https://<this server's admin host>/_feldspar/oauth/callback and the delegated permissions " +
+              "IMAP.AccessAsUser.All, SMTP.Send and offline_access.",
+          },
+          { name: "microsoft_client_secret", label: "Microsoft client secret", type: "String", fieldview: "password" },
+          {
+            name: "microsoft_tenant",
+            label: "Microsoft tenant",
+            type: "String",
+            sublabel: "common (any account; the default), consumers (Outlook.com, Hotmail and Live only), organizations, or your tenant's id",
+          },
+          {
+            name: "google_client_id",
+            label: "Google client ID",
+            type: "String",
+            sublabel:
+              "For Gmail without an app password: an OAuth client (web application) in Google Cloud, with the same redirect address and the scope https://mail.google.com/.",
+          },
+          { name: "google_client_secret", label: "Google client secret", type: "String", fieldview: "password" },
         ],
       },
     },

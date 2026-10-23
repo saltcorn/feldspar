@@ -45,6 +45,8 @@ mod install;
 mod map_tools;
 #[path = "model_providers.rs"]
 mod model_providers;
+#[path = "module_consent.rs"]
+mod module_consent;
 #[path = "module_actions.rs"]
 mod module_actions;
 #[path = "module_files.rs"]

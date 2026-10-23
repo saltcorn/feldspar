@@ -1995,14 +1995,28 @@ erDiagram
   }
   CHANGES["_fd_changes"] {
     int seq PK "identity; the log's order"
-    text table_name "the synced table, by name"
+    uuid changeset "the user action; UNIQUE (changeset, table_name, row_key)"
+    text table_name "the synced or history table, by name"
     text row_key "the primary key as text"
-    text op "insert | update | delete"
-    json fields "an update's changed columns; null otherwise"
-    int txid "the writing transaction, checked against pull watermarks"
-    uuid client_id "the uploading device; null for any other writer"
-    int mutation "the device's own number for the change"
+    text op "insert | update | delete, net of the changeset"
+    json old_values "update: changed columns before; delete: the whole row"
+    json new_values "update: changed columns after; insert: the whole row"
+    int txid "the LAST transaction that touched the entry, checked against pull watermarks"
     timestamp at
+  }
+  CHANGESETS["_fd_changesets"] {
+    uuid id PK "one user-level action"
+    timestamp at
+    uuid user_id "the originating caller; by value"
+    text session "derived from the login session; what an Undo action steps back through"
+    text source "request | import | workflow | undo | restore | sync | mcp | sql"
+    uuid application "by value"
+    text description
+    uuid cause "the changeset this one undid, or whose event started it"
+    text undo_table "an undo limited to one table; null for a whole changeset"
+    uuid client_id "the uploading device, for source sync"
+    int mutation "the device's own number for the change"
+    int txid "the first transaction"
   }
   SYNCCLIENTS["_fd_sync_clients"] {
     uuid id PK "the device"
@@ -2013,6 +2027,17 @@ erDiagram
     int last_mutation "highest upload already handled"
     timestamp created_at
     timestamp last_seen
+  }
+  SYNCKEYS["_fd_sync_keys"] {
+    uuid client_id PK "the device"
+    int mutation PK "the device's change that created the row"
+    text table_name
+    text row_key "the real key the server gave the row"
+    timestamp at
+  }
+  TXSETTINGS["_fd_tx_settings"] {
+    text name PK "SQLite only: a transaction-local setting, e.g. sc.changeset"
+    text value "deleted before its transaction commits"
   }
 
   ROLES ||--o{ USERS : "role -- enforced FK"
@@ -2055,7 +2080,12 @@ erDiagram
   APPS }o--o{ STREAMS : "streams[] -- by name"
   MODULES |o--o{ STREAMS : "provider -- by name, a stream provider the module supplies"
   TABLES ||--o{ CHANGES : "table_name -- by name, when attributes.sync is enabled"
-  SYNCCLIENTS |o--o{ CHANGES : "client_id -- by value, an uploaded change"
+  TABLES ||--o{ CHANGES : "table_name -- by name, when attributes.history is enabled"
+  CHANGESETS ||--o{ CHANGES : "changeset -- at most one entry per row"
+  CHANGESETS |o--o{ CHANGESETS : "cause -- undo, or what started a workflow run"
+  SYNCCLIENTS |o--o{ CHANGESETS : "client_id -- by value, an uploaded change"
+  SYNCCLIENTS ||--o{ SYNCKEYS : "client_id -- by value"
+  USERS |o--o{ CHANGESETS : "user_id -- by value"
   USERS ||--o{ SYNCCLIENTS : "user_id -- by value"
   APPS ||--o{ SYNCCLIENTS : "application -- by value"
 ```
@@ -2145,11 +2175,11 @@ ambient, and `row`/`old` are *out of scope* on an event that has no row (so nami
 run's `context` — §10.3) so an `only_if` and an action's settings cannot disagree about what is
 in scope.
 
-The nine built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_js_code`,
-`run_python_code` (§15.2), `send_email`, `publish` (§14.10) and `grant_role` (§7.4a: a user
-formula, a role, a duration or an `expires_at` formula, a key formula that is per user, and
-`once`, which grants nothing if a grant with that key ever existed for the user — the card-less
-trial; never the admin role), and they live in
+The ten built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_js_code`,
+`run_python_code` (§15.2), `send_email`, `publish` (§14.10), `undo` (§14.12) and `grant_role`
+(§7.4a: a user formula, a role, a duration or an `expires_at` formula, a key formula that is per
+user, and `once`, which grants nothing if a grant with that key ever existed for the user — the
+card-less trial; never the admin role), and they live in
 **`sc-core-actions`, above the row layer**. That placement is the design's one real constraint on where an action may live: a
 trigger's write goes through `sc-api`'s `rows` module, so it is coerced, validated,
 `File`-field-checked and *observed* exactly like an API caller's write. A second write path would
@@ -4403,10 +4433,15 @@ grants rather than replacing them: the applications area on with `allow_drop` of
 can write an SQL endpoint and cannot remove one.
 
 **A third area, `allow_modules`, is the exception to "on by default".** It offers the tagged
-`listModules` and `installModule` endpoints — so an agent writing a Python body can install the
-library it imports — and it is **off** unless a token or agent ticks it, because installing a
+`listModules`, `installModule` and `updateModule` endpoints — so an agent writing a Python body
+can install the library it imports, and change an installed module's settings (which reloads
+it; `updateModule` also needs `allow_edit`) — and it is **off** unless a token or agent ticks it, because installing a
 package runs a third party's code with the server's privileges and a Python one has no sandbox at
-all. No existing credential gains it by upgrading. **An MCP token is the exception to all of these
+all. No existing credential gains it by upgrading. **A fourth, `allow_history`,** is off unless
+ticked for the same kind of reason: its tools (`getRowHistory`, `listDeletedRows`, `getRowAsOf`,
+`listChangesets`, `getChangeset`, §14.12) read row data, which no other tool shows an agent, and
+its writes (`restoreRow`, `revertRow`, `undoChangeset`) also need the edit grant (undo the drop
+grant too). **An MCP token is the exception to all of these
 defaults:** a mint that leaves a flag out grants it (`sc_api::mcp::token_flags_from_submitted`) and
 the panel starts with every box ticked, because a token is minted by an admin, on purpose, for an
 agent they are handing the installation to; the stored `grants` is explicit, so the copilot's
@@ -11027,25 +11062,32 @@ keep working, so sync adds nothing to a user table. What it needs is:
 
 - **The table's setting:** `_fd_tables.attributes.sync` (`enabled`). It is sparse, so it is an
   attribute.
-- **One change-log for every table, `_fd_changes`:** `seq`, `table_name`, `row_key` (the primary
-  key as text), `op` (insert, update, delete), `fields` (the columns an update changed), `txid`,
-  and `client_id` and `mutation` for a change a device uploaded. A delete is an entry in the
-  log, so no table needs a "deleted" flag.
+- **One change-log for every table, `_fd_changes`, shared with row history (§14.12):** `seq`,
+  `table_name`, `row_key` (the primary key as text), `op` (insert, update, delete), the
+  `changeset` it belongs to, `old_values`/`new_values` (the changed columns; for an update,
+  the columns it changed are the keys of `new_values`) and `txid`. A change a device uploaded
+  belongs to a changeset that names the device and its change number (`_fd_changesets.client_id`,
+  `mutation`). A delete is an entry in the log, so no table needs a "deleted" flag.
 - **One row per device, `_fd_sync_clients`:** the user, the application, the watermark of its
   last pull, and the number of the last change it uploaded that the server applied.
 
 **Changes are recorded by database triggers**, not by the row layer: one `AFTER INSERT OR UPDATE
-OR DELETE` row trigger per synced table, all calling one function with the primary-key column as
-its argument. A trigger writes the log entry in the same transaction as the change, and also
+OR DELETE` row trigger (`_fd_changes`) per table that has sync **or** history switched on, all
+calling one function with the primary-key column as its argument. A trigger writes the log entry in the same transaction as the change, and also
 catches writes made outside Feldspar. An update that changes nothing records nothing; a change
 of primary key is recorded as a delete and an insert. The function runs with its owner's rights
 and a fixed `search_path`, so a writer needs no rights on the change-log and cannot forge or
-redirect entries. A device's upload sets who it is in
-transaction-local settings (`sc.sync_client`, `sc.sync_mutation`), the way the caller is
-passed for row-level security, so its own changes come back marked as its own. Switching sync on
-needs a one-column primary key in Saltcorn's own Postgres database; on SQLite it is refused for
-now, because a SQLite trigger cannot read a row generically and would have to be regenerated with
-every schema change.
+redirect entries. A device's upload opens one changeset per change (`source = 'sync'`, with
+the device and its change number), passed in the transaction-local `sc.changeset` the way the
+caller is passed for row-level security. The writes of the triggers that change fires carry the
+same changeset, in their own transactions too, so they are marked as the device's as well. Writes
+to one row within one changeset are **merged into one entry** (§14.12). The merge moves the
+entry's `txid` forward to the transaction doing it, and an entry is only removed when everything
+merged into it happened in that same transaction, so a pull taken between two transactions of one
+changeset never misses the second. Switching sync on
+needs a one-column primary key in Saltcorn's own database. On SQLite a trigger cannot read a row
+generically, so each table's triggers are generated from its columns and regenerated with every
+schema change (§14.12, "As built (H6)").
 
 **Pulls are cut at a watermark, not at a time or a count.** A number or timestamp is taken
 before a transaction commits, so a transaction that started earlier can become visible after a
@@ -11124,7 +11166,380 @@ pages and screens show "…" for it.
 Filtering by more than the access rules (only recent rows, say) is left for later.
 
 **Cleanup:** old entries superseded by a later entry for the same row are removed after a
-retention period. A device whose watermark is older than what is kept reloads its tables.
+retention period, by the one cleanup job sync shares with row history: an entry is removed only
+once history is done with it too (§14.12). A device whose watermark is older than what is kept
+reloads its tables.
+
+### 14.12 Row history (planned, `TODO-history.md`)
+
+A table may keep its **history**: for every insert, update and delete, what the row was before,
+who changed it and when. This serves three purposes: **undo** (take back what one user action
+did), **audit** (who changed which field) and **restore** (get a deleted row back, or put a
+row back as it was). The survey of how other systems do it, and the reasons for each choice
+below, are in [ROW_HISTORY.md](ROW_HISTORY.md).
+
+Saltcorn 1 had a *versioned* switch that created a `{table}__history` shadow table, and the row
+layer wrote a full copy into it on every write. That design had four problems, and each one
+explains a decision here:
+
+- **One save gave several versions.** A stored calculated field's recomputation and a
+  trigger's follow-up write each added a version. Here, writes are grouped into
+  **changesets**, with **one entry per row per changeset**.
+- **The shadow table had to follow every schema edit.** Here there is no shadow table. Rows
+  are stored as JSON in one log.
+- **Raw SQL and bulk writes were missed.** Here capture is done by a database trigger.
+- **There was nothing to undo a multi-table action as one unit.** Here the changeset is that
+  unit.
+
+**History is off by default** and is switched on per table: `_fd_tables.attributes.history`,
+`{ "enabled": true, "keep_days": 365 }` (no `keep_days` means keep forever). The setting is
+sparse, so it is an attribute.
+
+#### One change log, shared with offline sync
+
+History and sync (§14.11) record the same thing, a change to a row, so they share **one log
+(`_fd_changes`), one trigger function, one trigger per table and one cleanup job**. The trigger
+(`_fd_changes`) exists while **either** setting is on, and is dropped only when both are off.
+What differs is who reads the log and how long they keep it:
+
+| | Sync | History |
+|---|---|---|
+| Reads | the keys changed between two watermarks | the values, per row and per changeset |
+| Keeps an entry | until superseded and past sync's retention | for `keep_days` |
+| Only theirs | `_fd_sync_clients`, watermarks, pull and push | the read API, restore, undo |
+
+The switch-on checks are one function, `change_log_key()`: the table is in Saltcorn's own
+Postgres database, is not a system table, is not served by a provider, and has a one-column
+primary key. An error names the feature that asked. The capability is `change_triggers`, which
+both backends have: SQLite's per-table triggers are H6 (and sync's S1.4).
+
+#### Storage
+
+`_fd_changes`, one entry per row per changeset:
+
+- `seq`: an identity column, the log's order.
+- `changeset`: the user action the entry belongs to.
+- `table_name`, `row_key`: which row. The key is stored as text.
+- `op`: `i`, `u` or `d`, the **net** operation of the changeset on that row.
+- `old_values`: for an update, the changed columns' values before; for a delete, the whole row.
+- `new_values`: for an update, the changed columns' values after; for an insert, the whole row.
+- `txid`: the **last** transaction that touched the entry, which is what a pull reads.
+- `at`: when it was last touched.
+
+The key `UNIQUE (changeset, table_name, row_key)` is what collapses repeated writes. Sync's
+indexes `(txid, seq)` and `(table_name, row_key, txid)` serve history's per-row reads too.
+
+`_fd_changesets`, one row per user-level action:
+
+- `id`, `at`, `txid` (the first transaction).
+- `user_id`: the **originating** caller. A trigger action that runs with admin authority still
+  records the user who caused it, because that is the answer to "who changed this?".
+- `session`: a key **derived** from the login session's token hash (a hash of it, never the
+  hash itself, which is `_fd_sessions`' primary key). For a bearer-token caller (§13.6) it is
+  derived from the token's id. It is null for anonymous callers and for writes with no
+  Feldspar context.
+- `source`: `request`, `import`, `workflow`, `undo`, `restore`, `sync`, `mcp` or `sql`.
+- `application`, `description` (an optional reason).
+- `cause`: for an undo, the changeset it undid; for a workflow run, the changeset whose event
+  started it.
+- `undo_table`: for an undo limited to one table, that table; null for a whole-changeset undo.
+- `client_id`, `mutation`: for a sync upload, the device and its own change number.
+
+A row's version number is not stored. "Version 7" is the entry's position among the row's
+entries in `seq` order, computed when read.
+
+#### The changeset travels with the caller
+
+A changeset is **not a transaction**. A trigger's action commits *after* the write that fired
+it, in its own transaction (§10.2), so grouping by `txid` would separate the user's edit from
+the denormalising write its trigger made. Instead, `CallerContext` carries `changeset` next to
+the trigger `chain` it already carries, and `set_caller_context` sets it as the
+transaction-local `sc.changeset`, beside `sc.role` and `sc.user`. `Event` carries it too, so a
+trigger's action passes it to the writes it makes.
+
+`sc.changeset` holds a JSON object: the changeset's id, `source`, `application`, `cause` and
+the rest of its row, and the writer's `user_id` (with `session` only when there is a user). The
+trigger needs all of it, because it writes the `_fd_changesets` row. Most code never handles a
+changeset: one is **ambient** for the task that runs the action (`sc_catalog::changeset::scope`),
+and `CallerContext::new` picks it up. The server's request middleware sets one for each request,
+and so do a CSV import, an MCP tool call, a workflow step (from the run) and a trigger's action
+(from the event). A write to a change-logged table always runs in a caller-context transaction,
+so the GUCs reach the trigger.
+
+- **A request** mints one changeset. Its `_fd_changesets` row is written by the first
+  recorded entry, so a request that changes nothing leaves nothing behind.
+- **A trigger** fired by a write gets the event's changeset. **A stored calculated field**
+  (§6.2, when it exists) is recomputed under the writer's context. Both merge into the user's
+  entries.
+- **A workflow run** gets its own changeset when it starts, kept on `_fd_runs`, so steps resumed
+  days later still join it. Its `cause` is the changeset whose event started the run.
+- **A CSV import, an MCP tool call, an undo, a restore**: one changeset each. **A sync upload**:
+  one per device change, because each change is its own transaction and is accepted or refused
+  on its own (§14.11).
+- **A write with no Feldspar context** (`psql`, another program): the trigger function mints a
+  changeset on the transaction's first write and `set_config`s it transaction-locally, so the
+  rest of that transaction joins it, with `source = 'sql'`.
+
+`sc.change_log = 'off'` skips recording. Only a backup restore sets it: the log is backed up and
+restored as itself, and devices notice a restore by the database identity (S2.7).
+
+#### The trigger function, and the merge
+
+`_fd_record_change` is `SECURITY DEFINER` with a pinned `search_path` and is `CREATE OR
+REPLACE`d at every boot, as it is now. For each row:
+
+1. **The diff.** For an update, the diff is the columns that are `IS DISTINCT FROM` their old
+   value. An update that changes nothing records nothing. A change of primary key is a delete
+   plus an insert. These are sync's existing rules, and the same rules for both features,
+   which is why there is no per-table list of excluded columns: sync must see every change.
+2. **The changeset.** It is `sc.changeset`, or a new one (see above). Its row is inserted with
+   `ON CONFLICT DO NOTHING`, and a transaction-local flag skips that after the first entry.
+3. **The upsert** on `(changeset, table_name, row_key)`, merged with the existing entry:
+   - `old_values = new.old_values || existing.old_values`: the earlier value of each column wins.
+   - `new_values = existing.new_values || new.new_values`: the later value wins.
+   - **The net op**:
+     - `i`+`u` is `i` (the update is folded into the inserted row).
+     - `u`+`u` is `u`.
+     - `u`+`d` is `d`, with the whole original row rebuilt as the deleted row overlaid with the
+       stored old values.
+     - `d`+`i` is `u`.
+     - `i`+`d` is nothing.
+   - Columns whose old and new values are equal are dropped. An update left with no columns,
+     or an insert followed by a delete, is **removed only if every write merged into it was in
+     the current transaction**. The check is that the changeset's row was created in this
+     transaction. That is a little stricter than needed: an entry made and emptied in the second
+     transaction of a changeset is kept, empty. Otherwise it is kept with no values. An emptied
+     insert keeps the op `i` with no values, and a later write to the row starts it afresh. A device may already have
+     pulled the intermediate state, so the pull must still see the key. History readers skip
+     entries with no values.
+   - `txid = txid_current()`. Moving it forward makes the next pull see the entry again.
+
+Merging works across transactions (the after-commit trigger transaction upserts onto an entry
+already committed), and the unique index serialises two writers in one changeset. The trigger
+is `AFTER … FOR EACH ROW`. If bulk updates turn out to be too slow, a statement-level trigger
+with transition tables can do the same merge as one `INSERT … SELECT … ON CONFLICT`, behind the
+same storage.
+
+#### Reading
+
+All reads go through the row layer's access rules. **By default only the admin** may read a
+table's history. `history.min_role` opens it further, and then each row is checked too: a user
+sees the history of a row they may read now, and a deleted row's history if the read rule
+grants it when evaluated (reified, as for an `only_if`) against the deleted row. Secret fields
+(§6.2) stay as envelopes in the log and are always shown as the sentinel.
+
+- `GET {table}/{key}/history`: the row's entries, newest first, each with its changeset's user,
+  time, source and description, and the field-level old and new values.
+- `GET {table}/deleted`: rows whose last entry is a delete and whose key does not exist now,
+  with their deleted image.
+- `GET {table}/{key}?as_of=<time | seq>`: the row rebuilt by starting from the current row
+  (or the deleted image) and applying the `old_values` of later entries, newest first.
+- `GET /changesets?user=&table=&source=&since=` and `GET /changesets/{id}`: what one action did,
+  across tables.
+
+**As built (H2).** The rule lives in one place, `sc_api::history::HistoryReader`, over the log
+queries in `sc_catalog::history`. The admin API paths are `GET /api/tables/{table}/rows/{key}/history`,
+`/api/tables/{table}/deleted`, `/api/tables/{table}/rows/{key}?as_of=` and
+`/api/changesets[/{id}]`. They are **admin-only routes**, like the admin API's row CRUD: a table
+whose history is opened to role 80 is opened for the surfaces an application's users reach (the
+code API's `Table` history methods, H6), and the admin API is not one of them. A table must have
+history on to be read, and changesets show only entries of tables that have it on. Changesets
+span tables, so listing and reading them is always the admin's. Below the admin, a reader sees
+who made a change by user id, not by email. `as_of` takes a time, a date or an entry's `seq`
+(meaning just after it), and answers `{ row, removed }`, with values of dropped columns under
+`removed`. A history entry lists its `changes` field by field, each marked `removed` when the
+column is gone. The MCP tools are these five endpoints, in their own area `allow_history`, which
+is off unless granted (as `allow_modules` is): history is row data, and the schema tools are
+deliberately not.
+
+These are also admin screens: a History tab in the row editor, a Deleted tab on the table with
+Restore, and a changeset browser with Undo. They are MCP tools too, and in code bodies the v1
+`Table` history methods and `db.<table>`'s history terminals (§10.1, "As built (H6)").
+
+#### Restore and undo
+
+Restore and undo are **ordinary writes through the row layer**, as the caller. Write rules,
+ownership, validation and triggers apply, so an undo grants nothing the caller could not do by
+hand. Each runs in **one transaction** under a new changeset (`source = 'undo' | 'restore'`,
+`cause` = what it reverses), and is recorded like any other change. An undo can therefore be
+undone.
+
+- **Restore a deleted row** inserts its deleted image. Columns that no longer exist are dropped
+  and reported. A reference to a row that is gone refuses the restore with the reason.
+- **Revert a row to a version** is one update, setting each column to its value as of that
+  version.
+- **Undo a changeset** applies each entry's inverse: an insert becomes a delete, a delete an
+  insert, and an update sets `old_values`. Deletes go children first and inserts parents first,
+  by foreign-key depth.
+- **The conflict check.** Each entry's columns must still hold its `new_values`. If someone has
+  changed them since, the undo is refused, naming the rows and fields. An admin's undo may pass
+  `force` to overwrite them anyway. This is the same question sync's field-wise merge (S3.3)
+  asks: has this changed on the server since?
+- **Effects outside the database** (an email a trigger sent) are not undone. Triggers fire on
+  the undo's writes as on any other write, and the admin screens say so.
+
+An entry counts as **undone** when an undo changeset has the entry's changeset as its `cause`,
+and its `undo_table` is null or names the entry's table.
+
+**As built (H3).** `sc_api::undo::Reverser` does all three, writing through `write_as` (the REST
+API's create, update and delete rules) on a `SharedTx` over the primary database, inside a
+changeset whose `session` and `application` are the ambient (calling) one's, so the Undo action
+can find it. The admin API routes are `POST /api/tables/{table}/deleted/{key}/restore`,
+`POST /api/tables/{table}/rows/{key}/revert` (`{ version }`, the number from the row's history)
+and `POST /api/changesets/{id}/undo` (`{ table?, force? }`), admin-only like the reads, and MCP
+tools in the `allow_history` area (restore and revert need the edit grant, undo edit and drop).
+Details the text above leaves open:
+
+- A restore's `cause` is the delete's changeset; a revert's is the row's latest entry's. Restore
+  and revert need the history to be readable by the caller (they show what the row was).
+  Revert refuses a version that is the row's deletion, and one the row is already at; a row
+  deleted since is inserted.
+- An undo answers `{ undone, changeset, entries, dropped, conflicts }`. **A refusal is an answer,
+  not an error**: `undone: false` and the conflicts (`table`, `key`, `field`, `expected`,
+  `actual`, `reason`; `field` is null when the row is gone, or back), so the screen and an agent
+  can show them and offer `force`. Below the admin, an undo is only of the caller's own
+  changesets, and `force` is refused.
+- Order: rows put back first (parents first by foreign-key depth), then updates, then rows
+  removed (children first); within each, the latest entry first. A self-reference or a cycle
+  counts as no reference.
+- `force` overwrites changed fields and a row that has come back; a row that has been deleted
+  since cannot be updated or deleted, and is passed over.
+- Every written row's key fields are checked first, inside the transaction (so a parent put
+  back earlier in the same undo counts). A dangling one refuses the whole write with
+  "`tasks.project` refers to row 7 of `projects`, which no longer exists; restore that row
+  first".
+- Calculated and document columns are not written back; dropped columns are left out and
+  reported as `dropped`.
+
+#### The Undo action
+
+`undo` is a core action (`sc-core-actions`), so an application's button, a view's action or a
+trigger can call it. It steps back through **the caller's own session**:
+
+- **No `table` configured**: undo the most recent changeset of this session that still has
+  entries not undone, and is neither an undo nor the changeset of the request running the
+  action. Running it again steps back one action further, like an editor's undo stack.
+- **`table` configured** (it must have history on, checked when the trigger is saved): undo
+  only that table's entries, from the most recent changeset of this session that has entries in
+  that table not yet undone. The undo changeset records `undo_table`. A later unconfigured undo
+  of the same changeset reverses only its remaining entries.
+
+The undo is refused with a sentence when there is nothing to undo, when the caller has no
+session (anonymous callers have none), or when the conflict check fails. It does not use
+`force`. Changesets from other sessions, including the same user's other devices, are never
+picked. Redo is not a separate mechanism: it would be an undo of the session's last undo, and
+is left for later.
+
+**As built (H4).** `sc_core_actions::Undo` finds its changeset with
+`sc_catalog::history::session_undo_target` (the event's changeset gives the session and the id
+of the running request, which is skipped), then calls H3's `Reverser::undo_changeset` as the
+event's caller, without `force`. The undo changeset inherits the session from the ambient
+(request) changeset, so the next press skips it as an undo. "Most recent" is by the
+changeset's `at`, then `txid`; `_fd_changesets (session, at)` is indexed for it. A refusal is an
+`invalid` error carrying the sentence (an exposed trigger answers it as the request's error).
+On success the result is `{ undid, changeset, entries }`. The action has no required setting,
+the one built-in without one. It reaches applications as any action does: a trigger with it,
+exposed by the application, is an API endpoint and a Saltcorn UI button.
+
+#### Files
+
+A `File` field whose file is removed with its row (`files_removed_on_delete`) keeps the file
+while history may still restore it. On a table with history on, a delete **does not remove the
+file**. The cleanup job removes it once the delete entry has expired, unless some row or a
+remaining entry still references the path. This is the same check as `still_referenced`, plus
+the log.
+
+#### Schema edits and retention
+
+- **Add a column**: nothing to do.
+- **Drop a column**: old entries keep the key. Readers show it as a removed field, and a
+  restore skips it.
+- **Rename a column**: the same schema batch rewrites the JSON keys of that table's entries,
+  in the `schema_edit.rs` hook that sync's S2.8 also needs.
+- **Change a type**: values are kept as they were. A restore casts, and a value that will not
+  cast is reported.
+- **Drop a table**: its entries are deleted, and the drop dialog says so. A later table with the
+  same name must not inherit them.
+
+**One cleanup job** on the periodic scheduler (§10.2) serves both features. An entry is
+removed once **both** are done with it:
+
+- *Sync* is done with it when the table is not synced, or when the entry is superseded and
+  past sync's retention.
+- *History* is done with it when the table has no history, or when the entry is older than
+  `keep_days`.
+
+After that, the job removes the files whose delete entries expired, and then changesets with
+no entries left.
+
+**As built (H5).** History's `keep_days` is a table setting (`history_keep_days` in `PATCH`
+table settings, the admin table screen and MCP `alter_table`; 0 or absent keeps forever).
+`rows.rs` keeps every `remove_file` file while the table has history on. The job is
+`sc_catalog::retention::clean_change_log(catalog, now)`, run hourly by the server
+(`change_log_cleanup.rs`), and answers what it removed. Sync's retention is
+`SYNC_KEEP_DAYS` (30). Entries of tables that are no longer in the catalog go whatever their
+age. A file is removed only when no row of the table (read as the admin, so row-level security
+hides none) and no remaining entry of the table names its path. An empty changeset goes a day
+after its `at`, so a write joining it is not raced. `_fd_sync_keys` gained `at`, and pairs older
+than sync's retention go too. A device whose last pull is older than sync's retention gets
+whole tables (`reset`) on its next pull.
+
+A rename is the `name` setting of `alter_field` (MCP `rename_to`, `name` on the admin API's
+`updateField`): `RENAME COLUMN` on both backends, the overlay row follows, and the batch's
+`change_log_edits` (the hook sync's S2.8 shares) rewrite the key in the table's `old_values` and
+`new_values`. It is refused while a calculated field, a constraint, the ownership formula,
+another table's key or a module's declaration names the field. Renaming the key column re-creates
+the trigger. A dropped table's entries and sync key pairs are deleted in the drop's batch, and
+the drop confirmation says the row history goes too. Known gap: a row inserted and deleted in
+one transaction of a history table leaves no delete entry, so its file is never removed.
+
+**As built (H6).** *Code bodies.* `db`'s host takes `op: "history"` requests
+(`sc_api::code_host::history`) beside `models`, at the plan's authority: the admin's by default,
+the caller's or a named user's when the body says so, through H2's `HistoryReader` and H3's
+`Reverser`, so the role from `history.min_role`, the row's read rule and the write rules are the
+admin API's. `what` is `history`, `deleted`, `as_of`, `restore` or `revert`, which are
+`db.<table>.history(key)`, `.deleted()` (paged by `.limit()`/`.offset()`), `.asOf(key, when)`
+(`as_of` in Python), `.restore(key)` and `.revert(key, version)` in both languages; and
+`versions`, `restore_version`, `undo_row` and `redo_row`, which are v1's `table.get_history(id)`,
+`restore_row_version`, `undo_row_changes` and `redo_row_changes`. `get_history` rebuilds each
+version from the row now and the log (oldest first, the whole row after each version, with v1's
+`_version`, `_time` and `_userid` and also `_deleted`, `_op`, `_changeset` and `_source`), and
+requires the id, because v1's every-row answer has no cheap counterpart. v1's
+`_restore_of_version` is inferred: the version a restore went back to is the latest earlier
+version, not itself a restore, whose row it equals; undo goes to the version before it, redo to
+the next one that is not a restore, and nothing to step to does nothing, as in v1. A restore to
+the version the row is already at writes nothing (`Reverser::revert_row_if_changed`).
+`insert_history_row` and `compress_history` stay refused. A restore is refused inside a workflow
+step's transaction, which it would wait on. `write_as`'s write floor is now met by the role of the
+context the write runs under as well as the user's, which is what lets a code body restore with
+the admin's authority on behalf of a lower or absent caller.
+
+*SQLite* (`sc_catalog::change_log_sqlite`). The design's "connection-local temp table" cannot
+work: a trigger in the main schema cannot read the `temp` schema. Transaction-local settings are
+rows of a main-schema table, `_fd_tx_settings` (`sc_db::TX_SETTINGS_TABLE`), written by
+`SqliteTransaction::set_local` and deleted before the transaction commits. SQLite allows one
+writer at a time, so nobody else ever sees them, and a rollback takes them with it. A read-only
+transaction, or a database without the table, keeps none. Each recorded table has three triggers,
+`_fd_changes_{table}_ins`, `_upd` and `_del`, generated from its columns, that turn the row into
+JSON (booleans as JSON booleans, valid JSON in a JSON column as JSON, a blob as `\x` and its hex,
+everything else as stored) and insert it into the view `_fd_record_change`. That view's
+`INSTEAD OF INSERT` trigger is the merge, written once and recreated at every boot: it mints a
+`sql` changeset when none is set, writes the changeset's row once with a `:new`/`:old` marker,
+upserts the entry with Postgres's merge rules, drops unchanged columns, removes an emptied entry
+only when its changeset began in this transaction, and moves the entry's `seq` past every number
+given out. `_fd_changes.seq` is `AUTOINCREMENT` there, so a removed entry's number is never
+reused, and `txid` holds the `seq` the write was given. A write from another program has no
+settings and gets a changeset **per row**, removed from the settings at once, because nothing
+tells a trigger where another program's transaction ends. Schema changes keep the triggers in
+`Catalog::apply_schema_batch_in` (and `create_field`/`drop_field`): before a change to a table
+that has them they are dropped (SQLite refuses to drop a column a trigger names, and a rebuild
+would recreate them from their old text), and after it they are generated again from
+`pragma_table_info`. `schema_edit`'s switch generates them from the projected table. The readers,
+the cleanup job and the rename rewrite have SQLite spellings (`json_each`, `json_group_array`,
+`json_set`/`json_remove`, `CAST(… AS TEXT)`, `DELETE … RETURNING` instead of a data-modifying
+CTE, numbered placeholders), and sync's watermark on SQLite is the last `seq` (`n:n:`), with the
+changed keys those of entries after it. `SqliteTransaction` now also turns `query_only` off when a
+read-only transaction commits, which it had left on the pooled connection.
 
 ## 15. Code adapters and polyglot plugins (`sc-module`, `sc-python`)
 
@@ -11636,6 +12051,23 @@ which is a code body's `fs(…).asUser()` — the store's floor and every rule u
 for the caller's own download, and a refusal is the same refusal. It is read-only: a module
 writes nowhere but its own areas. The mail module's `mail_send` attaches an application file this
 way, so a user cannot mail themselves a file they could not have downloaded.
+
+**A consent flow (TODO-imap M10.3).** An action also gets **`oauth.begin(request)`**, a seventh
+ask surface, `oauth` (`CallHosts::oauth`, `sc_module::consent`), which only an action carries: it
+asks for the **caller's** consent at an OAuth 2.0 provider, for tokens the module keeps in its own
+row. The request names the provider's addresses, client, scopes and extra parameters, a
+`return_to` path, and `store: { table, id, fields: { access_token, refresh_token, expires_at },
+set }`. It is checked before anything is kept: the caller is a signed-in user, the addresses are
+`https` (or loopback), `params` does not set the request's own parameters, and the table is one
+the module declared, the token fields its declared **Secret** fields and `set` its declared fields.
+The answer is `{ url: "/_feldspar/oauth/consent/<id>" }`, which the application sends the browser
+to. The server then runs the browser's half on `sc_server::oauth`'s routes: the consent route
+refuses any session but the caller's, sets the binding cookie and redirects with PKCE; the
+shared callback (on the admin UI's host) exchanges the code; the completion, in the browser that
+started, writes the tokens through the row layer (sealed, and heard by the module's service as a
+change that is not its own) and leaves for `return_to`, with `oauth_error=…` on a failure. The
+module never sees the code, and the application never sees a token. Renewing a token is the
+module's own business, with its own `fetch`.
 
 **The vocabulary** is four functions, store-relative paths throughout:
 `write(store, path, data, { contentType, filename }) → path`, `read(store, path, { encoding }) →

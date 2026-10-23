@@ -524,6 +524,87 @@ test("M9.6: at most two IMAP connections per account, whatever the app calls in 
   }
 });
 
+// The field report (2026-10-22): folders made and deleted elsewhere, a folder row deleted by the
+// app, keywords, and an invitation sent to a local address.
+test("mail_sync_now lists folders again; mail_delete_folder; a new folder's role; keywords; a calendar part", { skip, timeout: 90_000 }, async () => {
+  await reset(USER);
+  await as(USER, (c) => c.mailboxCreate("Elsewhere"));
+  await append(USER, "Elsewhere", [mail({ subject: "e1" })]);
+  await append(USER, "INBOX", [mail({ subject: "labelled" })], { flags: ["$label1", "\\Seen"] });
+  const sink = await startSink();
+  const s = start();
+  try {
+    await idle(s);
+    assert.deepEqual(s.row("labelled").keywords, ["$label1"]);
+    assert.equal(s.rows("Elsewhere").length, 1);
+
+    // Another client deletes a folder and changes a keyword: mail_sync_now sees both at once,
+    // not at the next poll, and the account does not go to error over the missing folder.
+    await as(USER, async (c) => {
+      await c.mailboxDelete("Elsewhere");
+      const lock = await c.getMailboxLock("INBOX");
+      try {
+        await c.messageFlagsAdd("1:*", ["$label4"]);
+      } finally {
+        lock.release();
+      }
+    });
+    await s.act("mail_sync_now", ann, { account_id: s.account.id, wait: true });
+    await idle(s);
+    assert.equal(s.folder("Elsewhere"), undefined);
+    assert.equal(s.tables.mail_messages.some((m) => m.subject === "e1"), false);
+    assert.ok(!s.runner.folders.has("Elsewhere"), "forgotten by the runner");
+    assert.deepEqual(s.row("labelled").keywords, ["$label1", "$label4"]);
+    assert.equal(s.tables.mail_accounts[0].status, "idle");
+
+    // A folder row deleted by the app is made again at the next listing, not synced into.
+    const junk = s.folder("Junk");
+    s.tables.mail_folders.splice(s.tables.mail_folders.indexOf(junk), 1);
+    await s.act("mail_sync_now", ann, { account_id: s.account.id, wait: true });
+    await idle(s);
+    assert.ok(s.folder("Junk") && s.folder("Junk").id !== junk.id);
+    assert.equal(s.folder("Junk").role, "spam");
+    assert.equal(s.tables.mail_accounts[0].status, "idle");
+
+    // A folder made with a role's name has the role at once.
+    const archive = await s.act("mail_create_folder", ann, { account_id: s.account.id, name: "Archive" });
+    assert.equal(archive.role, "archive");
+    assert.equal(s.folder("Archive").role, "archive");
+
+    // mail_delete_folder: on the server, with its messages; INBOX and a parent refused.
+    await s.act("mail_create_folder", ann, { account_id: s.account.id, name: "Old" });
+    await append(USER, "Old", [mail({ subject: "o1", attachment: { name: "o.txt", data: "o" } })]);
+    await s.act("mail_sync_now", ann, { account_id: s.account.id, wait: true });
+    await idle(s);
+    assert.equal(s.rows("Old").length, 1);
+    await s.act("mail_create_folder", ann, { account_id: s.account.id, name: "Inner", parent: "Old" });
+    await assert.rejects(s.act("mail_delete_folder", ann, { account_id: s.account.id, path: "Old" }), /has folders inside it/);
+    await assert.rejects(s.act("mail_delete_folder", ann, { folder_id: s.folder("INBOX").id }), /INBOX cannot be deleted/);
+    await assert.rejects(s.act("mail_delete_folder", bob, { folder_id: s.folder("Old").id }), /not found/);
+    const inner = s.folder(`Old${s.folder("INBOX").delimiter}Inner`);
+    await s.act("mail_delete_folder", ann, { folder_id: inner.id });
+    const old = s.folder("Old");
+    const result = await s.act("mail_delete_folder", ann, { account_id: s.account.id, path: "Old" });
+    assert.deepEqual(result, { id: old.id, path: "Old", deleted: true });
+    assert.equal(s.folder("Old"), undefined);
+    assert.equal(s.tables.mail_messages.some((m) => m.subject === "o1"), false);
+    assert.ok(!(await as(USER, (c) => c.list())).some((b) => b.path === "Old"), "gone from the server");
+    s.runner.wake();
+    await idle(s);
+    assert.equal(s.tables.mail_accounts[0].status, "idle");
+
+    // An invitation to a local address: a text/calendar alternative with its method.
+    const ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "METHOD:REQUEST", "BEGIN:VEVENT", "UID:meet-1@example.com", "SUMMARY:Meet", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+    await s.act("mail_send", ann, { account_id: s.account.id, to: "carol@localhost", subject: "Meet", text: "Come along", calendar: { method: "REQUEST", content: ics } });
+    const source = sink.messages[sink.messages.length - 1].source.toString();
+    assert.match(source, /Content-Type: text\/calendar; charset=utf-8; method=REQUEST/i);
+    assert.deepEqual(sink.messages[sink.messages.length - 1].to, ["carol@localhost"]);
+  } finally {
+    await s.stop();
+    await sink.close();
+  }
+});
+
 after(async () => {
   if (up) await reset(USER).catch(() => {});
 });

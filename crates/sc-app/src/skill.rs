@@ -86,10 +86,10 @@ fn tool_lines(catalog: &Catalog) -> (Vec<ToolLine>, Vec<ToolLine>, Vec<ToolLine>
         None => always.push(line),
         Some(Area::Triggers) => triggers.push(line),
         Some(Area::Applications) => applications.push(line),
-        // No composite tool is in the modules area — its two tools are tagged
+        // No composite tool is in the modules or history area — their tools are tagged
         // endpoints, which this set does not hold — so this arm is for a tool
         // added there later, listed rather than dropped.
-        Some(Area::Modules) => always.push(line),
+        Some(Area::Modules) | Some(Area::History) => always.push(line),
     };
 
     for tool in set.tools() {

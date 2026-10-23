@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use sc_api::ApiProvider;
 use sc_api::code_host::TableHost;
 use sc_api::schema_edit::{self, ApplyOptions, Operation};
 use sc_catalog::{Catalog, ModuleTables, bootstrap_field_meta, bootstrap_table_meta};
@@ -62,6 +63,7 @@ fn mail_tables() -> Vec<TableDecl> {
                 { "name": "owner", "references": "users" },
                 { "name": "min_role", "type": "int", "required": true, "default": 40 },
                 { "name": "label", "type": "text" },
+                { "name": "display_name", "type": "text" },
                 { "name": "imap_password", "secret": true },
             ],
             "ownership": ACCOUNT_RULE, "min_role_read": 1, "min_role_write": 1,
@@ -622,4 +624,92 @@ async fn a_module_installed_twice_changes_nothing_and_an_upgrade_adds_a_field() 
 
     host.shutdown().await;
     let _ = std::fs::remove_dir_all(installer.root());
+}
+
+/// The account rule lets an owner write their own row: the write path checks
+/// the same rule as the read with `_read` false, so `owner === user.id` alone
+/// grants it — for a single field, and for the whole row sent back as the GET
+/// answered it (the password as its sentinel), through the row layer and the
+/// REST API. The field report of 2026-10-22 saw "not found" for such a PUT;
+/// this is the case it describes, and it passes.
+#[tokio::test]
+async fn an_owner_may_update_their_own_account() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = Arc::new(catalog(&db).await?);
+    let report = sync(&cat, MODULE, &mail_tables(), &ModuleTables::new()).await;
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+    sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
+    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80).await?;
+    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80).await?;
+    let admin = TableHost::new(&cat);
+    let anns = ask(
+        &admin,
+        json!({ "op": "insert", "table": "mail_accounts",
+                "values": { "label": "ann@", "owner": ann.id.to_string(), "min_role": 1,
+                            "imap_password": "hunter2" } }),
+    )
+    .await?["id"]
+        .clone();
+    let id = anns.to_string();
+    #[cfg(feature = "deno-host")]
+    sc_expr::set_isolate_prime(sc_module::prime_v8);
+    let evaluator: Arc<dyn JsEvaluator> = Arc::new(DenoEvaluator::new());
+    let accounts = cat.require("mail_accounts")?;
+    let update = |user: &sc_auth::User, body: Json| {
+        let (accounts, evaluator, id, user) = (&accounts, &evaluator, &id, user.clone());
+        let cat = &cat;
+        async move {
+            sc_api::update_row_as(
+                cat,
+                accounts,
+                id,
+                &body,
+                user.role,
+                Some(&user),
+                Some(evaluator),
+                &[],
+                &sc_api::rows::Executor::Pooled,
+            )
+            .await
+        }
+    };
+    let renamed = update(&ann, json!({ "label": "Ann's mail" })).await?;
+    assert_eq!(renamed["label"], json!("Ann's mail"));
+    let whole = update(
+        &ann,
+        json!({ "id": anns, "label": "Ann", "owner": ann.id.to_string(), "min_role": 1,
+                "imap_password": "••••••••" }),
+    )
+    .await?;
+    assert_eq!(whole["label"], json!("Ann"));
+    assert!(update(&bob, json!({ "label": "Bob's now" })).await.is_err());
+
+    // The same through the REST API, as an application's page saves it.
+    let rest = sc_api::RestProvider::project("/api", &[accounts.clone()])
+        .with_evaluator(evaluator.clone());
+    let path = format!("/api/mail_accounts/{id}");
+    let listed = rest
+        .handle(sc_api::ApiRequest::get("/api/mail_accounts"), &cat, Some(&ann))
+        .await?;
+    let mut row = listed.body[0].clone();
+    row["display_name"] = json!("Ann A.");
+    for body in [json!({ "label": "Ann via REST" }), row] {
+        let saved = rest
+            .handle(
+                sc_api::ApiRequest::new(sc_api::Method::Put, &path).body(body.clone()),
+                &cat,
+                Some(&ann),
+            )
+            .await?;
+        assert_eq!(saved.status, 200, "{body} → {}", saved.body);
+    }
+    let refused = rest
+        .handle(
+            sc_api::ApiRequest::new(sc_api::Method::Put, &path).body(json!({ "label": "x" })),
+            &cat,
+            Some(&bob),
+        )
+        .await;
+    assert!(refused.is_err() || refused.unwrap().status >= 400);
+    Ok(())
 }

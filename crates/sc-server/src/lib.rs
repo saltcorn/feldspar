@@ -27,6 +27,7 @@ mod apps;
 mod backup;
 mod browser;
 mod builder;
+mod change_log_cleanup;
 mod chat;
 mod clear_all;
 mod config;
@@ -72,7 +73,8 @@ pub use backup::{
 };
 pub use oauth::{
     BINDING_COOKIE as OAUTH_BINDING_COOKIE, CALLBACK_ROUTE as OAUTH_CALLBACK_ROUTE,
-    COMPLETE_ROUTE as OAUTH_COMPLETE_ROUTE, PROVIDERS_ROUTE as OAUTH_PROVIDERS_ROUTE,
+    COMPLETE_ROUTE as OAUTH_COMPLETE_ROUTE, CONSENT_ROUTE as OAUTH_CONSENT_ROUTE,
+    PROVIDERS_ROUTE as OAUTH_PROVIDERS_ROUTE,
 };
 // The S3 request signer, for the fake S3 server the automated-backup tests
 // check every request's signature against.

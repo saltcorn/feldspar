@@ -20,13 +20,14 @@
 //!   a DNS server that says "public" to the check and "127.0.0.1" to the
 //!   connection would choose where the password goes. So the name is resolved
 //!   here, once, the transport is pointed at the **IP**, and the name is kept
-//!   for TLS ([`TlsParameters`]: SNI and the certificate check), which is the
-//!   half of the name that still matters. The certificate is always verified.
+//!   for TLS (SNI and the certificate check), which is the half of the name
+//!   that still matters. The certificate is always verified: accepting any
+//!   certificate is the admin's choice for the installation's own server, never
+//!   a trigger's.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
-use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::transport::smtp::extension::ClientId;
 use lettre::{AsyncSmtpTransport, Tokio1Executor, transport::smtp::authentication::Credentials};
 use sc_config::{EmailSettings, SmtpSecurity};
@@ -78,6 +79,11 @@ pub fn check_relay(settings: &EmailSettings) -> Result<()> {
             settings.security.as_str()
         )));
     }
+    if settings.accept_any_certificate {
+        return Err(Error::invalid(format!(
+            "SMTP server `{host}`: a trigger's server must present a valid certificate"
+        )));
+    }
     settings.check()
 }
 
@@ -127,19 +133,7 @@ impl SmtpMailer {
     /// Public so the pinning itself can be tested against a local listener;
     /// [`relay_mailer`] is the way in that applies the rules.
     pub fn pinned(settings: &EmailSettings, ip: IpAddr) -> Result<SmtpMailer> {
-        let host = &settings.host;
-        let tls = || {
-            TlsParameters::new(host.clone()).map_err(|e| {
-                Error::config(format!(
-                    "could not set up TLS for SMTP server `{host}`: {e}"
-                ))
-            })
-        };
-        let tls = match settings.security {
-            SmtpSecurity::Tls => Tls::Wrapper(tls()?),
-            SmtpSecurity::StartTls => Tls::Required(tls()?),
-            SmtpSecurity::None => Tls::None,
-        };
+        let tls = crate::tls_for(settings)?;
         let domain = settings
             .from
             .address
@@ -237,7 +231,19 @@ mod tests {
             username: "orders@example.com".to_owned(),
             password: "Grüße-€-pässwort".to_owned(),
             from: parse_mailbox("orders@example.com").unwrap(),
+            certificate_name: None,
+            accept_any_certificate: false,
         }
+    }
+
+    /// Accepting any certificate is the admin's choice for the installation's
+    /// own server; a server a trigger names is always verified.
+    #[test]
+    fn a_relay_never_accepts_any_certificate() {
+        let mut settings = relay(465, SmtpSecurity::Tls);
+        settings.accept_any_certificate = true;
+        let err = check_relay(&settings).unwrap_err().to_string();
+        assert!(err.contains("valid certificate"), "{err}");
     }
 
     #[test]

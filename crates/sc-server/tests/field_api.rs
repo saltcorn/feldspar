@@ -969,3 +969,49 @@ async fn a_key_field_can_be_pointed_at_another_table() -> sc_error::Result<()> {
     );
     Ok(())
 }
+
+/// `name` on a field edit renames the column; omitted, it keeps its name.
+#[tokio::test]
+async fn a_field_is_renamed_with_its_data() -> sc_error::Result<()> {
+    let (mut client, _catalog, _db) = setup().await?;
+    for body in [
+        json!({ "name": "id", "type": "int", "primary_key": true }),
+        json!({ "name": "title", "type": "text", "label": "Title" }),
+    ] {
+        let (status, body) = client
+            .send("POST", "/api/tables/book/fields", Some(body))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/tables/book/rows",
+            Some(json!({ "title": "Dune" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].clone();
+
+    let (status, body) = client
+        .send(
+            "PUT",
+            "/api/tables/book/fields/title",
+            Some(json!({ "name": "heading", "type": "text", "label": "Heading" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], json!("heading"));
+    let (_, fields) = client.send("GET", "/api/tables/book/fields", None).await;
+    assert_eq!(field(&fields, "heading")["label"], json!("Heading"));
+    assert!(
+        fields
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["name"] != "title")
+    );
+    let (_, rows) = client.send("GET", "/api/tables/book/rows", None).await;
+    assert_eq!(rows, json!([{ "id": id, "heading": "Dune" }]), "{rows}");
+    Ok(())
+}

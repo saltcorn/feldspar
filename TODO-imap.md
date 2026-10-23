@@ -166,7 +166,9 @@ rows. M4 must keep fields an admin adds to a module table (e.g. a `handled` flag
   - **ports:** IMAP 993 or 143 with STARTTLS required; SMTP 465 or 587;
   - **public addresses only:** the host must resolve to globally routable addresses only, and the
     connection goes to the address that was checked (no second lookup);
-  - certificates are always verified;
+  - certificates are verified; an admin can name the certificate's host for a server given by IP
+    (`certificate_names`), or list a server whose certificate is not checked
+    (`unverified_servers`, M11.7). An account cannot;
   - imapflow's own timeouts are set, and the logger stays off unless debugging;
   - passwords never appear in a log, an error or `last_error`.
 
@@ -961,8 +963,100 @@ and do not commit.
   | IONOS | | | | | | | | | not run yet |
   | Strato | | | | | | | | | not run yet |
   | Exchange on-premises | | | | | | | | | not run yet; needs `configuration` (trusted server, CA) in its entry |
-- [ ] **M10.3** OAuth2 / XOAUTH2 per account (Gmail, Microsoft 365), built on the core OAuth work
-  (`sc-server/src/oauth.rs`). The tokens are Secret fields. *(later)*
+- [x] **M10.3** OAuth2 / XOAUTH2 per account (Gmail, Microsoft 365), built on the core OAuth work
+  (`sc-server/src/oauth.rs`). The tokens are Secret fields. **No longer "later"** (field report
+  2026-10-23, PaddiMail): `outlook.office365.com` answers `LOGINDISABLED`, offers only
+  `AUTH=XOAUTH2` and says "Basic authentication is disabled", so **personal Outlook.com /
+  Hotmail / Live mailboxes cannot be used at all** — neither passwords nor app passwords work.
+  PaddiMail lists Outlook.com with a disabled "Add" until this lands. Gmail gains too (no app
+  password needed). What is wanted:
+  - `mail_accounts.auth = "oauth2"` (the column exists, default `password`), with the access
+    token, refresh token and expiry as Secret fields;
+  - `connect.js` passes `auth: { user, accessToken }` to imapflow and nodemailer for such an
+    account; the service refreshes the token before expiry (and on an auth failure, once)
+    and writes the new tokens back; a refresh that is refused sets `auth_failed` with a
+    sentence saying to reconnect the account;
+  - module settings for the provider app: Microsoft (client id, client secret, tenant —
+    `consumers` for personal accounts, `common`/a tenant id for 365) and Google (client id,
+    client secret), with the scopes (`https://outlook.office.com/IMAP.AccessAsUser.All`,
+    `…/SMTP.Send`, `offline_access`; `https://mail.google.com/`);
+  - a consent flow an application can start for one account (owner-checked) that comes back
+    to a `return_to` in the app, reusing `oauth.rs`'s callback-on-the-admin-host, PKCE and
+    binding-cookie design, but storing tokens on the account instead of signing anybody in.
+
+  **Done (2026-10-23).** Decisions worth knowing (CHANGELOG has the full list):
+  - **The consent flow is the server's, asked for by the action.** An action's argument has
+    `oauth.begin(request)` (a new `oauth` ask surface, `sc_module::consent`), answering
+    `{ url: "/_feldspar/oauth/consent/<id>" }`. The server checks the request (the caller is
+    signed in; https or loopback addresses; the tokens go only into the module's declared Secret
+    fields of its own table; `set` only its declared fields), and runs the browser's half on
+    `oauth.rs`: the consent route refuses any session but the caller's, then the binding cookie,
+    PKCE, the shared callback on the admin host, and the completion in the starting browser,
+    which writes the tokens through the row layer and leaves for `return_to` (`oauth_error=…`
+    on failure). The module never sees the code; the application never sees a token. The
+    provider's redirect address is the same one sign-in uses.
+  - **`mail_oauth_start { account_id, provider, return_to }`** → `{ url, provider }`: the owner of
+    a personal account, an admin for a shared one. `provider` is `microsoft` or `google`, found
+    from the address or IMAP host when left out. Empty IMAP/SMTP servers get the provider's.
+  - **New columns:** `oauth_provider`, `oauth_access_token` and `oauth_refresh_token` (Secret),
+    `oauth_expires_at`. Module settings step **Sign-in providers**: `microsoft_client_id`,
+    `microsoft_client_secret`, `microsoft_tenant` (default `common`; `consumers` for Outlook.com
+    only), `google_client_id`, `google_client_secret`.
+  - **`oauth.js` `fresh`** renews a token expiring within 5 minutes before every connection
+    (runner and actions) and every send, one renewal at a time per account, and writes the new
+    tokens back (Microsoft's new refresh token too). A login refused with a token that looked
+    good renews once and reconnects at once. `invalid_grant` (and a bad client) sets
+    `auth_failed` straight away, "connect the account again"; other token-endpoint failures are
+    retried with the usual backoff. Tokens are redacted from errors like passwords.
+  - **The service** leaves token changes out of an account's fingerprint: tokens an action
+    renewed are handed to the running runner, and only an account at `auth_failed` restarts for
+    them (which is what a new consent does).
+  - **Tests:** `test/oauth.test.mjs` against a fake token endpoint, a fake IMAP server with
+    only `AUTH=XOAUTH2` (and `LOGINDISABLED`) and the SMTP library with XOAUTH2 only;
+    `crates/sc-module/tests/module_consent.rs` (the checks of `oauth.begin`) and
+    `crates/sc-server/tests/module_consent.rs` (the whole browser flow against a fake provider,
+    with a stranger's session and another browser refused).
+  - **Not done:** no live run against Outlook.com or Gmail yet (M10.2's matrix takes OAuth2
+    entries now: `auth`, `oauth_provider`, `oauth_refresh_token`, and the provider app in
+    `configuration`). The Admin UI's row editor has no "Connect" button; an application starts
+    the flow. Revoking the grant at the provider when an account is deleted is not done.
 - [ ] **M10.4** Search: server-side `UID SEARCH` for an action, plus Postgres full-text search over
   `mail_messages`. *(later)*
 - [ ] **M10.5** Risk scoring after `risk.py`'s ideas. CalDAV, and answering invitations. *(later)*
+
+## M11 — Field report: the first real use (PaddiMail, 2026-10-22)
+
+Six real accounts (IONOS, Hetzner, Gmail) moved from a Python bridge to the module, mirror mode.
+
+- [x] **M11.1** (1) `mail_attachments_message_fkey` during a large Gmail sync. Cause: after a
+  reconnect, a pass of the old connection went on with the new one, while `session()` ran its
+  LIST and SELECT outside the queue; a folder's expunge check could then search another folder
+  and delete the rows (a just-inserted message among them) as expunged. Now a pass, a backfill
+  step and a folder's sync are bound to their connection; the first LIST and SELECT are queued;
+  every sync step checks the selected folder before it searches and before it deletes
+  (`requireSelected`); a message's attachment rows are one insert, and a message deleted
+  meanwhile is skipped rather than failing the sync. A stopped runner no longer writes `error`
+  from a pass the stop interrupted.
+- [x] **M11.2** (2) `mail_sync_now` lists the folders again; the runner forgets folders gone from
+  the server and from the table, and makes a deleted folder row again; `mail_create_folder`
+  gives a folder named like a free role that role at once; new action `mail_delete_folder`.
+- [ ] **M11.3** (3) "not found" for an owner's `PUT /api/mail_accounts/<id>`. Not reproduced:
+  the row layer and `RestProvider` both let the owner update their row with the module's full
+  declaration (`module_tables::an_owner_may_update_their_own_account`). Needs the request (body,
+  user, app) that failed.
+- [x] **M11.4** (4) Module settings: `updateModule` is MCP-tagged in the modules area (needs
+  `allow_edit`); it saves and reloads. Writing `_fd_modules` directly reloads nothing.
+- [x] **M11.5** (6) `mail_messages.keywords` (non-system flags, kept up to date with the flags)
+  and `mail_messages.headers` (the module setting "Headers to keep", with defaults for
+  unsubscribe, authentication and spam headers); `mail_send`'s `calendar` (iTIP
+  `text/calendar; method=…` alternative).
+- [x] **M11.6** (7) `…@localhost` addresses; indexes on `(folder, sent_at)` and
+  `(folder, internal_date)`; `plugins/imap/README.md` for application authors.
+- [x] **M11.7** (2026-10-23) Self-signed certificates and SMTP hosts given as IP addresses
+  (`certificate not valid for name "188.65.204.58"`). Two problems: a certificate issued for a
+  DNS name, checked against the IP that was dialled; and a certificate no trusted CA issued.
+  Settings → Email: `smtp_certificate_name` (check against this name, still a full check) and
+  `smtp_certificate_check = accept_any`. The mail module: the admin settings
+  `certificate_names` and `unverified_servers`. A `send_email` override always verifies.
+  Not tested under feldspar's Deno worker, only under Node; Deno's `node:tls` is Node's
+  `_tls_wrap` ported, with the same `rejectUnauthorized` handling.

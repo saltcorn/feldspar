@@ -75,6 +75,9 @@ pub struct CallHosts<'a> {
     /// in an action speak — a [`crate::roles::ModuleRoles`], held to the role
     /// ceiling an admin granted the module.
     pub roles: Option<&'a dyn RoleAsks>,
+    /// An action's `oauth.begin(…)` (TODO-imap M10.3): the `oauth` surface, a
+    /// [`crate::consent::ConsentAsks`] for the action's module and caller.
+    pub oauth: Option<&'a dyn OAuthAsks>,
 }
 
 /// The `roles` ask surface: `{ op: "grant" | "revoke" | "get", … }`, answered
@@ -100,6 +103,14 @@ pub trait ServiceAsks: Send + Sync {
     async fn ask(&self, plan: Json) -> Result<Json>;
 }
 
+/// The `oauth` ask surface: an action asking for its caller's consent at an
+/// OAuth 2.0 provider ([`crate::consent`]).
+#[async_trait::async_trait]
+pub trait OAuthAsks: Send + Sync {
+    /// Answer one ask.
+    async fn ask(&self, plan: Json) -> Result<Json>;
+}
+
 impl<'a> CallHosts<'a> {
     /// The surfaces and the schema of one run, as
     /// `sc_core_actions::code_body::Hosts` supplies them.
@@ -112,6 +123,7 @@ impl<'a> CallHosts<'a> {
             service: None,
             module_files: None,
             roles: None,
+            oauth: None,
         }
     }
 
@@ -126,6 +138,13 @@ impl<'a> CallHosts<'a> {
     #[must_use]
     pub fn with_roles(mut self, roles: &'a dyn RoleAsks) -> CallHosts<'a> {
         self.roles = Some(roles);
+        self
+    }
+
+    /// The same, with the `oauth` surface.
+    #[must_use]
+    pub fn with_oauth(mut self, oauth: &'a dyn OAuthAsks) -> CallHosts<'a> {
+        self.oauth = Some(oauth);
         self
     }
 

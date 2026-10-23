@@ -55,19 +55,23 @@ pub(crate) async fn register(
 
 pub(super) fn devices_table(cat: &Catalog) -> Result<Table> {
     cat.get(SYNC_CLIENTS_TABLE)?.ok_or_else(|| {
-        Error::invalid("offline sync needs a Postgres database; this one cannot record changes yet")
+        Error::invalid(
+            "offline sync needs a database that can record changes with triggers, and this one \
+             cannot",
+        )
     })
 }
 
 /// The device must be this user's, for this application: a device id is not a
-/// secret, so it is never enough on its own.
+/// secret, so it is never enough on its own. Answers when it last pulled, if
+/// it has.
 pub(super) async fn check_device(
     cat: &Catalog,
     devices: &Table,
     id: Uuid,
     application: Uuid,
     user: &User,
-) -> Result<()> {
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
     let query = RowQuery {
         filter: Some(
             Expr::col("id")
@@ -78,13 +82,17 @@ pub(super) async fn check_device(
         limit: Some(1),
         ..RowQuery::new()
     };
-    if rows::list_row_values(cat, devices, &query, None)
+    let Some(device) = rows::list_row_values(cat, devices, &query, None)
         .await?
-        .is_empty()
-    {
+        .into_iter()
+        .next()
+    else {
         return Err(Error::not_found(
             "unknown device: register it with `sync/register` first",
         ));
-    }
-    Ok(())
+    };
+    Ok(match device.get("last_seen") {
+        Some(Value::Timestamp(at)) => Some(*at),
+        _ => None,
+    })
 }

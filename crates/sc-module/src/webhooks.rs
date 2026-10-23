@@ -188,6 +188,7 @@ pub async fn run_webhook(
         service: None,
         module_files: Some(&files),
         roles: Some(&roles),
+        oauth: None,
     };
     let answer = host
         .run_webhook(module, webhook, request_json(&request), call)

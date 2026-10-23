@@ -114,6 +114,19 @@ impl ModuleTables {
             Some(_) => Ok(()),
         }
     }
+
+    /// Refuse renaming a field a module declared, for the reason it may not be
+    /// dropped: the module's code names it.
+    pub fn refuse_rename(&self, table: &str, field: &str) -> Result<()> {
+        match self.claims.get(table) {
+            Some(claim) if claim.fields.iter().any(|f| f == field) => Err(Error::invalid(format!(
+                "`{table}.{field}` is a field the module {} declared, and its code names it: \
+                 it cannot be renamed while the module is installed",
+                claim.module
+            ))),
+            _ => Ok(()),
+        }
+    }
 }
 
 #[cfg(test)]

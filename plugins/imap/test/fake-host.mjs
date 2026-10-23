@@ -3,8 +3,10 @@
 // against a real IMAP server without a feldspar server. The Rust test (crates/sc-module/tests/
 // imap_ingest.rs) runs the same module on the real host.
 //
-// It keeps the unique constraints the module declares, so a duplicate insert fails here as it
-// would in Postgres, and records every write as an event, as triggers would see them.
+// It keeps the unique constraints the module declares and the foreign keys between its tables,
+// so a duplicate insert, or an attachment of a message that is gone, fails here as it would in
+// Postgres; and records every write as an event, as triggers would see them. An insert of an
+// array is one statement: all of it or none.
 //
 // For the actions, `installFakeTable` answers `require("@saltcorn/data/models/table")` with v1's
 // `Table` over the same tables, applying the module's ownership rule (§3) to `forUser` reads.
@@ -12,6 +14,12 @@
 import Module from "node:module";
 
 const UNIQUE = { mail_folders: [["account", "path"]], mail_messages: [["folder", "uid"]] };
+/** The keys between the module's tables, by table and column. */
+const FOREIGN = {
+  mail_folders: { account: "mail_accounts" },
+  mail_messages: { account: "mail_accounts", folder: "mail_folders" },
+  mail_attachments: { message: "mail_messages" },
+};
 
 function matches(row, where) {
   for (const [key, cond] of Object.entries(where)) {
@@ -49,6 +57,17 @@ export function fakeDb() {
       if (clash) throw new Error(`duplicate key value violates unique constraint on ${name} (${cols.join(", ")})`);
     }
   };
+  const checkForeign = (name, row) => {
+    for (const [col, target] of Object.entries(FOREIGN[name] || {})) {
+      const value = row[col];
+      if (value === null || value === undefined) continue;
+      if (!tables[target].some((r) => r.id === value)) {
+        throw new Error(`insert or update on table ${name} violates foreign key constraint ${name}_${col}_fkey`);
+      }
+    }
+  };
+  /** A hook tests set to act between two writes: called with the insert about to run. */
+  const hooks = { beforeInsert: null };
   const query = (name, state) => {
     const rows = () => {
       let out = tables[name].filter((r) => state.where.every((w) => matches(r, w)));
@@ -72,14 +91,24 @@ export function fakeDb() {
       },
       count: async () => rows().length,
       insert: async (values) => {
-        const row = { ...values };
-        for (const [k, v] of Object.entries(row)) if (v instanceof Date) row[k] = v.toISOString();
-        checkUnique(name, row, null);
-        ids[name] = (ids[name] || 0) + 1;
-        row.id = ids[name];
-        tables[name].push(row);
-        emit({ table: name, op: "insert", row: copy(row), old: null, own: true });
-        return copy(row);
+        if (hooks.beforeInsert) await hooks.beforeInsert(name, values);
+        const many = Array.isArray(values);
+        const rows = (many ? values : [values]).map((v) => {
+          const row = { ...v };
+          for (const [k, x] of Object.entries(row)) if (x instanceof Date) row[k] = x.toISOString();
+          return row;
+        });
+        for (const row of rows) {
+          checkUnique(name, row, null);
+          checkForeign(name, row);
+        }
+        for (const row of rows) {
+          ids[name] = (ids[name] || 0) + 1;
+          row.id = ids[name];
+          tables[name].push(row);
+          emit({ table: name, op: "insert", row: copy(row), old: null, own: true });
+        }
+        return many ? rows.map(copy) : copy(rows[0]);
       },
       update: async (values) => {
         if (!state.where.length) throw new Error("update without where");
@@ -88,6 +117,7 @@ export function fakeDb() {
           const old = copy(row);
           const next = { ...row, ...JSON.parse(JSON.stringify(values)) };
           checkUnique(name, next, row);
+          checkForeign(name, next);
           Object.assign(row, next);
           emit({ table: name, op: "update", row: copy(row), old, own: true });
         }
@@ -106,7 +136,7 @@ export function fakeDb() {
   for (const name of Object.keys(tables)) {
     Object.defineProperty(db, name, { get: () => query(name, { where: [], select: [], order: [], limit: null }) });
   }
-  return { db, tables, events, listeners };
+  return { db, tables, events, listeners, hooks };
 }
 
 export function fakeFiles() {
@@ -146,7 +176,7 @@ export function fakeLog() {
 
 /** A service `ctx` over the fakes, for `service.start`. */
 export function fakeCtx(configuration) {
-  const { db, tables, events, listeners } = fakeDb();
+  const { db, tables, events, listeners, hooks } = fakeDb();
   const files = fakeFiles();
   const log = fakeLog();
   const ctx = {
@@ -158,7 +188,7 @@ export function fakeCtx(configuration) {
       listeners.push({ table, callback });
     },
   };
-  return { ctx, tables, events, files, log, listeners };
+  return { ctx, tables, events, files, log, listeners, hooks };
 }
 
 /** Whether `user` may read a row of `name`: the module's rule (§3), through the account. */
@@ -184,7 +214,9 @@ export function installFakeTable(fake) {
       return {
         name,
         async getRows(where = {}, opts = {}) {
-          return visible(await db[name].where(where).orderBy("id").rows(), opts);
+          let rows = visible(await db[name].where(where).orderBy("id").rows(), opts);
+          if (opts.limit) rows = rows.slice(0, opts.limit);
+          return rows;
         },
         async getRow(where = {}, opts = {}) {
           return (await this.getRows(where, opts))[0] || null;

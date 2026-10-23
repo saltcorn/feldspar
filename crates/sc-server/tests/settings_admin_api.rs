@@ -30,10 +30,11 @@ use axum::http::{Request, StatusCode, header};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_config::{
-    ACME_CONTACT_EMAIL, EMAIL_FROM, LOG_SQL, LOG_VERBOSITY, MCP_ENABLED, MCP_LOOPBACK_ONLY,
-    MODE_CUSTOM, MODE_LETSENCRYPT, MODE_OFF, SECURITY_NONE, SECURITY_STARTTLS, SMTP_HOST,
-    SMTP_PASSWORD, SMTP_PORT, SMTP_SECURITY, SMTP_USERNAME, SSL_CERTIFICATE, SSL_MODE,
-    SSL_PRIVATE_KEY, SslMode, mcp_settings, ssl_settings, stored_config,
+    ACME_CONTACT_EMAIL, CERTIFICATE_VERIFY, EMAIL_FROM, LOG_SQL, LOG_VERBOSITY, MCP_ENABLED,
+    MCP_LOOPBACK_ONLY, MODE_CUSTOM, MODE_LETSENCRYPT, MODE_OFF, SECURITY_NONE, SECURITY_STARTTLS,
+    SMTP_CERTIFICATE_CHECK, SMTP_CERTIFICATE_NAME, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT,
+    SMTP_SECURITY, SMTP_USERNAME, SSL_CERTIFICATE, SSL_MODE, SSL_PRIVATE_KEY, SslMode,
+    mcp_settings, ssl_settings, stored_config,
 };
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -399,7 +400,9 @@ async fn the_email_section_round_trips_with_its_password_redacted() -> sc_error:
             SMTP_SECURITY,
             SMTP_USERNAME,
             SMTP_PASSWORD,
-            EMAIL_FROM
+            EMAIL_FROM,
+            SMTP_CERTIFICATE_NAME,
+            SMTP_CERTIFICATE_CHECK
         ]
     );
     let password = email["fields"]
@@ -412,6 +415,11 @@ async fn the_email_section_round_trips_with_its_password_redacted() -> sc_error:
     // Submission over STARTTLS, until an admin says otherwise.
     assert_eq!(body["values"][SMTP_PORT], json!(587));
     assert_eq!(body["values"][SMTP_SECURITY], json!(SECURITY_STARTTLS));
+    // And the certificate is checked, until an admin says otherwise.
+    assert_eq!(
+        body["values"][SMTP_CERTIFICATE_CHECK],
+        json!(CERTIFICATE_VERIFY)
+    );
 
     let (status, saved) = client
         .send(

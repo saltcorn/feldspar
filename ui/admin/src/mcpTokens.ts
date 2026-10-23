@@ -41,9 +41,9 @@ export const MCP_ENABLED = "mcp_enabled";
 /** The agent trait whose configuration form these grants are (§11.3). */
 export const ADMIN_COPILOT = "admin_copilot";
 
-/** The seven flags a token carries, in the order an admin ticks them: four
- * grants — what it may *do* — then three areas, which say what it may do it *to*.
- * A fresh token has all seven (`sc_api::mcp::token_flags_from_submitted`). */
+/** The eight flags a token carries, in the order an admin ticks them: four
+ * grants — what it may *do* — then four areas, which say what it may do it *to*.
+ * A fresh token has all eight (`sc_api::mcp::token_flags_from_submitted`). */
 export const GRANT_KEYS = [
   "allow_create",
   "allow_edit",
@@ -52,9 +52,10 @@ export const GRANT_KEYS = [
   "allow_triggers",
   "allow_applications",
   "allow_modules",
+  "allow_history",
 ] as const;
 
-/** The key a token stores to hold every grant — the seven above and any a later
+/** The key a token stores to hold every grant — the eight above and any a later
  * version adds (`sc_api::mcp::ALLOW_ALL`). A token's own key; the copilot has no
  * such checkbox. */
 export const ALLOW_ALL = "allow_all";
@@ -79,6 +80,11 @@ export const FALLBACK_GRANT_FIELDS: FieldSpec[] = [
     label: "May list and install modules (npm and PyPI packages run with the server's privileges)",
     default: false,
   },
+  {
+    name: "allow_history",
+    label: "May read row history (old values of rows, deleted rows and who changed them)",
+    default: false,
+  },
 ].map((field) => ({
   ...field,
   type: "bool",
@@ -89,7 +95,7 @@ export const FALLBACK_GRANT_FIELDS: FieldSpec[] = [
 
 /** The grant checkboxes, taken from the copilot's own configuration form.
  *
- * The seven of `GRANT_KEYS`, in that order, each with the label and default the
+ * The eight of `GRANT_KEYS`, in that order, each with the label and default the
  * server declared for it. A key the trait does not declare falls back to its own
  * entry above rather than disappearing: a token missing a checkbox would be a
  * token minted with a flag nobody was asked about. */
@@ -143,7 +149,7 @@ export function mintProblem(form: MintForm): string | null {
   return null;
 }
 
-/** What Mint sends: the label, all seven flags explicitly, and an expiry in days
+/** What Mint sends: the label, all eight flags explicitly, and an expiry in days
  * or nothing at all.
  *
  * The flags are sent in full rather than only the ticked ones. The server writes
@@ -204,7 +210,7 @@ export function tokenBadge(token: ApiToken): { label: string; tone: string } {
 /** The flags this token was minted with, as the keys that are on.
  *
  * `grants` arrives as `unknown` because the column is JSON; a row written by
- * this server has all seven, and one that somehow has fewer reads as "not granted"
+ * this server has all eight, and one that somehow has fewer reads as "not granted"
  * rather than as an error, which is what the server would also decide. */
 export function grantedKeys(token: ApiToken): string[] {
   const grants = token.grants;

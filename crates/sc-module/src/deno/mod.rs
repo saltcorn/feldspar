@@ -1412,7 +1412,8 @@ impl DenoModuleHost {
             || call.hosts.files.is_some()
             || call.service.is_some()
             || call.module_files.is_some()
-            || call.roles.is_some();
+            || call.roles.is_some()
+            || call.oauth.is_some();
         if let Json::Object(map) = &mut request {
             map.insert("asks".to_owned(), Json::Bool(can_ask));
             // The functions this call's modules supply, by name, for v1's
@@ -1435,7 +1436,7 @@ impl DenoModuleHost {
             }
         }
         let (reply, answer) = oneshot::channel();
-        let (asks, mut asked) = tokio::sync::mpsc::unbounded_channel::<HostAsk>();
+        let (asks, asked) = tokio::sync::mpsc::unbounded_channel::<HostAsk>();
         control
             .send(Control::Job(Box::new(Job {
                 request,
@@ -1454,16 +1455,23 @@ impl DenoModuleHost {
         let service = call.service;
         let module_files = call.module_files;
         let roles = call.roles;
+        let oauth = call.oauth;
         // The run's budget, and the same one a code body's run gets: a module's
         // N+1 costs what a body's N+1 costs, because it is the same bound on the
         // same server doing the same work. A service has none (`None`).
         let mut left = bounds.budget;
+        // The asks this caller has taken on and not yet answered, and the ones
+        // still queued for it. Kept so that a caller which stops waiting — its
+        // worker died, its wall clock ran out, or **its future was dropped**, as
+        // a service's is when its stop outlasts the grace — fails them by name
+        // on the way out, rather than leaving a module awaiting a promise that
+        // will never settle (and a reload of it waiting on that module's stop).
+        let mut pending_asks = PendingAsks {
+            control: control.clone(),
+            outstanding: BTreeSet::new(),
+            asked,
+        };
         let mut serving = FuturesUnordered::new();
-        // The asks this caller has taken on and not yet answered. Kept so that a
-        // caller which stops waiting — its worker died, or its wall clock ran out
-        // — can fail them **by name** on the way out, rather than leaving a
-        // module awaiting a promise that will never settle.
-        let mut outstanding: BTreeSet<u64> = BTreeSet::new();
         let limit = bounds.clock;
         let clock = async move {
             match limit {
@@ -1493,7 +1501,7 @@ impl DenoModuleHost {
                         limit.unwrap_or_default()
                     )));
                 }
-                Some(ask) = asked.recv() => {
+                Some(ask) = pending_asks.asked.recv() => {
                     if left == Some(0) {
                         let _ = control.send(Control::Answer {
                             ask: ask.id,
@@ -1505,7 +1513,7 @@ impl DenoModuleHost {
                     if let Some(left) = left.as_mut() {
                         *left -= 1;
                     }
-                    outstanding.insert(ask.id);
+                    pending_asks.outstanding.insert(ask.id);
                     let control = control.clone();
                     serving.push(async move {
                         let surfaces = Surfaces {
@@ -1516,6 +1524,7 @@ impl DenoModuleHost {
                             service,
                             module_files,
                             roles,
+                            oauth,
                         };
                         let (ok, text) = match serve(surfaces, ask.request).await {
                             Ok(value) => (
@@ -1533,14 +1542,42 @@ impl DenoModuleHost {
                     });
                 }
                 Some(answered) = serving.next(), if !serving.is_empty() => {
-                    outstanding.remove(&answered);
+                    pending_asks.outstanding.remove(&answered);
                 }
             }
         };
-        // Nobody is going to answer these now, and a module left awaiting one
-        // would hang until its own worker was restarted for some other reason.
-        for ask in outstanding {
-            let _ = control.send(Control::Answer {
+        // The serving futures go first: an ask one of them was about to answer
+        // is answered by the guard instead, and only once.
+        drop(serving);
+        drop(pending_asks);
+        outcome
+    }
+}
+
+/// The asks one call has taken on and not answered, and the queue of those it
+/// has not taken yet — refused, by name, when the call stops waiting.
+///
+/// A guard rather than a loop after the call's own loop, because the call's
+/// future can be **dropped** before it gets there, and then nobody answers: a
+/// module awaiting one of these would hang until its worker happened to be
+/// restarted, and every `stop` and reload that waited on it would hang too.
+struct PendingAsks {
+    control: tokio::sync::mpsc::UnboundedSender<Control>,
+    outstanding: BTreeSet<u64>,
+    asked: tokio::sync::mpsc::UnboundedReceiver<HostAsk>,
+}
+
+impl Drop for PendingAsks {
+    fn drop(&mut self) {
+        // Closed first, so an ask routed from here on is refused at the worker.
+        self.asked.close();
+        let queued = std::iter::from_fn(|| self.asked.try_recv().ok().map(|ask| ask.id));
+        let unanswered: Vec<u64> = std::mem::take(&mut self.outstanding)
+            .into_iter()
+            .chain(queued)
+            .collect();
+        for ask in unanswered {
+            let _ = self.control.send(Control::Answer {
                 ask,
                 ok: false,
                 text: "the call this request belongs to was given up on before this server \
@@ -1548,7 +1585,6 @@ impl DenoModuleHost {
                     .to_owned(),
             });
         }
-        outcome
     }
 }
 
@@ -1592,6 +1628,7 @@ struct Surfaces<'a> {
     service: Option<&'a dyn crate::host::ServiceAsks>,
     module_files: Option<&'a dyn sc_expr::FileHost>,
     roles: Option<&'a dyn crate::host::RoleAsks>,
+    oauth: Option<&'a dyn crate::host::OAuthAsks>,
 }
 
 /// One ask, on the surface it names.
@@ -1650,12 +1687,18 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
                  service and a webhook (TODO-payments P3.3)",
             )),
         },
+        "oauth" => match surfaces.oauth {
+            Some(oauth) => oauth.ask(plan).await,
+            None => Err(Error::config(
+                "only an action called by a user can ask for their consent (`oauth.begin`)",
+            )),
+        },
         other => Err(Error::config(format!(
             "`{other}` is not something a module can ask this server for; what a module may \
              reach is the database (`db`), this server's triggers (`trigger`), its modules' \
              functions (`function`), the file stores it was given (`files`), its own \
-             file areas (`module_files`), role grants (`roles`) and, from a service, its \
-             supervisor (`service`)"
+             file areas (`module_files`), role grants (`roles`), from a service its \
+             supervisor (`service`) and, from an action, a consent flow (`oauth`)"
         ))),
     }
 }

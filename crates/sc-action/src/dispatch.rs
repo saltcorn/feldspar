@@ -674,7 +674,9 @@ fn table_event(write: &TableWrite<'_>) -> Event {
     }
     match write.caller {
         Some(caller) => event.caused_by(caller),
-        None => event.caller(ROLE_PUBLIC, None),
+        None => event
+            .caller(ROLE_PUBLIC, None)
+            .in_changeset(sc_catalog::changeset::current()),
     }
 }
 
@@ -807,7 +809,12 @@ pub async fn fire_trigger_with(
     // a caller context it builds — a code body's `asUser()` write, a row it
     // inserts — carries the application and the guest session of the request
     // that raised the event, whichever task the event is being handled on.
-    sc_catalog::with_origin(event.origin(), action.run(&mut ctx))
+    // And in the event's changeset, so whatever the action writes joins the
+    // action that raised the event (§14.12), however it builds its caller.
+    sc_catalog::with_origin(
+        event.origin(),
+        sc_catalog::changeset::scope_if(event.changeset.clone(), action.run(&mut ctx)),
+    )
         .await
         .map(Some)
 }

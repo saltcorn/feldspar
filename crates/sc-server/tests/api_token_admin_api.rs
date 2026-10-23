@@ -161,18 +161,19 @@ async fn a_token_is_minted_once_listed_without_its_secret_and_revoked_in_place()
     // rather than in it: the token object is the same shape the list is made of.
     assert!(!minted["token"].to_string().contains(secret));
 
-    // The seven flags, all of them, whatever the body left out. A stored `grants`
+    // The eight flags, all of them, whatever the body left out. A stored `grants`
     // records what was agreed to; a sparse one would re-read itself against
     // tomorrow's defaults.
     let grants = minted["token"]["grants"].as_object().unwrap();
-    // Seven flags and `allow_all`, which the body did not ask for.
-    assert_eq!(grants.len(), 8, "{grants:?}");
+    // Eight flags and `allow_all`, which the body did not ask for.
+    assert_eq!(grants.len(), 9, "{grants:?}");
     assert_eq!(grants["allow_all"], json!(false));
     assert_eq!(grants["allow_create"], json!(true)); // the default, written down
     assert_eq!(grants["allow_drop"], json!(false));
     // A token is granted what the mint did not mention.
     assert_eq!(grants["allow_access_changes"], json!(true));
     assert_eq!(grants["allow_modules"], json!(true));
+    assert_eq!(grants["allow_history"], json!(true));
     assert_eq!(grants["allow_triggers"], json!(true));
 
     assert!(minted["token"]["expires_at"].is_string());
@@ -252,7 +253,7 @@ async fn a_mint_is_for_the_calling_admin_whatever_the_body_says() -> sc_error::R
 }
 
 /// The panel's "all grants" toggle: `allow_all` is stored on the token, beside
-/// the seven explicit flags, and an unticked box beside it stays unticked.
+/// the eight explicit flags, and an unticked box beside it stays unticked.
 #[tokio::test]
 async fn a_mint_with_allow_all_stores_it_on_the_token() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;

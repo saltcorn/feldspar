@@ -36,6 +36,7 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
+import { dropTableQuestion } from "../history";
 import {
   IconArrowLeft,
   IconDots,
@@ -282,6 +283,7 @@ export function TableDetail({ table }: { table: string }) {
           provided={Boolean(settings?.provider)}
           metadata={settings?.metadata ?? false}
           writes={settings?.provider?.writes ?? null}
+          logged={Boolean(settings?.history_enabled || settings?.sync_enabled)}
           onChange={load}
         />
 
@@ -320,10 +322,14 @@ function TableData({
   provided,
   metadata,
   writes,
+  logged,
   onChange,
 }: {
   table: string;
   rowCount: number | null;
+  /** Whether row history or offline sync records the table's changes: a drop
+   * deletes that record too, and the confirmation says so. */
+  logged?: boolean;
   /** Whether a module's table provider serves the rows (§8.3). */
   provided?: boolean;
   /** Whether this is one of Saltcorn's own metadata tables, on the list by the
@@ -427,7 +433,7 @@ function TableData({
       ? `Remove "${table}" from the tables list? Its settings are forgotten; the table and its rows are Saltcorn's and are not touched.`
       : provided
         ? `Delete the table "${table}"? Saltcorn forgets it. The data it was reading is not touched.`
-        : `Drop the table "${table}" and every row in it? This cannot be undone.`;
+        : dropTableQuestion(table, Boolean(logged));
     if (!window.confirm(question)) {
       return;
     }
@@ -1219,6 +1225,10 @@ function Settings({
   const [formula, setFormula] = useState("");
   const [rls, setRls] = useState(false);
   const [sync, setSync] = useState(false);
+  const [history, setHistory] = useState(false);
+  const [historyRole, setHistoryRole] = useState(1);
+  // Days a change is kept; 0 is forever.
+  const [keepDays, setKeepDays] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -1233,6 +1243,9 @@ function Settings({
     setFormula(settings?.ownership_formula ?? "");
     setRls(settings?.rls_enabled ?? false);
     setSync(settings?.sync_enabled ?? false);
+    setHistory(settings?.history_enabled ?? false);
+    setHistoryRole(settings?.history_min_role ?? 1);
+    setKeepDays(settings?.history_keep_days ?? 0);
     setSaved(false);
   }, [settings]);
 
@@ -1249,6 +1262,9 @@ function Settings({
         ownership_formula: formula.trim(),
         rls_enabled: rls,
         sync_enabled: sync,
+        history_enabled: history,
+        history_min_role: history ? historyRole : 1,
+        history_keep_days: history ? keepDays : 0,
       });
       setSaved(true);
       onChange();
@@ -1366,6 +1382,45 @@ function Settings({
               <Form.Text muted>
                 <T text="Records every change to this table, so apps can keep an offline copy and sync it. Rows created offline need a uuid key." />
               </Form.Text>
+            </Form.Group>
+          )}
+          {settings?.history_available && (
+            <Form.Group className="mb-3" controlId="tableHistoryEnabled">
+              <Form.Check
+                type="switch"
+                label={t("Keep row history")}
+                checked={history}
+                onChange={(e) => setHistory(e.target.checked)}
+              />
+              <Form.Text muted>
+                <T text="Keeps every version of each row, so you can see who changed what and restore an earlier version." />
+              </Form.Text>
+              {history && (
+                <div className="mt-2">
+                  <RoleSelect
+                    id="tableHistoryRole"
+                    label={t("Minimum role to read the history")}
+                    value={historyRole}
+                    roles={roles}
+                    onChange={setHistoryRole}
+                  />
+                  <Form.Text muted>
+                    <T text="Admin only by default. A wider role sees only the history of rows its read access lets it see, and secrets stay hidden. The admin screens stay admin-only." />
+                  </Form.Text>
+                  <Form.Group className="mt-2" controlId="tableHistoryKeepDays">
+                    <Form.Label><T text="Keep history for (days)" /></Form.Label>
+                    <Form.Control
+                      type="number"
+                      min={0}
+                      value={keepDays}
+                      onChange={(e) => setKeepDays(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                    />
+                    <Form.Text muted>
+                      <T text="0 keeps it forever. Older changes are removed, and with them the files of deleted rows." />
+                    </Form.Text>
+                  </Form.Group>
+                </div>
+              )}
             </Form.Group>
           )}
           <Button type="submit" size="sm" disabled={busy}>

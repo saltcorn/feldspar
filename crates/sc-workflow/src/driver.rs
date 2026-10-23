@@ -530,8 +530,13 @@ impl<'a> Driver<'a> {
         // what it wrote there directly travels with it. It runs inside the
         // event's origin, as a trigger's action does (TODO-payments P1.3, P1.5):
         // a step that resumes tomorrow still writes for the application and the
-        // guest session that started the run.
-        let value = sc_catalog::with_origin(event.origin(), action.run(&mut ctx)).await?;
+        // guest session that started the run. And in the run's changeset
+        // (§14.12), so every step's writes are one action.
+        let value = sc_catalog::with_origin(
+            event.origin(),
+            sc_catalog::changeset::scope_if(event.changeset.clone(), action.run(&mut ctx)),
+        )
+        .await?;
         Ok((value, ctx.context))
     }
 

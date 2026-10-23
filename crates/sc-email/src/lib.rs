@@ -42,7 +42,10 @@ use lettre::{
         Attachment as LettreAttachment, Mailbox as LettreMailbox, MultiPart, SinglePart,
         header::ContentType as LettreContentType,
     },
-    transport::smtp::authentication::Credentials,
+    transport::smtp::{
+        authentication::Credentials,
+        client::{Tls, TlsParameters},
+    },
 };
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
@@ -59,6 +62,7 @@ pub use relay::{
 pub use sc_config::{Mailbox, parse_mailbox};
 // And the settings a server is described by, for a caller that names one of
 // its own ([`Mailer::send_via`]).
+use sc_config::{CERTIFICATE_ACCEPT_ANY, SMTP_CERTIFICATE_CHECK, SMTP_CERTIFICATE_NAME};
 pub use sc_config::{EmailSettings, SmtpSecurity};
 
 /// One message, independent of how it is sent.
@@ -264,30 +268,15 @@ pub struct SmtpMailer {
 impl SmtpMailer {
     /// Build a transport for these settings.
     ///
-    /// The three security modes are lettre's three builders and nothing else:
-    /// `tls` is implicit TLS from the first byte, `starttls` connects in the
-    /// clear and upgrades, and `none` is `builder_dangerous` — named that way by
-    /// lettre, and reachable here only because [`EmailSettings::check`] has
-    /// already refused it in combination with credentials.
+    /// The three security modes: `tls` is implicit TLS from the first byte,
+    /// `starttls` connects in the clear and upgrades, and `none` is no TLS at
+    /// all — reachable only because [`EmailSettings::check`] has already refused
+    /// it in combination with credentials. The certificate is checked as
+    /// [`tls_for`] says.
     pub fn new(settings: &EmailSettings) -> Result<SmtpMailer> {
-        let smtp = |what: &str, e: lettre::transport::smtp::Error| {
-            Error::config(format!(
-                "could not {what} for SMTP server `{}`: {e}",
-                settings.host
-            ))
-        };
-        let mut builder = match settings.security {
-            SmtpSecurity::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(&settings.host)
-                .map_err(|e| smtp("open a TLS connection", e))?,
-            SmtpSecurity::StartTls => {
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&settings.host)
-                    .map_err(|e| smtp("open a STARTTLS connection", e))?
-            }
-            SmtpSecurity::None => {
-                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&settings.host)
-            }
-        }
-        .port(settings.port);
+        let mut builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&settings.host)
+            .port(settings.port)
+            .tls(tls_for(settings)?);
         if settings.authenticates() {
             builder = builder.credentials(Credentials::new(
                 settings.username.clone(),
@@ -318,13 +307,62 @@ impl Mailer for SmtpMailer {
             // problems with three different fixes, and no summary this crate
             // could write beats naming which one happened.
             .map_err(|e| {
-                Error::msg(format!(
-                    "the mail server `{}` rejected the message: {e}",
-                    self.host
-                ))
+                let mut message =
+                    format!("the mail server `{}` rejected the message: {e}", self.host);
+                // The two certificate problems have settings that fix them, and
+                // "invalid peer certificate" names neither.
+                if message.contains("invalid peer certificate") {
+                    message.push_str(&format!(
+                        ". If the server's certificate is issued for another name — as it is \
+                         when the SMTP host is an IP address — set `{SMTP_CERTIFICATE_NAME}` to \
+                         that name. If it is self-signed, `{SMTP_CERTIFICATE_CHECK}` \
+                         `{CERTIFICATE_ACCEPT_ANY}` accepts it"
+                    ));
+                }
+                Error::msg(message)
             })?;
         Ok(())
     }
+}
+
+/// The TLS a connection to `settings` uses: none for `none`, and otherwise the
+/// certificate checked against [`certificate_name`](EmailSettings::certificate_name)
+/// — or the host when there is none — by the platform's verifier, unless the
+/// admin chose to accept any certificate.
+///
+/// The name is also the SNI the client sends. An IP host with no certificate
+/// name is checked against the IP, which a certificate issued for a DNS name
+/// does not carry: that is the error `certificate not valid for name
+/// "188.65.204.58"`, and the certificate name is its fix.
+fn tls_for(settings: &EmailSettings) -> Result<Tls> {
+    if settings.security == SmtpSecurity::None {
+        return Ok(Tls::None);
+    }
+    let name = settings.certificate_name.clone().unwrap_or_else(|| {
+        settings
+            .host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_owned()
+    });
+    let parameters = TlsParameters::builder(name.clone())
+        // Both: lettre's "invalid certs" still checks the name, whatever its
+        // documentation says, and a self-signed certificate on an IP host fails
+        // that too. (The name switch alone is ignored under the platform
+        // verifier; together they replace it.)
+        .dangerous_accept_invalid_certs(settings.accept_any_certificate)
+        .dangerous_accept_invalid_hostnames(settings.accept_any_certificate)
+        .build()
+        .map_err(|e| {
+            Error::config(format!(
+                "could not set up TLS for SMTP server `{}` (certificate name `{name}`): {e}",
+                settings.host
+            ))
+        })?;
+    Ok(match settings.security {
+        SmtpSecurity::Tls => Tls::Wrapper(parameters),
+        _ => Tls::Required(parameters),
+    })
 }
 
 /// An [`Email`] as the MIME message that goes on the wire.
