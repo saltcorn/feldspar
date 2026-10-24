@@ -464,6 +464,65 @@ fn authority(host_and_port: &str, scheme: Option<&str>) -> String {
     }
 }
 
+/// Whether a `Host` header is a plain `host[:port]`: a DNS name (letters,
+/// digits, `-`, `.`, `_`) or a bracketed IPv6 literal, then at most one port of
+/// digits.
+///
+/// Anything else is refused before routing ([`host_header_guard`]), because the
+/// server builds links from the `Host` a request arrived on — a password reset's,
+/// an invitation's, an OAuth flow's way home — and every reader of it cuts the
+/// port at the first `:`. `blog.example.com:@evil.com` would route to `blog`
+/// while a link built from it lands a browser on `evil.com`, carrying its token.
+pub(crate) fn is_valid_host_header(host: &str) -> bool {
+    let digits =
+        |port: &str| (1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit());
+    let (name, port) = if let Some(rest) = host.strip_prefix('[') {
+        let Some((literal, after)) = rest.split_once(']') else {
+            return false;
+        };
+        if literal.is_empty()
+            || !literal
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
+            return false;
+        }
+        return match after {
+            "" => true,
+            _ => after.strip_prefix(':').is_some_and(digits),
+        };
+    } else {
+        match host.split_once(':') {
+            Some((name, port)) => (name, Some(port)),
+            None => (host, None),
+        }
+    };
+    !name.is_empty()
+        && name.len() <= 253
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+        && port.is_none_or(digits)
+}
+
+/// Refuse a request whose `Host` header is not [`is_valid_host_header`] with a
+/// `400`, before anything reads it. A request without one passes: nothing is
+/// built from a host it did not name.
+pub(crate) async fn host_header_guard(request: Request, next: Next) -> Response {
+    let valid = match request.headers().get(axum::http::header::HOST) {
+        None => true,
+        Some(value) => value.to_str().is_ok_and(is_valid_host_header),
+    };
+    if !valid {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": "malformed Host header" })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
 /// Whether a method may change server state (and so needs CSRF protection).
 fn is_mutating(method: &Method) -> bool {
     !matches!(
@@ -692,7 +751,46 @@ fn form_field(body: &[u8], name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CLIENT_KIND_HEADER, NATIVE_CLIENT, SESSION_COOKIE, upgrade_origin_allowed};
+    use super::{
+        CLIENT_KIND_HEADER, NATIVE_CLIENT, SESSION_COOKIE, is_valid_host_header,
+        upgrade_origin_allowed,
+    };
+
+    #[test]
+    fn only_a_plain_host_and_port_is_a_valid_host_header() {
+        for good in [
+            "example.com",
+            "blog.example.com:3032",
+            "localhost",
+            "127.0.0.1:8080",
+            "[::1]",
+            "[::1]:443",
+            "blog.example.com.",
+            "my_box",
+        ] {
+            assert!(is_valid_host_header(good), "{good}");
+        }
+        for bad in [
+            "",
+            "blog.example.com:@evil.com",
+            "blog.example.com:80@evil.com",
+            "user@blog.example.com",
+            "blog.example.com/evil",
+            "blog.example.com\\evil",
+            "blog.example.com:80:81",
+            "blog.example.com:",
+            "blog.example.com:123456",
+            "blog.example.com#x",
+            "blog.example.com?x",
+            ":80",
+            "[::1",
+            "[::1]x",
+            "[evil.com]",
+            "[::1]:",
+        ] {
+            assert!(!is_valid_host_header(bad), "{bad}");
+        }
+    }
 
     fn upgrade(host: &str, origin: Option<&str>, cookie: bool, native: bool) -> bool {
         let mut headers = axum::http::HeaderMap::new();

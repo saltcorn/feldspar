@@ -357,6 +357,11 @@ pub struct RunCaller {
     /// The role every tool's access is checked at — the user's own, admin for
     /// a system run, public for an anonymous one.
     pub role: u8,
+    /// Whether a trigger started this run ([`RunCaller::triggered`]): it reads
+    /// and writes rows with the trigger's authority, but is never offered the
+    /// tools that act as the server itself — the shell, module installs, the
+    /// project's scripts and checks, the admin copilot.
+    pub triggered: bool,
 }
 
 impl RunCaller {
@@ -365,6 +370,7 @@ impl RunCaller {
         RunCaller {
             role: user.role,
             user: Some(user),
+            triggered: false,
         }
     }
 
@@ -377,6 +383,24 @@ impl RunCaller {
         RunCaller {
             user: None,
             role: 1,
+            triggered: false,
+        }
+    }
+
+    /// A run a trigger started: [`system`](Self::system)'s authority over rows,
+    /// without the tools that act as the server's operating-system user or
+    /// rewrite the application.
+    ///
+    /// The difference is where the prompt came from. A trigger's prompt is a
+    /// formula over the event — a row somebody inserted, a webhook somebody
+    /// sent — so a run that holds the admin's shell because a trigger started it
+    /// hands the shell to whoever can cause the event, by prompt injection. The
+    /// `run_agent` action makes this one unless its trigger is marked as
+    /// running on trusted input.
+    pub fn triggered() -> RunCaller {
+        RunCaller {
+            triggered: true,
+            ..RunCaller::system()
         }
     }
 
@@ -390,6 +414,7 @@ impl RunCaller {
         RunCaller {
             user: None,
             role: 100,
+            triggered: false,
         }
     }
 

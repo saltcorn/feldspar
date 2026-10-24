@@ -497,6 +497,35 @@ async fn a_forgotten_password_is_reset_by_emailed_link() -> sc_error::Result<()>
     Ok(())
 }
 
+/// A reset link is built from the host the request came in on, so a `Host`
+/// that routes to the app but reads as another site in a URL
+/// (`patients.example.com:@evil.com`) must be refused before any mail is sent.
+#[tokio::test]
+async fn a_reset_asked_for_on_a_forged_host_sends_nothing() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    create_user(&fx.catalog, "pat@example.com", "old-pw", ROLE_PATIENT).await?;
+    let mut attacker = Client::new(&fx.router, PATIENTS).await;
+    for forged in [
+        "patients.example.com:@evil.com",
+        "patients.example.com:80@evil.com",
+        "patients.example.com/evil.com",
+        "patients.example.com:80:81",
+    ] {
+        attacker.host = forged.to_owned();
+        let (status, _) = attacker
+            .send(
+                "POST",
+                "/api/forgot-password",
+                Some(json!({ "email": "pat@example.com" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{forged}");
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(fx.mailer.sent().is_empty(), "no link went anywhere");
+    Ok(())
+}
+
 #[tokio::test]
 async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Result<()> {
     let fx = setup().await?;

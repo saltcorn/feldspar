@@ -56,8 +56,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::router::{
-    AppState, Resolved, SessionClient, apply_session, log_failure, parse_query, refuse_sign_in,
-    resolve_app, session_user,
+    AppState, Resolved, SessionClient, apply_session, is_served_host, log_failure, parse_query,
+    refuse_sign_in, resolve_app, session_user,
 };
 
 /// Where every route of the flow lives.
@@ -370,6 +370,11 @@ pub(crate) async fn start(
     let Some(provider) = provider.filter(|p| offered(p, admin)) else {
         return Redirect::to(&with_error(&return_to, "unknown identity provider")).into_response();
     };
+    // The flow ends by sending the browser, with a token worth a session, back
+    // to the host it started on: that must be a host this server serves.
+    if !is_served_host(&state, &headers, &jar) {
+        return unserved_host();
+    }
     let host = request_host(&headers);
     let redirect_uri = format!(
         "{}://{}{CALLBACK_ROUTE}",
@@ -441,6 +446,9 @@ pub(crate) async fn consent(
         ))
         .into_response();
     }
+    if !is_served_host(&state, &headers, &jar) {
+        return unserved_host();
+    }
     let host = request_host(&headers);
     let redirect_uri = format!(
         "{}://{}{CALLBACK_ROUTE}",
@@ -476,6 +484,17 @@ pub(crate) async fn consent(
     (
         jar.add(binding_cookie(&state, binding)),
         Redirect::to(&address),
+    )
+        .into_response()
+}
+
+/// The refusal of a flow started on a host this server does not serve
+/// ([`is_served_host`]): no redirect, since the only address to send it to is
+/// the one that is not trusted.
+fn unserved_host() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        "sign-in is not offered on this host",
     )
         .into_response()
 }

@@ -110,6 +110,88 @@ pub(crate) fn content_disposition(filename: &str, attachment: bool) -> String {
     format!("{kind}; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
+/// The `Content-Security-Policy` every piece of user content carries
+/// ([`as_user_content`]): a document opened from it runs no script, submits no
+/// form and has an origin of its own, so it cannot act as the application.
+pub(crate) const USER_CONTENT_CSP: &str = "sandbox";
+
+/// Types a browser would **run** when another page loads the file as a script
+/// or a worker — and `script-src 'self'` lets a page on the application's
+/// origin load one from it.
+const SCRIPT_TYPES: &[&str] = &[
+    "text/javascript",
+    "application/javascript",
+    "application/x-javascript",
+    "application/ecmascript",
+    "text/ecmascript",
+    "text/jscript",
+    "application/wasm",
+];
+
+/// Types a browser renders as an active **document** when the file is opened:
+/// script, forms and links on the application's origin.
+const DOCUMENT_TYPES: &[&str] = &[
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "text/xml",
+    "application/xml",
+    "text/xsl",
+    "application/xslt+xml",
+    "application/vnd.wap.xhtml+xml",
+    "multipart/x-mixed-replace",
+];
+
+/// A file response made safe to send from the application's origin when the
+/// bytes are somebody's upload — a `File` field, an upload slot, an app's
+/// `/files/serve/*` — whose type is whatever the uploader's file name implied.
+///
+/// - Sandboxed by its own CSP ([`USER_CONTENT_CSP`]), **added to** whatever
+///   policy the application sets, so the stricter of the two holds. A PDF is
+///   left unsandboxed: browsers' PDF viewers refuse a sandboxed document, and a
+///   PDF's own script runs in the viewer, not on the page's origin.
+/// - A script type is served as `text/plain`, which `nosniff` (on every
+///   response) forbids a browser to execute: `<script src="/files/serve/x.js">`
+///   on an upload page is otherwise a way round `script-src 'self'`.
+/// - A document type is an `attachment`, saved rather than rendered.
+pub(crate) fn as_user_content(mut response: Response) -> Response {
+    let essence = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    let headers = response.headers_mut();
+    if SCRIPT_TYPES.contains(&essence.as_str()) {
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+    }
+    if DOCUMENT_TYPES.contains(&essence.as_str())
+        && let Some(disposition) = headers
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("inline"))
+            .and_then(|rest| HeaderValue::from_str(&format!("attachment{rest}")).ok())
+    {
+        headers.insert(header::CONTENT_DISPOSITION, disposition);
+    }
+    if essence != "application/pdf" {
+        headers.append(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(USER_CONTENT_CSP),
+        );
+    }
+    response
+}
+
 /// The ETag of a file: a hash of its path, size and modification time — which
 /// is what changes when the bytes do, and costs no read.
 pub(crate) fn cheap_etag(path: &str, size: u64, modified: Option<&str>) -> String {
@@ -300,6 +382,73 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// An uploaded file served from the application's origin: sandboxed on top
+    /// of the app's own CSP, a script never served as one, a document saved
+    /// rather than rendered — and an image or a PDF still shown inline.
+    #[test]
+    fn user_content_cannot_act_as_the_application() {
+        let served = |content_type: &str| {
+            let response = (
+                [
+                    (header::CONTENT_TYPE, content_type.to_owned()),
+                    (header::CONTENT_DISPOSITION, content_disposition("x", false)),
+                    (
+                        header::CONTENT_SECURITY_POLICY,
+                        "script-src 'self' 'unsafe-inline'".to_owned(),
+                    ),
+                ],
+                "",
+            )
+                .into_response();
+            let response = as_user_content(response);
+            let get = |name: header::HeaderName| -> Vec<String> {
+                response
+                    .headers()
+                    .get_all(name)
+                    .iter()
+                    .map(|v| v.to_str().unwrap().to_owned())
+                    .collect()
+            };
+            (
+                get(header::CONTENT_TYPE)[0].clone(),
+                get(header::CONTENT_DISPOSITION)[0].clone(),
+                get(header::CONTENT_SECURITY_POLICY),
+            )
+        };
+
+        let (kind, disposition, csp) = served("text/html; charset=utf-8");
+        assert_eq!(kind, "text/html; charset=utf-8");
+        assert!(
+            disposition.starts_with("attachment; filename=\"x\""),
+            "{disposition}"
+        );
+        assert_eq!(
+            csp,
+            vec!["script-src 'self' 'unsafe-inline'", USER_CONTENT_CSP]
+        );
+
+        let (_, disposition, csp) = served("image/svg+xml");
+        assert!(disposition.starts_with("attachment"), "{disposition}");
+        assert!(csp.contains(&USER_CONTENT_CSP.to_owned()));
+
+        for script in ["text/javascript", "application/javascript; charset=utf-8"] {
+            let (kind, _, _) = served(script);
+            assert_eq!(kind, "text/plain; charset=utf-8", "{script}");
+        }
+
+        let (kind, disposition, csp) = served("image/png");
+        assert_eq!(kind, "image/png");
+        assert!(disposition.starts_with("inline"), "{disposition}");
+        assert!(csp.contains(&USER_CONTENT_CSP.to_owned()));
+
+        let (_, disposition, csp) = served("application/pdf");
+        assert!(disposition.starts_with("inline"), "{disposition}");
+        assert!(
+            !csp.contains(&USER_CONTENT_CSP.to_owned()),
+            "a PDF viewer refuses a sandbox"
+        );
+    }
 
     #[test]
     fn a_range_is_read_as_rfc_9110_says() {

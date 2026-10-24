@@ -157,7 +157,7 @@ pub use preview_pane::{
     reloads_on_turn,
 };
 pub use query_table::{DEFAULT_MAX_ROWS, QueryTable};
-pub use run_agent::{CFG_AGENT, CFG_PROMPT, RunAgent};
+pub use run_agent::{CFG_AGENT, CFG_PROMPT, CFG_TRUSTED_INPUT, RunAgent};
 pub use run_trigger::{CFG_TRIGGER, RunTrigger};
 // `subagent`'s own agent-name key is spelled `agent` too, so [`CFG_AGENT`] above
 // is it: one string, exported once, rather than two constants a reader would have

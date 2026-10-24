@@ -104,6 +104,8 @@ mod view_app;
 mod view_image;
 mod write;
 
+use std::borrow::Cow;
+
 use sc_agent::{
     AfterToolsContext, AgentTrait, Elidable, RunCaller, RunId, RunMode, SessionContext,
     ToolsContext, TraitCheck, TraitContext,
@@ -442,6 +444,7 @@ impl AgentTrait for Coding {
     /// edit format picks, the script runner, `check`, `view_app` and the
     /// shell.
     fn tools(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec> {
+        let config = &*for_caller(config, cx.caller);
         let scope = scope_as_written(config);
         let mut tools = vec![
             read::spec(&scope, config),
@@ -529,6 +532,17 @@ impl AgentTrait for Coding {
         ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
         let scope = configured_scope(config)?;
+        if (tool == script::tool_name(&scope) || tool == check::tool_name(&scope))
+            && !is_admin(ctx.caller)
+        {
+            return Err(Error::invalid(format!(
+                "agent `{}` may not run the project's scripts or checks for this user: they \
+                 run the project's own code on the server, as its operating-system user, so \
+                 they are only for runs whose caller is an administrator",
+                ctx.agent
+            )));
+        }
+        let config = &*for_caller(config, Some(ctx.caller));
         match tool {
             _ if tool == read::tool_name(&scope) => read::call(&scope, config, args, ctx).await,
             _ if tool == find::tool_name(&scope) => find::call(&scope, config, args, ctx).await,
@@ -619,7 +633,7 @@ impl AgentTrait for Coding {
     /// mode and the grants — and in `act`, with the shell offered, how to use it
     /// (TODO 8.1, 6a.7). The same text on every step, so the prefix caches.
     fn prompt(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Option<String> {
-        Some(prompt::prompt(cx, config))
+        Some(prompt::prompt(cx, &for_caller(config, cx.caller)))
     }
 
     /// The session header: `AGENTS.md`, a repo map focused on what the brief
@@ -679,7 +693,7 @@ impl AgentTrait for Coding {
         let scope = configured_scope(config)?;
         feedback::after_edits(
             &scope,
-            config,
+            &for_caller(config, Some(cx.caller)),
             cx.catalog,
             &crate::files::file_caller(cx.caller),
             cx.trait_state,
@@ -694,9 +708,41 @@ pub(crate) fn may(config: &Attrs, key: &str) -> bool {
     config.get(key).and_then(Json::as_bool).unwrap_or(false)
 }
 
-/// Whether a caller is an admin: the only caller the shell is offered to.
+/// Whether a caller is an admin: the only caller the shell, the module tools
+/// and the grants that run the project's own code are offered to.
+///
+/// A run a trigger started is not one, though it holds role 1: its prompt was
+/// computed from an event — a row somebody wrote, a webhook somebody sent — so
+/// what it is asked to do is only as trustworthy as whoever caused the event
+/// ([`RunCaller::triggered`]).
 pub(crate) fn is_admin(caller: &RunCaller) -> bool {
-    caller.role == 1
+    caller.role == 1 && !caller.triggered
+}
+
+/// The grants that run the project's own code — its `package.json` scripts,
+/// its checks, its formatter and its build — on the server, as the server's
+/// operating-system user. Whoever may edit the project decides what that code
+/// is (`package.json` is a file like any other), so these are a shell by
+/// another name, and are an admin's like the shell is.
+const HOST_CODE_GRANTS: [&str; 2] = [CFG_MAY_RUN_SCRIPTS, CFG_MAY_CHECK];
+
+/// The configuration as it applies to `caller`: [`HOST_CODE_GRANTS`] read as
+/// off unless the caller [`is_admin`]. Applied where the trait is entered —
+/// the tools offered, a call, the prompt, the after-turn checks — so every
+/// reading of a grant below sees the same answer.
+///
+/// `None` is the tools listed for no run in particular (validation, the admin
+/// UI), which see the configuration as written: nothing runs there, and every
+/// run has a caller.
+fn for_caller<'c>(config: &'c Attrs, caller: Option<&RunCaller>) -> Cow<'c, Attrs> {
+    if caller.is_none_or(is_admin) || !HOST_CODE_GRANTS.iter().any(|key| may(config, key)) {
+        return Cow::Borrowed(config);
+    }
+    let mut config = config.clone();
+    for key in HOST_CODE_GRANTS {
+        config.insert(key.to_owned(), Json::Bool(false));
+    }
+    Cow::Owned(config)
 }
 
 /// Refuse the shell to a run whose grant is off, whose mode is read-only, or

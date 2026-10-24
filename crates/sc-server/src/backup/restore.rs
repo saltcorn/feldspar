@@ -1640,7 +1640,10 @@ fn checkout_store(def: &sc_files::FileStoreDef) -> Result<Arc<dyn sc_files::File
     let root = sc_files::clone_path(def)?;
     std::fs::create_dir_all(&root)
         .map_err(|e| Error::msg(format!("creating {}: {e}", root.display())))?;
-    Ok(Arc::new(sc_files::LocalFileStore::new(&def.name, &root)?))
+    // The checkout *is* the backup's `.git`, so this one store writes it.
+    Ok(Arc::new(
+        sc_files::LocalFileStore::new(&def.name, &root)?.writing_git_dir(),
+    ))
 }
 
 /// Define a store from a backup's definition, returning what was saved, a note

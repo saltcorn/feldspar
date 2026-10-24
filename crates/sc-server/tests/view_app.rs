@@ -288,6 +288,19 @@ impl<'e> Run<'e> {
         (result, ctx.images.len())
     }
 
+    /// `check` in this run, as the admin: a build runs the project's own code
+    /// on the server, so only an admin's run may build. The preview it mounts
+    /// is the run's, and the run's own caller looks at it afterwards.
+    async fn check_as_admin(&mut self) -> Result<String> {
+        let admin = sc_auth::load_user_by_email(&self.env.catalog, "admin@example.com")
+            .await?
+            .expect("the admin");
+        let caller = std::mem::replace(&mut self.caller, RunCaller::user(admin));
+        let report = self.call("check", json!({})).await.0;
+        self.caller = caller;
+        report
+    }
+
     async fn view(&mut self, args: Json) -> String {
         match self.call("view_app", args.clone()).await.0 {
             Ok(text) => text,
@@ -329,8 +342,15 @@ async fn a_user_run_builds_looks_clicks_fills_and_hears_about_errors() -> Result
     let err = err.unwrap_err().to_string();
     assert!(err.contains("run the check tool"), "{err}");
 
-    let (report, _) = run.call("check", json!({})).await;
-    let report = report?;
+    // Alice may not build: that runs the project's code on the server.
+    let err = run
+        .call("check", json!({}))
+        .await
+        .0
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("administrator"), "{err}");
+    let report = run.check_as_admin().await?;
     assert!(
         report.contains("preview: this build of `notes` is mounted"),
         "{report}"
@@ -464,8 +484,8 @@ async fn a_run_that_has_built_nothing_looks_at_the_live_build() -> Result<()> {
 
     // A green check re-mounts the preview with the run's own build.
     run.mode = RunMode::Act;
-    let (report, _) = run.call("check", json!({})).await;
-    assert!(report?.contains("preview: this build of `notes` is mounted"));
+    let report = run.check_as_admin().await?;
+    assert!(report.contains("preview: this build of `notes` is mounted"));
     run.view(json!({"action": "goto", "path": "/"})).await;
     let page = run
         .view(json!({"action": "wait_for", "text": "loaded", "timeout": 10}))
@@ -581,7 +601,6 @@ async fn a_planned_features_pages_are_looked_at_on_the_planners_preview() -> Res
             ("may_edit", json!(true)),
         ])))
         .role(ModelRole::Strong, ModelRef::new("main", None))
-        // Alice chats with it, so it is hers to use, and so is its session.
         .min_role(80);
     sc_agent::save_agent(&env.catalog, env.agents.registry(), &agent).await?;
     // What `feldspar serve` installs at startup, so every run reaches them.
@@ -611,12 +630,18 @@ async fn a_planned_features_pages_are_looked_at_on_the_planners_preview() -> Res
             .role(ModelRole::Executor, executor.clone())
             .role(ModelRole::Strong, strong.clone()),
     );
+    // The admin chats with it: each feature's session builds the application
+    // to look at it, and a build runs the project's code on the server, which
+    // only an admin's run may do.
+    let admin = sc_auth::load_user_by_email(&env.catalog, "admin@example.com")
+        .await?
+        .expect("the admin");
     let runner = Runner::new(
         &env.catalog,
         env.agents.registry(),
         &agent,
         sc_llm::ConnectedModel::unconfigured(executor.clone()),
-        RunCaller::user(env.alice.clone()),
+        RunCaller::user(admin),
     )
     .with_connector(&models);
     let (_, conclusion) = runner.start("show the notes").await?;
@@ -667,7 +692,7 @@ async fn signed_out_looks_as_a_visitor_and_signs_back_in() -> Result<()> {
     let env = setup("signed_out", executable).await?;
 
     let mut run = Run::new(&env, RunCaller::user(env.alice.clone()), config(&[]));
-    run.call("check", json!({})).await.0?;
+    run.check_as_admin().await?;
     run.view(json!({"action": "goto", "path": "/"})).await;
     let page = run
         .view(json!({"action": "wait_for", "text": "loaded", "timeout": 10}))

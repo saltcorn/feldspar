@@ -2,6 +2,68 @@
 
 Changes in reverse chronological order.
 
+## Security fixes: Host header, OAuth host, agent privileges, uploads
+
+Fixes for items 1–5 of `docs/SECURITY_REVIEW_2026-10.md`.
+
+- **A forged `Host` header is refused before routing** (#1). `security::host_header_guard`
+  answers `400` to any `Host` that is not a plain `host[:port]` (a DNS name or a bracketed IPv6
+  literal, then one port of digits). Before this, `Host: blog.example.com:@evil.com` routed to
+  the app `blog`, because every reader cuts the port at the first `:`. But the password-reset
+  and invitation links built from that header (`RequestLinks::own_origin`) sent the victim's
+  browser, and the token, to `evil.com`. Anyone could take over any account that way, admins
+  included.
+- **An OAuth sign-in starts only on a host this server serves by name** (#2).
+  `router::is_served_host` accepts a mounted application's host, or the admin UI's own host
+  (under the base domain or an extra one). `oauth::start` and `oauth::consent` refuse any other
+  host with a `400`. Before this, an unknown host fell through to the admin, and the callback
+  sent the victim's completion token back to it. Without a base domain there is one host, and
+  the provider's check of the callback address still applies.
+- **Trigger-started agents no longer act as the server** (#3).
+  - `RunCaller` gains a `triggered` flag, and `RunCaller::triggered()` sets it. It keeps role
+    1 for rows, but `coding::is_admin` is false for it.
+  - So a triggered run is offered no shell, process tool or module install. It is also offered
+    no scripts, checks or builds, and no admin copilot tools (none are listed, and a call is
+    refused).
+  - `run_agent` creates `triggered()` runs unless the new `trusted_input` setting (off by
+    default) says that only trusted people can cause the event.
+- **The project's own code runs only for an admin's run** (#4).
+  - For a non-admin caller, the `coding` trait now reads `may_run_scripts` and `may_check` as
+    off. This covers the `run_project_script` and `check` tools, the baseline taken before an
+    edit, and formatting and type-checking after a turn. The `build_application` trait is
+    withheld the same way.
+  - The reason: whoever may edit `package.json` or a bundler config decides what `npm run`
+    executes.
+  - Tool lists made for no particular run (validation, the admin UI) are unchanged.
+- **Nothing is written inside `.git`** (#4).
+  - `LocalFileStore` (and so `GitFileStore`) refuses writes, mkdirs, deletes, renames,
+    appends, joins and metadata changes inside a `.git` segment. The check ignores case and
+    trailing dots, and treats `\` as a separator. `sc_files::in_git_dir` is the rule.
+  - The agent write path (`files::open_to_write`) also refuses such paths on any backend.
+  - Restoring a backup's own checkout uses `LocalFileStore::writing_git_dir()`.
+  - Before this, a non-admin agent could write `core.fsmonitor` into `.git/config`, which runs
+    on the server's next `git status`.
+- **Uploaded files cannot act as the application** (#5).
+  - A `File` field's download, a code query's `response({ file })` and an application's
+    `/files/serve/*` now go through `file_response::as_user_content`. It adds
+    `Content-Security-Policy: sandbox` alongside the app's own CSP (PDFs are exempt, since
+    browsers' viewers refuse a sandbox). It serves script types as `text/plain`, which
+    `nosniff` stops from running. It turns HTML, SVG and XML documents into attachments.
+  - The admin chat and language-server sockets now answer `404` on an application's or a
+    preview's host, as the stream-observe and fit-progress sockets already did.
+- **Tests:**
+  - `security::tests::only_a_plain_host_and_port_is_a_valid_host_header`;
+  - `app_invite::a_reset_asked_for_on_a_forged_host_sends_nothing`;
+  - the forged-host block in `oauth_sign_in`;
+  - `host_privileges` (sc-core-traits): scripts, checks, shell, builds and the copilot for
+    staff and triggered callers, and `.git` writes;
+  - `run_agent::a_triggered_run_is_offered_the_shell_only_on_trusted_input`;
+  - `sc-files` `nothing_is_written_inside_dot_git`;
+  - `file_response::tests::user_content_cannot_act_as_the_application`.
+  - `view_app` (sc-server) now builds the preview as the admin (`Run::check_as_admin`) and
+    looks at it as Alice, and asserts that Alice's own `check` is refused. The planned-feature
+    test chats as the admin, because each feature's session builds the application.
+
 ## Astro websites, W3: A/B optimisation of landing pages
 
 Milestone W3 of `TODO-astro.md`. A landing page can test its copy: each visitor is shown one

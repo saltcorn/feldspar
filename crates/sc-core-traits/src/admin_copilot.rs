@@ -306,6 +306,10 @@ impl AgentTrait for AdminCopilot {
     /// checkbox is on — which is [`ToolSet::specs`]'s rule, not one this trait
     /// applies on top of it.
     fn tools(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec> {
+        // A triggered run is offered none of it: see `call`.
+        if cx.caller.is_some_and(|caller| caller.triggered) {
+            return Vec::new();
+        }
         let mut specs = tool_set(config).specs(cx.catalog);
         if areas(config).has(Area::Applications) {
             specs.push(delegate_spec());
@@ -358,6 +362,16 @@ impl AgentTrait for AdminCopilot {
         args: &Json,
         ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
+        // The schema, the triggers and their code are the application itself, and
+        // a triggered run's prompt was written by whoever caused its event:
+        // holding role 1 because a trigger fired is not being an admin here.
+        if ctx.caller.triggered {
+            return Err(Error::invalid(format!(
+                "`{tool}` is not available to a run a trigger started: the admin copilot \
+                 changes the application itself, and this run's prompt came from an event. \
+                 An admin can allow it with the trigger's `trusted_input` setting."
+            )));
+        }
         if tool == TOOL_DELEGATE || tool == TOOL_PUBLISH {
             require_admin(ctx.caller.role, tool)?;
             if !areas(config).has(Area::Applications) {

@@ -34,6 +34,7 @@ use sc_llm::ToolSpec;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
+use crate::coding::is_admin;
 use crate::files::slugify;
 use crate::table::{arguments, config_str};
 
@@ -78,7 +79,14 @@ impl AgentTrait for BuildApplication {
         Ok(())
     }
 
-    fn tools(&self, _cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec> {
+    /// Withheld from a run whose caller is not an admin ([`is_admin`]): a build
+    /// runs the project's own scripts and bundler configuration on the server,
+    /// and whoever can edit the source decides what those are. Listed for no
+    /// run (validation, the admin UI), it is there.
+    fn tools(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec> {
+        if cx.caller.is_some_and(|caller| !is_admin(caller)) {
+            return Vec::new();
+        }
         let configured = config_str(config, CFG_APPLICATION);
         vec![ToolSpec::new(
             tool_name(&configured),
@@ -105,6 +113,14 @@ impl AgentTrait for BuildApplication {
         ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
         arguments(args, &[])?;
+        if !is_admin(ctx.caller) {
+            return Err(Error::invalid(format!(
+                "agent `{}` may not build the application for this user: a build runs the \
+                 project's own code on the server, so it is only for runs whose caller is an \
+                 administrator",
+                ctx.agent
+            )));
+        }
         let subdomain = configured_application(config)?;
         let (app, source) = resolve_application(ctx.catalog, &subdomain).await?;
 

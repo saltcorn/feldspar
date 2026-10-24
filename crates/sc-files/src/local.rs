@@ -39,6 +39,18 @@ fn rfc3339(time: std::time::SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// Whether a store-relative path is inside (or is) a `.git` directory, at any
+/// depth: a segment that is `.git` in any case, since a case-insensitive file
+/// system opens `.GIT/config` as the same file, and with trailing dots or spaces
+/// ignored, since Windows drops them.
+pub fn in_git_dir(path: &str) -> bool {
+    path.split(['/', '\\']).any(|segment| {
+        segment
+            .trim_end_matches(['.', ' '])
+            .eq_ignore_ascii_case(".git")
+    })
+}
+
 /// Name of the extended attribute holding a file's serialised [`FileMeta`]. On
 /// Unix the effective key is `user.saltcorn.meta` (the `user.` namespace is
 /// applied by the xattr layer).
@@ -49,6 +61,10 @@ const META_ATTR: &str = "saltcorn.meta";
 pub struct LocalFileStore {
     name: String,
     root: PathBuf,
+    /// Whether a write may land inside a `.git` directory
+    /// ([`writing_git_dir`](Self::writing_git_dir)). Off for every store a
+    /// caller reaches.
+    git_dir_writable: bool,
 }
 
 impl LocalFileStore {
@@ -69,7 +85,33 @@ impl LocalFileStore {
         Ok(Self {
             name: name.into(),
             root: canonical,
+            git_dir_writable: false,
         })
+    }
+
+    /// The same store, allowed to write inside `.git`: only for restoring a
+    /// backup's own checkout, an admin's act whose archive *is* the repository.
+    pub fn writing_git_dir(mut self) -> Self {
+        self.git_dir_writable = true;
+        self
+    }
+
+    /// [`resolve`](Self::resolve) for a path about to be written, created,
+    /// renamed or deleted: refused inside a `.git` directory ([`in_git_dir`]).
+    ///
+    /// A repository's `.git/config` and `.git/hooks` are commands the server's
+    /// own `git` runs — `core.fsmonitor` on every `git status` — so whoever may
+    /// write a file there may run a program as the server's operating-system
+    /// user. Nobody who reaches a store through Saltcorn (an agent's edit, an
+    /// upload, a File field) has a reason to.
+    fn resolve_for_write(&self, rel: &str) -> Result<PathBuf> {
+        if !self.git_dir_writable && in_git_dir(rel) {
+            return Err(Error::invalid(format!(
+                "path {rel:?} is inside a `.git` directory, which file store {} does not write",
+                self.name
+            )));
+        }
+        self.resolve(rel)
     }
 
     /// Resolve a store-relative path to an absolute path inside the root,
@@ -124,7 +166,7 @@ impl FileStore for LocalFileStore {
     }
 
     async fn write(&self, path: &str, data: Bytes) -> Result<()> {
-        let abs = self.resolve(path)?;
+        let abs = self.resolve_for_write(path)?;
         if let Some(parent) = abs.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -174,7 +216,7 @@ impl FileStore for LocalFileStore {
     }
 
     async fn mkdir(&self, path: &str) -> Result<()> {
-        let abs = self.resolve(path)?;
+        let abs = self.resolve_for_write(path)?;
         // A file already sitting there is a real conflict — `create_dir_all`
         // would report an opaque OS error, so name it.
         if abs.is_file() {
@@ -192,7 +234,7 @@ impl FileStore for LocalFileStore {
     }
 
     async fn delete(&self, path: &str) -> Result<bool> {
-        let abs = self.resolve(path)?;
+        let abs = self.resolve_for_write(path)?;
         // `resolve` collapses "", "/" and "." to the root, so this also catches
         // an attempt to delete the whole store by passing an empty path.
         if abs == self.root {
@@ -224,8 +266,8 @@ impl FileStore for LocalFileStore {
     }
 
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        let src = self.resolve(from)?;
-        let dst = self.resolve(to)?;
+        let src = self.resolve_for_write(from)?;
+        let dst = self.resolve_for_write(to)?;
         if src == self.root || dst == self.root {
             return Err(Error::invalid(format!(
                 "refusing to rename the root of file store {}",
@@ -333,7 +375,7 @@ impl FileStore for LocalFileStore {
 
     /// The file opened for appending, created (with its parents) if missing.
     async fn open_append<'a>(&'a self, path: &str) -> Result<BoxAsyncWrite<'a>> {
-        let abs = self.resolve(path)?;
+        let abs = self.resolve_for_write(path)?;
         if abs == self.root {
             return Err(Error::invalid(format!(
                 "the root of file store {} is not a file to append to",
@@ -358,7 +400,7 @@ impl FileStore for LocalFileStore {
     /// so the target is the whole join or untouched: every part is checked
     /// before a byte is copied, and a failure part-way removes the temporary.
     async fn concat(&self, parts: &[String], to: &str) -> Result<u64> {
-        let target = self.resolve(to)?;
+        let target = self.resolve_for_write(to)?;
         if target == self.root {
             return Err(Error::invalid(format!(
                 "the root of file store {} is not a file to join into",
@@ -438,7 +480,7 @@ impl FileStore for LocalFileStore {
 
     async fn set_meta(&self, path: &str, meta: &FileMeta) -> Result<()> {
         // The target file must exist before it can carry metadata.
-        let abs = self.resolve(path)?;
+        let abs = self.resolve_for_write(path)?;
         if !tokio::fs::try_exists(&abs)
             .await
             .with_context(|| format!("checking {path:?} exists"))?

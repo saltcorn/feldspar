@@ -15,8 +15,13 @@
 //!   feature. It is validated on save *and* on load like every other configured
 //!   formula, so an identifier that does not resolve is a message on the form
 //!   rather than a firing that fails.
-//! - **It runs with the trigger's authority** ([`RunCaller::system`], decision
-//!   5). Nobody is present — a row was written — so there is no user to run the
+//! - **It runs with the trigger's authority** ([`RunCaller::triggered`],
+//!   decision 5) over rows, but without the tools that act as the server itself
+//!   — the shell, module installs, the project's scripts and checks, the admin
+//!   copilot — because the prompt is computed from an event, and whoever can
+//!   cause the event can write into it. [`CFG_TRUSTED_INPUT`] restores them
+//!   ([`RunCaller::system`]) for a trigger whose event only trusted people
+//!   cause. Nobody is present — a row was written — so there is no user to run the
 //!   agent's tools as, and the run row records `user: null` for exactly that
 //!   reason. The agent's own `min_role` is therefore not a gate here: the floor
 //!   describes who may *chat* with it, and a trigger clears every floor. What
@@ -56,6 +61,19 @@ use serde_json::{Value as Json, json};
 pub const CFG_AGENT: &str = "agent";
 /// The formula computing what to say to it.
 pub const CFG_PROMPT: &str = "prompt";
+/// Whether the event this trigger fires on is one only trusted people can
+/// cause, so the run may have the tools that act as the server itself (the
+/// shell, module installs, the project's scripts and checks, the admin
+/// copilot). Off by default: see [`RunCaller::triggered`].
+pub const CFG_TRUSTED_INPUT: &str = "trusted_input";
+
+/// Whether [`CFG_TRUSTED_INPUT`] is on. Anything but `true` is off.
+fn trusted_input(config: &Attrs) -> bool {
+    config
+        .get(CFG_TRUSTED_INPUT)
+        .and_then(Json::as_bool)
+        .unwrap_or(false)
+}
 
 /// Run one configured agent with a prompt derived from the event.
 ///
@@ -95,6 +113,12 @@ impl Action for RunAgent {
             FormField::new(CFG_PROMPT, BasicType::Text)
                 .label("Prompt")
                 .required(),
+            FormField::new(CFG_TRUSTED_INPUT, BasicType::Bool)
+                .label(
+                    "Only trusted people can cause this event: let the agent use the shell, \
+                     install modules, run scripts and checks, and use the admin copilot",
+                )
+                .default_value(false),
         ]
     }
 
@@ -156,8 +180,14 @@ impl Action for RunAgent {
             agent,
             executor,
             // Decision 5, at the one place a run is created: nobody is present,
-            // so the run carries the trigger's authority and records no user.
-            RunCaller::system(),
+            // so the run carries the trigger's authority and records no user —
+            // without the server's own tools, unless the admin said the event
+            // is one nobody untrusted can cause.
+            if trusted_input(ctx.config) {
+                RunCaller::system()
+            } else {
+                RunCaller::triggered()
+            },
         )
         // The connector this action already holds, handed on so an agent a
         // trigger started can delegate exactly as one a person is chatting with

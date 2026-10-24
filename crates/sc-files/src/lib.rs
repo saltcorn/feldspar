@@ -49,7 +49,7 @@ pub use git::{
     clone_path, generate_deploy_key, git_operations, key_dir, parse_change, record_clone_path,
     record_deploy_key,
 };
-pub use local::{LocalFileStore, OP_SUGGEST_DIR, local_operations};
+pub use local::{LocalFileStore, OP_SUGGEST_DIR, in_git_dir, local_operations};
 pub use paths::{DATA_DIR_ENV, data_dir, local_store_dir, suggest_local_dir};
 pub use reference::{free_path, mime_for_path, suffixed_path, validate_file_path};
 pub use search::{
@@ -301,6 +301,50 @@ mod tests {
         assert!(!store.is_git_repo());
         std::fs::create_dir(base.join(".git")).unwrap();
         assert!(store.is_git_repo());
+    }
+
+    /// `.git/config` is commands the server's own `git` runs (`core.fsmonitor`
+    /// on every status), so no write through a store may land in `.git` — in
+    /// any case, at any depth, by any write path — except the restore of a
+    /// backup's own checkout.
+    #[tokio::test]
+    async fn nothing_is_written_inside_dot_git() {
+        let (base, store) = temp_store();
+        std::fs::create_dir(base.join(".git")).unwrap();
+        std::fs::write(base.join(".git/config"), "[core]\n").unwrap();
+        std::fs::write(base.join("ok.txt"), "x").unwrap();
+        let evil = Bytes::from_static(b"[core]\n\tfsmonitor = touch /tmp/owned\n");
+        for path in [
+            ".git/config",
+            ".GIT/config",
+            ".git./config",
+            "sub/.git/hooks/pre-commit",
+            "a\\.git\\config",
+        ] {
+            assert!(store.write(path, evil.clone()).await.is_err(), "{path}");
+        }
+        assert!(store.mkdir(".git/hooks").await.is_err());
+        assert!(store.delete(".git/config").await.is_err());
+        assert!(store.rename("ok.txt", ".git/config").await.is_err());
+        assert!(store.open_append(".git/config").await.is_err());
+        assert_eq!(
+            std::fs::read_to_string(base.join(".git/config")).unwrap(),
+            "[core]\n",
+            "the repository's config is untouched"
+        );
+        // Reading is not writing, and a file merely *named* like it is fine.
+        assert!(store.read(".git/config").await.is_ok());
+        store
+            .write("docs/.gitignore", Bytes::from_static(b"x"))
+            .await
+            .unwrap();
+        store
+            .write("dot.git/x", Bytes::from_static(b"x"))
+            .await
+            .unwrap();
+
+        let restoring = LocalFileStore::new("t", &base).unwrap().writing_git_dir();
+        restoring.write(".git/config", evil).await.unwrap();
     }
 
     #[tokio::test]

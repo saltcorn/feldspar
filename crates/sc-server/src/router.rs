@@ -504,6 +504,11 @@ pub fn build_router_with_apps(
         // other refusal this server makes is `{error}` JSON, and a client should
         // not need a second parser for this one.
         .layer(axum::middleware::from_fn(json_payload_too_large))
+        // Outside everything that reads `Host` — routing, CSRF, the handlers
+        // that build links from it — and inside logging, so a refusal is logged.
+        .layer(axum::middleware::from_fn(
+            crate::security::host_header_guard,
+        ))
         .layer(axum::middleware::from_fn(crate::logging::log_requests));
 
     Ok(app)
@@ -898,6 +903,29 @@ async fn admin_of(
     Ok((user, session_token))
 }
 
+/// A `404` for an admin-only socket asked for on an application's host (or a
+/// preview's), where it is nothing.
+///
+/// The Origin check passes there — the page is on the host it connects to — and
+/// with sign-in shared between applications the admin's cookie comes along, so
+/// without this a script on any application page an admin opens (an uploaded
+/// file, the application's own code) could hold the admin's chat or language
+/// server. The admin UI and the IDE connect from the admin's host, and only
+/// from there.
+fn admin_host_only(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    jar: &CookieJar,
+) -> Option<Response> {
+    match resolve_app(state, headers, jar) {
+        Resolved::Admin => None,
+        Resolved::App(_) | Resolved::HiddenPreview => Some(json_error(
+            StatusCode::NOT_FOUND,
+            "there is nothing at this path",
+        )),
+    }
+}
+
 /// The IDE's language-server socket (design §12.1): admin-only, one process per
 /// connection.
 ///
@@ -917,6 +945,9 @@ async fn language_server(
     AxumPath(store): AxumPath<String>,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
+    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
+        return refused;
+    }
     if !upgrade_origin_allowed(&headers) {
         return upgrade_origin_refused();
     }
@@ -943,6 +974,9 @@ async fn agent_chat(
     jar: CookieJar,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
+    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
+        return refused;
+    }
     if !upgrade_origin_allowed(&headers) {
         return upgrade_origin_refused();
     }
@@ -1329,6 +1363,44 @@ pub(crate) fn resolve_app(
     }
 }
 
+/// Whether the request's `Host` is one this server serves **by name**: an
+/// application's host, or the admin UI's own (under the base domain or an extra
+/// one).
+///
+/// [`resolve_app`] answers any host that names no application as the admin, so
+/// a request with `Host: attacker.example` reaches the admin's routes. That is
+/// harmless for a page, but not for anything that sends a browser back to the
+/// host the request came in on carrying a credential — an OAuth flow's
+/// completion token. Without a base domain there is one host and nothing to
+/// compare it with; such a flow's way home is its own callback address, which
+/// the provider checks.
+pub(crate) fn is_served_host(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    jar: &CookieJar,
+) -> bool {
+    let Some(base) = state.base_domain.as_ref().map(|b| b.as_str()) else {
+        return true;
+    };
+    let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    match resolve_app(state, headers, jar) {
+        Resolved::App(_) => true,
+        Resolved::HiddenPreview => false,
+        Resolved::Admin => {
+            let name = crate::admin_host::hostname(host);
+            let admin = state.apps.admin().subdomain();
+            std::iter::once(base)
+                .chain(state.extra_base_domains.iter().map(String::as_str))
+                .any(|domain| match &admin {
+                    Some(subdomain) => name.eq_ignore_ascii_case(&format!("{subdomain}.{domain}")),
+                    None => name.eq_ignore_ascii_case(domain),
+                })
+        }
+    }
+}
+
 /// Whether `host` is the base domain itself, or one of the extra ones — the
 /// hosts the `@` application answers on.
 fn is_base_host(host: &str, base: &str, extra_base_domains: &[String]) -> bool {
@@ -1655,7 +1727,8 @@ async fn dispatch_app(
                 ..
             }) => {
                 let out = crate::file_response::serve(&file, &method, uri, headers).await;
-                with_csp(with_code_headers(out, extra), &csp)
+                // Last, so neither the code's headers nor the app's CSP undo it.
+                crate::file_response::as_user_content(with_csp(with_code_headers(out, extra), &csp))
             }
             // A raw-bytes response — a file download (§4), a code query's
             // `response({ body: bytes })` (TODO F2.9) — goes out as-is under
@@ -1806,10 +1879,10 @@ async fn dispatch_app(
         // A store file (`/files/serve/*`) through the shared builder.
         Ok(sc_app::AppResponse {
             file: Some(file), ..
-        }) => with_csp(
+        }) => crate::file_response::as_user_content(with_csp(
             crate::file_response::serve(&file, &method, uri, headers).await,
             &csp,
-        ),
+        )),
         Ok(resp) => {
             let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::OK);
             // The same session code an API provider's response goes through, so

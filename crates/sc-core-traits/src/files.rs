@@ -243,6 +243,13 @@ pub async fn open_to_write(
 ) -> Result<(Arc<dyn FileStore>, String)> {
     let (store, floor) = scope.connect(ctx.catalog).await?;
     let path = scope.resolve(rel)?;
+    // Whatever the backend: a repository's `.git` holds commands the server's
+    // own `git` runs, so a file written there is a program run as the server.
+    if sc_files::in_git_dir(&path) {
+        return Err(Error::invalid(format!(
+            "`{rel}` is inside a `.git` directory, which an agent may not write"
+        )));
+    }
     check_write(store.as_ref(), floor, &path, &file_caller(ctx.caller)).await?;
     Ok((store, path))
 }
