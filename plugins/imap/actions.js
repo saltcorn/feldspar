@@ -267,9 +267,24 @@ const ACCOUNT_FIELDS = [
   "smtp_host", "smtp_port", "smtp_security", "smtp_user", "smtp_password",
 ];
 
+/** The fields that say where a login goes and as whom: a saved secret is only ever sent to the
+ * saved values of these. */
+const ENDPOINT_FIELDS = [
+  "email", "imap_host", "imap_port", "imap_security", "imap_user",
+  "smtp_host", "smtp_port", "smtp_security", "smtp_user",
+];
+
+/** The endpoint fields the payload gives a value that differs from the saved row's. */
+function changedEndpoints(given, saved) {
+  const norm = (v) => (v === undefined || v === null ? "" : String(v).trim().toLowerCase());
+  return ENDPOINT_FIELDS.filter((key) => norm(given[key]) !== "" && norm(given[key]) !== norm(saved[key]));
+}
+
 /** Log in to IMAP and SMTP with settings that may not be saved yet. With `account_id`, a
  * password left empty (or as the sentinel) is the saved one, read as the caller; a saved
- * OAuth2 account logs in with its token. */
+ * OAuth2 account logs in with its token. Both only with the saved servers, user and address:
+ * whoever may read a shared account may test it, and a test against a server the caller names
+ * would hand that server the account's password or token (security review #17). */
 async function testAccount({ payload, user, settings: configuration }) {
   caller(user);
   const now = Date.now();
@@ -283,6 +298,21 @@ async function testAccount({ payload, user, settings: configuration }) {
   for (const key of ACCOUNT_FIELDS) if (p[key] !== undefined) account[key] = p[key];
   if (p.account_id) {
     const saved = await readable("mail_accounts", Number(p.account_id), user);
+    const changed = changedEndpoints(account, saved);
+    const keeps = (key) => [undefined, null, "", SECRET_SENTINEL].includes(account[key]);
+    // A token logs in to both servers; a password to its own one (`oauth.js` `authOf`).
+    const moved = isOAuth(saved)
+      ? changed
+      : [
+          ...(keeps("imap_password") && saved.imap_password ? changed.filter((k) => !k.startsWith("smtp_")) : []),
+          ...(keeps("smtp_password") && saved.smtp_password ? changed.filter((k) => !k.startsWith("imap_")) : []),
+        ];
+    if (moved.length) {
+      throw new Error(
+        `the saved password or token is only sent to the saved servers, and ${[...new Set(moved)].join(", ")} ` +
+          "differ from them; enter the password to test other settings",
+      );
+    }
     for (const key of ACCOUNT_FIELDS) {
       const given = account[key];
       if (given === undefined || given === null || given === "" || given === SECRET_SENTINEL) account[key] = saved[key];

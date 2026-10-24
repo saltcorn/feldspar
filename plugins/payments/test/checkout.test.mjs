@@ -124,3 +124,31 @@ test("a checkout paid is logged against the row it was for", async () => {
   const succeeded = store.tables.pay_events.find((e) => e.kind === "payment.succeeded");
   assert.deepEqual([succeeded.ref_table, succeeded.ref_key, succeeded.user_id, succeeded.amount], ["orders", 12, 7, 1150]);
 });
+
+test("a basket changed after its checkout was made is a payment.mismatch, not a payment.succeeded", async () => {
+  const ctx = { db: store.db, log: Object.assign(() => {}, { warn: () => {} }) };
+  const { deliverTo } = require("../webhooks.js");
+  const cheap = await run({ ...children, item: "name" }, { order: 12 });
+  assert.equal(cheap.amount, 1150);
+  // Before paying, the buyer fills the basket through ordinary writes, then pays the old total.
+  await store.db.order_lines.insert({ order: 12, quantity: 3, price: 10000, name: "Gold" });
+  await fake.settle(account, cheap.checkout, "succeeded", deliverTo(account, ctx));
+  for (const e of fake.events(account)) await fake.resend(account, e.id, deliverTo(account, ctx));
+  const kinds = store.tables.pay_events.map((e) => e.kind);
+  assert.ok(!kinds.includes("payment.succeeded"), `${kinds}`);
+  const mismatch = store.tables.pay_events.filter((e) => e.kind === "payment.mismatch");
+  assert.equal(mismatch.length, 1, "once, however often it is delivered");
+  assert.deepEqual([mismatch[0].ref_table, mismatch[0].ref_key, mismatch[0].amount], ["orders", 12, 1150]);
+  // What was charged for — what an application may deliver — is on the event.
+  assert.deepEqual(mismatch[0].lines.map((l) => [l.item, l.quantity]), [["Tea", 2], ["Cup", 1]]);
+  const payment = store.tables.pay_objects.find((o) => o.kind === "payment");
+  assert.match(payment.issue, /its lines changed after the checkout was made/);
+
+  // A basket left alone is paid as it was, its charged lines on the event.
+  store.tables.order_lines.pop();
+  const again = await run({ ...children, item: "name" }, { order: 12 });
+  await fake.settle(account, again.checkout, "succeeded", deliverTo(account, ctx));
+  const succeeded = store.tables.pay_events.find((e) => e.kind === "payment.succeeded");
+  assert.ok(succeeded, `${store.tables.pay_events.map((e) => e.kind)}`);
+  assert.deepEqual(succeeded.lines.map((l) => [l.item, l.quantity, l.unit_amount]), [["Tea", 2, 450], ["Cup", 1, 250]]);
+});

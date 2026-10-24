@@ -165,6 +165,8 @@ pub(crate) struct AppState {
     extra_base_domains: Arc<Vec<String>>,
     /// How many more language servers the IDE may start (design §12.1).
     lsp_slots: ServerSlots,
+    /// The language server the IDE runs ([`ServerConfig::language_server`]).
+    language_server: Arc<std::path::PathBuf>,
     /// The tier-2 MCP tools: one per endpoint tagged
     /// [`Endpoint::mcp`](sc_api::Endpoint::mcp), built once here because
     /// dispatching one needs the handler registry (§13.6).
@@ -288,6 +290,7 @@ pub fn build_router_with_apps(
         base_domain: config.base_domain.clone().map(Arc::new),
         extra_base_domains: Arc::new(config.extra_base_domains.clone()),
         lsp_slots: server_slots(),
+        language_server: Arc::new(config.language_server.clone()),
         mcp_endpoint_tools,
         max_request_body: config.max_request_body,
         max_upload_bytes: config.max_upload_bytes,
@@ -650,10 +653,14 @@ async fn health() -> Response {
 /// lookup, the admin check, and reading the body.
 async fn upload(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
     AxumPath((store_name, path)): AxumPath<(String, String)>,
     body: axum::body::Body,
 ) -> Response {
+    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
+        return refused;
+    }
     let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
     let user = match session_user(&state, &jar).await {
         Ok(user) => user,
@@ -727,6 +734,9 @@ async fn download(
     headers: axum::http::HeaderMap,
     AxumPath((store_name, path)): AxumPath<(String, String)>,
 ) -> Response {
+    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
+        return refused;
+    }
     let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
     let user = match session_user(&state, &jar).await {
         Ok(user) => user,
@@ -773,8 +783,13 @@ async fn download(
 /// the half the endpoint model cannot describe. The work is the `createBackup`
 /// handler's: it holds the catalog, it persists the selection, and it is where an
 /// admin-only check has already been applied by the time the bytes exist.
-async fn create_backup(State(state): State<AppState>, jar: CookieJar, body: Bytes) -> Response {
-    let (user, session_token) = match admin_of(&state, &jar).await {
+async fn create_backup(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    jar: CookieJar,
+    body: Bytes,
+) -> Response {
+    let (user, session_token) = match admin_of(&state, &headers, &jar).await {
         Ok(pair) => pair,
         Err(response) => return *response,
     };
@@ -834,8 +849,13 @@ async fn create_backup(State(state): State<AppState>, jar: CookieJar, body: Byte
 /// chosen from it. That is one upload rather than two — the alternative, sending
 /// the file again with the choice, means a browser holding a large archive twice
 /// and an admin waiting for it twice.
-async fn upload_backup(State(state): State<AppState>, jar: CookieJar, body: Body) -> Response {
-    let (user, session_token) = match admin_of(&state, &jar).await {
+async fn upload_backup(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    jar: CookieJar,
+    body: Body,
+) -> Response {
+    let (user, session_token) = match admin_of(&state, &headers, &jar).await {
         Ok(pair) => pair,
         Err(response) => return *response,
     };
@@ -893,8 +913,12 @@ async fn upload_backup(State(state): State<AppState>, jar: CookieJar, body: Body
 /// different one.
 async fn admin_of(
     state: &AppState,
+    headers: &axum::http::HeaderMap,
     jar: &CookieJar,
 ) -> std::result::Result<(Option<User>, Option<String>), Box<Response>> {
+    if let Some(refused) = admin_host_only(state, headers, jar) {
+        return Err(Box::new(refused));
+    }
     let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
     let user = session_user(state, jar).await?;
     if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
@@ -903,15 +927,19 @@ async fn admin_of(
     Ok((user, session_token))
 }
 
-/// A `404` for an admin-only socket asked for on an application's host (or a
-/// preview's), where it is nothing.
+/// A `404` for an admin-only real route — a socket, or the file and backup
+/// routes — asked for on an application's host (or a preview's), where it is
+/// nothing.
 ///
-/// The Origin check passes there — the page is on the host it connects to — and
-/// with sign-in shared between applications the admin's cookie comes along, so
-/// without this a script on any application page an admin opens (an uploaded
-/// file, the application's own code) could hold the admin's chat or language
-/// server. The admin UI and the IDE connect from the admin's host, and only
-/// from there.
+/// The Origin check (or the CSRF token, which a page can read from its own
+/// host's cookie) passes there — the page is on the host it calls — and with
+/// sign-in shared between applications, or an admin simply signed in to the
+/// application, the admin's cookie comes along. Without this a script on any
+/// application page an admin opens (an uploaded file, the application's own
+/// code) could hold the admin's chat or language server, download a whole
+/// backup, or read and write any store. The admin UI and the IDE call from the
+/// admin's host, and only from there. `call_api` always sends to an
+/// application's host, so it meets the same refusal.
 fn admin_host_only(
     state: &AppState,
     headers: &axum::http::HeaderMap,
@@ -958,7 +986,14 @@ async fn language_server(
     if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
         return rejection;
     }
-    language_server_upgrade(ws, state.apps.catalog(), &state.lsp_slots, store).await
+    language_server_upgrade(
+        ws,
+        state.apps.catalog(),
+        &state.lsp_slots,
+        Arc::clone(&state.language_server),
+        store,
+    )
+    .await
 }
 
 /// The admin chat socket (§11.4): admin-only, one conversation per connection.

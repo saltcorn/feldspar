@@ -105,6 +105,7 @@ async function upsertObject(db, account, object) {
     if (!parent) continue;
     for (const k of Object.keys(origin)) if (origin[k] === null && parent[k] !== null && parent[k] !== undefined) origin[k] = parent[k];
     if (parent.kind === "checkout" && parent.effects && object.kind === "payment") values.effects = parent.effects;
+    if (parent.kind === "checkout" && parent.charged && object.kind === "payment" && !(existing && existing.charged)) values.charged = parent.charged;
   }
   const meta = fromMetadata(object.metadata);
   for (const [k, v] of Object.entries(meta)) if (k in origin && origin[k] === null) origin[k] = v;
@@ -287,6 +288,8 @@ async function applyEffects(ctx, account, current, row) {
   } catch (e) {
     issue = `its grants could not be made: ${e.message}`;
   }
+  const mismatch = row.charged && row.charged.mismatch;
+  if (mismatch) issue = issue ? `${issue}; ${mismatch}` : mismatch;
   if ((row.issue || null) !== issue) {
     await ctx.db.pay_objects.where({ id: row.id }).update({ issue });
     row.issue = issue;
@@ -318,6 +321,43 @@ async function mirrorAndApply(ctx, account, adapter, current) {
     }
   }
   return applied;
+}
+
+/**
+ * Whether a payment paid for what its row holds now (security review #18). A checkout's lines
+ * are priced when it is made, and the buyer pays up to a day later; the rows they came from (a
+ * basket's order lines) may have changed in between, and the application's triggers deliver
+ * from the rows. So the lines are worked out again, by the settings the checkout kept, and
+ * compared with what was charged; the payment's amount must also be that checkout's total.
+ *
+ * The checkout is the one the payment came from when the mirror knows it, and otherwise any
+ * checkout of the same row (a Stripe payment can arrive before its checkout names it). Answers
+ * `{ lines }` when it matches, `{ mismatch, lines }` when it does not, and `null` for a payment
+ * the module priced no lines for (a subscription's).
+ */
+async function checkCharged(ctx, account, row) {
+  const { chargedLines, sameLines } = require("./checkout.js");
+  let candidates = row.charged ? [row] : [];
+  if (!candidates.length && row.ref_table) {
+    const checkouts = await ctx.db.pay_objects.where({ account: account.id, kind: "checkout", ref_table: row.ref_table, ref_key: row.ref_key }).rows();
+    candidates = checkouts.filter((c) => c.charged);
+  }
+  if (!candidates.length) return null;
+  let now;
+  try {
+    now = await chargedLines(ctx.db, candidates[0].charged.source || {}, row.ref_table, row.ref_key);
+  } catch (e) {
+    return { mismatch: `its lines could not be worked out again: ${e.message}`, lines: candidates[0].charged.lines };
+  }
+  const total = (lines) => lines.reduce((sum, l) => sum + l.quantity * l.unit_amount, 0);
+  const paid = Number.isSafeInteger(row.amount) ? row.amount : null;
+  const match = candidates.find((c) => sameLines(c.charged.lines, now) && (paid === null || total(c.charged.lines) === paid));
+  if (match) return { lines: match.charged.lines };
+  const charged = candidates.find((c) => paid === null || total(c.charged.lines) === paid) || candidates[0];
+  return {
+    mismatch: `what was paid for is not what ${row.ref_table} ${JSON.stringify(row.ref_key)} holds now: its lines changed after the checkout was made`,
+    lines: charged.charged.lines,
+  };
 }
 
 /** Insert one `pay_events` row unless its `(account, event_id, kind)` is there. Answers whether
@@ -382,17 +422,36 @@ async function processEvents(ctx, account, adapter, events) {
       results.push({ id: event.id, logged, object: object && object.id });
       continue;
     }
-    // A delivery seen before, all of it: nothing to fetch.
+    // A delivery seen before, all of it: nothing to fetch. A payment found not to match its lines
+    // was logged as `payment.mismatch` in place of `payment.succeeded`, and stays so.
     const seen = await db.pay_events.where({ account: account.id, event_id: String(event.id) }).rows();
-    if (kinds.every((k) => seen.some((s) => s.kind === k))) {
+    const logs = (k) => seen.some((s) => s.kind === k || (k === "payment.succeeded" && s.kind === "payment.mismatch"));
+    if (kinds.every(logs)) {
       results.push({ id: event.id, logged: [], object: seen[0] && seen[0].object });
       continue;
     }
     if (!event.ref) throw new Error(`the ${event.type} event ${event.id} names no object`);
     const object = await syncOrThrow(ctx, account, adapter, event);
+    let final = kinds;
+    const extra = {};
+    if (kinds.includes("payment.succeeded")) {
+      // Decided once per event: a delivery finished by a retry finds the decision in the log.
+      const before = seen.find((s) => s.kind === "payment.succeeded" || s.kind === "payment.mismatch");
+      const checked = before ? { lines: before.lines, mismatch: before.kind === "payment.mismatch" } : await checkCharged(ctx, account, object);
+      if (checked && checked.lines) extra.lines = checked.lines;
+      if (checked && checked.mismatch) {
+        final = kinds.map((k) => (k === "payment.succeeded" ? "payment.mismatch" : k));
+        if (!before) {
+          // Kept on the row's `charged`, so that applying its effects again keeps the issue.
+          const charged = { ...(object.charged || { lines: checked.lines }), mismatch: checked.mismatch };
+          await db.pay_objects.where({ id: object.id }).update({ charged, issue: checked.mismatch });
+          if (ctx.log && typeof ctx.log.warn === "function") ctx.log.warn(`payments: payment ${object.provider_ref} on "${account.name}": ${checked.mismatch}`);
+        }
+      }
+    }
     const logged = [];
-    for (const kind of kinds) {
-      if (await logEvent(db, { ...base, ...fromObject(object), kind })) logged.push(kind);
+    for (const kind of final) {
+      if (await logEvent(db, { ...base, ...fromObject(object), ...extra, kind })) logged.push(kind);
     }
     results.push({ id: event.id, logged, object: object.id });
   }

@@ -250,8 +250,57 @@ pub async fn open_to_write(
             "`{rel}` is inside a `.git` directory, which an agent may not write"
         )));
     }
+    // Below admin — and for a triggered run, which holds role 1 but acts on
+    // whatever the event said — nothing that decides what the server runs:
+    // the build's own inputs, and what a build wrote, which is served (an
+    // Astro server entry runs with admin authority on every request) without
+    // being built again (security review #16).
+    if !crate::coding::is_admin(ctx.caller) {
+        if sc_files::controls_build(&path) {
+            return Err(Error::invalid(format!(
+                "`{rel}` decides what a build or install runs on the server, so only a run \
+                 whose caller is an administrator may write it"
+            )));
+        }
+        if let Some(output) = build_output_holding(ctx.catalog, &scope.store, &path).await? {
+            return Err(Error::invalid(format!(
+                "`{rel}` is inside `{output}`, where an application's build writes what is \
+                 served; only a build run by an administrator may change it"
+            )));
+        }
+    }
     check_write(store.as_ref(), floor, &path, &file_caller(ctx.caller)).await?;
     Ok((store, path))
+}
+
+/// The build output directory of an application built from `store` that the
+/// store-relative `path` is inside, if any — compared without case, since a
+/// case-insensitive file system opens `Dist/` as `dist/`.
+async fn build_output_holding(
+    catalog: &Catalog,
+    store: &str,
+    path: &str,
+) -> Result<Option<String>> {
+    let path = path.to_ascii_lowercase();
+    for app in sc_app::list_applications(catalog).await? {
+        for framework in std::iter::once(&app.framework).chain(&app.extra_frameworks) {
+            let Ok(source) = sc_app::app_source_from_config(framework) else {
+                continue;
+            };
+            if source.store.0 != store {
+                continue;
+            }
+            let output = normalise_path(&source.build.output_dir).unwrap_or_default();
+            if output.is_empty() {
+                continue;
+            }
+            let lower = output.to_ascii_lowercase();
+            if path == lower || path.starts_with(&format!("{lower}/")) {
+                return Ok(Some(output));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// A run's caller as a file rule sees them: the role every check runs at, and

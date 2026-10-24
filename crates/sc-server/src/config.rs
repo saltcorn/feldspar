@@ -255,6 +255,11 @@ pub struct ServerConfig {
     /// How many runs may hold a browser context at once
     /// (`--browser-contexts`). A call beyond it waits, within its timeout.
     pub browser_contexts: usize,
+    /// The `typescript-language-server` the IDE runs (`--language-server`,
+    /// default the one on `PATH`). Always the server's own: a store's
+    /// `node_modules/.bin` is written by whoever may edit the store, and the
+    /// process runs as the server's operating-system user.
+    pub language_server: PathBuf,
     /// How long a run's preview mount may go unused before the sweep removes it
     /// (`--preview-idle-minutes`, default an hour).
     pub preview_idle: std::time::Duration,
@@ -338,6 +343,7 @@ impl Default for ServerConfig {
             browser: None,
             browser_sandbox: true,
             browser_contexts: DEFAULT_BROWSER_CONTEXTS,
+            language_server: PathBuf::from(crate::lsp::SERVER_BIN),
             preview_idle: std::time::Duration::from_secs(DEFAULT_PREVIEW_IDLE_MINUTES * 60),
             max_request_body: DEFAULT_MAX_REQUEST_BODY,
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
@@ -537,6 +543,9 @@ impl ServerConfig {
                     cfg.browser = Some(PathBuf::from(next_value(&mut it, "--browser")?));
                 }
                 "--no-browser-sandbox" => cfg.browser_sandbox = false,
+                "--language-server" => {
+                    cfg.language_server = PathBuf::from(next_value(&mut it, "--language-server")?);
+                }
                 "--browser-contexts" => {
                     cfg.browser_contexts = positive(
                         &next_value(&mut it, "--browser-contexts")?,

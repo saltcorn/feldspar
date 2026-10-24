@@ -296,6 +296,16 @@ and in whatever order. **This is where your triggers go.**
 `ref_key` holds the key as the row has it — a number here, text or a UUID for a table keyed that
 way — so `id === row.ref_key` finds the row whatever its key's type.
 
+**What was paid for is what the order holds.** The order stays `open` until it is paid, so the
+buyer can still change its lines after the checkout was made — and a provider's checkout page
+stays payable for up to a day. So when the payment succeeds, the module works the lines out again
+by the checkout's own settings and compares them, and the payment's amount, with what was charged.
+Only a match is `payment.succeeded`. A basket changed in between is logged as
+**`payment.mismatch`** instead, with the payment's `issue` saying why: none of the triggers here
+runs, and the order stays open for you to settle by hand (refund it, or ask the buyer to pay the
+difference). Either event carries `lines`, the lines as charged — `item` is the product here — if
+you would rather deliver from what was paid for than from the rows.
+
 **Take the stock down** — `take_stock`, the same event and *only if*:
 
 | Setting | Value |

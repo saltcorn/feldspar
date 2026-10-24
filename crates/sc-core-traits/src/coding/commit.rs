@@ -31,6 +31,9 @@ pub const CFG_COMMIT: &str = "commit";
 /// How long one git command may take.
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The `-c` setting every agent `add` and `commit` carries: hooks off.
+const NO_HOOKS: &str = "core.hooksPath=/dev/null";
+
 /// The most characters of the diff the commit message's writer is shown.
 const MAX_MESSAGE_DIFF_CHARS: usize = 6_000;
 
@@ -117,11 +120,14 @@ pub async fn commit(
         return Ok(None);
     }
 
-    let mut add = vec!["add", "--all", "--"];
+    // No hooks: a repository whose `core.hooksPath` is inside the working tree
+    // (husky's `.husky/`) has hooks the agent may have just written, and they
+    // would run as the server (security review #16).
+    let mut add = vec!["-c", NO_HOOKS, "add", "--all", "--"];
     add.extend(paths.iter().map(String::as_str));
     git(top, &add).await?;
     // Only these paths: whatever else is staged stays staged, uncommitted.
-    let mut args: Vec<&str> = Vec::new();
+    let mut args: Vec<&str> = vec!["-c", NO_HOOKS];
     let identity = git(top, &["config", "user.email"]).await.is_ok();
     if !identity {
         args.extend([
@@ -131,7 +137,7 @@ pub async fn commit(
             "user.email=saltcorn@localhost",
         ]);
     }
-    args.extend(["commit", "--quiet", "-m", message, "--"]);
+    args.extend(["commit", "--quiet", "--no-verify", "-m", message, "--"]);
     args.extend(paths.iter().map(String::as_str));
     match git(top, &args).await {
         Ok(_) => {}

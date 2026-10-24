@@ -20,6 +20,13 @@
 //! settings says `users` is an issue on the card, and reading it is refused.
 //! What is admitted is read-only, at the module's authority; a write is refused
 //! by name.
+//!
+//! The same holds for a table an admin names in the configuration of a **trigger
+//! that runs one of the module's actions** (`TableScope::with_trigger_reads`),
+//! and the tables a Ⱶ-path written there reaches from it: the payments webhook
+//! prices a paid checkout's lines again from the rows its `pay_checkout` trigger
+//! names (security review #18). That action already reads them; the webhook
+//! reads nothing an admin's trigger did not already give the module.
 
 use std::collections::BTreeSet;
 
@@ -52,7 +59,7 @@ pub fn admitted(asked: &[String], configuration: &sc_types::Attrs) -> (Vec<Strin
 }
 
 /// Every string in `value`, trimmed, at any depth.
-fn strings_in(value: &Json, out: &mut BTreeSet<String>) {
+pub(crate) fn strings_in(value: &Json, out: &mut BTreeSet<String>) {
     match value {
         Json::String(s) => {
             let s = s.trim();
@@ -86,7 +93,10 @@ mod tests {
         let (tables, issues) = admitted(&asked, &configuration);
         assert_eq!(tables, ["plans", "addons"]);
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].contains("`users`, which its settings do not name"), "{issues:?}");
+        assert!(
+            issues[0].contains("`users`, which its settings do not name"),
+            "{issues:?}"
+        );
     }
 
     #[test]

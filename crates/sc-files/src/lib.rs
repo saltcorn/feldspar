@@ -29,7 +29,7 @@ mod stream;
 pub mod xattr;
 
 pub use access::{
-    FileCaller, ROLE_ADMIN, ROLE_PUBLIC, VisibleEntry, check_access, check_write,
+    FileCaller, ROLE_ADMIN, ROLE_PUBLIC, VisibleEntry, check_access, check_write, controls_build,
     effective_min_role, filter_visible, list_visible, record_owner, visible_entries,
 };
 pub use backend::{
@@ -344,6 +344,53 @@ mod tests {
         assert!(outside.join("secret.txt").exists());
 
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// Security review #16: below admin, the files that decide what a build runs
+    /// are not writable on a public store; source beside them still is.
+    #[tokio::test]
+    async fn build_inputs_are_admin_only_writes() {
+        let (_base, store) = temp_store();
+        let staff = FileCaller::new(40, Some("u1".into()));
+        for path in [
+            "web/package.json",
+            "web/Package.JSON",
+            "package-lock.json",
+            "web/yarn.lock",
+            "web/.npmrc",
+            "web/vite.config.js",
+            "site/astro.config.mjs",
+            "web/vite.config.prod.ts",
+            "web/.postcssrc.cjs",
+            "web/node_modules/.bin/typescript-language-server",
+            "web/node_modules",
+            "web/NODE_MODULES./x/index.js",
+        ] {
+            assert!(controls_build(path), "{path}");
+            assert!(
+                check_write(&store, None, path, &staff).await.is_err(),
+                "{path}"
+            );
+            assert!(
+                check_write(&store, None, path, &FileCaller::role(ROLE_ADMIN))
+                    .await
+                    .is_ok(),
+                "{path}"
+            );
+        }
+        for path in [
+            "web/src/App.tsx",
+            "web/config.js",
+            "web/src/config/index.ts",
+            "docs/package.json.md",
+            "web/README.md",
+        ] {
+            assert!(!controls_build(path), "{path}");
+            assert!(
+                check_write(&store, None, path, &staff).await.is_ok(),
+                "{path}"
+            );
+        }
     }
 
     /// Security review #12: a checkout's `.git` is not readable or listed below

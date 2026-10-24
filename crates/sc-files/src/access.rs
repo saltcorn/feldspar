@@ -217,6 +217,10 @@ pub async fn check_access(
 /// A **directory** is checked all the way down: deleting or moving a folder is
 /// deleting or moving every file in it, so one that holds somebody else's file
 /// is refused exactly as that file would be.
+///
+/// Below admin, a file that decides what a build runs ([`controls_build`]) is
+/// refused whatever the floor: an admin's next build or check runs it as the
+/// server's operating-system user.
 pub async fn check_write(
     store: &dyn FileStore,
     store_min_role: Option<u8>,
@@ -225,6 +229,9 @@ pub async fn check_write(
 ) -> Result<()> {
     if caller.is_admin() {
         return Ok(());
+    }
+    if controls_build(path) {
+        return Err(build_input_refused(path));
     }
     let meta = store.get_meta(path).await.unwrap_or_default();
     let permitted = match &meta.owner {
@@ -240,6 +247,67 @@ pub async fn check_write(
         return Err(denied(store, path));
     }
     Ok(())
+}
+
+/// The files a JavaScript build or install reads as *instructions*, not as
+/// source: `package.json` (its scripts), lockfiles (where packages come from),
+/// the package managers' rc files (`script-shell`, registries), bundler and tool
+/// configs (`vite.config.js`, `astro.config.mjs`, `.postcssrc.js`: code the
+/// bundler runs), and anything under `node_modules` (the packages themselves,
+/// `.bin` included).
+///
+/// Whoever may write one of these decides what runs at the next `npm install`,
+/// build or check, and those run as the server's operating-system user — so
+/// below admin they are refused on every write route (security review #16).
+/// Matched on any segment, in any case, with trailing dots and spaces ignored,
+/// as [`in_git_dir`](crate::in_git_dir) is. A directory that merely *contains*
+/// one is not matched: moving it keeps the names inside, and no new file can be
+/// given one of these names below admin.
+pub fn controls_build(path: &str) -> bool {
+    const FILES: [&str; 14] = [
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "bun.lock",
+        "bun.lockb",
+        "deno.json",
+        "deno.jsonc",
+        ".npmrc",
+        ".yarnrc",
+        ".yarnrc.yml",
+        ".pnpmfile.cjs",
+    ];
+    const CONFIG_EXTS: [&str; 7] = ["js", "cjs", "mjs", "ts", "cts", "mts", "json"];
+    let segments: Vec<String> = path
+        .split(['/', '\\'])
+        .map(|s| s.trim_end_matches(['.', ' ']).to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let Some(name) = segments.last() else {
+        return false;
+    };
+    if segments.iter().any(|s| s == "node_modules") || FILES.contains(&name.as_str()) {
+        return true;
+    }
+    // `<tool>.config.<ext>` and `<tool>.config.<variant>.<ext>` (`vite.config.ts`,
+    // `vite.config.prod.ts`), and a tool's rc file in code (`.postcssrc.js`).
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    CONFIG_EXTS.contains(&ext)
+        && (stem.split('.').skip(1).any(|part| part == "config")
+            || (stem.starts_with('.') && stem.ends_with("rc")))
+}
+
+/// The refusal [`check_write`] gives a build input.
+fn build_input_refused(path: &str) -> Error {
+    Error::auth(format!(
+        "only an administrator may write {path:?}: it decides what a build or install \
+         runs on the server"
+    ))
 }
 
 /// Whether anything beneath the directory `dir` is owned by somebody other than

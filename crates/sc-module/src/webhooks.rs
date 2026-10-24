@@ -162,7 +162,9 @@ pub async fn run_webhook(
             "module `{module}` has no webhook `{webhook}`"
         )));
     }
-    let tables = crate::services::TableScope::of(loaded);
+    let tables = crate::services::TableScope::of(loaded)
+        .with_trigger_reads(catalog, loaded)
+        .await;
     let areas = file_areas(&loaded.table_declarations());
     let user = webhook_user(module, webhook);
     let scoped = ScopedTables {

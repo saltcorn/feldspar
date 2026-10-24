@@ -416,10 +416,8 @@ pub(crate) async fn boot(tag: &str) -> sc_error::Result<Booted> {
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
-    let root = std::env::temp_dir().join(format!(
-        "sc-tutorial-payments-{}-{tag}",
-        std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("sc-tutorial-payments-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let goods = root.join("goods");
     std::fs::create_dir_all(&goods).unwrap();
@@ -543,7 +541,7 @@ pub(crate) async fn boot(tag: &str) -> sc_error::Result<Booted> {
     })
 }
 
-async fn setup() -> sc_error::Result<Shop> {
+async fn setup(tag: &str) -> sc_error::Result<Shop> {
     let Booted {
         router,
         catalog,
@@ -555,7 +553,7 @@ async fn setup() -> sc_error::Result<Shop> {
         modules,
         registries,
         ..
-    } = boot("shop").await?;
+    } = boot(tag).await?;
     sc_api::rows::create_row(
         &catalog,
         &catalog.require("pay_accounts")?,
@@ -629,7 +627,7 @@ async fn the_tutorials_shop_takes_a_guests_order_to_paid_and_delivers_it() -> sc
         eprintln!("skipping: npm is not on the PATH");
         return Ok(());
     }
-    let shop = setup().await?;
+    let shop = setup("shop").await?;
 
     // Ann's basket, as a guest: an open order of her own, and its lines — no prices.
     let mut ann = Browser::guest(&shop.router).await;
@@ -843,6 +841,103 @@ async fn the_tutorials_shop_takes_a_guests_order_to_paid_and_delivers_it() -> sc
         error_of(&other).contains("that you can read"),
         "{}",
         other.text
+    );
+    Ok(())
+}
+
+/// Security review #18: a basket filled after its checkout was made, then paid at the old total,
+/// is a `payment.mismatch` — the order stays open, and nothing is taken from stock or delivered.
+#[tokio::test]
+async fn a_basket_changed_after_checkout_is_not_paid_for() -> sc_error::Result<()> {
+    if !have_npm() {
+        eprintln!("skipping: npm is not on the PATH");
+        return Ok(());
+    }
+    let shop = setup("shop-mismatch").await?;
+    let mut ann = Browser::guest(&shop.router).await;
+    let order = ann
+        .ok(
+            "POST",
+            "/api/orders",
+            Some(json!({ "email": "ann@example.com" })),
+        )
+        .await;
+    let order_id = order["id"].as_i64().unwrap();
+    ann.ok(
+        "POST",
+        "/api/order_lines",
+        Some(json!({ "order": order_id, "product": 1, "quantity": 1 })),
+    )
+    .await;
+    let started = ann
+        .ok(
+            "POST",
+            "/api/actions/checkout",
+            Some(json!({ "order": order_id })),
+        )
+        .await;
+    assert_eq!(started["amount"], json!(450), "{started}");
+
+    // The order is still open, so its lines are still Ann's to write.
+    for (product, quantity) in [(2, 3), (3, 1)] {
+        ann.ok(
+            "POST",
+            "/api/order_lines",
+            Some(json!({ "order": order_id, "product": product, "quantity": quantity })),
+        )
+        .await;
+    }
+    let page = started["url"]
+        .as_str()
+        .unwrap()
+        .strip_prefix(&format!("http://{SHOP}"))
+        .unwrap()
+        .to_owned();
+    let paid = send(
+        &shop.router,
+        "POST",
+        Some(SHOP),
+        &format!("{page}/pay"),
+        &HashMap::new(),
+        &[],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(paid.status, StatusCode::SEE_OTHER, "{}", paid.text);
+
+    let events = shop
+        .rows("SELECT kind, amount, lines FROM pay_events ORDER BY id")
+        .await;
+    let kinds: Vec<&str> = events.iter().filter_map(|e| e["kind"].as_str()).collect();
+    assert!(kinds.contains(&"payment.mismatch"), "{events:?}");
+    assert!(!kinds.contains(&"payment.succeeded"), "{events:?}");
+    let mismatch = events
+        .iter()
+        .find(|e| e["kind"] == json!("payment.mismatch"))
+        .unwrap();
+    assert_eq!(mismatch["amount"], json!(450));
+    assert_eq!(
+        mismatch["lines"].as_array().map(Vec::len),
+        Some(1),
+        "{mismatch}"
+    );
+
+    let orders = ann.ok("GET", "/api/orders", None).await;
+    assert_eq!(orders[0]["status"], json!("open"), "{orders}");
+    let stock = shop
+        .rows("SELECT id, stock FROM products ORDER BY id")
+        .await;
+    assert_eq!(stock[0]["stock"], json!(10), "{stock:?}");
+    assert_eq!(stock[1]["stock"], json!(3), "{stock:?}");
+    assert!(shop.rows("SELECT id FROM downloads").await.is_empty());
+    let issue = shop
+        .rows("SELECT issue FROM pay_objects WHERE kind = 'payment'")
+        .await;
+    assert!(
+        issue[0]["issue"]
+            .as_str()
+            .is_some_and(|i| i.contains("lines changed after the checkout")),
+        "{issue:?}"
     );
     Ok(())
 }

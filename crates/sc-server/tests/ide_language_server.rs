@@ -119,10 +119,8 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// A stand-in for `typescript-language-server`, installed where the real one
-/// would be so that no test hook is needed to reach it: the bridge prefers the
-/// project's own copy (as a build prefers the project's own bundler), and in this
-/// fixture the project's own copy is this.
+/// A stand-in for `typescript-language-server`, handed to the server as its
+/// `--language-server`.
 ///
 /// It speaks just enough LSP to answer the two questions the bridge is asked:
 /// what did the process *receive* (echoed back in the `initialize` result), and
@@ -184,13 +182,15 @@ process.stdin.on("data", (chunk) => {
 });
 "#;
 
-/// Install an executable at `<root>/node_modules/.bin/typescript-language-server`.
-fn install_server_bin(root: &Path, script: &str) {
+/// Install an executable at `<root>/node_modules/.bin/typescript-language-server`,
+/// returning its path.
+fn install_server_bin(root: &Path, script: &str) -> PathBuf {
     let bin = root.join("node_modules/.bin");
     std::fs::create_dir_all(&bin).unwrap();
     let path = bin.join("typescript-language-server");
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
 }
 
 // --- the server under test ---------------------------------------------------
@@ -257,8 +257,12 @@ async fn serve(router: Router, sessions: &SessionStore, db: Option<TestDb>) -> S
     }
 }
 
-/// A server whose catalog has `stores` connected, over a real database.
-async fn serve_with_stores(stores: Vec<Arc<dyn FileStore>>) -> Result<Server> {
+/// A server whose catalog has `stores` connected, over a real database, running
+/// `language_server` for the IDE.
+async fn serve_with_stores(
+    stores: Vec<Arc<dyn FileStore>>,
+    language_server: PathBuf,
+) -> Result<Server> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
@@ -271,7 +275,10 @@ async fn serve_with_stores(stores: Vec<Arc<dyn FileStore>>) -> Result<Server> {
         &sc_api::admin_endpoints(),
         sc_server::HandlerRegistry::new(),
         sessions.clone(),
-        &ServerConfig::default(),
+        &ServerConfig {
+            language_server,
+            ..ServerConfig::default()
+        },
         apps,
     )?;
     Ok(serve(router, &sessions, Some(db)).await)
@@ -388,7 +395,8 @@ async fn a_store_with_no_local_path_is_closed_with_the_reason() -> Result<()> {
     let object = Arc::new(ObjectStore {
         name: "assets".to_owned(),
     }) as Arc<dyn FileStore>;
-    let server = serve_with_stores(vec![object]).await?;
+    let server =
+        serve_with_stores(vec![object], PathBuf::from("typescript-language-server")).await?;
 
     let mut socket = server
         .connect("assets", Some(&server.admin))
@@ -441,10 +449,23 @@ async fn a_store_with_no_local_path_is_closed_with_the_reason() -> Result<()> {
 async fn the_bridge_carries_a_handshake_and_translates_both_uri_spaces() -> Result<()> {
     let root = temp_dir("bridge");
     std::fs::write(root.join("package.json"), r#"{"name":"fixture"}"#).unwrap();
-    install_server_bin(&root, STUB_SERVER);
+    // The server's own language server lives outside the store…
+    let tools = temp_dir("bridge-tools");
+    let program = install_server_bin(&tools, STUB_SERVER);
+    // …and the store's own copy, which whoever may edit the store could have
+    // written, is never run (security review #16).
+    let marker = root.join("store-copy-ran");
+    install_server_bin(
+        &root,
+        &format!(
+            "#!/bin/sh\ntouch '{}'\nexec '{}' \"$@\"\n",
+            marker.display(),
+            program.display()
+        ),
+    );
 
     let store = Arc::new(LocalFileStore::new("app-source", root.clone())?) as Arc<dyn FileStore>;
-    let server = serve_with_stores(vec![store]).await?;
+    let server = serve_with_stores(vec![store], program).await?;
     let mut socket = server
         .connect("app-source", Some(&server.admin))
         .await
@@ -499,8 +520,13 @@ async fn the_bridge_carries_a_handshake_and_translates_both_uri_spaces() -> Resu
         published["params"]["diagnostics"][0]["message"],
         json!("stub diagnostic")
     );
+    assert!(
+        !marker.exists(),
+        "the store's own node_modules/.bin copy must not be run"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&tools);
     Ok(())
 }
 
@@ -569,7 +595,8 @@ async fn typescript_reports_a_type_error_at_its_line() -> Result<()> {
     borrow_language_server(&modules, &root);
 
     let store = Arc::new(LocalFileStore::new("app-source", root.clone())?) as Arc<dyn FileStore>;
-    let server = serve_with_stores(vec![store]).await?;
+    let server =
+        serve_with_stores(vec![store], modules.join(".bin/typescript-language-server")).await?;
     let mut socket = server
         .connect("app-source", Some(&server.admin))
         .await

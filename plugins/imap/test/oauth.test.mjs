@@ -386,6 +386,36 @@ test("the actions renew an expired token and log in to IMAP and SMTP with it", a
   }
 });
 
+test("a shared account's saved token or password goes only to its saved servers", async () => {
+  const w = await world();
+  const fake = fakeDb();
+  // Shared (no owner), so a staff user who may read it may test it.
+  fake.tables.mail_accounts.push(w.account({ owner: null, min_role: 80, oauth_access_token: "good" }));
+  fake.tables.mail_accounts.push({
+    id: 2, owner: null, min_role: 80, email: "team@example.com", auth: "password",
+    imap_host: "127.0.0.1", imap_port: w.imap.port, imap_security: "tls", imap_password: "imap-secret",
+    smtp_host: "127.0.0.1", smtp_port: w.smtp.port, smtp_security: "tls", smtp_password: "smtp-secret",
+  });
+  const restore = installFakeTable(fake);
+  const test_ = (payload) => actions.mail_test_account({ payload, user: { id: 6, role: 40 }, settings: w.configuration });
+  try {
+    await assert.rejects(test_({ account_id: 1, imap_host: "imap.attacker.example" }), /only sent to the saved servers, and imap_host differ/);
+    await assert.rejects(test_({ account_id: 1, smtp_port: 2525 }), /smtp_port differ/);
+    await assert.rejects(test_({ account_id: 2, smtp_host: "smtp.attacker.example", smtp_password: "••••••••" }), /smtp_host differ/);
+    await assert.rejects(test_({ account_id: 2, email: "someone@attacker.example" }), /email differ/);
+    assert.equal(w.imap.tokens.length, 0, "nothing was sent anywhere");
+    assert.equal(w.smtp.logins.length, 0);
+    assert.equal(w.token.seen.length, 0, "not even a renewal");
+
+    // The saved settings, given again (in another case), are not a change.
+    const result = await test_({ account_id: 1, imap_host: "127.0.0.1", imap_port: String(w.imap.port), smtp_security: "TLS" });
+    assert.deepEqual(result, { imap: true, smtp: true, error: null });
+  } finally {
+    restore();
+    await w.close();
+  }
+});
+
 test("mail_oauth_start asks the server for a consent flow, for the account's owner only", async () => {
   const fake = fakeDb();
   fake.tables.mail_accounts.push(

@@ -64,7 +64,7 @@ pub const LSP_ROUTE: &str = "/ide/lsp/{store}";
 pub const MAX_LANGUAGE_SERVERS: usize = 8;
 
 /// The executable, as `npx`-style resolution would find it.
-const SERVER_BIN: &str = "typescript-language-server";
+pub(crate) const SERVER_BIN: &str = "typescript-language-server";
 
 /// A close frame's reason is capped by the protocol (125 bytes for the whole
 /// payload, two of which are the code), so reasons are written to fit and are
@@ -160,6 +160,7 @@ pub(crate) async fn language_server_upgrade(
     ws: WebSocketUpgrade,
     catalog: Option<&Arc<Catalog>>,
     slots: &ServerSlots,
+    program: Arc<PathBuf>,
     store: String,
 ) -> axum::response::Response {
     // Both questions are answered before the upgrade, so a refusal costs no
@@ -168,7 +169,7 @@ pub(crate) async fn language_server_upgrade(
         Err(reason) => reason,
         Ok(root) => match Arc::clone(slots).try_acquire_owned() {
             Ok(permit) => {
-                return ws.on_upgrade(move |socket| bridge(socket, root, store, permit));
+                return ws.on_upgrade(move |socket| bridge(socket, program, root, store, permit));
             }
             Err(_) => format!(
                 "the server is already running its maximum of {MAX_LANGUAGE_SERVERS} language servers"
@@ -213,8 +214,14 @@ fn fit_close_reason(reason: String) -> String {
 /// end of this function is what returns the slot, so a socket that closes (a
 /// reload, a closed tab, a lost network) frees the server it was using without
 /// anything having to notice separately.
-async fn bridge(socket: WebSocket, root: PathBuf, store: String, permit: OwnedSemaphorePermit) {
-    let mut child = match spawn_language_server(&root) {
+async fn bridge(
+    socket: WebSocket,
+    program: Arc<PathBuf>,
+    root: PathBuf,
+    store: String,
+    permit: OwnedSemaphorePermit,
+) {
+    let mut child = match spawn_language_server(&program, &root) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("feldspar: language server for {store}: {e}");
@@ -301,14 +308,14 @@ async fn bridge(socket: WebSocket, root: PathBuf, store: String, permit: OwnedSe
     drop(permit);
 }
 
-/// Start `typescript-language-server` in `root`.
+/// Start the server's own language server (`program`) in `root`.
 ///
-/// The project's own copy is preferred over the one on `PATH`, for the same
-/// reason a build runs the project's own bundler: the version that matches the
-/// project's TypeScript is the one that agrees with what a build will say.
-fn spawn_language_server(root: &Path) -> std::io::Result<Child> {
-    let mut command =
-        Command::new(local_server_bin(root).unwrap_or_else(|| PathBuf::from(SERVER_BIN)));
+/// Never the store's own `node_modules/.bin` copy, though it would match the
+/// project's TypeScript more closely: whoever may edit the store may write that
+/// file, and it would run as the server's operating-system user the next time
+/// an admin opened the IDE (security review #16).
+fn spawn_language_server(program: &Path, root: &Path) -> std::io::Result<Child> {
+    let mut command = Command::new(program);
     command
         .arg("--stdio")
         .current_dir(root)
@@ -319,17 +326,6 @@ fn spawn_language_server(root: &Path) -> std::io::Result<Child> {
         // cancelled rather than run to its end, the child still goes.
         .kill_on_drop(true);
     command.spawn()
-}
-
-/// The store's own `typescript-language-server`, if a project in it installed one.
-fn local_server_bin(root: &Path) -> Option<PathBuf> {
-    let mut candidates = vec![root.join("node_modules/.bin").join(SERVER_BIN)];
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            candidates.push(entry.path().join("node_modules/.bin").join(SERVER_BIN));
-        }
-    }
-    candidates.into_iter().find(|path| path.is_file())
 }
 
 /// Read one `Content-Length`-framed LSP message body, or `None` at end of stream.

@@ -398,10 +398,10 @@ they turned out worse than stated.
 
 | # | Severity | Issue | Status |
 |---|----------|-------|--------|
-| 15 | High | `/upload`, `/download`, `/backup/*` accept an admin session on application hosts | reported |
-| 16 | High | Non-admin file edits become admin-authority server code (Astro entry, build files, LSP binary) | reported |
-| 17 | High | `mail_test_account` sends a shared account's saved password/token to a host the caller picks | reported |
-| 18 | High | Order lines can change between checkout and payment; the paid order delivers the new basket | reported |
+| 15 | High | `/upload`, `/download`, `/backup/*` accept an admin session on application hosts | **fixed** |
+| 16 | High | Non-admin file edits become admin-authority server code (Astro entry, build files, LSP binary) | **partly fixed** |
+| 17 | High | `mail_test_account` sends a shared account's saved password/token to a host the caller picks | **fixed** |
+| 18 | High | Order lines can change between checkout and payment; the paid order delivers the new basket | **fixed** |
 | 19 | Med–High | Repeated trials give unlimited plan roles and LLM credits | reported |
 | 20 | Medium | Exposed agents: anonymous visitors act as the agent's `view_app_user` | reported |
 | 21 | Medium | Exposed agents re-open admin tools (shell, copilot, modules) to app-origin script | reported |
@@ -420,6 +420,9 @@ they turned out worse than stated.
 | 34 | Medium | Chargebacks and partial refunds never revoke a purchase's role or credits | reported |
 | 35 | Medium | Polar customers bound to users by email (suspected) | reported |
 | 36+ | Low | See "Second review: Low / hardening" | reported |
+
+Items 15, 17 and 18 are fixed and 16 partly (its short-term list); see the CHANGELOG entry
+"Security fixes: admin routes on app hosts, edit-to-execute, mail test credentials, order lines".
 
 Items 15, 16, 20 and 21 are the main new routes to admin authority; 15 and 21 are the same class
 as the first review's #5 (admin session reachable from app-origin script) on routes its fix did not
@@ -455,6 +458,10 @@ admin can POST `/backup/create`.
 **Fix.** Call `admin_host_only` in all four handlers, or put every admin-only real route behind a
 host-guard layer. Longer term, bind each session to the host scope it was issued for and refuse
 app-issued sessions on admin routes; refuse admin paths in `call_api`.
+
+**Fixed:** all four call `admin_host_only` and are a 404 on application and preview hosts;
+`call_api` always sends to an application's host, so it is refused too. Sessions are still not
+bound to a host.
 
 ### 16. High — non-admin file edits become admin-authority server code (verified)
 
@@ -495,6 +502,14 @@ entries at the visitor's authority by default (like `TableHost::viewer_only`) wi
 an explicit per-app opt-in, run builds in the container sandbox, and give stores a separate write
 floor.
 
+**Fixed (the short-term part):** below admin, `check_write` refuses build inputs
+(`sc_files::controls_build`: `package.json`, lockfiles, package-manager rc files, `*.config.*`,
+`node_modules/**`) on every write route; the agent file tools also refuse them to triggered runs,
+and refuse application build output directories; `view_app` mounts no unbuilt output for a
+non-admin run; the LSP runs only `--language-server` (default: on `PATH`); agent commits disable
+hooks. Not done: build scripts named by a build command (`sh build.sh`), output-directory writes
+through routes other than the agent tools, and the longer-term items.
+
 ### 17. High — `mail_test_account` leaks a shared mail account's credentials (verified)
 
 - `plugins/imap/actions.js:273-300` (`testAccount`) copies every `ACCOUNT_FIELDS` value from the
@@ -516,6 +531,9 @@ Gmail) in the login. One call is enough; the 5/minute limit is irrelevant.
 saved row, do not fill in saved secrets or tokens. Alternatively, allow saved secrets only to the
 owner, or to an admin for a shared account (the rule `mail_oauth_start` uses).
 
+**Fixed** as the first suggestion: a changed address, host, port, security mode or user refuses
+the call unless the payload gives every secret that login would use.
+
 ### 18. High — an order's lines can change between checkout and payment
 
 - The lines are priced once when the checkout is made (`plugins/payments/checkout.js:151-182,222`)
@@ -535,6 +553,13 @@ paid, takes the stock and creates `downloads` rows for everything now in the bas
 mismatch event instead of `payment.succeeded`; or offer a "lock the row at checkout" setting. Put
 the charged lines (with `item`) on `pay_events`. Rewrite the tutorial so `pay_checkout` moves the
 order out of `open` and deliveries come from the charged lines.
+
+**Fixed:** the checkout keeps the priced lines and the settings that priced them (`charged`); at
+`payment.succeeded` they are worked out again and compared, with the paid amount; a difference is
+logged as `payment.mismatch` instead, with an issue on the payment. `pay_events.lines` carries the
+charged lines. To read the rows, a module's webhooks and services may now read the tables an
+admin named in its actions' trigger configurations (and their Ⱶ-paths). The tutorial explains the event but keeps its triggers, which do not run on a
+mismatch.
 
 ### 19. Medium–High — repeated trials give unlimited plan access and credits
 

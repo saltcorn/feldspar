@@ -2,6 +2,87 @@
 
 Changes in reverse chronological order.
 
+## Security fixes: admin routes on app hosts, edit-to-execute, mail test credentials, order lines
+
+Fixes for items 15–18 of `docs/SECURITY_REVIEW_2026-10.md`.
+
+- **The admin upload, download and backup routes are nothing on an application's host** (#15).
+  - Why: `/upload`, `/download`, `/backup/create` and `/backup/upload` are real routes, matched on
+    every host, and checked only for an admin session. Script on an application's origin (its own
+    code, an HTML injection, an agent-written preview) holds that host's CSRF cookie, and with an
+    admin's session reaching the host (shared sign-in, or the admin signed in to the app) it could
+    download the whole instance as a backup or read and write any store.
+  - Now all four call `admin_host_only` (`sc-server/src/router.rs`, via `admin_of` for the backup
+    pair), as the sockets already did: an application's or a preview's host gets a 404. `call_api`
+    always sends to an application's host, so it meets the same refusal.
+  - Still true: a session is not bound to the host it was issued on.
+- **Below admin, what a build runs and what a build wrote cannot be edited** (#16).
+  - `sc_files::check_write` refuses, below admin and on every write route (agent tools, the REST
+    file provider, File fields, code bodies, the file manager), the files a build reads as
+    instructions (`controls_build`): `package.json`, lockfiles, `.npmrc`/`.yarnrc*`/`.pnpmfile.cjs`,
+    `deno.json`, `<tool>.config.<js|ts|json…>`, `.<tool>rc.<js…>`, and anything under
+    `node_modules` — any case, trailing dots and spaces ignored.
+  - The agent file tools (`open_to_write`) apply the same rule to triggered runs too (role 1, but
+    not an admin), and also refuse anything inside an application's build output directory in that
+    store — where an Astro server entry (`dist/_server/entry.js`) runs with admin authority on every
+    request and is mounted at boot without a build.
+  - `view_app` no longer mounts an application's unbuilt output from disk for a non-admin run; it
+    needs a preview an admin's build mounted.
+  - The IDE's language server is always the server's own (`--language-server PATH`, default
+    `typescript-language-server` on `PATH`), never the store's `node_modules/.bin` copy.
+  - Agent commits run with `-c core.hooksPath=/dev/null` and `--no-verify`, so hooks in the working
+    tree (husky's `.husky/`) do not run.
+  - Still open: a build command that runs a script file in the store (`sh build.sh`) runs whatever
+    a non-admin wrote there; other write routes than the agent tools can still write an output
+    directory when the store's floor allows; the long-term fixes (visitor-authority Astro entries,
+    sandboxed builds, a store write floor) are not done.
+- **`mail_test_account` sends a saved password or token only to the saved servers** (#17).
+  - Why: with `account_id`, the action filled in the saved password (or OAuth token) of any account
+    the caller could *read* — every user at or above a shared account's `min_role` — while taking
+    the hosts from the payload, so one call handed the credentials to a server the caller chose.
+  - Now (`plugins/imap/actions.js` `changedEndpoints`), when the payload changes the address, a
+    host, port, security mode or user, the call is refused unless every secret that login would use
+    is given in the payload: a token logs in to both servers, a password to its own one.
+- **A payment for lines that changed after the checkout is a `payment.mismatch`** (#18).
+  - Why: a checkout prices the lines once; the order stays open (and its lines writable by the
+    buyer) until the payment's triggers run, and a provider's page stays payable for up to a day.
+    A buyer could fill the basket after the checkout and pay the old total, and the triggers
+    delivered what the rows held.
+  - Now `pay_checkout` (and `pay_charge_saved`) keeps on the mirror row, in a new `charged` field,
+    the lines as priced (with their items) and the settings that priced them. When a payment
+    succeeds, `processing.js` `checkCharged` works the lines out again from the rows and compares;
+    the paid amount must also be that checkout's total. A mismatch is logged as `payment.mismatch`
+    in place of `payment.succeeded` (decided once per event), and the payment's `issue` says why.
+    `pay_events` gains `lines`, the lines as charged, on both kinds. The new fields are added to
+    existing installations by the module's table sync. The mismatch is also kept on the
+    payment's `charged`, so a later sync of the payment does not clear its issue. Lines are now
+    priced by the key as the row has it (a key sent in capitals no longer changes the default
+    description).
+  - For that check, a module's webhooks and services may now **read** the application tables an
+    admin named in the configuration of a trigger running one of the module's actions, and the
+    tables the Ⱶ-paths written there reach from them (`sc-module` `TableScope::with_trigger_reads`,
+    documented in `reads.rs`) — what the action itself already reads. A webhook reads the triggers
+    on every call; a service when it starts, so a `pay_checkout` trigger saved later is not
+    readable by the reconcile sweep until the services restart, and a payment that sweep
+    processes in the meantime is logged as a mismatch (it fails closed). Workflow steps that run
+    `pay_checkout` are not looked at.
+  - The payments tutorial explains the new event; its triggers are unchanged, since none of them
+    runs on a mismatch.
+- **Tests:**
+  - `sc-server` `app_serving::admin_file_and_backup_routes_are_nothing_on_an_application_host`.
+  - `sc-server` `ide_language_server::the_bridge_carries_a_handshake_and_translates_both_uri_spaces`
+    now runs the stub as `--language-server` and checks a trap in the store's `node_modules/.bin`
+    never runs.
+  - `sc-files` `build_inputs_are_admin_only_writes`.
+  - `sc-core-traits` `host_privileges::below_admin_no_agent_writes_build_inputs_or_build_output`.
+  - `plugins/imap` `oauth.test.mjs`: "a shared account's saved token or password goes only to its
+    saved servers".
+  - `plugins/payments` `checkout.test.mjs`: "a basket changed after its checkout was made is a
+    payment.mismatch, not a payment.succeeded".
+  - `sc-server` `tutorial_payments::a_basket_changed_after_checkout_is_not_paid_for`: the
+    tutorial's shop on the real host — order still open, stock untouched, no download. `setup`
+    now takes a tag, so the two tests' scratch directories differ.
+
 ## Security review, second round (docs only)
 
 `docs/SECURITY_REVIEW_2026-10.md` gains a second general review of the whole system (items 15–35

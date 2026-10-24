@@ -279,6 +279,17 @@ async fn preview(application: &str, ctx: &TraitContext<'_>) -> Result<(PreviewIn
     // the directory is not read.
     let output_dir = match source {
         None => std::path::PathBuf::new(),
+        // What is on disk was not necessarily built by the server: below admin
+        // it may only be looked at once an admin's build has mounted it as the
+        // run's preview, since mounting a server-rendered bundle runs its
+        // server entry with admin authority (security review #16).
+        Some(_) if !super::is_admin(ctx.caller) => {
+            return Err(Error::invalid(format!(
+                "no preview of `{application}` is mounted for this run, and its build output \
+                 on disk is only previewed for a run whose caller is an administrator: \
+                 report that an administrator can build the application"
+            )));
+        }
         Some(source) => {
             let dir = sc_app::app_output_dir(ctx.catalog, &source).map_err(|e| never_built(&e))?;
             if !dir.is_dir() {

@@ -450,6 +450,53 @@ async fn apps_are_confined_to_their_subdomain_and_the_admin_is_still_reachable()
     Ok(())
 }
 
+/// The admin file and backup routes are the admin's host's alone: an admin's
+/// session sent to an application's host — by a script on that host, which can
+/// read the host's own CSRF cookie — reaches none of them (security review #15).
+#[tokio::test]
+async fn admin_file_and_backup_routes_are_nothing_on_an_application_host() -> sc_error::Result<()> {
+    let tmp = TempDir::new("adminroutes");
+    let (router, catalog, _db) = setup(&tmp).await?;
+    create_user(&catalog, "editor@example.com", "correct-horse", ROLE_ADMIN).await?;
+
+    // The admin signs in to the application, as any user of it might.
+    let mut app = Client::new(router.clone(), APP_HOST);
+    let (status, _, _) = app.raw("GET", "/", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = app
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({"email": "editor@example.com", "password": "correct-horse"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for (method, path) in [
+        ("GET", "/download/apps/web/build.sh"),
+        ("POST", "/upload/apps/web/planted.js"),
+        ("POST", "/backup/create"),
+        ("POST", "/backup/upload"),
+    ] {
+        let (status, _, _) = app.raw(method, path, None).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{method} {path} on the app host"
+        );
+    }
+    assert!(!tmp.path().join("web/planted.js").exists());
+
+    // The same session on the admin's host is an admin's: the refusal above is
+    // the host, not the session.
+    let mut admin = Client::new(router, BASE_DOMAIN);
+    admin.cookies = app.cookies.clone();
+    let (status, _, body) = admin.raw("GET", "/download/apps/web/build.sh", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("mkdir -p dist/assets"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn mounting_an_app_without_a_base_domain_is_refused() -> sc_error::Result<()> {
     let db = TestDb::new().await?;

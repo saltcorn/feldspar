@@ -9,6 +9,7 @@ const EVENT_KINDS = [
   "checkout.completed",
   "payment.processing",
   "payment.succeeded",
+  "payment.mismatch",
   "payment.failed",
   "payment.refunded",
   "dispute.opened",
@@ -66,6 +67,12 @@ const tables = [
       { name: "cancel_at_period_end", type: "bool", label: "Ends at period end", description: "Subscriptions: canceled, and running to the end of the period paid for" },
       { name: "lines", type: "json", label: "Lines", description: "The lines as charged" },
       { name: "effects", type: "json", label: "Effects", description: "What the module grants once it is paid" },
+      {
+        name: "charged",
+        type: "json",
+        label: "Charged",
+        description: "One-off payments: the lines as the module priced them, with their items, and the settings they were worked out by — checked against the rows again when it is paid",
+      },
       { name: "provider_data", type: "json", label: "Provider data" },
       {
         name: "allowance_key",
@@ -100,6 +107,7 @@ const tables = [
       { name: "amount", type: "int", label: "Amount" },
       { name: "currency", type: "text", label: "Currency" },
       { name: "status", type: "text", label: "Status" },
+      { name: "lines", type: "json", label: "Lines", description: "payment.succeeded and payment.mismatch: the lines as charged, with their items — what to deliver" },
       { name: "provider_type", type: "text", label: "Provider event type" },
       { name: "raw", type: "json", label: "Raw event" },
       { name: "created_at", type: "timestamp", label: "Received" },

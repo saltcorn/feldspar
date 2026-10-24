@@ -217,7 +217,11 @@ impl ServiceSupervisor {
             if manifest.services.is_empty() {
                 continue;
             }
-            let tables = Arc::new(TableScope::of(loaded));
+            let tables = Arc::new(
+                TableScope::of(loaded)
+                    .with_trigger_reads(&self.shared.catalog, loaded)
+                    .await,
+            );
             let areas: Arc<Vec<FileArea>> = Arc::new(file_areas(&loaded.table_declarations()));
             let roles = loaded.module.permissions.roles;
             for service in &manifest.services {
@@ -516,6 +520,65 @@ impl TableScope {
             own: loaded.table_names().into_iter().collect(),
             reads: loaded.read_names().into_iter().collect(),
         }
+    }
+
+    /// Add, for reading, the application tables an admin named in the
+    /// configuration of a trigger that runs one of `loaded`'s actions, and the
+    /// tables the Ⱶ-paths written there reach from them ([`crate::reads`]).
+    /// Read when the scope is made: a trigger saved later is seen by the next
+    /// webhook call, and by a service once it restarts.
+    pub(crate) async fn with_trigger_reads(
+        mut self,
+        catalog: &Catalog,
+        loaded: &crate::LoadedModule,
+    ) -> TableScope {
+        let actions = loaded.action_names();
+        if actions.is_empty() {
+            return self;
+        }
+        let Ok(triggers) = sc_action::list_triggers(catalog).await else {
+            return self;
+        };
+        let exists = |name: &str| catalog.get(name).ok().flatten().is_some();
+        for trigger in triggers {
+            let sc_action::TriggerBody::Action {
+                action,
+                configuration,
+            } = &trigger.body
+            else {
+                continue;
+            };
+            if !actions.contains(action) {
+                continue;
+            }
+            let configuration = Json::Object(configuration.clone());
+            let mut named = BTreeSet::new();
+            crate::reads::strings_in(&configuration, &mut named);
+            let named: Vec<String> = named.into_iter().filter(|t| exists(t)).collect();
+            let mut paths = Vec::new();
+            join_paths(&configuration, &mut paths);
+            for start in &named {
+                for path in &paths {
+                    let segments: Vec<&str> = path.split('Ⱶ').collect();
+                    let mut current = start.clone();
+                    for segment in &segments[..segments.len().saturating_sub(1)] {
+                        let Some(here) = catalog.get(&current).ok().flatten() else {
+                            break;
+                        };
+                        let Some(field) = here.field(segment) else {
+                            break;
+                        };
+                        let DataFieldKind::Key { target_table, .. } = &field.kind else {
+                            break;
+                        };
+                        current = target_table.0.clone();
+                        self.reads.insert(current.clone());
+                    }
+                }
+            }
+            self.reads.extend(named);
+        }
+        self
     }
 }
 

@@ -67,6 +67,7 @@ async function recordPayment(db, prepared, object) {
     amount: Number.isSafeInteger(object.amount) ? object.amount : prepared.total,
     currency: object.currency || prepared.currency,
     lines: prepared.lines,
+    charged: prepared.charged || null,
     effects: prepared.effects || null,
     provider_data: object.provider_data || null,
     updated_at: now,
