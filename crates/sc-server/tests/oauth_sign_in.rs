@@ -256,6 +256,10 @@ async fn fake_provider(seen: Arc<Mutex<Seen>>) -> String {
             .strip_prefix("Bearer tok:")
             .unwrap_or_default()
             .to_owned();
+        // `silent…` gets no `email_verified` at all, as Microsoft's userinfo.
+        if email.starts_with("silent") {
+            return axum::Json(json!({ "sub": "1", "email": email }));
+        }
         let verified = !email.starts_with("unverified");
         axum::Json(json!({ "sub": "1", "email": email, "email_verified": verified }))
     };
@@ -510,6 +514,16 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     assert!(back.unwrap().starts_with("/x?oauth_error="));
     assert!(
         load_user_by_email(&catalog, "unverified@example.com")
+            .await?
+            .is_none()
+    );
+    // So is one the provider does not say it verified, unless the admin
+    // trusts its addresses.
+    let mut other = Browser::new(router.clone(), APP_HOST);
+    let (_, back) = sign_in(&router, &mut other, &seen, "silent@example.com", "/x").await;
+    assert!(back.unwrap().starts_with("/x?oauth_error="));
+    assert!(
+        load_user_by_email(&catalog, "silent@example.com")
             .await?
             .is_none()
     );

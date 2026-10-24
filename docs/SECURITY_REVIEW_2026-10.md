@@ -22,17 +22,19 @@ code path traced but no exploit run. Line numbers are as of the base commit.
 | 6 | Medium | CSRF double-submit beatable by cookie tossing from a sibling subdomain | **fixed** |
 | 7 | Medium | Saltcorn-UI `/auth/login` has no login throttling | **fixed** |
 | 8 | Medium | Non-admin writes to `users.email` / `disabled` / admin-added columns | **fixed** |
-| 9 | Medium | OAuth treats missing `email_verified` as verified and links by email | reported |
-| 10 | Medium | Deno modules read arbitrary host files via dynamic `import("file://…")` | reported |
-| 11 | Med–Low | Module can borrow another in-flight call's caller via guessable `callId` | reported |
-| 12 | Med–Low | `.git` served on public file routes; symlinks followed out of store root | reported |
-| 13 | High (Windows) | Backslash path traversal in file-store paths | reported |
+| 9 | Medium | OAuth treats missing `email_verified` as verified and links by email | **fixed** |
+| 10 | Medium | Deno modules read arbitrary host files via dynamic `import("file://…")` | **fixed** |
+| 11 | Med–Low | Module can borrow another in-flight call's caller via guessable `callId` | **fixed** |
+| 12 | Med–Low | `.git` served on public file routes; symlinks followed out of store root | **fixed** |
+| 13 | High (Windows) | Backslash path traversal in file-store paths | **fixed** |
 | 14+ | Low | See "Low / hardening" | reported |
 
 Items 1 and 2 share a root cause (trusting the `Host` header) and should be fixed together.
 Items 1–5 are fixed; see the CHANGELOG entry "Security fixes: Host header, OAuth host, agent
 privileges, uploads". Items 6–8 are fixed; see "Security fixes: CSRF cookie tossing, UI login
-throttle, `users` columns". Items 3, 4 and 12 together describe the main routes to running code as the server's OS user.
+throttle, `users` columns". Items 9 and 10 are fixed; see "Security fixes: OAuth
+`email_verified`, Deno `import()` fence". Items 11–13 are fixed; see "Security fixes: module call
+tokens, `.git` and symlinks, Windows paths". Items 3, 4 and 12 together describe the main routes to running code as the server's OS user.
 
 ---
 
@@ -204,6 +206,11 @@ controlled ("nOAuth"). An attacker with their own Entra tenant sets a user's mai
 admin's address and signs in as them. **Fix:** default to unverified; require a per-provider
 "emails are verified" opt-in.
 
+**Fixed:** a missing `email_verified` is unverified unless the provider's `trust_emails` ("Trust
+unverified addresses") is ticked; GitHub falls through to `/user/emails`. The Microsoft preset takes a
+`tenant`, and `trust_emails` is refused for `common`/`organizations`/`consumers`, so a Microsoft
+provider must name its own directory.
+
 ### 10. Deno module sandbox: file reads via dynamic `import()` (reported)
 
 `crates/sc-module/src/deno/wiring.rs:142-160` — `HostModuleLoader` wraps `FsModuleLoader` without a
@@ -213,12 +220,19 @@ closed permission set (e.g. a compromised npm dependency) can
 paths, or run `.js` from anywhere. **Fix:** reject `file:` specifiers outside the module root in
 `resolve`/`load`, or check them against the module's permission container.
 
+**Fixed:** `ModuleFence` checks each `file:` load (canonicalised): modules root, the view runtime
+bundle, or a path the container grants for reading; anything else gets the read-denial error.
+
 ### 11. Module can borrow another call's authority (reported)
 
 `crates/sc-module/src/deno/worker.rs:379` (`host_ask`) takes `callId` from JS and `:1064` routes to
 any in-flight call with that id. Code in a shared worker can pass the id of a concurrent admin call
 and have its DB requests run as the admin. Code bodies already use 128-bit tokens for this
 (`sc-expr/src/code.rs`). **Fix:** unguessable per-call tokens, or bind each request to its module.
+
+**Fixed:** each call is named by a random v4 UUID (`CallToken`), used for `__scAsk`, `__scDbCall`,
+`__scDone` and `__scFail`. Modules sharing an isolate are still not isolated from each other in
+general (shared global, prototypes); the permission-based worker split remains the boundary.
 
 ### 12. `.git` served publicly; symlinks followed (reported)
 
@@ -231,6 +245,11 @@ and have its DB requests run as the admin. Code bodies already use 128-bit token
 **Fix.** Deny `.git` (and probably dotfiles) on public serve routes; canonicalize the parent and check
 the root prefix, or open with `O_NOFOLLOW` / `openat2(RESOLVE_BENEATH)`.
 
+**Fixed:** `check_access` refuses `.git` below admin and listings hide it; app `/files/serve` 404s
+any dot-segment. `LocalFileStore` canonicalises the deepest existing part of each path and refuses
+anything outside the root, dangling links included; delete/rename act on a link itself. This is a
+check before the open, so a link swapped in mid-request (TOCTOU) is not covered.
+
 ### 13. High on Windows — backslash path traversal (reported)
 
 `crates/sc-files/src/local.rs:79-90` splits on `/` only then `PathBuf::push(seg)`;
@@ -240,6 +259,9 @@ the root prefix, or open with `O_NOFOLLOW` / `openat2(RESOLVE_BENEATH)`.
 segment like `C:\x` replaces the whole path. `confined()`, `clean_relative` and git pathspecs already
 reject `\`. **Fix:** in `resolve`, reject segments containing `\`, `:` or NUL and require every
 `Path::components()` item to be `Normal`.
+
+**Fixed** as suggested, plus segments made only of dots and spaces. `validate_file_path` refuses
+the same characters.
 
 ---
 

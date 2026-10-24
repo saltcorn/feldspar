@@ -34,6 +34,12 @@
 //! What is never granted, because there is no allow-list for it: subprocesses,
 //! FFI, and `import` off the disk.
 //!
+//! **`import()` is fenced like `require`.** [`HostModuleLoader`] loads a
+//! `file:` module only from the modules root, the view runtime bundle, or a
+//! path the container grants for reading. Without that, a module denied the
+//! filesystem could still `import("file:///etc/x.json", {with:{type:"json"}})`
+//! (or `type: "text"`) and read whatever the server's user can.
+//!
 //! ## The startup snapshot, and why it is not optional
 //!
 //! `deno_core` does not embed the JavaScript its extensions are made of. An
@@ -130,7 +136,7 @@ include!(concat!(env!("OUT_DIR"), "/residual_lazy_sources.rs"));
 // Wiring 1: the module loader
 // ---------------------------------------------------------------------------
 
-/// [`FsModuleLoader`] plus one branch.
+/// [`FsModuleLoader`] plus one branch and one fence.
 ///
 /// A `node:` specifier is its own canonical form, and `deno_core`'s module map
 /// answers it from the `lazy_loaded_esm` registry the `deno_node` extension
@@ -138,7 +144,46 @@ include!(concat!(env!("OUT_DIR"), "/residual_lazy_sources.rs"));
 /// nothing else. That is the whole of what `module-host.mjs`'s four `import`s
 /// need; everything a *module* requires goes through [`ModuleRequireLoader`]
 /// below rather than through here, because a v1 plugin is CommonJS.
-struct HostModuleLoader(FsModuleLoader);
+///
+/// The fence: a module can still reach this loader with a dynamic `import()`,
+/// so a file is loaded only from [`ModuleFence`]'s places — the same rule
+/// `require` has.
+struct HostModuleLoader {
+    fs: FsModuleLoader,
+    fence: ModuleFence,
+}
+
+/// Where a module's code may be loaded from: the modules root and the view
+/// runtime bundle whatever was granted, and otherwise what the worker's
+/// container grants for reading.
+struct ModuleFence {
+    /// Canonicalised, as [`ModuleRequireLoader`]'s.
+    root: PathBuf,
+    /// The bundle file itself, canonicalised; not its directory.
+    view_runtime: Option<PathBuf>,
+    permissions: PermissionsContainer,
+}
+
+impl ModuleFence {
+    /// `Ok` when the module at `specifier` may be loaded. A path is judged
+    /// canonicalised — `..` and symlinks resolved — so neither walks out of the
+    /// root; one that does not exist is judged as given, so that outside the
+    /// fence a missing file is denied exactly as a present one (no probing).
+    fn check(&self, specifier: &ModuleSpecifier) -> Result<(), JsErrorBox> {
+        if specifier.scheme() != "file" {
+            return Ok(());
+        }
+        let path = deno_path_util::url_to_file_path(specifier).map_err(JsErrorBox::from_err)?;
+        let path = path.canonicalize().unwrap_or(path);
+        if path.starts_with(&self.root) || self.view_runtime.as_deref() == Some(path.as_path()) {
+            return Ok(());
+        }
+        self.permissions
+            .check_open(Cow::Owned(path), OpenAccessKind::Read, Some("import()"))
+            .map(|_| ())
+            .map_err(|e| JsErrorBox::generic(e.to_string()))
+    }
+}
 
 impl ModuleLoader for HostModuleLoader {
     fn resolve(
@@ -150,7 +195,7 @@ impl ModuleLoader for HostModuleLoader {
         if specifier.starts_with("node:") {
             return deno_core::url::Url::parse(specifier).map_err(JsErrorBox::from_err);
         }
-        self.0.resolve(specifier, referrer, kind)
+        self.fs.resolve(specifier, referrer, kind)
     }
 
     fn load(
@@ -159,7 +204,10 @@ impl ModuleLoader for HostModuleLoader {
         referrer: Option<&deno_core::ModuleLoadReferrer>,
         options: deno_core::ModuleLoadOptions,
     ) -> deno_core::ModuleLoadResponse {
-        self.0.load(specifier, referrer, options)
+        if let Err(e) = self.fence.check(specifier) {
+            return deno_core::ModuleLoadResponse::Sync(Err(e));
+        }
+        self.fs.load(specifier, referrer, options)
     }
 }
 
@@ -409,9 +457,10 @@ pub(super) fn try_build_worker(
     host: &ModuleSpecifier,
     max_heap: usize,
     permissions: &ModulePermissions,
+    view_runtime: Option<&str>,
 ) -> Result<MainWorker, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        build_worker(root, host, max_heap, permissions)
+        build_worker(root, host, max_heap, permissions, view_runtime)
     }))
     .map_err(|payload| {
         payload
@@ -427,20 +476,33 @@ pub(super) fn build_worker(
     host: &ModuleSpecifier,
     max_heap: usize,
     permissions: &ModulePermissions,
+    view_runtime: Option<&str>,
 ) -> MainWorker {
+    // Built from the `_fd_modules` rows of the modules pinned to this worker —
+    // which all share one set, because that is what the pool pins by. Closed
+    // unless an admin granted something.
+    let permissions = container(permissions);
+    let fence = ModuleFence {
+        root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+        view_runtime: view_runtime
+            .and_then(|url| ModuleSpecifier::parse(url).ok())
+            .and_then(|url| deno_path_util::url_to_file_path(&url).ok())
+            .map(|path| path.canonicalize().unwrap_or(path)),
+        permissions: permissions.clone(),
+    };
     let services = WorkerServiceOptions {
         blob_store: Arc::new(BlobStore::default()),
         broadcast_channel: InMemoryBroadcastChannel::default(),
         deno_rt_native_addon_loader: None,
         feature_checker: Arc::new(deno_runtime::FeatureChecker::default()),
         fs: Arc::new(RealFs),
-        module_loader: Rc::new(HostModuleLoader(FsModuleLoader)),
+        module_loader: Rc::new(HostModuleLoader {
+            fs: FsModuleLoader,
+            fence,
+        }),
         node_services: Some(node_services(root)),
         npm_process_state_provider: None,
-        // Built from the `_fd_modules` rows of the modules pinned to this
-        // worker — which all share one set, because that is what the pool pins
-        // by. Closed unless an admin granted something.
-        permissions: container(permissions),
+        permissions,
         root_cert_store_provider: None,
         fetch_dns_resolver: Default::default(),
         shared_array_buffer_store: None,

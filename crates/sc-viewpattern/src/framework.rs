@@ -1700,7 +1700,11 @@ pub async fn serve_store_file(
     rest: &[&str],
 ) -> Result<AppResponse> {
     let parts: Vec<String> = rest.iter().map(|p| percent_decode(p)).collect();
-    if !confined(&parts) {
+    // No dotfile and no dot-directory, whatever the rules on the files say: a
+    // store that is a checkout holds `.git` and `.env` beside its content, and
+    // nothing Saltcorn stores (uploads are named with a UUID prefix) starts
+    // with a dot.
+    if !confined(&parts) || parts.iter().any(|p| p.starts_with('.')) {
         return Ok(AppResponse::not_found());
     }
     let stores = &app.file_stores;

@@ -144,12 +144,28 @@ pub const PROVIDER_APP_LOGIN: &str = "app_login";
 pub const PROVIDER_CREATE_USERS: &str = "create_users";
 /// The role an account created that way gets.
 pub const PROVIDER_NEW_USER_ROLE: &str = "new_user_role";
+/// Whether an address the provider answers without saying it verified it
+/// (no `email_verified`) is taken as verified. Off, such a sign-in is refused:
+/// an account is found by its address, so an address the signer-in chose
+/// themselves would sign them in as whoever has it.
+pub const PROVIDER_TRUST_EMAILS: &str = "trust_emails";
+/// The Microsoft preset's directory (tenant): `common` (any work, school or
+/// personal account), `organizations`, `consumers`, or one directory's id or
+/// domain.
+pub const PROVIDER_TENANT: &str = "tenant";
 
 /// The custom preset: every URL is the admin's to give.
 pub const PRESET_CUSTOM: &str = "custom";
 /// GitHub, whose user endpoint may not show the address: the verified primary
 /// one is read from `/user/emails` instead.
 pub const PRESET_GITHUB: &str = "github";
+/// Microsoft, whose endpoints name a directory ([`PROVIDER_TENANT`]) and
+/// whose userinfo never says whether the address is verified: any directory's
+/// administrator sets its users' addresses.
+pub const PRESET_MICROSOFT: &str = "microsoft";
+/// The Microsoft directories anybody can make an account in, so whose
+/// addresses are never trusted.
+const MICROSOFT_OPEN_TENANTS: &[&str] = &["common", "organizations", "consumers"];
 
 /// A well-known provider's endpoints, so an admin gives only a client id and
 /// secret.
@@ -176,7 +192,7 @@ pub const OAUTH_PRESETS: &[OAuthPreset] = &[
         scopes: "openid email profile",
     },
     OAuthPreset {
-        name: "microsoft",
+        name: PRESET_MICROSOFT,
         label: "Microsoft",
         authorization_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
@@ -254,6 +270,19 @@ pub fn oauth_provider_spec() -> Vec<FormField> {
             .label("Scopes")
             .default_value("openid email profile")
             .show_if(PROVIDER_PRESET, custom()),
+        FormField::new(PROVIDER_TENANT, BasicType::Text)
+            .label("Directory (tenant)")
+            .default_value("common")
+            .pattern(
+                "[A-Za-z0-9][A-Za-z0-9.-]*",
+                Some("a directory id or domain".to_owned()),
+            )
+            .show_if(PROVIDER_PRESET, vec![Json::from(PRESET_MICROSOFT)])
+            .sublabel(
+                "Your organisation's directory id or domain. Microsoft does not say whether an \
+                 address is verified, so sign-ins through `common` are refused; with your own \
+                 directory, tick \"Trust unverified addresses\".",
+            ),
         FormField::new(PROVIDER_ENABLED, BasicType::Bool)
             .label("Enabled")
             .default_value(true),
@@ -275,6 +304,14 @@ pub fn oauth_provider_spec() -> Vec<FormField> {
             .label("Role of a created account")
             .default_value(i64::from(DEFAULT_NEW_USER_ROLE))
             .show_if(PROVIDER_CREATE_USERS, vec![Json::Bool(true)]),
+        FormField::new(PROVIDER_TRUST_EMAILS, BasicType::Bool)
+            .label("Trust unverified addresses")
+            .default_value(false)
+            .sublabel(
+                "Accept an address the provider does not say it verified. A sign-in finds the \
+                 account with that address — administrators' included — so tick this only for \
+                 a provider whose addresses nobody but your organisation can set.",
+            ),
     ]
 }
 
@@ -300,6 +337,8 @@ pub struct OAuthProvider {
     pub app_login: bool,
     pub create_users: bool,
     pub new_user_role: u8,
+    /// [`PROVIDER_TRUST_EMAILS`].
+    pub trust_emails: bool,
 }
 
 impl OAuthProvider {
@@ -332,7 +371,32 @@ impl OAuthProvider {
             p if p.is_empty() => PRESET_CUSTOM.to_owned(),
             p => p,
         };
+        let name = text(PROVIDER_NAME);
+        let tenant = match text(PROVIDER_TENANT) {
+            t if t.is_empty() => "common".to_owned(),
+            t => t,
+        };
+        let trust_emails = flag(PROVIDER_TRUST_EMAILS);
+        if preset == PRESET_MICROSOFT {
+            let open = MICROSOFT_OPEN_TENANTS
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(&tenant));
+            if open && trust_emails {
+                return Err(Error::invalid(format!(
+                    "identity provider `{name}`: addresses from the `{tenant}` Microsoft \
+                     directory cannot be trusted — anybody can make a directory and give its \
+                     users any address; name your own directory"
+                )));
+            }
+        }
         let (authorization_url, token_url, userinfo_url, scopes) = match oauth_preset(&preset) {
+            Some(p) if p.name == PRESET_MICROSOFT => (
+                p.authorization_url
+                    .replace("/common/", &format!("/{tenant}/")),
+                p.token_url.replace("/common/", &format!("/{tenant}/")),
+                p.userinfo_url.to_owned(),
+                p.scopes.to_owned(),
+            ),
             Some(p) => (
                 p.authorization_url.to_owned(),
                 p.token_url.to_owned(),
@@ -351,7 +415,6 @@ impl OAuthProvider {
                 )));
             }
         };
-        let name = text(PROVIDER_NAME);
         for (key, url) in [
             (PROVIDER_AUTHORIZATION_URL, &authorization_url),
             (PROVIDER_TOKEN_URL, &token_url),
@@ -393,6 +456,7 @@ impl OAuthProvider {
             app_login: flag(PROVIDER_APP_LOGIN),
             create_users: flag(PROVIDER_CREATE_USERS),
             new_user_role,
+            trust_emails,
         })
     }
 }
@@ -532,5 +596,45 @@ mod tests {
         let mut bad_name = base;
         bad_name["name"] = json!("Corp SSO");
         assert!(OAuthProvider::from_attrs(&attrs(bad_name)).is_err());
+    }
+
+    #[test]
+    fn addresses_are_trusted_only_when_ticked_and_never_from_an_open_microsoft_directory() {
+        let google = attrs(json!({
+            "name": "google", "label": "Google", "preset": "google", "client_id": "id",
+        }));
+        assert!(!OAuthProvider::from_attrs(&google).unwrap().trust_emails);
+
+        let microsoft = |tenant: Option<&str>, trust: bool| {
+            let mut a = attrs(json!({
+                "name": "ms", "label": "Microsoft", "preset": "microsoft", "client_id": "id",
+                "trust_emails": trust,
+            }));
+            if let Some(t) = tenant {
+                a.insert(PROVIDER_TENANT.to_owned(), json!(t));
+            }
+            OAuthProvider::from_attrs(&a)
+        };
+        let common = microsoft(None, false).unwrap();
+        assert!(!common.trust_emails);
+        assert_eq!(
+            common.token_url,
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+        );
+        for open in [
+            None,
+            Some("common"),
+            Some("Organizations"),
+            Some("consumers"),
+        ] {
+            assert!(microsoft(open, true).is_err(), "{open:?}");
+        }
+        let own = microsoft(Some("corp.onmicrosoft.com"), true).unwrap();
+        assert!(own.trust_emails);
+        assert_eq!(
+            own.authorization_url,
+            "https://login.microsoftonline.com/corp.onmicrosoft.com/oauth2/v2.0/authorize"
+        );
+        assert!(microsoft(Some("evil/path"), false).is_err());
     }
 }

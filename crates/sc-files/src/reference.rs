@@ -30,7 +30,8 @@ pub fn mime_for_path(path: &str) -> Option<String> {
 ///
 /// Three ways to fail, each an [`Error::invalid`]:
 ///
-/// - **Unsafe path** — empty, absolute, or containing a `..` segment. A `File`
+/// - **Unsafe path** — empty, absolute, containing a `..` segment, or holding a
+///   `\`, `:` or NUL (Windows separators and drives). A `File`
 ///   reference is confined to its store, so a path that could escape it is
 ///   refused here rather than relying on the store driver to sanitise it later.
 /// - **Outside the folder** — when the field restricts to a folder, the path must
@@ -53,6 +54,19 @@ pub fn validate_file_path(path: &str, folder: Option<&str>, mime_allow: &[String
     if path.split('/').any(|segment| segment == "..") {
         return Err(Error::invalid(format!(
             "file path `{path}` must not contain a `..` segment"
+        )));
+    }
+    // `/` is the only separator a store path has. A `\` is one more on Windows
+    // (`uploads/..\..\x`), a `:` starts a drive (`C:\x`) or an NTFS stream, and
+    // a segment of dots and spaces is trimmed by Windows to `..` — each a way
+    // out of the folder this check is about to compare against.
+    if path.contains(['\\', ':', '\0'])
+        || path.split('/').any(|segment| {
+            !segment.is_empty() && segment.trim_end_matches(['.', ' ']).is_empty() && segment != "."
+        })
+    {
+        return Err(Error::invalid(format!(
+            "file path `{path}` may only use `/` between plain names"
         )));
     }
 
@@ -145,6 +159,21 @@ mod tests {
         assert!(validate_file_path("", None, &[]).is_err());
         assert!(validate_file_path("/etc/passwd", None, &[]).is_err());
         assert!(validate_file_path("a/../../etc", None, &[]).is_err());
+        // Windows separators, drives, streams and trimmed dots (review #13):
+        // each would leave the folder on a Windows server.
+        for bad in [
+            "covers/..\\..\\Windows\\win.ini",
+            "covers/C:\\x",
+            "covers/a.png:stream",
+            "covers/.. /x",
+            "covers/.../x",
+            "covers/a\0b",
+        ] {
+            assert!(
+                validate_file_path(bad, Some("covers"), &[]).is_err(),
+                "{bad:?}"
+            );
+        }
         // A plain relative path is fine.
         assert!(validate_file_path("covers/a.png", None, &[]).is_ok());
     }

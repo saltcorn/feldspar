@@ -387,3 +387,32 @@ async fn what_a_module_may_not_do_is_refused_by_name() {
     host.shutdown().await;
     let _ = std::fs::remove_dir_all(installer.root());
 }
+
+/// **A call's authority is not guessable** (security review #11). An ask runs as
+/// the caller of the call it names, and every module on a worker can reach the
+/// seam's functions — so the name has to be one only that call was handed. The
+/// module tries the small integers a counter would have used, its own call's
+/// among them, and every guess is refused as naming no call at all.
+#[tokio::test]
+async fn a_module_cannot_borrow_a_call_by_guessing_its_id() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let db = TestDb::new().await.unwrap();
+    let cat = setup(&db).await.unwrap();
+    let (installer, host, registry, _set) = install(&cat, "v1-table-borrow").await;
+
+    // A slow read in flight beside it, so there is somebody else's call to land on.
+    let mut slow_config = Attrs::new();
+    slow_config.insert("delay_ms".into(), json!(400));
+    let (slow, guessed) = tokio::join!(
+        run(&registry, &cat, "v1_slow_read", slow_config),
+        run(&registry, &cat, "v1_borrow_by_guess", Attrs::new()),
+    );
+    let guessed = guessed.expect("the guessing action itself runs");
+    assert_eq!(guessed["tried"], json!(128), "{guessed}");
+    assert_eq!(guessed["borrowed"], json!([]), "{guessed}");
+    // And the honest call next to it was not disturbed.
+    assert_eq!(slow.unwrap()["waited"], json!(true));
+
+    host.shutdown().await;
+    let _ = std::fs::remove_dir_all(installer.root());
+}

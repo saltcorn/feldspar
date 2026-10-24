@@ -74,3 +74,63 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
     std::fs::remove_dir_all(&dir).ok();
     Ok(())
 }
+
+/// A store that is a checkout (security review #12): with no floor anywhere its
+/// files are public, but its `.git` and its dotfiles are not served to anyone —
+/// `.git/config` carries remote URLs with their tokens — and a symlink out of
+/// the store is not followed.
+#[tokio::test]
+async fn a_public_stores_git_dir_dotfiles_and_escaping_links_are_not_served() -> Result<()> {
+    let db = TestDb::new().await?;
+    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
+    let catalog = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+    sc_catalog::bootstrap_file_stores(&catalog).await?;
+    let base = std::env::temp_dir().join(format!(
+        "sc-viewpattern-files-dotfiles-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::remove_dir_all(&base).ok();
+    let dir = base.join("store");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(dir.join(".git/config"), "url = https://token@example.com/x").unwrap();
+    std::fs::write(dir.join(".env"), "SECRET=1").unwrap();
+    std::fs::write(dir.join("a.txt"), "hello").unwrap();
+    std::fs::write(outside.join("secret.txt"), "not yours").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, dir.join("uploads")).unwrap();
+    let store = Arc::new(LocalFileStore::new("site", &dir)?);
+    catalog.connect_file_store(store.clone())?;
+
+    let app = Application::new("Site", "site", FrameworkRef::new("saltcorn-ui"))
+        .with_file_store(FileStoreId("site".to_owned()));
+    let ada = User::new(uuid::Uuid::new_v4(), 80)?;
+
+    let served = serve_store_file(&app, &catalog, None, &["site", "a.txt"]).await?;
+    assert!(served.file.is_some(), "a public file is served");
+    for path in [
+        &["site", ".git", "config"][..],
+        &["site", ".env"],
+        &[".git", "config"],
+        &["site", ".GIT", "config"],
+        &["site", "uploads", "secret.txt"],
+    ] {
+        for user in [None, Some(&ada)] {
+            let answer = serve_store_file(&app, &catalog, user, path).await?;
+            if let Some(file) = &answer.file {
+                // The builder opens the file; an escaping link must fail there.
+                assert!(
+                    file.store.read(&file.path).await.is_err(),
+                    "{path:?} was served"
+                );
+            } else {
+                assert_eq!(answer.status, 404, "{path:?}");
+            }
+        }
+    }
+
+    std::fs::remove_dir_all(&base).ok();
+    Ok(())
+}

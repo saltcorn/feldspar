@@ -44,8 +44,8 @@
 //! before its main module ran. A function set on `globalThis` is not, and it
 //! costs less: `v8::Function::new` and a `v8::Global`.
 //!
-//! The `id` is still the worker's, because the reason for it never was the
-//! transport: many calls are in flight at once and a slow module's action must
+//! The `id` is still the worker's — a random token rather than a counter, see
+//! [`CallToken`] — because the reason for it never was the transport: many calls are in flight at once and a slow module's action must
 //! not hold anybody else's. What crosses back is `JSON.stringify`'s text and not
 //! the value, because the value is a *module's* object — a function property, a
 //! stream, a cycle — and `JSON.stringify` is the rule v1 itself applies to one.
@@ -299,9 +299,25 @@ impl Watchdog {
 // The three functions the isolate answers through
 // ---------------------------------------------------------------------------
 
+/// What a call is named by inside the isolate: a random (v4) UUID's 122 bits.
+///
+/// Not a counter, because the name is **authority**. Every module on a worker
+/// shares one global, so any of them can call `__scAsk`, `__scDbCall`,
+/// `__scDone` or `__scFail` with a call id of its choosing — and an ask is run
+/// as the caller of the call it names. A counter would let one module guess a
+/// concurrent call's id and have its queries run as that call's user (an
+/// admin's, say), or settle that call with an answer of its own making. A
+/// token is only known to the code the call was handed to.
+type CallToken = String;
+
+/// A fresh [`CallToken`].
+fn call_token() -> CallToken {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 /// One call, settled.
 struct Settled {
-    id: u64,
+    id: CallToken,
     outcome: Result<Json>,
 }
 
@@ -309,7 +325,7 @@ struct Settled {
 struct Asked {
     /// The call it belongs to — which is what says whose authority it runs
     /// under, because the caller of that call is where the host is borrowed.
-    call: u64,
+    call: CallToken,
     /// The ask's own id, which the answer carries back.
     ask: u64,
     /// `{ surface, plan }`, as the host script built it.
@@ -335,7 +351,7 @@ struct Bridge {
 /// A closed channel is not an error worth a word: it means the worker has
 /// already ended and is failing its calls by name, and this answer is one the
 /// caller was told about a moment ago.
-fn settle(scope: &mut v8::PinScope, id: u64, outcome: Result<Json>) {
+fn settle(scope: &mut v8::PinScope, id: CallToken, outcome: Result<Json>) {
     let op_state = deno_core::JsRuntime::op_state_from(scope);
     let state = op_state.borrow();
     if let Some(bridge) = state.try_borrow::<Bridge>() {
@@ -345,7 +361,7 @@ fn settle(scope: &mut v8::PinScope, id: u64, outcome: Result<Json>) {
 
 /// `__scDone(id, jsonText)` — the module answered.
 fn host_done(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let id = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
+    let id = args.get(0).to_rust_string_lossy(scope);
     let text = args.get(1).to_rust_string_lossy(scope);
     // The host script encodes with `JSON.stringify` and encodes a failure to do
     // so as a *failure*, so anything unreadable here is a bug in this pair
@@ -362,7 +378,7 @@ fn host_done(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv:
 /// is [`module_error`]'s, so a module's throw is an **Application** error, as it
 /// was over the pipe.
 fn host_fail(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let id = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
+    let id = args.get(0).to_rust_string_lossy(scope);
     let message = args.get(1).to_rust_string_lossy(scope);
     settle(scope, id, Err(module_error(&message)));
 }
@@ -377,7 +393,7 @@ fn host_fail(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv:
 /// own side, so an unreadable one here is a bug in this pair rather than a
 /// module's doing.
 fn host_ask(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let call = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
+    let call = args.get(0).to_rust_string_lossy(scope);
     let ask = args.get(1).integer_value(scope).unwrap_or(0).max(0) as u64;
     let text = args.get(2).to_rust_string_lossy(scope);
     let request = serde_json::from_str(&text).unwrap_or(Json::Null);
@@ -503,6 +519,7 @@ impl Host {
             &url,
             config.max_heap,
             &config.permissions,
+            config.view_runtime.as_deref(),
         )
         .map_err(|reason| {
             Error::config(format!("the module runtime could not be started: {reason}"))
@@ -617,17 +634,14 @@ impl Host {
     /// — which is at its first `await`. The answer arrives later, through
     /// [`host_done`] or [`host_fail`], while this worker's event loop is being
     /// polled.
-    fn call(&mut self, id: u64, request: &Json) -> Result<()> {
+    fn call(&mut self, id: &str, request: &Json) -> Result<()> {
         deno_core::scope!(scope, self.worker.js_runtime);
         v8::tc_scope!(let scope, scope);
         let entry = v8::Local::new(scope, &self.entry);
         let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "an id is a per-worker counter; a worker that answered 2^53 calls has \
-                      other problems"
-        )]
-        let id_value: v8::Local<v8::Value> = v8::Number::new(scope, id as f64).into();
+        let id_value: v8::Local<v8::Value> = v8::String::new(scope, id)
+            .ok_or_else(|| Error::msg("the module worker could not name this call"))?
+            .into();
         let request = deno_core::serde_v8::to_v8(scope, request)
             .map_err(|e| Error::msg(format!("encoding a module-host request: {e}")))?;
         entry.call(scope, receiver, &[id_value, request]);
@@ -826,27 +840,25 @@ async fn serve(config: WorkerConfig, mut rx: tokio::sync::mpsc::UnboundedReceive
             }
         };
 
-        let mut pending: HashMap<u64, Pending> = HashMap::new();
-        let mut next_id: u64 = 1;
+        let mut pending: HashMap<CallToken, Pending> = HashMap::new();
 
         // Replayed **before** the first job is called, so no caller's `run` can
         // reach a fresh worker before its modules are back. Not awaited: the
         // host script's own `loading` map makes a `run` wait for a load that is
         // still in flight, which is the same guarantee for less machinery.
         for (name, request) in &loads {
-            let id = next_id;
-            next_id += 1;
+            let id = call_token();
             let request = json!({
                 "op": "load",
                 "module": name,
                 "dir": request.dir.display().to_string(),
                 "configuration": request.configuration,
             });
-            if host.call(id, &request).is_ok() {
+            if host.call(&id, &request).is_ok() {
                 pending.insert(id, Pending::Replay(name.clone()));
             }
         }
-        submit(&mut host, &mut next_id, &mut pending, *first);
+        submit(&mut host, &mut pending, *first);
 
         // Whether the event loop has said it has nothing left to do.
         //
@@ -879,7 +891,7 @@ async fn serve(config: WorkerConfig, mut rx: tokio::sync::mpsc::UnboundedReceive
                 }
                 Woke::Control(Some(Control::Job(job))) => {
                     resting = false;
-                    submit(&mut host, &mut next_id, &mut pending, *job);
+                    submit(&mut host, &mut pending, *job);
                 }
                 // Settling a promise queues microtasks, so the event loop has
                 // work again — exactly as submitting a job does, and for the
@@ -997,9 +1009,8 @@ fn ending_reason(host: &Host, ended: &End, slice: Duration) -> String {
 /// Give a job an id, put this server's schema in front of it if the isolate does
 /// not already hold it, call the isolate, and remember who is waiting for the
 /// answer.
-fn submit(host: &mut Host, next_id: &mut u64, pending: &mut HashMap<u64, Pending>, job: Job) {
-    let id = *next_id;
-    *next_id += 1;
+fn submit(host: &mut Host, pending: &mut HashMap<CallToken, Pending>, job: Job) {
+    let id = call_token();
     let Job {
         mut request,
         remember,
@@ -1036,7 +1047,7 @@ fn submit(host: &mut Host, next_id: &mut u64, pending: &mut HashMap<u64, Pending
             views_defined = Some((application, generation));
         }
     }
-    if let Err(e) = host.call(id, &request) {
+    if let Err(e) = host.call(&id, &request) {
         let _ = reply.send(Err(e));
         return;
     }
@@ -1068,7 +1079,7 @@ fn submit(host: &mut Host, next_id: &mut u64, pending: &mut HashMap<u64, Pending
 /// for. A module told that fails at its `await`; one told nothing would hang
 /// until the call's own wall clock ran out, which is the failure this whole
 /// system's naming rule exists to prevent.
-fn route(host: &mut Host, pending: &HashMap<u64, Pending>, asked: Asked) {
+fn route(host: &mut Host, pending: &HashMap<CallToken, Pending>, asked: Asked) {
     let refused = match pending.get(&asked.call) {
         Some(Pending::Call { asks: Some(to), .. }) => {
             match to.send(HostAsk {
@@ -1097,7 +1108,7 @@ fn route(host: &mut Host, pending: &HashMap<u64, Pending>, asked: Asked) {
 /// One answer: to whoever is waiting for it, and to the replay table if it was a
 /// load that worked.
 fn dispatch(
-    pending: &mut HashMap<u64, Pending>,
+    pending: &mut HashMap<CallToken, Pending>,
     loads: &mut BTreeMap<String, LoadRequest>,
     answer: Settled,
 ) {

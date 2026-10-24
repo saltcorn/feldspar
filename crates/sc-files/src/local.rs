@@ -115,22 +115,113 @@ impl LocalFileStore {
     }
 
     /// Resolve a store-relative path to an absolute path inside the root,
-    /// rejecting anything that would escape it.
+    /// rejecting anything that would escape it — by its spelling
+    /// ([`lexical`](Self::lexical)) or through a symbolic link on disk
+    /// ([`beneath_root`](Self::beneath_root)).
     fn resolve(&self, rel: &str) -> Result<PathBuf> {
+        let abs = self.lexical(rel)?;
+        self.beneath_root(&abs, rel, true)?;
+        Ok(abs)
+    }
+
+    /// [`resolve`](Self::resolve) for an entry acted on **as itself** — deleted
+    /// or moved — so a link is the link and not what it points at: only its
+    /// parent has to lie inside the root. A link out of the store can still be
+    /// removed, which is the one thing worth doing with it.
+    fn resolve_entry(&self, rel: &str) -> Result<PathBuf> {
+        if !self.git_dir_writable && in_git_dir(rel) {
+            return Err(Error::invalid(format!(
+                "path {rel:?} is inside a `.git` directory, which file store {} does not write",
+                self.name
+            )));
+        }
+        let abs = self.lexical(rel)?;
+        self.beneath_root(&abs, rel, false)?;
+        Ok(abs)
+    }
+
+    /// The path `rel` names under the root, by its spelling alone.
+    ///
+    /// Split on `/` only, and every segment must be one plain name: a `\`, a
+    /// `:` or a NUL is refused rather than handed to [`PathBuf::push`], which on
+    /// Windows reads `..\..\x` as two steps up and `C:\x` as a whole new path —
+    /// and either would also slip past the folder floors `check_access` walks,
+    /// which are split on `/`. So is a segment of nothing but dots and spaces,
+    /// which Windows trims to `..` or to nothing.
+    fn lexical(&self, rel: &str) -> Result<PathBuf> {
+        let escapes = || Error::invalid(format!("path {rel:?} escapes the file store root"));
         let mut out = self.root.clone();
         for segment in rel.split('/') {
             match segment {
                 // Empty (leading/trailing/double slash) and "." are no-ops.
                 "" | "." => continue,
-                ".." => {
-                    return Err(Error::invalid(format!(
-                        "path {rel:?} escapes the file store root"
-                    )));
+                ".." => return Err(escapes()),
+                seg if seg.contains(['\\', ':', '\0'])
+                    || seg.trim_end_matches(['.', ' ']).is_empty() =>
+                {
+                    return Err(escapes());
                 }
-                seg => out.push(seg),
+                seg => {
+                    let mut components = Path::new(seg).components();
+                    match (components.next(), components.next()) {
+                        (Some(std::path::Component::Normal(_)), None) => out.push(seg),
+                        _ => return Err(escapes()),
+                    }
+                }
             }
         }
         Ok(out)
+    }
+
+    /// Refuse `abs` if what is on disk takes it out of the root: a symbolic
+    /// link (or a directory replaced by one) anywhere on the path, pointing
+    /// outside — `uploads -> /etc`, committed upstream and arriving with a pull.
+    ///
+    /// The deepest part of the path that exists is canonicalised and must still
+    /// be under the root; what does not exist yet cannot be a link. A link that
+    /// leads nowhere is refused too, since writing through it would create its
+    /// target wherever it points. With `follow_last` off the entry itself is not
+    /// followed, only its parent. Links that stay inside the store are fine.
+    ///
+    /// A check before the open rather than `openat2(RESOLVE_BENEATH)`, so it is
+    /// the same on every platform; it stops links that are there when a caller
+    /// asks, which is the case a checkout produces.
+    fn beneath_root(&self, abs: &Path, rel: &str, follow_last: bool) -> Result<()> {
+        let escapes = || Error::invalid(format!("path {rel:?} escapes the file store root"));
+        let mut probe = if follow_last || abs == self.root {
+            abs
+        } else {
+            abs.parent().unwrap_or(&self.root)
+        };
+        loop {
+            match std::fs::symlink_metadata(probe) {
+                Ok(_) => {
+                    return match std::fs::canonicalize(probe) {
+                        Ok(real) if real.starts_with(&self.root) => Ok(()),
+                        Ok(_) => Err(escapes()),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(escapes()),
+                        Err(e) => Err(Error::from(e))
+                            .with_context(|| format!("resolving {rel:?} in store {}", self.name)),
+                    };
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::NotFound
+                        || e.kind() == std::io::ErrorKind::NotADirectory =>
+                {
+                    if probe == self.root {
+                        return Ok(());
+                    }
+                    match probe.parent() {
+                        Some(parent) if parent.starts_with(&self.root) => probe = parent,
+                        _ => return Ok(()),
+                    }
+                }
+                Err(e) => {
+                    return Err(Error::from(e))
+                        .with_context(|| format!("resolving {rel:?} in store {}", self.name));
+                }
+            }
+        }
     }
 
     /// Turn a filesystem error into a domain error, keeping **"it is not there"**
@@ -234,7 +325,7 @@ impl FileStore for LocalFileStore {
     }
 
     async fn delete(&self, path: &str) -> Result<bool> {
-        let abs = self.resolve_for_write(path)?;
+        let abs = self.resolve_entry(path)?;
         // `resolve` collapses "", "/" and "." to the root, so this also catches
         // an attempt to delete the whole store by passing an empty path.
         if abs == self.root {
@@ -266,7 +357,7 @@ impl FileStore for LocalFileStore {
     }
 
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        let src = self.resolve_for_write(from)?;
+        let src = self.resolve_entry(from)?;
         let dst = self.resolve_for_write(to)?;
         if src == self.root || dst == self.root {
             return Err(Error::invalid(format!(

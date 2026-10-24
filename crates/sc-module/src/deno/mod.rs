@@ -161,6 +161,7 @@ pub fn prime() {
                         &url,
                         DEFAULT_MODULE_MAX_HEAP,
                         &ModulePermissions::closed(),
+                        None,
                     ) {
                         Ok(worker) => {
                             let _hold = worker;

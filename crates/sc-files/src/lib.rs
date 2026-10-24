@@ -252,6 +252,148 @@ mod tests {
         assert!(matches!(err.repr(), sc_error::Repr::Invalid(_)));
     }
 
+    /// Security review #13: on Windows `PathBuf::push` reads `\` as a separator
+    /// and `C:` as a drive, so a segment holding either is refused on every
+    /// platform rather than pushed — as is one Windows trims to `..`.
+    #[tokio::test]
+    async fn windows_separators_and_drives_are_rejected() {
+        let (_base, store) = temp_store();
+        for bad in [
+            "uploads/..\\..\\..\\Windows\\win.ini",
+            "uploads/C:\\x",
+            "C:",
+            "uploads/a.txt:stream",
+            "uploads/.. ",
+            "uploads/...",
+            "uploads/a\0b",
+        ] {
+            let err = store.read(bad).await.unwrap_err();
+            assert!(
+                matches!(err.repr(), sc_error::Repr::Invalid(_)),
+                "{bad:?}: {err}"
+            );
+            let err = store
+                .write(bad, Bytes::from_static(b"x"))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err.repr(), sc_error::Repr::Invalid(_)),
+                "{bad:?}: {err}"
+            );
+        }
+        // Dots inside a name are still a name.
+        store
+            .write("a..b/c.d.txt", Bytes::from_static(b"x"))
+            .await
+            .unwrap();
+        assert_eq!(&store.read("a..b/c.d.txt").await.unwrap()[..], b"x");
+    }
+
+    /// Security review #12: a symlink out of the store (`uploads -> /etc`,
+    /// committed upstream) is not followed for reads or writes, nor is a
+    /// dangling one written through; a link that stays inside is fine, and an
+    /// escaping link can still be deleted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinks_out_of_the_store_are_not_followed() {
+        let (base, store) = temp_store();
+        let outside = base.with_extension("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "not yours").unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("uploads")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), base.join("leak.txt")).unwrap();
+        std::os::unix::fs::symlink(outside.join("new.txt"), base.join("dangling.txt")).unwrap();
+        store
+            .write("inside/real.txt", Bytes::from_static(b"ok"))
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(base.join("inside"), base.join("alias")).unwrap();
+
+        for path in ["uploads/secret.txt", "leak.txt"] {
+            let err = store.read(path).await.unwrap_err();
+            assert!(
+                matches!(err.repr(), sc_error::Repr::Invalid(_)),
+                "{path}: {err}"
+            );
+            assert!(store.open_read(path, None).await.is_err(), "{path}");
+            assert!(store.stat(path).await.is_err(), "{path}");
+        }
+        assert!(store.list("uploads").await.is_err());
+        for path in [
+            "uploads/new.txt",
+            "uploads/sub/new.txt",
+            "dangling.txt",
+            "leak.txt",
+        ] {
+            assert!(
+                store.write(path, Bytes::from_static(b"x")).await.is_err(),
+                "{path}"
+            );
+        }
+        assert!(!outside.join("new.txt").exists());
+        assert!(!outside.join("sub").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.join("secret.txt")).unwrap(),
+            "not yours"
+        );
+
+        // Inside the store, a link is just another way to the same file.
+        assert_eq!(&store.read("alias/real.txt").await.unwrap()[..], b"ok");
+        // And the escaping link itself can be removed, without touching its target.
+        assert!(store.delete("uploads").await.unwrap());
+        assert!(outside.join("secret.txt").exists());
+
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// Security review #12: a checkout's `.git` is not readable or listed below
+    /// admin, whatever the floors on the store say.
+    #[tokio::test]
+    async fn a_git_dir_is_admin_only() {
+        let (base, _) = temp_store();
+        let store = LocalFileStore::new("test", &base)
+            .unwrap()
+            .writing_git_dir();
+        store
+            .write(".git/config", Bytes::from_static(b"[remote]"))
+            .await
+            .unwrap();
+        store
+            .write("a.txt", Bytes::from_static(b"a"))
+            .await
+            .unwrap();
+        let staff = FileCaller::new(40, Some("u1".into()));
+        for path in [".git/config", ".git", ".GIT/config"] {
+            assert!(
+                check_access(&store, None, path, &staff).await.is_err(),
+                "{path}"
+            );
+            assert!(
+                check_access(&store, None, path, &FileCaller::anonymous())
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            check_access(&store, None, ".git/config", &FileCaller::role(ROLE_ADMIN))
+                .await
+                .is_ok()
+        );
+        let names = |v: Vec<VisibleEntry>| v.into_iter().map(|e| e.entry.name).collect::<Vec<_>>();
+        assert_eq!(
+            names(list_visible(&store, None, "", &staff).await.unwrap()),
+            ["a.txt"]
+        );
+        assert_eq!(
+            names(
+                list_visible(&store, None, "", &FileCaller::role(ROLE_ADMIN))
+                    .await
+                    .unwrap()
+            ),
+            [".git", "a.txt"]
+        );
+    }
+
     #[tokio::test]
     async fn meta_round_trips_and_defaults() {
         let (_base, store) = temp_store();

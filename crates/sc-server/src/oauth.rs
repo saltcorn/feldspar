@@ -682,24 +682,23 @@ async fn signed_in_email(
         .json()
         .await
         .unwrap_or(Value::Null);
-    let verified = match info.get("email_verified") {
-        Some(Value::Bool(b)) => *b,
-        Some(Value::String(s)) => s == "true",
-        _ => true,
-    };
+    let github = provider.preset == sc_config::authentication::PRESET_GITHUB;
     if let Some(email) = info
         .get("email")
         .and_then(Value::as_str)
         .filter(|e| !e.is_empty())
     {
-        if !verified {
+        if email_vouched_for(&info, provider.trust_emails) {
+            return Ok(email.trim().to_owned());
+        }
+        if !github {
             return Err("the identity provider has not verified that email address".to_owned());
         }
-        return Ok(email.trim().to_owned());
     }
-    // GitHub's user shows an address only if its owner made one public; the
-    // verified primary one is on its own endpoint.
-    if provider.preset == sc_config::authentication::PRESET_GITHUB {
+    // GitHub's user shows an address only if its owner made one public, and
+    // never says whether it is verified; the verified primary one is on its
+    // own endpoint.
+    if github {
         let emails: Value = get("https://api.github.com/user/emails")
             .await
             .map_err(unreachable)?
@@ -719,6 +718,18 @@ async fn signed_in_email(
         }
     }
     Err("the identity provider did not say which email address you signed in with".to_owned())
+}
+
+/// Whether userinfo `info` says its `email` is verified. A provider that does
+/// not say (no `email_verified`) is believed only when its admin ticked
+/// `trust_emails`: the account is found by address, and some providers let
+/// the person signing in — or whoever runs their directory — choose it.
+fn email_vouched_for(info: &Value, trust_unsaid: bool) -> bool {
+    match info.get("email_verified") {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s == "true",
+        _ => trust_unsaid,
+    }
 }
 
 /// The account `email` signs in to. An administrator, on the admin UI's host;
@@ -916,6 +927,24 @@ fn html_escape(text: &str) -> String {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn an_address_nobody_vouched_for_is_believed_only_when_trusted() {
+        let silent = json!({ "email": "admin@corp.example" });
+        assert!(!email_vouched_for(&silent, false));
+        assert!(email_vouched_for(&silent, true));
+        for (said, verified) in [
+            (json!(true), true),
+            (json!("true"), true),
+            (json!(false), false),
+            (json!("false"), false),
+        ] {
+            let info = json!({ "email": "a@b.example", "email_verified": said });
+            assert_eq!(email_vouched_for(&info, false), verified, "{info}");
+            assert_eq!(email_vouched_for(&info, true), verified, "{info}");
+        }
+    }
 
     #[test]
     fn only_a_path_on_this_host_is_returned_to() {

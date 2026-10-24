@@ -51,7 +51,10 @@
 //
 // The `callId` is the one the request arrived with, because that is what says
 // **whose** authority the ask runs under: the caller of that call is where the
-// host is borrowed, and the worker routes the ask to it. An ask is answered on
+// host is borrowed, and the worker routes the ask to it. It is an unguessable
+// string (a random UUID) rather than a counter, because every module on this
+// worker can call `__scAsk` and `__scDbCall`: a call's authority is borrowed
+// only by code that was handed its id. An ask is answered on
 // the server's own task, so a module parked on a query is not holding this
 // worker's JavaScript slice — awaiting a promise yields, which is the whole of
 // why the bounds are unchanged.

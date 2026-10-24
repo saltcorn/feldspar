@@ -195,6 +195,11 @@ module.exports = {
       // the code it is made of, and may read nothing else it was not granted.
       run: (path) => require("node:fs").readFileSync(path, "utf8").slice(0, 40),
     },
+    echo_import: {
+      description: "Import a JSON file by URL — the module loader's gate, not require's",
+      arguments: [{ name: "url", type: "String" }],
+      run: async (url) => (await import(url, { with: { type: "json" } })).default,
+    },
     echo_env: {
       description: "What one environment variable looks like from in here",
       arguments: [{ name: "name", type: "String" }],

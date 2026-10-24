@@ -442,6 +442,98 @@ async fn a_module_denied_the_filesystem_cannot_read_the_modules_root() {
     let _ = std::fs::remove_dir_all(installer.root());
 }
 
+/// A dynamic `import()` of a file outside the modules root goes through the
+/// same fence as `node:fs`: denied closed, allowed once the path is granted.
+/// Without it a closed module could read any JSON (or text) the server can.
+#[tokio::test]
+async fn a_module_denied_the_filesystem_cannot_import_a_file_outside_the_root() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let (installer, host, names) =
+        installed_on_deno("deno-perm-import", &["echo-module"], 1, default_bounds()).await;
+    let name = &names[0];
+    let outside =
+        std::env::temp_dir().join(format!("sc-module-import-secret-{}", std::process::id()));
+    std::fs::create_dir_all(&outside).unwrap();
+    let secret = outside.join("secret.json");
+    std::fs::write(&secret, r#"{"password":"hunter2"}"#).unwrap();
+    let url = format!("file://{}", secret.canonicalize().unwrap().display());
+
+    host.load(name, &installer.package_dir(name), &json!({}), &closed())
+        .await
+        .unwrap();
+    let err = host
+        .call(
+            name,
+            "echo_import",
+            vec![json!(url.clone())],
+            CallHosts::default(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(!err.contains("hunter2"), "{err}");
+    assert!(
+        err.contains("read access") || err.contains("Settings → Modules"),
+        "{err}"
+    );
+    // A path that is not there is refused the same way, so nothing can be
+    // probed.
+    let missing = url.replace("secret.json", "missing.json");
+    let err = host
+        .call(
+            name,
+            "echo_import",
+            vec![json!(missing)],
+            CallHosts::default(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("read access") || err.contains("Settings → Modules"),
+        "{err}"
+    );
+    // Nor does `..` from inside the root get out.
+    let dotted = format!(
+        "file://{}/../../../../../../../..{}",
+        installer.root().canonicalize().unwrap().display(),
+        secret.canonicalize().unwrap().display()
+    );
+    assert!(
+        host.call(
+            name,
+            "echo_import",
+            vec![json!(dotted)],
+            CallHosts::default()
+        )
+        .await
+        .is_err()
+    );
+
+    // Granted, it imports.
+    host.load(
+        name,
+        &installer.package_dir(name),
+        &json!({}),
+        &sc_module::ModulePermissions {
+            read: vec![outside.display().to_string()],
+            ..sc_module::ModulePermissions::closed()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        host.call(name, "echo_import", vec![json!(url)], CallHosts::default())
+            .await
+            .unwrap(),
+        json!({ "password": "hunter2" })
+    );
+
+    host.shutdown().await;
+    let _ = std::fs::remove_dir_all(installer.root());
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 /// Phase 3: an environment variable nobody granted is **not there**, rather than
 /// an exception.
 ///

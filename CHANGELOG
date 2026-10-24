@@ -2,6 +2,87 @@
 
 Changes in reverse chronological order.
 
+## Security fixes: module call tokens, `.git` and symlinks, Windows paths
+
+Fixes for items 11–13 of `docs/SECURITY_REVIEW_2026-10.md`.
+
+- **A module call is named by a random token, not a counter** (#11).
+  - Why: every module on a worker shares one global, so any of them can call `__scAsk`,
+    `__scDbCall`, `__scDone` or `__scFail` with a call id it picks. An ask runs as the caller of the
+    call it names, so a module could guess a concurrent admin call's small-integer id and have its
+    queries run as the admin, or settle someone else's call with an answer it made up.
+  - Now (`sc-module/src/deno/worker.rs`, `CallToken`) each call, replayed loads included, gets a
+    random v4 UUID that only the code handed the call knows. The pending map is keyed by it, and the
+    native functions read it as a string. The host script passes it through unchanged.
+  - Still true: modules in one isolate are not isolated from each other in general (a shared global
+    and prototypes). The permission grouping that already splits workers is still the boundary.
+- **`.git` is admin-only, dotfiles are not served, and symlinks stay inside the store** (#12).
+  - `sc_files::check_access` refuses anything inside a `.git` directory (`in_git_dir`: any case,
+    trailing dots/spaces) below admin, and `visible_entries` leaves it out of listings. That covers
+    `/files/serve`, the REST file provider and agent file tools.
+  - An application's `/files/serve/*` (`serve_store_file`) also 404s any segment starting with `.`
+    (`.env`, `.github/…`). Nothing Saltcorn stores starts with a dot, because uploads get a UUID prefix.
+  - `LocalFileStore::resolve` now checks the disk too (`beneath_root`): the deepest existing part of
+    the path is canonicalised and must still be under the root, so a symlink out of the store
+    (`uploads -> /etc`, arriving with a pull) is refused for reads and writes. A dangling link is
+    refused as well, since writing through it would create its target. Links that stay inside still
+    work. `delete` and `rename`'s source check only the parent (`resolve_entry`), so an escaping link
+    can still be removed. This is a check before the open, not `openat2(RESOLVE_BENEATH)`: it stops
+    links that exist when the request arrives, not one swapped in mid-request.
+- **Backslashes, drives and dot-only segments are refused in store paths** (#13).
+  - Why: on Windows `PathBuf::push("..\\..\\x")` climbs and `push("C:\\x")` replaces the whole path,
+    escaping the root and skipping folder floors, which are split on `/`.
+  - `LocalFileStore` (`lexical`) refuses any segment holding `\`, `:` or NUL, any segment of nothing
+    but dots and spaces (which Windows trims to `..`), and any segment that is not a single `Normal`
+    path component. `validate_file_path` (File-field writes) refuses the same. **Side effect:** a file
+    with `:` in its name can no longer be reached through a local store on any platform.
+- **Tests:**
+  - `sc-module` `v1_table::a_module_cannot_borrow_a_call_by_guessing_its_id` (new
+    `v1_borrow_by_guess` action on the `table-module` fixture): with another call in flight, 128
+    guesses at small ids, its own call's among them, are all refused as naming no call.
+  - `sc-files` `windows_separators_and_drives_are_rejected`,
+    `symlinks_out_of_the_store_are_not_followed`, `a_git_dir_is_admin_only`, and more cases in
+    `reference::an_unsafe_path_is_refused`.
+  - `sc-viewpattern` `files_serve::a_public_stores_git_dir_dotfiles_and_escaping_links_are_not_served`.
+
+## Security fixes: OAuth `email_verified`, Deno `import()` fence
+
+Fixes for items 9 and 10 of `docs/SECURITY_REVIEW_2026-10.md`.
+
+- **An identity provider's address counts only if the provider says it is verified** (#9).
+  - Why: a sign-in finds the account by email (admins included, when `admin_login` is on), and a
+    userinfo answer with no `email_verified` was taken as verified. Microsoft's Graph userinfo never
+    sends it, and with the `common` directory any tenant's administrator sets their users' addresses
+    ("nOAuth"): make a tenant, give a user the victim admin's address, sign in as the admin.
+  - Now (`oauth::email_vouched_for`) a missing `email_verified` is unverified and the sign-in is
+    refused, unless the provider's new **Trust unverified addresses** setting (`trust_emails`,
+    default off) is ticked. Google and GitLab send the claim, so they are unaffected. GitHub's user
+    endpoint never sends it; an unvouched address there falls through to `/user/emails`, which
+    already demanded the primary *verified* address.
+  - The Microsoft preset gains a **Directory (tenant)** setting (`tenant`, default `common`),
+    substituted into its authorization and token URLs. Since Microsoft never vouches, a Microsoft
+    provider works only with `trust_emails`, and `from_attrs` refuses that combination for the open
+    directories (`common`, `organizations`, `consumers`). So: name your own directory and tick the
+    box. **Existing Microsoft providers on `common` stop signing anyone in**, by design.
+  - The admin form is spec-driven, so both settings appear with no UI change.
+- **A module's dynamic `import()` is fenced like its `require()`** (#10).
+  - Why: `HostModuleLoader` was a bare `FsModuleLoader`, so a module with the closed permission set
+    (e.g. a compromised npm dependency) could `import("file:///…", {with:{type:"json"}})` (or
+    `type: "text"`) to read anything the server user could, probe paths, or run `.js` from anywhere.
+  - Now `ModuleFence` (`sc-module/src/deno/wiring.rs`) checks every `file:` load: allowed under the
+    canonicalised modules root, for the view runtime bundle file itself, or where the worker's
+    permission container grants read; otherwise the same read-denial error as `node:fs`. Paths are
+    canonicalised first, so `..` and symlinks cannot walk out. A path that does not exist is judged
+    as given, so a missing file outside the fence is refused exactly like a present one (no probing).
+  - `try_build_worker` / `build_worker` take the view runtime URL so the bundle stays importable.
+- **Tests:**
+  - `sc-config` `addresses_are_trusted_only_when_ticked_and_never_from_an_open_microsoft_directory`.
+  - `sc-server` `oauth::tests::an_address_nobody_vouched_for_is_believed_only_when_trusted`, and
+    `oauth_sign_in`: a provider answering no `email_verified` is refused and creates no account.
+  - `sc-module` `deno_host::a_module_denied_the_filesystem_cannot_import_a_file_outside_the_root`
+    (new `echo_import` action on the `echo-module` fixture): denied closed, a missing file denied the
+    same way, `..` from the root denied, and allowed once the directory is granted.
+
 ## Security fixes: CSRF cookie tossing, UI login throttle, `users` columns
 
 Fixes for items 6–8 of `docs/SECURITY_REVIEW_2026-10.md`.

@@ -190,6 +190,12 @@ pub async fn check_access(
     if caller.is_admin() {
         return Ok(());
     }
+    // A repository's own `.git` is the server's, not the store's content: its
+    // `config` carries remote URLs with their tokens and its objects carry every
+    // file the history ever held, so no rule set on the files reaches it.
+    if crate::in_git_dir(path) {
+        return Err(denied(store, path));
+    }
     let floor = effective_min_role(store, store_min_role, path).await?;
     if caller.clears(floor) {
         return Ok(());
@@ -373,6 +379,10 @@ pub async fn visible_entries(
 ) -> Result<Vec<VisibleEntry>> {
     let mut visible = Vec::with_capacity(entries.len());
     for entry in entries {
+        // Not listed below admin, for the reason `check_access` refuses it.
+        if !caller.is_admin() && crate::in_git_dir(&entry.path) {
+            continue;
+        }
         let meta: FileMeta = store.get_meta(&entry.path).await.unwrap_or_default();
         let effective_min_role = tighten(dir_floor, meta.min_role);
         if caller.is_admin() || caller.clears(effective_min_role) || caller.owns(&meta) {

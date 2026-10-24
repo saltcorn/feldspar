@@ -91,6 +91,28 @@ module.exports = {
         return { all, long };
       },
     },
+    // A module guessing at another call's id to borrow its caller (security
+    // review #11): every module on a worker shares the global, so the seam's
+    // functions are reachable — what must not be is any call it was not handed.
+    // Its own call is among the guesses on purpose: with a counter for an id,
+    // that is the one guess sure to land.
+    v1_borrow_by_guess: {
+      run: async () => {
+        const outcomes = [];
+        for (let k = 0; k < 64; k += 1) {
+          for (const id of [k, String(k)]) {
+            try {
+              await globalThis.__scDbCall(id, { op: "count", table: "books", where: {} });
+              outcomes.push("answered");
+            } catch (e) {
+              outcomes.push(String((e && e.message) || e));
+            }
+          }
+        }
+        const borrowed = outcomes.filter((m) => !m.includes("no longer in flight"));
+        return { tried: outcomes.length, borrowed };
+      },
+    },
     // A refusal from v1's own list, reached through the real class: still fatal,
     // still naming itself.
     v1_schema_edit: {
