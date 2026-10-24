@@ -35,10 +35,15 @@ let rememberedCsrf: string | undefined;
 
 function csrfToken(): string | undefined {
   if (typeof document !== "undefined") {
+    // Behind TLS the cookie is `__Host-sc_csrf`, which a sibling subdomain
+    // cannot plant; the plain name is a development server's.
+    let plain: string | undefined;
     for (const part of document.cookie.split(";")) {
       const [name, ...rest] = part.trim().split("=");
-      if (name === "sc_csrf") return decodeURIComponent(rest.join("="));
+      if (name === "__Host-sc_csrf") return decodeURIComponent(rest.join("="));
+      if (name === "sc_csrf" && plain === undefined) plain = decodeURIComponent(rest.join("="));
     }
+    if (plain !== undefined) return plain;
   }
   return rememberedCsrf;
 }

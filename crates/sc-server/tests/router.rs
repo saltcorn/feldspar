@@ -13,7 +13,7 @@ use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
 use sc_auth::{ROLE_ADMIN, SessionStore, User};
 use sc_server::{
     CONTENT_SECURITY_POLICY, CSRF_COOKIE, CSRF_HEADER, HandlerRegistry, HandlerResponse,
-    SESSION_COOKIE, ServerConfig, build_router,
+    SECURE_CSRF_COOKIE, SESSION_COOKIE, ServerConfig, build_router,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -613,6 +613,80 @@ async fn csrf_accepts_the_token_in_v1s_header_and_in_a_forms_field() {
         .unwrap();
     let (status, _, _) = call(&router, request).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Security review 2026-10 #6: behind TLS the CSRF cookie is `__Host-sc_csrf`,
+/// which a browser refuses to accept with a `Domain` — so script on a sibling
+/// subdomain cannot "toss" one in. A plain `sc_csrf` it *can* toss is not the
+/// cookie the check reads, and a form post echoing it is refused.
+#[tokio::test]
+async fn behind_tls_a_tossed_plain_csrf_cookie_does_not_pass_the_check() {
+    let config = ServerConfig {
+        secure_cookies: true,
+        ..ServerConfig::default()
+    };
+    let router = build_router(
+        &test_endpoints(),
+        test_registry(),
+        Arc::new(SessionStore::default()),
+        &config,
+    )
+    .expect("build router");
+
+    // First contact mints the `__Host-` cookie, with the attributes the prefix
+    // demands: `Secure`, `Path=/`, no `Domain`.
+    let (_, cookies, _) = call(
+        &router,
+        Request::get("/api/ping").body(Body::empty()).unwrap(),
+    )
+    .await;
+    let csrf = cookie_value(&cookies, SECURE_CSRF_COOKIE).expect("secure csrf cookie");
+    let set = cookies
+        .iter()
+        .find(|c| c.starts_with(SECURE_CSRF_COOKIE))
+        .unwrap();
+    assert!(set.contains("Secure") && set.contains("Path=/"), "{set}");
+    assert!(!set.to_ascii_lowercase().contains("domain="), "{set}");
+    assert!(cookie_value(&cookies, CSRF_COOKIE).is_none(), "{cookies:?}");
+
+    let form = |cookie: String, token: &str| {
+        Request::post("/api/echo")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, cookie)
+            .body(Body::from(format!("title=Dune&_csrf={token}")))
+            .unwrap()
+    };
+    // The attack: a tossed `sc_csrf=X` and `_csrf=X`, beside the victim's own
+    // cookie or with none at all.
+    let (status, _, _) = call(
+        &router,
+        form(
+            format!("{CSRF_COOKIE}=tossed; {SECURE_CSRF_COOKIE}={csrf}"),
+            "tossed",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = call(&router, form(format!("{CSRF_COOKIE}=tossed"), "tossed")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // The real token still works, in the form and in the header.
+    let (status, _, body) = call(
+        &router,
+        form(
+            format!("{CSRF_COOKIE}=tossed; {SECURE_CSRF_COOKIE}={csrf}"),
+            &csrf,
+        ),
+    )
+    .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+    let request = Request::post("/api/echo")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, format!("{SECURE_CSRF_COOKIE}={csrf}"))
+        .header(CSRF_HEADER, &csrf)
+        .body(Body::from("{\"a\":1}"))
+        .unwrap();
+    let (status, _, _) = call(&router, request).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]

@@ -12,6 +12,9 @@ import { createClient, type ApiClient } from "./client";
 const CSRF_HEADER = "x-csrf-token";
 /** Non-`HttpOnly` cookie the server hands the browser (matches `CSRF_COOKIE`). */
 const CSRF_COOKIE = "sc_csrf";
+/** Its name behind TLS (matches `SECURE_CSRF_COOKIE`): `__Host-`, so no sibling
+ * subdomain can plant it. */
+const SECURE_CSRF_COOKIE = "__Host-sc_csrf";
 
 /** Read a cookie value by name from `document.cookie`, or `null` if absent. */
 function readCookie(name: string): string | null {
@@ -25,7 +28,7 @@ function readCookie(name: string): string | null {
 /** A `fetch` that carries the session cookie and the CSRF header. */
 const browserFetch: typeof fetch = (input, init = {}) => {
   const headers = new Headers(init.headers);
-  const csrf = readCookie(CSRF_COOKIE);
+  const csrf = readCookie(SECURE_CSRF_COOKIE) ?? readCookie(CSRF_COOKIE);
   if (csrf) headers.set(CSRF_HEADER, csrf);
   return fetch(input, { ...init, headers, credentials: "same-origin" });
 };

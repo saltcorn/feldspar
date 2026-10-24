@@ -218,6 +218,7 @@
   "This application has no view named {name}.": "لا تحتوي هذه application على واجهة عرض باسم {name}.",
   "Timeout (ms)": "مهلة الانتظار (مللي ثانية)",
   "To": "إلى",
+  "Too many sign-in attempts. Try again in a few minutes.": "محاولات تسجيل دخول كثيرة جدًا. حاول مرة أخرى بعد بضع دقائق.",
   "Topic filter (`+` for one level, `#` for the rest)": "مرشح الموضوع (`+` لمستوى واحد، و`#` للباقي)",
   "Trees": "الأشجار",
   "Trigger": "المشغّل",

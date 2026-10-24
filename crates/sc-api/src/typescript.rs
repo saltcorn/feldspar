@@ -122,10 +122,15 @@ let rememberedCsrf: string | undefined;
 
 function csrfToken(): string | undefined {{
   if (typeof document !== "undefined") {{
+    // Behind TLS the cookie is `{secure_cookie}`, which a sibling subdomain
+    // cannot plant; the plain name is a development server's.
+    let plain: string | undefined;
     for (const part of document.cookie.split(";")) {{
       const [name, ...rest] = part.trim().split("=");
-      if (name === "{cookie}") return decodeURIComponent(rest.join("="));
+      if (name === "{secure_cookie}") return decodeURIComponent(rest.join("="));
+      if (name === "{cookie}" && plain === undefined) plain = decodeURIComponent(rest.join("="));
     }}
+    if (plain !== undefined) return plain;
   }}
   return rememberedCsrf;
 }}
@@ -167,6 +172,7 @@ export function requestHeaders(method: string, hasBody: boolean): Record<string,
 
 "#,
         cookie = crate::auth::CSRF_COOKIE,
+        secure_cookie = crate::auth::SECURE_CSRF_COOKIE,
         header = crate::auth::CSRF_HEADER,
         client_header = crate::auth::CLIENT_KIND_HEADER,
         native = crate::auth::NATIVE_CLIENT,

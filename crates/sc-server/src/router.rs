@@ -50,9 +50,9 @@ use crate::lsp::{LSP_ROUTE, ServerSlots, language_server_upgrade, server_slots};
 use crate::mcp::MCP_ROUTE;
 use crate::observe::{STREAM_OBSERVE_ROUTE, stream_observe_upgrade};
 use crate::security::{
-    ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CSRF_COOKIE,
-    CSRF_HEADER, CsrfPolicy, GUEST_COOKIE, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE,
-    SESSION_COOKIE, admin_content_security_policy, build_cookie, csrf_middleware, is_native_client,
+    ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CSRF_HEADER,
+    CsrfPolicy, GUEST_COOKIE, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE, SESSION_COOKIE,
+    admin_content_security_policy, build_cookie, csrf_middleware, is_native_client,
     upgrade_origin_allowed, upgrade_origin_refused,
 };
 
@@ -1857,10 +1857,14 @@ async fn dispatch_app(
     // framework is told so: a bundle is served all the same (it is what draws
     // the sign-in), and a framework that renders data refuses them (TODO F9).
     req.admitted = refused.is_none();
+    req.client_ip = client_ip;
     // The token the CSRF middleware checked this request against, or minted for
     // it: what a rendered form carries, and what `req.csrfToken()` answers.
     req.csrf_token = csrf
-        .or_else(|| jar.get(CSRF_COOKIE).map(|c| c.value().to_owned()))
+        .or_else(|| {
+            jar.get(crate::security::csrf_cookie(state.secure_cookies))
+                .map(|c| c.value().to_owned())
+        })
         .unwrap_or_default();
     req.cookies = app_cookies(&jar);
     // The anonymous visitor id an A/B test assigns by (TODO-astro W3.1): the

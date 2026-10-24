@@ -13,6 +13,15 @@
 //!   must echo it in the `x-csrf-token` header. A cross-site page can send the
 //!   cookie but cannot read it to set the header, so the forgery fails.
 //!
+//!   Behind TLS the cookie is named `__Host-sc_csrf`. Sibling subdomains are
+//!   *same-site*, so script on one of them (an application's own code, an
+//!   upload) could otherwise **toss** a `sc_csrf; Domain=<base>` cookie of its
+//!   choosing and then forge a form post to another host carrying the same
+//!   value; the `__Host-` prefix makes the browser refuse a cookie with a
+//!   `Domain`, so only this host can set the one the check reads. A plain-`http`
+//!   (development) server cannot use the prefix — it requires `Secure` — and
+//!   keeps the plain name.
+//!
 //!   The token is also sent as an `x-csrf-token` **response header** on API
 //!   answers (JSON) and on the refusal. A browser page reads it from the cookie;
 //!   a native app — React Native on a phone — has no `document.cookie` to read,
@@ -62,7 +71,9 @@ pub const VISITOR_COOKIE_DAYS: i64 = 365;
 /// server enforces the check here and the generated TypeScript client satisfies
 /// it, and a second spelling of either name is exactly how those two stop
 /// agreeing.
-pub use sc_api::auth::{CLIENT_KIND_HEADER, CSRF_COOKIE, CSRF_HEADER, NATIVE_CLIENT};
+pub use sc_api::auth::{
+    CLIENT_KIND_HEADER, CSRF_COOKIE, CSRF_HEADER, NATIVE_CLIENT, SECURE_CSRF_COOKIE, csrf_cookie,
+};
 
 /// The strict Content-Security-Policy served with every response. No
 /// `unsafe-inline` **script**: executable code loads only from the app's own
@@ -590,8 +601,9 @@ pub(crate) struct AnonymousCaller;
 
 /// CSRF middleware implementing the double-submit-cookie check.
 ///
-/// On a mutating request the token must equal the existing `sc_csrf` cookie,
-/// else the request is rejected `403`. The token may come in any of three
+/// On a mutating request the token must equal the existing CSRF cookie
+/// ([`csrf_cookie`]: `__Host-sc_csrf` behind TLS, `sc_csrf` otherwise), else
+/// the request is rejected `403`. The comparison is constant-time. The token may come in any of three
 /// places, all the same check against the same cookie:
 ///
 /// - the `x-csrf-token` header — the admin SPA and the generated client;
@@ -619,7 +631,8 @@ pub(crate) async fn csrf_middleware(
     next: Next,
 ) -> Response {
     let secure = policy.secure;
-    let existing = jar.get(CSRF_COOKIE).map(|c| c.value().to_owned());
+    let cookie_name = csrf_cookie(secure);
+    let existing = jar.get(cookie_name).map(|c| c.value().to_owned());
     let mut request = request;
 
     if is_mutating(request.method()) && !is_bearer_authenticated(&request) {
@@ -628,7 +641,8 @@ pub(crate) async fn csrf_middleware(
             .find_map(|name| request.headers().get(*name))
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let mut valid = matches!((&existing, &header), (Some(cookie), Some(hdr)) if cookie == hdr);
+        let mut valid =
+            matches!((&existing, &header), (Some(cookie), Some(hdr)) if tokens_match(cookie, hdr));
         if !valid && header.is_none() && is_form(&request) {
             let (parts, body) = request.into_parts();
             let bytes = match axum::body::to_bytes(body, MAX_CSRF_FORM_BODY).await {
@@ -638,7 +652,8 @@ pub(crate) async fn csrf_middleware(
                 }
             };
             valid = existing.as_deref().is_some_and(|cookie| {
-                form_field(&bytes, CSRF_FORM_FIELD).as_deref() == Some(cookie)
+                form_field(&bytes, CSRF_FORM_FIELD)
+                    .is_some_and(|field| tokens_match(&field, cookie))
             });
             request = Request::from_parts(parts, axum::body::Body::from(bytes));
         }
@@ -657,7 +672,7 @@ pub(crate) async fn csrf_middleware(
             let token = existing.clone().unwrap_or_else(new_csrf_token);
             let jar = match existing {
                 Some(_) => jar,
-                None => jar.add(build_cookie(CSRF_COOKIE, token.clone(), false, secure)),
+                None => jar.add(build_cookie(cookie_name, token.clone(), false, secure)),
             };
             let mut refused =
                 (StatusCode::FORBIDDEN, jar, "CSRF token missing or invalid").into_response();
@@ -671,11 +686,19 @@ pub(crate) async fn csrf_middleware(
     let response = next.run(request).await;
     let jar = match existing {
         Some(_) => jar,
-        None => jar.add(build_cookie(CSRF_COOKIE, token.clone(), false, secure)),
+        None => jar.add(build_cookie(cookie_name, token.clone(), false, secure)),
     };
     let mut response = (jar, response).into_response();
     expose_csrf_token(&mut response, &token);
     response
+}
+
+/// Whether a submitted CSRF token equals the cookie's, compared in constant time
+/// (for equal lengths) so the check leaks nothing about how much of a guess was
+/// right.
+fn tokens_match(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Name the request's CSRF token in the response's `x-csrf-token` header — how a

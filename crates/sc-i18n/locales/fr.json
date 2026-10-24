@@ -218,6 +218,7 @@
   "This application has no view named {name}.": "Cette application n'a aucune vue nommée {name}.",
   "Timeout (ms)": "Délai d'expiration (ms)",
   "To": "À",
+  "Too many sign-in attempts. Try again in a few minutes.": "Trop de tentatives de connexion. Réessayez dans quelques minutes.",
   "Topic filter (`+` for one level, `#` for the rest)": "Filtre de sujet (`+` pour un niveau, `#` pour le reste)",
   "Trees": "Arbres",
   "Trigger": "Déclencheur",

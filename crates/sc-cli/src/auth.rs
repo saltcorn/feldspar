@@ -60,7 +60,9 @@ pub const DEFAULT_PLAYWRIGHT_FILE: &str = ".feldspar-session.json";
 /// The default file name for [`SessionFormat::Netscape`].
 pub const DEFAULT_NETSCAPE_FILE: &str = ".feldspar-cookies.txt";
 
-/// The names of the two cookies a signed-in browser carries.
+/// The names of the two cookies a signed-in browser carries. Behind TLS the CSRF
+/// cookie is [`SECURE_CSRF_COOKIE`] — `__Host-`-prefixed, so a sibling subdomain
+/// cannot plant one.
 ///
 /// Spelled here rather than imported from `sc-server` because the server that
 /// reads this file may be a different build: what matters is the wire contract,
@@ -69,6 +71,7 @@ pub const DEFAULT_NETSCAPE_FILE: &str = ".feldspar-cookies.txt";
 /// quietly.
 const SESSION_COOKIE: &str = "sc_session";
 const CSRF_COOKIE: &str = "sc_csrf";
+const SECURE_CSRF_COOKIE: &str = "__Host-sc_csrf";
 
 /// Which file to write.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -185,7 +188,15 @@ fn cookies_for(target: &Target, token: String) -> Vec<Cookie> {
         // Not read back by anything server-side — the double-submit check only
         // compares this cookie with the header echoing it — so any unguessable
         // value is a valid one, and this is the same 256 bits the server mints.
-        cookie(CSRF_COOKIE, new_csrf_token(), false),
+        cookie(
+            if target.secure {
+                SECURE_CSRF_COOKIE
+            } else {
+                CSRF_COOKIE
+            },
+            new_csrf_token(),
+            false,
+        ),
     ]
 }
 
@@ -597,10 +608,12 @@ mod tests {
             secure: true,
             ..insecure_target()
         };
+        let cookies = cookies_for(&secure, "abc123".to_owned());
+        assert!(cookies.iter().all(|c| c.secure));
+        // Behind TLS the server reads the `__Host-` name, and only that.
         assert!(
-            cookies_for(&secure, "abc123".to_owned())
-                .iter()
-                .all(|c| c.secure)
+            cookies.iter().any(|c| c.name == "__Host-sc_csrf"),
+            "{cookies:?}"
         );
     }
 

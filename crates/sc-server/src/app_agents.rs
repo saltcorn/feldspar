@@ -134,7 +134,7 @@ async fn answer(
         return Ok(refused.response());
     }
     let exposure = &request.exposure;
-    let asker = asker(exposure, caller.user, jar)?;
+    let asker = asker(exposure, caller.user, jar, state.secure_cookies)?;
 
     // The agent as it is now, and the agent's own floor: the one rule about who
     // may talk to an agent, wherever it is reached from.
@@ -181,8 +181,13 @@ async fn answer(
 /// Decide who is asking: a signed-in user as themselves, or — only where the
 /// application lets this agent be used signed out — an anonymous visitor at
 /// the public role.
-fn asker(exposure: &AgentExposure, user: Option<User>, jar: &CookieJar) -> Result<Asker> {
-    let owner = crate::uploads::uploader_of(user.as_ref(), jar);
+fn asker(
+    exposure: &AgentExposure,
+    user: Option<User>,
+    jar: &CookieJar,
+    secure: bool,
+) -> Result<Asker> {
+    let owner = crate::uploads::uploader_of(user.as_ref(), jar, secure);
     match user {
         Some(user) => Ok(Asker {
             user: Some(user.id),

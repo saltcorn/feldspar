@@ -54,15 +54,18 @@ pub fn generate_graphql_client(mount: &str) -> String {
     out.push_str(&format!(
         "function csrfToken(): string | undefined {{\n  \
          if (typeof document === \"undefined\") return undefined;\n  \
+         let plain: string | undefined;\n  \
          for (const part of document.cookie.split(\";\")) {{\n    \
          const [name, ...rest] = part.trim().split(\"=\");\n    \
-         if (name === \"{cookie}\") return decodeURIComponent(rest.join(\"=\"));\n  \
-         }}\n  return undefined;\n}}\n\n\
+         if (name === \"{secure_cookie}\") return decodeURIComponent(rest.join(\"=\"));\n    \
+         if (name === \"{cookie}\" && plain === undefined) plain = decodeURIComponent(rest.join(\"=\"));\n  \
+         }}\n  return plain;\n}}\n\n\
          /** The header that echoes it — the double-submit check every mutating\n \
          * request must satisfy (§16). A GraphQL request is a POST whether it reads\n \
          * or writes, so it is always sent. */\n\
          const CSRF_HEADER = \"{header}\";\n",
         cookie = crate::auth::CSRF_COOKIE,
+        secure_cookie = crate::auth::SECURE_CSRF_COOKIE,
         header = crate::auth::CSRF_HEADER,
     ));
     out.push_str(REQUEST);

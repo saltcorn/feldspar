@@ -595,15 +595,24 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     assert_eq!(status, StatusCode::FORBIDDEN);
     for victim in [other.id, fx.admin.id] {
         let (status, _) = client
+            .send("PUT", &path(victim), Some(json!({ "language": "fr" })))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = client.send("DELETE", &path(victim), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    // An account's email is an admin's to change, even a weaker one's — else
+    // a reset link for it would come to the caller (security review 2026-10
+    // #8). Refused whoever the row is, so it says nothing about who exists.
+    for victim in [pat.id, ther.id, other.id] {
+        let (status, _) = client
             .send(
                 "PUT",
                 &path(victim),
                 Some(json!({ "email": "mine@example.com" })),
             )
             .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, _) = client.send("DELETE", &path(victim), None).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
     // Their own row: they may edit it, and keep — but not raise — their role.
     let (status, _) = client

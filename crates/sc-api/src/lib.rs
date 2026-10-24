@@ -115,7 +115,7 @@ pub use typescript::{
     client_property, client_runtime, generate_app_client, generate_client,
     generate_client_with_streams, has_offline_sync,
 };
-pub use user_rows::api_row;
+pub use user_rows::{ADMIN_ONLY_WRITE, api_row};
 
 #[cfg(test)]
 mod tests {

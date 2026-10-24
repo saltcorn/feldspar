@@ -92,6 +92,10 @@ pub struct AppRequest {
     /// framework that serves data or pages must refuse them everything else.
     /// A framework that serves only a bundle has nothing to refuse.
     pub admitted: bool,
+    /// The client's address, as the router resolved it (trusted proxies
+    /// applied) — what a framework's own sign-in form throttles guesses by, as
+    /// the admin and REST logins do. `None` when unknown (a test, a prerender).
+    pub client_ip: Option<std::net::IpAddr>,
 }
 
 impl AppRequest {
@@ -115,6 +119,7 @@ impl AppRequest {
             csrf_token: String::new(),
             locale: Locale::source(),
             admitted: true,
+            client_ip: None,
         }
     }
 

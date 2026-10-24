@@ -218,6 +218,7 @@
   "This application has no view named {name}.": "Esta aplicación no tiene ninguna vista llamada {name}.",
   "Timeout (ms)": "Tiempo de espera (ms)",
   "To": "Para",
+  "Too many sign-in attempts. Try again in a few minutes.": "Demasiados intentos de inicio de sesión. Inténtelo de nuevo en unos minutos.",
   "Topic filter (`+` for one level, `#` for the rest)": "Filtro de temas (`+` para un nivel, `#` para el resto)",
   "Trees": "Árboles",
   "Trigger": "Disparador",

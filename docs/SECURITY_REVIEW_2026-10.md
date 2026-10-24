@@ -19,9 +19,9 @@ code path traced but no exploit run. Line numbers are as of the base commit.
 | 3 | High | Trigger-started agents run as role 1 → prompt injection gets admin tools / shell | **fixed** |
 | 4 | High | Non-admin coding-agent callers can run host commands (scripts/check/build, `.git/config`) | **fixed** |
 | 5 | Med–High | Stored XSS via uploads served inline on the app origin | **fixed** |
-| 6 | Medium | CSRF double-submit beatable by cookie tossing from a sibling subdomain | verified |
-| 7 | Medium | Saltcorn-UI `/auth/login` has no login throttling | verified |
-| 8 | Medium | Non-admin writes to `users.email` / `disabled` / admin-added columns | verified |
+| 6 | Medium | CSRF double-submit beatable by cookie tossing from a sibling subdomain | **fixed** |
+| 7 | Medium | Saltcorn-UI `/auth/login` has no login throttling | **fixed** |
+| 8 | Medium | Non-admin writes to `users.email` / `disabled` / admin-added columns | **fixed** |
 | 9 | Medium | OAuth treats missing `email_verified` as verified and links by email | reported |
 | 10 | Medium | Deno modules read arbitrary host files via dynamic `import("file://…")` | reported |
 | 11 | Med–Low | Module can borrow another in-flight call's caller via guessable `callId` | reported |
@@ -31,7 +31,8 @@ code path traced but no exploit run. Line numbers are as of the base commit.
 
 Items 1 and 2 share a root cause (trusting the `Host` header) and should be fixed together.
 Items 1–5 are fixed; see the CHANGELOG entry "Security fixes: Host header, OAuth host, agent
-privileges, uploads". Items 3, 4 and 12 together describe the main routes to running code as the server's OS user.
+privileges, uploads". Items 6–8 are fixed; see "Security fixes: CSRF cookie tossing, UI login
+throttle, `users` columns". Items 3, 4 and 12 together describe the main routes to running code as the server's OS user.
 
 ---
 
@@ -161,12 +162,17 @@ preflight answers; Saltcorn-UI form routes are exposed.
 **Fix.** Rename to `__Host-sc_csrf`, or make the token an HMAC of the session id and verify it
 server-side. Use constant-time comparison while there.
 
+**Fixed:** behind TLS the cookie is `__Host-sc_csrf` and only that name is read; the comparison is
+constant-time. A plain-`http` server keeps `sc_csrf` (the prefix requires `Secure`) and so is not
+protected against tossing — development only.
+
 ### 7. No login throttling on Saltcorn-UI `/auth/login` (verified)
 
 `crates/sc-viewpattern/src/framework.rs:839-852` calls `sc_auth::authenticate` directly;
 `throttle::login_attempt`/`login_failed` are only called from `handlers.rs:212` and
 `rest/mod.rs:1088`. Unlimited online password guessing against any instance account (admins
 included) through any Saltcorn-UI app. **Fix:** route through the same throttle.
+**Fixed:** same throttle and keys; `429` with `Retry-After`.
 
 ### 8. Non-admins can write sensitive `users` columns (verified)
 
@@ -185,6 +191,9 @@ unchecked on generic REST, GraphQL and sync writes (invites do refuse them via
 
 **Fix.** Treat `SYSTEM_USER_COLUMNS` as admin-only writes in `update_guard`/`check_insert`, and add a
 per-field "admin-only write" flag for admin-added columns that drive authorization.
+
+**Fixed:** below admin, an update may not name `email`, `disabled` or a different `id`, and no
+write may name a field with `"admin_only_write": true`. The admin UI has no toggle for the flag yet.
 
 ### 9. OAuth: missing `email_verified` treated as verified (reported)
 

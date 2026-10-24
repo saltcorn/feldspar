@@ -150,7 +150,7 @@ To try it without editing the app, use the browser console on
 CSRF cookie in a header — that is what the generated client is doing for you above:
 
 ```js
-const csrf = document.cookie.match(/(?:^|;\s*)sc_csrf=([^;]*)/)?.[1];
+const csrf = document.cookie.match(/(?:^|;\s*)(?:__Host-)?sc_csrf=([^;]*)/)?.[1];
 await fetch("/api/actions/archive_done", {
   method: "POST",
   headers: { "content-type": "application/json", "x-csrf-token": csrf },

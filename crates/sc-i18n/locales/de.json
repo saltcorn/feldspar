@@ -218,6 +218,7 @@
   "This application has no view named {name}.": "Diese Anwendung hat keine Ansicht mit dem Namen {name}.",
   "Timeout (ms)": "Zeitüberschreitung (ms)",
   "To": "An",
+  "Too many sign-in attempts. Try again in a few minutes.": "Zu viele Anmeldeversuche. Bitte versuchen Sie es in einigen Minuten erneut.",
   "Topic filter (`+` for one level, `#` for the rest)": "Themenfilter (`+` für eine Ebene, `#` für den Rest)",
   "Trees": "Bäume",
   "Trigger": "Auslöser",

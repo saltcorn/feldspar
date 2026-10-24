@@ -2,6 +2,49 @@
 
 Changes in reverse chronological order.
 
+## Security fixes: CSRF cookie tossing, UI login throttle, `users` columns
+
+Fixes for items 6–8 of `docs/SECURITY_REVIEW_2026-10.md`.
+
+- **The CSRF cookie is `__Host-sc_csrf` behind TLS** (#6).
+  - Why: sibling subdomains are same-site. Script on one host (an application's own code, an
+    upload) could set `sc_csrf=X; Domain=<base>`, then submit a form post to another app or
+    the admin host with `_csrf=X`. The double-submit check compared the attacker's value with
+    itself. Browsers refuse a `__Host-` cookie that carries a `Domain`, so only the host itself
+    can set the cookie the check reads.
+  - Naming: `sc_api::auth::csrf_cookie(secure)` picks the name. A plain-`http` (development)
+    server keeps `sc_csrf`, because the prefix requires `Secure`. The middleware reads only the
+    name for its mode, so a tossed `sc_csrf` is ignored behind TLS.
+  - The token comparison is now constant-time (`security::tokens_match`).
+  - Clients read `__Host-sc_csrf` first, then `sc_csrf`: the generated TypeScript and GraphQL
+    clients, the SPAs' `api.ts` and `helper.ts`, the CLI's cookie jar (by `target.secure`) and
+    the triggers tutorial. The anonymous upload/agent owner key (`uploads::uploader_of`) and
+    `req.csrfToken()` for server-rendered pages use the name for the mode.
+- **The Saltcorn UI's `/auth/login` is throttled** (#7). It now calls
+  `sc_api::throttle::login_attempt` / `login_failed` under the same keys as the admin and REST
+  logins, so guesses through any app count against the same account and IP. A limited attempt
+  gets `429` with the form redrawn, a translated message and `Retry-After`. `AppRequest` gains
+  `client_ip`, which the router fills in (trusted proxies applied).
+- **Below admin, identity and tenancy columns of `users` are not writable** (#8)
+  (`user_rows::reject_admin_only`, used by `check_insert` and `update_guard`, so it covers
+  REST, GraphQL, sync and agent writes alike).
+  - An update may not name `email`, `disabled` or a different `id`. Rewriting a weaker
+    account's email would let the caller reset its password and sign in as it. Naming the
+    row's own `id` is allowed, since it changes nothing.
+  - Neither an insert nor an update may name an admin-added column whose field attributes
+    carry `"admin_only_write": true` (`sc_api::ADMIN_ONLY_WRITE`). This is for `org_id`-style
+    columns that an ownership formula reads.
+  - An insert may still name `email`, because a new account needs one.
+  - Not done: a toggle for the flag in the admin UI's field editor. For now it is set through
+    the field's attributes.
+- **Tests:**
+  - `router::behind_tls_a_tossed_plain_csrf_cookie_does_not_pass_the_check`;
+  - `saltcorn_ui_render::the_sign_in_form_is_throttled_like_every_other_login`;
+  - `user_rows::tests::identity_and_tenancy_columns_are_written_by_an_admin_only`;
+  - `app_invite::the_users_table_shows_no_hash_and_hands_out_no_power` now expects `403` for an
+    email rewrite of any row, and checks the out-of-reach `404` with a `language` write;
+  - the `__Host-` name in sc-cli's `auth` tests and `the_wire_names_match_the_servers`.
+
 ## Security fixes: Host header, OAuth host, agent privileges, uploads
 
 Fixes for items 1–5 of `docs/SECURITY_REVIEW_2026-10.md`.

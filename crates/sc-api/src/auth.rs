@@ -26,7 +26,30 @@ use crate::schema::{StructField, TypeSchema};
 /// [`CSRF_HEADER`] or it is refused. The server enforces it and
 /// [`generate_client`](crate::generate_client) emits code that satisfies it —
 /// naming it twice is how the two drift.
+///
+/// This is the name on a server that does **not** set `Secure` cookies (plain
+/// `http`, i.e. development). Behind TLS the cookie is [`SECURE_CSRF_COOKIE`]
+/// instead; [`csrf_cookie`] picks between them, and a client reads whichever it
+/// finds, preferring the secure one.
 pub const CSRF_COOKIE: &str = "sc_csrf";
+/// Name of the CSRF cookie when cookies are `Secure`: the `__Host-` prefix makes
+/// the browser refuse it unless it is `Secure`, `Path=/` and has **no `Domain`**,
+/// so script on a sibling subdomain cannot plant one for this host ("cookie
+/// tossing", security review 2026-10 #6). Without the prefix, `a.example.com`
+/// could set `sc_csrf=X; Domain=example.com` and then forge a form post to
+/// `b.example.com` carrying `_csrf=X` — the double-submit check would compare
+/// the attacker's value with itself.
+pub const SECURE_CSRF_COOKIE: &str = "__Host-sc_csrf";
+
+/// The CSRF cookie's name for a server whose cookies are (or are not) `Secure`.
+/// `__Host-` cookies must be `Secure`, so a plain-`http` server cannot use it.
+pub fn csrf_cookie(secure: bool) -> &'static str {
+    if secure {
+        SECURE_CSRF_COOKIE
+    } else {
+        CSRF_COOKIE
+    }
+}
 /// Header a mutating request must echo the [`CSRF_COOKIE`] value in.
 pub const CSRF_HEADER: &str = "x-csrf-token";
 /// Header a client sends, with the value [`NATIVE_CLIENT`], when it is **not a

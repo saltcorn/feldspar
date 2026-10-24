@@ -218,6 +218,7 @@
   "This application has no view named {name}.": "此应用没有名为 {name} 的视图。",
   "Timeout (ms)": "超时（毫秒）",
   "To": "收件人",
+  "Too many sign-in attempts. Try again in a few minutes.": "登录尝试次数过多。请几分钟后再试。",
   "Topic filter (`+` for one level, `#` for the rest)": "主题筛选器（`+` 表示一级，`#` 表示其余级别）",
   "Trees": "树",
   "Trigger": "触发器",

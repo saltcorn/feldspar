@@ -1224,6 +1224,60 @@ async fn an_application_that_refuses_the_caller_serves_only_its_sign_in() -> sc_
     Ok(())
 }
 
+/// Security review 2026-10 #7: the Saltcorn UI's own sign-in form is throttled
+/// as the admin and REST logins are — after ten failures for one address the
+/// next attempt is refused `429` before any password is checked, with the form
+/// redrawn and a `Retry-After`.
+#[tokio::test]
+async fn the_sign_in_form_is_throttled_like_every_other_login() -> sc_error::Result<()> {
+    let Some(bundle) = bundle_dir() else {
+        eprintln!(
+            "skipping: the Saltcorn UI bundle is not built (npm ci && npm run build in ui/saltcorn-ui)"
+        );
+        return Ok(());
+    };
+    let server = setup("throttle", bundle).await?;
+    let mut browser = visitor(&server.client);
+    browser.app_get("/auth/login", &[]).await;
+    let csrf = browser.cookies.get(CSRF_COOKIE).cloned().expect("a token");
+    // An address of its own, so no other test's guesses count against it.
+    let email = format!("guess-{}@example.com", uuid::Uuid::new_v4().simple());
+    let attempt = |password: &str| {
+        form(&[
+            ("_csrf", csrf.as_str()),
+            ("email", email.as_str()),
+            ("password", password),
+        ])
+    };
+    for n in 0..sc_api::throttle::LOGIN_FAILURES_PER_EMAIL.max {
+        let wrong = browser
+            .app_post("/auth/login", FORM, attempt(&format!("guess-{n}")), &[])
+            .await;
+        assert_eq!(wrong.status, StatusCode::UNAUTHORIZED, "{}", wrong.body);
+    }
+    let limited = browser
+        .app_post("/auth/login", FORM, attempt("one-more"), &[])
+        .await;
+    assert_eq!(
+        limited.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        limited.body
+    );
+    assert!(
+        limited.body.contains("Too many sign-in attempts"),
+        "{}",
+        limited.body
+    );
+    assert!(
+        limited.headers.contains_key("retry-after"),
+        "{:?}",
+        limited.headers
+    );
+    assert!(!browser.cookies.contains_key(SESSION_COOKIE));
+    Ok(())
+}
+
 /// 7.1, 7.3, 7.4 and 7.5: somebody who is not signed in is sent to sign in and
 /// comes back to what they asked for; signing out leaves; sign-up is offered
 /// only when the settings say so; and a view whose table the application no

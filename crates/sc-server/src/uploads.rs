@@ -40,7 +40,7 @@ use uuid::Uuid;
 
 use crate::apps::MountedApp;
 use crate::router::{AppState, app_caller, enforce_auth, json_error, log_failure};
-use crate::security::{CSRF_COOKIE, SESSION_COOKIE};
+use crate::security::{SESSION_COOKIE, csrf_cookie};
 
 /// The protocol version this server speaks, and the only one.
 const TUS_VERSION: &str = "1.0.0";
@@ -149,7 +149,7 @@ async fn answer(
         return refused.response();
     }
     let user = caller.user;
-    let uploader = uploader_of(user.as_ref(), jar);
+    let uploader = uploader_of(user.as_ref(), jar, state.secure_cookies);
     let missing = || json_error(StatusCode::NOT_FOUND, "no such upload");
 
     let Some(id) = route.id.as_deref() else {
@@ -218,14 +218,15 @@ async fn answer(
 /// Who may continue an upload: `user:<id>` for a signed-in caller, otherwise
 /// a hash of the cookie the browser carries — never the cookie itself, which
 /// is a credential and has no business in a table. A request with neither has
-/// nobody to continue it.
-pub(crate) fn uploader_of(user: Option<&User>, jar: &CookieJar) -> Option<String> {
+/// nobody to continue it. `secure` picks the CSRF cookie's name
+/// ([`csrf_cookie`]), so a cookie a sibling host tossed is never the one used.
+pub(crate) fn uploader_of(user: Option<&User>, jar: &CookieJar, secure: bool) -> Option<String> {
     if let Some(user) = user {
         return Some(format!("user:{}", user.id));
     }
     let cookie = jar
         .get(SESSION_COOKIE)
-        .or_else(|| jar.get(CSRF_COOKIE))?
+        .or_else(|| jar.get(csrf_cookie(secure)))?
         .value()
         .to_owned();
     let digest = Sha256::digest(cookie.as_bytes());

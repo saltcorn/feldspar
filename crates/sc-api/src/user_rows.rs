@@ -20,16 +20,37 @@
 //!   accounts ([`update_guard`], [`delete_guard`]). The last part rides in the statement's `WHERE`,
 //!   so a row out of reach is the same not-found an absent one is.
 //!
+//! - **Columns that decide who somebody is, or what they may see, are written
+//!   by an admin only** (security review 2026-10 #8). Below admin, an update may
+//!   not name `email` (the identifier a password reset and an OAuth sign-in find
+//!   the account by — rewriting a weaker account's would let the caller reset
+//!   its password and sign in as it), `disabled` (an admin's decision) or `id`;
+//!   and neither an insert nor an update may name an admin-added column whose
+//!   field carries [`ADMIN_ONLY_WRITE`] — the `org_id` a tenancy formula reads,
+//!   which a self-edit rule would otherwise let a user move to another tenant.
+//!   An insert may still name `email`: a new account needs one.
+//!
 //! A write with **no caller context** (a system path) or at **admin** role is
 //! not held to the role rule: an admin can make anybody anything in the admin
 //! UI already. The table's own access rules and ownership formula still decide
 //! whether a caller may write the table at all; this narrows, it never grants.
 
-use sc_auth::{COL_ID, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, USERS_TABLE};
+use sc_auth::{
+    COL_DISABLED, COL_EMAIL, COL_ID, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, USERS_TABLE,
+};
 use sc_catalog::{CallerContext, DataField, Table};
 use sc_error::{Error, Result};
 use sc_query::{BinOp, Expr, Projection, Value};
 use serde_json::{Map, Value as Json};
+
+/// The field attribute that makes an admin-added column of the users table one
+/// only an admin writes: `"admin_only_write": true`. For a column an access
+/// or ownership formula reads (`org_id`, `tenant_id`, a manager's id), so that
+/// the user it describes cannot change it.
+pub const ADMIN_ONLY_WRITE: &str = "admin_only_write";
+
+/// The system columns of the users table an update below admin may not name.
+const ADMIN_ONLY_SYSTEM_COLUMNS: [&str; 3] = [COL_ID, COL_EMAIL, COL_DISABLED];
 
 /// Whether `table` is the users table.
 pub(crate) fn is_users(table: &Table) -> bool {
@@ -143,6 +164,34 @@ fn written_role(table: &Table, obj: &Map<String, Json>) -> Result<Option<i64>> {
     }
 }
 
+/// Refuse a write below admin that names a column only an admin writes: one
+/// whose field carries [`ADMIN_ONLY_WRITE`], and on an update the
+/// [`ADMIN_ONLY_SYSTEM_COLUMNS`] too — except an `id` that repeats the id of
+/// the row being updated (`update` is that id), which a client sending the
+/// whole row back does, and which changes nothing.
+fn reject_admin_only(table: &Table, obj: &Map<String, Json>, update: Option<&str>) -> Result<()> {
+    let flagged = |name: &str| {
+        table
+            .field(name)
+            .is_some_and(|f| f.base.attributes.get(ADMIN_ONLY_WRITE) == Some(&Json::Bool(true)))
+    };
+    let system = |name: &str| {
+        let Some(id) = update else { return false };
+        let unchanged_id = name == COL_ID
+            && obj
+                .get(COL_ID)
+                .and_then(Json::as_str)
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case(id.trim()));
+        ADMIN_ONLY_SYSTEM_COLUMNS.contains(&name) && !unchanged_id
+    };
+    match obj.keys().find(|name| system(name) || flagged(name)) {
+        Some(name) => Err(Error::auth(format!(
+            "`{name}` of an account is changed by an admin only"
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn too_powerful(role: i64, caller_role: u8) -> Error {
     Error::auth(format!(
         "you cannot give an account role {role}: a role you assign must be less \
@@ -150,8 +199,8 @@ fn too_powerful(role: i64, caller_role: u8) -> Error {
     ))
 }
 
-/// Check an insert into the users table: no password hash, and a role less
-/// powerful than the caller's.
+/// Check an insert into the users table: no password hash, a role less
+/// powerful than the caller's, and no admin-only column.
 pub(crate) fn check_insert(
     table: &Table,
     obj: &Map<String, Json>,
@@ -163,6 +212,7 @@ pub(crate) fn check_insert(
     let Some(caller) = restricted_caller(table, context) else {
         return Ok(());
     };
+    reject_admin_only(table, obj, None)?;
     match written_role(table, obj)? {
         Some(role) if role > i64::from(caller.role) => Ok(()),
         Some(role) => Err(too_powerful(role, caller.role)),
@@ -174,6 +224,8 @@ pub(crate) fn check_insert(
 
 /// Check an update of user `id` and return the predicate that confines it to
 /// the rows the caller may change — their own, and less powerful accounts'.
+/// Below admin the update may not name an admin-only column, the caller's own
+/// row included.
 pub(crate) fn update_guard(
     table: &Table,
     id: &str,
@@ -186,6 +238,7 @@ pub(crate) fn update_guard(
     let Some(caller) = restricted_caller(table, context) else {
         return Ok(None);
     };
+    reject_admin_only(table, obj, Some(id))?;
     if let Some(role) = written_role(table, obj)? {
         let own_row = caller_id(caller).is_some_and(|me| me.eq_ignore_ascii_case(id.trim()));
         // Keeping your own role is not handing anybody anything.
@@ -251,6 +304,15 @@ mod tests {
                 DataField::plain(COL_ROLE, TypeRef::Basic(BasicType::Int)),
                 DataField::plain("email", TypeRef::Basic(BasicType::Text)),
                 DataField::plain(COL_PASSWORD_HASH, TypeRef::Basic(BasicType::Text)),
+                DataField::plain(COL_DISABLED, TypeRef::Basic(BasicType::Bool)),
+                DataField::plain("bio", TypeRef::Basic(BasicType::Text)),
+                {
+                    let mut org = DataField::plain("org_id", TypeRef::Basic(BasicType::Int));
+                    org.base
+                        .attributes
+                        .insert(ADMIN_ONLY_WRITE.into(), json!(true));
+                    org
+                },
             ],
             primary_key: vec![COL_ID.to_owned()],
             label: USERS_TABLE.to_owned(),
@@ -279,7 +341,7 @@ mod tests {
     fn the_hash_is_neither_projected_nor_resolvable() {
         let t = users();
         let cols = projection(&t);
-        assert_eq!(cols.len(), 3, "{cols:?}");
+        assert_eq!(cols.len(), 6, "{cols:?}");
         assert!(visible_field(&t, COL_PASSWORD_HASH).is_none());
         assert!(visible_field(&t, "email").is_some());
         // Another table's column of the same name is an ordinary column.
@@ -316,12 +378,47 @@ mod tests {
         assert!(update_guard(&t, ME, &keep, Some(&ctx)).is_ok());
         assert!(update_guard(&t, other, &keep, Some(&ctx)).is_err());
         assert!(update_guard(&t, ME, &obj(json!({"role": 1})), Some(&ctx)).is_err());
-        let guard = update_guard(&t, other, &obj(json!({"email": "e"})), Some(&ctx))
+        let guard = update_guard(&t, other, &obj(json!({"bio": "e"})), Some(&ctx))
             .unwrap()
             .expect("a restricted caller is confined");
         let sql = format!("{guard:?}");
         assert!(sql.contains("role") && sql.contains("id"), "{sql}");
         assert!(delete_guard(&t, Some(&ctx)).unwrap().is_some());
         assert!(delete_guard(&t, None).unwrap().is_none());
+    }
+
+    /// Security review 2026-10 #8: below admin, nobody rewrites an account's
+    /// email (a password reset would then go to them), clears `disabled`, or
+    /// moves an account — their own included — between tenants.
+    #[test]
+    fn identity_and_tenancy_columns_are_written_by_an_admin_only() {
+        let t = users();
+        let ctx = therapist();
+        let other = "0b5d9a52-54d4-4bde-8b2a-6d0f6f7a1a11";
+        for body in [
+            json!({"email": "me@attacker"}),
+            json!({"disabled": false}),
+            json!({"id": "9d3c4b1a-0000-4000-8000-000000000001"}),
+            json!({"org_id": 7}),
+        ] {
+            for row in [ME, other] {
+                let err = update_guard(&t, row, &obj(body.clone()), Some(&ctx)).unwrap_err();
+                assert!(err.to_string().contains("admin only"), "{body}: {err}");
+            }
+        }
+        // Sending the row's own id back changes nothing, and is allowed.
+        assert!(update_guard(&t, ME, &obj(json!({"id": ME, "bio": "x"})), Some(&ctx)).is_ok());
+        // An ordinary admin-added column is still the user's to edit.
+        assert!(update_guard(&t, ME, &obj(json!({"bio": "hi"})), Some(&ctx)).is_ok());
+        // An insert names its email, but not a flagged column.
+        assert!(check_insert(&t, &obj(json!({"email": "p@x", "role": 80})), Some(&ctx)).is_ok());
+        let org = obj(json!({"email": "p@x", "role": 80, "org_id": 7}));
+        assert!(check_insert(&t, &org, Some(&ctx)).is_err());
+        // An admin, and a system write, are not held to it.
+        let admin = CallerContext::new(ROLE_ADMIN, None);
+        let all = obj(json!({"email": "e@x", "disabled": true, "org_id": 7}));
+        assert!(update_guard(&t, other, &all, Some(&admin)).is_ok());
+        assert!(update_guard(&t, other, &all, None).is_ok());
+        assert!(check_insert(&t, &org, Some(&admin)).is_ok());
     }
 }
