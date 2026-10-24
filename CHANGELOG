@@ -2,6 +2,16 @@
 
 Changes in reverse chronological order.
 
+## Security review, second round (docs only)
+
+`docs/SECURITY_REVIEW_2026-10.md` gains a second general review of the whole system (items 15–35
+plus a Low / hardening list), made after the fixes for items 1–13. Highlights: admin
+upload/download/backup routes accept an admin session on application hosts (#15); non-admin file
+edits become admin-authority code through the Astro server entry, build files and the IDE language
+server (#16); `mail_test_account` sends a shared account's saved credentials to a host the caller
+picks (#17); order lines can change between checkout and payment (#18); repeated trials (#19). No
+code changed.
+
 ## Security fixes: module call tokens, `.git` and symlinks, Windows paths
 
 Fixes for items 11–13 of `docs/SECURITY_REVIEW_2026-10.md`.
