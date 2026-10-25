@@ -424,6 +424,11 @@ fn source_key() -> sc_catalog::ConstraintKind {
 
 /// Ensure the three tables exist, with their keys and, when new, their access
 /// settings. Idempotent; **after the users table**, which they reference.
+///
+/// **Not** part of [`crate::bootstrap`]: a new installation has no ledger. A
+/// module that grants credits declares it (`core_tables`, created when the
+/// module loads), and the first write made without one creates it. Until then
+/// every read answers as if the ledger were empty.
 pub async fn bootstrap_credits(catalog: &Catalog) -> Result<()> {
     sc_catalog::bootstrap_table_meta(catalog).await?;
     bootstrap_one(
@@ -513,7 +518,8 @@ pub async fn grant_credits(
     new: NewCreditGrant,
     caller: Option<&CallerContext>,
 ) -> Result<CreditGrant> {
-    check_grant(catalog, &new)?;
+    check_grant(&new)?;
+    ensure_tables(catalog).await?;
     let amount = credits(new.amount);
     let outcome = locked(catalog, new.user_id, |tx, written| {
         let new = new.clone();
@@ -731,7 +737,7 @@ pub async fn debit_credits(
             debit.amount
         )));
     }
-    require_tables(catalog)?;
+    ensure_tables(catalog).await?;
     let amount = credits(debit.amount);
     let (outcome, written) = locked(catalog, debit.user_id, |tx, written| {
         let debit = debit.clone();
@@ -866,13 +872,15 @@ pub async fn revoke_credits(
     note: Option<&str>,
     caller: Option<&CallerContext>,
 ) -> Result<CreditRevoked> {
-    require_tables(catalog)?;
     let not_found = CreditRevoked {
         found: false,
         revoked: Decimal::ZERO,
         balance: None,
         replayed: false,
     };
+    if !have_tables(catalog)? {
+        return Ok(not_found);
+    }
     // Whose bucket it is, to lock their row; read again under the lock.
     let user = {
         let tx = SharedTx::begin_primary(catalog)?;
@@ -976,12 +984,12 @@ pub async fn set_low_balance_threshold(
     threshold: Option<Decimal>,
     caller: Option<&CallerContext>,
 ) -> Result<CreditBalance> {
-    require_tables(catalog)?;
     if threshold.is_some_and(|t| t < Decimal::ZERO) {
         return Err(Error::invalid(
             "a low-balance threshold is an amount of credits, zero or more",
         ));
     }
+    ensure_tables(catalog).await?;
     let threshold = threshold.map(credits);
     let (balance, written) = locked(catalog, user, |tx, written| {
         Box::pin(async move {
@@ -1059,23 +1067,35 @@ pub(crate) async fn delete_credits_for_user(catalog: &Catalog, user: Uuid) -> Re
     Ok(())
 }
 
-fn require_tables(catalog: &Catalog) -> Result<()> {
+/// Whether all three tables are there.
+fn have_tables(catalog: &Catalog) -> Result<bool> {
     for table in [
         CREDIT_BUCKETS_TABLE,
         CREDIT_ENTRIES_TABLE,
         CREDIT_ACCOUNTS_TABLE,
     ] {
         if catalog.get(table)?.is_none() {
-            return Err(Error::config(format!(
-                "this installation has no `{table}` table; restart the server to create it"
-            )));
+            return Ok(false);
         }
+    }
+    Ok(true)
+}
+
+/// Create the three tables if they are not there yet: what the first write
+/// does on an installation where no module declared them (an admin's grant by
+/// hand, a metered agent's first debit). Once created, they stay.
+async fn ensure_tables(catalog: &Catalog) -> Result<()> {
+    if have_tables(catalog)? {
+        return Ok(());
+    }
+    let _creating = crate::CREATING_TABLES.lock().await;
+    if !have_tables(catalog)? {
+        bootstrap_credits(catalog).await?;
     }
     Ok(())
 }
 
-fn check_grant(catalog: &Catalog, new: &NewCreditGrant) -> Result<()> {
-    require_tables(catalog)?;
+fn check_grant(new: &NewCreditGrant) -> Result<()> {
     if new.amount <= Decimal::ZERO {
         return Err(Error::invalid(format!(
             "a credit grant gives credits; {} is not more than nothing",

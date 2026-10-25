@@ -84,8 +84,31 @@ fn debit(user: Uuid, amount: Decimal, key: &str) -> CreditDebit {
 }
 
 #[tokio::test]
-async fn the_tables_are_ordinary_owner_readable_ones() -> Result<()> {
+async fn the_tables_are_ordinary_owner_readable_ones_made_by_the_first_grant() -> Result<()> {
     let f = fixture().await?;
+    // A new installation has no ledger, and reads it as empty.
+    for name in [
+        CREDIT_BUCKETS_TABLE,
+        CREDIT_ENTRIES_TABLE,
+        CREDIT_ACCOUNTS_TABLE,
+    ] {
+        assert!(f.catalog.get(name)?.is_none(), "{name}: not bootstrapped");
+    }
+    let user = create_user(&f.catalog, "first@example.com", "pw", 80).await?;
+    assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(0));
+    assert!(list_credit_buckets(&f.catalog, user.id).await?.is_empty());
+    assert!(
+        list_credit_entries(&f.catalog, user.id, 10)
+            .await?
+            .is_empty()
+    );
+    let revoked = sc_auth::revoke_credits(&f.catalog, "admin", "nothing", None, None).await?;
+    assert!(!revoked.found, "nothing to take back, and nothing created");
+    assert!(f.catalog.get(CREDIT_BUCKETS_TABLE)?.is_none());
+
+    // The first grant makes them.
+    grant_credits(&f.catalog, grant(user.id, 5, "first"), None).await?;
+    assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(5));
     for name in [
         CREDIT_BUCKETS_TABLE,
         CREDIT_ENTRIES_TABLE,
@@ -103,6 +126,7 @@ async fn the_tables_are_ordinary_owner_readable_ones() -> Result<()> {
     }
     let buckets = f.catalog.require(CREDIT_BUCKETS_TABLE)?;
     bootstrap(&f.catalog).await?;
+    sc_auth::bootstrap_credits(&f.catalog).await?;
     assert_eq!(f.catalog.require(CREDIT_BUCKETS_TABLE)?, buckets);
     Ok(())
 }

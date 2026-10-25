@@ -453,6 +453,8 @@ async fn sync_tables(catalog: &Catalog, modules: &mut [LoadedModule]) {
         let Some(manifest) = loaded.manifest.as_ref() else {
             continue;
         };
+        let core = core_tables(catalog, &manifest.core_tables).await;
+        loaded.issues.extend(core);
         if manifest.tables.is_empty() {
             continue;
         }
@@ -465,6 +467,41 @@ async fn sync_tables(catalog: &Catalog, modules: &mut [LoadedModule]) {
         }
     }
 }
+
+/// The core tables a module names in `core_tables`: `role_grants`, and
+/// `llm_credits` for the credit ledger (`credit_buckets`, `credit_entries`,
+/// `credit_accounts`). A new installation has neither; the module that needs
+/// them creates them by loading, and they stay when it is removed — they hold
+/// what users were granted. A name that means nothing, or a creation that
+/// failed, is an issue on the module's card.
+async fn core_tables(catalog: &Catalog, names: &[String]) -> Vec<String> {
+    let mut issues = Vec::new();
+    for name in names {
+        let created = match name.as_str() {
+            CORE_ROLE_GRANTS => sc_auth::bootstrap_role_grants(catalog).await.map(|_| ()),
+            CORE_LLM_CREDITS => sc_auth::bootstrap_credits(catalog).await,
+            other => {
+                issues.push(format!(
+                    "its `core_tables` names `{other}`, which is not one; there are \
+                     `{CORE_ROLE_GRANTS}` and `{CORE_LLM_CREDITS}`"
+                ));
+                continue;
+            }
+        };
+        if let Err(e) = created {
+            issues.push(format!(
+                "the core tables `{name}` could not be created: {}",
+                e.causes()
+            ));
+        }
+    }
+    issues
+}
+
+/// `core_tables`: the role grants table.
+pub const CORE_ROLE_GRANTS: &str = "role_grants";
+/// `core_tables`: the three LLM credit ledger tables.
+pub const CORE_LLM_CREDITS: &str = "llm_credits";
 
 /// One namespace of view pattern names, as a view stores its pattern by name
 /// (TODO "Saltcorn UI" §6): v1's built-in patterns first, then each module's in
@@ -564,6 +601,7 @@ mod tests {
             stream_providers: Vec::new(),
             map_tools: Vec::new(),
             tables: Vec::new(),
+            core_tables: Vec::new(),
             services: Vec::new(),
             webhooks: Vec::new(),
             reads: Vec::new(),

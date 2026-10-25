@@ -7,7 +7,9 @@
 //! definition goes, only the ticked stores leave the disk, and every account,
 //! role and setting goes too: the admin who pressed the button is signed out,
 //! the status says no user exists (the admin UI's create-first-user screen),
-//! and creating the first user works again.
+//! and creating the first user works again. A new installation lists `users`
+//! alone; the role grants and the LLM credits ledger, once something made them,
+//! are dropped too, so it lists `users` alone again afterwards.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
@@ -196,6 +198,17 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     base
 }
 
+/// The tables `/api/tables` lists.
+async fn table_names(client: &mut Client) -> Vec<String> {
+    let (status, body) = client.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body.as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
 async fn ok(client: &mut Client, method: &str, path: &str, body: Value) -> Value {
     let (status, out) = client.send(method, path, Some(body)).await;
     assert!(status.is_success(), "{method} {path}: {status} {out}");
@@ -207,6 +220,47 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
 {
     let mut server = setup().await?;
     let c = &mut server.client;
+
+    // A new installation has one table: no role grants, no credits ledger.
+    assert_eq!(table_names(c).await, ["users"]);
+
+    // An admin's grant of credits by hand, and a role grant, make them.
+    let admin = sc_auth::load_user_by_email(&server.catalog, ADMIN)
+        .await?
+        .unwrap();
+    ok(
+        c,
+        "POST",
+        &format!("/api/users/{}/credits", admin.id),
+        json!({ "amount": "5" }),
+    )
+    .await;
+    sc_auth::save_role(&server.catalog, &sc_auth::Role::new(60, "Pro")).await?;
+    sc_auth::grant_role(
+        &server.catalog,
+        sc_auth::NewRoleGrant {
+            user_id: admin.id,
+            role: 60,
+            source: "test".into(),
+            source_ref: "one".into(),
+            starts_at: None,
+            expires_at: None,
+            note: None,
+        },
+    )
+    .await?;
+    let mut names = table_names(c).await;
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "credit_accounts",
+            "credit_buckets",
+            "credit_entries",
+            "role_grants",
+            "users"
+        ]
+    );
 
     // Two tables that reference each other, and a `users` column that points
     // at one of them.
@@ -376,6 +430,15 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
         json!({ "email": "new@example.com", "password": PASSWORD }),
     )
     .await;
+    for table in [
+        sc_auth::ROLE_GRANTS_TABLE,
+        sc_auth::CREDIT_BUCKETS_TABLE,
+        sc_auth::CREDIT_ENTRIES_TABLE,
+        sc_auth::CREDIT_ACCOUNTS_TABLE,
+    ] {
+        assert!(server.catalog.get(table)?.is_none(), "{table} is dropped");
+    }
+    assert_eq!(table_names(&mut server.client).await, ["users"]);
 
     // Clearing an installation that is already empty is not an error.
     let report = ok(

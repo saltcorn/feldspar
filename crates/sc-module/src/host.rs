@@ -625,6 +625,12 @@ pub struct ModuleManifest {
     /// server when the module loads.
     #[serde(default)]
     pub tables: Vec<Json>,
+    /// The core tables it needs (`core_tables`): `role_grants`, and
+    /// `llm_credits` for the three credit ledger tables. Niche enough that a
+    /// new installation does not have them; created by [`crate::ModuleSet::load`]
+    /// when a module that names them loads.
+    #[serde(default)]
+    pub core_tables: Vec<String>,
     /// The services it runs in the background (TODO-imap M5) — started by
     /// [`ServiceSupervisor`](crate::ServiceSupervisor) after every load.
     #[serde(default)]

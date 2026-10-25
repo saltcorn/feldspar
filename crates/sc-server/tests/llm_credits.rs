@@ -126,6 +126,9 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, TestDb)> {
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
+    // The ledger, as the payments module's load would make it: the trigger
+    // below is on one of its tables.
+    sc_auth::bootstrap_credits(&catalog).await?;
     let evaluator = default_js_evaluator();
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;

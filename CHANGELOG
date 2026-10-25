@@ -2,6 +2,28 @@
 
 Changes in reverse chronological order.
 
+## Role grants and LLM credits tables only when a module needs them
+
+- **A new installation lists `users` alone.** `sc_auth::bootstrap` no longer creates
+  `role_grants`, `credit_buckets`, `credit_entries` or `credit_accounts`.
+- **A module declares them**: a new plugin key, `core_tables: ["role_grants", "llm_credits"]`,
+  goes into the manifest (`ModuleManifest::core_tables`). `ModuleSet::load` creates the named
+  tables on every load; an unknown name is an issue on the module's card. The payments module
+  declares both.
+- **The first write creates them** if no module did: an admin's grant of credits or a role by
+  hand, the `grant_role` action, a metered agent's debit, a restore with their rows. Creation
+  is serialised in-process. Reads (effective role, balance, lists, find, revoke) treat a
+  missing table as empty and create nothing, so sessions and agents keep working before the
+  payments module is installed. An agent with no credit metering never touches the ledger.
+  A metered one sees a zero balance and stops, as before when the ledger was empty.
+- **Clear all drops them** (after the admin's tables, without going through the schema editor,
+  which still refuses to drop them by hand). Before, it only emptied them.
+- Design: TECHNICAL_DESIGN §7.4c. No migration: existing installations keep their tables.
+- Tests: sc-auth `credits`/`role_grants` (not bootstrapped; reads work without the tables;
+  the first grant creates them), sc-module `module_credits` (`core_tables` creates the ledger on
+  load, and an unknown name is an issue), sc-server `clear_all_api` (a fresh install lists only
+  `users`; Clear all drops the four tables).
+
 ## Admin: every run of an agent
 
 - **A Runs button on each agent** in the agents list opens `#/agents/<name>/runs`

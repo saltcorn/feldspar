@@ -12,6 +12,8 @@ const attempt = async (call) => {
 
 module.exports = {
   sc_plugin_api_version: 1,
+  // The ledger, created when the module loads; and a name that is not one.
+  core_tables: ["llm_credits", "invoices"],
   actions: {
     grant_credits: {
       run: async ({ payload, credits }) => {

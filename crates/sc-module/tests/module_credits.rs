@@ -2,7 +2,8 @@
 //! fixture module's action grants credits through `credits`, keyed so that a
 //! replayed grant does nothing, reads the balance, sets the low-balance
 //! threshold, rolls an allowance over into the next (P7.1), and has no way to
-//! spend them.
+//! spend them. The ledger is the module's to declare (`core_tables`): a new
+//! installation has none until it loads.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -45,10 +46,28 @@ mod deno {
         module.permissions = ModulePermissions::closed();
         save_module(&cat, &module).await.unwrap();
         let mut registry = ActionRegistry::new();
+        // A new installation has no ledger; the module that declares it does.
+        assert!(cat.get(sc_auth::CREDIT_BUCKETS_TABLE).unwrap().is_none());
         let set = ModuleSet::load(&cat, &host, &installer, &surfaces(), &mut registry)
             .await
             .unwrap();
-        assert!(set.issues().is_empty(), "{:?}", set.issues());
+        let issues: Vec<String> = set.issues().iter().map(|i| i.problem.clone()).collect();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].contains("`invoices`, which is not one"),
+            "{issues:?}"
+        );
+        for table in [
+            sc_auth::CREDIT_BUCKETS_TABLE,
+            sc_auth::CREDIT_ENTRIES_TABLE,
+            sc_auth::CREDIT_ACCOUNTS_TABLE,
+        ] {
+            assert!(cat.get(table).unwrap().is_some(), "{table}: made on load");
+        }
+        assert!(
+            cat.get(sc_auth::ROLE_GRANTS_TABLE).unwrap().is_none(),
+            "only what it named"
+        );
 
         let event = Event::new(EventKind::None).payload(json!({ "user": user.id.to_string() }));
         let config = Attrs::new();

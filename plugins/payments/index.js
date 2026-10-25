@@ -29,6 +29,9 @@ const { PLAN_FIELDS, planBinding } = require("./plans.js");
 module.exports = {
   sc_plugin_api_version: 1,
   tables,
+  // The core tables a subscription's role and a plan's LLM credits are written to, which a new
+  // installation does not have until a module that needs them is installed.
+  core_tables: ["role_grants", "llm_credits"],
   // The module's settings: the plan binding (§6.2), with its LLM-credit allowance (§6.3).
   configuration_workflow: () => ({
     steps: [{ name: "Plans", form: { fields: PLAN_FIELDS } }],

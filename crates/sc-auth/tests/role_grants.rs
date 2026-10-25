@@ -67,8 +67,23 @@ fn new_grant(user: Uuid, role: u8, source_ref: &str) -> NewRoleGrant {
 }
 
 #[tokio::test]
-async fn the_table_is_an_ordinary_owner_readable_one() -> Result<()> {
+async fn the_table_is_an_ordinary_owner_readable_one_made_by_the_first_grant() -> Result<()> {
     let f = fixture().await?;
+    // A new installation has no grants table, and every read does without it.
+    assert!(
+        f.catalog.get(ROLE_GRANTS_TABLE)?.is_none(),
+        "not bootstrapped"
+    );
+    let user = create_user(&f.catalog, "first@example.com", "pw", 80).await?;
+    assert_eq!(load_user(&f.catalog, user.id).await?.unwrap().role, 80);
+    assert!(list_role_grants(&f.catalog, user.id).await?.is_empty());
+    assert!(find_role_grant(&f.catalog, "test", "x").await?.is_none());
+    assert!(!revoke_role_grant(&f.catalog, "test", "x").await?);
+    assert!(f.catalog.get(ROLE_GRANTS_TABLE)?.is_none());
+
+    // The first grant makes it.
+    grant_role(&f.catalog, new_grant(user.id, 60, "first")).await?;
+    assert_eq!(load_user(&f.catalog, user.id).await?.unwrap().role, 60);
     let table = f.catalog.require(ROLE_GRANTS_TABLE)?;
     assert!(!table.is_system(), "an application reads it like any table");
     assert_eq!(table.access.min_role_read, ROLE_ADMIN);
@@ -81,6 +96,7 @@ async fn the_table_is_an_ordinary_owner_readable_one() -> Result<()> {
     );
     // Bootstrapping again changes nothing.
     bootstrap(&f.catalog).await?;
+    sc_auth::bootstrap_role_grants(&f.catalog).await?;
     assert_eq!(f.catalog.require(ROLE_GRANTS_TABLE)?, table);
     Ok(())
 }

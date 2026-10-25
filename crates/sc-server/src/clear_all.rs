@@ -89,7 +89,7 @@ pub async fn clear_all(
         .await
         .unwrap_or_default();
 
-    let dropped = drop_user_tables(catalog).await?;
+    let dropped = drop_user_tables(catalog).await? + drop_core_tables(catalog).await?;
     report.cleared.push(match dropped {
         0 => "no tables to drop".to_owned(),
         1 => "dropped 1 table".to_owned(),
@@ -283,27 +283,44 @@ fn key_target(field: &DataField) -> Option<&str> {
 }
 
 /// A table the admin made in the primary database: not a system table, not
-/// `users` or the role grants beside it, and not one a module provides.
+/// `users` or a core table a module declared, and not one a module provides.
 fn is_user_table(table: &Table) -> bool {
     table.database == DbId::primary()
         && !table.is_system()
         && !is_kept_ordinary(table)
+        && !CORE_TABLES.contains(&table.name.as_str())
         && table.provider().is_none()
 }
 
-/// The ordinary tables the system itself depends on, which Clear all empties
-/// rather than drops: `users`, `role_grants` (TODO-payments P3), which every
-/// session reads, and the LLM credits ledger (P6), which every metered agent
-/// run reads.
+/// The core tables a module declares (`core_tables`), which a fresh
+/// installation does not have: the role grants and the LLM credits ledger, in
+/// an order each can be dropped in (an entry references its bucket).
+const CORE_TABLES: [&str; 4] = [
+    sc_auth::ROLE_GRANTS_TABLE,
+    sc_auth::CREDIT_ENTRIES_TABLE,
+    sc_auth::CREDIT_BUCKETS_TABLE,
+    sc_auth::CREDIT_ACCOUNTS_TABLE,
+];
+
+/// Drop the core tables that are there, returning how many: the modules that
+/// declared them are removed too, and the next one installed creates them
+/// again. Past the schema editor, which refuses to drop them by hand, and
+/// after the admin's tables, any of which may reference them.
+async fn drop_core_tables(catalog: &Catalog) -> Result<usize> {
+    let mut count = 0;
+    for name in CORE_TABLES {
+        if catalog.get(name)?.is_some() {
+            catalog.drop_table(name).await?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// The ordinary table the system itself depends on, which Clear all empties
+/// rather than drops: `users`, which every session reads.
 fn is_kept_ordinary(table: &Table) -> bool {
-    [
-        sc_auth::USERS_TABLE,
-        sc_auth::ROLE_GRANTS_TABLE,
-        sc_auth::CREDIT_BUCKETS_TABLE,
-        sc_auth::CREDIT_ENTRIES_TABLE,
-        sc_auth::CREDIT_ACCOUNTS_TABLE,
-    ]
-    .contains(&table.name.as_str())
+    table.name == sc_auth::USERS_TABLE
 }
 
 /// Delete every row of every `_fd_*` table and of the ordinary tables above.

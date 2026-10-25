@@ -197,6 +197,10 @@ fn source_key() -> sc_catalog::ConstraintKind {
 /// Ensure `role_grants` exists, with its `(source, source_ref)` key and, when
 /// the table is new, its access settings. Idempotent.
 ///
+/// **Not** part of [`crate::bootstrap`]: a new installation has no grants
+/// table. A module that grants roles declares it (`core_tables`, created when
+/// the module loads), and the first grant made without one creates it.
+///
 /// **After the users and roles tables**, both of which it references.
 /// The access settings are the creation's, like a module table's (§15.1b): an
 /// admin who changes them afterwards keeps the change.
@@ -313,6 +317,7 @@ pub(crate) async fn with_grants(
 /// force again. What a subscription's renewal does to extend its one grant.
 pub async fn grant_role(catalog: &Catalog, new: NewRoleGrant) -> Result<RoleGrant> {
     check_new(catalog, &new).await?;
+    ensure_table(catalog).await?;
     if let Some(updated) = update_by_key(catalog, &new).await? {
         return Ok(updated);
     }
@@ -332,6 +337,7 @@ pub async fn grant_role(catalog: &Catalog, new: NewRoleGrant) -> Result<RoleGran
 /// trial on sign-up uses, so a second one is never granted.
 pub async fn grant_role_once(catalog: &Catalog, new: NewRoleGrant) -> Result<Option<RoleGrant>> {
     check_new(catalog, &new).await?;
+    ensure_table(catalog).await?;
     if find(catalog, &new.source, &new.source_ref).await?.is_some() {
         return Ok(None);
     }
@@ -373,6 +379,9 @@ pub async fn find_role_grant(
 
 /// One grant by id.
 pub async fn load_role_grant(catalog: &Catalog, id: Uuid) -> Result<Option<RoleGrant>> {
+    if catalog.get(ROLE_GRANTS_TABLE)?.is_none() {
+        return Ok(None);
+    }
     let select = Select::from(Source::table(ROLE_GRANTS_TABLE))
         .filter(Expr::col(COL_GRANT_ID).eq(Expr::lit(id)))
         .limit(1);
@@ -442,11 +451,6 @@ pub(crate) async fn clear_ended_grants_of_role(catalog: &Catalog, role: u8) -> R
 /// public role (everybody's already), an empty source or reference, or an end
 /// before its start.
 async fn check_new(catalog: &Catalog, new: &NewRoleGrant) -> Result<()> {
-    if catalog.get(ROLE_GRANTS_TABLE)?.is_none() {
-        return Err(Error::config(
-            "this installation has no role grants table; restart the server to create it",
-        ));
-    }
     if new.role >= ROLE_PUBLIC || new.role < ROLE_ADMIN {
         return Err(Error::invalid(format!(
             "role {} cannot be granted: grants run from 1 to 99, and the public role is \
@@ -475,7 +479,24 @@ async fn check_new(catalog: &Catalog, new: &NewRoleGrant) -> Result<()> {
     Ok(())
 }
 
+/// Create `role_grants` if it is not there yet: what the first grant does on an
+/// installation where no module declared it (an admin's grant by hand, the
+/// `grant_role` action). Once created, it stays.
+async fn ensure_table(catalog: &Catalog) -> Result<()> {
+    if catalog.get(ROLE_GRANTS_TABLE)?.is_some() {
+        return Ok(());
+    }
+    let _creating = crate::CREATING_TABLES.lock().await;
+    if catalog.get(ROLE_GRANTS_TABLE)?.is_none() {
+        bootstrap_role_grants(catalog).await?;
+    }
+    Ok(())
+}
+
 async fn find(catalog: &Catalog, source: &str, source_ref: &str) -> Result<Option<RoleGrant>> {
+    if catalog.get(ROLE_GRANTS_TABLE)?.is_none() {
+        return Ok(None);
+    }
     let select = Select::from(Source::table(ROLE_GRANTS_TABLE))
         .filter(
             Expr::col(COL_GRANT_SOURCE)

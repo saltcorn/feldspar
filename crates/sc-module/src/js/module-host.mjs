@@ -784,6 +784,9 @@ const supportedKeys = new Set([
   "frameworks",
   // The tables a module declares (TODO-imap M4): data, created by the server.
   "tables",
+  // The core tables a module needs (`role_grants`, `llm_credits`), which a new
+  // installation does not have until a module names them.
+  "core_tables",
   // The services a module runs in the background (TODO-imap M5).
   "services",
   // The webhooks a module receives (TODO-payments P1.1).
@@ -1711,6 +1714,24 @@ async function evalReads(plugin, configuration) {
   return { reads, issues };
 }
 
+/** This system's `core_tables` key: the core tables a module needs, by name
+ * (`["role_grants", "llm_credits"]`). Which names mean something is the
+ * server's to say; here only the shape is checked. */
+function evalCoreTables(plugin) {
+  const raw = plugin.core_tables;
+  if (raw === undefined || raw === null) return { coreTables: [], issues: [] };
+  if (!Array.isArray(raw)) {
+    return { coreTables: [], issues: ["its `core_tables` is not a list of names"] };
+  }
+  const coreTables = [];
+  const issues = [];
+  for (const value of raw) {
+    if (typeof value === "string" && value.trim()) coreTables.push(value.trim());
+    else issues.push(`its \`core_tables\` names ${JSON.stringify(value)}, which is not a name`);
+  }
+  return { coreTables, issues };
+}
+
 /** The loaded stream provider, or a sentence naming what is missing. */
 function requireStreamProvider(name, providerName) {
   const entry = loaded.get(name);
@@ -2472,6 +2493,9 @@ async function loadModule({ module: name, dir, configuration }) {
   const { reads, issues: readIssues } = await evalReads(plugin, configuration);
   issues.push(...readIssues);
 
+  const { coreTables, issues: coreTableIssues } = evalCoreTables(plugin);
+  issues.push(...coreTableIssues);
+
   const {
     frameworks,
     set: frameworkSet,
@@ -2522,6 +2546,7 @@ async function loadModule({ module: name, dir, configuration }) {
     stream_providers: streamProviders,
     map_tools: mapTools,
     tables,
+    core_tables: coreTables,
     services: serviceList,
     webhooks: webhookList,
     reads,

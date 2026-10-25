@@ -1311,11 +1311,12 @@ the grants in force (started, not ended, not revoked). A grant never lowers a ro
   has *ever* existed. Revoking keeps the row (`revoked_at`) for that reason.
 - **An ordinary table**, so an application reads it (a "your trial ends on …" banner, a daily
   reminder trigger): created with `min_role_read`/`min_role_write` 1 and the ownership formula
-  `_read && user_id === user.id`, which are then the admin's. It is never dropped and its
-  columns are protected, like `users`'. Deleting a user deletes their grants; deleting a role
-  is refused while a grant of it is in force, and clears its ended ones. A backup carries the
-  grants inside the Users choice (`users/role_grants.ndjson`), not as a table, and Clear all
-  empties the table rather than dropping it.
+  `_read && user_id === user.id`, which are then the admin's. The schema editor never drops it
+  and its columns are protected, like `users`'. Deleting a user deletes their grants; deleting
+  a role is refused while a grant of it is in force, and clears its ended ones. A backup carries
+  the grants inside the Users choice (`users/role_grants.ndjson`), not as a table.
+- **Not there until something needs it** (§7.4c). A new installation, or one after Clear all,
+  has no `role_grants`: every read answers as if it were empty.
 - **Sources.** `admin` (the user page, a fresh uuid as the reference), `grant_role` (the action,
   §10.1, with `<user id>:<key>` as the reference), or a module's package name (`ctx.roles`,
   §15.1e) — a module sees and touches only its own.
@@ -1339,8 +1340,10 @@ metering facility: an application that charges for something else keeps its own 
   `low_balance_threshold`. Amounts are `numeric`, kept to six decimal places, and travel as
   decimal strings to the admin client. All three are created with `min_role_read`/`write` 1
   and `_read && user_id === user.id`, so a balance widget is an owner's REST read; never
-  dropped, columns protected, emptied by Clear all, carried by a backup's Users choice
-  (`users/credit_*.ndjson`), and deleted with their user.
+  dropped by the schema editor, columns protected, carried by a backup's Users choice
+  (`users/credit_*.ndjson`), and deleted with their user. Like `role_grants` they are not
+  there until something needs them (§7.4c): until then the balance is zero and the lists are
+  empty, and an agent that is not metered never reads them at all.
 - **The balance** is what is left in the unexpired buckets less the debt. An expiry is a read,
   like a role grant's: nothing is written when a bucket lapses.
 - **`grant_credits`** repays debt first, then fills a new bucket with the rest. A grant whose
@@ -1369,6 +1372,24 @@ metering facility: an application that charges for something else keeps its own 
 - **The admin user page** ("LLM credits" in a user's menu) shows the balance and debt, every
   bucket, the latest 50 entries, a form to grant credits for some days (or for good), and the
   threshold (`getUserCredits`, `grantUserCredits`, `setUserCreditThreshold`).
+
+
+### 7.4c Core tables a module declares (`core_tables`)
+
+The role grants and the credits ledger are core's (written only by `sc_auth`), but most
+applications never use them, so a new installation lists `users` alone. A module that needs
+them names them in its plugin object, `core_tables: ["role_grants", "llm_credits"]`
+(`llm_credits` is the three ledger tables). The payments module does. `ModuleSet::load`
+creates them on every load (a no-op once they are there), so installing the module creates
+them; an unknown name is an issue on the module's card. They stay when the module is removed,
+because they hold what users were granted.
+
+Besides that, **the first write creates them**: an admin's grant by hand, the `grant_role`
+action, a module's `ctx.roles`/`ctx.credits`, a metered agent's debit, a restore whose backup
+holds their rows. Every read (`effective_role`, `credit_balance`, the lists, `find`/`load`, a
+revoke) treats a missing table as empty and creates nothing. A trigger on `credit_entries` can
+only be made once the ledger exists. **Clear all drops them** after the admin's tables,
+bypassing the schema editor's refusal, so the next module installed creates them again.
 
 ### 7.5 Guest sessions, and where a request came from (TODO-payments P1.3, P1.5, P1.6)
 

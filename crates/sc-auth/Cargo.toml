@@ -37,6 +37,8 @@ serde_json.workspace = true
 rust_decimal.workspace = true
 # A ledger write's table event that could not be dispatched is said in the log.
 sc-log.workspace = true
+# One first use at a time creates the role grants or the credits ledger.
+tokio = { workspace = true }
 
 [dev-dependencies]
 sc-db-postgres.workspace = true

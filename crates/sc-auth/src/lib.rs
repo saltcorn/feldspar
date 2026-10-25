@@ -35,6 +35,11 @@
 //! an agent run's model calls are charged to: [`grant_credits`],
 //! [`credit_balance`], and the debit the agent loop alone calls
 //! ([`debit_credits`]).
+//!
+//! Neither is created by [`bootstrap`]: they are niche, so a new installation
+//! lists `users` alone. A module that needs them declares them (`core_tables`
+//! — the payments module does), and the first write made without them creates
+//! them; until then every read answers as if they were empty.
 
 mod create;
 mod credits;
@@ -119,6 +124,11 @@ pub use tokens::{
     load_api_token, mint_api_token, revoke_api_token, sweep_expired_api_tokens,
 };
 pub use user::User;
+
+/// Held while the role grants or the credits ledger are created on first use,
+/// so two first writes at once do not both create them.
+static CREATING_TABLES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub use users::{
     COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
     ROLE_ADMIN, ROLE_PUBLIC, SYSTEM_USER_COLUMNS, USERS_TABLE, bootstrap, is_api_hidden_column,

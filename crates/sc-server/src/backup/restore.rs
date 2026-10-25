@@ -470,6 +470,16 @@ async fn restore_credits(
     repointed: &BTreeMap<String, String>,
     report: &mut RestoreReport,
 ) {
+    // A fresh server has no ledger until something needs one: the backup's
+    // rows are that something.
+    if CREDIT_ROWS_FILES
+        .iter()
+        .any(|(_, path)| archive.contains(path))
+        && let Err(e) = sc_auth::bootstrap_credits(catalog).await
+    {
+        report.skipped(format!("LLM credits: {}", e.causes()));
+        return;
+    }
     for (name, path) in CREDIT_ROWS_FILES {
         if !archive.contains(path) {
             continue;
@@ -541,9 +551,13 @@ async fn restore_role_grants(
     if !archive.contains(ROLE_GRANT_ROWS_FILE) {
         return;
     }
-    let Ok(table) = catalog.require(sc_auth::ROLE_GRANTS_TABLE) else {
-        report.skipped("role grants: this server has no role grants table");
-        return;
+    // A fresh server has no grants table until something needs one.
+    let table = match sc_auth::bootstrap_role_grants(catalog).await {
+        Ok(table) => table,
+        Err(e) => {
+            report.skipped(format!("role grants: {}", e.causes()));
+            return;
+        }
     };
     let mut restored = 0;
     let mut reader = archive.rows(ROLE_GRANT_ROWS_FILE);
