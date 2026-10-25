@@ -12,6 +12,10 @@
 // those too. The type buttons narrow the list to the kinds switched on, and
 // with none switched on every kind is shown. What is kept and how it is
 // ordered is `entities.ts`'s.
+//
+// The screen has the viewport, as Saltcorn 1's did: the list scrolls inside
+// the card, and the search above it and the "Create …" buttons below it stay
+// in view however many entities there are (`.entities-page` in `admin.css`).
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -135,13 +139,13 @@ export function Entities() {
   );
 
   return (
-    <>
+    <div className="entities-page">
       <PageHeader pretitle={t("Overview")} title={t("All entities")} />
       <PageBody>
         {error && <Alert variant="danger">{error}</Alert>}
         {ran && <TestRunToast outcome={ran} onClose={() => setRan(null)} />}
 
-        <div className="card">
+        <div className="card entities-card">
           <div className="card-body border-bottom">
             <div className="input-group mb-3">
               <span className="input-group-text">
@@ -191,7 +195,8 @@ export function Entities() {
             </div>
           </div>
 
-          <Table hover responsive className="card-table table-vcenter">
+          <div className="entities-scroll">
+          <Table hover className="card-table table-vcenter">
             <thead>
               <tr>
                 <th><T text="Type" /></th>
@@ -230,6 +235,7 @@ export function Entities() {
               {all.map((e) => row(e, false))}
             </tbody>
           </Table>
+          </div>
 
           <div className="card-footer">
             <div className="btn-list">
@@ -243,7 +249,7 @@ export function Entities() {
           </div>
         </div>
       </PageBody>
-    </>
+    </div>
   );
 }
 

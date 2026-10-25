@@ -2,6 +2,21 @@
 
 Changes in reverse chronological order.
 
+## Entities list: no sidebar link, and the create buttons stay in view
+
+- The sidebar's **All entities** link is gone. The logo and the Saltcorn/Feldspar wordmark
+  at the top of the sidebar already link to the entities list, which is also where the
+  admin UI opens.
+- The entities list now has the viewport, as Saltcorn 1's did: the page stops at the
+  window's height, the table scrolls inside the card (with its column headings kept at the
+  top), and the search above it and the **Create …** buttons in the card's footer are
+  always visible. With few entities the card is only as tall as its rows. The page footer
+  is hidden on this screen. Done in CSS with the same `:has()` approach as the chat page
+  (`.entities-page` in `admin.css`).
+
+Test: `screens/Entities.test.tsx` (the table is inside its own scroll container, and the
+create buttons come after it, outside it).
+
 ## The admin sidebar's application picker is a dropdown
 
 The picker at the top of the sidebar's Applications section looked like one of Tabler's

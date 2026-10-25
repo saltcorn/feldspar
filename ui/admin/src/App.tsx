@@ -30,7 +30,6 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconFolder,
-  IconLayoutDashboard,
   IconLogout,
   IconMoon,
   IconRobot,
@@ -187,16 +186,6 @@ type NavItem = {
 /** The Data Layer section of the sidebar: the installation's shared furniture.
  * Applications are the other section, and are not entries here — that section is
  * about one application at a time, picked in the sidebar (`AppSidebar.tsx`). */
-/** The home page's entry: every entity of every kind in one list, the
- * recently edited first (`screens/Entities.tsx`). Above the sections rather
- * than in one, because it is about all of them, and where the admin UI opens. */
-export const HOME: NavItem = {
-  href: "#/entities",
-  label: "All entities",
-  icon: <IconLayoutDashboard />,
-  matches: ["/entities"],
-};
-
 export const NAV: NavItem[] = [
   {
     href: "#/tables",
@@ -414,7 +403,6 @@ function Shell({
             <ul className="navbar-nav pt-lg-3">
               {/* Tabler's section titles: folded to a rail, each becomes a short
                   rule between the groups of icons. */}
-              <NavLink item={HOME} route={route} folded={folded} />
               <li className="nav-section-title"><T text="Data Layer" /></li>
               {NAV.map((item) => (
                 <NavLink key={item.href} item={item} route={route} folded={folded} />

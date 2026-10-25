@@ -229,6 +229,57 @@ div.navbar-brand>a:hover {
   letter-spacing: 0.04em;
 }
 
+/* The entities list has the viewport, the way a chat page does (below): the
+   page stops growing at the window's height, the table scrolls inside the
+   card, and the search and the "Create …" buttons at the card's foot stay in
+   view. The card is only as tall as its rows until they would overflow. */
+.page:has(.entities-page) {
+  height: 100%;
+  overflow: hidden;
+}
+
+.page-wrapper:has(> .entities-page) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.page-wrapper:has(> .entities-page)>.footer {
+  display: none;
+}
+
+.entities-page,
+.entities-page>.page-body,
+.entities-page>.page-body>.container-xl {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.entities-page,
+.entities-page>.page-body {
+  flex: 1;
+}
+
+.entities-card {
+  min-height: 0;
+}
+
+.entities-scroll {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The column headings stay over the rows they name while those scroll. */
+.entities-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--tblr-bg-surface);
+}
+
 /* A build log in the outcome toast: long enough to read the error, not so long
  * the toast covers the page. */
 .app-outcome-toast {
