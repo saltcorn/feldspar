@@ -2,6 +2,23 @@
 
 Changes in reverse chronological order.
 
+## The admin sidebar's application picker is a dropdown
+
+The picker at the top of the sidebar's Applications section looked like one of Tabler's
+submenus, which read as more navigation rather than a choice of application. It is now a
+dropdown (`ui/admin/src/AppPicker.tsx`, not a native `<select>`):
+
+- **Closed**, a bordered box with a small "Application" caption, the current application's
+  name under it (truncated if long) and a caret.
+- **Open**, every application with a tick beside the current one, then a divider and
+  **All applications** / **New application**. The menu is positioned over the links below it
+  rather than inline, so opening it does not push them down. It closes on a click outside,
+  on Escape, on choosing, or on navigating.
+- Folded to a rail, it is still the icon with Tabler's flyout menu beside it.
+
+Test: `AppPicker.test.tsx` (caption and name, caret, open/closed, the tick on the current
+application only, the two links after the names, the empty and unchosen labels).
+
 ## The admin UI's home page: all entities, the recently edited first
 
 Saltcorn 1's "All entities" list, as the admin UI's home page (`#/entities`, and where the

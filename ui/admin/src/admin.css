@@ -116,10 +116,105 @@ div.navbar-brand>a:hover {
   text-decoration: none;
 }
 
-/* The application picker's toggle in the sidebar carries an application's name,
- * which can be longer than the sidebar is wide: it truncates rather than wraps,
- * so the links under it stay where the eye expects them. */
-.app-picker-title {
+/* The application picker (`AppPicker.tsx`): a dropdown, not a submenu.
+ *
+ * Unfolded, the toggle is a bordered box — a small "Application" caption over
+ * the current application's name, which truncates rather than wraps, and a
+ * caret — and the open menu is positioned over the links below it instead of
+ * in the flow, so opening it moves nothing. Tabler makes every dropdown menu
+ * in an unfolded sidebar `position: static` and inline; the `:not(.navbar-
+ * folded)` rules here undo that for this one menu only. Folded to a rail, none
+ * of this applies and the menu is Tabler's own flyout. */
+.app-picker {
+  position: relative;
+}
+
+.app-picker-toggle {
+  width: 100%;
+  text-align: start;
+}
+
+.navbar-vertical:not(.navbar-folded) .navbar-nav .app-picker>.app-picker-toggle {
+  margin: 0.25rem 0.75rem;
+  width: calc(100% - 1.5rem);
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.navbar-vertical:not(.navbar-folded) .navbar-nav .app-picker>.app-picker-toggle:hover,
+.navbar-vertical:not(.navbar-folded) .navbar-nav .app-picker.open>.app-picker-toggle {
+  border-color: var(--tblr-border-color-translucent, var(--tblr-border-color));
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.app-picker-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+  line-height: 1.25;
+}
+
+.app-picker-caption {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+
+.app-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--tblr-font-weight-medium);
+}
+
+.app-picker-caret {
+  margin-inline-start: 0.5rem;
+  display: inline-flex;
+  transition: transform 0.15s;
+}
+
+.app-picker.open .app-picker-caret {
+  transform: rotate(180deg);
+}
+
+.navbar-vertical:not(.navbar-folded) .navbar-collapse .app-picker>.dropdown-menu.app-picker-menu {
+  position: absolute;
+  top: 100%;
+  inset-inline: 0.75rem;
+  z-index: 1060;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--tblr-dropdown-padding-y) var(--tblr-dropdown-padding-x);
+  color: var(--tblr-dropdown-color);
+  background-color: var(--tblr-dropdown-bg);
+  border: var(--tblr-dropdown-border-width) solid var(--tblr-dropdown-border-color);
+  border-radius: var(--tblr-dropdown-border-radius);
+  box-shadow: var(--tblr-dropdown-box-shadow);
+}
+
+.navbar-vertical:not(.navbar-folded) .navbar-collapse .app-picker>.app-picker-menu .dropdown-item {
+  padding-inline-start: 0.5rem;
+}
+
+.app-picker-menu .dropdown-item {
+  align-items: center;
+}
+
+/* A fixed slot for the tick, so the chosen name lines up with the others. */
+.app-picker-tick {
+  display: inline-flex;
+  flex: 0 0 1.25rem;
+  width: 1.25rem;
+  margin-inline-end: 0.25rem;
+}
+
+.app-picker-item-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -1,14 +1,10 @@
 // The Applications section of the sidebar: a picker for the current application,
 // and under it the links for working on that one (`appNav.ts` decides which).
 //
-// The picker is Tabler's own sidebar submenu — a `nav-item dropdown` — rather
-// than a `<select>`. A native select cannot be made to look like the rest of a
-// dark Tabler sidebar, and it has nothing to offer a folded one; the submenu is
-// styled for both by Tabler itself: unfolded, the menu opens inline under the
-// toggle like any submenu, and folded to a rail it flies out beside it. The
-// toggle's own label is the current application's name, so which one the links
-// below are about is on screen whenever the sidebar is wide enough to say so
-// (folded, it is the toggle's hover label).
+// The picker (`AppPicker.tsx`) is a dropdown whose menu floats over the links
+// under it. Its toggle shows the current application's name, so which one the
+// links below are about is on screen whenever the sidebar is wide enough to say
+// so (folded, it is the toggle's hover label).
 //
 // Which application is current is remembered across visits, and a route that
 // is about an application makes that application current — so opening one's
@@ -17,6 +13,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { api } from "./api";
+import { AppPicker } from "./AppPicker";
 import {
   buildApplication,
   buildApplicationTarget,
@@ -40,7 +37,6 @@ import { splitRoute } from "./builder";
 import type { ListAgentsResponse, ListApplicationsResponse } from "./client";
 import {
   IconAlertTriangle,
-  IconApps,
   IconBooks,
   IconCode,
   IconDeviceMobile,
@@ -52,7 +48,7 @@ import {
   IconMessagePlus,
   IconSettings,
 } from "./icons";
-import { T, useT } from "./i18n";
+import { useT } from "./i18n";
 
 type AppItem = ListApplicationsResponse[number];
 type AgentItem = ListAgentsResponse[number];
@@ -126,8 +122,8 @@ export function ApplicationsNav({ route, folded }: { route: string; folded: bool
     }
   }, [currentId]);
 
-  // Folded, the menu is a flyout over the page, and a flyout that only closes
-  // from its own toggle is one that gets left open over whatever is under it.
+  // The menu floats over the sidebar (or, folded, over the page), and one that
+  // only closes from its own toggle gets left open over whatever is under it.
   useEffect(() => {
     if (!open) return;
     const onDown = (event: MouseEvent) => {
@@ -148,80 +144,28 @@ export function ApplicationsNav({ route, folded }: { route: string; folded: bool
     if (current) void resumeTargetBuilds(current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeKey]);
-  const label = current
-    ? current.name
-    : apps && apps.length === 0
-      ? "No applications"
-      : "Choose application";
   const links = current ? appNavLinks(current, builderAgentFor(current, agents), window.location) : [];
   const listActive = onApplicationsList(path);
 
-  const choose = (app: AppItem) => {
+  const choose = (app: { id: string }) => {
     setCurrentId(app.id);
     setOpen(false);
   };
 
   return (
     <>
-      <li
-        ref={pickerRef}
-        className={`nav-item dropdown${listActive ? " active" : ""}`}
-      >
-        <a
-          className={`nav-link dropdown-toggle${open ? " show" : ""}`}
-          href="#"
-          role="button"
-          aria-expanded={open}
-          aria-haspopup="menu"
-          aria-label={`Current application: ${label}. Choose another`}
-          title={folded ? label : undefined}
-          onClick={(event) => {
-            event.preventDefault();
-            setOpen((o) => !o);
-          }}
-        >
-          <span className="nav-link-icon d-md-none d-lg-inline-block">
-            <IconApps />
-          </span>
-          <span
-            className={`nav-link-title app-picker-title${current ? "" : " text-secondary"}`}
-          >
-            {label}
-          </span>
-        </a>
-        <div className={`dropdown-menu${open ? " show" : ""}`} role="menu">
-          {apps?.map((app) => (
-            <button
-              key={app.id}
-              type="button"
-              role="menuitemradio"
-              aria-checked={app.id === current?.id}
-              className={`dropdown-item${app.id === current?.id ? " active" : ""}`}
-              onClick={() => choose(app)}
-            >
-              {app.name}
-            </button>
-          ))}
-          {apps?.length === 0 && (
-            <span className="dropdown-item disabled"><T text="No applications yet" /></span>
-          )}
-          <div className="dropdown-divider" />
-          <a
-            className={`dropdown-item${path === "/applications" ? " active" : ""}`}
-            href="#/applications"
-            role="menuitem"
-          >
-            <T text="All applications" />
-          </a>
-          <a
-            className={`dropdown-item${path === "/applications/new" ? " active" : ""}`}
-            href="#/applications/new"
-            role="menuitem"
-          >
-            <T text="New application" />
-          </a>
-        </div>
-      </li>
+      <AppPicker
+        apps={apps}
+        current={current}
+        open={open}
+        path={path}
+        listActive={listActive}
+        folded={folded}
+        pickerRef={pickerRef}
+        onToggle={() => setOpen((o) => !o)}
+        onChoose={choose}
+        onClose={() => setOpen(false)}
+      />
       {current &&
         links.map((link) => (
           <AppLink

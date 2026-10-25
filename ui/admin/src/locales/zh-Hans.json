@@ -926,5 +926,6 @@
   "Example: user.department === \"Finance\"": "示例：user.department === \"Finance\"",
   "A user with a less privileged role cannot sign in to this application or call any of its endpoints. Public lets everybody in.": "角色权限较低的用户无法登录此应用，也无法调用其任何端点。公开表示允许所有人。",
   "Nobody holds a more privileged role while using this application: an admin is served as this role. Admin caps nobody.": "使用此应用时，任何人都不会拥有更高权限的角色：管理员将以此角色访问。管理员表示不限制任何人。",
-  "A formula that must hold for anybody to use this application, with {user} in scope as in an ownership formula ({null} when nobody is signed in), or a condition on the time. It sees the user’s own role, before the maximum above. Blank means no condition.": "任何人使用此应用都必须满足的公式，可像所有权公式一样使用 {user}（无人登录时为 {null}），也可以是关于时间的条件。它看到的是用户自己的角色，在上述最高角色限制之前。留空表示没有条件。"
+  "A formula that must hold for anybody to use this application, with {user} in scope as in an ownership formula ({null} when nobody is signed in), or a condition on the time. It sees the user’s own role, before the maximum above. Blank means no condition.": "任何人使用此应用都必须满足的公式，可像所有权公式一样使用 {user}（无人登录时为 {null}），也可以是关于时间的条件。它看到的是用户自己的角色，在上述最高角色限制之前。留空表示没有条件。",
+  "Choose application": "选择应用"
 }
