@@ -5,7 +5,8 @@ looking for information leakage, privilege escalation, remote code execution, se
 related flaws.
 
 A second review (items 15 onward, base commit `5993840c`) follows the first; see
-"Second review — October 2026" below.
+"Second review — October 2026" below. A third review (items 36 onward, base commit `c4e43785`)
+follows that; see "Third review — October 2026".
 
 **Method.** Six read-only reviews ran in parallel, one per attack surface: authentication & sessions,
 API authorization, SQL/formula injection, code execution & SSRF, files/uploads/backups, and output
@@ -918,3 +919,273 @@ The full vendored Saltcorn-UI v1 runtime (spot checks only: `safe_href`, `safe_r
 4. Payments integrity: #18, #19, #33, #34, then #35.
 5. #23 (formula isolate), #24, #25, #28, #27, #22, #26, #29.
 6. The Low / hardening list.
+
+---
+---
+
+# Third review — October 2026
+
+A third general review of the whole system, on branch `security-review1` at base commit `c4e43785`
+(after the fixes for items 15–35). Only Critical, Severe and High issues are reported; issues that
+need an admin to author malicious code or configuration are out of scope. Line numbers are as of
+that commit.
+
+**Method.** Seven read-only reviews ran in parallel: a re-review of fixes 1–35 for bypasses;
+authentication, sessions and tenancy; data-access authorization; code execution and sandboxes;
+files and storage; rendering and browser-side security; and integrations, mail and network. Nothing
+was built or executed. Every finding below was re-traced against the source after the reviewer
+reported it, so they are marked **(verified)**: the path from attacker input to the sink was read.
+No exploit was run.
+
+## Summary
+
+| # | Severity | Issue | Status |
+|---|----------|-------|--------|
+| 36 | High | Vendored v1 `interpolate`: `{{= }}` re-evaluates row data as JavaScript (no #23 fix) → stored XSS, code in the shared view worker | open |
+| 37 | High | v1 page action buttons ignore `minRole`; the trigger then runs at admin authority, skipping its own `min_role` | open |
+| 38 | High | v1 views filter on `users.password_hash` from URL state → hash extraction oracle | open |
+| 39 | High | IMAP: forged `mail_attachments` row reads any user's stored attachment | open |
+| 40 | High | Invitations write `admin_only_write` user columns (bypass of #8) → cross-tenant membership | open |
+| 41 | High | Account pre-hijack: unverified password signup, then OAuth sign-in links to it by email | open |
+| 42 | High | Admin agent-chat socket keeps admin tools after logout, disable, demotion or password reset | open |
+
+36–38 share a root cause: the vendored Saltcorn-UI v1 runtime did not get the fixes made for the
+same classes in the Rust paths. 39 and 40 are both "a guard that exists, on a path that skips it".
+
+---
+
+## Third review: High
+
+### 36. High — v1 `{{= }}` evaluates row data as JavaScript (verified)
+
+**Attacker:** any app user (or anonymous visitor, on a publicly writable table) who can write a text
+field that a Saltcorn-UI v1 view, page or HTML segment shows with `{{= field }}`.
+
+**Path.** `Page.run` and the v1 patterns use the vendored `runtime.internals.interpolate`, not the
+Rust template engine (`crates/sc-module/src/js/module-host.mjs:3570,3686-3693`). In
+`ui/saltcorn-ui/vendor/saltcorn-data/utils.ts:529-538` the `=` sigil returns
+`go_interp(escapeHtml(strVal))`. The field's *value* is parsed again as a template, and every
+`{{ … }}` / `{{! … }}` inside it goes to `evaluator.evaluate(code, context)` as a full JavaScript
+expression. `escapeHtml` (`:550-552`) escapes only `& < >`, so quotes and `String.fromCharCode` pass
+through.
+
+**Impact.**
+- `{{! … }}` in a stored value emits raw HTML. Saltcorn-UI pages allow `'unsafe-inline'` script, so
+  this is stored XSS against every user who views the record.
+- The evaluator is `vm.runInNewContext` (`ui/saltcorn-ui/src/shims/vm2.ts`), which its own comment
+  says is not a boundary. `this.constructor.constructor` reaches the worker realm. That realm serves
+  every viewer's view calls, so injected code can patch the runtime and read or alter other viewers'
+  renders. Inside it, the view call's file host and `V1Trigger.run` are not clamped to the viewer
+  (see #37 and the second review's Low list). How far this reaches beyond that was not fully traced.
+
+**Why existing guards don't stop it.** The #23 fix (`crates/sc-expr/src/template.rs:425-455`,
+names-only and `{{!` downgraded for re-interpolated values) covers only the Rust engine.
+
+**Fix.** In the vendored `interpolate`, apply the same rule: re-interpolated values may contain only
+bare names and static members, and `{{!` becomes `{{`. Better, do not re-interpolate data at all.
+Run the view runtime in its own worker. Clamp the view call's file and trigger hosts to the viewer.
+
+### 37. High — v1 action buttons ignore `minRole`, and run at admin authority (verified)
+
+**Attacker:** any viewer of a page (or Show view) on which the admin placed an action button
+restricted with `minRole`, for example an admin-only "approve", "delete all" or "send" button on a
+page that users can view.
+
+**Path.** `crates/sc-viewpattern/src/framework.rs:681-715` (`page_action`) checks only the page's
+`min_role`. `viewPageAction` (`module-host.mjs:4625-4646`) finds the segment by `rndid` and calls
+`run_action_column` with no `minRole` check. The `on_page_load` path does check it (`:3641`), and
+render hides the button (`show.ts:445-448`). The Show pattern's `run_action` route is reported to
+behave the same way; that one was not re-traced. The trigger then runs through `V1Trigger.run` /
+`runWithoutRow` (`module-host.mjs:3795-3801`), which sends no `authority`. The default is
+`Authority::Admin` (`crates/sc-api/src/code_host/triggers.rs:241-243`), under which the trigger's
+own `min_role` is never checked (`:187`).
+
+**Precondition.** The attacker needs the button's `rndid`: 24 random bits, stable, present in the
+page source of any user who can see the button, and in exported layouts. It can also be guessed by
+brute force.
+
+**Fix.** Refuse in `viewPageAction` and every pattern's action route when `col.minRole` is below
+the viewer's role. Have `V1Trigger.run`/`runWithoutRow` send `authority: "user"` so the trigger's
+floor applies to view-initiated runs.
+
+### 38. High — `password_hash` usable as a filter through v1 views (verified)
+
+**Attacker:** an app user or anonymous visitor who can open a v1 list or show view over `users`
+and read at least some other users' rows. Typical cases are a member directory or a public profile
+page.
+
+**Path.**
+- URL state goes to `stateFieldsToWhere` (`module-host.mjs:3448`) with `table.getFields()`. The code-host
+  schema snapshot emits every column, the hash included (`crates/sc-api/src/code_host/schema.rs:111-116`).
+- `stateFieldsToWhere` (`ui/saltcorn-ui/vendor/saltcorn-data/plugin-helper.ts:2258-2400`) turns
+  `?password_hash=…` into `ilike %…%`, and `_gte_password_hash=` / `_lt_…` into range comparisons.
+- `v1_api.js` `getRows` passes the field name through to a select plan unchanged
+  (`crates/sc-expr/src/js/v1_api.js:336-423,1404`).
+- `Lowering::new` allows filters on every table field (`crates/sc-api/src/code_host/plan.rs:1163`).
+  `filter::queryable_field` (`crates/sc-api/src/filter.rs:432-462`) refuses Secret, calc and
+  collab fields, but not hidden ones.
+
+The rows returned are guarded and the hash is projected out, but the filter still runs. Which rows
+come back tells the attacker how the hash compares. A range search with `_gte_` recovers each
+user's full argon2 hash in a few hundred requests, ready for offline cracking.
+
+**Why existing guards don't stop it.** `user_rows::visible_field` is used by REST, GraphQL and live
+filters only (`query_string.rs:108,204`, `rest/query.rs:341`, `graphql/names.rs:412`), not by the
+code-host lowering.
+
+**Fix.** Build `Lowering.fields` without `user_rows::is_hidden_column` columns, which also refuses
+ordering on them. Leave hidden columns out of `schema.rs` `table_json`.
+
+### 39. High — IMAP: any user reads others' mail attachments with a forged row (verified)
+
+**Attacker:** any signed-in app user, on an app that exposes the IMAP module tables as
+`docs/tutorial-mail.md` describes. The `mail_files` store must be the one the module creates
+(the default).
+
+**Path.**
+1. The module's store has no floor: `local_store` (`crates/sc-module/src/tables.rs:661-672`) leaves
+   `min_role` as `None`. Module file writes run at `authority: "admin"`
+   (`crates/sc-module/src/files.rs:229`) and record no owner.
+2. Attachment paths are predictable: `attachments/<message id>/<n>-<filename>`, falling back to
+   `part-<n>` (`plugins/imap/sync.js:344-348`). Message ids are sequential.
+3. The attacker inserts their own `mail_accounts` row (`owner === user.id`,
+   `plugins/imap/index.js:193`), a `mail_messages` row under it, and a `mail_attachments` row whose
+   `file` is `attachments/<victim msg id>/2-part-2`. The ownership rule
+   `viaAccount("messageⱵaccount")` (`index.js:138,278`) passes.
+4. `may_attach_file` (`crates/sc-api/src/rows.rs:1532-1572`) calls `sc_files::check_write`. For a
+   file with no owner that only asks `caller.clears(floor)`, which is always true for `None`
+   (`crates/sc-files/src/access.rs:107-108,236-240`). Because a missing path is refused, the write
+   also tells the attacker which paths exist.
+5. REST download (`crates/sc-api/src/rest/mod.rs:1806-1840`) reads the path from the attacker's
+   readable row and applies the same `None` floor, so the victim's file is served. Forwarding it
+   with `mail_send {attachment_id}` (`plugins/imap/actions.js:425-428,652-657`) also works.
+
+**Fix.**
+- Record an owner marker on module-written files (e.g. `module:<name>`) so `check_write` refuses
+  them to everyone else.
+- Or: `may_attach_file` refuses unowned files to non-admins unless they already reach the path
+  through a row they can read.
+- Create module stores with `min_role: 1`.
+- Related (Medium): the `mail_folders` / `mail_messages` / `mail_attachments` ownership rules lack
+  the `_read &&` guard that `mail_accounts` has. Every reader of a shared account can therefore
+  insert, rewrite or delete its mail over REST, including forging "inbound" mail that fires the
+  tutorial's order-creating trigger.
+
+### 40. High — invitations write admin-only user columns (verified; bypass of #8)
+
+**Attacker:** an app user at or above `invite_min_role`, on an app with `allow_invite` and an invite
+floor below admin (the documented "therapists invite patients" / org-manager case). The users table
+has a tenancy column flagged `admin_only_write`, such as `org_id`, which ownership formulas read.
+
+**Path.** `POST {mount}/invite {"email": "<attacker alias>", "role": <weaker>, "fields": {"org_id":
+<victim org>}}`. `user_fields` (`crates/sc-api/src/rest/password.rs:418-439`, called at `:223`)
+refuses only `is_system_user_column`. `invite_user` → `create_invited_user` → `insert_user` writes
+the extra columns directly with SQL. The link goes to the address the attacker chose; they set a
+password and sign in as a member of the other tenant.
+
+**Why existing guards don't stop it.** The `ADMIN_ONLY_WRITE` check
+(`crates/sc-api/src/user_rows.rs:168-201`) lives in the row layer, which invitations bypass. The
+#8 fix assumed every write went through it.
+
+**Fix.** In `user_fields`, refuse `ADMIN_ONLY_WRITE` fields unless the inviter is an admin, or run
+the extras through `user_rows::check_insert` with the inviter's caller context.
+
+### 41. High — account pre-hijack via signup and OAuth linking by email (verified)
+
+**Attacker:** anonymous. Some app on the instance offers password signup (REST `signup` or the
+Saltcorn-UI `/auth/signup` form), and some app offers an OAuth provider. Users are instance-wide.
+
+**Path.** The attacker signs up as `victim@corp` with a password they choose. Signup does not check
+the email (`crates/sc-api/src/rest/mod.rs:1166-1197`, `crates/sc-viewpattern/src/framework.rs:879-908`).
+Later the victim uses "Sign in with Google/Microsoft". `account_for`
+(`crates/sc-server/src/oauth.rs:738-783`) calls `load_user_by_email` and signs the victim into the
+attacker's account. The attacker keeps password access and any session they hold, so they see
+everything the victim later stores, buys or is granted. Invites and admin creation of that address
+fail with "already exists", which nudges the admin to promote the attacker's account.
+
+**Why existing guards don't stop it.** Fix #9 checks the *provider's* `email_verified`, not whether
+the local account ever proved the address.
+
+**Fix.** Keep a local `email_verified` flag. Password signup leaves it false; redeeming a reset or
+invite link sets it. `account_for` refuses to link an unverified password account, or clears its
+password and ends its sessions before linking. Requiring email confirmation on signup also closes it.
+
+### 42. High — admin chat socket outlives the session (verified)
+
+**Attacker:** anyone who once held an admin session: a stolen session, or an admin who has since
+been demoted, disabled, force-logged-out or had their password reset.
+
+**Path.** `agent_chat` (`crates/sc-server/src/router.rs:1006-1039`) resolves the session once, at
+the handshake. `agent_chat_upgrade` (`crates/sc-server/src/chat.rs:130-150`) freezes the user as
+`RunCaller::user(user)`. `chat()` (`:177` onward) runs a turn for every message for the life of the
+socket and never re-reads the session. Tool gates read the frozen role
+(`crates/sc-core-traits/src/coding.rs:720`), so shell, module install, copilot and host-code tools
+stay available. Pings keep the socket open with no time limit.
+
+**Why existing guards don't stop it.** Only the app live hub registers as a session listener
+(`router.rs:248-250`). Logout, `forceLogoutUser`, disabling, demotion and password-reset session
+deletion do not reach this socket. The documented "re-read within 60 s" therefore does not hold
+for the most powerful route. The LSP, stream-observe and fit-progress sockets use the same
+once-at-handshake pattern but offer no shell.
+
+**Fix.** Register these sockets as `SessionListener`s and close them on `SessionEnded`. Re-check
+`sessions.user_for(token)` plus the admin check before each turn and on a timer, as the live
+socket's `recheck` does.
+
+---
+
+## Third review: below the bar, noted
+
+Reported as Medium, which is below this review's bar. They are listed because they are gaps in
+earlier fixes:
+
+- **#30 bypass**: modules share a realm with unfrozen intrinsics. Patching `Map.prototype.set/get`
+  captures every call token and defeats the `callOwners` check (`module-host.mjs:238-245,4967`).
+  The Rust side (`sc-module/src/deno/worker.rs:395-405`) routes asks by token alone. Freeze the
+  intrinsics before modules load (as `FREEZE_PRELUDE` does), and bind tokens to their module on
+  the Rust side.
+- **#32 bypass**: `call_api` / `view_app` loopback requests carry no `UNTRUSTED_ORIGIN` mark
+  (`sc-server/src/requests.rs:69-100`). A write they cause can start a `trusted_input` `run_agent`
+  trigger as `RunCaller::system()`.
+- **#5 gap**: `SCRIPT_TYPES` (`sc-server/src/file_response.rs`) misses `text/x-javascript`,
+  `application/x-ecmascript`, `text/javascript1.x` and others. IMAP sets an attachment's type from
+  the sender, so such a file can be loaded as a same-origin script by an HTML injection (e.g. #36).
+  Use an allow-list of inline-safe types instead.
+- **#16 gap**: REST File-field upload (`sc-api/src/rest/mod.rs` `upload_inner`) runs
+  `check_write`/`controls_build` only when the target already exists, so new `package.json` /
+  `*.config.*` files can be created. This matters only if a File field's folder overlaps a source root.
+- **REST embeds ignore the app's table subset** (`sc-api/src/rest/query.rs:375-389`). The target
+  table's own read floor still applies.
+
+## Third review: checked and found sound
+
+- **Fixes 1–35** hold for the routes they name (apart from the gaps above), including #15's
+  `admin_host_only` on every real admin route, #20/#21's `is_admin` requiring a trusted origin at
+  every gate, #28's readable-only write responses and #31's canonical-path `.git` check.
+- **Rendering**: Saltcorn-UI document, builder boot JSON, OAuth `leave_for`, Astro escaping and
+  render cache (anonymous only, uncacheable on per-visitor reads, no `Set-Cookie`), `as_user_content`,
+  CSP `frame-ancestors 'none'` on admin UIs, no `postMessage` handlers.
+- **Data access**: REST/GraphQL/live hidden-column and Secret refusals, `write_as`, aggregates,
+  datasets/analytics guard rewrite, history, RLS fail-closed, `TableHost::viewer_only` row reads.
+- **Auth**: admin handoff, OAuth host binding and PKCE, password tokens, invite role rule, grant
+  ceilings, session freshness, guest sessions app-scoped, WebSocket Origin checks, CSRF coverage.
+- **Files**: `/files/serve` path checks and floors, traversal and symlink refusals, tus slots, agent
+  file tools, admin file endpoints.
+- **Integrations**: payment signatures and account binding, MCP, `fetch` SSRF fix, `is_public`,
+  module webhooks, IMAP/SMTP target checks, ACME names, `trusted_proxies`.
+
+## Third review: not covered in depth
+
+- Vendored v1 List / Edit / Feed / Filter action routes (expected to share #37).
+- How far code reaches after the #36 vm escape inside the view worker.
+- TNEF `PR_ATTACH_MIME_TAG` against `as_user_content`'s essence parsing and its PDF exemption.
+- Rust HTML in `sc-llm/listing.rs`, `sc-core-traits/http/document.rs`, `sc-email/mjml.rs`.
+- Sync push, undo writes, `rest/custom.rs`, `calc_read.rs`.
+- sc-cli remote commands.
+
+## Third review: recommended order
+
+1. #36 and #37 (v1 runtime: data as code, button floors and trigger authority), then #38.
+2. #42 (admin socket revocation) and #41 (pre-hijack).
+3. #39 (module-file ownership) and #40 (invite columns).
+4. The noted Medium gaps.
