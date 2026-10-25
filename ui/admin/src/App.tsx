@@ -30,6 +30,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconFolder,
+  IconLayoutDashboard,
   IconLogout,
   IconMoon,
   IconRobot,
@@ -44,6 +45,7 @@ import { useFoldedSidebar, useTheme } from "./layout";
 import { LocalePicker } from "./screens/LocalePicker";
 import { AgentChat } from "./screens/AgentChat";
 import { AgentForm } from "./screens/AgentForm";
+import { Entities } from "./screens/Entities";
 import { Agents } from "./screens/Agents";
 import { Applications } from "./screens/Applications";
 import { ApplicationForm } from "./screens/ApplicationForm";
@@ -86,7 +88,7 @@ export type CurrentUser = NonNullable<AuthStatusResponse["current_user"]>;
 
 /** Subscribe to `location.hash`, normalised to a path like `/tables`. */
 function useHashRoute(): string {
-  const read = () => window.location.hash.replace(/^#/, "") || "/tables";
+  const read = () => window.location.hash.replace(/^#/, "") || "/entities";
   const [route, setRoute] = useState(read);
   useEffect(() => {
     const onChange = () => setRoute(read());
@@ -185,6 +187,16 @@ type NavItem = {
 /** The Data Layer section of the sidebar: the installation's shared furniture.
  * Applications are the other section, and are not entries here — that section is
  * about one application at a time, picked in the sidebar (`AppSidebar.tsx`). */
+/** The home page's entry: every entity of every kind in one list, the
+ * recently edited first (`screens/Entities.tsx`). Above the sections rather
+ * than in one, because it is about all of them, and where the admin UI opens. */
+export const HOME: NavItem = {
+  href: "#/entities",
+  label: "All entities",
+  icon: <IconLayoutDashboard />,
+  matches: ["/entities"],
+};
+
 export const NAV: NavItem[] = [
   {
     href: "#/tables",
@@ -358,7 +370,7 @@ function Shell({
               colours to keep. */}
           <div className="navbar-brand">
             <a
-              href="#/tables"
+              href="#/entities"
               className="d-flex align-items-center gap-2"
               aria-label={t("Saltcorn")}
             >
@@ -402,33 +414,11 @@ function Shell({
             <ul className="navbar-nav pt-lg-3">
               {/* Tabler's section titles: folded to a rail, each becomes a short
                   rule between the groups of icons. */}
+              <NavLink item={HOME} route={route} folded={folded} />
               <li className="nav-section-title"><T text="Data Layer" /></li>
-              {NAV.map((item) => {
-                const active = item.matches.some((prefix) =>
-                  route.startsWith(prefix),
-                );
-                return (
-                  <li
-                    key={item.href}
-                    className={active ? "nav-item active" : "nav-item"}
-                  >
-                    <a
-                      className={active ? "nav-link active" : "nav-link"}
-                      href={item.href}
-                      aria-current={active ? "page" : undefined}
-                      // Folded, the icon is all there is to go on, so the name
-                      // becomes the hover label. Unfolded it is already on
-                      // screen and a tooltip would only repeat it.
-                      title={folded ? item.label : undefined}
-                    >
-                      <span className="nav-link-icon d-md-none d-lg-inline-block">
-                        {item.icon}
-                      </span>
-                      <span className="nav-link-title">{item.label}</span>
-                    </a>
-                  </li>
-                );
-              })}
+              {NAV.map((item) => (
+                <NavLink key={item.href} item={item} route={route} folded={folded} />
+              ))}
               <li className="nav-section-title"><T text="Applications" /></li>
               <ApplicationsNav route={route} folded={folded} />
             </ul>
@@ -518,6 +508,37 @@ function Shell({
   );
 }
 
+/** One sidebar link, lit up when the route is one of the item's. */
+function NavLink({
+  item,
+  route,
+  folded,
+}: {
+  item: NavItem;
+  route: string;
+  folded: boolean;
+}) {
+  const active = item.matches.some((prefix) => route.startsWith(prefix));
+  return (
+    <li className={active ? "nav-item active" : "nav-item"}>
+      <a
+        className={active ? "nav-link active" : "nav-link"}
+        href={item.href}
+        aria-current={active ? "page" : undefined}
+        // Folded, the icon is all there is to go on, so the name becomes the
+        // hover label. Unfolded it is already on screen and a tooltip would
+        // only repeat it.
+        title={folded ? item.label : undefined}
+      >
+        <span className="nav-link-icon d-md-none d-lg-inline-block">
+          {item.icon}
+        </span>
+        <span className="nav-link-title">{item.label}</span>
+      </a>
+    </li>
+  );
+}
+
 /** Light/dark switch. One button that shows the scheme it would switch *to*,
  * which is how Tabler's own header reads (it swaps two links; we swap an icon). */
 function ThemeToggle({
@@ -565,6 +586,9 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   // Routes are matched on their path; a query is what a screen is opened with
   // (the builder's way back to `views/:name?step=n`).
   const { path, query } = splitRoute(route);
+  if (path === "/entities") {
+    return <Entities />;
+  }
   const tableDataMatch = path.match(/^\/tables\/([^/]+)\/data$/);
   if (tableDataMatch) {
     return <TableData table={decodeURIComponent(tableDataMatch[1])} />;

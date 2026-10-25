@@ -103,6 +103,9 @@ fn trigger_fields() -> Vec<DataField> {
         // Nullable, and necessarily so: it is reconciled onto tables that
         // already have rows, and "never run" is its honest value for those.
         DataField::plain(COL_LAST_RUN_AT, TypeRef::Basic(BasicType::Timestamp)),
+        // When it was last saved (`sc_catalog::edited`): bookkeeping for the
+        // entities list, written by every save and read by nothing else.
+        sc_catalog::updated_at_field(),
     ]
 }
 
@@ -196,6 +199,24 @@ pub async fn record_trigger_run(catalog: &Catalog, id: TriggerId, at: DateTime<U
     run(catalog, Statement::from(update)).await
 }
 
+/// Record that `id` was edited now without rewriting its row — for an edit
+/// that lives elsewhere, a workflow body's new version (§10.3), which is still
+/// an edit of the trigger as far as the entities list is concerned.
+pub async fn touch_trigger(catalog: &Catalog, id: TriggerId) -> Result<()> {
+    if catalog.get(TRIGGERS_TABLE)?.is_none() {
+        return Ok(());
+    }
+    let update = sc_query::Update::new(
+        TRIGGERS_TABLE,
+        vec![Assignment::new(
+            sc_catalog::COL_UPDATED_AT.to_owned(),
+            Expr::Lit(sc_catalog::updated_now()),
+        )],
+    )
+    .filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
+    run(catalog, Statement::from(update)).await
+}
+
 /// Load the trigger with this id, if it exists.
 pub async fn load_trigger(catalog: &Catalog, id: TriggerId) -> Result<Option<Trigger>> {
     load_one(catalog, Expr::col(COL_ID).eq(Expr::lit(id.0))).await
@@ -251,6 +272,7 @@ fn trigger_columns() -> Vec<String> {
         COL_CONFIGURATION,
         COL_MIN_ROLE,
         COL_ATTRIBUTES,
+        sc_catalog::COL_UPDATED_AT,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -276,6 +298,8 @@ fn trigger_values(trigger: &Trigger) -> Vec<Value> {
             None => Value::Null,
         },
         Value::Json(Json::Object(trigger.attributes.clone())),
+        // Every save is an edit (`sc_catalog::edited`).
+        sc_catalog::updated_now(),
     ]
 }
 

@@ -326,7 +326,7 @@ export function Triggers() {
  * `console.error` is coloured as one: a body that logged an error and then
  * returned a value is a body whose result is not the whole story.
  */
-function TestRunToast({
+export function TestRunToast({
   outcome,
   onClose,
 }: {

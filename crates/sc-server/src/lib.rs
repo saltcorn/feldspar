@@ -33,6 +33,7 @@ mod change_log_cleanup;
 mod chat;
 mod clear_all;
 mod config;
+mod entities;
 mod file_response;
 mod fit_progress;
 mod handler;

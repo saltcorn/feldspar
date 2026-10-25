@@ -99,6 +99,22 @@ pub fn admin_endpoints() -> EndpointSet {
             .auth(AuthRequirement::admin()),
     );
 
+    // --- entities: the admin UI's home page --------------------------------
+
+    // Every entity an admin configures — tables, file stores, triggers, agents
+    // and applications — in one list, each with when it was last saved, so the
+    // home page can show the recently edited ones and search them all. The
+    // per-kind lists stay the place to read one kind in full; this carries what
+    // a row of a mixed list shows. With `deep`, each also carries its whole
+    // definition as text, for a search that looks inside it (secrets masked,
+    // as the per-kind lists mask them).
+    set.register(
+        Endpoint::new("listEntities", Method::Get, api().lit("entities"))
+            .query([QueryParam::new("deep", ValueType::Bool)])
+            .output(TypeSchema::array(entity_schema()))
+            .auth(AuthRequirement::admin()),
+    );
+
     set.register(
         Endpoint::new("createTable", Method::Post, api().lit("tables"))
             .input(TypeSchema::struct_of([
@@ -6768,6 +6784,33 @@ fn build_result_schema() -> TypeSchema {
 /// whose action a removed plugin provided is **not in the live set** and will not
 /// fire, but it is still stored, still listed and still editable — and the reason
 /// is the only thing that says what to fix.
+/// One row of `listEntities`.
+fn entity_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        // `table`, `file_store`, `trigger`, `agent` or `application`.
+        StructField::new("kind", TypeSchema::text()),
+        // What the entity's own screen is addressed by: a table's name, or the
+        // id of any other kind's row.
+        StructField::new("id", TypeSchema::text()),
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("description", TypeSchema::text()),
+        // Short facts for the Details column, most telling first: a trigger's
+        // event and action, an agent's provider and model, a store's backend.
+        StructField::new("details", TypeSchema::array(TypeSchema::text())),
+        // Who may use it, as role names: `read/write` for a table.
+        StructField::new("access", TypeSchema::text()),
+        // Null for one not saved since edit times were recorded.
+        StructField::new("updated_at", TypeSchema::optional(TypeSchema::timestamp())),
+        // Whether the Run link means anything now: false for a trigger that is
+        // switched off or not usable.
+        StructField::new("runnable", TypeSchema::bool()),
+        // An application's subdomain, for the link that opens it.
+        StructField::new("subdomain", TypeSchema::optional(TypeSchema::text())),
+        // The whole definition as JSON text — only when asked for with `deep`.
+        StructField::new("definition", TypeSchema::optional(TypeSchema::text())),
+    ])
+}
+
 fn trigger_schema() -> TypeSchema {
     let mut fields = vec![StructField::new("id", TypeSchema::uuid())];
     fields.extend(trigger_fields());

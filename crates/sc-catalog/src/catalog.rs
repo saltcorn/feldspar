@@ -939,6 +939,7 @@ impl Catalog {
     /// [`drop_table`](Self::drop_table), split out so a batch can do it after its
     /// own DDL has committed.
     pub async fn forget_table_meta(&self, name: &str) -> Result<()> {
+        crate::edited::forget_table_edit(self, name).await?;
         if self.get(FIELD_META_TABLE)?.is_some() {
             for meta in crate::field_meta::list_field_meta_for_table(self, name).await? {
                 crate::field_meta::delete_field_meta_row(self, meta.id).await?;

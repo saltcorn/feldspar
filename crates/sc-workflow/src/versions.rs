@@ -155,6 +155,7 @@ pub async fn save_workflow(
             .collect(),
     );
     exec(catalog, Statement::from(insert)).await?;
+    sc_action::touch_trigger(catalog, workflow.id).await?;
     Ok(minted)
 }
 

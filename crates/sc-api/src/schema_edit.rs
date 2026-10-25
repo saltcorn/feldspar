@@ -649,6 +649,16 @@ pub async fn apply(
 
     catalog.reload().await?;
 
+    // Every table the batch created or changed was edited now (the entities
+    // list's "recently edited"); a dropped one forgot its time with its overlay.
+    let edited: Vec<&str> = plan
+        .changes
+        .iter()
+        .filter(|change| !matches!(change, SchemaChanged::TableDropped(_)))
+        .map(SchemaChanged::table)
+        .collect();
+    sc_catalog::touch_tables(catalog, &edited).await?;
+
     let mut applied = plan.applied;
     for change in &plan.changes {
         match catalog.notify_schema_changed(change) {

@@ -428,6 +428,9 @@ fn table_meta_fields() -> Vec<DataField> {
 /// same contract as [`bootstrap_file_stores`](crate::bootstrap_file_stores).
 /// Call once at startup, after the [`Catalog`] is initialised.
 pub async fn bootstrap_table_meta(catalog: &Catalog) -> Result<Table> {
+    // A table's last edit time is kept beside its overlay rather than in it
+    // (see `edited`), and is needed wherever tables are configured.
+    crate::edited::bootstrap_table_edits(catalog).await?;
     if let Some(existing) = catalog.get(TABLE_META_TABLE)? {
         return Ok(existing);
     }
@@ -513,7 +516,7 @@ pub async fn save_table_meta_row(catalog: &Catalog, meta: &TableMeta) -> Result<
         );
         run(catalog, Statement::from(insert)).await?;
     }
-    Ok(())
+    crate::edited::touch_tables(catalog, &[name]).await
 }
 
 /// Load the overlay with this id, if it exists.

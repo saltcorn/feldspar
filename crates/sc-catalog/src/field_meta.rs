@@ -381,7 +381,7 @@ pub async fn save_field_meta_row(catalog: &Catalog, meta: &FieldMeta) -> Result<
         );
         run(catalog, Statement::from(insert)).await?;
     }
-    Ok(())
+    crate::edited::touch_tables(catalog, &[table]).await
 }
 
 /// Load the overlay with this id, if it exists.

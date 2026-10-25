@@ -126,6 +126,14 @@ div.navbar-brand>a:hover {
   white-space: nowrap;
 }
 
+/* The entities list's section headings ("Recently edited", "All entities"):
+   a band across the table in the surface's secondary colour, which Tabler
+   redefines for the dark theme (Bootstrap's `table-light` would stay light). */
+.entities-section > td {
+  background: var(--tblr-bg-surface-secondary);
+  letter-spacing: 0.04em;
+}
+
 /* A build log in the outcome toast: long enough to read the error, not so long
  * the toast covers the page. */
 .app-outcome-toast {

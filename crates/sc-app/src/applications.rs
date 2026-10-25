@@ -141,6 +141,9 @@ fn applications_fields() -> Vec<DataField> {
         DataField::plain(COL_MIN_ROLE, int()),
         DataField::plain(COL_MAX_ROLE, int()),
         DataField::plain(COL_ACCESS_IF, text()),
+        // When it was last saved (`sc_catalog::edited`): bookkeeping for the
+        // entities list, written by every save and read by nothing else.
+        sc_catalog::updated_at_field(),
     ]
 }
 

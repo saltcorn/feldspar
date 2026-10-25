@@ -33,6 +33,7 @@ pub mod changeset;
 mod code_libraries;
 mod constraint;
 mod db_connections;
+mod edited;
 mod events;
 mod field;
 mod field_meta;
@@ -84,6 +85,10 @@ pub use db_connections::{
     check_db_connection_saveable, connect_all_db_connections, connect_db_connection,
     delete_db_connection, dial, list_db_connections, load_db_connection,
     load_db_connection_by_name, save_db_connection,
+};
+pub use edited::{
+    COL_UPDATED_AT, TABLE_EDITS_TABLE, bootstrap_table_edits, forget_table_edit, touch_tables,
+    updated_at_by, updated_at_field, updated_now,
 };
 pub use events::{LIVE_EVENTS, TRIGGER_EVENTS, TableEvents, TableWrite, WriteOp};
 pub use field::{

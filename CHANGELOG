@@ -2,6 +2,38 @@
 
 Changes in reverse chronological order.
 
+## The admin UI's home page: all entities, the recently edited first
+
+Saltcorn 1's "All entities" list, as the admin UI's home page (`#/entities`, and where the
+admin UI opens; first in the sidebar as **All entities**).
+
+- **One list of every entity** an admin configures: tables, file stores, triggers ("actions"),
+  agents and applications. Views and pages belong to one application's framework, so they are
+  not in it. Each row has its kind, its name linking to its configuration screen, a **Run**
+  link where running one means something (a table's data, a store's files, a trigger's test
+  run in place — the same toast the triggers list shows —, a chat with an agent, the running
+  application), a few details (a trigger's event and action, an agent's provider and model,
+  a store's backend, a table's field count) and who may use it (`read/write` for a table).
+  "Create …" buttons for each kind are at the foot.
+- **Recently edited**: the five most recently saved entities come first, with how long ago.
+- **Search** matches names, descriptions and kinds; **Deep search** fetches the listing again
+  with each definition (the JSON its own list endpoint answers, so secrets stay masked) and
+  matches inside it. The **type** buttons narrow the list to the kinds switched on; none
+  switched on shows every kind.
+- **`updated_at` on every definition.** `_fd_triggers`, `_fd_agents`, `_fd_file_stores` and
+  `_fd_applications` have a nullable `updated_at` that their save functions stamp, so every
+  path that saves one (admin API, MCP, CLI) records it; a workflow's new version stamps its
+  trigger. A table's `_fd_tables` row is an optional overlay, so its edit time is kept in a new
+  `_fd_table_edits` (name → time), stamped by every schema-editor batch and every table or field
+  overlay save, and forgotten when the table is dropped (`sc_catalog::edited`).
+- New admin endpoint `listEntities` (`GET /api/entities?deep=`), in `sc-server/src/entities.rs`.
+- Migration: `TABLES_RENAME.sql` adds the columns and the table (bootstrap adds them too).
+- **Tests:** `entities_api::every_entity_is_listed_with_when_it_was_last_saved` (sc-server: each
+  kind listed, saves stamped in order, an edit moves a trigger to the top, a schema change
+  stamps a table that has no overlay row, only `deep` carries definitions);
+  `ui/admin/src/entities.test.ts` (search, deep search, type filter, recently edited, ordering,
+  links).
+
 ## Security fixes: v1 action roles, hidden-column filters, module file owners, invitation columns, signup pre-hijack, chat socket
 
 Fixes for items 37–42 of `docs/SECURITY_REVIEW_2026-10.md` (third review). Item 36 is not

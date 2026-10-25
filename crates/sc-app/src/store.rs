@@ -305,6 +305,7 @@ fn app_columns() -> Vec<String> {
         COL_MIN_ROLE,
         COL_MAX_ROLE,
         COL_ACCESS_IF,
+        sc_catalog::COL_UPDATED_AT,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -354,6 +355,8 @@ fn app_values(app: &Application) -> Result<Vec<Value>> {
         Value::Int(i64::from(app.min_role)),
         Value::Int(i64::from(app.max_role)),
         Value::Text(app.access_if.trim().to_owned()),
+        // Every save is an edit (`sc_catalog::edited`).
+        sc_catalog::updated_now(),
     ])
 }
 

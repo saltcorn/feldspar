@@ -11,6 +11,8 @@ export type CreateFirstUserResponse = { id: string; email: string; role: number 
 export type LoginRequest = { email: string; password: string };
 export type LoginResponse = { id: string; email: string; role: number };
 export type ListTablesResponse = Array<{ name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; sync_enabled: boolean; history_enabled: boolean; history_min_role?: number | null; history_keep_days?: number | null; configured: boolean; ownership_error?: string | null; rls_available: boolean; sync_available: boolean; history_available: boolean; database: string; metadata: boolean; module?: string | null; module_fields: Array<string>; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null }>;
+export type ListEntitiesQuery = { deep?: boolean };
+export type ListEntitiesResponse = Array<{ kind: string; id: string; name: string; description: string; details: Array<string>; access: string; updated_at?: string | null; runnable: boolean; subdomain?: string | null; definition?: string | null }>;
 export type CreateTableRequest = { name: string; database?: string | null };
 export type CreateTableResponse = { name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; sync_enabled: boolean; history_enabled: boolean; history_min_role?: number | null; history_keep_days?: number | null; configured: boolean; ownership_error?: string | null; rls_available: boolean; sync_available: boolean; history_available: boolean; database: string; metadata: boolean; module?: string | null; module_fields: Array<string>; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null };
 export type CreateTableFromCsvRequest = { name: string; csv: string; database?: string | null };
@@ -432,6 +434,7 @@ export interface ApiClient {
   login(body: LoginRequest): Promise<LoginResponse>;
   logout(): Promise<void>;
   listTables(): Promise<ListTablesResponse>;
+  listEntities(query?: ListEntitiesQuery): Promise<ListEntitiesResponse>;
   createTable(body: CreateTableRequest): Promise<CreateTableResponse>;
   createTableFromCsv(body: CreateTableFromCsvRequest): Promise<CreateTableFromCsvResponse>;
   createTableFromGeoFile(body: CreateTableFromGeoFileRequest): Promise<CreateTableFromGeoFileResponse>;
@@ -756,6 +759,17 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("listTables", res);
       return (await res.json()) as ListTablesResponse;
+    },
+    async listEntities(query) {
+      const search = new URLSearchParams();
+      if (query?.deep !== undefined && query?.deep !== null) search.append("deep", String(query?.deep));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/entities${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listEntities", res);
+      return (await res.json()) as ListEntitiesResponse;
     },
     async createTable(body) {
       const res = await doFetch(`${baseUrl}/api/tables`, {

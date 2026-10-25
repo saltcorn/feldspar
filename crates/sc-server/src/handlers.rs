@@ -7211,6 +7211,8 @@ pub fn admin_handlers_with(
     // --- the Analytics UI (analytics TODO A1.13) -----------------------------
     crate::analytics::register(&mut reg, catalog.clone());
     crate::public_datasets::register(&mut reg, catalog.clone(), fetch);
+    // --- the home page's entities list ----------------------------------------
+    crate::entities::register(&mut reg, catalog.clone(), apps.clone());
 
     reg
 }
@@ -8282,7 +8284,7 @@ fn parse_str_array(obj: &Map<String, Json>, key: &str) -> Result<Vec<String>> {
 /// row, because they are not properties of the definition: the same definition
 /// is connected on one machine and not on another, and that difference is
 /// exactly what the admin needs to see.
-fn file_store_json(catalog: &Catalog, def: &FileStoreDef) -> Result<Json> {
+pub(crate) fn file_store_json(catalog: &Catalog, def: &FileStoreDef) -> Result<Json> {
     let connected = catalog.file_store(&def.name)?;
     Ok(json!({
         "id": Some(def.id.0),

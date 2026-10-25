@@ -81,7 +81,7 @@ pub use scope::{
 };
 pub use store::{
     COL_ACTION, COL_BODY, TRIGGERS_TABLE, bootstrap_triggers, delete_trigger, list_triggers,
-    load_trigger, load_trigger_by_name, record_trigger_run, save_trigger,
+    load_trigger, load_trigger_by_name, record_trigger_run, save_trigger, touch_trigger,
 };
 pub use trigger::{ATTR_ENABLED, Trigger, TriggerBody, TriggerId};
 pub use triggers::{TriggerIssue, Triggers};

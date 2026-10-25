@@ -76,6 +76,8 @@ fn file_store_fields() -> Vec<DataField> {
         // (public) only in intent, but the admin UI shows them differently.
         DataField::plain(COL_MIN_ROLE, int()),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
+        // When it was last saved (`edited`): bookkeeping for the entities list.
+        crate::edited::updated_at_field(),
     ]
 }
 
@@ -521,6 +523,7 @@ fn store_columns() -> Vec<String> {
         COL_CONFIG,
         COL_MIN_ROLE,
         COL_ATTRIBUTES,
+        crate::edited::COL_UPDATED_AT,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -540,6 +543,8 @@ fn store_values(def: &FileStoreDef) -> Vec<Value> {
             None => Value::Null,
         },
         Value::Json(Json::Object(def.attributes.clone())),
+        // Every save is an edit (`sc_catalog::edited`).
+        crate::edited::updated_now(),
     ]
 }
 

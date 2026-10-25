@@ -70,6 +70,9 @@ fn agent_fields() -> Vec<DataField> {
         DataField::plain(COL_TRAITS, json()).required(),
         DataField::plain(COL_MIN_ROLE, TypeRef::Basic(BasicType::Int)),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
+        // When it was last saved (`sc_catalog::edited`): bookkeeping for the
+        // entities list, written by every save and read by nothing else.
+        sc_catalog::updated_at_field(),
     ]
 }
 
@@ -190,6 +193,7 @@ fn agent_columns() -> Vec<String> {
         COL_TRAITS,
         COL_MIN_ROLE,
         COL_ATTRIBUTES,
+        sc_catalog::COL_UPDATED_AT,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -225,6 +229,8 @@ fn agent_values(agent: &Agent) -> Vec<Value> {
             None => Value::Null,
         },
         Value::Json(Json::Object(agent.attributes.clone())),
+        // Every save is an edit (`sc_catalog::edited`).
+        sc_catalog::updated_now(),
     ]
 }
 

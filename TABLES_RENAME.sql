@@ -861,3 +861,16 @@ ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "agents" jsonb
 -- Security review #41: whether an account's address was ever proven. Only `false` (a
 -- self-service signup nobody has confirmed) says anything; existing accounts stay NULL.
 ALTER TABLE IF EXISTS "users" ADD COLUMN IF NOT EXISTS "email_verified" boolean;
+
+-- The entities list (admin home page): when each definition was last saved. NULL reads back as
+-- "not known", so existing rows just sort after the edited ones. (Bootstrap adds these too.)
+-- On SQLite use `ADD COLUMN "updated_at" TEXT` without `IF NOT EXISTS`, once per table.
+ALTER TABLE IF EXISTS "_fd_triggers" ADD COLUMN IF NOT EXISTS "updated_at" timestamptz;
+ALTER TABLE IF EXISTS "_fd_agents" ADD COLUMN IF NOT EXISTS "updated_at" timestamptz;
+ALTER TABLE IF EXISTS "_fd_file_stores" ADD COLUMN IF NOT EXISTS "updated_at" timestamptz;
+ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "updated_at" timestamptz;
+-- A table's edit time is kept beside its optional `_fd_tables` overlay rather than in it.
+CREATE TABLE IF NOT EXISTS "_fd_table_edits" (
+  "name" text PRIMARY KEY,
+  "updated_at" timestamptz NOT NULL
+);
