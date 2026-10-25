@@ -508,6 +508,48 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     let token_request = seen.lock().unwrap().token_requests.last().cloned().unwrap();
     assert_eq!(token_request["grant_type"], "authorization_code");
 
+    // An account a signup made for somebody else's address (security review
+    // #41): the provider's sign-in for that address claims it. Whoever signed
+    // up loses their password and their session, and the address is proven.
+    let squatted = sc_auth::sign_up_user(&catalog, "victim@example.com", "squat-pw", 100).await?;
+    assert!(squatted.email_unproven());
+    let mut squatter = Browser::new(router.clone(), APP_HOST);
+    squatter.send("GET", "/", None).await;
+    let (status, body) = squatter
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "victim@example.com", "password": "squat-pw" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        squatter.whoami().await.as_deref(),
+        Some("victim@example.com")
+    );
+    let mut holder = Browser::new(router.clone(), APP_HOST);
+    let (status, _) = sign_in(&router, &mut holder, &seen, "victim@example.com", "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(holder.whoami().await.as_deref(), Some("victim@example.com"));
+    assert_eq!(
+        squatter.whoami().await,
+        None,
+        "the squatter's session is gone"
+    );
+    let (status, _) = squatter
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "victim@example.com", "password": "squat-pw" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "and so is their password");
+    let claimed = load_user_by_email(&catalog, "victim@example.com")
+        .await?
+        .unwrap();
+    assert_eq!(claimed.id, squatted.id);
+    assert!(!claimed.email_unproven());
+
     // An unverified address is refused, back on the page it started from.
     let mut other = Browser::new(router.clone(), APP_HOST);
     let (_, back) = sign_in(&router, &mut other, &seen, "unverified@example.com", "/x").await;

@@ -165,6 +165,16 @@ impl User {
         matches!(self.get(COL_DISABLED), Some(Value::Bool(true)))
     }
 
+    /// Whether this account was made by a self-service signup whose address
+    /// nobody has proven since ([`COL_EMAIL_VERIFIED`](crate::COL_EMAIL_VERIFIED)
+    /// is `false`).
+    pub fn email_unproven(&self) -> bool {
+        matches!(
+            self.get(crate::users::COL_EMAIL_VERIFIED),
+            Some(Value::Bool(false))
+        )
+    }
+
     /// Whether this user meets a `min_role` gate. Roles run 1–100 with **lower =
     /// more privileged** (matching [`AccessRules`](sc_catalog::AccessRules)), so a
     /// user passes when `role <= min_role`.

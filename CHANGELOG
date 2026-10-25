@@ -2,6 +2,63 @@
 
 Changes in reverse chronological order.
 
+## Security fixes: v1 action roles, hidden-column filters, module file owners, invitation columns, signup pre-hijack, chat socket
+
+Fixes for items 37–42 of `docs/SECURITY_REVIEW_2026-10.md` (third review). Item 36 is not
+addressed here.
+
+- **A v1 action button's `minRole` holds when it is run, and a view runs triggers as the viewer**
+  (#37). `run_action_column` (ui/saltcorn-ui `src/plugin-helper.ts`, which every v1 action route
+  reaches: a page's `/page/:name/action/:rndid` and every pattern's `run_action`) refuses a
+  column or segment whose `minRole` is below the viewer's role, as render already hid it. A view
+  call's trigger surface (`AppTriggers` in `sc-viewpattern`) runs every trigger at the **viewer's**
+  authority, whatever the worker asked for, so the trigger's own `min_role` is checked (absent
+  is admin-only); `V1Trigger.run`/`runWithoutRow` and the state-action runners say
+  `authority: "user"` too. A view that runs an admin-only trigger for a member now refuses it:
+  give the trigger the `min_role` it is meant for.
+- **The password hash is no field to a code-host plan** (#38). `Lowering` builds its fields
+  without the hidden columns, and a select, ordering, aggregate or Ⱶ-path naming one is "no
+  field", so a v1 view's URL state (`?password_hash=…`, `_gte_password_hash=`) can no longer be
+  used as an oracle. The code-host schema snapshot leaves hidden columns out, and the catalog's
+  formula shape leaves `users.password_hash` out, so no formula (filter, ownership, calculated
+  field) can name it either.
+- **A module's stored files are owned by the module** (#39). A module's file `write`, `append`
+  or `rename` records `module:<name>` as the file's owner (`sc_module::files::module_owner`), so
+  `check_write` — which `may_attach_file` asks — refuses every non-admin who points a row's File
+  field at it. A forged `mail_attachments` row can no longer name another user's stored
+  attachment. Not done: creating module stores with `min_role: 1` (it would stop owners
+  downloading their own attachments through the File field), and the `_read &&` guard on the
+  IMAP child tables' ownership rules (the review's related Medium).
+- **An invitation sets `admin_only_write` columns only when an admin sends it** (#40).
+  `user_fields` refuses such a column below admin with 403 before any account exists
+  (`user_rows::is_admin_only_write`, now shared with the row layer's check).
+- **A self-service signup's address is unproven, and an identity provider's sign-in claims such
+  an account** (#41). New system column `users.email_verified` (nullable; only `false` says
+  anything). REST `signup` and Saltcorn-UI `/auth/signup` create accounts through
+  `sc_auth::sign_up_user`, which records `false`; redeeming a reset or invite link sets it
+  `true`. When an OAuth sign-in lands on an unproven account, `claim_unproven_account` clears its
+  password, its reset links and its sessions (also through the session store, so cached copies
+  and listening sockets go), marks the address proven, and only then signs the provider's user
+  in. Accounts made by an admin, an invitation or a provider are unaffected. Below admin,
+  `email_verified` is not writable through the users table (`ADMIN_ONLY_SYSTEM_COLUMNS`).
+  Migration: `TABLES_RENAME.sql` adds the column.
+- **The admin chat socket does not outlive its session** (#42). The socket registers a
+  `SessionListener` for its token and user and re-reads the session before every `start` and
+  turn (running the turn as the user the session names now) and every 30 s
+  (`chat::SESSION_RECHECK`). A sign-out, forced sign-out, disabled or deleted account, password
+  reset or demotion closes it with a reason, a running turn included (the run is stopped, as on a
+  disconnect). A store that cannot answer refuses the turn but leaves the socket open. Not done:
+  the LSP, stream-observe and fit-progress sockets, which the review notes use the same pattern
+  but offer no shell.
+- **Tests:** `saltcorn_ui_render::a_pages_action_buttons_run_and_its_properties_shape_the_document`
+  (`minRole` and trigger `min_role` refused to a member, a member-level trigger runs);
+  `code_host_reads::the_password_hash_is_no_field_to_filter_order_or_join_on`;
+  `module_files::a_module_keeps_files_in_its_declared_area_and_nowhere_else` (owner recorded,
+  `check_write` refuses a user); `app_invite::an_invitation_sets_no_admin_only_column_below_admin`;
+  `db_password_tokens::a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole`;
+  `oauth_sign_in::an_application_and_the_admin_ui_sign_in_with_an_identity_provider` (a squatter's
+  signup is claimed: session and password gone); `agent_chat::ending_the_session_closes_the_chat_socket`.
+
 ## Security fixes: write responses, sync keys, module bridge, `.git` links, trigger chains, payments
 
 Fixes for items 28–35 of `docs/SECURITY_REVIEW_2026-10.md`.

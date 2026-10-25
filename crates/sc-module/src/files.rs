@@ -164,14 +164,22 @@ impl<'a> ModuleFiles<'a> {
         &self,
         store: &str,
         path: &str,
+        owned: bool,
         content_type: Option<String>,
         filename: Option<String>,
     ) -> Result<()> {
-        if content_type.is_none() && filename.is_none() {
+        if !owned && content_type.is_none() && filename.is_none() {
             return Ok(());
         }
         let store = self.catalog.require_file_store(store)?;
         let mut meta = store.get_meta(path).await?;
+        // The module's own mark, which is no user's id: `check_write` lets only
+        // a file's owner (or the admin) attach it to a row, so a user cannot
+        // point a row they write at a file the module stored for somebody else
+        // and download it through that row (security review #39).
+        if owned && meta.owner.is_none() {
+            meta.owner = Some(module_owner(self.module));
+        }
         if let Some(content_type) = content_type {
             meta.attributes
                 .insert(CONTENT_TYPE_ATTRIBUTE.to_owned(), content_type);
@@ -229,7 +237,9 @@ impl FileHost for ModuleFiles<'_> {
         req.insert("path".into(), Json::String(path));
         req.insert("authority".into(), Json::String("admin".into()));
         let answer = self.inner.files(Json::Object(req)).await?;
-        self.label(&store, &landed, content_type, filename).await?;
+        let owned = matches!(op.as_str(), "write" | "append" | "rename");
+        self.label(&store, &landed, owned, content_type, filename)
+            .await?;
         Ok(answer)
     }
 
@@ -238,6 +248,12 @@ impl FileHost for ModuleFiles<'_> {
         names.dedup();
         names
     }
+}
+
+/// The [`FileMeta::owner`](sc_files::FileMeta::owner) a module's file is
+/// recorded with: `module:<name>`, which no user id is.
+pub fn module_owner(module: &str) -> String {
+    format!("module:{module}")
 }
 
 /// A request's text field, or a refusal naming it.

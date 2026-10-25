@@ -220,7 +220,7 @@ pub(crate) async fn invite(
         .and_then(|r| u8::try_from(r).ok())
         .ok_or_else(|| Error::invalid("`role` must be the new account's role number"))?;
     let language = optional_text(obj, "language")?;
-    let extra = user_fields(cat, obj.get("fields"))?;
+    let extra = user_fields(cat, obj.get("fields"), inviter.role)?;
 
     // Everything that can be wrong with the *message* is found before an
     // account exists, so a bad template never leaves one behind.
@@ -415,9 +415,16 @@ fn invite_template(obj: &Map<String, Json>) -> Result<Template> {
 /// The admin-added columns an invitation sets on the new account, coerced to
 /// the users table's own types. System columns are refused further down, by
 /// the same check every other way of making an account has.
+///
+/// A column flagged [`ADMIN_ONLY_WRITE`](crate::user_rows::ADMIN_ONLY_WRITE)
+/// — the `org_id` a tenancy formula reads — is set by an admin's invitation
+/// only. The account is written directly, not through the row layer that
+/// holds every other write to that rule, so it is held to it here: otherwise a
+/// manager could invite an address of their own into another tenant.
 fn user_fields(
     cat: &Catalog,
     fields: Option<&Json>,
+    inviter_role: u8,
 ) -> Result<std::collections::BTreeMap<String, Value>> {
     let mut out = std::collections::BTreeMap::new();
     let Some(fields) = fields.filter(|f| !f.is_null()) else {
@@ -431,6 +438,13 @@ fn user_fields(
         if sc_auth::is_system_user_column(column) {
             return Err(Error::invalid(format!(
                 "`fields`: `{column}` is set by the invitation itself, not as a field"
+            )));
+        }
+        if inviter_role > sc_auth::ROLE_ADMIN
+            && crate::user_rows::is_admin_only_write(&users, column)
+        {
+            return Err(Error::auth(format!(
+                "`fields`: `{column}` of an account is set by an admin only"
             )));
         }
         out.insert(column.clone(), column_value(&users, column, json)?);

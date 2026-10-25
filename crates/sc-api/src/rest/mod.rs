@@ -1189,7 +1189,8 @@ impl RestProvider {
                 "there is already an account with this email address",
             ));
         }
-        let user = sc_auth::create_user(cat, &email, &password, role).await?;
+        // Recorded as unproven: the caller chose the address (security review #41).
+        let user = sc_auth::sign_up_user(cat, &email, &password, role).await?;
         let summary = user_summary_json(&user);
         let mut out = ApiResponse::start_session(user, summary);
         out.status = 201;

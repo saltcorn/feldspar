@@ -899,7 +899,8 @@ impl SaltcornUiFramework {
                 "There is already an account with this email address."
             ));
         }
-        match sc_auth::create_user(cat, &email, &password, self.new_user_role()).await {
+        // Recorded as unproven: the visitor chose the address (security review #41).
+        match sc_auth::sign_up_user(cat, &email, &password, self.new_user_role()).await {
             Ok(user) => Ok(signed_in(user, dest)),
             // "role 80 does not exist" is the admin's to fix, and the one
             // sentence that says how.
@@ -1471,7 +1472,14 @@ struct AppTriggers<'a> {
 
 #[async_trait]
 impl TriggerHost for AppTriggers<'_> {
-    async fn run(&self, request: Json) -> Result<Json> {
+    async fn run(&self, mut request: Json) -> Result<Json> {
+        // A view's run is the viewer's, whatever the worker asked for: the
+        // trigger's own `min_role` is checked against them, and neither the
+        // admin's authority (the code-body default, which skips that floor)
+        // nor another named user is reachable from a view.
+        if let Some(fields) = request.as_object_mut() {
+            fields.insert("authority".to_owned(), Json::from("user"));
+        }
         let name = request
             .get("trigger")
             .and_then(Json::as_str)

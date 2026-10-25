@@ -101,7 +101,19 @@ export const pathToState = upstream.pathToState;
 export const picked_fields_to_query = upstream.picked_fields_to_query;
 export const readState = upstream.readState;
 export const readStateStrict = upstream.readStateStrict;
-export const run_action_column = upstream.run_action_column;
+// An action column or segment placed with `minRole` is hidden from a weaker
+// viewer when it renders, but v1's action routes (a page's
+// `/page/:name/action/:rndid`, every pattern's `run_action`) find it by its
+// `rndid` or column index and run it without asking again. Every one of them
+// runs it through here, so here is where a viewer below the floor is refused.
+export const run_action_column: typeof upstream.run_action_column = async (args) => {
+  const floor = args && args.col ? args.col.minRole : undefined;
+  const role = (args && args.req && args.req.user && args.req.user.role_id) || 100;
+  if (floor && +floor !== 100 && +floor < +role) {
+    throw new Error("You do not have permission to run this action");
+  }
+  return upstream.run_action_column(args);
+};
 export const sqlBinOp = upstream.sqlBinOp;
 export const sqlFun = upstream.sqlFun;
 export const stateFieldsToQuery = upstream.stateFieldsToQuery;

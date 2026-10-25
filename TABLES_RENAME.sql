@@ -857,3 +857,7 @@ ALTER TABLE IF EXISTS "_fd_sync_keys" ADD COLUMN IF NOT EXISTS "at" timestamptz 
 -- §11.7 exposed agents: the agents an application's client may talk to. (Bootstrap adds it too;
 -- NULL reads back as "exposes no agents".)
 ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "agents" jsonb;
+
+-- Security review #41: whether an account's address was ever proven. Only `false` (a
+-- self-service signup nobody has confirmed) says anything; existing accounts stay NULL.
+ALTER TABLE IF EXISTS "users" ADD COLUMN IF NOT EXISTS "email_verified" boolean;

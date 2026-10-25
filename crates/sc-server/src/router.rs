@@ -1028,6 +1028,12 @@ async fn agent_chat(
         // caller is the one thing decision 5 says cannot exist.
         return json_error(StatusCode::UNAUTHORIZED, "this route requires a session");
     };
+    // The session is re-read for every turn and watched for its end, so a
+    // sign-out, a disabled account or a demotion closes the socket (#42).
+    let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
+        return json_error(StatusCode::UNAUTHORIZED, "this route requires a session");
+    };
+    let session = crate::chat::ChatSession::new(state.sessions.clone(), token, &user);
     agent_chat_upgrade(
         ws,
         state.apps.catalog(),
@@ -1035,6 +1041,7 @@ async fn agent_chat(
         state.apps.evaluator(),
         state.apps.triggers().cloned(),
         user,
+        session,
     )
     .await
 }

@@ -21,7 +21,9 @@ use uuid::Uuid;
 use crate::password::{hash_password, random_password};
 use crate::user::User;
 use crate::users::USERS_TABLE;
-use crate::users::{COL_EMAIL, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE};
+use crate::users::{
+    COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
+};
 
 /// What an admin supplies when creating a user.
 #[derive(Debug, Clone, Default)]
@@ -93,6 +95,17 @@ pub(crate) async fn insert_user(
     new: NewUser,
     password_hash: Option<String>,
 ) -> Result<User> {
+    insert_user_marked(catalog, new, password_hash, false).await
+}
+
+/// [`insert_user`], recording the address as unproven when `unproven` (a
+/// self-service signup, [`sign_up_user`]).
+async fn insert_user_marked(
+    catalog: &Catalog,
+    new: NewUser,
+    password_hash: Option<String>,
+    unproven: bool,
+) -> Result<User> {
     let email = new.email.trim();
     if email.is_empty() {
         return Err(Error::invalid("email is required"));
@@ -126,6 +139,10 @@ pub(crate) async fn insert_user(
         columns.push(column.clone());
         values.push(Expr::lit(value.clone()));
     }
+    if unproven {
+        columns.push(COL_EMAIL_VERIFIED.to_owned());
+        values.push(Expr::lit(false));
+    }
 
     let insert = Insert::row(USERS_TABLE, columns, values);
     catalog
@@ -143,7 +160,38 @@ pub(crate) async fn insert_user(
             .insert(COL_LANGUAGE.to_owned(), Value::Text(language.to_owned()));
     }
     user.extra.extend(new.extra);
+    if unproven {
+        user.extra
+            .insert(COL_EMAIL_VERIFIED.to_owned(), Value::Bool(false));
+    }
     Ok(user)
+}
+
+/// Create the account a **self-service signup** asks for: [`create_user`],
+/// with the address recorded as unproven
+/// ([`COL_EMAIL_VERIFIED`](crate::COL_EMAIL_VERIFIED) `false`). Whoever signs
+/// up chooses the address, so until an emailed link is redeemed nothing says
+/// they hold it — and an identity provider sign-in for that address claims the
+/// account rather than joining whoever made it
+/// ([`claim_unproven_account`](crate::claim_unproven_account)).
+pub async fn sign_up_user(
+    catalog: &Catalog,
+    email: &str,
+    password: &str,
+    role: u8,
+) -> Result<User> {
+    if password.is_empty() {
+        return Err(Error::invalid("password is required"));
+    }
+    let new = NewUser {
+        email: email.to_owned(),
+        password: password.to_owned(),
+        role,
+        language: None,
+        extra: BTreeMap::new(),
+    };
+    let password_hash = hash_password(password)?;
+    insert_user_marked(catalog, new, Some(password_hash), true).await
 }
 
 /// Create a user with the given email, plaintext password, and role, returning

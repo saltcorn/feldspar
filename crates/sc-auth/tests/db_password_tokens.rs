@@ -13,9 +13,9 @@ use std::sync::Arc;
 use chrono::Duration;
 use sc_auth::{
     InviteOutcome, NewUser, PASSWORD_TOKENS_TABLE, PasswordTokenPurpose, Role, SESSIONS_TABLE,
-    authenticate, bootstrap, create_session, create_user, invite_user, issue_password_token,
-    password_token_issued_within, redeem_password_token, save_role, set_user_disabled,
-    user_has_password,
+    authenticate, bootstrap, claim_unproven_account, create_session, create_user, invite_user,
+    issue_password_token, load_user, password_token_issued_within, redeem_password_token,
+    save_role, set_user_disabled, sign_up_user, user_has_password,
 };
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -219,5 +219,58 @@ async fn an_invitation_is_only_to_less_power() -> Result<()> {
             .await
             .is_err()
     );
+    Ok(())
+}
+
+/// A self-service signup's address is unproven (security review #41) until a
+/// link sent there is redeemed. Claiming an unproven account takes its
+/// password, its reset links and its sessions away; claiming a proven one
+/// changes nothing.
+#[tokio::test]
+async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() -> Result<()> {
+    let f = fixture().await?;
+    let made = create_user(&f.catalog, "made@example.com", "made-pw", 80).await?;
+    assert!(
+        !made.email_unproven(),
+        "an account somebody else made is not unproven"
+    );
+
+    let signed = sign_up_user(&f.catalog, "signed@example.com", "signed-pw", 80).await?;
+    assert!(signed.email_unproven());
+    assert!(
+        load_user(&f.catalog, signed.id)
+            .await?
+            .unwrap()
+            .email_unproven()
+    );
+    let token = issue_password_token(&f.catalog, signed.id, PasswordTokenPurpose::Reset).await?;
+    let redeemed = redeem_password_token(&f.catalog, &token, "new-pw")
+        .await?
+        .unwrap();
+    assert!(!redeemed.email_unproven());
+    assert!(
+        !load_user(&f.catalog, signed.id)
+            .await?
+            .unwrap()
+            .email_unproven()
+    );
+
+    let squat = sign_up_user(&f.catalog, "squat@example.com", "squat-pw", 80).await?;
+    create_session(&f.catalog, squat.id, Duration::hours(1)).await?;
+    issue_password_token(&f.catalog, squat.id, PasswordTokenPurpose::Reset).await?;
+    let claimed = claim_unproven_account(&f.catalog, squat.clone()).await?;
+    assert_eq!(claimed.id, squat.id);
+    assert!(!claimed.email_unproven());
+    assert!(!user_has_password(&f.catalog, squat.id).await?);
+    assert!(
+        authenticate(&f.catalog, "squat@example.com", "squat-pw")
+            .await?
+            .is_none()
+    );
+    assert_eq!(count(&f.catalog, SESSIONS_TABLE).await?, 0);
+    assert_eq!(count(&f.catalog, PASSWORD_TOKENS_TABLE).await?, 0);
+
+    let kept = claim_unproven_account(&f.catalog, made.clone()).await?;
+    assert!(user_has_password(&f.catalog, kept.id).await?);
     Ok(())
 }

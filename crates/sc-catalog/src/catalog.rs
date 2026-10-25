@@ -1923,7 +1923,12 @@ pub(crate) fn schema_shape_of_tables<'a>(
             // filter, an ordering, an ownership rule or a calculated field over
             // it could only compare ciphertext — or, computed on read, carry
             // the plaintext out to a client.
-            if field.is_collab_doc() || field.is_secret() {
+            // The password hash likewise: no formula has a use for it, and a
+            // filter over it is an oracle for it although it is never returned.
+            if field.is_collab_doc()
+                || field.is_secret()
+                || (table.name == USERS_TABLE && field.base.name == USERS_PASSWORD_COLUMN)
+            {
                 continue;
             }
             table_shape = match &field.kind {

@@ -942,12 +942,15 @@ No exploit was run.
 | # | Severity | Issue | Status |
 |---|----------|-------|--------|
 | 36 | High | Vendored v1 `interpolate`: `{{= }}` re-evaluates row data as JavaScript (no #23 fix) → stored XSS, code in the shared view worker | open |
-| 37 | High | v1 page action buttons ignore `minRole`; the trigger then runs at admin authority, skipping its own `min_role` | open |
-| 38 | High | v1 views filter on `users.password_hash` from URL state → hash extraction oracle | open |
-| 39 | High | IMAP: forged `mail_attachments` row reads any user's stored attachment | open |
-| 40 | High | Invitations write `admin_only_write` user columns (bypass of #8) → cross-tenant membership | open |
-| 41 | High | Account pre-hijack: unverified password signup, then OAuth sign-in links to it by email | open |
-| 42 | High | Admin agent-chat socket keeps admin tools after logout, disable, demotion or password reset | open |
+| 37 | High | v1 page action buttons ignore `minRole`; the trigger then runs at admin authority, skipping its own `min_role` | **fixed** |
+| 38 | High | v1 views filter on `users.password_hash` from URL state → hash extraction oracle | **fixed** |
+| 39 | High | IMAP: forged `mail_attachments` row reads any user's stored attachment | **fixed** |
+| 40 | High | Invitations write `admin_only_write` user columns (bypass of #8) → cross-tenant membership | **fixed** |
+| 41 | High | Account pre-hijack: unverified password signup, then OAuth sign-in links to it by email | **fixed** |
+| 42 | High | Admin agent-chat socket keeps admin tools after logout, disable, demotion or password reset | **fixed** |
+
+Items 37–42 are fixed (36 is open); see the CHANGELOG entry "Security fixes: v1 action roles,
+hidden-column filters, module file owners, invitation columns, signup pre-hijack, chat socket".
 
 36–38 share a root cause: the vendored Saltcorn-UI v1 runtime did not get the fixes made for the
 same classes in the Rust paths. 39 and 40 are both "a guard that exists, on a path that skips it".

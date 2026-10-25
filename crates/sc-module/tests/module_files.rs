@@ -136,6 +136,24 @@ mod deno {
         let meta = files.get_meta("docs/a/hello.txt").await.unwrap();
         assert_eq!(meta.attributes[CONTENT_TYPE_ATTRIBUTE], "text/x-greeting");
         assert_eq!(meta.attributes[FILENAME_ATTRIBUTE], "Hello.txt");
+        // Recorded as the module's (security review #39), the streamed file
+        // renamed into place too: no user may attach either to a row they
+        // write, which is what would let them download it.
+        for path in ["docs/a/hello.txt", "docs/big-stream.bin"] {
+            let meta = files.get_meta(path).await.unwrap();
+            assert_eq!(
+                meta.owner.as_deref(),
+                Some(sc_module::files::module_owner(&names[0]).as_str()),
+                "{path}"
+            );
+            let user = sc_files::FileCaller::new(80, Some(uuid::Uuid::new_v4().to_string()));
+            assert!(
+                sc_files::check_write(files.as_ref(), None, path, &user)
+                    .await
+                    .is_err(),
+                "{path}"
+            );
+        }
         let listed: Vec<String> = files
             .list("docs")
             .await
@@ -172,8 +190,14 @@ mod deno {
         // --- A file of the application's, read as the caller (M9.3) --------------
         // `callerFiles` reads with the caller's authority: the rule on a file
         // decides, as it would for their download, and there is no write.
-        other.write("shared/open.txt", b"for everyone".to_vec().into()).await.unwrap();
-        other.write("shared/closed.txt", b"admins only".to_vec().into()).await.unwrap();
+        other
+            .write("shared/open.txt", b"for everyone".to_vec().into())
+            .await
+            .unwrap();
+        other
+            .write("shared/closed.txt", b"admins only".to_vec().into())
+            .await
+            .unwrap();
         other
             .set_meta(
                 "shared/closed.txt",
@@ -186,14 +210,20 @@ mod deno {
             .unwrap();
         let event = Event::new(EventKind::None)
             .payload(json!({ "open": "shared/open.txt", "closed": "shared/closed.txt" }))
-            .caller(80, Some(json!({ "id": "00000000-0000-0000-0000-000000000080", "role": 80 })));
+            .caller(
+                80,
+                Some(json!({ "id": "00000000-0000-0000-0000-000000000080", "role": 80 })),
+            );
         let action = registry.require("read_as_caller").unwrap();
         let mut ctx = ActionContext::new(&cat, &event, &config, "read as the caller");
         let result = action.run(&mut ctx).await.unwrap();
         assert_eq!(result["open"], json!("for everyone"), "{result}");
         assert_eq!(result["size"], json!(12), "{result}");
         assert_ne!(result["closed"], json!("allowed"), "{result}");
-        assert!(!result["closed"].to_string().contains("admins only"), "{result}");
+        assert!(
+            !result["closed"].to_string().contains("admins only"),
+            "{result}"
+        );
         assert_eq!(result["writes"], json!("undefined"));
 
         supervisor.stop_all().await;

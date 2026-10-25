@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use sc_auth::{
-    COL_DISABLED, COL_EMAIL, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE, USERS_TABLE,
-    bootstrap,
+    COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
+    USERS_TABLE, bootstrap,
 };
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -90,7 +90,8 @@ async fn bootstrap_creates_users_table() -> sc_error::Result<()> {
             COL_EMAIL,
             COL_PASSWORD_HASH,
             COL_DISABLED,
-            COL_LANGUAGE
+            COL_LANGUAGE,
+            COL_EMAIL_VERIFIED
         ]
     );
     assert_eq!(physical.primary_key, vec![COL_ID.to_string()]);

@@ -37,8 +37,8 @@ use crate::password::hash_password;
 use crate::roles::load_role;
 use crate::user::User;
 use crate::users::{
-    COL_DISABLED, COL_EMAIL, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN,
-    USERS_TABLE, is_system_user_column, role_in_range,
+    COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
+    ROLE_ADMIN, USERS_TABLE, is_system_user_column, role_in_range,
 };
 
 /// The changes an admin is making to a user. Every field is optional: what is
@@ -161,6 +161,44 @@ pub async fn set_user_password(catalog: &Catalog, id: Uuid, password: &str) -> R
         )],
     )
     .await
+}
+
+/// Record that the holder of `id`'s address has proven it — by redeeming a
+/// link sent there, or by an identity provider vouching for it.
+pub(crate) async fn mark_email_proven(catalog: &Catalog, id: Uuid) -> Result<User> {
+    write(
+        catalog,
+        id,
+        vec![Assignment::new(COL_EMAIL_VERIFIED, Expr::lit(true))],
+    )
+    .await
+}
+
+/// Hand an account whose address was never proven
+/// ([`User::email_unproven`]) to somebody who has just proven it — an
+/// identity provider's sign-in for that address (security review #41).
+///
+/// Whoever signed up for the address may not hold it, so what they could use
+/// to come back goes first: the password they chose, any reset link, and every
+/// session. The address is then proven. An account whose address is not
+/// unproven is returned as it is.
+pub async fn claim_unproven_account(catalog: &Catalog, user: User) -> Result<User> {
+    if !user.email_unproven() {
+        return Ok(user);
+    }
+    let id = user.id;
+    let claimed = write(
+        catalog,
+        id,
+        vec![
+            Assignment::new(COL_PASSWORD_HASH, Expr::Lit(Value::Null)),
+            Assignment::new(COL_EMAIL_VERIFIED, Expr::lit(true)),
+        ],
+    )
+    .await?;
+    crate::password_tokens::delete_password_tokens_for_user(catalog, id).await?;
+    crate::session::delete_sessions_for_user(catalog, id).await?;
+    Ok(claimed)
 }
 
 /// Delete a user, reporting whether there was one to delete.

@@ -562,7 +562,7 @@ pub(crate) async fn callback(State(state): State<AppState>, uri: Uri) -> Respons
                 Ok(email) => email,
                 Err(message) => return back(&message),
             };
-            match account_for(&catalog, &provider, &email, *admin).await {
+            match account_for(&catalog, &state.sessions, &provider, &email, *admin).await {
                 Ok(user) => Outcome::SignIn(user),
                 Err(message) => return back(&message),
             }
@@ -737,6 +737,7 @@ fn email_vouched_for(info: &Value, trust_unsaid: bool) -> bool {
 /// accounts, somebody new.
 async fn account_for(
     catalog: &sc_catalog::Catalog,
+    sessions: &sc_auth::SessionStore,
     provider: &OAuthProvider,
     email: &str,
     admin: bool,
@@ -776,6 +777,21 @@ async fn account_for(
     }
     if admin && !user.is_admin() {
         return Err(format!("{email} is not an administrator"));
+    }
+    // The provider has just proven the address. An account a signup made for
+    // it proved nothing, so whoever made it may not be its holder: it is
+    // claimed — their password and sessions gone — not joined (security
+    // review #41). The store ends the sessions too, so this node's cached
+    // copies and the sockets listening for them go with the rows.
+    if user.email_unproven() {
+        let claimed = sc_auth::claim_unproven_account(catalog, user)
+            .await
+            .map_err(failed)?;
+        sessions
+            .end_user_sessions(claimed.id)
+            .await
+            .map_err(failed)?;
+        return Ok(claimed);
     }
     Ok(user)
 }

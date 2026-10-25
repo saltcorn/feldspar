@@ -242,7 +242,9 @@ pub async fn redeem_password_token(
         Some(user) if !user.is_disabled() => {}
         _ => return Ok(None),
     }
-    let user = set_user_password(catalog, user_id, password).await?;
+    set_user_password(catalog, user_id, password).await?;
+    // The link went to the address, so whoever followed it holds it.
+    let user = crate::manage::mark_email_proven(catalog, user_id).await?;
     delete_password_tokens_for_user(catalog, user_id).await?;
     crate::session::delete_sessions_for_user(catalog, user_id).await?;
     Ok(Some(user))

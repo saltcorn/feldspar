@@ -109,9 +109,13 @@ fn schema_json(catalog: &Catalog) -> Result<Json> {
 
 /// One table, in v1's vocabulary.
 fn table_json(by_name: &HashMap<&str, &Table>, table: &Table) -> Json {
+    // A hidden column (the password hash) is not described: a v1 pattern turns
+    // the fields it is told of into filters on URL state, and one on the hash
+    // would be an oracle for it.
     let fields: Vec<Json> = table
         .fields
         .iter()
+        .filter(|f| !crate::user_rows::is_hidden_column(table, &f.base.name))
         .map(|f| field_json(by_name, table, f))
         .collect();
     json!({

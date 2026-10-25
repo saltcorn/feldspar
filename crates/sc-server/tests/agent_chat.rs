@@ -104,6 +104,7 @@ struct Server {
     admin: String,
     public: String,
     catalog: Arc<Catalog>,
+    sessions: Arc<SessionStore>,
     _db: TestDb,
 }
 
@@ -212,6 +213,7 @@ async fn serve_with(agent: Agent, providers: Arc<dyn ProviderConnector>) -> Resu
             .await
             .unwrap(),
         catalog,
+        sessions,
         _db: db,
     })
 }
@@ -703,5 +705,61 @@ async fn the_chat_and_the_admin_api_share_one_trait_registry() -> Result<()> {
         .await?
         .expect("stored");
     sc_agent::validate_agent(&server.catalog, services.registry(), &stored).await?;
+    Ok(())
+}
+
+// --- the session outlives no socket (security review #42) ---------------------
+
+/// The close frame's reason, once the server closes the socket.
+async fn closed_with(socket: &mut Socket) -> String {
+    loop {
+        let message = tokio::time::timeout(REPLY_TIMEOUT, socket.next())
+            .await
+            .expect("timed out waiting for the socket to close");
+        match message {
+            Some(Ok(Message::Close(frame))) => {
+                return frame.map(|f| f.reason.to_string()).unwrap_or_default();
+            }
+            Some(Ok(_)) => {}
+            None | Some(Err(_)) => panic!("the socket went away without a close frame"),
+        }
+    }
+}
+
+/// Every turn runs tools as the admin who opened the socket, so the socket does
+/// not outlive their session: a sign-out closes it at once, saying why, and so
+/// does ending all of the user's sessions — idle or mid-turn alike.
+#[tokio::test]
+async fn ending_the_session_closes_the_chat_socket() -> Result<()> {
+    let provider = Arc::new(FakeProvider::new([Reply::says("Hello.")]));
+    let server = serve_with(talker(), Arc::new(Scripted(provider))).await?;
+
+    // Idle, after a turn: signing out closes it.
+    let mut socket = server.connect(Some(&server.admin)).await.expect("connect");
+    send(
+        &mut socket,
+        json!({ "type": "start", "agent": "librarian" }),
+    )
+    .await;
+    send(&mut socket, json!({ "type": "message", "text": "Hi" })).await;
+    drain_turn(&mut socket).await;
+    assert!(server.sessions.logout(&server.admin).await?);
+    let reason = closed_with(&mut socket).await;
+    assert!(reason.contains("session ended"), "{reason}");
+    // And a new socket on that session is refused before the upgrade.
+    assert!(server.connect(Some(&server.admin)).await.is_err());
+
+    // A second admin's socket closes when all of their sessions are ended.
+    let other = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
+    let token = server.sessions.login(other.clone()).await?;
+    let mut socket = server.connect(Some(&token)).await.expect("connect");
+    send(
+        &mut socket,
+        json!({ "type": "start", "agent": "librarian" }),
+    )
+    .await;
+    server.sessions.end_user_sessions(other.id).await?;
+    let reason = closed_with(&mut socket).await;
+    assert!(reason.contains("session ended"), "{reason}");
     Ok(())
 }

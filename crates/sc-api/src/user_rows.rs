@@ -24,7 +24,8 @@
 //!   by an admin only** (security review 2026-10 #8). Below admin, an update may
 //!   not name `email` (the identifier a password reset and an OAuth sign-in find
 //!   the account by — rewriting a weaker account's would let the caller reset
-//!   its password and sign in as it), `disabled` (an admin's decision) or `id`;
+//!   its password and sign in as it), `disabled` (an admin's decision),
+//!   `email_verified` (what an identity provider sign-in trusts) or `id`;
 //!   and neither an insert nor an update may name an admin-added column whose
 //!   field carries [`ADMIN_ONLY_WRITE`] — the `org_id` a tenancy formula reads,
 //!   which a self-edit rule would otherwise let a user move to another tenant.
@@ -36,7 +37,8 @@
 //! whether a caller may write the table at all; this narrows, it never grants.
 
 use sc_auth::{
-    COL_DISABLED, COL_EMAIL, COL_ID, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, USERS_TABLE,
+    COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN,
+    USERS_TABLE,
 };
 use sc_catalog::{CallerContext, DataField, Table};
 use sc_error::{Error, Result};
@@ -50,7 +52,7 @@ use serde_json::{Map, Value as Json};
 pub const ADMIN_ONLY_WRITE: &str = "admin_only_write";
 
 /// The system columns of the users table an update below admin may not name.
-const ADMIN_ONLY_SYSTEM_COLUMNS: [&str; 3] = [COL_ID, COL_EMAIL, COL_DISABLED];
+const ADMIN_ONLY_SYSTEM_COLUMNS: [&str; 4] = [COL_ID, COL_EMAIL, COL_DISABLED, COL_EMAIL_VERIFIED];
 
 /// Whether `table` is the users table.
 pub(crate) fn is_users(table: &Table) -> bool {
@@ -164,17 +166,20 @@ fn written_role(table: &Table, obj: &Map<String, Json>) -> Result<Option<i64>> {
     }
 }
 
+/// Whether `column` of `table` carries [`ADMIN_ONLY_WRITE`].
+pub(crate) fn is_admin_only_write(table: &Table, column: &str) -> bool {
+    table
+        .field(column)
+        .is_some_and(|f| f.base.attributes.get(ADMIN_ONLY_WRITE) == Some(&Json::Bool(true)))
+}
+
 /// Refuse a write below admin that names a column only an admin writes: one
 /// whose field carries [`ADMIN_ONLY_WRITE`], and on an update the
 /// [`ADMIN_ONLY_SYSTEM_COLUMNS`] too — except an `id` that repeats the id of
 /// the row being updated (`update` is that id), which a client sending the
 /// whole row back does, and which changes nothing.
 fn reject_admin_only(table: &Table, obj: &Map<String, Json>, update: Option<&str>) -> Result<()> {
-    let flagged = |name: &str| {
-        table
-            .field(name)
-            .is_some_and(|f| f.base.attributes.get(ADMIN_ONLY_WRITE) == Some(&Json::Bool(true)))
-    };
+    let flagged = |name: &str| is_admin_only_write(table, name);
     let system = |name: &str| {
         let Some(id) = update else { return false };
         let unchanged_id = name == COL_ID

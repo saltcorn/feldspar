@@ -41,6 +41,7 @@ use crate::convert::value_to_json;
 use crate::filter::{self, FilterKey, JoinedColumn};
 use crate::ownership::{self, AggregateGuard, JoinAccess};
 use crate::rows::{self, RowQuery};
+use crate::user_rows;
 
 use super::HostLimits;
 
@@ -1145,8 +1146,11 @@ struct Lowering<'a> {
     /// The table being read. Owned (a `Table` is cheap next to a query) so that
     /// the caller may hand its own copy on to the read it is building.
     table: Table,
-    /// Every field of the table: the code host has no allow-list, unlike an
-    /// agent's tool, because a code body is the admin's own configuration.
+    /// Every field of the table but the hidden ones: the code host has no
+    /// allow-list, unlike an agent's tool, because a code body is the admin's
+    /// own configuration — but a view runs plans on a viewer's behalf, and a
+    /// filter on the password hash is an oracle for it even though the column
+    /// is never returned, so it is as good as a field that is not there.
     fields: Vec<String>,
     shape: sc_expr::SchemaShape,
     calc: CalcFields,
@@ -1162,7 +1166,12 @@ impl<'a> Lowering<'a> {
     fn new(catalog: &'a Catalog, table: &Table, role: u8) -> Result<Lowering<'a>> {
         Ok(Lowering {
             catalog,
-            fields: table.fields.iter().map(|f| f.base.name.clone()).collect(),
+            fields: table
+                .fields
+                .iter()
+                .map(|f| f.base.name.clone())
+                .filter(|name| !user_rows::is_hidden_column(table, name))
+                .collect(),
             shape: catalog.schema_shape()?,
             calc: table.calc_formulas(),
             calc_plan: crate::calc_read::CalcPlan::of(catalog, table)?,
@@ -1214,7 +1223,7 @@ impl<'a> Lowering<'a> {
     /// carries it (a column of the table, or a calculated field the row layer
     /// projects itself).
     fn projected(&self, name: &str) -> Result<Option<Expr>> {
-        match self.table.field(name) {
+        match user_rows::visible_field(&self.table, name) {
             Some(field) if field.is_collab_doc() => Err(not_a_value(&self.table.name, name)),
             Some(_) => Ok(None),
             None if is_plain_name(name) => Err(Error::invalid(format!(
@@ -1229,7 +1238,7 @@ impl<'a> Lowering<'a> {
     /// an expression. What `.orderBy(…)` and `.sum(…)` take, resolved the one
     /// way, so a formula means the same thing wherever a plan puts one.
     fn value_expr(&self, source: &str) -> Result<Expr> {
-        match self.table.field(source) {
+        match user_rows::visible_field(&self.table, source) {
             Some(field) if field.is_collab_doc() => Err(not_a_value(&self.table.name, source)),
             // A secret's column holds envelopes: ordering by one, or computing
             // over one, could only compare ciphertext (TODO-imap M2).
@@ -1291,7 +1300,7 @@ impl<'a> Lowering<'a> {
         // A calculated field has a declared type like any other field, so its
         // value can be typed — but it is an expression over the row, so nothing
         // says it cannot be null even when every column it reads is required.
-        if let Some(f) = self.table.field(field) {
+        if let Some(f) = user_rows::visible_field(&self.table, field) {
             return Ok(SortKey {
                 expr,
                 dir,
@@ -1466,7 +1475,7 @@ impl<'a> Lowering<'a> {
         let mut table = self.table.clone();
         let mut segments = ident.split(JOIN).peekable();
         while let Some(segment) = segments.next() {
-            let field = table.field(segment).ok_or_else(|| {
+            let field = user_rows::visible_field(&table, segment).ok_or_else(|| {
                 Error::invalid(format!(
                     "`{}` has no field `{segment}` (in `{ident}`)",
                     table.name

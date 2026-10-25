@@ -61,6 +61,16 @@ pub const COL_DISABLED: &str = "disabled";
 /// called `language` to the users table would otherwise be editing this one
 /// through a text box.
 pub const COL_LANGUAGE: &str = "language";
+/// Whether the account's address was ever proven to be its holder's.
+///
+/// Nullable, and only `false` says anything: a **self-service signup** records
+/// `false`, because whoever signed up chose the address and may not hold it;
+/// an account an admin made, an invitation, or an identity provider's sign-in
+/// leaves `NULL`. Redeeming an emailed link sets it `true`. An identity
+/// provider sign-in finds the account by address, so an unproven one is
+/// claimed rather than joined (security review #41): its password and its
+/// sessions go before the provider's user is signed in to it.
+pub const COL_EMAIL_VERIFIED: &str = "email_verified";
 
 /// The most-privileged role: full access.
 pub const ROLE_ADMIN: u8 = 1;
@@ -91,6 +101,7 @@ fn users_fields() -> Vec<DataField> {
         DataField::plain(COL_PASSWORD_HASH, text()),
         DataField::plain(COL_DISABLED, bool_()),
         DataField::plain(COL_LANGUAGE, text()),
+        DataField::plain(COL_EMAIL_VERIFIED, bool_()),
     ]
 }
 
@@ -102,13 +113,14 @@ fn users_fields() -> Vec<DataField> {
 /// know which of them are not theirs to type into: the generated id, the role
 /// (its own select), the identifier, the hash (never shown), and the disabled
 /// flag (an action on the users screen, not a text box).
-pub const SYSTEM_USER_COLUMNS: [&str; 6] = [
+pub const SYSTEM_USER_COLUMNS: [&str; 7] = [
     COL_ID,
     COL_ROLE,
     COL_EMAIL,
     COL_PASSWORD_HASH,
     COL_DISABLED,
     COL_LANGUAGE,
+    COL_EMAIL_VERIFIED,
 ];
 
 /// Whether `column` is one of the columns the system owns
@@ -178,7 +190,8 @@ mod tests {
                 COL_EMAIL,
                 COL_PASSWORD_HASH,
                 COL_DISABLED,
-                COL_LANGUAGE
+                COL_LANGUAGE,
+                COL_EMAIL_VERIFIED
             ]
         );
 

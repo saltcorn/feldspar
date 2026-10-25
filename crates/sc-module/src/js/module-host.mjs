@@ -3791,13 +3791,18 @@ const V1Trigger = class Trigger {
   }
 
   /** Run it on `row`, through **the** dispatcher and under the viewer's
-   * authority — the one a `trigger("name").run()` in a code body goes through. */
+   * authority — the one a `trigger("name").run()` in a code body goes through,
+   * with the trigger's own `min_role` checked against the viewer. */
   async run(row) {
-    return ask("trigger", { trigger: this.name, payload: row === undefined || row === null ? {} : row });
+    return ask("trigger", {
+      trigger: this.name,
+      payload: row === undefined || row === null ? {} : row,
+      authority: "user",
+    });
   }
 
   async runWithoutRow(runargs = {}) {
-    return ask("trigger", { trigger: this.name, payload: (runargs && runargs.row) || {} });
+    return ask("trigger", { trigger: this.name, payload: (runargs && runargs.row) || {}, authority: "user" });
   }
 };
 installV1Refusals(V1Trigger, "Trigger.");
@@ -4314,7 +4319,7 @@ function triggerActionRunners(set) {
               `configured with it`,
           );
         }
-        return ask("trigger", { trigger: String(args.trigger_id), payload: args.row || {} });
+        return ask("trigger", { trigger: String(args.trigger_id), payload: args.row || {}, authority: "user" });
       },
     });
   }

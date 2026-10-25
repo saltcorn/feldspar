@@ -366,3 +366,54 @@ async fn a_get_by_key_is_one_row_or_none_and_an_unknown_name_is_refused() -> Res
     }
     Ok(())
 }
+
+/// The password hash is not a field to a plan (security review #38): a v1 view
+/// turns URL state into a plan's filter, and although the hash is never
+/// returned, which rows a comparison on it keeps would spell it out. Filtered,
+/// ordered, joined to or computed on, it is a field that is not there.
+#[tokio::test]
+async fn the_password_hash_is_no_field_to_filter_order_or_join_on() -> Result<()> {
+    let db = TestDb::new().await?;
+    db.client()
+        .await?
+        .batch_execute(
+            "CREATE TABLE users (id bigint primary key, email text, password_hash text);
+             CREATE TABLE notes (id bigint primary key, body text,
+                 author bigint references users(id));
+             INSERT INTO users VALUES (1, 'ada@example.com', '$argon2id$abc');
+             INSERT INTO notes VALUES (1, 'hello', 1);",
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
+    let catalog = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+    // At the admin's authority, so that nothing but the field decides.
+    let host = TableHost::new(&catalog);
+    let plans = [
+        json!({ "op": "select", "table": "users", "where": { "password_hash": { "ilike": "%a%" } } }),
+        json!({ "op": "select", "table": "users", "where": { "password_hash": { "gte": "$" } } }),
+        json!({ "op": "select", "table": "users", "where": { "formula": "password_hash > \"$a\"" } }),
+        json!({ "op": "select", "table": "users", "order": [ { "field": "password_hash" } ] }),
+        json!({ "op": "select", "table": "notes", "where": { "authorⱵpassword_hash": "$argon2id$abc" } }),
+        json!({ "op": "select", "table": "notes", "select": ["authorⱵpassword_hash"] }),
+        json!({
+            "op": "aggregate", "table": "users",
+            "aggregate": [ { "alias": "value", "fn": "max", "arg": "password_hash" } ],
+        }),
+    ];
+    for plan in plans {
+        let err = ask(&host, plan.clone()).await.expect_err(&plan.to_string());
+        assert!(
+            err.to_string().contains("password_hash"),
+            "{plan}: refused naming the field, not for another reason: {err}"
+        );
+    }
+    // An ordinary read of the table is unaffected, and still leaves it out.
+    let rows = ask(
+        &host,
+        json!({ "op": "select", "table": "users", "where": { "id": 1 } }),
+    )
+    .await?;
+    assert_eq!(rows, json!([ { "id": 1, "email": "ada@example.com" } ]));
+    Ok(())
+}

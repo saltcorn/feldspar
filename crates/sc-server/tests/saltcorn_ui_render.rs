@@ -2442,9 +2442,14 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     // one throws. `SayHello` also writes an author, so its running is seen.
     let say_hello = "await db.Authors.insert({ first_name: \"Page\", last_name: \"Button\" });\n\
                      return { notify: \"Hello from the page\" };";
-    for (name, code) in [
-        ("SayHello", say_hello),
-        ("Refuses", "throw new Error(\"no books today\");"),
+    for (name, code, min_role) in [
+        ("SayHello", say_hello, Value::Null),
+        (
+            "Refuses",
+            "throw new Error(\"no books today\");",
+            Value::Null,
+        ),
+        ("Greets", "return { notify: \"Hello, member\" };", json!(80)),
     ] {
         let (status, created) = server
             .client
@@ -2454,7 +2459,7 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
                 Some(json!({
                     "name": name, "description": "", "when": "none", "channel": Value::Null,
                     "only_if": Value::Null, "action": "run_js_code",
-                    "configuration": { "code": code }, "min_role": Value::Null, "enabled": true,
+                    "configuration": { "code": code }, "min_role": min_role, "enabled": true,
                 })),
             )
             .await;
@@ -2463,6 +2468,7 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     let mut app = booksdb(&catalog).await;
     app.triggers.push(sc_app::TriggerRef::new("SayHello"));
     app.triggers.push(sc_app::TriggerRef::new("Refuses"));
+    app.triggers.push(sc_app::TriggerRef::new("Greets"));
     let app = save_application(&catalog, &app).await?;
 
     let button = |rndid: &str, action: &str| {
@@ -2479,9 +2485,13 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
         ]})),
     )
     .await?;
+    let mut admin_only = button("ad0001", "Greets");
+    admin_only["minRole"] = json!(1);
     let actions = Page::new(app.id, "Actions").layout(json!({ "above": [
         button("a1b2c3", "SayHello"),
         button("fa11ed", "Refuses"),
+        button("9e1001", "Greets"),
+        admin_only,
         { "type": "library", "library_id": card.id.0.to_string() },
     ]}));
     sc_viewpattern::save_page(&catalog, &actions).await?;
@@ -2570,6 +2580,38 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     let token = member.cookies.get(CSRF_COOKIE).cloned().unwrap();
     let refused = post_page_action(&mut member, "/page/Actions/action/a1b2c3", Some(&token)).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+
+    // On a page the member may view (#37): a button placed with `minRole` 1 is
+    // refused to them although it is found, and a trigger runs at the member's
+    // own role, so one whose `min_role` is admin-only is refused too. A trigger
+    // open to members runs for them.
+    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(80)).await?;
+    build_and_mount(&server.apps, booksdb(&catalog).await).await?;
+    let shown = member.app_get("/page/Actions", &[]).await;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    assert!(
+        !shown.body.contains("/page/Actions/action/ad0001"),
+        "{}",
+        shown.body
+    );
+    for rndid in ["ad0001", "a1b2c3"] {
+        let refused = post_page_action(
+            &mut member,
+            &format!("/page/Actions/action/{rndid}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{rndid}: {}",
+            refused.body
+        );
+        assert!(!refused.body.contains("Hello, member"), "{rndid}: {}", refused.body);
+    }
+    let greeted = post_page_action(&mut member, "/page/Actions/action/9e1001", Some(&token)).await;
+    assert_eq!(greeted.status, StatusCode::OK, "{}", greeted.body);
+    assert!(greeted.body.contains("Hello, member"), "{}", greeted.body);
     let client = &mut server.client;
     assert_eq!(row_count(client, "Authors").await, authors + 2);
 

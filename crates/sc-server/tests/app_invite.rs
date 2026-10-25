@@ -432,6 +432,75 @@ async fn an_invitation_hands_out_no_power_and_links_nowhere_else() -> sc_error::
     Ok(())
 }
 
+/// An invitation's `fields` are held to `admin_only_write` (security review
+/// #40): the account is written directly, not through the row layer, so a
+/// therapist cannot invite an address of their own into another clinic. An
+/// ordinary column is still theirs to set, and an admin sets either.
+#[tokio::test]
+async fn an_invitation_sets_no_admin_only_column_below_admin() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    fx._db
+        .client()
+        .await?
+        .batch_execute("ALTER TABLE users ADD COLUMN clinic_id bigint, ADD COLUMN nickname text")
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    sc_catalog::bootstrap_field_meta(&fx.catalog).await?;
+    let mut clinic = sc_catalog::FieldMeta::new(sc_auth::USERS_TABLE, "clinic_id");
+    clinic
+        .attributes
+        .insert("admin_only_write".to_owned(), json!(true));
+    sc_catalog::save_field_meta(&fx.catalog, &clinic).await?;
+
+    let mut ther = Client::new(&fx.router, THERAPISTS).await;
+    assert_eq!(
+        ther.login("ther@example.com", "ther-pw").await,
+        StatusCode::OK
+    );
+    let invite = |email: &str, fields: Value| {
+        Some(json!({ "email": email, "role": ROLE_PATIENT, "fields": fields }))
+    };
+    let (status, body) = ther
+        .send(
+            "POST",
+            "/api/invite",
+            invite("mine@example.com", json!({ "clinic_id": 7 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        load_user_by_email(&fx.catalog, "mine@example.com")
+            .await?
+            .is_none(),
+        "no account is made"
+    );
+    assert!(fx.mailer.sent().is_empty());
+
+    let (status, body) = ther
+        .send(
+            "POST",
+            "/api/invite",
+            invite("pat@example.com", json!({ "nickname": "Pat" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let mut admin = Client::new(&fx.router, THERAPISTS).await;
+    assert_eq!(
+        admin.login("admin@example.com", "admin-pw").await,
+        StatusCode::OK
+    );
+    let (status, body) = admin
+        .send(
+            "POST",
+            "/api/invite",
+            invite("placed@example.com", json!({ "clinic_id": 7 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_forgotten_password_is_reset_by_emailed_link() -> sc_error::Result<()> {
     let fx = setup().await?;

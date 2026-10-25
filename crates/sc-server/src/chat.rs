@@ -44,7 +44,20 @@
 //! window that silently stops is unfixable by the person watching it, and a
 //! closed socket is indistinguishable from a network that dropped. The only
 //! things closed with a reason are the two conditions under which no chat is
-//! possible at all — a server with no catalog, or none with agents installed.
+//! possible at all — a server with no catalog, or none with agents installed —
+//! and the end of the session the socket was opened on.
+//!
+//! ## The session
+//!
+//! The handshake is an admin's, but a socket outlives a handshake, and every
+//! turn on it runs tools as that admin (security review #42). So the session is
+//! read again before every `start` and every turn, and the turn runs as the user
+//! it names *now*; the socket also listens to the session store, which tells it
+//! at once when that session or that user's sessions end on this node, and
+//! re-reads the session every [`SESSION_RECHECK`] in between — which is what
+//! reaches a demotion, and a sign-out on another node. A session that has ended,
+//! or no longer names an admin, closes the socket with the reason, a turn
+//! that is running included.
 //!
 //! ## Aborting
 //!
@@ -64,13 +77,15 @@ use sc_agent::validate::Agents;
 use sc_agent::{
     Agent, Conclusion, ModelRole, Run, RunCaller, RunObserver, Runner, abort_run, save_run,
 };
-use sc_auth::User;
+use sc_api::AuthRequirement;
+use sc_auth::{SessionEnded, SessionListener, SessionStore, User};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
 use sc_llm::{LlmDelta, ToolCall};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use uuid::Uuid;
 
@@ -117,9 +132,121 @@ struct ChatContext {
     evaluator: Option<Arc<dyn JsEvaluator>>,
     triggers: Option<Arc<TriggerDispatcher>>,
     /// Who every tool in every run on this socket executes as (decision 5): the
-    /// person chatting, never the server.
+    /// person chatting, never the server — as the session names them at the
+    /// start of the turn.
     caller: RunCaller,
+    /// The session the socket was opened on.
+    session: ChatSession,
 }
+
+/// How often an open chat socket re-reads its session between the store's own
+/// notices: what reaches a demotion, and a sign-out on another node.
+pub(crate) const SESSION_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The session a chat socket was opened on, and the ear it keeps on the store.
+pub(crate) struct ChatSession {
+    sessions: Arc<SessionStore>,
+    token: String,
+    user: Uuid,
+    watch: Arc<SessionWatch>,
+}
+
+/// The [`SessionListener`] a chat socket registers: told synchronously by the
+/// store, it only raises a flag and wakes the socket's task.
+struct SessionWatch {
+    token: String,
+    user: Uuid,
+    ended: std::sync::atomic::AtomicBool,
+    notify: Notify,
+}
+
+impl SessionListener for SessionWatch {
+    fn session_ended(&self, ended: &SessionEnded<'_>) {
+        let mine = match ended {
+            SessionEnded::Token(token) => *token == self.token,
+            SessionEnded::User(user) => *user == self.user,
+            SessionEnded::All => true,
+        };
+        if mine {
+            self.ended.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.notify.notify_one();
+        }
+    }
+}
+
+/// What a re-read of the session found.
+enum SessionNow {
+    /// Still an admin's: the user as they are now.
+    Admin(User),
+    /// Ended, or no longer an admin's, said as the close frame says it.
+    Lost(String),
+    /// The store could not answer.
+    Unknown,
+}
+
+impl ChatSession {
+    /// Watch `token`, which `user` holds, on `sessions`.
+    pub(crate) fn new(sessions: Arc<SessionStore>, token: String, user: &User) -> ChatSession {
+        let watch = Arc::new(SessionWatch {
+            token: token.clone(),
+            user: user.id,
+            ended: std::sync::atomic::AtomicBool::new(false),
+            notify: Notify::new(),
+        });
+        let listener: Arc<dyn SessionListener> = watch.clone();
+        sessions.add_listener(Arc::downgrade(&listener));
+        ChatSession {
+            sessions,
+            token,
+            user: user.id,
+            watch,
+        }
+    }
+
+    async fn now(&self) -> SessionNow {
+        if self.watch.ended.load(std::sync::atomic::Ordering::SeqCst) {
+            return SessionNow::Lost(SIGNED_OUT.to_owned());
+        }
+        match self.sessions.user_for(&self.token).await {
+            Ok(Some(user)) if user.id == self.user => {
+                if AuthRequirement::admin().admits(Some(&user)) {
+                    SessionNow::Admin(user)
+                } else {
+                    SessionNow::Lost(
+                        "this account is no longer an administrator, so the chat is closed"
+                            .to_owned(),
+                    )
+                }
+            }
+            Ok(_) => SessionNow::Lost(SIGNED_OUT.to_owned()),
+            Err(e) => {
+                sc_log::log_warn!(
+                    "the chat socket could not re-read its session: {}",
+                    sc_error::format_chain(&e)
+                );
+                SessionNow::Unknown
+            }
+        }
+    }
+
+    /// Wait until the session is lost, and say why. A store that cannot
+    /// answer leaves the socket open until the next re-read, as the live
+    /// socket does: a database that blinked is not a sign-out.
+    async fn lost(&self) -> String {
+        loop {
+            tokio::select! {
+                () = self.watch.notify.notified() => {}
+                () = tokio::time::sleep(SESSION_RECHECK) => {}
+            }
+            if let SessionNow::Lost(reason) = self.now().await {
+                return reason;
+            }
+        }
+    }
+}
+
+/// The close reason for a session that has ended.
+const SIGNED_OUT: &str = "your session ended, so the chat is closed; sign in again";
 
 /// Serve one chat socket for `user`.
 ///
@@ -134,6 +261,7 @@ pub(crate) async fn agent_chat_upgrade(
     evaluator: Option<Arc<dyn JsEvaluator>>,
     triggers: Option<Arc<TriggerDispatcher>>,
     user: User,
+    session: ChatSession,
 ) -> axum::response::Response {
     let (Some(catalog), Some(services)) = (catalog, services) else {
         let reason = "this server has no agents installed, so there is nothing to chat with";
@@ -145,6 +273,7 @@ pub(crate) async fn agent_chat_upgrade(
         evaluator,
         triggers,
         caller: RunCaller::user(user),
+        session,
     };
     ws.on_upgrade(move |socket| chat(socket, ctx))
 }
@@ -174,7 +303,7 @@ fn fit_close_reason(reason: String) -> String {
 }
 
 /// Read the socket until it closes, running a turn for every message.
-async fn chat(socket: WebSocket, ctx: ChatContext) {
+async fn chat(socket: WebSocket, mut ctx: ChatContext) {
     let (mut sender, mut receiver) = socket.split();
     // Events are pushed from two places — this task, and the observer the driver
     // calls from inside the stream — so they meet in a channel rather than
@@ -187,12 +316,22 @@ async fn chat(socket: WebSocket, ctx: ChatContext) {
                 break;
             }
         }
+        sender
     });
 
     let mut agent_name: Option<String> = None;
     let mut run: Option<Run> = None;
+    let mut closing: Option<String> = None;
 
-    while let Some(Ok(message)) = receiver.next().await {
+    loop {
+        let message = tokio::select! {
+            message = receiver.next() => message,
+            reason = ctx.session.lost() => {
+                closing = Some(reason);
+                break;
+            }
+        };
+        let Some(Ok(message)) = message else { break };
         let text = match message {
             Message::Text(text) => text.to_string(),
             Message::Binary(bytes) => match String::from_utf8(bytes.to_vec()) {
@@ -210,6 +349,27 @@ async fn chat(socket: WebSocket, ctx: ChatContext) {
                 continue;
             }
         };
+
+        // Every `start` and every turn runs as the session's user as they are
+        // now; an ended session or a demoted admin closes the socket.
+        if !matches!(client, ClientMessage::Abort) {
+            match ctx.session.now().await {
+                SessionNow::Admin(user) => ctx.caller = RunCaller::user(user),
+                SessionNow::Lost(reason) => {
+                    closing = Some(reason);
+                    break;
+                }
+                // A store that cannot answer refuses the turn: this socket
+                // runs tools as an admin.
+                SessionNow::Unknown => {
+                    send(
+                        &tx,
+                        error_event("the session could not be checked; try again in a moment"),
+                    );
+                    continue;
+                }
+            }
+        }
 
         match client {
             ClientMessage::Start { agent, run: run_id } => {
@@ -239,6 +399,11 @@ async fn chat(socket: WebSocket, ctx: ChatContext) {
                     // The socket went away mid-turn. The run is on its row,
                     // written after every step, so nothing is lost by stopping.
                     Ok(Ended::Disconnected) => break,
+                    // The session went mid-turn; the run was stopped with it.
+                    Ok(Ended::SessionLost(reason)) => {
+                        closing = Some(reason);
+                        break;
+                    }
                     Err(e) => {
                         // Everything that can go wrong before or around the loop
                         // — an agent that is not usable, a provider that
@@ -261,7 +426,16 @@ async fn chat(socket: WebSocket, ctx: ChatContext) {
     }
 
     drop(tx);
-    let _ = writer.await;
+    if let Ok(mut sender) = writer.await
+        && let Some(reason) = closing
+    {
+        let _ = sender
+            .send(Message::Close(Some(CloseFrame {
+                code: close_code::POLICY,
+                reason: fit_close_reason(reason).into(),
+            })))
+            .await;
+    }
 }
 
 /// Bind the socket to an agent, resolving the run it is to continue.
@@ -292,6 +466,9 @@ enum Ended {
     Ok,
     /// The client went away mid-turn.
     Disconnected,
+    /// The session the socket was opened on ended, or stopped being an
+    /// admin's, mid-turn; the run has been stopped.
+    SessionLost(String),
 }
 
 /// Run one user turn, streaming it, watching for a stop.
@@ -385,7 +562,8 @@ async fn turn(
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_))) => {}
                     None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break Turn::Disconnected,
-                }
+                },
+                reason = ctx.session.lost() => break Turn::SessionLost(reason),
             }
         }
     };
@@ -431,6 +609,12 @@ async fn turn(
             // that says "still going" for ever in the history.
             stop(ctx, &mut run).await?;
             Ended::Disconnected
+        }
+        Turn::SessionLost(reason) => {
+            // Stopped as a disconnect is: the tools ran as somebody who is no
+            // longer signed in as an admin.
+            stop(ctx, &mut run).await?;
+            Ended::SessionLost(reason)
         }
     };
 
@@ -480,6 +664,7 @@ enum Turn {
     Finished(Result<Conclusion>),
     Aborted,
     Disconnected,
+    SessionLost(String),
 }
 
 /// Whether `caller` may chat with `agent`.
