@@ -336,11 +336,12 @@ async fn a_user_run_builds_looks_clicks_fills_and_hears_about_errors() -> Result
     let env = setup("user", executable).await?;
     let mut run = Run::new(&env, RunCaller::user(env.alice.clone()), config(&[]));
 
-    // Before a green check — and with no build on disk to look at instead —
-    // there is nothing to look at, and the tool says what to do.
+    // Before a green check there is nothing Alice may look at: below admin
+    // the build output on disk is not previewed (security review #16), and
+    // the tool says who can build it.
     let err = run.call("view_app", json!({"action": "snapshot"})).await.0;
     let err = err.unwrap_err().to_string();
-    assert!(err.contains("run the check tool"), "{err}");
+    assert!(err.contains("an administrator can build"), "{err}");
 
     // Alice may not build: that runs the project's code on the server.
     let err = run
@@ -439,7 +440,9 @@ async fn a_user_run_builds_looks_clicks_fills_and_hears_about_errors() -> Result
 }
 
 /// A run that has built nothing looks at what is live — in `plan`, where it may
-/// only look — and a green check then shows it its own build instead.
+/// only look — and a green check then shows it its own build instead. An
+/// admin's run: below admin the build output on disk is not previewed (security
+/// review #16; the user run above is refused it).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_that_has_built_nothing_looks_at_the_live_build() -> Result<()> {
     let Some(executable) = browser("a_run_that_has_built_nothing_looks_at_the_live_build") else {
@@ -457,7 +460,10 @@ async fn a_run_that_has_built_nothing_looks_at_the_live_build() -> Result<()> {
     .unwrap();
     std::fs::write(dist.join("app.js"), APP_JS).unwrap();
 
-    let mut run = Run::new(&env, RunCaller::user(env.alice.clone()), config(&[]));
+    let admin = sc_auth::load_user_by_email(&env.catalog, "admin@example.com")
+        .await?
+        .expect("the admin");
+    let mut run = Run::new(&env, RunCaller::user(admin), config(&[]));
     run.mode = RunMode::Plan;
     let opened = run.view(json!({"action": "goto", "path": "/"})).await;
     assert!(

@@ -58,6 +58,9 @@ addressed here.
   `db_password_tokens::a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole`;
   `oauth_sign_in::an_application_and_the_admin_ui_sign_in_with_an_identity_provider` (a squatter's
   signup is claimed: session and password gone); `agent_chat::ending_the_session_closes_the_chat_socket`.
+- **`view_app` tests follow #16's preview rule.** Below admin, a run is not shown the build
+  output on disk, so the user run now expects the "an administrator can build" refusal, and the
+  live-build test looks as the admin.
 
 ## Security fixes: write responses, sync keys, module bridge, `.git` links, trigger chains, payments
 
