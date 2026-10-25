@@ -99,9 +99,9 @@ fn render(
                     out.push_str(p);
                 }
                 MemberProp::Computed(e) => {
-                    out.push('[');
+                    out.push_str("[__scKey(");
                     render(e, locals, hoisted, out);
-                    out.push(']');
+                    out.push_str(")]");
                 }
             }
             out.push(')');
@@ -119,9 +119,9 @@ fn render(
                     out.push_str(p);
                 }
                 MemberProp::Computed(e) => {
-                    out.push('[');
+                    out.push_str("[__scKey(");
                     render(e, locals, hoisted, out);
-                    out.push(']');
+                    out.push_str(")]");
                 }
             }
             out.push_str(")(");
@@ -140,9 +140,16 @@ fn render(
                     out.push_str(p);
                 }
                 MemberProp::Computed(e) => {
-                    out.push_str(if *optional { "?.[" } else { "[" });
+                    // Through the isolate's key guard (`eval::FREEZE_PRELUDE`):
+                    // a key computed from data may not name `constructor` and
+                    // its kin, which a static one is refused at parse time.
+                    out.push_str(if *optional {
+                        "?.[__scKey("
+                    } else {
+                        "[__scKey("
+                    });
                     render(e, locals, hoisted, out);
-                    out.push(']');
+                    out.push_str(")]");
                 }
             }
         }
@@ -416,7 +423,7 @@ mod tests {
         // Computed access takes the guard too.
         assert_eq!(
             js("owner === user[title]"),
-            "(owner === (user === null ? null : user[title]))"
+            "(owner === (user === null ? null : user[__scKey(title)]))"
         );
     }
 

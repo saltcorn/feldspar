@@ -113,7 +113,7 @@
 //!   it on its subdomain — the admin's Build button, by subdomain.
 
 use sc_agent::DEFAULT_MAX_DEPTH;
-use sc_agent::{AgentTrait, SessionContext, ToolsContext, TraitCheck, TraitContext};
+use sc_agent::{AgentTrait, RunCaller, SessionContext, ToolsContext, TraitCheck, TraitContext};
 use sc_api::mcp::{
     Area, Areas, ToolContext, ToolSet, arguments, optional_string, require_admin, require_grant,
 };
@@ -306,8 +306,8 @@ impl AgentTrait for AdminCopilot {
     /// checkbox is on — which is [`ToolSet::specs`]'s rule, not one this trait
     /// applies on top of it.
     fn tools(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec> {
-        // A triggered run is offered none of it: see `call`.
-        if cx.caller.is_some_and(|caller| caller.triggered) {
+        // A triggered or exposed run is offered none of it: see `call`.
+        if cx.caller.is_some_and(RunCaller::untrusted_origin) {
             return Vec::new();
         }
         let mut specs = tool_set(config).specs(cx.catalog);
@@ -370,6 +370,13 @@ impl AgentTrait for AdminCopilot {
                 "`{tool}` is not available to a run a trigger started: the admin copilot \
                  changes the application itself, and this run's prompt came from an event. \
                  An admin can allow it with the trigger's `trusted_input` setting."
+            )));
+        }
+        // Nor through an application: its page's script can send the chat.
+        if ctx.caller.exposed {
+            return Err(Error::invalid(format!(
+                "`{tool}` is not available to a chat through an application: the admin \
+                 copilot changes the application itself, and is used from the admin console"
             )));
         }
         if tool == TOOL_DELEGATE || tool == TOOL_PUBLISH {

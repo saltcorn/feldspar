@@ -62,7 +62,7 @@ function write(files) {
 function fakeDb(tables) {
   const asked = [];
   let ids = 0;
-  const table = (name, conds = [], group = null, agg = null) => {
+  const table = (name, conds = [], group = null, agg = null, user = false) => {
     const matching = () =>
       (tables[name] || []).filter((row) => conds.every((c) => Object.entries(c).every(([k, v]) => row[k] === v)));
     const grouped = () => {
@@ -79,14 +79,14 @@ function fakeDb(tables) {
       return [...out.values()];
     };
     const chain = {
-      where: (c) => table(name, [...conds, c], group, agg),
-      groupBy: (g) => table(name, conds, g, agg),
-      aggregate: (a) => table(name, conds, group, a),
+      where: (c) => table(name, [...conds, c], group, agg, user),
+      groupBy: (g) => table(name, conds, g, agg, user),
+      aggregate: (a) => table(name, conds, group, a, user),
       orderBy: () => chain,
       limit: () => chain,
-      asUser: () => chain,
+      asUser: () => table(name, conds, group, agg, true),
       rows: async () => {
-        asked.push(name);
+        asked.push(user ? `${name} as the visitor` : name);
         return agg ? grouped() : matching();
       },
       first: async () => matching()[0] ?? null,
@@ -269,7 +269,8 @@ test("a page's frontmatter reads the database with the code-action syntax", asyn
   const { db, asked } = fakeDb({ posts });
   const out = await run({ path: "/posts" }, { db });
   assert.equal(out.status, 200);
-  assert.deepEqual(asked, ["posts"]);
+  // The scaffolded page reads as the visitor, never at admin authority.
+  assert.deepEqual(asked, ["posts as the visitor"]);
   assert.match(out.body, /^<!DOCTYPE html>/i);
   assert.match(out.body, /Hello &lt;world&gt;/, "text is escaped");
   assert.match(out.body, /<link rel="stylesheet" href="\/_astro\/site\.[0-9a-f]+\.css">/);

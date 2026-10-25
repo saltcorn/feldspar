@@ -400,7 +400,8 @@ fn render_parts<'a>(
                                     token.source
                                 )));
                             }
-                            let nested = Template::parse(&text)?;
+                            let mut nested = Template::parse(&text)?;
+                            from_data(&mut nested, &token.source)?;
                             out.push_str(
                                 &render_parts(
                                     &nested.parts,
@@ -419,6 +420,42 @@ fn render_parts<'a>(
         }
         Ok(out)
     })
+}
+
+/// Hold a template parsed from a `{{= }}` token's **value** — row data, which
+/// whoever wrote the row chose — to what data may ask for: each token only
+/// names a value (`firstName`, `user.name`, `customerⱵemail`), and is escaped
+/// as a bare token is. An operator, a call or a computed member is code, and
+/// the formula isolate is shared by every evaluation (security review #23); a
+/// `{{! }}` would let the row put any field's markup on the page unescaped.
+fn from_data(nested: &mut Template, outer: &str) -> Result<()> {
+    for part in &mut nested.parts {
+        let Part::Token(token) = part else { continue };
+        if !names_a_value(token.formula.ast()) {
+            return Err(Error::invalid(format!(
+                "`{outer}` holds the token `{}`; a value re-interpolated with `{{{{= }}}}` \
+                 may only name fields, as in `{{{{ firstName }}}}`",
+                token.source
+            )));
+        }
+        if token.escape == Escape::Raw {
+            token.escape = Escape::Html;
+        }
+    }
+    Ok(())
+}
+
+/// Whether `ast` is a name, or a name's static members: `a`, `user.name`.
+fn names_a_value(ast: &Ast) -> bool {
+    match ast {
+        Ast::Ident(_) => true,
+        Ast::Member {
+            obj,
+            prop: crate::ast::MemberProp::Static(_),
+            ..
+        } => names_a_value(obj),
+        _ => false,
+    }
 }
 
 /// One evaluated token as text.
@@ -754,6 +791,40 @@ mod render_tests {
         assert_eq!(
             t.render_html(&ev, &bindings).await.unwrap(),
             "Tea &amp; &lt;b&gt;"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_value_from_data_may_only_name_fields() {
+        // Row data re-interpolated is somebody's text, not the admin's
+        // template: a token in it names a value, and nothing more.
+        let ev = DenoEvaluator::new();
+        for code in [
+            "{{ `x`.constructor.constructor(`return 1`)() }}",
+            "{{ firstName + 1 }}",
+            "{{ firstName.toUpperCase() }}",
+            "{{ user[firstName] }}",
+        ] {
+            let bindings = bind(&[
+                ("greeter", Value::Text(code.into())),
+                ("firstName", Value::Text("John".into())),
+            ]);
+            let t = Template::parse("{{= greeter }}").unwrap();
+            let msg = t.render_text(&ev, &bindings).await.unwrap_err().to_string();
+            assert!(
+                msg.contains("may only name fields") || msg.contains("may not read the member"),
+                "{code}: {msg}"
+            );
+        }
+        // And a raw token in it is escaped as a bare one is.
+        let bindings = bind(&[
+            ("greeter", Value::Text("Hi {{! bio }}".into())),
+            ("bio", Value::Text("<img src=x onerror=alert(1)>".into())),
+        ]);
+        let t = Template::parse("{{= greeter }}").unwrap();
+        assert_eq!(
+            t.render_html(&ev, &bindings).await.unwrap(),
+            "Hi &lt;img src=x onerror=alert(1)&gt;"
         );
     }
 

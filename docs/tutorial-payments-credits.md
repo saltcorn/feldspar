@@ -92,7 +92,7 @@ When the module grants:
 | The subscription | Credits |
 |---|---|
 | starts, paid | the first month's |
-| starts with a trial (card taken up front) | the plan's credits, for the trial |
+| starts with a trial (card taken up front) | the plan's credits, for the trial — the user's first subscription on the account only; a later one has no trial |
 | renews, paid | the new month's, rolling over the last month's |
 | past due (the renewal's card was declined) | none, until the payment is recovered; then that month's |
 | changes plan mid-month | none until the next month, which is the new plan's |

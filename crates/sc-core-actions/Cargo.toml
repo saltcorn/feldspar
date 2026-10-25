@@ -43,8 +43,9 @@ sc-email.workspace = true
 # reads back. This crate is layer 9 and `sc-model` is layer 6, so the
 # dependency runs the way every other one here does.
 sc-model.workspace = true
-# `fit_model` waits for the fit it started by reading its row back on a timer.
-tokio = { workspace = true, features = ["time"] }
+# `fit_model` waits for the fit it started by reading its row back on a timer;
+# `fetch` resolves a templated host itself, to keep to public addresses.
+tokio = { workspace = true, features = ["time", "net"] }
 # `send_email`'s attachments: the store the row's file path points into is read
 # through `FileStore`, and `mime_for_path` types the part from the file's own
 # extension — the same inference the File field's `mime_allow` check uses, so a

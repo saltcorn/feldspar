@@ -41,6 +41,12 @@ fn staff() -> RunCaller {
     RunCaller::user(sc_auth::User::new(uuid::Uuid::new_v4(), 40).expect("a user"))
 }
 
+/// An admin chatting through an agent an application exposes: script on the
+/// application's origin can send that chat (security review #21).
+fn exposed_admin() -> RunCaller {
+    RunCaller::exposed(sc_auth::User::new(uuid::Uuid::new_v4(), 1).expect("a user"))
+}
+
 fn offered_to(env: &Env, trait_: &str, config: &Attrs, caller: &RunCaller) -> Vec<String> {
     env.registry
         .require(trait_)
@@ -71,7 +77,11 @@ async fn the_projects_own_code_runs_only_for_an_admin() -> Result<()> {
         assert!(admin.contains(tool), "{tool} for an admin: {admin:?}");
     }
 
-    for (who, caller) in [("staff", staff()), ("a trigger", RunCaller::triggered())] {
+    for (who, caller) in [
+        ("staff", staff()),
+        ("a trigger", RunCaller::triggered()),
+        ("an admin through an application", exposed_admin()),
+    ] {
         let names = offered_to(&env, "coding", &cfg, &caller);
         for tool in [&script, &check, &shell] {
             assert!(!names.contains(tool), "{tool} offered to {who}: {names:?}");
@@ -221,8 +231,23 @@ async fn a_triggered_run_has_no_admin_copilot_and_builds_nothing() -> Result<()>
         .to_string();
     assert!(err.contains("trusted_input"), "{err}");
 
+    // Nor for an admin chatting through an application.
+    assert!(offered_to(&env, "admin_copilot", &copilot, &exposed_admin()).is_empty());
+    let err = env
+        .call_tool(
+            "admin_copilot",
+            &copilot,
+            "list_tables",
+            json!({}),
+            &exposed_admin(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("through an application"), "{err}");
+
     let build = config(&[("application", json!("todo"))]);
-    for caller in [staff(), RunCaller::triggered()] {
+    for caller in [staff(), RunCaller::triggered(), exposed_admin()] {
         assert!(offered_to(&env, "build_application", &build, &caller).is_empty());
         let err = env
             .call_tool(

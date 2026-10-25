@@ -279,10 +279,42 @@ fn lower_lit(lit: &swc::Lit) -> Result<Ast> {
     }
 }
 
+/// The member names a formula may not read: each leads from a value to the
+/// shared prototypes or to `Function`, which runs any statement — assignment
+/// included — in the isolate every later formula shares (security review #23).
+/// A computed key is checked again when it is evaluated (`__scKey`).
+pub(crate) const BANNED_MEMBERS: &[&str] = &[
+    "constructor",
+    "__proto__",
+    "prototype",
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+];
+
+fn banned_member(name: &str) -> Result<()> {
+    if BANNED_MEMBERS.contains(&name) {
+        return Err(Error::invalid(format!(
+            "a formula may not read the member `{name}`"
+        )));
+    }
+    Ok(())
+}
+
 fn lower_member(m: &swc::MemberExpr, optional: bool) -> Result<Ast> {
     let prop = match &m.prop {
-        swc::MemberProp::Ident(i) => MemberProp::Static(i.sym.to_string()),
-        swc::MemberProp::Computed(c) => MemberProp::Computed(Box::new(lower(&c.expr)?)),
+        swc::MemberProp::Ident(i) => {
+            banned_member(&i.sym)?;
+            MemberProp::Static(i.sym.to_string())
+        }
+        swc::MemberProp::Computed(c) => {
+            let key = lower(&c.expr)?;
+            if let Ast::Str(name) = &key {
+                banned_member(name)?;
+            }
+            MemberProp::Computed(Box::new(key))
+        }
         swc::MemberProp::PrivateName(_) => return Err(unsupported("private names (`#x`)")),
     };
     Ok(Ast::Member {

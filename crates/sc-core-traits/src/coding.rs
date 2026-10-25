@@ -714,9 +714,11 @@ pub(crate) fn may(config: &Attrs, key: &str) -> bool {
 /// A run a trigger started is not one, though it holds role 1: its prompt was
 /// computed from an event — a row somebody wrote, a webhook somebody sent — so
 /// what it is asked to do is only as trustworthy as whoever caused the event
-/// ([`RunCaller::triggered`]).
+/// ([`RunCaller::triggered`]). Nor is an admin chatting with an agent an
+/// application exposes: any script on the application's origin can send that
+/// chat with the admin's cookie ([`RunCaller::exposed`]).
 pub(crate) fn is_admin(caller: &RunCaller) -> bool {
-    caller.role == 1 && !caller.triggered
+    caller.role == 1 && !caller.untrusted_origin()
 }
 
 /// The grants that run the project's own code — its `package.json` scripts,

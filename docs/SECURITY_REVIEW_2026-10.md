@@ -402,15 +402,15 @@ they turned out worse than stated.
 | 16 | High | Non-admin file edits become admin-authority server code (Astro entry, build files, LSP binary) | **partly fixed** |
 | 17 | High | `mail_test_account` sends a shared account's saved password/token to a host the caller picks | **fixed** |
 | 18 | High | Order lines can change between checkout and payment; the paid order delivers the new basket | **fixed** |
-| 19 | Med–High | Repeated trials give unlimited plan roles and LLM credits | reported |
-| 20 | Medium | Exposed agents: anonymous visitors act as the agent's `view_app_user` | reported |
-| 21 | Medium | Exposed agents re-open admin tools (shell, copilot, modules) to app-origin script | reported |
-| 22 | Medium | No rate limit or spending cap on exposed agents; signup unthrottled | reported |
-| 23 | Medium | Formula isolate allows full JS via `constructor`, shared and persistent, no heap limit | reported |
-| 24 | Medium | Astro scaffold publishes rows of every API table to anonymous visitors | reported |
-| 25 | Medium | Prerendered / refreshed Astro pages served to callers the app does not admit | reported |
-| 26 | Medium | Unauthenticated CPU/memory exhaustion through Astro `/_image` | reported |
-| 27 | Medium | `fetch` action with a templated host is an SSRF that returns the response | reported |
+| 19 | Med–High | Repeated trials give unlimited plan roles and LLM credits | **fixed** |
+| 20 | Medium | Exposed agents: anonymous visitors act as the agent's `view_app_user` | **fixed** |
+| 21 | Medium | Exposed agents re-open admin tools (shell, copilot, modules) to app-origin script | **fixed** |
+| 22 | Medium | No rate limit or spending cap on exposed agents; signup unthrottled | **partly fixed** |
+| 23 | Medium | Formula isolate allows full JS via `constructor`, shared and persistent, no heap limit | **fixed** |
+| 24 | Medium | Astro scaffold publishes rows of every API table to anonymous visitors | **fixed** |
+| 25 | Medium | Prerendered / refreshed Astro pages served to callers the app does not admit | **fixed** |
+| 26 | Medium | Unauthenticated CPU/memory exhaustion through Astro `/_image` | **fixed** |
+| 27 | Medium | `fetch` action with a templated host is an SSRF that returns the response | **fixed** |
 | 28 | Medium | REST create/update and GraphQL delete return rows the caller may not read | reported |
 | 29 | Medium | Offline-sync pull lists the keys of changed rows the caller cannot read | reported |
 | 30 | Medium | Module workers: `__scDbCall` is writable, so any module can capture other calls' tokens | reported |
@@ -423,6 +423,8 @@ they turned out worse than stated.
 
 Items 15, 17 and 18 are fixed and 16 partly (its short-term list); see the CHANGELOG entry
 "Security fixes: admin routes on app hosts, edit-to-execute, mail test credentials, order lines".
+Items 19–21 and 23–27 are fixed and 22 partly (no per-exposure daily budget); see the CHANGELOG
+entry "Security fixes: repeat trials, exposed agents, formula isolate, Astro, `/_image`, `fetch`".
 
 Items 15, 16, 20 and 21 are the main new routes to admin authority; 15 and 21 are the same class
 as the first review's #5 (admin session reachable from app-origin script) on routes its fix did not

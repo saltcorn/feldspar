@@ -362,6 +362,14 @@ pub struct RunCaller {
     /// tools that act as the server itself — the shell, module installs, the
     /// project's scripts and checks, the admin copilot.
     pub triggered: bool,
+    /// Whether this run is a chat with an agent an application exposes
+    /// ([`RunCaller::exposed`], [`RunCaller::anonymous`]). Like a triggered
+    /// run, it keeps its caller's authority over rows but is never offered the
+    /// tools that act as the server: the request came from an application's
+    /// origin, where any script on the page holds the visitor's cookie and
+    /// CSRF token, and an admin signed in to the application is not therefore
+    /// at the admin console (security review #21).
+    pub exposed: bool,
 }
 
 impl RunCaller {
@@ -371,6 +379,17 @@ impl RunCaller {
             role: user.role,
             user: Some(user),
             triggered: false,
+            exposed: false,
+        }
+    }
+
+    /// A chat turn of `user` with an agent an application exposes: the user's
+    /// own authority over rows, without the server's own tools (see
+    /// [`exposed`](Self::exposed)).
+    pub fn exposed(user: User) -> RunCaller {
+        RunCaller {
+            exposed: true,
+            ..RunCaller::user(user)
         }
     }
 
@@ -384,6 +403,7 @@ impl RunCaller {
             user: None,
             role: 1,
             triggered: false,
+            exposed: false,
         }
     }
 
@@ -415,7 +435,24 @@ impl RunCaller {
             user: None,
             role: 100,
             triggered: false,
+            exposed: true,
         }
+    }
+
+    /// Whether this is an anonymous visitor's run ([`anonymous`](Self::anonymous)),
+    /// as opposed to a system or triggered one, which also has no user. A tool
+    /// that falls back to a configured account when "nobody is chatting" must
+    /// not fall back for a visitor, who is somebody (security review #20).
+    pub fn is_anonymous(&self) -> bool {
+        self.user.is_none() && self.exposed
+    }
+
+    /// Whether the prompt this run acts on came from outside the admin
+    /// console — an event a trigger fired on, or an application's page — so
+    /// that holding role 1 is not being an administrator at the console. Such a
+    /// run is never offered the tools that act as the server.
+    pub fn untrusted_origin(&self) -> bool {
+        self.triggered || self.exposed
     }
 
     /// Whether this caller meets a role floor — how an agent's `min_role` and a
@@ -700,6 +737,20 @@ mod tests {
         assert!(caller.meets_role(Some(100)));
         assert!(!caller.meets_role(Some(80)));
         assert!(!caller.meets_role(None));
+        // A visitor is somebody, and not a system run.
+        assert!(caller.is_anonymous() && caller.untrusted_origin());
+        assert!(!RunCaller::system().is_anonymous());
+        assert!(!RunCaller::triggered().is_anonymous());
+        assert!(RunCaller::triggered().untrusted_origin());
+    }
+
+    #[test]
+    fn an_exposed_run_is_its_user_from_an_untrusted_origin() {
+        let admin = User::new(Uuid::new_v4(), 1).unwrap();
+        let caller = RunCaller::exposed(admin.clone());
+        assert_eq!(caller.role, 1);
+        assert!(caller.untrusted_origin() && !caller.is_anonymous());
+        assert!(!RunCaller::user(admin).untrusted_origin());
     }
 
     #[test]

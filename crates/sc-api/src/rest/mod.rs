@@ -269,6 +269,12 @@ const GUEST_SESSION_RATE: sc_ratelimit::Rate = sc_ratelimit::Rate {
     window: std::time::Duration::from_secs(60),
 };
 
+/// How many accounts one address may make an hour.
+const SIGNUP_RATE: sc_ratelimit::Rate = sc_ratelimit::Rate {
+    max: 5,
+    window: std::time::Duration::from_secs(60 * 60),
+};
+
 /// The endpoints that make up an application's **sign-in**: how a caller who
 /// is nobody yet becomes somebody, or gets back to being able to. A caller an
 /// application does not let in at all reaches these and nothing else (TODO
@@ -1157,7 +1163,8 @@ impl RestProvider {
     /// other way of making one has: not blank. An address that already has an
     /// account is a `409` — unlike a failed login, the answer cannot be kept
     /// vague, because the caller has to be told to sign in instead.
-    async fn signup(&self, body: &Json, cat: &Catalog) -> Result<ApiResponse> {
+    async fn signup(&self, req: &ApiRequest, cat: &Catalog) -> Result<ApiResponse> {
+        let body = &req.body;
         let Some(role) = self.signup_role else {
             // The route is only projected alongside a role, so this is the set
             // having been extended by something else.
@@ -1168,6 +1175,14 @@ impl RestProvider {
         };
         let (email, password) = credentials(body)?;
         let email = email.trim().to_owned();
+        // An account is a password hash to compute and, where an agent is
+        // exposed to signed-in users, a way to its provider budget: a person
+        // signs up once, a script a thousand times (security review #22).
+        if let Some(ip) = req.client_ip
+            && let Err(limited) = sc_ratelimit::global().hit(&format!("signup:{ip}"), SIGNUP_RATE)
+        {
+            return Ok(ApiResponse::too_many_requests(limited));
+        }
         if sc_auth::load_user_by_email(cat, &email).await?.is_some() {
             return Ok(ApiResponse::error(
                 409,
@@ -2062,7 +2077,7 @@ impl RestProvider {
 
         match &endpoint.handler {
             HandlerRef::Named(_) if endpoint.name == LOGIN => self.login(&req, cat).await,
-            HandlerRef::Named(_) if endpoint.name == SIGNUP => self.signup(&req.body, cat).await,
+            HandlerRef::Named(_) if endpoint.name == SIGNUP => self.signup(&req, cat).await,
             HandlerRef::Named(_) if endpoint.name == GUEST_SESSION => {
                 self.start_guest_session(&req, cat, user).await
             }

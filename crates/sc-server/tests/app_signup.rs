@@ -69,6 +69,8 @@ struct Client {
     router: Router,
     host: String,
     cookies: HashMap<String, String>,
+    /// The socket address requests come from; none by default.
+    peer: Option<std::net::SocketAddr>,
 }
 
 impl Client {
@@ -77,6 +79,7 @@ impl Client {
             router,
             host: host.to_owned(),
             cookies: HashMap::new(),
+            peer: None,
         }
     }
 
@@ -111,6 +114,12 @@ impl Client {
                 .unwrap(),
             None => builder.body(Body::empty()).unwrap(),
         };
+        let mut request = request;
+        if let Some(peer) = self.peer {
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(peer));
+        }
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         for raw in response.headers().get_all(header::SET_COOKIE) {
@@ -337,6 +346,51 @@ async fn signup_makes_an_account_with_the_configured_role_and_signs_it_in() -> s
         )
         .await;
     assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+/// One address makes a handful of accounts an hour, not a thousand (security
+/// review #22).
+#[tokio::test]
+async fn signup_is_throttled_per_address() -> sc_error::Result<()> {
+    let tmp = TempDir::new("throttle");
+    let api = ApiConfig::new("rest", "/api")
+        .with(sc_api::REST_CFG_ALLOW_SIGNUP, true)
+        .with(sc_api::REST_CFG_NEW_USER_ROLE, 80);
+    let (router, catalog, _db) = setup(&tmp, api).await?;
+    save_role(&catalog, &Role::new(80, "Member")).await?;
+
+    let peer: std::net::SocketAddr = "203.0.113.77:4000".parse().unwrap();
+    for n in 0..6 {
+        let mut client = Client::new(router.clone(), APP_HOST);
+        client.peer = Some(peer);
+        client.raw("GET", "/", None).await;
+        let (status, body) = client
+            .send(
+                "POST",
+                "/api/signup",
+                credentials(&format!("bot{n}@example.com"), "pw-123"),
+            )
+            .await;
+        let expected = if n < 5 {
+            StatusCode::CREATED
+        } else {
+            StatusCode::TOO_MANY_REQUESTS
+        };
+        assert_eq!(status, expected, "signup {n}: {body}");
+    }
+    // Another address is counted apart.
+    let mut client = Client::new(router.clone(), APP_HOST);
+    client.peer = Some("203.0.113.78:4000".parse().unwrap());
+    client.raw("GET", "/", None).await;
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/signup",
+            credentials("human@example.com", "pw-123"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
     Ok(())
 }
 

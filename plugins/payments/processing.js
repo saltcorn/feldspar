@@ -214,6 +214,12 @@ async function allowanceEffects(ctx, account, current, row, binding, plan) {
   if (!period) return null;
   const key = `allowance:${account.id}:${current.ref}:${period.end}`;
   if (row.allowance_key === key) return null;
+  // A trial's allowance only for the user's first subscription on the account: two trial
+  // checkouts opened at once both pass the checkout's one-trial check.
+  if (current.status === "trialing") {
+    const subs = await ctx.db.pay_objects.where({ account: account.id, kind: "subscription", user_id: row.user_id }).orderBy("id", "asc").rows();
+    if (subs.length && subs[0].id !== row.id) return "a trial on a second subscription includes no LLM credits; they are granted from its first paid period";
+  }
   if (!ctx.credits) return "this delivery could not grant LLM credits";
   await ctx.credits.grant({
     user: row.user_id,

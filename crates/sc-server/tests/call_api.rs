@@ -196,6 +196,17 @@ impl Env {
     /// Call `call_api_apps_web` as `caller` in `mode`, with the requester the
     /// server installed, and return its text.
     async fn call(&self, caller: &RunCaller, mode: RunMode, args: Json) -> Result<String> {
+        self.call_with(&coding(), caller, mode, args).await
+    }
+
+    /// [`call`](Self::call) with the `coding` trait configured as `config`.
+    async fn call_with(
+        &self,
+        config: &Attrs,
+        caller: &RunCaller,
+        mode: RunMode,
+        args: Json,
+    ) -> Result<String> {
         let registry = sc_core_traits::builtin_traits().unwrap();
         let coding_trait = registry.require("coding").unwrap().clone();
         let services = self.agents.registry().view_services();
@@ -219,7 +230,7 @@ impl Env {
             images: Vec::new(),
         };
         coding_trait
-            .call(&coding(), TOOL, &args, &mut ctx)
+            .call(config, TOOL, &args, &mut ctx)
             .await
             .map(|j| j.as_str().unwrap_or_default().to_owned())
     }
@@ -416,6 +427,53 @@ async fn call_api_needs_someone_to_send_as_and_a_served_application() -> Result<
         .unwrap_err()
         .to_string();
     assert!(err.contains("no application is being served"), "{err}");
+    Ok(())
+}
+
+/// `view_app_user` is who a run nobody is chatting in sends as; a visitor who
+/// is not signed in is somebody, and sends as the public (security review #20).
+#[tokio::test]
+async fn an_anonymous_visitor_never_sends_as_view_app_user() -> Result<()> {
+    let env = setup("anon").await?;
+    let mut config = coding();
+    config.insert("view_app_user".to_owned(), json!(BOB));
+
+    let system = env
+        .call_with(
+            &config,
+            &RunCaller::system(),
+            RunMode::Plan,
+            json!({"path": "/api/notes"}),
+        )
+        .await?;
+    assert!(system.contains("as bob@example.com → 200"), "{system}");
+    assert!(system.contains("bob note"), "{system}");
+
+    let visitor = env
+        .call_with(
+            &config,
+            &RunCaller::anonymous(),
+            RunMode::Plan,
+            json!({"path": "/api/notes"}),
+        )
+        .await?;
+    assert!(
+        visitor.starts_with("GET /api/notes as public → 200"),
+        "{visitor}"
+    );
+    assert!(!visitor.contains("bob note"), "{visitor}");
+    // Nor may it name the account.
+    let err = env
+        .call_with(
+            &config,
+            &RunCaller::anonymous(),
+            RunMode::Plan,
+            json!({"path": "/api/notes", "user": BOB}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("only an administrator"), "{err}");
     Ok(())
 }
 

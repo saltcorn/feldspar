@@ -25,6 +25,12 @@
 //! in its attributes. Only its owner sees it through this route, in this
 //! application; anybody else asking for it gets the 404 a run that does not
 //! exist gets. The admin chat still lists it under the agent, as a record.
+//!
+//! **A turn spends the provider's budget**, so starting one is limited
+//! (security review #22): per address and per asker by
+//! [`sc_ratelimit::global`], and in how many may run at once — per
+//! application and per asker — by [`TurnSlots`]. A visitor who is not signed
+//! in also gets a smaller step budget ([`ANONYMOUS_MAX_STEPS`]).
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -61,6 +67,129 @@ pub(crate) const ATTR_APP_MODE: &str = "app_mode";
 /// The longest title a person may give a conversation.
 const MAX_TITLE_CHARS: usize = 200;
 
+/// How many turns one address may start: a person typing, not a script.
+const TURNS_PER_IP: sc_ratelimit::Rate = sc_ratelimit::Rate {
+    max: 30,
+    window: std::time::Duration::from_secs(10 * 60),
+};
+/// How many turns one asker — a user, or a browser's cookie — may start.
+const TURNS_PER_ASKER: sc_ratelimit::Rate = sc_ratelimit::Rate {
+    max: 20,
+    window: std::time::Duration::from_secs(10 * 60),
+};
+/// How many turns may run at once in one application.
+const MAX_TURNS_PER_APP: usize = 16;
+/// How many turns one asker may have running at once.
+const MAX_TURNS_PER_ASKER: usize = 2;
+/// The most model steps a run started by a visitor who is not signed in may
+/// take, whatever the agent's own `max_steps`.
+pub(crate) const ANONYMOUS_MAX_STEPS: u32 = 20;
+
+/// The turns running now, counted by key (`app:<id>`, `asker:<app>:<who>`).
+/// In memory and per process, like the rate limits.
+#[derive(Default)]
+struct TurnSlots {
+    running: std::sync::Mutex<std::collections::HashMap<String, usize>>,
+}
+
+/// One running turn's place in [`TurnSlots`], given back when it is dropped —
+/// when the turn's task ends, however it ends.
+pub(crate) struct TurnSlot {
+    keys: Vec<String>,
+}
+
+impl TurnSlots {
+    fn global() -> &'static TurnSlots {
+        static SLOTS: std::sync::OnceLock<TurnSlots> = std::sync::OnceLock::new();
+        SLOTS.get_or_init(TurnSlots::default)
+    }
+
+    /// Take a place under every `(key, cap)`, or none and `false` when any is
+    /// full.
+    fn take(&'static self, limits: &[(String, usize)]) -> Option<TurnSlot> {
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        if limits
+            .iter()
+            .any(|(key, cap)| running.get(key).copied().unwrap_or(0) >= *cap)
+        {
+            return None;
+        }
+        for (key, _) in limits {
+            *running.entry(key.clone()).or_insert(0) += 1;
+        }
+        Some(TurnSlot {
+            keys: limits.iter().map(|(k, _)| k.clone()).collect(),
+        })
+    }
+}
+
+impl Drop for TurnSlot {
+    fn drop(&mut self) {
+        let slots = TurnSlots::global();
+        let mut running = slots.running.lock().unwrap_or_else(|e| e.into_inner());
+        for key in &self.keys {
+            if let Some(n) = running.get_mut(key) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    running.remove(key);
+                }
+            }
+        }
+    }
+}
+
+/// A `429` saying when to come back.
+fn too_many(message: &str, retry_after: Option<u64>) -> Response {
+    let mut response = json_error(StatusCode::TOO_MANY_REQUESTS, message);
+    if let Some(secs) = retry_after
+        && let Ok(value) = HeaderValue::from_str(&secs.to_string())
+    {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    response
+}
+
+/// Whether this caller may start a turn now: within the rate limits for its
+/// address and for itself, and with a place among the turns running. The
+/// place is held until the returned slot is dropped.
+fn admit_turn(ctx: &AgentCtx) -> std::result::Result<TurnSlot, Response> {
+    let app = ctx.app.app.id.0.to_string();
+    let limiter = sc_ratelimit::global();
+    if let Some(ip) = ctx.client_ip
+        && let Err(limited) = limiter.hit(&format!("agent-turn:{app}:ip:{ip}"), TURNS_PER_IP)
+    {
+        return Err(too_many(
+            "too many messages from this address; wait a little and try again",
+            Some(limited.retry_after_secs()),
+        ));
+    }
+    // Who is asking, for the per-asker counts: the run owner, else (a prompt
+    // with no cookie) the address.
+    let who = ctx
+        .asker
+        .owner
+        .clone()
+        .or_else(|| ctx.client_ip.map(|ip| format!("ip:{ip}")));
+    if let Some(who) = &who
+        && let Err(limited) = limiter.hit(&format!("agent-turn:{app}:{who}"), TURNS_PER_ASKER)
+    {
+        return Err(too_many(
+            "too many messages; wait a little and try again",
+            Some(limited.retry_after_secs()),
+        ));
+    }
+    let mut limits = vec![(format!("app:{app}"), MAX_TURNS_PER_APP)];
+    if let Some(who) = who {
+        limits.push((format!("asker:{app}:{who}"), MAX_TURNS_PER_ASKER));
+    }
+    TurnSlots::global().take(&limits).ok_or_else(|| {
+        too_many(
+            "the agent is answering too many messages at once; try again in a moment",
+            Some(5),
+        )
+    })
+}
+
 /// Serve one request to an exposed agent.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle(
@@ -71,9 +200,14 @@ pub(crate) async fn handle(
     uri: &Uri,
     jar: &CookieJar,
     anonymous: bool,
+    client_ip: Option<std::net::IpAddr>,
     body: &Bytes,
 ) -> Response {
-    match answer(state, app, request, method, uri, jar, anonymous, body).await {
+    match answer(
+        state, app, request, method, uri, jar, anonymous, client_ip, body,
+    )
+    .await
+    {
         Ok(response) => response,
         Err(e) => refusal(&e),
     }
@@ -113,6 +247,7 @@ async fn answer(
     uri: &Uri,
     jar: &CookieJar,
     anonymous: bool,
+    client_ip: Option<std::net::IpAddr>,
     body: &Bytes,
 ) -> Result<Response> {
     let catalog = state
@@ -139,11 +274,19 @@ async fn answer(
     // The agent as it is now, and the agent's own floor: the one rule about who
     // may talk to an agent, wherever it is reached from.
     let agents = Agents::load(&catalog, services.registry()).await?;
-    let agent = agents
+    let mut agent = agents
         .require(&exposure.name)
         .map_err(|e| Error::invalid(format!("agent `{}` is not available: {e}", exposure.name)))?
         .clone();
     may_chat(&asker.caller, &agent)?;
+    // A visitor's run goes round the loop fewer times: each step is paid for,
+    // and nobody can be asked to pay for a visitor's.
+    if asker.caller.is_anonymous() {
+        let steps = agent.max_steps().min(ANONYMOUS_MAX_STEPS);
+        agent
+            .attributes
+            .insert(sc_agent::ATTR_MAX_STEPS.to_owned(), json!(steps));
+    }
 
     let ctx = AgentCtx {
         catalog,
@@ -153,6 +296,7 @@ async fn answer(
         exposure: exposure.clone(),
         agent,
         asker,
+        client_ip,
     };
     match (&request.route, method) {
         (AgentRoute::Chat, &Method::POST) if exposure.chat => chat(ctx, body).await,
@@ -191,7 +335,7 @@ fn asker(
     match user {
         Some(user) => Ok(Asker {
             user: Some(user.id),
-            caller: RunCaller::user(user),
+            caller: RunCaller::exposed(user),
             owner,
         }),
         None if exposure.anonymous => Ok(Asker {
@@ -215,6 +359,8 @@ struct AgentCtx {
     exposure: AgentExposure,
     agent: Agent,
     asker: Asker,
+    /// The address the request came from, for the per-address turn limit.
+    client_ip: Option<std::net::IpAddr>,
 }
 
 impl AgentCtx {
@@ -305,7 +451,11 @@ async fn chat(ctx: AgentCtx, body: &Bytes) -> Result<Response> {
             )));
         }
     };
-    Ok(sse(start_turn(ctx, existing, text, "chat")))
+    let slot = match admit_turn(&ctx) {
+        Ok(slot) => slot,
+        Err(refused) => return Ok(refused),
+    };
+    Ok(sse(start_turn(ctx, slot, existing, text, "chat")))
 }
 
 /// `POST …/prompt`: `{ prompt }` or `{ input }`, answered as JSON — or as a
@@ -322,7 +472,11 @@ async fn prompt(ctx: AgentCtx, body: &Bytes, stream: bool) -> Result<Response> {
         }
     };
     let text = ctx.exposure.prompt_text(prompt, obj.get("input"))?;
-    let rx = start_turn(ctx, None, text, "prompt");
+    let slot = match admit_turn(&ctx) {
+        Ok(slot) => slot,
+        Err(refused) => return Ok(refused),
+    };
+    let rx = start_turn(ctx, slot, None, text, "prompt");
     if stream {
         return Ok(sse(rx));
     }
@@ -333,12 +487,15 @@ async fn prompt(ctx: AgentCtx, body: &Bytes, stream: bool) -> Result<Response> {
 /// Dropping the receiver — the response going away — stops the agent.
 fn start_turn(
     ctx: AgentCtx,
+    slot: TurnSlot,
     existing: Option<Run>,
     text: String,
     mode: &'static str,
 ) -> tokio::sync::mpsc::UnboundedReceiver<Json> {
     let (tx, rx) = unbounded_channel::<Json>();
     tokio::spawn(async move {
+        // Held for as long as the turn runs.
+        let _slot = slot;
         if let Err(e) = drive_turn(&ctx, existing, text, mode, &tx).await {
             let message = match e.kind() {
                 ErrorKind::System => {
@@ -759,6 +916,34 @@ impl RunObserver for AppObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_slots_cap_what_runs_at_once_and_free_on_drop() {
+        let slots = TurnSlots::global();
+        let limits = |who: &str| {
+            vec![
+                ("app:slot-test".to_owned(), 3),
+                (format!("asker:slot-test:{who}"), 2),
+            ]
+        };
+        let a1 = slots.take(&limits("a")).expect("first");
+        let a2 = slots.take(&limits("a")).expect("second");
+        assert!(slots.take(&limits("a")).is_none(), "the asker's cap");
+        let b1 = slots.take(&limits("b")).expect("another asker");
+        assert!(slots.take(&limits("c")).is_none(), "the application's cap");
+        drop(a1);
+        let c1 = slots.take(&limits("c")).expect("a place was given back");
+        drop((a2, b1, c1));
+        assert!(
+            !slots
+                .running
+                .lock()
+                .unwrap()
+                .keys()
+                .any(|k| k.contains("slot-test")),
+            "nothing left counted"
+        );
+    }
 
     fn conversation() -> Vec<LlmMessage> {
         vec![

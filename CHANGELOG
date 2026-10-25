@@ -2,6 +2,75 @@
 
 Changes in reverse chronological order.
 
+## Security fixes: repeat trials, exposed agents, formula isolate, Astro, `/_image`, `fetch`
+
+Fixes for items 19–27 of `docs/SECURITY_REVIEW_2026-10.md`.
+
+- **A trial is had once per user on a payment account** (#19).
+  - Why: a trialing subscription grants the plan's role and its credit allowance, and nothing
+    stopped a user from subscribing with a trial, cancelling, and subscribing again — or opening
+    several trial checkouts at once.
+  - Now `prepareCheckout` (`plugins/payments/checkout.js` `hadTrial`) drops the trial (the buyer
+    pays from the first day) when the user has any subscription on the account, of any plan and
+    in any state, or a trial checkout that is open or completed. Behind that, `processing.js`
+    grants a trialing subscription's credit allowance only for the user's first subscription on
+    the account, so two trial checkouts that passed the check at the same moment grant the
+    credits once (the second's `issue` says why).
+- **An exposed agent's chat never acts as the server, and a visitor is nobody's account**
+  (#20, #21).
+  - Why: an admin chatting with an agent an application exposes was a plain `RunCaller::user`,
+    so the shell, module installs, the project's scripts, builds and the admin copilot were
+    offered to a chat any script on the application's origin can send with the admin's cookie.
+    And an anonymous visitor (no user) read as "nobody is chatting", so `view_app` and `call_api`
+    fell back to the agent's `view_app_user`.
+  - `RunCaller` gains `exposed`, set by `RunCaller::exposed(user)` (what `app_agents.rs` now
+    makes for a signed-in asker) and by `RunCaller::anonymous()`. `untrusted_origin()` (triggered
+    or exposed) is what `is_admin` and the admin copilot now check, so an exposed run is treated
+    as a triggered one is: its caller's authority over rows, none of the server's tools.
+    `is_anonymous()` tells a visitor from a system run: `call_api` sends a visitor's request as
+    the public, and `view_app` refuses one.
+- **Exposed agents and sign-up are rate-limited** (#22, partly).
+  - Starting a turn (`chat`, `prompt`) is limited to 30 per 10 minutes per address and 20 per
+    10 minutes per asker (user or browser cookie), and to 16 running turns per application and 2
+    per asker; over a limit is a `429` with `Retry-After` (`app_agents.rs` `admit_turn`,
+    `TurnSlots`). A visitor's run takes at most 20 model steps (`ANONYMOUS_MAX_STEPS`), whatever
+    the agent's `max_steps`. `POST {mount}/signup` is limited to 5 accounts per address an hour.
+  - Still open: a per-exposure daily spending cap. The limits are in memory, per process.
+- **The formula isolate is sealed** (#23).
+  - Static member names `constructor`, `__proto__`, `prototype` and the four
+    `__define/lookupGetter/Setter__` are refused when a formula is parsed (`ast.rs`
+    `BANNED_MEMBERS`); a computed member's key goes through `__scKey`, which refuses the same
+    names at run time.
+  - After the preludes, every intrinsic reachable from the global object (and the generator,
+    async and iterator prototypes) is frozen, and the global bindings made read-only
+    (`eval.rs` `FREEZE_PRELUDE`), so no evaluation can change what a later one reads.
+  - The isolate has a 64 MB heap; a formula that reaches it is stopped by the near-heap-limit
+    callback, answered with an error, and the isolate is replaced.
+  - A `{{= }}` value — row data re-interpolated as a template — may only hold tokens that name
+    values (`firstName`, `user.name`); anything else is an error, and `{{! }}` in it is escaped
+    like a bare token.
+- **The Astro scaffold's table pages read as the visitor** (#24): `db.<table>.asUser()`, with a
+  comment saying why, so a generated `/orders` shows what the API would give the visitor.
+- **A prerendered page that read data is refused to a caller the application does not admit**
+  (#25). The prerender records which pages read a table (or wrote) in `prerendered.json`'s new
+  `data` list; those and every refreshable page get the same 403 as a rendered page. Pages that
+  read nothing (a sign-in page) and the site's files are still served. A site built before this
+  must be built again for its data pages to be known.
+- **`/_image` is bounded** (#26): at most 2 resizes at once per site (a request waits up to 10 s,
+  then `503`), and one that waited is answered from a variant made meanwhile; the 32
+  variants per image are counted when a resize starts, under the check's lock, and since mount
+  (never given back on eviction); sources are decoded up to 8192 px a side and 128 MB.
+- **`fetch` with a templated host reaches only the public internet** (#27). When a token falls
+  before the URL's path (`{{ webhook_url }}`, `https://{{ host }}/`, a templated port), the
+  request goes through a client whose resolver answers public addresses only, an address
+  literal is checked before sending, and every redirect hop is checked. A host the admin wrote
+  out reaches what the server can reach, as before. Not done: URL-encoding of tokens (the first
+  review's Low item).
+
+Not fixed here: `sc-server`'s `view_app::a_run_that_has_built_nothing_looks_at_the_live_build`
+and `view_app::a_user_run_builds_looks_clicks_fills_and_hears_about_errors` fail since #16's
+change (a non-admin run no longer previews an unbuilt output); they predate this work.
+
 ## Security fixes: admin routes on app hosts, edit-to-execute, mail test credentials, order lines
 
 Fixes for items 15–18 of `docs/SECURITY_REVIEW_2026-10.md`.

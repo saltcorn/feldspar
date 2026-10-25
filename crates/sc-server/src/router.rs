@@ -1648,8 +1648,10 @@ async fn dispatch_app(
     // reason: `{mount}/_agents/…` sits under a provider's mount.
     if let Some(request) = sc_app::agent_route(&app.app, path) {
         return with_csp(
-            crate::app_agents::handle(state, app, request, &method, uri, &jar, anonymous, body)
-                .await,
+            crate::app_agents::handle(
+                state, app, request, &method, uri, &jar, anonymous, client_ip, body,
+            )
+            .await,
             &csp,
         );
     }

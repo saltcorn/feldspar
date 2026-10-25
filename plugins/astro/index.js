@@ -323,10 +323,14 @@ function tableAstro(table) {
   const cells = shown.length ? shown : table.fields.slice(0, 1);
   return `---
 // Rendered on every request, so it always shows the table as it is now. The
-// frontmatter is a code body: \`db\` here is the same \`db\` a code action has.
+// frontmatter is a code body: \`db\` here is the same \`db\` a code action has,
+// which reads with admin authority. \`asUser()\` reads as the visitor instead, so
+// the page shows exactly the rows the API would give them — none of a table
+// whose list is not public, only their own of one with an ownership rule.
+// Drop it only for a table every visitor may see all of.
 import Layout from "../../layouts/Layout.astro";
 
-const rows = await ${dbRef(table.name)}.limit(50).rows();
+const rows = await ${dbRef(table.name)}.asUser().limit(50).rows();
 ---
 <Layout title=${JSON.stringify(table.title)} description=${JSON.stringify(`The latest ${table.title.toLowerCase()}.`)}>
   <h1>${title}</h1>

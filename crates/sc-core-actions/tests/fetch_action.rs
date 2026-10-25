@@ -298,6 +298,73 @@ async fn a_url_template_is_rendered_against_the_row() -> Result<()> {
     Ok(())
 }
 
+/// A URL whose host a token fills in reaches the public internet only: a row
+/// or a payload must not point the server at its own network and be handed
+/// the answer (security review #27). The admin's own host is the admin's.
+#[tokio::test]
+async fn a_templated_host_reaches_only_public_addresses() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = setup(&db).await?;
+    let (url, _received) = one_shot(200, "application/json", "{\"secret\": 1}").await;
+    let event = Event::new(EventKind::Insert)
+        .on("books")
+        .row(json!({ "id": 7, "title": url, "pages": 100 }))
+        .caller(1, Some(json!({ "email": "admin@example.com" })));
+
+    // The whole URL from the row: a loopback literal is refused before
+    // anything is sent.
+    let cfg = config(&[("url", json!("{{ row.title }}")), ("method", json!("GET"))]);
+    let msg = run(&catalog, &event, &cfg).await.unwrap_err().to_string();
+    assert!(msg.contains("private or reserved"), "{msg}");
+    for target in [
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]:9/",
+        "http://10.1.2.3/",
+    ] {
+        let event = Event::new(EventKind::Insert)
+            .on("books")
+            .row(json!({ "id": 7, "title": target, "pages": 100 }))
+            .caller(1, None);
+        let msg = run(&catalog, &event, &cfg).await.unwrap_err().to_string();
+        assert!(msg.contains("private or reserved"), "{target}: {msg}");
+    }
+    // A name that resolves to loopback is refused by the resolver.
+    let port = url
+        .trim_start_matches("http://127.0.0.1:")
+        .trim_end_matches("/hook");
+    let cfg = config(&[
+        (
+            "url",
+            json!(format!("http://{{{{ row.title }}}}:{port}/hook")),
+        ),
+        ("method", json!("GET")),
+    ]);
+    let event = Event::new(EventKind::Insert)
+        .on("books")
+        .row(json!({ "id": 7, "title": "localhost", "pages": 100 }))
+        .caller(1, None);
+    let msg = run(&catalog, &event, &cfg).await.unwrap_err().to_string();
+    assert!(
+        msg.contains("private or reserved") || msg.contains("localhost"),
+        "{msg}"
+    );
+
+    // The admin's own host, with a token in the path, still reaches it.
+    let cfg = config(&[
+        (
+            "url",
+            json!(format!(
+                "{}/{{{{ row.id }}}}",
+                url.trim_end_matches("/hook")
+            )),
+        ),
+        ("method", json!("GET")),
+    ]);
+    let answer = run(&catalog, &book_insert(), &cfg).await?;
+    assert_eq!(answer, json!({ "secret": 1 }));
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_get_sends_no_body_and_a_text_response_comes_back_as_text() -> Result<()> {
     let db = TestDb::new().await?;

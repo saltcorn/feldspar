@@ -370,53 +370,174 @@ impl JsEvaluator for DenoEvaluator {
 }
 
 #[cfg(feature = "eval")]
-/// The dedicated thread: owns the `JsRuntime`, its watchdog, and the job loop.
+/// The heap the formula isolate may use. A formula is an expression over a
+/// handful of values; one that needs more than this is allocating on purpose.
+const FORMULA_MAX_HEAP: usize = 64 * 1024 * 1024;
+
+/// Run after the preludes: the formula's own key guard, then every intrinsic
+/// reachable from the global object frozen. A formula runs in the same isolate
+/// as every later one, so a prototype or a global it could change — `JSON`,
+/// which wraps value-mode results, or `Array.prototype.includes`, which an
+/// ownership formula calls — would change all of them (security review #23).
+#[cfg(feature = "eval")]
+pub(crate) const FREEZE_PRELUDE: &str = r#"
+(() => {
+  // A computed member's key, refused when it names the way out of the data:
+  // `constructor` reaches `Function`, `__proto__` and `prototype` the shared
+  // prototypes. The key is made a primitive once, here, so an object whose
+  // `toString` answers differently the second time cannot pass the check.
+  const banned = new Set(["constructor", "__proto__", "prototype",
+    "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__"]);
+  const key = (k) => {
+    const p = typeof k === "number" ? k : String(k);
+    if (typeof p === "string" && banned.has(p)) {
+      throw new TypeError("a formula may not read the member `" + p + "`");
+    }
+    return p;
+  };
+  Object.defineProperty(globalThis, "__scKey", { value: key, writable: false, enumerable: false, configurable: false });
+
+  const seen = new Set();
+  const freeze = (v) => {
+    if (v === null || (typeof v !== "object" && typeof v !== "function") || seen.has(v)) return;
+    seen.add(v);
+    Object.freeze(v);
+    freeze(Object.getPrototypeOf(v));
+    for (const name of Reflect.ownKeys(v)) {
+      const d = Object.getOwnPropertyDescriptor(v, name);
+      if (!d) continue;
+      if ("value" in d) freeze(d.value);
+      freeze(d.get);
+      freeze(d.set);
+    }
+  };
+  // The intrinsics no global names.
+  freeze(Object.getPrototypeOf(function* () {}));
+  freeze(Object.getPrototypeOf(async function () {}));
+  freeze(Object.getPrototypeOf(async function* () {}));
+  freeze(Object.getPrototypeOf([][Symbol.iterator]()));
+  freeze(Object.getPrototypeOf(new Map()[Symbol.iterator]()));
+  freeze(Object.getPrototypeOf(new Set()[Symbol.iterator]()));
+  freeze(Object.getPrototypeOf(""[Symbol.iterator]()));
+  freeze(Object.getPrototypeOf("".matchAll(/x/g)));
+  freeze(Object.getPrototypeOf(Int8Array));
+  for (const name of Reflect.ownKeys(globalThis)) {
+    const d = Object.getOwnPropertyDescriptor(globalThis, name);
+    if (d && "value" in d) freeze(d.value);
+  }
+  // And the global object's own bindings, so `JSON` cannot be replaced.
+  for (const name of Reflect.ownKeys(globalThis)) {
+    const d = Object.getOwnPropertyDescriptor(globalThis, name);
+    if (d && d.configurable) Object.defineProperty(globalThis, name, { writable: false, configurable: false });
+  }
+})();
+"#;
+
+#[cfg(feature = "eval")]
+/// The formula isolate and what watches it: built at start, and built again
+/// after an evaluation that reached the heap limit, since V8 leaves an isolate
+/// that has been there in no state to trust.
+struct FormulaIsolate {
+    runtime: deno_core::JsRuntime,
+    /// The isolate's tokio anchor; must outlive it (see `code::build_isolate`).
+    _anchor: Option<tokio::runtime::Runtime>,
+    watchdog: mpsc::Sender<WatchdogMsg>,
+    timed_out: Arc<AtomicBool>,
+    /// Set by the near-heap-limit callback.
+    out_of_heap: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "eval")]
+impl FormulaIsolate {
+    fn build(anchor: Option<&tokio::runtime::Handle>, max_heap: usize) -> FormulaIsolate {
+        let (mut runtime, anchor) = crate::code::build_isolate(
+            anchor,
+            deno_core::RuntimeOptions {
+                create_params: Some(
+                    deno_core::v8::CreateParams::default().heap_limits(0, max_heap),
+                ),
+                ..Default::default()
+            },
+        );
+
+        // A default runtime still carries `Deno.core` (deno_core's own plumbing —
+        // not I/O, but not formula business either). Remove the global outright:
+        // the sandbox test asserts `typeof Deno === 'undefined'`, and the simplest
+        // way for that to be true is for it to actually be true.
+        if runtime
+            .execute_script("sc_setup.js", "delete globalThis.Deno;")
+            .is_err()
+        {
+            // A failed setup leaves `Deno.core` visible but harmless; evaluation
+            // still works, so serve rather than die. The sandbox test would flag
+            // it loudly on any platform where this happens.
+        }
+
+        // The aggregation prelude (Phase 7): the invented `Array.prototype` methods
+        // the curated chain relies on, implementing the semantics table. A failure
+        // here means aggregation formulas throw (deny) rather than silently doing
+        // the wrong thing; ordinary formulas are unaffected.
+        if runtime.execute_script("sc_agg.js", AGG_PRELUDE).is_err() {
+            // As above: serve rather than die; a parity test would catch a real
+            // regression on any platform where the prelude failed to install.
+        }
+
+        // Last: the key guard every computed member goes through, and the
+        // intrinsics frozen. Without the guard a computed member throws
+        // (`__scKey` is not defined), so a failure here denies rather than
+        // opening anything.
+        let frozen = runtime.execute_script("sc_freeze.js", FREEZE_PRELUDE);
+        debug_assert!(
+            frozen.is_ok(),
+            "the formula freeze prelude failed: {frozen:?}"
+        );
+
+        // The watchdog: armed per evaluation with a deadline; on expiry it
+        // terminates JS execution through the isolate's thread-safe handle (the
+        // only safe cross-thread operation on an isolate).
+        let isolate_handle = runtime.v8_isolate().thread_safe_handle();
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let (watchdog_tx, watchdog_rx) = mpsc::channel::<WatchdogMsg>();
+        {
+            let timed_out = Arc::clone(&timed_out);
+            let isolate_handle = isolate_handle.clone();
+            std::thread::Builder::new()
+                .name("sc-expr-js-watchdog".into())
+                .spawn(move || watchdog_thread(watchdog_rx, isolate_handle, timed_out))
+                .ok();
+        }
+
+        // Near the limit, V8's own answer is to abort the process. This is the
+        // answer instead: stop the formula, and give it room to unwind in; the
+        // isolate is replaced once it has.
+        let out_of_heap = Arc::new(AtomicBool::new(false));
+        {
+            let flag = Arc::clone(&out_of_heap);
+            runtime.add_near_heap_limit_callback(move |current, initial| {
+                flag.store(true, Ordering::SeqCst);
+                isolate_handle.terminate_execution();
+                current.saturating_add((initial / 2).max(1))
+            });
+        }
+
+        FormulaIsolate {
+            runtime,
+            _anchor: anchor,
+            watchdog: watchdog_tx,
+            timed_out,
+            out_of_heap,
+        }
+    }
+}
+
+#[cfg(feature = "eval")]
+/// The dedicated thread: owns the formula isolate, its watchdog, and the job loop.
 fn runtime_thread(
     rx: mpsc::Receiver<Job>,
     timeout: Duration,
     anchor: Option<&tokio::runtime::Handle>,
 ) {
-    // `_anchor` is the isolate's tokio anchor and must outlive it — `deno_core`
-    // aborts the process if V8 posts a delayed task against an isolate that was
-    // built outside a runtime. See `code::build_isolate`.
-    let (mut runtime, _anchor) =
-        crate::code::build_isolate(anchor, deno_core::RuntimeOptions::default());
-
-    // A default runtime still carries `Deno.core` (deno_core's own plumbing —
-    // not I/O, but not formula business either). Remove the global outright:
-    // the sandbox test asserts `typeof Deno === 'undefined'`, and the simplest
-    // way for that to be true is for it to actually be true.
-    if runtime
-        .execute_script("sc_setup.js", "delete globalThis.Deno;")
-        .is_err()
-    {
-        // A failed setup leaves `Deno.core` visible but harmless; evaluation
-        // still works, so serve rather than die. The sandbox test would flag
-        // it loudly on any platform where this happens.
-    }
-
-    // The aggregation prelude (Phase 7): the invented `Array.prototype` methods
-    // the curated chain relies on, implementing the semantics table. A failure
-    // here means aggregation formulas throw (deny) rather than silently doing
-    // the wrong thing; ordinary formulas are unaffected.
-    if runtime.execute_script("sc_agg.js", AGG_PRELUDE).is_err() {
-        // As above: serve rather than die; a parity test would catch a real
-        // regression on any platform where the prelude failed to install.
-    }
-
-    // The watchdog: armed per evaluation with a deadline; on expiry it
-    // terminates JS execution through the isolate's thread-safe handle (the
-    // only safe cross-thread operation on an isolate).
-    let isolate_handle = runtime.v8_isolate().thread_safe_handle();
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let (watchdog_tx, watchdog_rx) = mpsc::channel::<WatchdogMsg>();
-    {
-        let timed_out = Arc::clone(&timed_out);
-        std::thread::Builder::new()
-            .name("sc-expr-js-watchdog".into())
-            .spawn(move || watchdog_thread(watchdog_rx, isolate_handle, timed_out))
-            .ok();
-    }
+    let mut isolate = FormulaIsolate::build(anchor, FORMULA_MAX_HEAP);
 
     while let Ok(job) = rx.recv() {
         // Build the script (with the right result wrapper), remember how to
@@ -441,14 +562,39 @@ fn runtime_thread(
             Job::Raw(script, reply) => (script, Pending::Bool(reply), FORMULA),
         };
 
-        timed_out.store(false, Ordering::SeqCst);
-        let _ = watchdog_tx.send(WatchdogMsg::Arm(Instant::now() + timeout));
-        let outcome = runtime.execute_script("sc_formula.js", script);
-        let _ = watchdog_tx.send(WatchdogMsg::Disarm);
+        isolate.timed_out.store(false, Ordering::SeqCst);
+        let _ = isolate
+            .watchdog
+            .send(WatchdogMsg::Arm(Instant::now() + timeout));
+        let outcome = isolate.runtime.execute_script("sc_formula.js", script);
+        let _ = isolate.watchdog.send(WatchdogMsg::Disarm);
+
+        if isolate.out_of_heap.load(Ordering::SeqCst) {
+            let err = Error::invalid(format!(
+                "{what} used more than the {} MB a formula may",
+                FORMULA_MAX_HEAP / (1024 * 1024)
+            ));
+            match pending {
+                Pending::Bool(reply) => {
+                    let _ = reply.send(Err(err));
+                }
+                Pending::Value(reply) => {
+                    let _ = reply.send(Err(err));
+                }
+            }
+            // A fresh isolate for whatever comes next. The old one's watchdog
+            // ends when its channel is dropped with it.
+            // The old isolate goes first: V8 isolates on one thread are
+            // dropped in the reverse order they were made.
+            drop(outcome);
+            drop(isolate);
+            isolate = FormulaIsolate::build(anchor, FORMULA_MAX_HEAP);
+            continue;
+        }
 
         match outcome {
             Ok(global) => {
-                deno_core::scope!(scope, &mut runtime);
+                deno_core::scope!(scope, &mut isolate.runtime);
                 let local = deno_core::v8::Local::new(scope, global);
                 match pending {
                     // A `!!(…)` script yields a boolean.
@@ -469,10 +615,10 @@ fn runtime_thread(
                 }
             }
             Err(e) => {
-                let err = if timed_out.load(Ordering::SeqCst) {
+                let err = if isolate.timed_out.load(Ordering::SeqCst) {
                     // Termination poisons the isolate until cancelled; restore
                     // it so the next evaluation runs clean.
-                    runtime.v8_isolate().cancel_terminate_execution();
+                    isolate.runtime.v8_isolate().cancel_terminate_execution();
                     Error::invalid(format!("{what} timed out after {timeout:?}"))
                 } else {
                     Error::invalid(format!("{what} failed: {e}"))
@@ -488,8 +634,8 @@ fn runtime_thread(
             }
         }
     }
-    // rx closed: last DenoEvaluator handle dropped. watchdog_tx drops here,
-    // which ends the watchdog thread's loop too.
+    // rx closed: last DenoEvaluator handle dropped. The isolate's watchdog
+    // channel drops with it, which ends the watchdog thread's loop too.
 }
 
 /// What a failing job is called in its error message. Named rather than
@@ -1026,6 +1172,101 @@ mod tests {
             .send(Job::Eval(call("_read", Operation::Read), tx))
             .unwrap();
         assert!(rx.await.unwrap().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_formula_cannot_reach_function_or_the_shared_prototypes() {
+        // Static: refused when the formula is parsed (security review #23).
+        for src in [
+            "``.constructor.constructor(`return 1`)()",
+            "title.__proto__ === null",
+            "[].constructor.prototype.includes === 1",
+            "title[\"constructor\"] === 1",
+            "title.__lookupGetter__ === 1",
+        ] {
+            let err = Formula::parse(src).unwrap_err().to_string();
+            assert!(err.contains("may not read the member"), "{src}: {err}");
+        }
+        // Computed from data: refused when it is evaluated.
+        let ev = DenoEvaluator::new();
+        for key in ["constructor", "__proto__", "prototype"] {
+            let c = with_row(
+                call("title[k] === undefined", Operation::Read),
+                &[
+                    ("title", Value::Text("x".into())),
+                    ("k", Value::Text(key.into())),
+                ],
+            );
+            let err = ev.eval(c).await.unwrap_err().to_string();
+            assert!(err.contains("may not read the member"), "{key}: {err}");
+        }
+        // An ordinary computed key still reads.
+        let c = with_row(
+            call("user[k] === 7", Operation::Read),
+            &[("k", Value::Text("id".into()))],
+        );
+        assert!(
+            ev.eval(with_user(c, &[("id", Value::Int(7))]))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_intrinsics_are_frozen_for_every_later_formula() {
+        // Even raw script, which a formula cannot be, changes nothing a later
+        // evaluation reads.
+        let ev = DenoEvaluator::new();
+        for attempt in [
+            "Array.prototype.includes = () => true",
+            "JSON.stringify = () => '1'",
+            "globalThis.JSON = {}",
+            "Object.prototype.polluted = 1",
+            "String.prototype.trim = () => ''",
+        ] {
+            let _ = ev
+                .eval_raw(format!(
+                    "(() => {{ try {{ {attempt}; }} catch (e) {{}} return true; }})()"
+                ))
+                .await;
+        }
+        assert!(
+            ev.eval_raw(
+                "!!([1].includes(2) === false && JSON.stringify(1) === '1' && \
+                 ({}).polluted === undefined && ' a '.trim() === 'a')"
+                    .into()
+            )
+            .await
+            .unwrap()
+        );
+        let c = with_row(
+            call("tags.includes(\"x\")", Operation::Read),
+            &[("tags", Value::Json(serde_json::json!(["a"])))],
+        );
+        assert!(!ev.eval(c).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_formula_that_fills_the_heap_is_stopped_and_the_isolate_replaced() {
+        let ev = DenoEvaluator::with_timeout(Duration::from_secs(30));
+        let err = ev
+            .eval_raw(
+                "(() => { const a = []; for (;;) a.push(new Array(1 << 20).fill(1.5)); })()".into(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("MB a formula may"), "got: {err}");
+        // The next evaluation runs in a fresh isolate, frozen as the first.
+        let c = with_row(
+            call("title === 'x'", Operation::Read),
+            &[("title", Value::Text("x".into()))],
+        );
+        assert!(ev.eval(c).await.unwrap());
+        assert!(
+            ev.eval_raw("!!Object.isFrozen(Array.prototype)".into())
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

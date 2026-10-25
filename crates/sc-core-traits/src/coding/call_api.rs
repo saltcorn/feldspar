@@ -228,6 +228,11 @@ async fn sender(config: &Attrs, args: &Json, ctx: &TraitContext<'_>) -> Result<O
         .map(str::trim)
         .filter(|u| !u.is_empty());
     let Some(named) = named else {
+        // A visitor who is not signed in sends as the public, never as the
+        // agent's `view_app_user` (security review #20).
+        if ctx.caller.is_anonymous() {
+            return Ok(None);
+        }
         return viewer(config, ctx).await.map(Some).map_err(|_| {
             Error::invalid(format!(
                 "nobody is chatting in this run, so there is no `you` to send as, and agent `{}` \

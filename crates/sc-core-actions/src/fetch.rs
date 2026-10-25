@@ -51,6 +51,16 @@ pub struct Fetch {
     /// TLS configuration, and rebuilding those per request would pay for a new
     /// handshake on every firing.
     client: reqwest::Client,
+    /// The client for a URL whose **host** a token fills in: public addresses
+    /// only, checked as each name is resolved and on every redirect.
+    ///
+    /// Why: with `{{ webhook_url }}`, or a token in the host, what is
+    /// requested is whatever a row or a payload says — and the response is the
+    /// action's result, handed back to whoever ran the trigger. Reaching the
+    /// server's own network (`169.254.169.254`'s cloud credentials) would make
+    /// the server read it for them (security review #27). A URL whose host the
+    /// admin wrote is the admin's, and reaches what the server can reach.
+    public: reqwest::Client,
 }
 
 impl Fetch {
@@ -62,7 +72,94 @@ impl Fetch {
     pub fn new() -> Result<Fetch> {
         Ok(Fetch {
             client: http_client()?,
+            public: public_client()?,
         })
+    }
+}
+
+/// The most redirects the public-only client follows.
+const MAX_REDIRECTS: usize = 10;
+
+/// A client that reaches only the public internet: names resolved through
+/// [`PublicOnly`], and every redirect's address literal checked, so neither a
+/// name nor a hop can lead it inside.
+fn public_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .dns_resolver(std::sync::Arc::new(PublicOnly))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= MAX_REDIRECTS {
+                return attempt.error(format!("more than {MAX_REDIRECTS} redirects"));
+            }
+            match private_literal(attempt.url()) {
+                Some(ip) => attempt.error(format!(
+                    "a redirect to {ip}, a private or reserved address, which a URL whose \
+                     host comes from data may not reach"
+                )),
+                None => attempt.follow(),
+            }
+        }))
+        .build()
+        .map_err(|e| Error::config(format!("could not build the HTTP client: {e}")))
+}
+
+/// The private or reserved address a URL names literally, if it does.
+fn private_literal(url: &reqwest::Url) -> Option<std::net::IpAddr> {
+    // The parser has normalised the host: an IPv4 literal in any spelling
+    // (`0x7f.1`, `2130706433`) is dotted-quad by now, an IPv6 one bracketed.
+    let ip: std::net::IpAddr = url
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .ok()?;
+    (!sc_email::is_public(ip)).then_some(ip)
+}
+
+/// A resolver that answers with public addresses only, so the address
+/// checked is the address connected to (`sc-core-traits`' `PublicResolver`,
+/// for an agent's fetch, is the same rule).
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let found: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            let public: Vec<std::net::SocketAddr> = found
+                .iter()
+                .copied()
+                .filter(|addr| sc_email::is_public(addr.ip()))
+                .collect();
+            if public.is_empty() {
+                let message = if found.is_empty() {
+                    format!("`{host}` did not resolve to any address")
+                } else {
+                    format!(
+                        "`{host}` resolves only to private or reserved addresses, which a \
+                         URL whose host comes from data may not reach"
+                    )
+                };
+                return Err(message.into());
+            }
+            let addrs: reqwest::dns::Addrs = Box::new(public.into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
+/// Whether a token of the URL template can decide where the request goes: one
+/// before the end of the host (the scheme, credentials, host or port). A URL
+/// whose `scheme://host/` the admin wrote out has its tokens in the path or
+/// the query only.
+fn host_is_templated(source: &str) -> bool {
+    let Some(first) = source.find("{{") else {
+        return false;
+    };
+    let literal = &source[..first];
+    match literal.find("://") {
+        None => true,
+        Some(at) => !literal[at + 3..].contains(['/', '?', '#']),
     }
 }
 
@@ -156,11 +253,21 @@ impl Action for Fetch {
         let method = method(ctx.config)?;
         let headers = headers(ctx.config)?;
         let timeout = timeout(ctx.config)?;
+        let client = if host_is_templated(url_template(ctx.config)?.source()) {
+            if let Some(ip) = private_literal(&url) {
+                return Err(Error::invalid(format!(
+                    "trigger `{}`: `{CFG_URL}` came to {url}, and {ip} is a private or \
+                     reserved address; a URL whose host comes from data may only reach the \
+                     public internet",
+                    ctx.trigger
+                )));
+            }
+            &self.public
+        } else {
+            &self.client
+        };
 
-        let mut request = self
-            .client
-            .request(method.clone(), url.clone())
-            .timeout(timeout);
+        let mut request = client.request(method.clone(), url.clone()).timeout(timeout);
         if takes_body(&method) {
             // The default body is the event itself: the common case is "tell that
             // service what happened", and spelling it out as a formula would be
@@ -434,6 +541,41 @@ mod tests {
 
     /// A URL with tokens is a template; one without is the same string it always
     /// was, and never reaches the template machinery for anything but a copy.
+    #[test]
+    fn a_token_before_the_path_is_a_templated_host() {
+        for source in [
+            "{{ webhook_url }}",
+            "https://{{ host }}/hook",
+            "https://{{ tenant }}.example.com/hook",
+            "https://example.com:{{ port }}/hook",
+            "https://user:{{ pw }}@example.com/",
+            "{{ scheme }}://example.com/",
+        ] {
+            assert!(host_is_templated(source), "{source}");
+        }
+        for source in [
+            "https://example.com/hook",
+            "https://example.com/books/{{ row.id }}",
+            "https://example.com?id={{ row.id }}",
+            "http://127.0.0.1:8080/hook/{{ id }}",
+        ] {
+            assert!(!host_is_templated(source), "{source}");
+        }
+    }
+
+    #[test]
+    fn a_private_address_literal_is_named() {
+        let url = |s: &str| reqwest::Url::parse(s).unwrap();
+        assert!(private_literal(&url("http://169.254.169.254/latest")).is_some());
+        assert!(private_literal(&url("http://[::1]/")).is_some());
+        assert!(private_literal(&url("http://10.0.0.1/")).is_some());
+        assert!(private_literal(&url("http://93.184.216.34/")).is_none());
+        assert!(
+            private_literal(&url("http://localhost/")).is_none(),
+            "a name is the resolver's"
+        );
+    }
+
     #[test]
     fn a_url_with_tokens_is_a_template_and_one_without_is_a_literal() {
         let literal = url_template(&config(&[("url", json!("https://example.com/hook"))])).unwrap();

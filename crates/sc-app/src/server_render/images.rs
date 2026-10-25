@@ -9,9 +9,15 @@
 //! a variant URL can be cached forever and nobody can point the resizer at
 //! anything else.
 //!
-//! Bounded three ways, because the URL is anybody's to type: never larger than
-//! the image (and never over [`MAX_SIDE`]), at most [`MAX_VARIANTS`] sizes of
-//! one image, and at most [`MAX_BYTES`] of them kept.
+//! Bounded, because the URL is anybody's to type — before the application's
+//! admission check, since an image is a file (security review #26): never
+//! larger than the image (and never over [`MAX_SIDE`]), at most
+//! [`MAX_VARIANTS`] sizes of one image made since the site was mounted —
+//! counted when a resize starts, under the same lock as the check, and never
+//! given back when a variant is evicted — at most [`MAX_BYTES`] of them kept,
+//! and at most [`MAX_RESIZING`] resizes at once, each decoding no more than
+//! [`MAX_DECODE_ALLOC`]. A request that waited for a resize is answered from
+//! the variant if another request made it meanwhile.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
@@ -32,7 +38,14 @@ pub const MAX_VARIANTS: usize = 32;
 /// How many bytes of variants one site keeps. The oldest go first.
 pub const MAX_BYTES: usize = 64 << 20;
 /// The largest source image decoded, per side.
-const MAX_DECODE_SIDE: u32 = 16_384;
+const MAX_DECODE_SIDE: u32 = 8_192;
+/// The most memory one decode may allocate.
+pub const MAX_DECODE_ALLOC: u64 = 128 << 20;
+/// How many resizes one site runs at once.
+pub const MAX_RESIZING: usize = 2;
+/// How long a request waits for a resize to be free before it is told to come
+/// back.
+const RESIZE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What one variant is asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +157,7 @@ pub fn resize(bytes: &[u8], request: &ImageRequest) -> std::result::Result<Vec<u
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_DECODE_SIDE);
     limits.max_image_height = Some(MAX_DECODE_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
     let image = reader
         .decode()
@@ -206,15 +220,34 @@ fn encode(image: DynamicImage, request: &ImageRequest) -> std::result::Result<Ve
 #[derive(Default)]
 struct Store {
     variants: HashMap<String, Bytes>,
-    per_source: HashMap<String, usize>,
-    order: VecDeque<(String, String)>,
+    /// Every variant of each source a resize was started for since the site
+    /// was mounted. Never shrinks: an evicted variant made again is the same
+    /// variant, and one never made is a new one.
+    made: HashMap<String, std::collections::HashSet<String>>,
+    order: VecDeque<String>,
     bytes: usize,
 }
 
 /// One site's resized images, kept.
-#[derive(Default)]
 pub struct SiteImages {
     store: Mutex<Store>,
+    resizing: tokio::sync::Semaphore,
+}
+
+impl Default for SiteImages {
+    fn default() -> Self {
+        SiteImages {
+            store: Mutex::new(Store::default()),
+            resizing: tokio::sync::Semaphore::new(MAX_RESIZING),
+        }
+    }
+}
+
+/// What looking a variant up found.
+enum Lookup {
+    Kept(Bytes),
+    TooMany,
+    Make,
 }
 
 impl SiteImages {
@@ -229,25 +262,35 @@ impl SiteImages {
             return plain(404, &format!("/{} is not in this site", request.source));
         };
         let key = request.key();
-        let kept = self
-            .store
-            .lock()
-            .ok()
-            .and_then(|store| store.variants.get(&key).cloned());
-        let bytes = match kept {
-            Some(bytes) => bytes,
-            None => {
-                let too_many = self.store.lock().is_ok_and(|store| {
-                    store.per_source.get(&request.source).copied().unwrap_or(0) >= MAX_VARIANTS
-                });
-                if too_many {
-                    return plain(
-                        400,
-                        &format!(
-                            "/{} already has {MAX_VARIANTS} sizes; use fewer distinct widths",
-                            request.source
-                        ),
-                    );
+        let too_many = || {
+            plain(
+                400,
+                &format!(
+                    "/{} already has {MAX_VARIANTS} sizes; use fewer distinct widths",
+                    request.source
+                ),
+            )
+        };
+        let bytes = match self.lookup(&request, &key) {
+            Lookup::Kept(bytes) => bytes,
+            Lookup::TooMany => return too_many(),
+            Lookup::Make => {
+                let permit = match tokio::time::timeout(RESIZE_WAIT, self.resizing.acquire()).await
+                {
+                    Ok(Ok(permit)) => permit,
+                    _ => {
+                        return plain(503, "the site is resizing other images; try again")
+                            .header("retry-after", "5");
+                    }
+                };
+                // Whoever held the permit may have made this very variant.
+                match self.lookup(&request, &key) {
+                    Lookup::Kept(bytes) => {
+                        return AppResponse::ok(content_type(request.format), bytes)
+                            .header("cache-control", "public, max-age=31536000, immutable");
+                    }
+                    Lookup::TooMany => return too_many(),
+                    Lookup::Make => {}
                 }
                 let job = request.clone();
                 let made = tokio::task::spawn_blocking(move || resize(&source, &job)).await;
@@ -256,7 +299,8 @@ impl SiteImages {
                     Ok(Err(message)) => return plain(422, &message),
                     Err(_) => return plain(500, "resizing the image failed"),
                 };
-                self.keep(&request, key, bytes.clone());
+                self.keep(key, bytes.clone());
+                drop(permit);
                 bytes
             }
         };
@@ -264,7 +308,27 @@ impl SiteImages {
             .header("cache-control", "public, max-age=31536000, immutable")
     }
 
-    fn keep(&self, request: &ImageRequest, key: String, bytes: Bytes) {
+    /// The kept variant, or whether one may be made: counted as made here,
+    /// under the lock the check is made under, so concurrent requests for
+    /// distinct sizes cannot all pass it.
+    fn lookup(&self, request: &ImageRequest, key: &str) -> Lookup {
+        let Ok(mut store) = self.store.lock() else {
+            return Lookup::TooMany;
+        };
+        if let Some(bytes) = store.variants.get(key) {
+            return Lookup::Kept(bytes.clone());
+        }
+        let made = store.made.entry(request.source.clone()).or_default();
+        if !made.contains(key) {
+            if made.len() >= MAX_VARIANTS {
+                return Lookup::TooMany;
+            }
+            made.insert(key.to_owned());
+        }
+        Lookup::Make
+    }
+
+    fn keep(&self, key: String, bytes: Bytes) {
         let Ok(mut store) = self.store.lock() else {
             return;
         };
@@ -273,17 +337,13 @@ impl SiteImages {
         }
         store.bytes += bytes.len();
         store.variants.insert(key.clone(), bytes);
-        *store.per_source.entry(request.source.clone()).or_default() += 1;
-        store.order.push_back((key, request.source.clone()));
+        store.order.push_back(key);
         while store.bytes > MAX_BYTES {
-            let Some((old, source)) = store.order.pop_front() else {
+            let Some(old) = store.order.pop_front() else {
                 break;
             };
             if let Some(gone) = store.variants.remove(&old) {
                 store.bytes -= gone.len();
-            }
-            if let Some(count) = store.per_source.get_mut(&source) {
-                *count = count.saturating_sub(1);
             }
         }
     }
@@ -394,5 +454,42 @@ mod tests {
         assert_eq!(again.body, first.body);
         let missing = images.serve(&req, None).await;
         assert_eq!(missing.status, 404);
+    }
+
+    #[tokio::test]
+    async fn concurrent_distinct_sizes_cannot_pass_the_variant_cap() {
+        let images = std::sync::Arc::new(SiteImages::default());
+        let source = Bytes::from(png(256, 256));
+        let mut tasks = Vec::new();
+        for w in 1..=(MAX_VARIANTS as u32 + 8) {
+            let (images, source) = (images.clone(), source.clone());
+            tasks.push(tokio::spawn(async move {
+                let w = w.to_string();
+                let req = ask(&[("src", "/_astro/a.png"), ("w", w.as_str())]);
+                images.serve(&req, Some(source)).await.status
+            }));
+        }
+        let mut statuses = Vec::new();
+        for t in tasks {
+            statuses.push(t.await.unwrap());
+        }
+        assert_eq!(statuses.iter().filter(|s| **s == 200).count(), MAX_VARIANTS);
+        assert_eq!(statuses.iter().filter(|s| **s == 400).count(), 8);
+        // A variant made before is still served; a new one is not, even once
+        // the kept ones are evicted.
+        images.store.lock().unwrap().variants.clear();
+        let old = ask(&[("src", "/_astro/a.png"), ("w", "1")]);
+        assert_eq!(images.serve(&old, Some(source.clone())).await.status, 200);
+        let new = ask(&[("src", "/_astro/a.png"), ("w", "200")]);
+        assert_eq!(images.serve(&new, Some(source)).await.status, 400);
+    }
+
+    #[test]
+    fn a_source_too_large_to_decode_is_refused() {
+        // 9000 is over MAX_DECODE_SIDE.
+        let source = png(9000, 1);
+        let req = ImageRequest::parse(&ask(&[("src", "/_astro/a.png"), ("w", "10")])).unwrap();
+        let err = resize(&source, &req).unwrap_err();
+        assert!(err.contains("could not be read"), "{err}");
     }
 }

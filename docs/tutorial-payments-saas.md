@@ -221,6 +221,9 @@ own: a welcome email, a note to the team when somebody leaves.
 the subscribe trigger. Nothing is charged at checkout, the subscription is `trialing`, and the
 grant lasts to the trial's end plus grace. When the trial ends the card is charged and the
 subscription carries on. If the user cancels during the trial, it ends with the trial.
+A trial is had once per user on an account: a user who has subscribed before (to any plan), or
+who already has a trial checkout open, is sent to a checkout without one and pays from the first
+day.
 
 ## Step 7 — The account page
 

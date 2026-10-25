@@ -269,6 +269,10 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
   // The provider customer this user already is on the account, so that a second checkout (a
   // top-up, another plan) is the same customer, with the same saved card (§5).
   const known = signedIn ? await db.pay_objects.where({ account: account.id, kind: "customer", user_id: user.id }).first() : null;
+  // One trial per user on an account: a user who has subscribed before, or has a trial checkout
+  // still open or completed, subscribes without one — paying from the first day — or a trial
+  // could be taken, cancelled and taken again for a new role and a new credit allowance.
+  if (mode === "subscription" && lines[0].trial_days > 0 && (await hadTrial(db, account, user.id))) lines[0].trial_days = 0;
 
   let tax = configuration.tax || "none";
   if (!TAX.includes(tax)) throw new Error(`tax is ${TAX.join(", ")}, not "${tax}"`);
@@ -332,6 +336,14 @@ async function prepareCheckout({ configuration = {}, payload, row, user, session
     // Provider metadata is text, so the key is kept as JSON: `12` and `"12"` stay apart.
     metadata: { sc_ref_table: table, sc_ref_key: JSON.stringify(refKey), ...(signedIn ? { sc_user_id: String(user.id) } : {}) },
   };
+}
+
+/** Whether `userId` has had a subscription on `account` — of any plan, in any state — or has a
+ * checkout for a trial that is open or was completed (one that expired unpaid gave nothing). */
+async function hadTrial(db, account, userId) {
+  if (await db.pay_objects.where({ account: account.id, kind: "subscription", user_id: userId }).first()) return true;
+  const checkouts = await db.pay_objects.where({ account: account.id, kind: "checkout", user_id: userId }).rows();
+  return checkouts.some((c) => c.status !== "expired" && c.status !== "failed" && (c.lines || []).some((l) => l && l.trial_days > 0));
 }
 
 /** A subscription checkout's one line: the provider's price, from the configuration's formula

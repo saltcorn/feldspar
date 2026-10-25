@@ -50,7 +50,9 @@ const HOST: &str = "site.example.com";
 /// The code body, as `plugins/astro`'s build writes it: one function body that
 /// routes on `request` and answers `{ status, headers, body }`.
 const ENTRY: &str = r#"
-if (request.mode === "prerender-list") return { paths: ["/about"], refresh: ["/about"] };
+if (request.mode === "prerender-list") {
+  return { paths: ["/about", "/team", "/signin"], refresh: ["/about"] };
+}
 if (request.mode === "error") {
   return { status: 500, headers: [], body: "<h1>sorry: " + request.error + "</h1>" };
 }
@@ -83,6 +85,8 @@ if (request.path === "/posts") {
   const posts = await db.posts.orderBy("id").rows();
   return html("<ul>" + posts.map((p) => "<li>" + p.title + "</li>").join("") + "</ul>");
 }
+if (request.path === "/team") return html("<h1>" + (await db.posts.count()) + " authors</h1>");
+if (request.path === "/signin") return html("<form>sign in</form>");
 if (request.path === "/about") {
   return html("<h1>about " + (await db.posts.count()) + " posts, " + request.mode + "</h1>");
 }
@@ -415,7 +419,7 @@ async fn prerendering_writes_the_listed_pages_through_the_same_body() -> sc_erro
         Some(&server.dispatcher),
     )
     .await?;
-    assert_eq!(written, 1);
+    assert_eq!(written, 3);
     let page = "<h1>about 2 posts, prerender</h1>";
     assert_eq!(
         std::fs::read_to_string(output_dir.join("about/index.html")).unwrap(),
@@ -425,7 +429,7 @@ async fn prerendering_writes_the_listed_pages_through_the_same_body() -> sc_erro
         &report.bundle.get("about/index.html").unwrap().bytes[..],
         page.as_bytes()
     );
-    assert!(report.stdout.contains("prerendered 1 page(s)"));
+    assert!(report.stdout.contains("prerendered 3 page(s)"));
 
     // Mounted from that bundle, the page is a file: it says `prerender`, not
     // `render`, because no body ran for this request.
@@ -470,6 +474,29 @@ async fn prerendering_writes_the_listed_pages_through_the_same_body() -> sc_erro
         sc_app::prerender_site(&server.catalog, &server.app, &spec(), &mut bare, None).await?;
     assert_eq!(none, 0);
     assert!(bare.stdout.contains("prerendering skipped"));
+
+    // A caller the application does not let in gets the pages that read no
+    // data — a sign-in page — and the 403 for those that did, refreshable or
+    // not (security review #25).
+    let refused = |path: &str| {
+        let mut req = sc_app::AppRequest::get(path);
+        req.admitted = false;
+        req
+    };
+    for path in ["/about", "/team"] {
+        let answer = framework.handle(refused(path), &server.catalog).await?;
+        assert_eq!(answer.status, 403, "{path}");
+    }
+    let signin = framework
+        .handle(refused("/signin"), &server.catalog)
+        .await?;
+    assert_eq!(signin.status, 200);
+    assert_eq!(&signin.body[..], b"<form>sign in</form>");
+    // Admitted, the data page is served.
+    let team = framework
+        .handle(sc_app::AppRequest::get("/team"), &server.catalog)
+        .await?;
+    assert_eq!(&team.body[..], b"<h1>2 authors</h1>");
     Ok(())
 }
 

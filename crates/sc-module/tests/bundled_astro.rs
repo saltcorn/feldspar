@@ -162,8 +162,10 @@ async fn the_scaffold_ships_the_build_and_runtime_and_a_page_per_table() {
         "trailing slash dropped"
     );
 
-    // The page per table reads it with the code action's `db`.
-    assert!(file("src/pages/posts/index.astro").contains("await db.posts.limit(50).rows()"));
+    // The page per table reads it as the visitor, never at admin authority.
+    assert!(
+        file("src/pages/posts/index.astro").contains("await db.posts.asUser().limit(50).rows()")
+    );
     assert!(file("src/pages/index.astro").contains("export const prerender = true"));
     assert!(file("src/pages/contact.astro").contains("<Csrf />"));
     assert!(file("package.json").contains("\"@astrojs/compiler\": \"4.0.0\""));

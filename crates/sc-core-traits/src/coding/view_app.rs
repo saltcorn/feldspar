@@ -310,6 +310,16 @@ pub(super) async fn viewer(config: &Attrs, ctx: &TraitContext<'_>) -> Result<Use
     if let Some(user) = &ctx.caller.user {
         return Ok(user.clone());
     }
+    // A visitor who is not signed in is somebody: the configured account is
+    // for runs nobody is chatting in, and lending it to a visitor would hand
+    // them its access (security review #20).
+    if ctx.caller.is_anonymous() {
+        return Err(Error::invalid(format!(
+            "agent `{}` may not use view_app for a visitor who is not signed in: it signs in \
+             to the application as a user, and this visitor is none",
+            ctx.agent
+        )));
+    }
     let email = config_str(config, CFG_VIEW_APP_USER);
     if email.is_empty() {
         return Err(Error::invalid(format!(

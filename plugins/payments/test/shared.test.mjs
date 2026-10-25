@@ -475,6 +475,52 @@ for (const makeDriver of PROVIDERS) {
       assert.equal(credits.of(bob.id), 100);
     });
 
+    test("a trial is had once per user on an account: a second subscription pays from the first day", async () => {
+      withCredits(100, "none");
+      const first = await subscribe(1, { trial_days: "14" });
+      assert.equal(first.sub.status, "trialing");
+      assert.equal(credits.of(ann.id), 100);
+      await actions.pay_cancel_subscription.run(argument({ configuration: { account: "shop" }, payload: {} }));
+      await provider.flush();
+      await provider.renew(shop, first.sub.provider_ref, "succeeded");
+      assert.equal(mirror(first.sub).status, "canceled");
+
+      // Subscribing again, to the same or another plan: no trial, charged now.
+      const again = await actions.pay_checkout.run(
+        argument({ configuration: { account: "shop", mode: "subscription", table: "plans", key_field: "plan", currency: "EUR", trial_days: "14" }, payload: { plan: 2 } }),
+      );
+      const checkout = store.tables.pay_objects.find((o) => o.kind === "checkout" && o.provider_ref === String(again.checkout));
+      assert.equal(checkout.lines[0].trial_days, 0);
+      // Bob's first trial is his own.
+      const bobs = await actions.pay_checkout.run(
+        argument({ user: bob, configuration: { account: "shop", mode: "subscription", table: "plans", key_field: "plan", currency: "EUR", trial_days: "14" }, payload: { plan: 1 } }),
+      );
+      assert.equal(store.tables.pay_objects.find((o) => o.kind === "checkout" && o.provider_ref === String(bobs.checkout)).lines[0].trial_days, 14);
+      // A second trial checkout while the first is open has no trial either.
+      const stacked = await actions.pay_checkout.run(
+        argument({ user: bob, configuration: { account: "shop", mode: "subscription", table: "plans", key_field: "plan", currency: "EUR", trial_days: "14" }, payload: { plan: 2 } }),
+      );
+      assert.equal(store.tables.pay_objects.find((o) => o.kind === "checkout" && o.provider_ref === String(stacked.checkout)).lines[0].trial_days, 0);
+    });
+
+    test("two trials taken at once grant the plan's credits once", async () => {
+      withCredits(100, "none");
+      const config = { account: "shop", mode: "subscription", table: "plans", key_field: "plan", currency: "EUR", trial_days: "14" };
+      const a = await actions.pay_checkout.run(argument({ configuration: config, payload: { plan: 1 } }));
+      // As if both checks ran before either checkout was recorded.
+      const rowA = store.tables.pay_objects.find((o) => o.kind === "checkout" && o.provider_ref === String(a.checkout));
+      const linesA = rowA.lines;
+      rowA.lines = [];
+      const b = await actions.pay_checkout.run(argument({ configuration: config, payload: { plan: 1 } }));
+      rowA.lines = linesA;
+      await provider.pay(shop, a.checkout, "succeeded");
+      await provider.pay(shop, b.checkout, "succeeded");
+      const subs = store.tables.pay_objects.filter((o) => o.kind === "subscription" && o.user_id === ann.id);
+      assert.deepEqual(subs.map((s) => s.status), ["trialing", "trialing"]);
+      assert.equal(credits.of(ann.id), 100);
+      assert.match(mirror(subs[1]).issue, /second subscription includes no LLM credits/);
+    });
+
     test("a plan whose rollover makes no sense is an issue, and its role is granted all the same", async () => {
       withCredits(100, "capped");
       const { sub } = await subscribe(1);

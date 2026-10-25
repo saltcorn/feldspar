@@ -209,6 +209,7 @@ async fn an_anonymous_caller_is_refused_and_an_admin_is_never_charged() -> Resul
         user: None,
         role: 100,
         triggered: false,
+        exposed: true,
     };
     let provider = Arc::new(FakeProvider::new([Reply::says("never")]));
     let runner = Runner::new(

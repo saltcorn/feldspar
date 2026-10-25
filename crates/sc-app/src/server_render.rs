@@ -134,6 +134,10 @@ pub struct ServerRendered {
     dispatcher: Option<Arc<TriggerDispatcher>>,
     cache: Arc<cache::SiteCache>,
     images: images::SiteImages,
+    /// The bundle keys of the prerendered pages that read data when they were
+    /// rendered: pages, not files, so not for a caller the application does
+    /// not admit (security review #25).
+    data_pages: std::collections::HashSet<String>,
 }
 
 impl ServerRendered {
@@ -155,11 +159,12 @@ impl ServerRendered {
         })?;
         let source = String::from_utf8(source.bytes.to_vec())
             .map_err(|_| Error::config(format!("the server entry {entry} is not UTF-8 text")))?;
-        let refresh = bundle
+        let manifest = bundle
             .get(&format!("{}/{PRERENDERED_MANIFEST}", server_dir(entry)))
             .and_then(|asset| serde_json::from_slice::<Json>(&asset.bytes).ok())
-            .map(|manifest| refresh_pages(&manifest))
-            .unwrap_or_default();
+            .unwrap_or(Json::Null);
+        let refresh = refresh_pages(&manifest);
+        let data_pages = data_pages(&manifest);
         bundle.remove_prefix(server_dir(entry));
         bundle.clear_fallback();
         let etags = bundle
@@ -180,6 +185,7 @@ impl ServerRendered {
             dispatcher,
             cache: Arc::new(cache::SiteCache::new(refresh)),
             images: images::SiteImages::default(),
+            data_pages,
         })
     }
 
@@ -430,6 +436,26 @@ impl ServerRendered {
     }
 }
 
+/// What a caller the application does not let in gets for a page.
+fn forbidden() -> AppResponse {
+    AppResponse::html(
+        403,
+        "<!DOCTYPE html><title>Forbidden</title><h1>You may not see this page</h1>",
+    )
+}
+
+/// The bundle keys of the prerendered pages a manifest says read data.
+fn data_pages(manifest: &Json) -> std::collections::HashSet<String> {
+    manifest
+        .get("data")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Json::as_str)
+        .map(prerendered_file)
+        .collect()
+}
+
 /// The refreshable prerendered pages a manifest lists, as `(bundle key, site
 /// path)`.
 fn refresh_pages(manifest: &Json) -> Vec<(String, String)> {
@@ -465,7 +491,13 @@ impl Framework for ServerRendered {
         if matches!(req.method, Method::Get)
             && let Some((key, asset)) = self.static_asset(&req.path)
         {
-            if let Some((path, current)) = self.cache.refresh_page(&key) {
+            let refreshable = self.cache.refresh_page(&key);
+            // A prerendered page that read data is a rendered page, written
+            // ahead of time: refused as one to a caller not let in.
+            if !req.admitted && (refreshable.is_some() || self.data_pages.contains(&key)) {
+                return Ok(forbidden());
+            }
+            if let Some((path, current)) = refreshable {
                 return Ok(match current {
                     Some(page) => Self::serve_rendered(&page, &req),
                     None => self.refresh(&key, &path, asset, &req, cat).await,
@@ -476,10 +508,7 @@ impl Framework for ServerRendered {
         // Somebody the application does not let in gets its files — they are
         // what draws a sign-in — and none of its rendered pages.
         if !req.admitted {
-            return Ok(AppResponse::html(
-                403,
-                "<!DOCTYPE html><title>Forbidden</title><h1>You may not see this page</h1>",
-            ));
+            return Ok(forbidden());
         }
         self.render(&req, cat).await
     }
@@ -674,9 +703,13 @@ pub async fn prerender(
         .unwrap_or_default();
 
     let mut written = 0;
+    // The pages that read a table: refused, like a rendered page, to a caller
+    // the application does not let in.
+    let mut data: Vec<String> = Vec::new();
     for path in paths {
         let mut req = AppRequest::get(path.clone());
         req.base_url = String::new();
+        let trace = sc_expr::trace_sink();
         let answer = run_entry(
             dispatcher,
             cat,
@@ -685,7 +718,7 @@ pub async fn prerender(
             app.id.0,
             request_binding(&req, "prerender", &app.name),
             None,
-            None,
+            Some(trace.clone()),
         )
         .await
         .map_err(|e| Error::invalid(format!("prerendering {path} of {}: {e}", app.name)))?;
@@ -697,6 +730,10 @@ pub async fn prerender(
                  cannot redirect or depend on the request",
                 app.name, page.status
             )));
+        }
+        let touched = sc_expr::read_trace(&trace);
+        if !touched.tables.is_empty() || touched.side_effects {
+            data.push(path.clone());
         }
         let file = prerendered_file(&path);
         write_output(&report.output_dir, &file, &page.body)?;
@@ -713,7 +750,7 @@ pub async fn prerender(
         .filter_map(Json::as_str)
         .collect();
     let manifest = format!("{}/{PRERENDERED_MANIFEST}", server_dir(entry_path));
-    let body = Bytes::from(json!({ "refresh": refresh }).to_string());
+    let body = Bytes::from(json!({ "refresh": refresh, "data": data }).to_string());
     write_output(&report.output_dir, &manifest, &body)?;
     report.bundle.insert(&manifest, body);
     report
