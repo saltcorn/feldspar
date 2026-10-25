@@ -2,6 +2,34 @@
 
 Changes in reverse chronological order.
 
+## Entities diagram: triggers, streams, search, and the full viewport
+
+- **Streams are entities.** `listEntities` lists each stored stream (kind `stream`: its
+  provider, `off` when disabled, its observe floor, a deep definition as the streams list
+  answers it). The entities list shows them with an orange badge, an **Observe** link
+  (when enabled), a **Streams** type button and a **Create stream** button. Streams now
+  stamp `updated_at` on every save like the other definitions, so they appear under
+  "Recently edited" (the nullable `updated_at` column is added to `_fd_streams` at startup by bootstrap, so no manual migration is needed).
+- **A trigger's channel** is in `listEntities` (`channel`: the table of an
+  insert/update/delete trigger, the stream of a stream trigger), so the diagram can join it.
+- **The diagram draws triggers and streams.** A trigger is a box joined (dashed) from the
+  table its event is on; a stream is a box joined (dashed) to each trigger that fires when
+  an element arrives on it. A trigger on no table or stream stands alone. Each box links to
+  its entity's page.
+- **Search in the diagram** draws the matching entities and everything one edge away from
+  them (keys either way, a table's triggers, a stream's triggers), and outlines the
+  matches with a 2px blue border. Deep search works here too.
+- **Only the diagram's type buttons** (Tables, Triggers, Streams) show in diagram mode.
+- **The diagram fills the viewport**: in diagram mode the card takes all the height left,
+  the **Create …** buttons sit at the bottom of the window, and the canvas fills the
+  space between the filter and them, however big or small the diagram is. Before this the
+  canvas took its height from the first fitted view, which left no room to zoom out into.
+
+Tests: `entityDiagram.test.ts` (trigger and stream edges, search draws matches plus
+neighbours and marks only matches, layout order), `entities.test.ts` (a stream's links),
+`screens/Entities.test.tsx` (the Streams button and Create stream), and
+`crates/sc-server/tests/entities_api.rs::streams_are_listed_and_triggers_name_their_channel`.
+
 ## Entities list: an entity relationship diagram
 
 - A **Diagram** switch in the top right of the **All entities** page (off by default)

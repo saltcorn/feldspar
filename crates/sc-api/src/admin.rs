@@ -6787,7 +6787,7 @@ fn build_result_schema() -> TypeSchema {
 /// One row of `listEntities`.
 fn entity_schema() -> TypeSchema {
     TypeSchema::struct_of([
-        // `table`, `file_store`, `trigger`, `agent` or `application`.
+        // `table`, `file_store`, `trigger`, `stream`, `agent` or `application`.
         StructField::new("kind", TypeSchema::text()),
         // What the entity's own screen is addressed by: a table's name, or the
         // id of any other kind's row.
@@ -6806,6 +6806,9 @@ fn entity_schema() -> TypeSchema {
         StructField::new("runnable", TypeSchema::bool()),
         // An application's subdomain, for the link that opens it.
         StructField::new("subdomain", TypeSchema::optional(TypeSchema::text())),
+        // What a trigger's event is about: the table of a table event, the
+        // stream of a stream event. Null for every other entity.
+        StructField::new("channel", TypeSchema::optional(TypeSchema::text())),
         // The whole definition as JSON text — only when asked for with `deep`.
         StructField::new("definition", TypeSchema::optional(TypeSchema::text())),
     ])

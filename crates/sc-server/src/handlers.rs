@@ -11015,7 +11015,7 @@ async fn resolve_element_types(streams: &crate::StreamServices, stored: &[sc_str
 /// for status and counters. A stream whose provider was uninstalled has no
 /// element type and carries the reason in `error`, and it is still listed and
 /// still editable — because editing it is the repair.
-fn stream_json(
+pub(crate) fn stream_json(
     streams: &crate::StreamServices,
     apps: &AppMounts,
     stream: &sc_stream::Stream,

@@ -1894,18 +1894,22 @@ div.navbar-brand>a:hover {
   overflow: hidden;
 }
 
-/* The entities page's relationship diagram fills the card between the filter
-   and the "Create …" buttons. React Flow measures its container, so it needs a
-   height of its own: the rest of the viewport, and never less than a usable
-   canvas. */
-.entity-diagram {
-  flex: 1 1 auto;
-  min-height: 24rem;
-  width: 100%;
+/* In diagram mode the card is the whole height left in the viewport, whatever
+   the diagram's size: the "Create …" buttons sit at the foot of the window and
+   the diagram fills everything between the filter and them. React Flow sizes
+   itself to its container, so the container's height must not come from its
+   content (a basis of 0, not auto) — or the first fit sets the height, and
+   zooming out has no room to use. */
+.entities-page-diagram>.page-body>.container-xl,
+.entities-page-diagram .entities-card {
+  flex: 1;
 }
 
-.entities-card:has(.entity-diagram) {
-  flex: 1;
+.entity-diagram {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
 }
 
 /* A table in the diagram, after React Flow's database schema node: the name
@@ -1964,6 +1968,31 @@ div.navbar-brand>a:hover {
 .erd-pk {
   color: var(--tblr-yellow);
   font-size: 0.625rem;
+}
+
+/* A box the search matched. */
+.erd-node-match {
+  border: 2px solid var(--tblr-blue);
+}
+
+.erd-node-head > .icon {
+  flex-shrink: 0;
+  margin-inline-end: 0.375rem;
+  color: var(--tblr-secondary);
+}
+
+.erd-node-trigger .erd-node-head > .icon {
+  color: var(--tblr-yellow);
+}
+
+.erd-node-stream .erd-node-head > .icon {
+  color: var(--tblr-orange);
+}
+
+/* A trigger's edge (from its table or its stream) is dashed, so it reads as
+   "fires" rather than "references". */
+.erd-edge-trigger path.react-flow__edge-path {
+  stroke-dasharray: 5 4;
 }
 
 /* The handles only anchor the edges; nothing is connected by dragging them. */

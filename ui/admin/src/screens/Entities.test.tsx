@@ -34,4 +34,9 @@ describe("Entities diagram switch", () => {
     expect(header).toMatch(/<input[^>]*type="checkbox"[^>]*id="entities-diagram"(?![^>]*checked)/);
     expect(html).toContain('<div class="entities-scroll">');
   });
+
+  it("lists streams among the types, with a button to create one", () => {
+    expect(html).toContain("Streams");
+    expect(html).toContain('href="#/streams/new"');
+  });
 });

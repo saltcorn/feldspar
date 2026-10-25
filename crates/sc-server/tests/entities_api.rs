@@ -22,7 +22,10 @@ use sc_server::{
     AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
     default_js_evaluator, install_triggers,
 };
+use sc_stream::testing::ScriptedProvider;
+use sc_stream::{ElementField, ElementType, StreamConfig, StreamProvider, StreamRegistry};
 use sc_test_harness::TestDb;
+use sc_types::BasicType;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -97,11 +100,26 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
+    // A scripted stream provider, so a stream can be saved without a broker.
+    let mut registry = StreamRegistry::new();
+    let provider = ScriptedProvider::new(
+        "scripted",
+        ElementType::json([ElementField::new("temperature", BasicType::Float)]),
+    );
+    registry.register(Arc::new(provider) as Arc<dyn StreamProvider>)?;
+    let streams = sc_server::install_streams_with(
+        &catalog,
+        &dispatcher,
+        Arc::new(registry),
+        StreamConfig::default(),
+    )
+    .await?;
     let apps = Arc::new(
         AppMounts::new(catalog.clone())
             .with_triggers(dispatcher)
             .with_agents(agents)
-            .with_models(models),
+            .with_models(models)
+            .with_streams(streams),
     );
     let router = build_router_with_apps(
         &sc_api::admin_endpoints(),
@@ -253,5 +271,62 @@ async fn every_entity_is_listed_with_when_it_was_last_saved() -> sc_error::Resul
     );
 
     std::fs::remove_dir_all(&dir).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn streams_are_listed_and_triggers_name_their_channel() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+
+    client
+        .ok("POST", "/api/tables", Some(json!({ "name": "readings" })))
+        .await;
+    client
+        .ok(
+            "POST",
+            "/api/streams",
+            Some(json!({
+                "name": "boiler", "description": "the boiler's thermometer",
+                "provider": "scripted", "configuration": {}, "min_role": null,
+                "enabled": false,
+            })),
+        )
+        .await;
+    let on = |name: &str, when: &str, channel: &str| {
+        json!({
+            "name": name, "description": "", "when": when, "channel": channel,
+            "only_if": null, "action": "run_js_code", "configuration": { "code": "1" },
+            "min_role": null, "enabled": true,
+        })
+    };
+    client
+        .ok("POST", "/api/triggers", Some(on("on_reading", "stream", "boiler")))
+        .await;
+    client
+        .ok("POST", "/api/triggers", Some(on("audit", "insert", "readings")))
+        .await;
+
+    let list = client.ok("GET", "/api/entities", None).await;
+    let boiler = entity(&list, "stream", "boiler");
+    assert_eq!(boiler["description"], json!("the boiler's thermometer"));
+    assert_eq!(boiler["details"], json!(["scripted", "off"]));
+    assert_eq!(boiler["access"], json!("Admin"));
+    // Switched off, so there is nothing to observe.
+    assert_eq!(boiler["runnable"], json!(false));
+    assert!(boiler["updated_at"].is_string(), "{boiler}");
+    assert!(boiler["channel"].is_null());
+
+    // A trigger's channel is what the diagram joins it to.
+    assert_eq!(entity(&list, "trigger", "on_reading")["channel"], json!("boiler"));
+    assert_eq!(entity(&list, "trigger", "audit")["channel"], json!("readings"));
+    assert!(entity(&list, "table", "readings")["channel"].is_null());
+
+    let deep = client.ok("GET", "/api/entities?deep=true", None).await;
+    assert!(
+        entity(&deep, "stream", "boiler")["definition"]
+            .as_str()
+            .unwrap()
+            .contains("scripted")
+    );
     Ok(())
 }

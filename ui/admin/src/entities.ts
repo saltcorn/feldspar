@@ -14,17 +14,24 @@ export const ENTITY_KINDS = [
   "table",
   "file_store",
   "trigger",
+  "stream",
   "agent",
   "application",
 ] as const;
 
 export type EntityKind = (typeof ENTITY_KINDS)[number];
 
+/** The kinds the relationship diagram draws, and so the only type buttons it
+ * offers: tables with their keys, the triggers on them, and the streams that
+ * fire triggers. */
+export const DIAGRAM_KINDS: readonly EntityKind[] = ["table", "trigger", "stream"];
+
 /** A kind's name, singular for a row's badge and plural for the filter. */
 export const KIND_LABELS: Record<EntityKind, { one: string; many: string }> = {
   table: { one: "Table", many: "Tables" },
   file_store: { one: "File store", many: "File stores" },
   trigger: { one: "Trigger", many: "Triggers" },
+  stream: { one: "Stream", many: "Streams" },
   agent: { one: "Agent", many: "Agents" },
   application: { one: "Application", many: "Applications" },
 };
@@ -42,6 +49,8 @@ export function configHref(entity: Entity): string {
       return `#/file-stores/${id}/edit`;
     case "trigger":
       return `#/triggers/${id}/edit`;
+    case "stream":
+      return `#/streams/${id}/edit`;
     case "agent":
       return `#/agents/${id}/edit`;
     case "application":
@@ -74,6 +83,13 @@ export function runAction(
       return { type: "link", label: "Browse", href: `#/files/${name}`, external: false };
     case "trigger":
       return { type: "test-run", label: "Test run" };
+    case "stream":
+      return {
+        type: "link",
+        label: "Observe",
+        href: `#/streams/${encodeURIComponent(entity.id)}/observe`,
+        external: false,
+      };
     case "agent":
       return { type: "link", label: "Chat", href: `#/agents/${name}/chat`, external: false };
     case "application":

@@ -91,6 +91,9 @@ fn stream_fields() -> Vec<DataField> {
         // docs.
         DataField::plain(COL_MIN_ROLE, TypeRef::Basic(BasicType::Int)),
         DataField::plain(COL_ATTRIBUTES, TypeRef::Basic(BasicType::Json)).required(),
+        // When it was last saved (`sc_catalog::edited`): bookkeeping for the
+        // entities list, written by every save and read by nothing else.
+        sc_catalog::updated_at_field(),
     ]
 }
 
@@ -262,6 +265,7 @@ fn stream_columns() -> Vec<String> {
         COL_CONFIGURATION,
         COL_MIN_ROLE,
         COL_ATTRIBUTES,
+        sc_catalog::COL_UPDATED_AT,
     ]
     .iter()
     .map(|c| (*c).to_owned())
@@ -281,6 +285,8 @@ fn stream_values(stream: &Stream) -> Vec<Value> {
             None => Value::Null,
         },
         Value::Json(Json::Object(stream.attributes.clone())),
+        // Every save is an edit (`sc_catalog::edited`).
+        sc_catalog::updated_now(),
     ]
 }
 

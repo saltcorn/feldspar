@@ -1,7 +1,7 @@
 // The admin UI's home page: every entity in one list (Saltcorn 1's "All
 // entities").
 //
-// Tables, file stores, triggers, agents and applications, each a row with a
+// Tables, file stores, triggers, streams, agents and applications, each a row with a
 // link to its configuration screen and a Run link where running one means
 // something. The five most recently edited come first, under their own heading,
 // because "the thing I was working on" is what an admin opening the admin UI is
@@ -14,8 +14,11 @@
 // ordered is `entities.ts`'s.
 //
 // The **Diagram** switch in the page header swaps the list for an entity
-// relationship diagram of the tables the search and filter keep, each linking
-// to its table page (`EntityDiagram.tsx`).
+// relationship diagram of the tables, triggers and streams (`EntityDiagram.tsx`),
+// each box linking to its entity's page. Only those three type buttons are
+// offered then, and a search draws the matches, outlined, with what they are
+// connected to. The diagram fills the card down to the "Create …" buttons,
+// which sit at the foot of the viewport (`.entities-page-diagram`).
 //
 // The screen has the viewport, as Saltcorn 1's did: the list scrolls inside
 // the card, and the search above it and the "Create …" buttons below it stay
@@ -29,6 +32,7 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import {
+  DIAGRAM_KINDS,
   ENTITY_KINDS,
   KIND_LABELS,
   configHref,
@@ -44,6 +48,7 @@ import {
 import {
   IconApps,
   IconBolt,
+  IconBroadcast,
   IconFilter,
   IconFolder,
   IconPlus,
@@ -56,12 +61,14 @@ import { T, useT } from "../i18n";
 import { testRunFailure, testRunOutcome, type TestRunOutcome } from "../triggerTestRun";
 import { TestRunToast } from "./Triggers";
 import { EntityDiagram } from "./EntityDiagram";
+import { nodeId } from "../entityDiagram";
 
 /** Each kind's icon and Tabler colour, for its badge and its filter button. */
 const KIND_LOOK: Record<EntityKind, { icon: ReactNode; color: string }> = {
   table: { icon: <IconTable />, color: "blue" },
   file_store: { icon: <IconFolder />, color: "cyan" },
   trigger: { icon: <IconBolt />, color: "yellow" },
+  stream: { icon: <IconBroadcast />, color: "orange" },
   agent: { icon: <IconRobot />, color: "green" },
   application: { icon: <IconApps />, color: "purple" },
 };
@@ -72,6 +79,7 @@ const CREATE: { kind: EntityKind; label: string; href: string }[] = [
   { kind: "table", label: "Create table", href: "#/tables" },
   { kind: "file_store", label: "Create file store", href: "#/file-stores/new" },
   { kind: "trigger", label: "Create trigger", href: "#/triggers/new" },
+  { kind: "stream", label: "Create stream", href: "#/streams/new" },
   { kind: "agent", label: "Create agent", href: "#/agents/new" },
   { kind: "application", label: "Create application", href: "#/applications/new" },
 ];
@@ -118,9 +126,26 @@ export function Entities() {
   );
   const recent = useMemo(() => recentlyEdited(kept), [kept]);
   const all = useMemo(() => sortEntities(kept), [kept]);
-  const tables = useMemo(
-    () => all.filter((e) => e.kind === "table").map((e) => e.id),
-    [all],
+  // The diagram: the kinds it draws that the type filter keeps (none switched
+  // on is every kind), and, with a search, which of them match.
+  const diagramKinds = useMemo(() => {
+    const on = DIAGRAM_KINDS.filter((k) => kinds.includes(k));
+    return on.length > 0 ? on : DIAGRAM_KINDS;
+  }, [kinds]);
+  const diagramEntities = useMemo(
+    () => (entities ?? []).filter((e) => diagramKinds.includes(e.kind as EntityKind)),
+    [entities, diagramKinds],
+  );
+  const diagramMatches = useMemo(
+    () =>
+      query.trim() === ""
+        ? null
+        : new Set(
+            diagramEntities
+              .filter((e) => matchesFilter(e, { query, kinds: [], deep: searchDeep }))
+              .map((e) => nodeId(e.kind, e.id)),
+          ),
+    [diagramEntities, query, searchDeep],
   );
 
   const testRun = async (entity: Entity) => {
@@ -149,7 +174,7 @@ export function Entities() {
   );
 
   return (
-    <div className="entities-page">
+    <div className={diagram ? "entities-page entities-page-diagram" : "entities-page"}>
       <PageHeader
         pretitle={t("Overview")}
         title={t("All entities")}
@@ -200,7 +225,7 @@ export function Entities() {
                 <T text="Types:" />
               </span>
               <div className="btn-group btn-group-sm flex-wrap" role="group" aria-label={t("Types")}>
-                {ENTITY_KINDS.map((kind) => {
+                {(diagram ? DIAGRAM_KINDS : ENTITY_KINDS).map((kind) => {
                   const on = kinds.includes(kind);
                   return (
                     <button
@@ -220,7 +245,9 @@ export function Entities() {
           </div>
 
           {diagram ? (
-            entities !== null && <EntityDiagram tables={tables} />
+            entities !== null && (
+              <EntityDiagram entities={diagramEntities} matches={diagramMatches} />
+            )
           ) : (
           <div className="entities-scroll">
           <Table hover className="card-table table-vcenter">

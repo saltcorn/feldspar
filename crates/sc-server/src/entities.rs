@@ -1,13 +1,17 @@
 //! `listEntities`: every entity an admin configures, in one list — the admin
 //! UI's home page (Saltcorn 1's "All entities").
 //!
-//! Five kinds: tables, file stores, triggers, agents and applications. A view
+//! Six kinds: tables, file stores, triggers, streams, agents and applications. A view
 //! or a page belongs to one application's framework rather than to the
 //! installation, so it is not one of them. Each row carries what a mixed list
 //! shows — its name, a line of details, who may use it — and when it was last
 //! saved (`sc_catalog::edited`), which is what the "recently edited" section
 //! sorts by. The ordering and the searching are the screen's: the list is short
 //! enough to send whole.
+//!
+//! A trigger also carries its **channel** — the table of a table event, the
+//! stream of a stream event — which is what the entities diagram draws the
+//! trigger's edge to.
 //!
 //! A **deep** listing also carries each entity's definition as JSON text, the
 //! same JSON its own list endpoint answers (so secrets are masked exactly as
@@ -27,8 +31,8 @@ use serde_json::{Value as Json, json};
 use crate::apps::AppMounts;
 use crate::handler::{HandlerRegistry, HandlerResponse};
 use crate::handlers::{
-    agent_json, agents_of, application_api_json, field_json, file_store_json, table_json,
-    trigger_json_with, triggers_of,
+    agent_json, agents_of, application_api_json, field_json, file_store_json, stream_json,
+    streams_of, table_json, trigger_json_with, triggers_of,
 };
 
 /// Register `listEntities` on `reg`.
@@ -74,6 +78,7 @@ struct Row {
     updated_at: Option<DateTime<Utc>>,
     runnable: bool,
     subdomain: Option<String>,
+    channel: Option<String>,
     definition: Option<Json>,
 }
 
@@ -89,6 +94,7 @@ impl Row {
             "updated_at": self.updated_at.map(|t| t.to_rfc3339()),
             "runnable": self.runnable,
             "subdomain": self.subdomain,
+            "channel": self.channel,
             "definition": if deep {
                 self.definition.map(|d| Json::String(d.to_string()))
             } else {
@@ -143,6 +149,7 @@ async fn list_entities(
             updated_at: edited.get(&table.name).copied(),
             runnable: true,
             subdomain: None,
+            channel: None,
             // The table's settings and its fields, so a deep search finds a
             // table by a column it has.
             definition: deep.then(|| {
@@ -182,6 +189,7 @@ async fn list_entities(
             details,
             runnable: true,
             subdomain: None,
+            channel: None,
             definition,
         });
     }
@@ -233,8 +241,42 @@ async fn list_entities(
             runnable: dispatcher.is_some() && problem.is_none() && trigger.is_enabled(),
             name: trigger.name,
             description: trigger.description,
+            channel: trigger.channel,
             details,
             subdomain: None,
+            definition,
+        });
+    }
+
+    // --- streams: the stored rows, as the streams list shows them. A server
+    // with no stream services still lists them, without definitions.
+    let edited = sc_catalog::updated_at_by(catalog, sc_stream::STREAMS_TABLE, "id").await?;
+    let services = streams_of(apps).ok();
+    let streams = if catalog.get(sc_stream::STREAMS_TABLE)?.is_some() {
+        sc_stream::list_streams(catalog).await?
+    } else {
+        Vec::new()
+    };
+    for stream in streams {
+        let mut details = vec![stream.provider.clone()];
+        if !stream.is_enabled() {
+            details.push("off".to_owned());
+        }
+        let definition = match (&services, deep) {
+            (Some(services), true) => Some(stream_json(services, apps, &stream)),
+            _ => None,
+        };
+        rows.push(Row {
+            kind: "stream",
+            id: stream.id.0.to_string(),
+            updated_at: edited.get(&stream.id.0.to_string()).copied(),
+            access: roles.floor(stream.min_role, &admin),
+            runnable: services.is_some() && stream.is_enabled(),
+            name: stream.name,
+            description: stream.description,
+            details,
+            subdomain: None,
+            channel: None,
             definition,
         });
     }
@@ -278,6 +320,7 @@ async fn list_entities(
             description: agent.description,
             details,
             subdomain: None,
+            channel: None,
         });
     }
 
@@ -297,6 +340,7 @@ async fn list_entities(
             access: roles.name(app.min_role),
             runnable: true,
             subdomain: Some(app.subdomain.clone()),
+            channel: None,
             definition: deep.then(|| application_api_json(&app)),
             name: app.name,
             description: app.description,

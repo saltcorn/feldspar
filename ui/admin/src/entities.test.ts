@@ -25,6 +25,7 @@ function entity(over: Partial<Entity> & Pick<Entity, "kind" | "name">): Entity {
     updated_at: null,
     runnable: true,
     subdomain: null,
+    channel: null,
     definition: null,
     ...over,
   };
@@ -108,6 +109,9 @@ describe("links", () => {
     expect(configHref(entity({ kind: "agent", id: "b2", name: "helper" }))).toBe(
       "#/agents/b2/edit",
     );
+    expect(configHref(entity({ kind: "stream", id: "d4", name: "boiler" }))).toBe(
+      "#/streams/d4/edit",
+    );
     expect(configHref(entity({ kind: "application", id: "c3", name: "Blog" }))).toBe(
       "#/applications/c3/edit",
     );
@@ -119,6 +123,10 @@ describe("links", () => {
     expect(runAction(greet)).toEqual({ type: "test-run", label: "Test run" });
     expect(runAction(entity({ kind: "agent", name: "helper" }))).toMatchObject({
       href: "#/agents/helper/chat",
+    });
+    expect(runAction(entity({ kind: "stream", id: "d4", name: "boiler" }))).toMatchObject({
+      label: "Observe",
+      href: "#/streams/d4/observe",
     });
     const blog = entity({ kind: "application", name: "Blog", subdomain: "blog" });
     expect(runAction(blog, (sub) => `https://${sub}.example.com`)).toEqual({
