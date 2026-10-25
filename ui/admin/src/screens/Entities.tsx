@@ -13,6 +13,10 @@
 // with none switched on every kind is shown. What is kept and how it is
 // ordered is `entities.ts`'s.
 //
+// The **Diagram** switch in the page header swaps the list for an entity
+// relationship diagram of the tables the search and filter keep, each linking
+// to its table page (`EntityDiagram.tsx`).
+//
 // The screen has the viewport, as Saltcorn 1's did: the list scrolls inside
 // the card, and the search above it and the "Create …" buttons below it stay
 // in view however many entities there are (`.entities-page` in `admin.css`).
@@ -51,6 +55,7 @@ import { PageBody, PageHeader } from "../layout";
 import { T, useT } from "../i18n";
 import { testRunFailure, testRunOutcome, type TestRunOutcome } from "../triggerTestRun";
 import { TestRunToast } from "./Triggers";
+import { EntityDiagram } from "./EntityDiagram";
 
 /** Each kind's icon and Tabler colour, for its badge and its filter button. */
 const KIND_LOOK: Record<EntityKind, { icon: ReactNode; color: string }> = {
@@ -80,6 +85,7 @@ export function Entities() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [deep, setDeep] = useState(false);
+  const [diagram, setDiagram] = useState(false);
   const [kinds, setKinds] = useState<EntityKind[]>([]);
   const [ran, setRan] = useState<TestRunOutcome | null>(null);
   const [running, setRunning] = useState<string | null>(null);
@@ -112,6 +118,10 @@ export function Entities() {
   );
   const recent = useMemo(() => recentlyEdited(kept), [kept]);
   const all = useMemo(() => sortEntities(kept), [kept]);
+  const tables = useMemo(
+    () => all.filter((e) => e.kind === "table").map((e) => e.id),
+    [all],
+  );
 
   const testRun = async (entity: Entity) => {
     // A trigger's first detail is its event, which is what the outcome needs
@@ -140,7 +150,21 @@ export function Entities() {
 
   return (
     <div className="entities-page">
-      <PageHeader pretitle={t("Overview")} title={t("All entities")} />
+      <PageHeader
+        pretitle={t("Overview")}
+        title={t("All entities")}
+        actions={
+          <Form.Check
+            type="switch"
+            id="entities-diagram"
+            className="mb-0"
+            checked={diagram}
+            onChange={(e) => setDiagram(e.target.checked)}
+            label={t("Diagram")}
+            title={t("Show the tables as an entity relationship diagram")}
+          />
+        }
+      />
       <PageBody>
         {error && <Alert variant="danger">{error}</Alert>}
         {ran && <TestRunToast outcome={ran} onClose={() => setRan(null)} />}
@@ -195,6 +219,9 @@ export function Entities() {
             </div>
           </div>
 
+          {diagram ? (
+            entities !== null && <EntityDiagram tables={tables} />
+          ) : (
           <div className="entities-scroll">
           <Table hover className="card-table table-vcenter">
             <thead>
@@ -236,6 +263,7 @@ export function Entities() {
             </tbody>
           </Table>
           </div>
+          )}
 
           <div className="card-footer">
             <div className="btn-list">

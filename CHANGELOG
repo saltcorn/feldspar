@@ -2,6 +2,25 @@
 
 Changes in reverse chronological order.
 
+## Entities list: an entity relationship diagram
+
+- A **Diagram** switch in the top right of the **All entities** page (off by default)
+  replaces the list with an entity relationship diagram, drawn with React Flow
+  (`@xyflow/react`, already a dependency) after its database schema node: one box per
+  table, listing its fields with their types (primary keys marked **PK**, keys shown as
+  `→ target`), and an edge from each key field's row to the row of the field it
+  references (the target's primary key when the key names no field). Laid out left to
+  right by dagre, so a table sits left of the tables its keys point at.
+- Clicking a box opens that table's page. The diagram draws the tables the search and type
+  filter keep; a key to a table not drawn has no edge. Only tables for now.
+- Fields come from one `listFields` call per table, made the first time a table is drawn.
+- The model (edges, handles, layout) is `entityDiagram.ts`; the renderer is
+  `screens/EntityDiagram.tsx`.
+
+Tests: `entityDiagram.test.ts` (boxes, key edges row to row, keys to undrawn tables left
+out, the heading fallback, left-to-right layout) and `screens/Entities.test.tsx` (the
+switch is in the page header and off, with the list shown).
+
 ## Entities list: no sidebar link, and the create buttons stay in view
 
 - The sidebar's **All entities** link is gone. The logo and the Saltcorn/Feldspar wordmark

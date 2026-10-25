@@ -23,3 +23,15 @@ describe("Entities", () => {
     expect(html.slice(footer)).toContain("Create table");
   });
 });
+
+describe("Entities diagram switch", () => {
+  const html = renderToStaticMarkup(<Entities />);
+
+  it("offers a Diagram switch in the page header, off by default", () => {
+    const header = html.slice(html.indexOf("page-header"), html.indexOf("page-body"));
+    expect(header).toContain('id="entities-diagram"');
+    expect(header).toContain("Diagram");
+    expect(header).toMatch(/<input[^>]*type="checkbox"[^>]*id="entities-diagram"(?![^>]*checked)/);
+    expect(html).toContain('<div class="entities-scroll">');
+  });
+});

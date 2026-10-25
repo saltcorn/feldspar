@@ -1893,3 +1893,81 @@ div.navbar-brand>a:hover {
   min-height: 0;
   overflow: hidden;
 }
+
+/* The entities page's relationship diagram fills the card between the filter
+   and the "Create …" buttons. React Flow measures its container, so it needs a
+   height of its own: the rest of the viewport, and never less than a usable
+   canvas. */
+.entity-diagram {
+  flex: 1 1 auto;
+  min-height: 24rem;
+  width: 100%;
+}
+
+.entities-card:has(.entity-diagram) {
+  flex: 1;
+}
+
+/* A table in the diagram, after React Flow's database schema node: the name
+   as a heading, then a row per field with its type on the right. */
+.erd-node {
+  background: var(--tblr-bg-surface);
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius);
+  box-shadow: var(--tblr-box-shadow-card);
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.erd-node-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background: var(--tblr-bg-surface-secondary);
+  border-bottom: 1px solid var(--tblr-border-color);
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+
+.erd-node-head > a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erd-node-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0.75rem;
+}
+
+.erd-node-row + .erd-node-row {
+  border-top: 1px solid var(--tblr-border-color-translucent);
+}
+
+.erd-node-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erd-type {
+  color: var(--tblr-secondary);
+  flex-shrink: 0;
+  max-width: 50%;
+}
+
+.erd-pk {
+  color: var(--tblr-yellow);
+  font-size: 0.625rem;
+}
+
+/* The handles only anchor the edges; nothing is connected by dragging them. */
+.erd-node .react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
