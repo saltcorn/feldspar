@@ -2,6 +2,20 @@
 
 Changes in reverse chronological order.
 
+## Admin: every run of an agent
+
+- **A Runs button on each agent** in the agents list opens `#/agents/<name>/runs`
+  (`AgentRuns.tsx`). It lists all users' runs of that agent, newest first, from the existing
+  `listRuns` endpoint, which already returns every user's runs. Each run gets one line:
+  started, last activity, user (by email, or the bare id if the user was deleted, or
+  "anonymous"), description (with sub-agent runs marked "(delegated)"), state, and
+  **Show** / **Delete**. Delete asks for confirmation first.
+- **Show** opens the existing run page (`#/runs/<id>`). The agent run page now has a
+  **Context** card with the stored run context as pretty-printed JSON, and an **All runs**
+  button that goes back to the list.
+- Tests: `agentRuns.test.ts` (user label, JSON formatting), `AgentRuns.test.tsx` (page
+  header and columns).
+
 ## Entities diagram: triggers, streams, search, and the full viewport
 
 - **Streams are entities.** `listEntities` lists each stored stream (kind `stream`: its

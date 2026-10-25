@@ -15,6 +15,7 @@ import Spinner from "react-bootstrap/Spinner";
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { conclusionNotice, transcriptFromRun, type Conclusion } from "../agentChat";
+import { prettyContext } from "../agentRuns";
 import type { GetRunDiffResponse, GetRunResponse } from "../client";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
@@ -193,6 +194,12 @@ export function AgentRunDetail({ run, onRefresh }: { run: GetRunResponse; onRefr
               <IconArrowLeft className="icon-2" />
               {t("Chat with {agent}", { agent: run.subject })}
             </Button>
+            <Button
+              variant="outline-secondary"
+              href={`#/agents/${encodeURIComponent(run.subject)}/runs`}
+            >
+              <T text="All runs" />
+            </Button>
             <Button variant="outline-secondary" onClick={onRefresh}>
               <T text="Refresh" />
             </Button>
@@ -221,6 +228,16 @@ export function AgentRunDetail({ run, onRefresh }: { run: GetRunResponse; onRefr
           <Card.Body>
             {entries.length === 0 && <p className="text-secondary mb-0"><T text="Nothing was said." /></p>}
             <Transcript entries={entries} />
+          </Card.Body>
+        </Card>
+        {/* The loop state as stored — what the transcript above is read out
+            of, for when the question is about something it does not draw. */}
+        <Card className="mt-3">
+          <Card.Header><T text="Context" /></Card.Header>
+          <Card.Body>
+            <pre className="mb-0 small" style={{ maxHeight: "40rem", overflow: "auto" }}>
+              {prettyContext(run.context)}
+            </pre>
           </Card.Body>
         </Card>
       </PageBody>

@@ -45,6 +45,7 @@ import { LocalePicker } from "./screens/LocalePicker";
 import { AgentChat } from "./screens/AgentChat";
 import { AgentForm } from "./screens/AgentForm";
 import { Entities } from "./screens/Entities";
+import { AgentRuns } from "./screens/AgentRuns";
 import { Agents } from "./screens/Agents";
 import { Applications } from "./screens/Applications";
 import { ApplicationForm } from "./screens/ApplicationForm";
@@ -751,6 +752,11 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   const agentChatMatch = path.match(/^\/agents\/([^/]+)\/chat$/);
   if (agentChatMatch) {
     return <AgentChat agent={decodeURIComponent(agentChatMatch[1])} />;
+  }
+  // Runs are keyed by the agent's name too (the run's `subject`).
+  const agentRunsMatch = path.match(/^\/agents\/([^/]+)\/runs$/);
+  if (agentRunsMatch) {
+    return <AgentRuns agent={decodeURIComponent(agentRunsMatch[1])} />;
   }
   const agentEditMatch = path.match(/^\/agents\/([^/]+)\/edit$/);
   if (agentEditMatch) {
