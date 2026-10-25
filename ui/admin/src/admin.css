@@ -1905,6 +1905,13 @@ div.navbar-brand>a:hover {
   flex: 1;
 }
 
+/* Bootstrap gives every `.card-body` `flex: 1 1 auto`, so the search and type
+   buttons above the diagram would grow too and take half the free height,
+   leaving a gap above the canvas. Only the diagram grows. */
+.entities-page-diagram .entities-card>.card-body {
+  flex: 0 0 auto;
+}
+
 .entity-diagram {
   position: relative;
   flex: 1 1 0;

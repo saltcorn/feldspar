@@ -60,6 +60,9 @@ Changes in reverse chronological order.
   the **Create …** buttons sit at the bottom of the window, and the canvas fills the
   space between the filter and them, however big or small the diagram is. Before this the
   canvas took its height from the first fitted view, which left no room to zoom out into.
+  The filter section above the canvas is held at its own height (Bootstrap's `.card-body`
+  is `flex: 1 1 auto` and otherwise took half the free height, leaving an empty band of
+  several hundred pixels between the type buttons and the canvas).
 
 Tests: `entityDiagram.test.ts` (trigger and stream edges, search draws matches plus
 neighbours and marks only matches, layout order), `entities.test.ts` (a stream's links),
