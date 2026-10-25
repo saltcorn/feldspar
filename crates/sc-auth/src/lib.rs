@@ -61,10 +61,10 @@ pub use credits::{
     COL_ENTRY_OUTPUT_TOKENS, COL_ENTRY_RUN, CREDIT_ACCOUNTS_TABLE, CREDIT_BUCKETS_TABLE,
     CREDIT_DECIMALS, CREDIT_ENTRIES_TABLE, CREDIT_SOURCE_ADMIN, CREDIT_SOURCE_AGENT,
     CREDITS_OWNERSHIP, CreditBalance, CreditBucket, CreditDebit, CreditDebited, CreditEntry,
-    CreditGrant, CreditRollover, ENTRY_DEBIT, ENTRY_GRANT, ENTRY_LOW_BALANCE, ENTRY_ROLLOVER,
-    NewCreditGrant, bootstrap_credits,
-    credit_balance, credits, debit_credits, grant_credits, list_credit_buckets,
-    list_credit_entries, set_low_balance_threshold,
+    CreditGrant, CreditRevoked, CreditRollover, ENTRY_DEBIT, ENTRY_GRANT, ENTRY_LOW_BALANCE,
+    ENTRY_REVOKE, ENTRY_ROLLOVER, NewCreditGrant, bootstrap_credits, credit_balance, credits,
+    debit_credits, grant_credits, list_credit_buckets, list_credit_entries, revoke_credits,
+    set_low_balance_threshold,
 };
 pub use first_user::{any_user_exists, create_first_user};
 pub use grants::{

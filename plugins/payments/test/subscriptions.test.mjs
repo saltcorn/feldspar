@@ -13,7 +13,7 @@ const fake = require("../adapters/fake.js");
 const { actionsFor } = require("../actions.js");
 const { deliverTo, fakeProvider } = require("../webhooks.js");
 
-const account = { id: 1, name: "shop", adapter: "fake", mode: "test", enabled: true, webhook_secret: "whsec_test", settings: {} };
+const account = { id: 1, name: "shop", adapter: "fake", mode: "test", enabled: true, webhook_secret: "whsec_test", settings: { grants_in_test_mode: true } };
 const configuration = { plans_table: "plans", plan_price_field: "stripe_price", plan_role_field: "role", grace_days: 3 };
 const actions = actionsFor(configuration);
 

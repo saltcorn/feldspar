@@ -212,64 +212,103 @@ pub async fn changed_keys(
     since: &SyncWatermark,
     until: &SyncWatermark,
 ) -> Result<BTreeSet<String>> {
+    Ok(changed_entries(catalog, tx, table, since, until)
+        .await?
+        .into_iter()
+        .map(|entry| entry.key)
+        .collect())
+}
+
+/// One change-log entry of a row: what a pull needs to tell what the row was
+/// before the changes it is being sent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChangedEntry {
+    pub key: String,
+    /// The changeset's net operation on the row: `i`, `u` or `d`.
+    pub op: String,
+    /// An update's changed columns before, or a deleted row whole.
+    pub old_values: Option<serde_json::Map<String, Json>>,
+    /// The entry's place in the log: entries of one row are in the order
+    /// their changesets first wrote it.
+    pub seq: i64,
+}
+
+/// The change-log entries of `table` written by a transaction that had
+/// committed at `until` but not yet at `since`, read on `tx`, in `seq` order.
+pub async fn changed_entries(
+    catalog: &Catalog,
+    tx: &SharedTx,
+    table: &str,
+    since: &SyncWatermark,
+    until: &SyncWatermark,
+) -> Result<Vec<ChangedEntry>> {
     require_sync(catalog)?;
-    if catalog.primary().dialect().is_sqlite() {
-        let sql = format!(
-            "SELECT DISTINCT row_key FROM \"{log}\" WHERE table_name = ?1 AND seq > ?2 AND seq <= ?3",
-            log = crate::change_log::CHANGES_TABLE
-        );
-        let rows = tx
-            .run(
-                None,
-                &Statement::raw(
-                    sql,
-                    vec![
-                        Value::Text(table.to_owned()),
-                        Value::Int(since.xmax),
-                        Value::Int(until.xmax),
-                    ],
-                ),
-            )
-            .await?;
-        return Ok(rows
-            .iter()
-            .filter_map(|row| match row.get_index(0) {
-                Some(Value::Text(key)) => Some(key.clone()),
-                _ => None,
-            })
-            .collect());
-    }
-    // The txid bounds only narrow the search to the index; the snapshots decide.
-    let sql = format!(
-        "SELECT DISTINCT row_key FROM {log} \
-         WHERE table_name = $1 AND txid >= $2 AND txid < $3 \
-           AND txid_visible_in_snapshot(txid, $4::text::txid_snapshot) \
-           AND NOT txid_visible_in_snapshot(txid, $5::text::txid_snapshot)",
-        log = catalog
-            .primary()
-            .dialect()
-            .quote_ident(crate::change_log::CHANGES_TABLE),
-    );
-    let rows = tx
-        .run(
-            None,
-            &Statement::raw(
-                sql,
-                vec![
-                    Value::Text(table.to_owned()),
-                    Value::Int(since.xmin),
-                    Value::Int(until.xmax),
-                    Value::Text(until.to_string()),
-                    Value::Text(since.to_string()),
-                ],
+    let (sql, binds) = if catalog.primary().dialect().is_sqlite() {
+        (
+            format!(
+                "SELECT row_key, op, old_values, seq FROM \"{log}\" \
+                 WHERE table_name = ?1 AND seq > ?2 AND seq <= ?3 ORDER BY seq",
+                log = crate::change_log::CHANGES_TABLE
             ),
+            vec![
+                Value::Text(table.to_owned()),
+                Value::Int(since.xmax),
+                Value::Int(until.xmax),
+            ],
         )
-        .await?;
+    } else {
+        // The txid bounds only narrow the search to the index; the snapshots
+        // decide.
+        (
+            format!(
+                "SELECT row_key, op, old_values, seq FROM {log} \
+                 WHERE table_name = $1 AND txid >= $2 AND txid < $3 \
+                   AND txid_visible_in_snapshot(txid, $4::text::txid_snapshot) \
+                   AND NOT txid_visible_in_snapshot(txid, $5::text::txid_snapshot) \
+                 ORDER BY seq",
+                log = catalog
+                    .primary()
+                    .dialect()
+                    .quote_ident(crate::change_log::CHANGES_TABLE),
+            ),
+            vec![
+                Value::Text(table.to_owned()),
+                Value::Int(since.xmin),
+                Value::Int(until.xmax),
+                Value::Text(until.to_string()),
+                Value::Text(since.to_string()),
+            ],
+        )
+    };
+    let rows = tx.run(None, &Statement::raw(sql, binds)).await?;
     Ok(rows
         .iter()
-        .filter_map(|row| match row.get_index(0) {
-            Some(Value::Text(key)) => Some(key.clone()),
-            _ => None,
+        .filter_map(|row| {
+            let Some(Value::Text(key)) = row.get_index(0) else {
+                return None;
+            };
+            let op = match row.get_index(1) {
+                Some(Value::Text(op)) => op.clone(),
+                _ => String::new(),
+            };
+            let old_values = match row.get_index(2) {
+                Some(Value::Json(Json::Object(map))) => Some(map.clone()),
+                Some(Value::Text(text)) => match serde_json::from_str(text) {
+                    Ok(Json::Object(map)) => Some(map),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let seq = match row.get_index(3) {
+                Some(Value::Int(seq)) => *seq,
+                _ => 0,
+            };
+            Some(ChangedEntry {
+                key: key.clone(),
+                op,
+                old_values,
+                seq,
+            })
         })
         .collect())
 }

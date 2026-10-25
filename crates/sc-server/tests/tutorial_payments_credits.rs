@@ -204,7 +204,8 @@ async fn setup() -> sc_error::Result<Booted> {
         &catalog.require("pay_accounts")?,
         &json!({ "name": "tea", "adapter": "fake", "mode": "test",
                  "webhook_secret": "any random text",
-                 "settings": { "prices": { "price_assistant": { "amount": 500 } } } }),
+                 "settings": { "grants_in_test_mode": true,
+                               "prices": { "price_assistant": { "amount": 500 } } } }),
     )
     .await?;
     create_tables(catalog).await?;

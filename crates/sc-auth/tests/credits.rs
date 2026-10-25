@@ -23,7 +23,7 @@ use sc_auth::{
     CREDIT_ACCOUNTS_TABLE, CREDIT_BUCKETS_TABLE, CREDIT_ENTRIES_TABLE, CreditDebit, CreditRollover,
     ENTRY_LOW_BALANCE, ENTRY_ROLLOVER, NewCreditGrant, ROLE_ADMIN, Role, bootstrap, create_user,
     credit_balance, debit_credits, delete_user, grant_credits, list_credit_buckets,
-    list_credit_entries, save_role, set_low_balance_threshold,
+    list_credit_entries, revoke_credits, save_role, set_low_balance_threshold,
 };
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -489,6 +489,40 @@ async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
             .await
             .is_err(),
         "period:2 is the first user's"
+    );
+    Ok(())
+}
+
+/// Security review #34: a top-up whose payment was refunded or charged back is
+/// taken back — what is left of it, not what was spent, and only once; and
+/// only the source's own grant.
+#[tokio::test]
+async fn a_revoked_grant_takes_back_what_is_left_once() -> Result<()> {
+    let f = fixture().await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", 80).await?;
+    grant_credits(&f.catalog, grant(user.id, 100, "payment:1:pi_1"), None).await?;
+    grant_credits(&f.catalog, grant(user.id, 50, "payment:1:pi_2"), None).await?;
+    debit_credits(&f.catalog, debit(user.id, d(30), "run:1"), None).await?;
+    assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(120));
+
+    // Another source's key of the same name is not this one's.
+    let elsewhere = revoke_credits(&f.catalog, "other", "payment:1:pi_1", None, None).await?;
+    assert!(!elsewhere.found);
+
+    let taken =
+        revoke_credits(&f.catalog, "test", "payment:1:pi_1", Some("refunded"), None).await?;
+    assert!(taken.found && !taken.replayed);
+    assert_eq!(taken.revoked, d(70), "the 30 spent from it stay spent");
+    assert_eq!(taken.balance, Some(d(50)));
+    let again = revoke_credits(&f.catalog, "test", "payment:1:pi_1", None, None).await?;
+    assert!(again.replayed);
+    assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(50));
+    let entries = list_credit_entries(&f.catalog, user.id, 10).await?;
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.kind == sc_auth::ENTRY_REVOKE && e.amount == d(-70)),
+        "{entries:?}"
     );
     Ok(())
 }

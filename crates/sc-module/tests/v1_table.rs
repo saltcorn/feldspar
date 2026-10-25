@@ -416,3 +416,24 @@ async fn a_module_cannot_borrow_a_call_by_guessing_its_id() {
     host.shutdown().await;
     let _ = std::fs::remove_dir_all(installer.root());
 }
+
+/// **The bridge cannot be wrapped** (security review #30). A module that could
+/// replace `__scDbCall` (or the storage each call's context lives in) would see
+/// the tokens of other calls in flight and could act as their callers; each
+/// attempt is refused, and the module's own reads still work.
+#[tokio::test]
+async fn a_module_cannot_wrap_the_host_bridge() {
+    skip_without!(have_npm(), "npm is not on the PATH");
+    let db = TestDb::new().await.unwrap();
+    let cat = setup(&db).await.unwrap();
+    let (installer, host, registry, _set) = install(&cat, "v1-table-wrap").await;
+
+    let answer = run(&registry, &cat, "v1_wrap_bridge", Attrs::new())
+        .await
+        .expect("the wrapping action itself runs");
+    assert_eq!(answer["kept"], json!([]), "{answer}");
+    assert_eq!(answer["count"], json!(4), "{answer}");
+
+    host.shutdown().await;
+    let _ = std::fs::remove_dir_all(installer.root());
+}

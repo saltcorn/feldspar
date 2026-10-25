@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const fake = require("../adapters/fake.js");
 const { actions } = require("../actions.js");
 
-const account = { id: 1, name: "shop", adapter: "fake", mode: "test", enabled: true, webhook_secret: "whsec_test" };
+const account = { id: 1, name: "shop", adapter: "fake", mode: "test", enabled: true, webhook_secret: "whsec_test", settings: { grants_in_test_mode: true } };
 
 let store;
 beforeEach(() => {

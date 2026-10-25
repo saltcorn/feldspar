@@ -53,9 +53,14 @@ export function polarSimulation() {
     s.queue.push(event);
   }
 
-  function customerFor(key, { id, email }) {
+  // A checkout with no customer: the customer of that external id, else — as Polar is suspected
+  // to (security review #35) — the customer of that email, else a new one.
+  function customerFor(key, { id, email, external_id }) {
     if (id) return s.customers.get(id);
-    const c = { id: uuid(), created_at: stamp(), modified_at: null, email, external_id: null, metadata: {}, deleted_at: null, _key: key };
+    const all = [...s.customers.values()].filter((c) => c._key === key);
+    const found = (external_id && all.find((c) => c.external_id === external_id)) || (email && all.find((c) => c.email === email));
+    if (found) return found;
+    const c = { id: uuid(), created_at: stamp(), modified_at: null, email, external_id: external_id || null, metadata: {}, deleted_at: null, _key: key };
     s.customers.set(c.id, c);
     return c;
   }
@@ -144,6 +149,7 @@ export function polarSimulation() {
         product_id: product,
         customer_id: json.customer_id || null,
         customer_email: json.customer_email || (json.customer_id ? s.customers.get(json.customer_id).email : null),
+        external_customer_id: json.external_customer_id || null,
         metadata: json.metadata || {},
         subscription_id: null,
         _key: key,
@@ -313,7 +319,7 @@ export function polarSimulation() {
       emit(key, "checkout.updated", view(c));
       return;
     }
-    const customer = customerFor(key, { id: c.customer_id, email: c.customer_email });
+    const customer = customerFor(key, { id: c.customer_id, email: c.customer_email, external_id: c.external_customer_id });
     customer._card = "ok";
     c.customer_id = customer.id;
     c.status = "succeeded";
@@ -444,7 +450,7 @@ export function polarSimulation() {
         enabled: true,
         secret_key: `polar_oat_sim_${name}`,
         webhook_secret: `whsec_${Buffer.from(`secret of ${name}`).toString("base64")}`,
-        settings: { product: products.oneOff, webhook_endpoint_id: uuid() },
+        settings: { product: products.oneOff, webhook_endpoint_id: uuid(), grants_in_test_mode: true },
         _hold: hold,
         // The organisation is on a plan with off-session charges (P5.3).
         _offSession: true,

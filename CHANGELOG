@@ -2,6 +2,64 @@
 
 Changes in reverse chronological order.
 
+## Security fixes: write responses, sync keys, module bridge, `.git` links, trigger chains, payments
+
+Fixes for items 28–35 of `docs/SECURITY_REVIEW_2026-10.md`.
+
+- **A write answers with a row only to a caller who may read it** (#28). REST create and update
+  (`rest/mod.rs` `written_row`) judge the written row by the read rule (`ownership::RowImage`) and
+  answer with its key alone when the caller may not read it — a table whose write floor is below
+  its read floor (a submission form read by staff) no longer lets a writer read any row by
+  resending it. GraphQL `delete_…_by_pk` judges the removed row the same way and refuses (the
+  delete stands) like insert/update's `read_back` does.
+- **An offline-sync pull lists as `removed` only rows the device could have held** (#29). The
+  change log's `old_values` rebuild each unreadable changed row as it was at the device's
+  watermark (`sync/pull.rs` `was_held`; `sc_catalog::changed_entries`); only a key whose row the
+  user could read then is listed. Other users' new, edited and deleted rows no longer leak their
+  keys and change times. A row first inserted after the watermark is never listed. Judged with the
+  user's role now; a verdict that cannot be reached withholds the key.
+- **Module workers seal the host bridge** (#30). `__scDbCall` is defined read-only, every `__sc*`
+  global is made read-only and permanent when the host script finishes (before any module loads),
+  and `AsyncLocalStorage` (where each call's context and token live) is frozen. An ask from inside
+  one module's call on behalf of another module's call is refused (`askFor`, `callOwners`).
+- **The `.git` rule follows links** (#31). `LocalFileStore` refuses a path that is not spelled
+  inside `.git` but lands there on disk — a symlink in the working tree into `.git`, which can
+  arrive with a pull — for reads and writes alike (`lands_outside_git`, after canonicalising).
+  `in_git_dir` also refuses `git~<digits>` segments, NTFS's short name for `.git`, as git's
+  `core.protectNTFS` does; that covers `check_access` and the file listings too.
+- **`trusted_input` does not survive a cascade an untrusted prompt started** (#32). A run of
+  untrusted origin (triggered or exposed) marks the writes and trigger runs its tools make with
+  `sc_catalog::UNTRUSTED_ORIGIN` at the head of their trigger chain (`RunCaller::tool_chain`). The
+  chain already travels with every write, event, action, code body and workflow, so the mark does
+  too; it is not counted towards the cascade depth. `run_agent` grants `RunCaller::system()` only
+  when `trusted_input` is set **and** the event's chain carries no mark.
+- **A test-mode payment account grants nothing unless told to** (#33). `processing.js` grants
+  roles and credits for a live account, or a test account whose settings say
+  `"grants_in_test_mode": true`; otherwise the object's `issue` says why nothing was granted
+  (only for objects that would have granted). The fake adapter is test-only, so it is covered.
+  The tutorials set the option on their test accounts and say to disable a test account before
+  going live. Not done: a server dev flag for the fake adapter, a warning on the module card.
+- **A refund in full or a lost chargeback takes back what a payment granted** (#34). Stripe
+  payments are read with `latest_charge.dispute`, and a lost dispute is the status
+  `charged_back`; a dispute event now syncs its payment too. On `refunded` or `charged_back` the
+  payment's role is revoked and what is left of its credit top-up is taken back through the new
+  `credits.revoke({ key })` (`sc_auth::revoke_credits`: empties the module's own bucket, writes a
+  `revoke` entry, once; spent credits stay spent, no debt is made). A partial refund still takes
+  nothing back. Not done: a lost dispute on a subscription's invoice.
+- **A Polar customer is bound to a user only when Polar says it is theirs** (#35). Checkouts send
+  `external_customer_id` (the user's id) with the email; an object's customer is bound to its user
+  only when the adapter's `customer_external_id` is that user's id (`processing.js`
+  `customerUser`). An adapter that reports no external id (Stripe) binds as before. The portal
+  and saved-card charge read only bindings made that way, so they need no further check.
+- **Tests:** `table_access_enforcement::a_writer_who_may_not_read_gets_only_the_key_back`;
+  `sync_pull::a_later_pull_brings_what_changed_and_what_is_gone` (exact `removed`);
+  `v1_table::a_module_cannot_wrap_the_host_bridge`; `sc-files` `a_link_into_git_does_not_reach_it`;
+  `run_agent::trusted_input_does_not_survive_a_cascade_from_untrusted_input`;
+  `credits::a_revoked_grant_takes_back_what_is_left_once`; payments `processing.test.mjs` (test-mode
+  grants, refunds/chargebacks, customer binding), `stripe.test.mjs` (charged back), `polar.test.mjs`
+  (`external_customer_id`); the payments test fixtures and tutorial tests opt their test accounts
+  in to grants.
+
 ## Security fixes: repeat trials, exposed agents, formula isolate, Astro, `/_image`, `fetch`
 
 Fixes for items 19–27 of `docs/SECURITY_REVIEW_2026-10.md`.

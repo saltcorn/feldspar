@@ -458,7 +458,8 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
     // Its accounts, as an admin enters them.
     let accounts = catalog.require("pay_accounts")?;
     for row in [
-        json!({ "name": "shop", "adapter": "fake", "mode": "test", "webhook_secret": SECRET }),
+        json!({ "name": "shop", "adapter": "fake", "mode": "test", "webhook_secret": SECRET,
+                "settings": { "grants_in_test_mode": true } }),
         json!({ "name": "unsigned", "adapter": "fake", "mode": "test" }),
         json!({ "name": "acme", "adapter": "acme", "mode": "test", "webhook_secret": SECRET }),
         json!({ "name": "real", "adapter": "fake", "mode": "live", "webhook_secret": SECRET }),
@@ -466,7 +467,7 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
                 "enabled": false }),
         // A provider whose webhooks a test delivers by hand, in its own order.
         json!({ "name": "held", "adapter": "fake", "mode": "test", "webhook_secret": SECRET,
-                "settings": { "webhooks": "hold" } }),
+                "settings": { "webhooks": "hold", "grants_in_test_mode": true } }),
     ] {
         sc_api::rows::create_row(&catalog, &accounts, &row).await?;
     }

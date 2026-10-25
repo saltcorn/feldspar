@@ -558,7 +558,8 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
         &catalog,
         &catalog.require("pay_accounts")?,
         &json!({ "name": "shop", "adapter": "fake", "mode": "test",
-                 "webhook_secret": "any random text" }),
+                 "webhook_secret": "any random text",
+                 "settings": { "grants_in_test_mode": true } }),
     )
     .await?;
 

@@ -66,6 +66,13 @@ function recordingCredits() {
       buckets.set(key, bucket);
       return { ...bucket, replayed: false, carried };
     },
+    async revoke({ key }) {
+      const bucket = buckets.get(key);
+      if (!bucket) return { found: false, revoked: 0 };
+      const revoked = bucket.remaining;
+      bucket.remaining = 0;
+      return { found: true, revoked };
+    },
     async balance(user) {
       return { balance: this.of(user) };
     },
@@ -535,7 +542,7 @@ for (const makeDriver of PROVIDERS) {
 
     const pack = { account: "shop", table: "credit_packs", amount: "price", description: "name", currency: "EUR", grant_credits: "units" };
 
-    test("a credit pack paid through checkout grants its credits once, and a refund leaves them", async () => {
+    test("a credit pack paid through checkout grants its credits once, and a full refund takes back what is left", async () => {
       const started = await actions.pay_checkout.run(argument({ configuration: { ...pack, key_field: "pack", credits_expire_days: 365 }, payload: { pack: 1 } }));
       assert.equal(started.amount, 200);
       await provider.pay(shop, started.checkout, "succeeded");
@@ -548,7 +555,7 @@ for (const makeDriver of PROVIDERS) {
       await actions.pay_refund.run(argument({ configuration: { source: "row", table: "credit_packs", key_field: "pack" }, payload: { pack: 1 } }));
       await provider.flush();
       assert.ok(kinds().includes("payment.refunded"));
-      assert.equal(credits.of(ann.id), 100, "only agent runs spend credits");
+      assert.equal(credits.of(ann.id), 0, "the money went back, and with it the credits (security review #34)");
     });
 
     test("pay_charge_saved charges the saved card once per key, and falls back to checkout", async () => {

@@ -36,7 +36,7 @@ function fakeDriver() {
     prices: { basic: "price_basic", pro: "price_pro", staff: "price_staff", mystery: "price_mystery", gone: "price_gone" },
     renewalPaymentsKnowTheirRow: true,
     account(n, name, { hold = false } = {}) {
-      return { id: n, name, adapter: "fake", mode: "test", enabled: true, webhook_secret: `whsec_${name}`, settings: hold ? { webhooks: "hold" } : {} };
+      return { id: n, name, adapter: "fake", mode: "test", enabled: true, webhook_secret: `whsec_${name}`, settings: hold ? { webhooks: "hold", grants_in_test_mode: true } : { grants_in_test_mode: true } };
     },
     install(accounts, deliverFor) {
       fake.reset();

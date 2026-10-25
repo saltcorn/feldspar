@@ -182,8 +182,10 @@ impl Action for RunAgent {
             // Decision 5, at the one place a run is created: nobody is present,
             // so the run carries the trigger's authority and records no user —
             // without the server's own tools, unless the admin said the event
-            // is one nobody untrusted can cause.
-            if trusted_input(ctx.config) {
+            // is one nobody untrusted can cause. An event a cascade of
+            // untrusted origin raised is one, whatever the trigger says
+            // (security review #32).
+            if trusted_input(ctx.config) && !sc_catalog::is_untrusted_chain(&ctx.chain) {
                 RunCaller::system()
             } else {
                 RunCaller::triggered()

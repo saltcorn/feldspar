@@ -1273,12 +1273,21 @@ impl RestProvider {
                     executor: &executor,
                 };
                 let outcome = match &route.op {
-                    RestOp::Create => write_as::create(cat, &table, body, &writer)
-                        .await?
-                        .map(|row| ApiResponse::with_status(201, client_row(&table, row))),
-                    RestOp::Update => write_as::update(cat, &table, id()?, body, &writer)
-                        .await?
-                        .map(|row| ApiResponse::ok(client_row(&table, row))),
+                    RestOp::Create => match write_as::create(cat, &table, body, &writer).await? {
+                        Ok(row) => Ok(ApiResponse::with_status(
+                            201,
+                            self.written_row(cat, &table, row, user).await,
+                        )),
+                        Err(denied) => Err(denied),
+                    },
+                    RestOp::Update => {
+                        match write_as::update(cat, &table, id()?, body, &writer).await? {
+                            Ok(row) => Ok(ApiResponse::ok(
+                                self.written_row(cat, &table, row, user).await,
+                            )),
+                            Err(denied) => Err(denied),
+                        }
+                    }
                     _ => write_as::delete(cat, &table, id()?, &writer)
                         .await?
                         .map(|()| deleted()),
@@ -1402,6 +1411,31 @@ impl RestProvider {
         write_as::owned_row_as(cat, table, formula, op, user, self.evaluator.as_ref(), id).await
     }
 
+    /// A row a create or update wrote, as the caller gets it back: in full
+    /// (secrets as their sentinel) when the caller may **read** it, and
+    /// otherwise its key alone (security review #28). A table whose write floor
+    /// is below its read floor — a public submission form read by staff — must
+    /// not let a writer read any row by resending it unchanged. A readability
+    /// check that fails is a refusal.
+    async fn written_row(
+        &self,
+        cat: &Catalog,
+        table: &Table,
+        row: Json,
+        user: Option<&User>,
+    ) -> Json {
+        let role = ownership::caller_role(user);
+        let readable = ownership::RowImage::new(table, &row)
+            .readable(cat, role, user, self.evaluator.as_ref())
+            .await
+            .unwrap_or(false);
+        if readable {
+            client_row(table, row)
+        } else {
+            key_only(table, &row)
+        }
+    }
+
     /// Run a row operation on an **RLS-enabled** table (§6): the database's
     /// policies do all the gating, so there is no formula translation, no
     /// evaluator, and no fetch-then-check here. Every statement runs through a
@@ -1431,17 +1465,15 @@ impl RestProvider {
             // itself through a caller-context transaction because the *table*
             // says to, so the policies decide exactly as they do everywhere else.
             RestOp::List => self.list(cat, table, req, user).await?,
-            RestOp::Create => ApiResponse::with_status(
-                201,
-                client_row(
-                    table,
-                    rows::create_row_ctx(cat, table, body, Some(&ctx)).await?,
-                ),
-            ),
-            RestOp::Update => ApiResponse::ok(client_row(
-                table,
-                rows::update_row_guarded(cat, table, id()?, body, None, Some(&ctx)).await?,
-            )),
+            RestOp::Create => {
+                let row = rows::create_row_ctx(cat, table, body, Some(&ctx)).await?;
+                ApiResponse::with_status(201, self.written_row(cat, table, row, user).await)
+            }
+            RestOp::Update => {
+                let row =
+                    rows::update_row_guarded(cat, table, id()?, body, None, Some(&ctx)).await?;
+                ApiResponse::ok(self.written_row(cat, table, row, user).await)
+            }
             RestOp::Delete => {
                 rows::delete_row_guarded(cat, table, id()?, None, Some(&ctx)).await?;
                 deleted()
@@ -1468,6 +1500,18 @@ impl RestProvider {
             }
         })
     }
+}
+
+/// The primary key of a written row, all a caller who may write but not read
+/// it is told (`{}` for a table without a single key).
+fn key_only(table: &Table, row: &Json) -> Json {
+    let mut out = serde_json::Map::new();
+    if let Ok(pk) = rows::single_pk(table)
+        && let Some(value) = row.get(&pk)
+    {
+        out.insert(pk, value.clone());
+    }
+    Json::Object(out)
 }
 
 /// A written row as the caller gets it back: its secrets as their sentinel

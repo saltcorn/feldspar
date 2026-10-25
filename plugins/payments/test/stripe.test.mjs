@@ -23,7 +23,7 @@ const account = {
   enabled: true,
   secret_key: "sk_test_51ExampleKey",
   webhook_secret: "whsec_example_secret",
-  settings: {},
+  settings: { grants_in_test_mode: true },
 };
 
 /** The requests made, and the answers queued for them. */
@@ -347,4 +347,22 @@ test("the portal, a plan change and a cancellation, as Stripe receives them", as
   const now = await stripe.cancel(account, "sub_1QaBcDeFgHiJkLmN", { at_period_end: false });
   assert.equal(now.status, "canceled");
   assert.deepEqual([sent[4].method, sent[4].path], ["DELETE", "/v1/subscriptions/sub_1QaBcDeFgHiJkLmN"]);
+});
+
+// Security review #34: Stripe leaves a charged-back payment `succeeded` with nothing refunded, so
+// the dispute is read with it, and a lost one is the module's `charged_back`.
+test("a payment whose dispute was lost reads as charged back", async () => {
+  const pi = fixture("payment_intent_succeeded");
+  const charge = typeof pi.latest_charge === "object" && pi.latest_charge ? pi.latest_charge : { id: "ch_1", amount_refunded: 0 };
+  for (const [dispute, status] of [
+    [null, "succeeded"],
+    [{ id: "dp_1", status: "needs_response" }, "succeeded"],
+    [{ id: "dp_1", status: "won" }, "succeeded"],
+    [{ id: "dp_1", status: "lost" }, "charged_back"],
+  ]) {
+    answers.push([200, { ...pi, latest_charge: { ...charge, disputed: !!dispute, dispute } }]);
+    const read = await stripe.fetch(account, { kind: "payment", id: pi.id });
+    assert.equal(read.status, status, JSON.stringify(dispute));
+  }
+  assert.equal(sent[0].query.get("expand[1]"), "latest_charge.dispute");
 });

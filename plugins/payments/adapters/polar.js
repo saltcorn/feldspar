@@ -151,6 +151,7 @@ function normaliseCheckout(c) {
     // Polar's checkout does not name the order it made; the order names its checkout.
     payment_ref: null,
     customer_ref: c.customer_id || null,
+    customer_external_id: c.external_customer_id || c.customer_external_id || null,
     subscription_ref: null,
     trial_end: c.trial_end || null,
     metadata: c.metadata || {},
@@ -176,6 +177,7 @@ function normaliseOrder(o) {
     checkout_ref: o.checkout_id || null,
     subscription_ref: o.subscription_id || null,
     customer_ref: o.customer_id || null,
+    customer_external_id: (o.customer && o.customer.external_id) || null,
     amount_refunded: (o.refunded_amount || 0) + (o.refunded_tax_amount || 0),
     billing_reason: o.billing_reason || null,
     lines: (o.items || []).map((i) => ({ description: i.label, quantity: 1, unit_amount: i.amount, amount: i.amount })),
@@ -202,6 +204,7 @@ function normaliseSubscription(s) {
     cancel_at: s.cancel_at_period_end ? s.ends_at || null : null,
     email: (s.customer && s.customer.email) || null,
     customer_ref: s.customer_id || null,
+    customer_external_id: (s.customer && s.customer.external_id) || null,
     checkout_ref: s.checkout_id || null,
     metadata: s.metadata || {},
     created: s.created_at,
@@ -211,7 +214,7 @@ function normaliseSubscription(s) {
 }
 
 function normaliseCustomer(c) {
-  return { kind: "customer", ref: c.id, status: c.deleted_at ? "deleted" : null, email: c.email || null, metadata: c.metadata || {}, updated: c.created_at, provider_data: c };
+  return { kind: "customer", ref: c.id, status: c.deleted_at ? "deleted" : null, email: c.email || null, external_id: c.external_id || null, metadata: c.metadata || {}, updated: c.created_at, provider_data: c };
 }
 
 /** A refund, in what the buyer gets back: Polar's pre-tax amount and the tax refunded with it. */
@@ -439,8 +442,15 @@ module.exports = {
       body.currency = currency.toLowerCase();
       body.prices = { [product]: [{ amount_type: "fixed", price_amount: total, price_currency: currency.toLowerCase() }] };
     }
+    // A new customer is named by the user's id (security review #35): Polar may find an existing
+    // customer by the email alone, and an email address is not proof of whose it is — signing up
+    // does not verify it. The module binds a Polar customer to a user only when the customer's
+    // `external_id` is that user's id (`processing.js`).
     if (input.customer && input.customer.ref) body.customer_id = polarId(input.customer.ref, "customer");
-    else if (input.customer && input.customer.email) body.customer_email = input.customer.email;
+    else if (input.customer) {
+      if (input.customer.user_id !== null && input.customer.user_id !== undefined) body.external_customer_id = String(input.customer.user_id);
+      if (input.customer.email) body.customer_email = input.customer.email;
+    }
     const checkout = await request(account, "POST", "/v1/checkouts/", body);
     return { id: checkout.id, url: checkout.url, object: normaliseCheckout(checkout) };
   },

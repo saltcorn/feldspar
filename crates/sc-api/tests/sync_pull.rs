@@ -206,17 +206,23 @@ async fn a_later_pull_brings_what_changed_and_what_is_gone() -> Result<()> {
     let f = fixture(&db).await?;
     let (ann, bob) = (f.ann.id, f.bob.id);
     let gone = "00000000-0000-4000-8000-0000000000a3";
+    let given = "00000000-0000-4000-8000-0000000000a4";
+    let bobs = "00000000-0000-4000-8000-0000000000b3";
+    let bobs_gone = "00000000-0000-4000-8000-0000000000b4";
     sql(
         &db,
         &format!(
             "INSERT INTO notes (title, owner) VALUES ('ann 1', '{ann}'), ('bob 1', '{bob}');
-             INSERT INTO notes (id, title, owner) VALUES ('{gone}', 'ann 3', '{ann}');"
+             INSERT INTO notes (id, title, owner) VALUES ('{gone}', 'ann 3', '{ann}');
+             INSERT INTO notes (id, title, owner) VALUES ('{given}', 'ann 4', '{ann}');
+             INSERT INTO notes (id, title, owner) VALUES ('{bobs}', 'bob 3', '{bob}');
+             INSERT INTO notes (id, title, owner) VALUES ('{bobs_gone}', 'bob 4', '{bob}');"
         ),
     )
     .await?;
     let device = register(&f, &f.ann).await?;
     let first = pull(&f, &f.ann, &device, &Json::Null).await?;
-    assert_eq!(notes(&first).1, set(&["ann 1", "ann 3"]));
+    assert_eq!(notes(&first).1, set(&["ann 1", "ann 3", "ann 4"]));
 
     // Nothing changed: nothing comes.
     let quiet = pull(&f, &f.ann, &device, &first["watermark"]).await?;
@@ -228,7 +234,10 @@ async fn a_later_pull_brings_what_changed_and_what_is_gone() -> Result<()> {
             "UPDATE notes SET title = 'ann 1 edited' WHERE title = 'ann 1';
              DELETE FROM notes WHERE id = '{gone}';
              UPDATE notes SET owner = '{ann}' WHERE title = 'bob 1';
-             INSERT INTO notes (title, owner) VALUES ('bob 2', '{bob}');"
+             INSERT INTO notes (title, owner) VALUES ('bob 2', '{bob}');
+             UPDATE notes SET owner = '{bob}' WHERE id = '{given}';
+             UPDATE notes SET title = 'bob 3 edited' WHERE id = '{bobs}';
+             DELETE FROM notes WHERE id = '{bobs_gone}';"
         ),
     )
     .await?;
@@ -237,7 +246,10 @@ async fn a_later_pull_brings_what_changed_and_what_is_gone() -> Result<()> {
     assert!(!reset);
     // The edit, and the note handed to her; never Bob's own.
     assert_eq!(titles, set(&["ann 1 edited", "bob 1"]));
-    assert!(removed.contains(gone), "{removed:?}");
+    // Her deleted note and the one she gave away go; Bob's new, edited and
+    // deleted notes were never hers, so their keys are not hers to learn
+    // (security review #29).
+    assert_eq!(removed, set(&[gone, given]));
 
     // A table the device does not hold yet comes in whole.
     let fresh = post(

@@ -455,6 +455,20 @@ impl RunCaller {
         self.triggered || self.exposed
     }
 
+    /// The trigger chain a write or a trigger run made by one of this run's
+    /// tools carries: empty — a tool call is not a trigger firing — or, for a
+    /// run of [untrusted origin](Self::untrusted_origin), the
+    /// [`UNTRUSTED_ORIGIN`](sc_catalog::UNTRUSTED_ORIGIN) mark, so a
+    /// `trusted_input` trigger the write fires does not hand the server's
+    /// tools back to the prompt that caused it (security review #32).
+    pub fn tool_chain(&self) -> Vec<String> {
+        if self.untrusted_origin() {
+            sc_catalog::untrusted_chain(Vec::new())
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Whether this caller meets a role floor — how an agent's `min_role` and a
     /// trigger's are both checked.
     ///

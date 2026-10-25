@@ -62,8 +62,13 @@ On the test provider any price id works. It costs 10.00 for 30 days unless the a
 prices:
 
 ```json
-{ "prices": { "price_basic": { "amount": 500 }, "price_pro": { "amount": 1500 } } }
+{ "grants_in_test_mode": true,
+  "prices": { "price_basic": { "amount": 500 }, "price_pro": { "amount": 1500 } } }
 ```
+
+`grants_in_test_mode` lets this test account grant roles and credits, which a test account does
+not do otherwise: it takes no real money, so one left enabled on a live site would hand out plans
+for nothing. Leave it off on any test account a production site keeps.
 
 Use a test account of its own: add a `pay_accounts` row named **`saas`**, adapter `fake`, mode
 `test`, any random text as its webhook signing secret, and these settings.

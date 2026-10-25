@@ -422,7 +422,7 @@ export function stripeSimulation() {
      * API version 2025-03-31), so its payment.succeeded names no application row. */
     renewalPaymentsKnowTheirRow: false,
     account(n, name, { hold = false } = {}) {
-      return { id: n, name, adapter: "stripe", mode: "test", enabled: true, secret_key: `sk_test_sim_${name}`, webhook_secret: `whsec_sim_${name}`, settings: {}, _hold: hold };
+      return { id: n, name, adapter: "stripe", mode: "test", enabled: true, secret_key: `sk_test_sim_${name}`, webhook_secret: `whsec_sim_${name}`, settings: { grants_in_test_mode: true }, _hold: hold };
     },
     install(accounts, deliverFor) {
       for (const a of accounts) s.accounts.set(a.secret_key, { account: a, deliver: deliverFor(a), hold: a._hold });

@@ -57,7 +57,10 @@ mod tx;
 mod wakeups;
 
 pub use admin_host::{AdminCall, AdminHost};
-pub use caller::{CallerContext, CallingApp, Origin, current_origin, with_origin};
+pub use caller::{
+    CallerContext, CallingApp, Origin, UNTRUSTED_ORIGIN, current_origin, is_untrusted_chain,
+    untrusted_chain, with_origin,
+};
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
     CHANGES_TABLE, ChangeLogFeature, as_text_sql, bootstrap_change_log, change_log_enabled,
@@ -118,8 +121,8 @@ pub use rls::{
 pub use secrets::SecretKey;
 pub use spatial::bootstrap_spatial;
 pub use sync::{
-    SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_keys, set_sync_enabled,
-    sync_enabled, sync_watermark,
+    ChangedEntry, SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_entries,
+    changed_keys, set_sync_enabled, sync_enabled, sync_watermark,
 };
 pub use table::{AccessRules, FieldMergeIssue, Table, TableSource};
 pub use table_meta::{

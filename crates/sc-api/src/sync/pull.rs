@@ -16,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use sc_auth::User;
-use sc_catalog::{Catalog, SharedTx, SyncWatermark, Table, changed_keys, sync_watermark};
+use sc_catalog::{
+    Catalog, ChangedEntry, SharedTx, SyncWatermark, Table, changed_entries, sync_watermark,
+};
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
 use sc_query::{Expr, InSet};
@@ -207,7 +209,7 @@ fn may_read(table: &Table, role: u8) -> bool {
 
 /// What changed in `table` since the device's last pull: the changed rows as
 /// they are now, and the keys of changed rows the user can no longer see
-/// (deleted, or not theirs anymore).
+/// (deleted, or not theirs anymore) **but could before** — see [`was_held`].
 async fn changes_of(
     cat: &Catalog,
     tx: &SharedTx,
@@ -217,7 +219,8 @@ async fn changes_of(
     user: &User,
     evaluator: Option<&Arc<dyn JsEvaluator>>,
 ) -> Result<Json> {
-    let changed = changed_keys(cat, tx, &table.name, since, watermark).await?;
+    let entries = changed_entries(cat, tx, &table.name, since, watermark).await?;
+    let changed: BTreeSet<String> = entries.iter().map(|e| e.key.clone()).collect();
     let executor = Executor::Transaction(tx.clone());
     let pk = rows::single_pk(table)?;
     let mut found: BTreeMap<String, Json> = BTreeMap::new();
@@ -250,13 +253,96 @@ async fn changes_of(
             }
         }
     }
-    let removed: Vec<&String> = changed.iter().filter(|k| !found.contains_key(*k)).collect();
+    let unseen: Vec<&String> = changed.iter().filter(|k| !found.contains_key(*k)).collect();
+    let removed = was_held(cat, table, &entries, &unseen, user, evaluator, &executor).await?;
     Ok(json!({
         "table": table.name,
         "reset": false,
         "rows": found.into_values().collect::<Vec<_>>(),
         "removed": removed,
     }))
+}
+
+/// Of the changed keys the user cannot read now, those whose row they could
+/// read **as it was at the device's watermark** — the rows the device holds
+/// and must drop (security review #29). Every other key is left out: listing
+/// a changed key the user never could read would tell a device that another
+/// user's (or tenant's) row exists, its key, and when it changed.
+///
+/// The row as it was is rebuilt from the change log: a row whose first entry
+/// since the watermark is an insert did not exist then; otherwise it is the
+/// row as it is now (read as the system; nothing, if deleted), with each
+/// entry's `old_values` laid over it from the latest entry back to the
+/// earliest, so every changed column takes the value it had before the first
+/// change. That image is judged by the read rule ([`ownership::RowImage`]),
+/// with the user's role now. A verdict that cannot be reached withholds the
+/// key: the device keeps a stale row rather than learn of somebody else's.
+async fn was_held(
+    cat: &Catalog,
+    table: &Table,
+    entries: &[ChangedEntry],
+    unseen: &[&String],
+    user: &User,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+    executor: &Executor,
+) -> Result<Vec<String>> {
+    if unseen.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pk = rows::single_pk(table)?;
+    // The rows as they are now, whoever may read them.
+    let mut current: BTreeMap<String, Map<String, Json>> = BTreeMap::new();
+    for chunk in unseen.chunks(KEYS_PER_READ) {
+        let set = chunk
+            .iter()
+            .map(|key| rows::column_value(table, &pk, &Json::String((*key).clone())).map(Expr::lit))
+            .collect::<Result<Vec<_>>>()?;
+        let query = RowQuery {
+            filter: Some(Expr::In {
+                e: Box::new(Expr::col(&pk)),
+                set: InSet::List(set),
+            }),
+            ..RowQuery::new()
+        };
+        let read = ownership::read_rows_as_in(
+            cat,
+            table,
+            &query,
+            sc_auth::ROLE_ADMIN,
+            None,
+            evaluator,
+            executor,
+        )
+        .await?;
+        for row in read.as_array().into_iter().flatten() {
+            if let (Some(key), Json::Object(map)) = (row.get(&pk).map(key_text), row) {
+                current.insert(key, map.clone());
+            }
+        }
+    }
+    let mut held = Vec::new();
+    for key in unseen {
+        // `entries` is in log order, so this row's are too.
+        let mine: Vec<&ChangedEntry> = entries.iter().filter(|e| &e.key == *key).collect();
+        if mine.first().is_none_or(|first| first.op == "i") {
+            continue;
+        }
+        let mut image = current.get(*key).cloned().unwrap_or_default();
+        for entry in mine.iter().rev() {
+            for (column, value) in entry.old_values.iter().flatten() {
+                image.insert(column.clone(), value.clone());
+            }
+        }
+        let image = Json::Object(image);
+        let readable = ownership::RowImage::new(table, &image)
+            .readable(cat, user.role, Some(user), evaluator)
+            .await
+            .unwrap_or(false);
+        if readable {
+            held.push((*key).clone());
+        }
+    }
+    Ok(held)
 }
 
 /// A key as the change-log writes it: a text key as itself, any other as its

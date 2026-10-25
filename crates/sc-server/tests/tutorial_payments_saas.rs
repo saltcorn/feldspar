@@ -196,7 +196,8 @@ async fn setup() -> sc_error::Result<Booted> {
         &catalog.require("pay_accounts")?,
         &json!({ "name": "saas", "adapter": "fake", "mode": "test",
                  "webhook_secret": "any random text",
-                 "settings": { "prices": { "price_basic": { "amount": 500 },
+                 "settings": { "grants_in_test_mode": true,
+                               "prices": { "price_basic": { "amount": 500 },
                                            "price_pro": { "amount": 1500 } } } }),
     )
     .await?;

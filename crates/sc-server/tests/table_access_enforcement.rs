@@ -425,3 +425,75 @@ async fn forgetting_a_tables_settings_re_closes_the_app_live() -> sc_error::Resu
     );
     Ok(())
 }
+
+/// Security review #28: on a table whose write floor is more permissive than
+/// its read floor — a submission form read by staff — a writer's create and
+/// update answer with the row's key only, so resending a row unchanged does not
+/// read it.
+#[tokio::test]
+async fn a_writer_who_may_not_read_gets_only_the_key_back() -> sc_error::Result<()> {
+    let tmp = TempDir::new("write-only");
+    let (router, catalog, _db) = setup(&tmp).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
+    save_role(&catalog, &Role::new(80, "Submitter")).await?;
+    save_role(&catalog, &Role::new(40, "Staff")).await?;
+    create_user(&catalog, "submitter@example.com", "submitter-pw", 80).await?;
+    create_user(&catalog, "staff@example.com", "staff-pw", 40).await?;
+
+    let mut admin = Client::new(router.clone(), BASE_DOMAIN);
+    admin.login("admin@example.com", "admin-pw").await;
+    let (status, _) = admin
+        .send(
+            "PUT",
+            "/api/tables/posts",
+            Some(json!({
+                "label": "",
+                "description": "",
+                "min_role_read": 40,
+                "min_role_write": 80,
+                "ownership_formula": "",
+                "rls_enabled": false,
+                "sync_enabled": false,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Staff write a row of their own, and get it back in full.
+    let mut staff = Client::new(router.clone(), APP_HOST);
+    staff.login("staff@example.com", "staff-pw").await;
+    let (status, row) = staff
+        .send("POST", "/api/posts", Some(json!({ "title": "private" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(row["title"], json!("private"));
+    let id = row["id"].clone();
+
+    // The submitter may write but not read: a create answers with the key.
+    let mut submitter = Client::new(router.clone(), APP_HOST);
+    submitter
+        .login("submitter@example.com", "submitter-pw")
+        .await;
+    let (status, created) = submitter
+        .send("POST", "/api/posts", Some(json!({ "title": "mine" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created.as_object().map(|o| o.len()), Some(1), "{created}");
+    assert!(created["id"].is_number(), "{created}");
+
+    // …and an update of staff's row does not read it back.
+    let (status, updated) = submitter
+        .send(
+            "PUT",
+            &format!("/api/posts/{id}"),
+            Some(json!({ "title": "private" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        updated,
+        json!({ "id": id }),
+        "the update answered only the key"
+    );
+    Ok(())
+}

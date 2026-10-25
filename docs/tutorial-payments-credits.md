@@ -57,8 +57,10 @@ Use a test account of its own: a `pay_accounts` row named **`tea`**, adapter `fa
 text as its webhook signing secret, and these settings:
 
 ```json
-{ "prices": { "price_assistant": { "amount": 500 } } }
+{ "grants_in_test_mode": true, "prices": { "price_assistant": { "amount": 500 } } }
 ```
+
+(`grants_in_test_mode`, as in part 2: without it a test account grants no roles or credits.)
 
 ## Step 2 — Tell the module which fields hold the credits
 

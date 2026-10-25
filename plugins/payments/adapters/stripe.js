@@ -238,12 +238,15 @@ function normaliseCheckout(s) {
 }
 
 /** A PaymentIntent's status in the module's words: Stripe's, except that a failed attempt
- * (`requires_payment_method` with an error) is `failed`, a hold is `authorized`, and a refunded
- * charge is `refunded` or `partially_refunded`. */
+ * (`requires_payment_method` with an error) is `failed`, a hold is `authorized`, a refunded
+ * charge is `refunded` or `partially_refunded`, and a charge whose dispute the merchant lost is
+ * `charged_back` — Stripe leaves the intent `succeeded` and the refund amount at nothing then
+ * (security review #34). */
 function paymentStatus(pi) {
   const charge = pi.latest_charge && typeof pi.latest_charge === "object" ? pi.latest_charge : null;
   switch (pi.status) {
     case "succeeded":
+      if (charge && charge.dispute && typeof charge.dispute === "object" && charge.dispute.status === "lost") return "charged_back";
       if (charge && charge.amount_refunded > 0) return charge.refunded ? "refunded" : "partially_refunded";
       return "succeeded";
     case "requires_payment_method":
@@ -347,7 +350,7 @@ function normaliseDispute(d) {
 /** Where each kind of object is read, and what it is read as. */
 const OBJECTS = {
   checkout: { path: "/v1/checkout/sessions", expand: ["line_items"], normalise: normaliseCheckout },
-  payment: { path: "/v1/payment_intents", expand: ["latest_charge"], normalise: normalisePayment },
+  payment: { path: "/v1/payment_intents", expand: ["latest_charge", "latest_charge.dispute"], normalise: normalisePayment },
   refund: { path: "/v1/refunds", expand: [], normalise: normaliseRefund },
   dispute: { path: "/v1/disputes", expand: [], normalise: normaliseDispute },
   subscription: { path: "/v1/subscriptions", expand: [], normalise: normaliseSubscription, list: { status: "all" } },

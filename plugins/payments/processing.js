@@ -150,6 +150,18 @@ async function upsertCustomer(db, account, ref, { user_id, email }) {
   }
 }
 
+/** The user an object's provider customer may be bound to: the object's user — unless the
+ * adapter says whose the customer is (`customer_external_id`, Polar's `external_id`) and it is not
+ * that user (security review #35). Polar may attach a checkout to an existing customer found by
+ * its email; binding that customer to whoever paid would give a sign-up with somebody else's
+ * address their portal and their saved card. An adapter that does not say (`undefined`) creates
+ * its customers per user, and the object's user is bound. */
+function customerUser(current, row) {
+  if (row.user_id === null || row.user_id === undefined) return null;
+  if (current.customer_external_id === undefined) return row.user_id;
+  return current.customer_external_id !== null && String(current.customer_external_id) === String(row.user_id) ? row.user_id : null;
+}
+
 /** The reference a module's grant for `object` is made under: one per subscription, or per
  * payment for a one-off pass. */
 const grantRef = (account, object) => `${account.name}:${object.ref}`;
@@ -246,12 +258,17 @@ async function paymentEffects(ctx, account, current, row) {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Whether a payment's money went back to the buyer, all of it: refunded in full, or charged
+ * back by a dispute the merchant lost (security review #34). What it granted is taken back. A
+ * partial refund takes nothing back: what it bought is the shop's to settle with the buyer. */
+const takenBack = (current) => current.status === "refunded" || current.status === "charged_back";
+
 /** The *grant a role* effect: granted, for its days, once the payment succeeded, and revoked when
- * all of it is refunded. The days are counted from when it was made, so granting it again
- * changes nothing. */
+ * its money went back ([`takenBack`]). The days are counted from when it was made, so granting it
+ * again changes nothing. */
 async function paymentRole(ctx, account, current, row, effect) {
   const ref = grantRef(account, current);
-  if (current.status === "refunded") {
+  if (takenBack(current)) {
     if (ctx.roles) await ctx.roles.revoke(ref);
     return null;
   }
@@ -266,17 +283,52 @@ async function paymentRole(ctx, account, current, row, effect) {
 
 /** The *grant credits* effect (§6.3, P7.2): a top-up, granted once the payment succeeded, keyed by
  * the payment so that it is granted once however often its events arrive, and expiring its days
- * after the payment was made. A refund does not take the credits back: nothing but an agent
- * run spends them (§3.8). A payment seen for the first time already refunded grants nothing. */
+ * after the payment was made. When its money goes back — a full refund, or a lost chargeback —
+ * what is left of the top-up is taken back (security review #34): a buyer who spent a pack and
+ * charged it back keeps only what they spent, and their balance owes nothing more. A partial
+ * refund leaves the credits. A payment seen for the first time already refunded grants nothing. */
 async function paymentCredits(ctx, account, current, row, effect) {
+  const key = `payment:${account.id}:${current.ref}`;
+  if (takenBack(current)) {
+    if (!ctx.credits || typeof ctx.credits.revoke !== "function") return "this delivery could not take back LLM credits";
+    await ctx.credits.revoke({ key, note: `payment ${current.ref} ${current.status === "refunded" ? "refunded" : "charged back"}` });
+    return null;
+  }
   if (current.status !== "succeeded" && current.status !== "partially_refunded") return null;
   if (row.user_id === null || row.user_id === undefined) return "the payment is no user's of this instance, so its LLM credits were not granted";
   if (!ctx.credits) return "this delivery could not grant LLM credits";
   const made = plans.millis(current.created || current.updated) || Date.now();
   const expires_at = effect.expire_days ? new Date(made + effect.expire_days * DAY_MS).toISOString() : null;
   if (expires_at && Date.parse(expires_at) <= Date.now()) return `its LLM credits expired on ${expires_at}, before the payment was heard of`;
-  await ctx.credits.grant({ user: row.user_id, amount: effect.amount, key: `payment:${account.id}:${current.ref}`, expires_at, kind: "top_up", note: `payment ${current.ref}` });
+  await ctx.credits.grant({ user: row.user_id, amount: effect.amount, key, expires_at, kind: "top_up", note: `payment ${current.ref}` });
   return null;
+}
+
+/** The account setting that lets a **test-mode** account grant roles and credits (security review
+ * #33). Off by default: a test account takes no real money — the fake adapter's portal changes to
+ * any price and renews on a click — so one left enabled in production would hand out plans and
+ * unlimited LLM credits. An admin trying the module out turns it on for that account. */
+const TEST_GRANTS = "grants_in_test_mode";
+
+/** Whether `account` may grant: a live account, or a test account the admin opted in. */
+function grantsFor(account) {
+  if (account.mode === "live") return true;
+  const settings = account.settings && typeof account.settings === "object" ? account.settings : {};
+  return settings[TEST_GRANTS] === true;
+}
+
+/** The issue on an object of a test-mode account that may not grant. */
+const testModeIssue = (account) =>
+  `the payment account "${account.name}" is in test mode, so it grants no roles or LLM credits; ` +
+  `set "${TEST_GRANTS}": true in its settings to try grants out`;
+
+/** Whether `current` is an object that grants something: a subscription under a plan binding,
+ * or a payment with a *grant a role* or *grant credits* effect. */
+function wouldGrant(ctx, current, row) {
+  if (current.kind === "subscription") return !!plans.planBinding(ctx.configuration);
+  if (current.kind !== "payment") return false;
+  const effects = row.effects || {};
+  return !!(effects.role || effects.credits);
 }
 
 /** Everything the module does for an object besides mirroring it: its customer's row, and its
@@ -285,11 +337,12 @@ async function paymentCredits(ctx, account, current, row, effect) {
  * mirror row, and cleared once the object needs none. */
 async function applyEffects(ctx, account, current, row) {
   if (current.customer_ref && current.kind !== "customer") {
-    await upsertCustomer(ctx.db, account, current.customer_ref, { user_id: row.user_id, email: row.email });
+    await upsertCustomer(ctx.db, account, current.customer_ref, { user_id: customerUser(current, row), email: row.email });
   }
   let issue = null;
   try {
-    if (current.kind === "subscription") issue = await subscriptionEffects(ctx, account, current, row);
+    if (!grantsFor(account)) issue = wouldGrant(ctx, current, row) ? testModeIssue(account) : null;
+    else if (current.kind === "subscription") issue = await subscriptionEffects(ctx, account, current, row);
     else if (current.kind === "payment") issue = await paymentEffects(ctx, account, current, row);
   } catch (e) {
     issue = `its grants could not be made: ${e.message}`;
@@ -319,6 +372,11 @@ async function syncObject(ctx, account, adapter, ref) {
 async function mirrorAndApply(ctx, account, adapter, current) {
   const row = await upsertObject(ctx.db, account, current);
   const applied = await applyEffects(ctx, account, current, row);
+  // A dispute changes what its payment is (a lost one is a chargeback, security review #34), but
+  // the provider's dispute events are about the dispute: the payment is read again with it.
+  if (current.kind === "dispute" && current.payment_ref) {
+    await syncObject(ctx, account, adapter, { kind: "payment", id: current.payment_ref });
+  }
   if (current.kind === "checkout" && current.payment_ref) {
     const payment = await adapter.fetch(account, { kind: "payment", id: current.payment_ref });
     if (!payment.checkout_ref) {
@@ -475,4 +533,4 @@ async function syncOrThrow(ctx, account, adapter, event) {
   return mirrorAndApply(ctx, account, adapter, current);
 }
 
-module.exports = { processEvents, upsertObject, upsertCustomer, applyEffects, syncObject, logEvent, kindsOf, fromMetadata, grantRef };
+module.exports = { TEST_GRANTS, grantsFor, processEvents, upsertObject, upsertCustomer, applyEffects, syncObject, logEvent, kindsOf, fromMetadata, grantRef };

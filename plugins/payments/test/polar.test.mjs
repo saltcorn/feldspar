@@ -19,7 +19,7 @@ const PLAN = "22222222-2222-4222-8222-222222222222";
 const ORDER = "33333333-3333-4333-8333-333333333333";
 const CUSTOMER = "44444444-4444-4444-8444-444444444444";
 const SUB = "55555555-5555-4555-8555-555555555555";
-const account = { id: 4, name: "mor", adapter: "polar", mode: "test", enabled: true, secret_key: "polar_oat_example", webhook_secret: "whsec_dGhlIHNlY3JldA==", settings: { product: PRODUCT } };
+const account = { id: 4, name: "mor", adapter: "polar", mode: "test", enabled: true, secret_key: "polar_oat_example", webhook_secret: "whsec_dGhlIHNlY3JldA==", settings: { product: PRODUCT, grants_in_test_mode: true } };
 
 let sent;
 let answers;
@@ -55,7 +55,7 @@ test("a one-off checkout charges the lines' total as an ad-hoc price of the acco
       { description: "Tea", quantity: 2, unit_amount: 450 },
       { description: "Cup", quantity: 1, unit_amount: 250 },
     ],
-    customer: { email: "ann@example.com" },
+    customer: { email: "ann@example.com", user_id: 7 },
     success_url: "https://shop.example.com/thanks",
     cancel_url: "https://shop.example.com/basket",
     metadata: { sc_ref_table: "orders", sc_ref_key: "12" },
@@ -74,6 +74,8 @@ test("a one-off checkout charges the lines' total as an ad-hoc price of the acco
     currency: "eur",
     prices: { [PRODUCT]: [{ amount_type: "fixed", price_amount: 1150, price_currency: "eur" }] },
     customer_email: "ann@example.com",
+    // The user's id, which is what binds the customer to them (security review #35).
+    external_customer_id: "7",
   });
   // A live account reaches the production API, pinned to the version its settings name.
   answers.push([201, checkoutAnswer()]);

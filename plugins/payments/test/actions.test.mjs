@@ -13,7 +13,7 @@ const actions = plugin.actions({});
 const { keepAccounts } = require("../accounts.js");
 const { sweepAll } = require("../service.js");
 
-const shop = { id: 1, name: "shop", adapter: "fake", mode: "test", enabled: true, webhook_secret: "whsec_test", settings: {} };
+const shop = { id: 1, name: "shop", adapter: "fake", mode: "test", enabled: true, webhook_secret: "whsec_test", settings: { grants_in_test_mode: true } };
 const held = { ...shop, id: 2, name: "held", settings: { webhooks: "hold" } };
 
 let store;

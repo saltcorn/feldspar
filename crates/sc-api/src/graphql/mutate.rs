@@ -184,6 +184,19 @@ async fn delete(
         &rows::Executor::Pooled,
     )
     .await?;
+    // The row is gone, so it cannot be read back as an insert's is: its last
+    // image is judged by the read rule instead (security review #28). A caller
+    // who may delete but not read is told the delete happened, not the row.
+    let readable = ownership::RowImage::new(table, &removed)
+        .readable(&rc.catalog, rc.role(), rc.user(), rc.evaluator())
+        .await
+        .unwrap_or(false);
+    if !readable {
+        return Err(Error::auth(format!(
+            "the row was deleted from `{}`, but you may not read it",
+            table.name
+        )));
+    }
     Ok(Some(FieldValue::owned_any(RowValue::written(
         &table.name,
         rows::json_row_values(table, &removed),

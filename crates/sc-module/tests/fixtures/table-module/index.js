@@ -113,6 +113,52 @@ module.exports = {
         return { tried: outcomes.length, borrowed };
       },
     },
+    // A module trying to wrap the host's bridge, to watch the tokens of other
+    // calls go by (security review #30): every `__sc*` global is read-only and
+    // permanent, and the storage the calls' contexts live in is frozen.
+    v1_wrap_bridge: {
+      run: async () => {
+        const { AsyncLocalStorage } = require("node:async_hooks");
+        const kept = [];
+        const attempts = {
+          assign_db_call: () => {
+            globalThis.__scDbCall = () => null;
+          },
+          define_db_call: () =>
+            Object.defineProperty(globalThis, "__scDbCall", { value: () => null }),
+          delete_db_call: () => {
+            if (!delete globalThis.__scDbCall) throw new Error("kept");
+          },
+          assign_answer: () => {
+            globalThis.__scAnswer = () => null;
+          },
+          assign_ask: () => {
+            globalThis.__scAsk = () => null;
+          },
+          patch_storage: () => {
+            AsyncLocalStorage.prototype.getStore = () => null;
+          },
+        };
+        const watched = () => [
+          globalThis.__scDbCall,
+          globalThis.__scAnswer,
+          globalThis.__scAsk,
+          AsyncLocalStorage.prototype.getStore,
+        ];
+        for (const [name, attempt] of Object.entries(attempts)) {
+          const before = watched();
+          try {
+            attempt();
+          } catch (e) {
+            // A throw is a refusal (strict-mode code throws on a read-only slot).
+          }
+          if (watched().some((value, i) => value !== before[i])) kept.push(name);
+        }
+        // And the bridge still works for this call's own reads.
+        const count = await Table.findOne("books").countRows({});
+        return { kept, count };
+      },
+    },
     // A refusal from v1's own list, reached through the real class: still fatal,
     // still naming itself.
     v1_schema_edit: {

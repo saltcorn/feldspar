@@ -167,6 +167,10 @@ console.error = speak("error");
 const asks = new Map();
 let nextAsk = 1;
 
+/** The module each call in flight is of, by the call's token: what `askFor`
+ * binds an ask to. */
+const callOwners = new Map();
+
 /** One ask, answered. `ok` says which of the two the third argument is: the
  * answer's JSON text, or the message it failed with.
  *
@@ -229,6 +233,14 @@ function ask(surface, plan) {
  * callback a library fires from somewhere no async context reaches (a socket's
  * `data` event, a timer a dependency set) still asks as the service. */
 function askFor(callId, surface, plan) {
+  // A call's token is its authority, so a module running inside one call may
+  // not ask on behalf of another module's (security review #30): one that
+  // learned a token anyway still cannot use it from its own code.
+  const store = running.getStore();
+  const owner = callOwners.get(callId);
+  if (store && store.call !== callId && owner !== undefined && owner !== store.module) {
+    return Promise.reject(new Error("a module may only ask on behalf of its own calls"));
+  }
   return new Promise((resolve, reject) => {
     let text;
     try {
@@ -252,7 +264,12 @@ function askFor(callId, surface, plan) {
 /** What the shared `db` builder (`sc_expr::DB_PRELUDE`) sends through: here the
  * token is the call a plan belongs to — a service's own — and the plan is an
  * ask on the `db` surface of that call. */
-globalThis.__scDbCall = (token, plan) => askFor(token, "db", plan);
+Object.defineProperty(globalThis, "__scDbCall", {
+  value: (token, plan) => askFor(token, "db", plan),
+  writable: false,
+  configurable: false,
+  enumerable: false,
+});
 
 // ---------------------------------------------------------------------------
 // The schema snapshot
@@ -1276,7 +1293,7 @@ function serviceContext(record, configuration) {
     /** Role grants (TODO-payments P3.3): `grant`, `revoke`, `get`, up to the
      * role ceiling an admin allowed this module. */
     roles: moduleRoles((plan) => askFor(callId, "roles", plan)),
-    /** LLM credits (TODO-payments P6.4): `grant`, `balance`, `setThreshold`. */
+    /** LLM credits (TODO-payments P6.4): `grant`, `revoke`, `balance`, `setThreshold`. */
     credits: moduleCredits((plan) => askFor(callId, "credits", plan)),
     /** Run another trigger, as `trigger.run(name, payload)` does in a body. */
     runTrigger: (trigger, payload) =>
@@ -2736,6 +2753,12 @@ function moduleCredits(send) {
      * carried }`. */
     grant({ user, amount, key, expires_at, kind, note, rollover } = {}) {
       return send({ op: "grant", user: who(user), amount, key, expires_at: when(expires_at), kind, note, rollover: rollover ?? null });
+    },
+    /** Take back what is left of this module's grant keyed `key` — a top-up
+     * whose payment was refunded or charged back. What was spent stays spent.
+     * Answers `{ found, revoked, balance, replayed }`. */
+    revoke({ key, note } = {}) {
+      return send({ op: "revoke", key, note: note ?? null });
     },
     /** `{ balance, available, debt, next_expiry, low_balance_threshold }`. */
     balance(user) {
@@ -4891,6 +4914,7 @@ async function handle(request) {
  * `null` an action that returns nothing has always answered; the second is a
  * failure that names the value rather than a reply nobody can read. */
 function answer(id, value) {
+  callOwners.delete(id);
   let text;
   try {
     text = JSON.stringify(value === undefined ? null : value);
@@ -4940,6 +4964,7 @@ globalThis.__scModuleHost = (id, request) => {
       context.messages = viewRequestOf.messages;
     }
   }
+  callOwners.set(id, context.module);
   running.run(context, () => {
     let pending;
     try {
@@ -4966,12 +4991,16 @@ globalThis.__scModuleHost = (id, request) => {
       }
       pending = handle(request);
     } catch (e) {
+      callOwners.delete(id);
       fail(id, (e && e.message) || String(e), (e && e.stack) || null);
       return;
     }
     pending.then(
       (value) => answer(id, value),
-      (e) => fail(id, (e && e.message) || String(e), (e && e.stack) || null),
+      (e) => {
+        callOwners.delete(id);
+        fail(id, (e && e.message) || String(e), (e && e.stack) || null);
+      },
     );
   });
 };
@@ -4982,3 +5011,23 @@ globalThis.__scModuleHost = (id, request) => {
 process.on("unhandledRejection", (e) => {
   console.error(`unhandled rejection from a module: ${(e && e.stack) || e}`);
 });
+
+// The host's bridge is sealed before any module loads (security review #30).
+// Every module on this worker shares this global, and the bridge carries every
+// call's token: a module that could wrap `__scDbCall` — or the
+// `AsyncLocalStorage` each call's context lives in — would see the tokens of
+// other calls in flight, an admin's among them, and could act as their
+// callers. So every `__sc*` global is made read-only and permanent, and the
+// storage class frozen, while this script is the only code that has run.
+for (const name of Object.getOwnPropertyNames(globalThis)) {
+  if (!name.startsWith("__sc")) continue;
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+  if (!descriptor.configurable) continue;
+  Object.defineProperty(
+    globalThis,
+    name,
+    "value" in descriptor ? { writable: false, configurable: false } : { configurable: false },
+  );
+}
+Object.freeze(AsyncLocalStorage.prototype);
+Object.freeze(AsyncLocalStorage);

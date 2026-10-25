@@ -384,8 +384,19 @@ impl Event {
     }
 
     /// How deep in a cascade this event is: 0 for one raised by a request.
+    /// The [`UNTRUSTED_ORIGIN`](sc_catalog::UNTRUSTED_ORIGIN) mark is not a
+    /// trigger and is not counted.
     pub fn depth(&self) -> usize {
-        self.chain.len()
+        self.chain
+            .iter()
+            .filter(|name| *name != sc_catalog::UNTRUSTED_ORIGIN)
+            .count()
+    }
+
+    /// Whether the cascade this event belongs to began on untrusted input
+    /// (security review #32).
+    pub fn untrusted(&self) -> bool {
+        sc_catalog::is_untrusted_chain(&self.chain)
     }
 
     /// Record that `trigger` is firing for this event, returning the chain any
@@ -402,7 +413,7 @@ impl Event {
             return Err(Error::invalid(format!(
                 "trigger `{trigger}` was not run: it is {} triggers deep, past the \
                  limit of {MAX_DEPTH} — the chain is {}",
-                chain.len(),
+                self.depth() + 1,
                 chain.join(" → ")
             )));
         }

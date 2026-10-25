@@ -411,20 +411,24 @@ they turned out worse than stated.
 | 25 | Medium | Prerendered / refreshed Astro pages served to callers the app does not admit | **fixed** |
 | 26 | Medium | Unauthenticated CPU/memory exhaustion through Astro `/_image` | **fixed** |
 | 27 | Medium | `fetch` action with a templated host is an SSRF that returns the response | **fixed** |
-| 28 | Medium | REST create/update and GraphQL delete return rows the caller may not read | reported |
-| 29 | Medium | Offline-sync pull lists the keys of changed rows the caller cannot read | reported |
-| 30 | Medium | Module workers: `__scDbCall` is writable, so any module can capture other calls' tokens | reported |
-| 31 | Medium | `.git` guard checks the spelling of a path, not where it lands (symlinks, `GIT~1`) | reported |
-| 32 | Medium | The "triggered" marker is lost across trigger chains | reported |
-| 33 | Medium | Test-mode / fake payment accounts grant real roles and credits | reported |
-| 34 | Medium | Chargebacks and partial refunds never revoke a purchase's role or credits | reported |
-| 35 | Medium | Polar customers bound to users by email (suspected) | reported |
+| 28 | Medium | REST create/update and GraphQL delete return rows the caller may not read | **fixed** |
+| 29 | Medium | Offline-sync pull lists the keys of changed rows the caller cannot read | **fixed** |
+| 30 | Medium | Module workers: `__scDbCall` is writable, so any module can capture other calls' tokens | **fixed** |
+| 31 | Medium | `.git` guard checks the spelling of a path, not where it lands (symlinks, `GIT~1`) | **fixed** |
+| 32 | Medium | The "triggered" marker is lost across trigger chains | **fixed** |
+| 33 | Medium | Test-mode / fake payment accounts grant real roles and credits | **partly fixed** |
+| 34 | Medium | Chargebacks and partial refunds never revoke a purchase's role or credits | **fixed** |
+| 35 | Medium | Polar customers bound to users by email (suspected) | **fixed** |
 | 36+ | Low | See "Second review: Low / hardening" | reported |
 
 Items 15, 17 and 18 are fixed and 16 partly (its short-term list); see the CHANGELOG entry
 "Security fixes: admin routes on app hosts, edit-to-execute, mail test credentials, order lines".
 Items 19–21 and 23–27 are fixed and 22 partly (no per-exposure daily budget); see the CHANGELOG
 entry "Security fixes: repeat trials, exposed agents, formula isolate, Astro, `/_image`, `fetch`".
+
+Items 28–32, 34 and 35 are fixed and 33 partly (no server dev flag for the fake adapter, no
+warning on the module card); see the CHANGELOG entry "Security fixes: write responses, sync keys,
+module bridge, `.git` links, trigger chains, payments".
 
 Items 15, 16, 20 and 21 are the main new routes to admin authority; 15 and 21 are the same class
 as the first review's #5 (admin session reachable from app-origin script) on routes its fix did not

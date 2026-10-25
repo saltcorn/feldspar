@@ -100,6 +100,31 @@ impl<'a> ModuleCredits<'a> {
     }
 }
 
+impl ModuleCredits<'_> {
+    /// Take back what is left of one of this module's own grants, by its key
+    /// (security review #34): a top-up whose payment was refunded or charged
+    /// back. Only the module's own: the source is the module's name.
+    async fn revoke(&self, plan: &Map<String, Json>) -> Result<Json> {
+        let key = match plan.get("key") {
+            Some(Json::String(k)) if !k.trim().is_empty() => k.trim().to_owned(),
+            Some(Json::Number(n)) => n.to_string(),
+            _ => {
+                return Err(Error::invalid(
+                    "credits.revoke needs `key`, the key the grant was made under",
+                ));
+            }
+        };
+        let note = plan.get("note").and_then(Json::as_str);
+        let revoked = sc_auth::revoke_credits(self.catalog, self.module, &key, note, None).await?;
+        Ok(json!({
+            "found": revoked.found,
+            "revoked": number(revoked.revoked),
+            "balance": revoked.balance.map(number),
+            "replayed": revoked.replayed,
+        }))
+    }
+}
+
 #[async_trait::async_trait]
 impl CreditAsks for ModuleCredits<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
@@ -108,6 +133,7 @@ impl CreditAsks for ModuleCredits<'_> {
         };
         match plan.get("op").and_then(Json::as_str).unwrap_or_default() {
             "grant" => self.grant(&plan).await,
+            "revoke" => self.revoke(&plan).await,
             "balance" => {
                 let balance =
                     sc_auth::credit_balance(self.catalog, user(&plan, "credits.balance")?).await?;
@@ -121,8 +147,8 @@ impl CreditAsks for ModuleCredits<'_> {
                 Ok(balance_json(&balance))
             }
             other => Err(Error::invalid(format!(
-                "`{other}` is not a credits operation; there are grant, balance and \
-                 setThreshold (credits are spent only by agent runs)"
+                "`{other}` is not a credits operation; there are grant, revoke, balance \
+                 and setThreshold (credits are spent only by agent runs)"
             ))),
         }
     }

@@ -29,6 +29,34 @@ use std::sync::Arc;
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
+/// The chain entry marking a cascade that began on **untrusted input**: a
+/// write or a trigger run made by an agent whose prompt came from outside the
+/// admin console — a triggered run, or an application's exposed chat
+/// (security review #32).
+///
+/// It rides in the chain because the chain already travels with every write,
+/// every event it raises, every action those fire and every workflow they
+/// start, so nothing on the way can drop it. `run_agent` reads it: a
+/// `trusted_input` trigger reached through such a cascade still starts a
+/// triggered run, without the server's own tools, because the event it fired
+/// on is one an untrusted prompt caused. It does not count towards the
+/// cascade's depth; a trigger an admin gave this name would only mark its own
+/// cascades untrusted, which takes tools away and grants nothing.
+pub const UNTRUSTED_ORIGIN: &str = "(untrusted input)";
+
+/// `chain` with the [`UNTRUSTED_ORIGIN`] mark at its head, once.
+pub fn untrusted_chain(mut chain: Vec<String>) -> Vec<String> {
+    if !is_untrusted_chain(&chain) {
+        chain.insert(0, UNTRUSTED_ORIGIN.to_owned());
+    }
+    chain
+}
+
+/// Whether `chain` began on untrusted input ([`UNTRUSTED_ORIGIN`]).
+pub fn is_untrusted_chain(chain: &[String]) -> bool {
+    chain.iter().any(|name| name == UNTRUSTED_ORIGIN)
+}
+
 /// The application a request came through (TODO-payments P1.3, design C5): what
 /// a checkout's success URL and a portal's return URL are built from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +189,12 @@ impl CallerContext {
     /// `Event::firing` handed the action making it.
     pub fn chained(mut self, chain: Vec<String>) -> CallerContext {
         self.chain = chain;
+        self
+    }
+
+    /// The same, marked as made on **untrusted input** ([`UNTRUSTED_ORIGIN`]).
+    pub fn untrusted(mut self) -> CallerContext {
+        self.chain = untrusted_chain(self.chain);
         self
     }
 

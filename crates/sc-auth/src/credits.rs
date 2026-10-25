@@ -132,6 +132,10 @@ pub const ENTRY_DEBIT: &str = "debit";
 /// ([`CreditRollover`]): its amount is what that did to the balance — what was
 /// carried, less what the earlier bucket still counted before it was emptied.
 pub const ENTRY_ROLLOVER: &str = "rollover";
+/// An entry recording a grant taken back ([`revoke_credits`]): its amount is
+/// what that took off the balance — what was left of the bucket, while it
+/// still counted.
+pub const ENTRY_REVOKE: &str = "revoke";
 /// An entry saying a debit took the balance below the user's threshold — what
 /// an application's auto top-up trigger listens for.
 pub const ENTRY_LOW_BALANCE: &str = "low_balance";
@@ -833,6 +837,112 @@ pub async fn debit_credits(
 /// Whether a fall from `before` to `after` goes below `threshold`.
 fn crosses_below(before: Decimal, after: Decimal, threshold: Decimal) -> bool {
     before >= threshold && after < threshold
+}
+
+/// What taking back a grant did ([`revoke_credits`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreditRevoked {
+    /// Whether there was a grant with that key to take back.
+    pub found: bool,
+    /// What was left of it, and is now gone: credits already spent stay
+    /// spent.
+    pub revoked: Decimal,
+    /// The user's balance after it, when there was a grant.
+    pub balance: Option<Decimal>,
+    /// Whether it had already been taken back, so nothing was.
+    pub replayed: bool,
+}
+
+/// Take back what is left of the grant `source` made under `key` (security
+/// review #34): a top-up whose payment was refunded or charged back. The
+/// bucket is emptied — what was spent from it stays spent, and no debt is
+/// made — and a [`ENTRY_REVOKE`] entry records it, keyed `<key>:revoke`, so
+/// taking it back again does nothing. A key that granted nothing is
+/// `found: false`.
+pub async fn revoke_credits(
+    catalog: &Catalog,
+    source: &str,
+    key: &str,
+    note: Option<&str>,
+    caller: Option<&CallerContext>,
+) -> Result<CreditRevoked> {
+    require_tables(catalog)?;
+    let not_found = CreditRevoked {
+        found: false,
+        revoked: Decimal::ZERO,
+        balance: None,
+        replayed: false,
+    };
+    // Whose bucket it is, to lock their row; read again under the lock.
+    let user = {
+        let tx = SharedTx::begin_primary(catalog)?;
+        let found = find_bucket(&tx, source, key).await;
+        let _ = tx.rollback().await;
+        match found? {
+            Some(bucket) => bucket.user_id,
+            None => return Ok(not_found),
+        }
+    };
+    let (source, key, note) = (source.to_owned(), key.to_owned(), note.map(str::to_owned));
+    let (revoked, written) = locked(catalog, user, |tx, written| {
+        Box::pin(async move {
+            let entry_key = format!("{key}:{ENTRY_REVOKE}");
+            let Some(bucket) = find_bucket(tx, &source, &key).await? else {
+                return Ok(not_found);
+            };
+            if find_entry(tx, &source, &entry_key).await?.is_some() {
+                let balance = balance_in(tx, user).await?.balance;
+                return Ok(CreditRevoked {
+                    found: true,
+                    revoked: Decimal::ZERO,
+                    balance: Some(balance),
+                    replayed: true,
+                });
+            }
+            let left = bucket.remaining.max(Decimal::ZERO);
+            if left > Decimal::ZERO {
+                let updated = update_returning(
+                    tx,
+                    CREDIT_BUCKETS_TABLE,
+                    bucket.id,
+                    vec![Assignment::new(COL_CREDIT_REMAINING, dec(Decimal::ZERO))],
+                )
+                .await?;
+                written.update(CREDIT_BUCKETS_TABLE, updated);
+            }
+            let counted = if bucket.live_at(Utc::now()) {
+                left
+            } else {
+                Decimal::ZERO
+            };
+            let balance = balance_in(tx, user).await?.balance;
+            let entry_row = insert_entry(
+                tx,
+                EntryValues {
+                    user_id: user,
+                    kind: ENTRY_REVOKE,
+                    amount: -counted,
+                    balance,
+                    source: &source,
+                    key: &entry_key,
+                    bucket: Some(bucket.id),
+                    note: note.as_deref(),
+                    ..EntryValues::default()
+                },
+            )
+            .await?;
+            written.insert(CREDIT_ENTRIES_TABLE, entry_row);
+            Ok(CreditRevoked {
+                found: true,
+                revoked: left,
+                balance: Some(balance),
+                replayed: false,
+            })
+        })
+    })
+    .await?;
+    written.emit(catalog, caller).await;
+    Ok(revoked)
 }
 
 /// A user's balance now. A user who has never had credits has none.

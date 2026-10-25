@@ -109,8 +109,9 @@ impl AgentTrait for DeleteRows {
                 ctx.caller.role,
                 ctx.caller.user.as_ref(),
                 ctx.evaluator,
-                // A tool call is not a trigger firing: nothing led here.
-                &[],
+                // A tool call is not a trigger firing: the write this raises is at
+                // depth 0, marked if the run's prompt came from outside the console.
+                &ctx.caller.tool_chain(),
                 // An agent run is its own unit of durability — its own run row,
                 // persisted after every step — so its tools' writes commit as they
                 // are made, even when the run was started by a workflow step

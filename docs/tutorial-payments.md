@@ -45,8 +45,12 @@ Then add an account. Open **Data → pay_accounts** and add a row:
 | Adapter | `fake` |
 | Mode | `test` |
 | Webhook signing secret | any random text, such as `k7e2…` |
+| Settings | `{ "grants_in_test_mode": true }` |
 
-The name is part of the account's webhook URL, so it is letters, digits, `-` and `_`. The keys are
+The name is part of the account's webhook URL, so it is letters, digits, `-` and `_`. A test
+account takes no real money, so it grants no roles or LLM credits unless its settings say
+`grants_in_test_mode` — the tutorial's later steps grant some. **Disable or delete the test
+account before the site goes live**: a payment on it, or a plan change in its portal, is free. The keys are
 **secret fields**: stored encrypted, and never shown back to anybody, the admin included.
 
 To see the account work before there is a shop, make a trigger with event **None** and the action
