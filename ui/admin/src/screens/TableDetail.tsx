@@ -400,11 +400,11 @@ function TableData({
       const { inserted, updated, errors } = await api.importTableCsv(table, { csv });
       setNotice(
         `${inserted} row${inserted === 1 ? "" : "s"} added from ${file.name}` +
-          // A file that names primary keys replaces rows as well as adding
-          // them, and "0 rows added" for a file that rewrote the whole table
-          // would read as nothing having happened.
-          (updated > 0 ? `, ${updated} replaced` : "") +
-          (errors.length > 0 ? `, ${errors.length} refused.` : "."),
+        // A file that names primary keys replaces rows as well as adding
+        // them, and "0 rows added" for a file that rewrote the whole table
+        // would read as nothing having happened.
+        (updated > 0 ? `, ${updated} replaced` : "") +
+        (errors.length > 0 ? `, ${errors.length} refused.` : "."),
       );
       setRejected(errors);
       onChange();
@@ -751,7 +751,7 @@ function Constraints({
     <Card className="mb-4">
       <Card.Header><T text="Constraints and indexes" /></Card.Header>
       <Card.Body>
-        {error && <Alert variant="danger">{error}</Alert>}        
+        {error && <Alert variant="danger">{error}</Alert>}
         {listed.length > 0 && (
           <Table size="sm" hover responsive className="table-vcenter">
             <thead>
@@ -1342,7 +1342,7 @@ function Settings({
             />
             <Form.Text muted>
               <T
-                text="A JavaScript expression over the row’s fields, {user}, the operation flags ({read}, {write}, …) and Ⱶ-joinfields. Rows it grants are reachable below the roles above. Blank means roles only."
+                text="A JavaScript expression over the row’s fields, {user}, the operation flags ({read}, {write}, …), Ⱶ-joinfields and Ↄ-aggregations. Rows it grants are reachable below the roles above. Blank means roles only."
                 values={{
                   user: <code>user</code>,
                   read: <code>_read</code>,
