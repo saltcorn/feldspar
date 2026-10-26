@@ -140,9 +140,32 @@ pub struct TriggerDispatcher {
     /// after the dispatcher exists (the dispatcher is what it is installed
     /// *on*), so it arrives on a handle that is already shared.
     engine: RwLock<Option<Arc<dyn crate::WorkflowEngine>>>,
+    /// The shared handle this dispatcher lives in, when it was shared through
+    /// [`into_shared`](TriggerDispatcher::into_shared) — so an action it is
+    /// running can hand *the* dispatcher on to something that keeps an `Arc`
+    /// (`run_agent`'s agent, whose tools run triggers). Weak, because a
+    /// dispatcher must not keep itself alive.
+    this: std::sync::Weak<TriggerDispatcher>,
 }
 
 impl TriggerDispatcher {
+    /// Share this dispatcher, remembering the handle so
+    /// [`shared`](TriggerDispatcher::shared) can answer it. What a server does
+    /// once its dispatcher is built; `Arc::new` works too, and leaves an action
+    /// that wants the shared handle without one.
+    pub fn into_shared(self) -> Arc<TriggerDispatcher> {
+        Arc::new_cyclic(|this| TriggerDispatcher {
+            this: this.clone(),
+            ..self
+        })
+    }
+
+    /// The shared handle this dispatcher lives in, if it was shared through
+    /// [`into_shared`](TriggerDispatcher::into_shared).
+    pub fn shared(&self) -> Option<Arc<TriggerDispatcher>> {
+        self.this.upgrade()
+    }
+
     /// A dispatcher over `registry`, with no triggers yet — a server calls
     /// [`reload`](TriggerDispatcher::reload) once the catalog is up.
     pub fn new(registry: Arc<ActionRegistry>) -> TriggerDispatcher {
@@ -152,6 +175,7 @@ impl TriggerDispatcher {
             services: ActionServices::default(),
             observer: RwLock::new(None),
             engine: RwLock::new(None),
+            this: std::sync::Weak::new(),
         }
     }
 

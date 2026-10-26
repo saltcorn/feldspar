@@ -214,7 +214,7 @@ impl AgentTrait for SearchTable {
             }
         };
         let format = retrieval::doc_format(config);
-        turn.append_system(retrieval::paragraph(
+        turn.append_context(retrieval::paragraph(
             &format!(
                 "Rows of the `{}` table that a full-text search found for the user's latest \
                  message, best match first. Use them if they are relevant:",

@@ -68,6 +68,7 @@ pub mod openai;
 pub mod openai_chat;
 pub mod pricing;
 pub mod provider;
+pub mod request_options;
 mod rig_bridge;
 pub mod speech;
 pub mod storage;
@@ -107,6 +108,10 @@ pub use pricing::{
     CFG_PRICE_PER_IMAGE, CFG_PRICE_PER_MILLION_CHARACTERS, Prices,
 };
 pub use provider::{DeltaStream, LlmProvider, LlmStream};
+pub use request_options::{
+    CFG_EXTRA_PARAMS, CFG_REASONING_EFFORT, ReasoningEffort, RequestDefaults, WithRequestDefaults,
+    extra_params_from_setting,
+};
 pub use speech::{Speech, SpeechRequest, speak};
 pub use storage::{
     LLM_MODELS_TABLE, LLM_PROVIDERS_TABLE, bootstrap_llm_models, bootstrap_llm_providers,

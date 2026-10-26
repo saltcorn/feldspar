@@ -124,15 +124,29 @@ export function readNumbers(attributes: unknown): Record<string, string> {
   return out;
 }
 
+/** The reasoning effort levels (`sc_llm::ReasoningEffort`), in order. Blank is
+ * "the model's own setting". */
+export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/** The stored `reasoning_effort` (`sc_agent::ATTR_REASONING_EFFORT`), blank
+ * for absent. */
+export function readEffort(attributes: unknown): string {
+  const value = ((attributes ?? {}) as Record<string, unknown>).reasoning_effort;
+  return typeof value === "string" ? value : "";
+}
+
 /** The attributes to save: every stored key the form does not show, then the
  * numbers that were typed and the roles that were chosen. An empty box is not
- * a zero, and an unchosen role is not a role. */
+ * a zero, and an unchosen role is not a role. `effort` is the reasoning effort
+ * picked; left out, the stored one is kept, and blank removes it. */
 export function agentAttributes(
   stored: unknown,
   numbers: Record<string, string>,
   roles: Record<RoleKey, RoleChoice>,
+  effort?: string,
 ): Record<string, unknown> {
   const shown = new Set<string>([...NUMBER_KEYS, ...ROLES.map((r) => r.key)]);
+  if (effort !== undefined) shown.add("reasoning_effort");
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries((stored ?? {}) as Record<string, unknown>)) {
     if (!shown.has(key)) out[key] = value;
@@ -141,6 +155,7 @@ export function agentAttributes(
     const text = (numbers[key] ?? "").trim();
     if (text !== "") out[key] = Number(text);
   }
+  if (effort !== undefined && effort.trim() !== "") out.reasoning_effort = effort.trim();
   for (const { key } of ROLES) {
     const choice = roles[key];
     if (choice.provider.trim() === "") continue;

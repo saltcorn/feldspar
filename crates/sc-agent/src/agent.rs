@@ -69,6 +69,10 @@ pub const DEFAULT_MAX_IMAGES: usize = 20;
 /// The attribute allowing several tool calls in one model turn. Absent is off
 /// (R§12): sequential calls are easier to fingerprint.
 pub const ATTR_PARALLEL_TOOL_CALLS: &str = "parallel_tool_calls";
+/// The attribute holding how much the model reasons before answering
+/// (`none` … `max`) — sparse: absent leaves the model row's setting, then the
+/// host's default. Wins over the model row's `reasoning_effort`.
+pub const ATTR_REASONING_EFFORT: &str = "reasoning_effort";
 /// The attribute listing the models a person may pick in the chat
 /// (TODO-agent-skills AS10.4): `[{"provider", "model"?, "label"?}]`. When set,
 /// the composer gets a [`MODEL_CONTROL`] select, and the pick answers that
@@ -497,6 +501,16 @@ impl Agent {
             .unwrap_or(false)
     }
 
+    /// How much the model reasons before answering, if the agent says. A stored
+    /// value that names no level is an error, so a save names it rather than a
+    /// run silently sending the model row's.
+    pub fn reasoning_effort(&self) -> sc_error::Result<Option<sc_llm::ReasoningEffort>> {
+        sc_llm::ReasoningEffort::from_setting(
+            self.attributes.get(ATTR_REASONING_EFFORT),
+            &format!("agent `{}`: `{ATTR_REASONING_EFFORT}`", self.name),
+        )
+    }
+
     /// The models a person may pick in the chat (AS10.4), in order; empty when
     /// the agent offers no choice. A stored value of the wrong shape, or an
     /// entry with no provider, is an error, as a role's is.
@@ -700,6 +714,14 @@ mod tests {
         assert_eq!(a.max_wall_seconds(), Some(60));
         assert_eq!(a.context_budget(), Some(8000));
         assert!(a.parallel_tool_calls());
+        assert_eq!(a.reasoning_effort().unwrap(), None);
+        let a = a.attribute(ATTR_REASONING_EFFORT, "low");
+        assert_eq!(
+            a.reasoning_effort().unwrap(),
+            Some(sc_llm::ReasoningEffort::Low)
+        );
+        let a = a.attribute(ATTR_REASONING_EFFORT, "lots");
+        assert!(a.reasoning_effort().is_err());
         for role in ModelRole::ALL {
             assert_eq!(ModelRole::parse(role.as_str()).unwrap(), role);
         }

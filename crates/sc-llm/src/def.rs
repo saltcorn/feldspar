@@ -322,11 +322,20 @@ pub fn connect_model(provider: &LlmProviderDef, model: &LlmModelDef) -> Result<C
             )));
         }
     };
+    // Outside the call log, so what the log records is the request as sent —
+    // the row's reasoning effort and extra fields included.
+    let defaults = crate::RequestDefaults::from_config(
+        &crate::normalise_model_config(&model.config),
+        &format!("LLM model `{name}`"),
+    )?;
     Ok(ConnectedModel {
-        provider: Arc::new(crate::logging::LoggedProvider::new(
-            connected,
-            &provider.name,
-        )),
+        provider: crate::WithRequestDefaults::wrap(
+            Arc::new(crate::logging::LoggedProvider::new(
+                connected,
+                &provider.name,
+            )),
+            defaults,
+        ),
         provider_name: provider.name.clone(),
         backend: provider.backend.clone(),
         capabilities,

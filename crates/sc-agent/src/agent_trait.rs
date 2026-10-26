@@ -261,6 +261,24 @@ pub trait AgentTrait: Send + Sync {
         Ok(request.answer_text(value))
     }
 
+    /// [`on_answer`](AgentTrait::on_answer), with a tool call's context: for a
+    /// trait whose answer *does* something before the model hears of it — an
+    /// approved proposal applied as the person who approved it
+    /// (`library_tools`). The default is `on_answer`.
+    ///
+    /// The request is the one the run stored, so its payload is what the
+    /// trait put there, never what the client sent; only `value` is theirs.
+    async fn on_answer_in(
+        &self,
+        config: &Attrs,
+        request: &UserRequest,
+        value: &Json,
+        ctx: &mut TraitContext<'_>,
+    ) -> Result<String> {
+        let _ = ctx;
+        self.on_answer(config, request, value).await
+    }
+
     /// The controls this trait adds to the chat's input row (AS6.4). Their
     /// values reach [`on_turn`](AgentTrait::on_turn) as [`Turn::controls`].
     fn controls(&self, config: &Attrs) -> Vec<ComposerControl> {
@@ -508,6 +526,11 @@ pub struct RunCaller {
     /// CSRF token, and an admin signed in to the application is not therefore
     /// at the admin console (security review #21).
     pub exposed: bool,
+    /// The trigger chain that started this run, when a trigger did
+    /// ([`chained`](Self::chained)): what a trigger run or a write made by one
+    /// of its tools carries on, so the cascade limit counts a trigger → agent →
+    /// trigger loop like any other. Empty for a chat.
+    pub chain: Vec<String>,
 }
 
 impl RunCaller {
@@ -518,6 +541,7 @@ impl RunCaller {
             user: Some(user),
             triggered: false,
             exposed: false,
+            chain: Vec::new(),
         }
     }
 
@@ -542,6 +566,7 @@ impl RunCaller {
             role: 1,
             triggered: false,
             exposed: false,
+            chain: Vec::new(),
         }
     }
 
@@ -574,7 +599,34 @@ impl RunCaller {
             role: 100,
             triggered: false,
             exposed: true,
+            chain: Vec::new(),
         }
+    }
+
+    /// A run a trigger started **as whoever caused the event**: `user` at
+    /// their own role, or — nobody signed in — the public role, exactly as
+    /// [`anonymous`](Self::anonymous). Never the server's own tools, because the
+    /// prompt is still computed from the event ([`triggered`](Self::triggered)).
+    ///
+    /// What `run_agent`'s `run_as: event_user` makes, so an application that
+    /// starts an agent through `POST /api/actions/<trigger>` gets tools that see
+    /// what the signed-in person may see, and a run that records them.
+    pub fn event_user(user: Option<User>) -> RunCaller {
+        let caller = match user {
+            Some(user) => RunCaller::user(user),
+            None => RunCaller::anonymous(),
+        };
+        RunCaller {
+            triggered: true,
+            ..caller
+        }
+    }
+
+    /// This caller, carrying `chain` — the firing chain of the trigger that
+    /// started the run — on to what its tools do.
+    pub fn chained(mut self, chain: Vec<String>) -> RunCaller {
+        self.chain = chain;
+        self
     }
 
     /// Whether this is an anonymous visitor's run ([`anonymous`](Self::anonymous)),
@@ -594,16 +646,17 @@ impl RunCaller {
     }
 
     /// The trigger chain a write or a trigger run made by one of this run's
-    /// tools carries: empty — a tool call is not a trigger firing — or, for a
-    /// run of [untrusted origin](Self::untrusted_origin), the
+    /// tools carries: the [`chain`](Self::chain) that started the run — empty
+    /// for a chat, since a tool call is not itself a trigger firing — and, for
+    /// a run of [untrusted origin](Self::untrusted_origin), the
     /// [`UNTRUSTED_ORIGIN`](sc_catalog::UNTRUSTED_ORIGIN) mark, so a
     /// `trusted_input` trigger the write fires does not hand the server's
     /// tools back to the prompt that caused it (security review #32).
     pub fn tool_chain(&self) -> Vec<String> {
         if self.untrusted_origin() {
-            sc_catalog::untrusted_chain(Vec::new())
+            sc_catalog::untrusted_chain(self.chain.clone())
         } else {
-            Vec::new()
+            self.chain.clone()
         }
     }
 
@@ -892,6 +945,8 @@ pub struct Turn<'a> {
     pub messages: &'a [sc_llm::LlmMessage],
     /// Paragraphs appended to the system prompt, in the order traits added them.
     extra_system: Vec<String>,
+    /// Paragraphs sent after the conversation, in the order traits added them.
+    extra_context: Vec<String>,
 }
 
 impl<'a> Turn<'a> {
@@ -908,10 +963,17 @@ impl<'a> Turn<'a> {
             evaluator: None,
             messages: &[],
             extra_system: Vec::new(),
+            extra_context: Vec::new(),
         }
     }
 
     /// Append a paragraph to the system prompt for this turn only.
+    ///
+    /// For text that is the **same on every step** of a session — rows
+    /// preloaded once, a picked prompt. The system prompt comes before the
+    /// conversation, so text that changes from one message to the next would
+    /// make the host's prompt cache miss on the whole conversation after it;
+    /// that is [`append_context`](Turn::append_context)'s.
     ///
     /// Blank text is dropped rather than stored, so a trait that computed nothing
     /// to say does not push a stray blank line into the prompt.
@@ -920,6 +982,36 @@ impl<'a> Turn<'a> {
         if !text.trim().is_empty() {
             self.extra_system.push(text);
         }
+    }
+
+    /// Append a paragraph of context for this turn only, sent **after the
+    /// conversation**, as a last user message the run does not keep.
+    ///
+    /// For what changes with every message — rows found for the user's latest
+    /// question — so the system prompt, the tools and the conversation so far
+    /// stay a byte-identical prefix the host can cache. Blank text is dropped.
+    pub fn append_context(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if !text.trim().is_empty() {
+            self.extra_context.push(text);
+        }
+    }
+
+    /// Everything [`append_context`](Turn::append_context) added, in order.
+    pub fn extra_context(&self) -> &[String] {
+        &self.extra_context
+    }
+
+    /// The trailing message the context is sent as, or `None` when there is
+    /// none.
+    pub fn context_message(&self) -> Option<sc_llm::LlmMessage> {
+        (!self.extra_context.is_empty()).then(|| {
+            sc_llm::LlmMessage::user(format!(
+                "<context>\nThe system added this for the latest message; it is not \
+                 from the user.\n\n{}\n</context>",
+                self.extra_context.join("\n\n")
+            ))
+        })
     }
 
     /// The text of the latest user message in the conversation — the one this

@@ -393,8 +393,31 @@ impl<'a> Runner<'a> {
         let mut state = run.agent_loop()?;
         let request = state.awaited(&answer.answers_request)?.clone();
         request.check_answer(&answer.value)?;
+        let mode = run.mode()?;
         let text = match self.asker(&request.trait_key) {
-            Some((trait_, config)) => trait_.on_answer(config, &request, &answer.value).await?,
+            Some((trait_, config)) => {
+                let mut ctx = TraitContext {
+                    catalog: self.catalog,
+                    caller: &self.caller,
+                    agent: &self.agent.name,
+                    run: run.id,
+                    mode,
+                    trait_state: state.trait_state_mut(&request.trait_key),
+                    evaluator: self.evaluator,
+                    triggers: self.triggers,
+                    delegate: None,
+                    previews: None,
+                    browser: None,
+                    requests: None,
+                    modules: None,
+                    signals: Vec::new(),
+                    images: Vec::new(),
+                    extras: CallExtras::default(),
+                };
+                trait_
+                    .on_answer_in(config, &request, &answer.value, &mut ctx)
+                    .await?
+            }
             // The trait that asked has been removed since: the answer is still
             // the person's, said in words.
             None => request.answer_text(&answer.value),
@@ -970,12 +993,21 @@ impl<'a> Runner<'a> {
         // After the static prefix, so what a trait adds per turn costs only
         // what follows it.
         let system = turn.system_prompt(prefix.system.as_deref().unwrap_or_default());
+        // What changes per message goes last, so everything before it is the
+        // prefix the previous step sent (TODO §9). Not kept on the run.
+        let context = turn.context_message();
+        let mut messages = messages;
+        messages.extend(context);
         let request = LlmRequest {
             system: (!system.trim().is_empty()).then_some(system),
             messages,
             tools: prefix.tools,
             max_tokens: self.agent.max_tokens(),
             temperature: self.agent.temperature(),
+            // Validated on save; a value that slipped past is the row's.
+            reasoning_effort: self.agent.reasoning_effort().ok().flatten(),
+            // The model row's, applied where the row became this model.
+            extra_params: serde_json::Map::new(),
             // Off unless the agent says otherwise (R§12): one call per turn is
             // what a doom-loop detector can fingerprint. The adapters send it
             // only with tools.
@@ -1959,6 +1991,7 @@ impl Delegator for RunDelegation<'_, '_> {
             system: Some(system.to_owned()),
             messages: vec![LlmMessage::user(prompt)],
             max_tokens: self.runner.agent.max_tokens(),
+            reasoning_effort: self.runner.agent.reasoning_effort().ok().flatten(),
             ..LlmRequest::default()
         };
         let answer = self.runner.ask(&model, request, false).await?;

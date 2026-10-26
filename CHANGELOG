@@ -2,6 +2,84 @@
 
 Changes in reverse chronological order.
 
+## Agents as an in-app assistant: the Paddi field report
+
+A team building an assistant into their application on Feldspar agents (an OpenAI-compatible
+host, a reasoning model) reported seven problems. Each one, and what changed:
+
+- **An agent started by a trigger could not use its tools.** `run_agent` did not pass the agent
+  the trigger dispatcher, to avoid a trigger → agent → trigger loop with nothing counting how deep
+  it went. So `run_trigger` (and `run_js_code`, which the report did not mention) answered "this
+  needs the trigger dispatcher". Now the run carries the firing chain (`RunCaller::chain`,
+  `RunCaller::chained`), and what its tools run or write carries that chain on
+  (`RunCaller::tool_chain`). A loop is then one cascade and stops at `MAX_DEPTH`. The dispatcher
+  keeps a weak handle to its own `Arc`, so it can be handed down:
+  `TriggerDispatcher::into_shared`, `shared` and `ActionContext::shared_triggers`. The server
+  builds its dispatcher with `into_shared`.
+- **A triggered run had no user.** `run_agent` has a new setting, `run_as`: `trigger` (the
+  default, unchanged) or `event_user` (`RunCaller::event_user`). With `event_user` the agent's
+  tools run as whoever caused the event, at their role: the signed-in caller of
+  `POST /api/actions/<trigger>`, or the user whose write fired it. Nobody signed in means the
+  public role. The run records that user, and the agent's `min_role` applies, checked before a
+  model is connected. The run never gets the server's own tools, and saving refuses
+  `event_user` together with `trusted_input`.
+- **No reasoning control.** Models have new settings, `reasoning_effort` (`none`, `minimal`,
+  `low`, `medium`, `high`, `xhigh`, `max`) and `extra_params`, a JSON object merged into every
+  request body. Agents have a new attribute, `reasoning_effort`, which wins over the model's
+  setting. The admin agent form has a selector for it. Both settings are applied where a model
+  row becomes callable (`sc_llm::WithRequestDefaults`, which wraps the call log so the log sees
+  what was sent). Each API takes the effort in its own field: Chat Completions
+  `reasoning_effort`, Responses `reasoning.effort`, Anthropic `output_config.effort` (`none` and
+  `minimal` send `low`). `extra_params` is refused when it is not an object or sets the
+  request's own fields (`model`, `messages`, `tools`, …). On the Responses API only the fields
+  rig's request type knows get through.
+- **Chat from the generated client** already existed (§11.7: `api.agents[name].chat`, streamed,
+  per user, tool events). What was missing was a tool that proposes a change instead of making
+  it. A `library_tools` function can now return `{ "$proposal": { prompt, apply, payload,
+  label } }`. That becomes an `approve` request and ends the turn. On approval the `apply` export
+  is called with the stored payload, as the user who approved, before the model hears the
+  outcome. This uses a new trait hook, `AgentTrait::on_answer_in`: `on_answer` plus a tool
+  call's context, which `Runner::push_answer` now supplies. The `pending_form` the report asked
+  about belongs to workflow runs and is unrelated.
+- **Custom tools as code.** A new trait, `library_tools`, takes a code library and a list of
+  `{ name, description, parameters (JSON schema), function }`. Each tool calls
+  `lib(library)[function](args)` through `TriggerDispatcher::run_code`, as the run's caller. In
+  an application's chat, the application's libraries are found first.
+- **Prompt caching.** The system prompt and tools were already a byte-identical prefix, and
+  `cached_tokens` was already read and priced at `price_cached_input`. But `search_table` and
+  `similar_rows` in `every_message` mode put their rows into the system prompt, which changes
+  with every message. That invalidated the cache for the whole conversation after it. The new
+  `Turn::append_context` sends such text as a last user message after the history, and the run
+  does not keep it (`Turn::context_message`). Both traits now use it. `append_system` is
+  documented as being for text that stays the same through a session.
+- **Small things:**
+  - The `run_agent` prompt field's help text now says it is a formula, not a `{{ }}` template.
+  - **A code library's top-level declaration no longer clashes with a handle.** The save check
+    compiled the library with only `console` and `ratelimit` in scope, so
+    `async function models()` passed. Every importer then failed with "Identifier 'models' has
+    already been declared". The library's code now goes in a block of its own, so its
+    declarations shadow `models`, `db`, `require` and the rest instead of redeclaring them.
+  - `listLlmProviders` and `listLlmModels` are tagged for MCP, read-only (keys come back
+    masked), so an agent creating an agent can find the provider and model names. Creating a
+    provider stays an admin's job, because that is where the secrets are.
+- **Docs:** TECHNICAL_DESIGN §11.2 covers the two outlets of `on_turn` and the request options,
+  §11.3 covers `library_tools` and proposals, and §11.5 covers triggered runs with the dispatcher
+  and `run_as`. `docs/tutorial-agents.md` Step 6 covers `event_user`, a new Step 11 covers an
+  assistant inside an application, and the traits table lists `library_tools`.
+- **Tests:**
+  - `sc-expr`: `a_library_may_declare_a_name_its_importer_has_as_a_handle`.
+  - `sc-llm`: `request_options` units, effort and passthrough per API in
+    `request_options_map_per_wire`, model settings validation, and
+    `a_model_rows_reasoning_effort_and_extra_params_reach_the_host` against a stub Chat
+    Completions host.
+  - `sc-agent`: `per_step_context_follows_a_byte_identical_prefix`, and the agent attribute.
+  - `sc-core-traits`, `run_agent`: a triggered agent runs triggers, runs as the event's user,
+    keeps the agent's floor, and a trigger → agent → trigger loop stops at the depth limit.
+  - `sc-core-traits`, `library_tools`: the tool schema, running as the user, and a proposal
+    applied only on approval.
+  - `sc-api`: the tier-two census.
+  - Admin UI: `agentForm.test.ts`.
+
 ## Workspace test suite green again
 
 `cargo test --workspace` had 8 failures after the agent-skill and MCP work. Their causes and

@@ -302,7 +302,7 @@ impl AgentTrait for SimilarRows {
             }
         };
         let format = retrieval::doc_format(config);
-        turn.append_system(retrieval::paragraph(
+        turn.append_context(retrieval::paragraph(
             &format!(
                 "Rows of the `{}` table nearest in meaning to the user's latest message, most \
                  related first. Use them if they are relevant:",

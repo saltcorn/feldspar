@@ -69,6 +69,8 @@ pub async fn validate_agent(
             priced.push((role, model.prices()));
         }
     }
+    // Its message already names the agent.
+    agent.reasoning_effort()?;
     // Each model a person may pick (AS10.4) resolves as a role's does, and is
     // priced against the budgets as the executor it stands in for.
     for picked in agent

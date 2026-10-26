@@ -51,7 +51,7 @@ async fn turn_text(
         .require(trait_)?
         .on_turn(cfg, &mut turn)
         .await?;
-    Ok(turn.extra_system().join("\n\n"))
+    Ok(turn.extra_context().join("\n\n"))
 }
 
 // --- search_table ------------------------------------------------------------

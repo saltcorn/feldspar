@@ -174,7 +174,10 @@ impl AgentTrait for Preamble {
     }
 
     fn config_spec(&self) -> Vec<FormField> {
-        vec![FormField::new("text", BasicType::Text).required()]
+        vec![
+            FormField::new("text", BasicType::Text),
+            FormField::new("context", BasicType::Text),
+        ]
     }
 
     fn tools(&self, _cx: &ToolsContext<'_>, _config: &Attrs) -> Vec<ToolSpec> {
@@ -199,7 +202,13 @@ impl AgentTrait for Preamble {
             .and_then(Json::as_str)
             .unwrap_or_default();
         // Which step it is, so a test can see this runs before *every* call.
-        turn.append_system(format!("{text} (step {})", turn.step));
+        if !text.is_empty() {
+            turn.append_system(format!("{text} (step {})", turn.step));
+        }
+        // And what changes per step, which goes after the conversation.
+        if let Some(context) = config.get("context").and_then(Json::as_str) {
+            turn.append_context(format!("{context} (step {})", turn.step));
+        }
         Ok(())
     }
 }

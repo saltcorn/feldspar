@@ -43,8 +43,10 @@ import {
   BUDGETS,
   CREDITS,
   NUMBER_ATTRIBUTES,
+  REASONING_EFFORTS,
   ROLES,
   agentAttributes,
+  readEffort,
   readNumbers,
   readRoles,
   shellWarning,
@@ -83,6 +85,7 @@ export function AgentForm({ agentId }: { agentId?: string }) {
   // What the agent had, so keys this form does not show survive a save.
   const [storedAttributes, setStoredAttributes] = useState<unknown>({});
   const [numbers, setNumbers] = useState<Record<string, string>>({});
+  const [effort, setEffort] = useState("");
   const [modelRoles, setModelRoles] = useState<Record<RoleKey, RoleChoice>>(readRoles({}));
   const [adding, setAdding] = useState("");
 
@@ -121,6 +124,7 @@ export function AgentForm({ agentId }: { agentId?: string }) {
           );
           setStoredAttributes(existing.attributes);
           setNumbers(readNumbers(existing.attributes));
+          setEffort(readEffort(existing.attributes));
           setModelRoles(readRoles(existing.attributes));
         } else {
           // A new agent starts on the installation's default provider.
@@ -179,7 +183,7 @@ export function AgentForm({ agentId }: { agentId?: string }) {
         min_role: minRole,
         // The sparse attributes: what was typed, nothing that was not, and
         // every stored key this form has no box for.
-        attributes: agentAttributes(storedAttributes, numbers, modelRoles),
+        attributes: agentAttributes(storedAttributes, numbers, modelRoles, effort),
       };
       if (agentId) {
         await api.updateAgent(agentId, body);
@@ -340,6 +344,20 @@ export function AgentForm({ agentId }: { agentId?: string }) {
                     />
                   </Col>
                 ))}
+                <Col md={4}>
+                  <Form.Group className="mb-3" controlId="agentReasoningEffort">
+                    <Form.Label><T text="Reasoning effort" /></Form.Label>
+                    <Form.Select value={effort} onChange={(e) => setEffort(e.target.value)}>
+                      <option value=""><T text="The model's own setting" /></option>
+                      {REASONING_EFFORTS.map((level) => (
+                        <option key={level} value={level}>{level}</option>
+                      ))}
+                    </Form.Select>
+                    <Form.Text muted>
+                      <T text="How much the model thinks before it answers. Lower is faster and cheaper." />
+                    </Form.Text>
+                  </Form.Group>
+                </Col>
               </Row>
             </Card.Body>
           </Card>

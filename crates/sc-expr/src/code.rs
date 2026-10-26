@@ -13370,6 +13370,25 @@ mod tests {
         assert!(err.starts_with("SyntaxError"), "{err}");
         assert!(err.contains("(line 3)"), "{err}");
     }
+
+    #[tokio::test]
+    async fn a_library_may_declare_a_name_its_importer_has_as_a_handle() {
+        // The save check's run has no `db`, so it has no `models` either; an
+        // importer with a host has both. A library declaring either must work
+        // in both, not compile in one and redeclare in the other.
+        let code = "async function models() { return 'mine'; }\nconst db = 2;\n\
+                    exports.v = async () => [await models(), db];";
+        let engine = crate::DenoEvaluator::new();
+        assert_eq!(
+            crate::check_code_library(&engine, code).await.unwrap(),
+            None
+        );
+        let host = FakeHost::rows(json!([]));
+        let mut c = with_host(r#"return await lib("own").v();"#, &*host);
+        c.libraries = libraries(&[("own", code)]);
+        let rt = CodeRuntime::with_workers(1);
+        assert_eq!(rt.run(c).await.unwrap(), json!(["mine", 2]));
+    }
 }
 
 /// `ratelimit` as a body sees it (TODO F4.5): run through a real isolate.

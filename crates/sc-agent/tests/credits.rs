@@ -205,12 +205,7 @@ async fn an_anonymous_caller_is_refused_and_an_admin_is_never_charged() -> Resul
     let registry = registry(Counter::new())?;
     let agent = metered_agent();
 
-    let anonymous = RunCaller {
-        user: None,
-        role: 100,
-        triggered: false,
-        exposed: true,
-    };
+    let anonymous = RunCaller::anonymous();
     let provider = Arc::new(FakeProvider::new([Reply::says("never")]));
     let runner = Runner::new(
         &catalog,

@@ -110,6 +110,7 @@ mod files;
 mod generate_js;
 pub mod http;
 mod insert_row;
+mod library_tools;
 mod mcp_server;
 pub mod memory;
 pub mod media;
@@ -193,7 +194,10 @@ pub use search_table::{ARG_PHRASES, DEFAULT_SEARCH_ROWS, SearchTable};
 pub use similar_rows::{
     ARG_QUERY, CFG_LIMIT, CFG_RELATION, CFG_VECTOR_FIELD, DEFAULT_SIMILAR_ROWS, SimilarRows,
 };
-pub use run_agent::{CFG_AGENT, CFG_PROMPT, CFG_TRUSTED_INPUT, RunAgent};
+pub use run_agent::{
+    CFG_AGENT, CFG_PROMPT, CFG_RUN_AS, CFG_TRUSTED_INPUT, RUN_AS_EVENT_USER, RUN_AS_TRIGGER,
+    RunAgent,
+};
 pub use run_js_code::{
     CFG_ARGUMENTS, CFG_BUTTON_LABEL, CFG_CODE, CFG_JS_MODE, CFG_TOOL_DESCRIPTION, CFG_TOOL_NAME,
     JS_MODE_BUTTON, JS_MODE_TOOL, RunJsCode, button_control,
@@ -211,6 +215,7 @@ pub use prompt_picker::{
     CFG_PROMPT_WHERE, CFG_PROMPTS, CFG_SEND, CFG_SOURCE, MAX_PICKER_ROWS, PromptPicker,
     SOURCE_PREDEFINED, SOURCE_TABLE,
 };
+pub use library_tools::{CFG_LIBRARY, CFG_LIBRARY_TOOLS, LibraryTools, PROPOSAL_KEY};
 pub use run_trigger::{CFG_TRIGGER, RunTrigger};
 // Context: preloaded rows and code, memory, skill files (TODO-agent-skills AS8).
 pub use memory::{
@@ -321,6 +326,7 @@ pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
     registry.register(Arc::new(DeleteRows))?;
     registry.register(Arc::new(RunTrigger))?;
     registry.register(Arc::new(RunJsCode))?;
+    registry.register(Arc::new(LibraryTools))?;
     registry.register(Arc::new(AskUser))?;
     registry.register(Arc::new(PlanApproval))?;
     registry.register(Arc::new(PromptPicker))?;
@@ -361,6 +367,7 @@ mod tests {
                 "generate_js",
                 "http",
                 "insert_row",
+                "library_tools",
                 "mcp_server",
                 "memory",
                 "plan_approval",

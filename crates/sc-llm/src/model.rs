@@ -374,6 +374,15 @@ pub fn model_config_spec(backend: &str, kind: ModelKind) -> Result<Vec<FormField
         }
         other => return Err(unknown_backend(other)),
     }
+    spec.push(choice(
+        crate::CFG_REASONING_EFFORT,
+        "Reasoning effort",
+        &crate::ReasoningEffort::ALL.map(crate::ReasoningEffort::as_str),
+    ));
+    spec.push(
+        FormField::new(crate::CFG_EXTRA_PARAMS, BasicType::Json)
+            .label("Extra request parameters (JSON object)"),
+    );
     spec.push(choice(CFG_VISION, "Images in tool results", &["yes", "no"]));
     spec.push(choice(
         CFG_SUPPORTS_TEMPERATURE,
@@ -443,6 +452,9 @@ pub fn validate_model_config(backend: &str, model: &LlmModelDef) -> Result<()> {
             )));
         }
     }
+    // An `extra_params` that is not an object, or sets the request's own
+    // fields, is refused here rather than on the first call.
+    crate::RequestDefaults::from_config(&config, &format!("LLM model `{}`", model.name))?;
     Ok(())
 }
 
@@ -508,6 +520,8 @@ mod tests {
             (CFG_CONTEXT_WINDOW, json!(0)),
             (CFG_PRICE_INPUT, json!("three dollars")),
             ("temperature", json!(0.5)),
+            (crate::CFG_REASONING_EFFORT, json!("tiny")),
+            (crate::CFG_EXTRA_PARAMS, json!({ "messages": [] })),
         ] {
             let model = LlmModelDef::new(provider, "claude-sonnet-5").with(key, value);
             let err = validate_model_config(ANTHROPIC_BACKEND, &model)
@@ -516,6 +530,11 @@ mod tests {
             assert!(err.contains("claude-sonnet-5"), "{err}");
             assert!(err.contains(key), "{err}");
         }
+        // Every chat backend takes a reasoning effort and extra fields.
+        let model = LlmModelDef::new(provider, "glm-5.3-flash")
+            .with(crate::CFG_REASONING_EFFORT, "none")
+            .with(crate::CFG_EXTRA_PARAMS, json!({ "top_p": 0.9 }));
+        validate_model_config(OPENAI_CHAT_BACKEND, &model).unwrap();
         // Responses-only overrides are unknown on Anthropic.
         let model =
             LlmModelDef::new(provider, "claude-sonnet-5").with(CFG_NATIVE_APPLY_PATCH, "yes");

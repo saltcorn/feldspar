@@ -287,10 +287,9 @@ impl Env {
     /// catalog's write listener, so a row a trait writes raises the events a row
     /// written any other way raises.
     pub fn with_triggers(mut self, actions: ActionRegistry) -> Result<Env> {
-        let dispatcher = Arc::new(
-            TriggerDispatcher::new(Arc::new(actions))
-                .with_evaluator(Arc::new(DenoEvaluator::new())),
-        );
+        let dispatcher = TriggerDispatcher::new(Arc::new(actions))
+            .with_evaluator(Arc::new(DenoEvaluator::new()))
+            .into_shared();
         self.catalog.add_table_events(
             sc_catalog::TRIGGER_EVENTS,
             Arc::clone(&dispatcher) as Arc<dyn TableEvents>,

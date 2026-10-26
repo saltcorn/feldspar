@@ -21,12 +21,16 @@
 //!   copilot — because the prompt is computed from an event, and whoever can
 //!   cause the event can write into it. [`CFG_TRUSTED_INPUT`] restores them
 //!   ([`RunCaller::system`]) for a trigger whose event only trusted people
-//!   cause. Nobody is present — a row was written — so there is no user to run the
-//!   agent's tools as, and the run row records `user: null` for exactly that
-//!   reason. The agent's own `min_role` is therefore not a gate here: the floor
-//!   describes who may *chat* with it, and a trigger clears every floor. What
-//!   gates a triggered run is the trigger, which is the thing an admin already
-//!   knows how to guard (§10.2, §13.2).
+//!   cause. The run row then records `user: null`, and the agent's own
+//!   `min_role` is not a gate: the floor describes who may *chat* with it, and
+//!   a trigger clears every floor. What gates a triggered run is the trigger,
+//!   which is the thing an admin already knows how to guard (§10.2, §13.2).
+//! - **Or as whoever caused the event** ([`CFG_RUN_AS`] = `event_user`,
+//!   [`RunCaller::event_user`]): the signed-in user who called
+//!   `POST /api/actions/<trigger>` or wrote the row, at their own role, or the
+//!   public role when nobody was signed in. The tools then see what that person
+//!   may see, the run records them, and the agent's `min_role` applies as it
+//!   does in a chat. Still never the server's own tools.
 //! - **It does not stream.** An action returns a value (§10.1), and a caller who
 //!   wants deltas is a chat client. What it returns is the final assistant
 //!   message and the **run id**, so the run is `getRun`-able afterwards and the
@@ -35,16 +39,13 @@
 //!   that failed halfway is still a readable transcript with a reason on it
 //!   rather than a line in a log.
 //!
-//! ## What a triggered run cannot do
+//! ## Running triggers from a triggered run
 //!
-//! Run a trigger. An agent whose traits include
-//! [`RunTrigger`](crate::RunTrigger) needs *the* dispatcher, and the dispatcher
-//! is what is running this action — so handing it back down would close a loop
-//! (trigger → agent → trigger → agent) with nothing counting the depth, since a
-//! tool call is not a firing and carries no chain. The tool therefore answers
-//! with `TraitContext::require_triggers`' configuration error, which the model
-//! reads as a tool result and can report. Chat is where an agent runs triggers,
-//! until a run carries a firing chain.
+//! The agent's tools get *the* dispatcher — the one running this action — so
+//! `run_trigger` and `run_js_code` work as they do in a chat. The run carries
+//! this firing's chain ([`RunCaller::chained`]), and every trigger its tools run
+//! or write they cause carries it on, so a trigger → agent → trigger loop is
+//! one cascade and stops at the dispatcher's depth limit like any other.
 
 use std::sync::Arc;
 
@@ -66,6 +67,26 @@ pub const CFG_PROMPT: &str = "prompt";
 /// shell, module installs, the project's scripts and checks, the admin
 /// copilot). Off by default: see [`RunCaller::triggered`].
 pub const CFG_TRUSTED_INPUT: &str = "trusted_input";
+
+/// Who the agent's tools run as: [`RUN_AS_TRIGGER`] (the default) or
+/// [`RUN_AS_EVENT_USER`].
+pub const CFG_RUN_AS: &str = "run_as";
+/// [`CFG_RUN_AS`]: the trigger's own authority, and no user.
+pub const RUN_AS_TRIGGER: &str = "trigger";
+/// [`CFG_RUN_AS`]: whoever caused the event, at their own role.
+pub const RUN_AS_EVENT_USER: &str = "event_user";
+
+/// Whether [`CFG_RUN_AS`] says `event_user`; refused when it names neither.
+fn runs_as_event_user(config: &Attrs) -> Result<bool> {
+    match config.get(CFG_RUN_AS) {
+        None | Some(Json::Null) => Ok(false),
+        Some(Json::String(s)) if s.trim().is_empty() || s == RUN_AS_TRIGGER => Ok(false),
+        Some(Json::String(s)) if s == RUN_AS_EVENT_USER => Ok(true),
+        Some(other) => Err(Error::invalid(format!(
+            "`{CFG_RUN_AS}` should be `{RUN_AS_TRIGGER}` or `{RUN_AS_EVENT_USER}`, not {other}"
+        ))),
+    }
+}
 
 /// Whether [`CFG_TRUSTED_INPUT`] is on. Anything but `true` is off.
 fn trusted_input(config: &Attrs) -> bool {
@@ -112,7 +133,15 @@ impl Action for RunAgent {
                 .required(),
             FormField::new(CFG_PROMPT, BasicType::Text)
                 .label("Prompt")
+                .sublabel(
+                    "A formula over the event, not a {{ }} template: \
+                     `payload.prompt`, or `\"Summarise \" + row.title`",
+                )
                 .required(),
+            FormField::new(CFG_RUN_AS, BasicType::Text)
+                .label("Run the agent's tools as")
+                .options([RUN_AS_TRIGGER.to_owned(), RUN_AS_EVENT_USER.to_owned()])
+                .default_value(RUN_AS_TRIGGER),
             FormField::new(CFG_TRUSTED_INPUT, BasicType::Bool)
                 .label(
                     "Only trusted people can cause this event: let the agent use the shell, \
@@ -142,6 +171,13 @@ impl Action for RunAgent {
         {
             return Err(Error::invalid(format!("no agent named `{name}`")));
         }
+        let event_user = runs_as_event_user(check.config)?;
+        if event_user && trusted_input(check.config) {
+            return Err(Error::invalid(format!(
+                "`{CFG_TRUSTED_INPUT}` gives the agent the server's own tools, which a run \
+                 as the event's user never has; turn one of them off"
+            )));
+        }
         let formula = required_formula(check.config, CFG_PROMPT)?;
         check_formula(
             check.shape,
@@ -168,36 +204,50 @@ impl Action for RunAgent {
             .await
             .map_err(named)?;
         let agent = agents.require(&name).map_err(named)?;
+        // Decision 5, at the one place a run is created. As the event's user:
+        // their authority, gated by the agent's floor as a chat is. Otherwise
+        // nobody is present, so the run carries the trigger's authority and
+        // records no user — without the server's own tools, unless the admin
+        // said the event is one nobody untrusted can cause. An event a cascade
+        // of untrusted origin raised is one, whatever the trigger says
+        // (security review #32).
+        let caller = if runs_as_event_user(ctx.config).map_err(named)? {
+            let user =
+                sc_auth::User::from_json(ctx.event.role, ctx.event.user.as_ref()).map_err(named)?;
+            let caller = RunCaller::event_user(user);
+            if let Some(floor) = agent.min_role
+                && !caller.meets_role(Some(floor))
+            {
+                return Err(Error::auth(format!(
+                    "trigger `{}`: agent `{name}` is for role {floor} and above, \
+                     and the user who caused this event is not",
+                    ctx.trigger
+                )));
+            }
+            caller
+        } else if trusted_input(ctx.config) && !sc_catalog::is_untrusted_chain(&ctx.chain) {
+            RunCaller::system()
+        } else {
+            RunCaller::triggered()
+        };
+        // This firing's chain, so whatever the agent's tools run or write is
+        // the same cascade, bounded by the same depth limit.
+        let caller = caller.chained(ctx.chain.clone());
+        let dispatcher = ctx.shared_triggers();
+        // After the floor, so a person the agent is not for costs no connection.
         let executor = self
             .providers
             .connect(ctx.catalog, agent, sc_agent::ModelRole::Executor)
             .await
             .map_err(named)?;
-
-        let mut runner = Runner::new(
-            ctx.catalog,
-            &self.traits,
-            agent,
-            executor,
-            // Decision 5, at the one place a run is created: nobody is present,
-            // so the run carries the trigger's authority and records no user —
-            // without the server's own tools, unless the admin said the event
-            // is one nobody untrusted can cause. An event a cascade of
-            // untrusted origin raised is one, whatever the trigger says
-            // (security review #32).
-            if trusted_input(ctx.config) && !sc_catalog::is_untrusted_chain(&ctx.chain) {
-                RunCaller::system()
-            } else {
-                RunCaller::triggered()
-            },
-        )
-        // The connector this action already holds, handed on so an agent a
-        // trigger started can delegate exactly as one a person is chatting with
-        // does. Unlike the dispatcher — which is *running* this action and
-        // cannot be handed back down without closing an uncounted cycle — a
-        // sub-agent run counts its own depth, so there is nothing here to
-        // withhold.
-        .with_connector(&self.providers);
+        let mut runner = Runner::new(ctx.catalog, &self.traits, agent, executor, caller)
+            // The connector this action already holds, handed on so an agent a
+            // trigger started can delegate exactly as one a person is chatting with
+            // does. Unlike the dispatcher — which is *running* this action and
+            // cannot be handed back down without closing an uncounted cycle — a
+            // sub-agent run counts its own depth, so there is nothing here to
+            // withhold.
+            .with_connector(&self.providers);
         // A tool that reads a table whose ownership formula does not translate
         // needs the engine; the dispatcher running this action has one wherever
         // the deployment does.
@@ -208,6 +258,12 @@ impl Action for RunAgent {
         // computed from it (`preload_rows`' filter, AS8.1).
         if let Some(row) = &ctx.event.row {
             runner = runner.with_row(row.clone());
+        }
+        // The dispatcher running this action, for `run_trigger` and
+        // `run_js_code`: the chain above is what keeps a loop through them
+        // bounded.
+        if let Some(dispatcher) = &dispatcher {
+            runner = runner.with_triggers(dispatcher);
         }
 
         // Built here rather than through `Runner::start` for the one thing that

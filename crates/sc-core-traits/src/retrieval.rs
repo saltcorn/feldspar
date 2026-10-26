@@ -5,9 +5,11 @@
 //!
 //! - **A mode.** `tool` offers the model a tool to call when it wants to look
 //!   something up; `every_message` looks up the latest user message itself,
-//!   before every model call, and puts what it found in the turn's system
-//!   prompt (`AgentTrait::on_turn`, `Turn::append_system`) — v1's "Search on
-//!   every user input". Not a second inference call and not a tool.
+//!   before every model call, and sends what it found after the conversation
+//!   (`AgentTrait::on_turn`, `Turn::append_context`) — v1's "Search on every
+//!   user input". Not a second inference call and not a tool. After, not in
+//!   the system prompt, because it changes with every message and the system
+//!   prompt is the start of the prefix a host caches.
 //! - **A document format.** Rows go to the model as JSON objects, or — when
 //!   the admin wrote a `doc_format` — as one text per row, the template filled
 //!   in from the row (`{{title}} by {{author}}`). A template names fields, and

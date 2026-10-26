@@ -4010,7 +4010,19 @@ milestone, Phase 3, `sc_agent::control`):
   a *user* message at index 0 rather than part of the system prompt, because a trait's header is
   data (a repo map, an `AGENTS.md`, a git log) and the system prompt is the cached prefix.
   `CachePlan`'s breakpoints are set from exactly this layout, and `prompt_cache_key` is the run
-  id. `on_turn` is documented as cache-breaking and `coding` does not use it.
+  id. `on_turn` has two outlets: `Turn::append_system`, for text that is the same on every step
+  of a session (preloaded rows, a picked prompt), and `Turn::append_context`, for text that
+  changes per message (`search_table`/`similar_rows` in `every_message` mode). The second is sent
+  as a last user message after the history and is not kept on the run, so the system prompt,
+  tools and history stay a byte-identical prefix from one step to the next — which matters most
+  on hosts that cache prefixes on their own, with no breakpoints to place. `coding` uses neither.
+- **A model row may set `reasoning_effort` (`none` … `max`) and `extra_params`**, a JSON object
+  merged into every request body last; an agent's own `reasoning_effort` wins over the row's.
+  They are applied where the row becomes a callable model (`sc_llm::WithRequestDefaults`), so the
+  loop, the test button and single prompts all send them. Chat Completions sends
+  `reasoning_effort`, Responses `reasoning.effort`, Anthropic `output_config.effort` (whose
+  levels start at `low`). `extra_params` may not set the request's own fields (`model`,
+  `messages`, `tools`, …).
 - **The stored transcript is never edited.** Clearing and compacting are **overlays** beside the
   messages: a stub per cleared tool result, keyed by index, and `(up_to_index, summary)` records.
   The request is built from transcript plus overlays; the chat and the admin read the transcript
@@ -4117,6 +4129,16 @@ with the run's caller.
 `min_role` still gates it, so exposing an agent to a role does not thereby expose everything the
 agent could call. This is the trait that connects an agent to the whole of §10 — a workflow,
 once §10.3 lands, becomes callable the same way, because a workflow is a trigger.
+
+**Code.** `run_js_code` keeps one JavaScript body in the agent as one tool. `library_tools`
+exposes functions a code library already exports: the configuration names the library and lists
+`{ name, description, parameters, function }`, each tool calls `lib(library)[function](args)`
+through `TriggerDispatcher::run_code` as the run's caller (an application's chat resolves the
+application's libraries first). A function may return `{ "$proposal": { prompt, apply, payload,
+label } }` instead of acting: the trait puts it to the person as an `approve` request, the turn
+ends, and on approval `AgentTrait::on_answer_in` — `on_answer` with a tool call's context — calls
+the `apply` export with the stored payload as the approving person before the model is told the
+outcome. The payload comes from the run's stored request, never from the client.
 
 **What was built, where it deviates** (Phase 3, `run_trigger`):
 
@@ -4880,12 +4902,14 @@ action returns a value (§10.1), and a caller who wants the deltas is a chat cli
   not currently validate is a repairable state, and the trigger that names it should not also be
   invalid: one broken thing, one error, in the place it can be fixed. Firing then reports the
   agent's own validation message.
-- **A triggered run is given no trigger dispatcher.** An agent whose traits include
-  `run_trigger` answers that one tool with `require_triggers`' configuration error, which the
-  model reads as a tool result. Handing the dispatcher back down into an action it is itself
-  running would close a trigger → agent → trigger cycle with nothing counting the depth, since a
-  tool call is not a firing and carries no chain. Chat is where an agent runs triggers, until a
-  run carries a firing chain of its own.
+- **A triggered run is given the trigger dispatcher, and carries the firing chain.** The run's
+  caller holds the chain of the firing that started it (`RunCaller::chain`), and every trigger
+  its tools run, or write they cause, carries that chain on (`RunCaller::tool_chain`). A trigger
+  → agent → trigger loop is therefore one cascade and stops at `MAX_DEPTH` like any other; the
+  innermost model reads the limit as its tool's result. The dispatcher hands itself down through
+  a weak handle to its own `Arc` (`TriggerDispatcher::into_shared`,
+  `ActionContext::shared_triggers`), so `run_trigger`, `run_js_code` and `library_tools` work
+  in a triggered run as in a chat.
 - **The run is created with a description naming the trigger.** `Runner::start` cannot give one,
   and a history sidebar of triggered runs would otherwise be a list of timestamps.
 - **The agent's `min_role` does not gate a triggered run.** It is the floor on who may *chat*
@@ -4893,6 +4917,12 @@ action returns a value (§10.1), and a caller who wants the deltas is a chat cli
   (decision 5 read the other way round). What guards it is the trigger's own `min_role`, which is
   also what guards it when an application exposes it as `POST {mount}/actions/{name}` — pinned by
   test rather than asserted, and needing no change to §13.2.
+- **Or the run is the event's user's** (`run_as: event_user`). The agent's tools run as whoever
+  caused the event — the signed-in caller of `POST {mount}/actions/{name}`, the user whose write
+  fired the trigger — at their role, or at the public role when nobody was signed in, and the run
+  records them. The agent's `min_role` then applies as in a chat. Such a run is still of
+  untrusted origin (the prompt is computed from the event), so it never has the server's own
+  tools, and `trusted_input` cannot be combined with it.
 
 ### 11.6 Copilot & AppConstructor
 

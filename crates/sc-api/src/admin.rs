@@ -1210,6 +1210,15 @@ pub fn admin_endpoints() -> EndpointSet {
     set.register(
         Endpoint::new("listLlmProviders", Method::Get, api().lit("llm-providers"))
             .output(TypeSchema::array(llm_provider_schema()))
+            // Read-only, and its keys come back as the secret sentinel: an
+            // agent setting up another agent needs the provider and model
+            // names `createAgent` takes, and none of the credentials.
+            .mcp(
+                "List the LLM providers: each one's name and id (what an agent's \
+                 `provider` names), backend and settings, with API keys masked. \
+                 Read the models of one with `listLlmModels`. Providers are set up \
+                 by an admin in the admin UI, not over this API.",
+            )
             .auth(AuthRequirement::admin()),
     );
 
@@ -1295,6 +1304,12 @@ pub fn admin_endpoints() -> EndpointSet {
                 .lit("models"),
         )
         .output(TypeSchema::array(llm_model_schema()))
+        .mcp(
+            "List a provider's models: each one's name (what an agent's `model` \
+             names), kind (chat, embedding, image, speech), whether it is the \
+             provider's default, and its settings — prices, context window, \
+             reasoning effort.",
+        )
         .auth(AuthRequirement::admin()),
     );
 
@@ -7749,6 +7764,12 @@ mod tests {
                 "restoreRow",
                 "revertRow",
                 "undoChangeset",
+                // The LLM providers and their models, read-only (the Paddi
+                // field report): an agent creating an agent needs the names
+                // `createAgent` takes. Setting one up stays an admin's, since
+                // it is where the secrets are.
+                "listLlmProviders",
+                "listLlmModels",
                 // Modules, behind their own area that is off unless granted: an
                 // agent writing Python needs a library installed to import it,
                 // and asking a human to click Install is the gap this closes.

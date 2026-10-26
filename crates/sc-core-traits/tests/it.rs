@@ -72,6 +72,8 @@ mod retrieval;
 mod reaching_out;
 #[path = "run_agent.rs"]
 mod run_agent;
+#[path = "library_tools.rs"]
+mod library_tools;
 #[path = "run_js_code.rs"]
 mod run_js_code;
 #[path = "run_trigger.rs"]
