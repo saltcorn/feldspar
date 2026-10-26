@@ -61,35 +61,35 @@ const EVENT_KINDS: {
    * save, so offering it would be offering a field that cannot be saved. */
   timing: TimingField[];
 }[] = [
-  { value: "insert", label: "A row is inserted", table: true, timing: [] },
-  { value: "update", label: "A row is updated", table: true, timing: [] },
-  { value: "delete", label: "A row is deleted", table: true, timing: [] },
-  {
-    value: "none",
-    label: "Only when something asks (no event)",
-    table: false,
-    timing: [],
-  },
-  { value: "login", label: "A user signs in", table: false, timing: [] },
-  { value: "startup", label: "The server starts up", table: false, timing: [] },
-  { value: "error", label: "An error is reported", table: false, timing: [] },
-  { value: "often", label: "Every five minutes", table: false, timing: [] },
-  { value: "hourly", label: "Once an hour", table: false, timing: ["minute"] },
-  { value: "daily", label: "Once a day", table: false, timing: ["hour", "minute"] },
-  {
-    value: "weekly",
-    label: "Once a week",
-    table: false,
-    timing: ["day_of_week", "hour", "minute"],
-  },
-  {
-    value: "stream",
-    label: "An element arrives on a stream",
-    table: false,
-    stream: true,
-    timing: [],
-  },
-];
+    { value: "insert", label: "A row is inserted", table: true, timing: [] },
+    { value: "update", label: "A row is updated", table: true, timing: [] },
+    { value: "delete", label: "A row is deleted", table: true, timing: [] },
+    {
+      value: "none",
+      label: "Only when something asks (no event)",
+      table: false,
+      timing: [],
+    },
+    { value: "login", label: "A user signs in", table: false, timing: [] },
+    { value: "startup", label: "The server starts up", table: false, timing: [] },
+    { value: "error", label: "An error is reported", table: false, timing: [] },
+    { value: "often", label: "Every five minutes", table: false, timing: [] },
+    { value: "hourly", label: "Once an hour", table: false, timing: ["minute"] },
+    { value: "daily", label: "Once a day", table: false, timing: ["hour", "minute"] },
+    {
+      value: "weekly",
+      label: "Once a week",
+      table: false,
+      timing: ["day_of_week", "hour", "minute"],
+    },
+    {
+      value: "stream",
+      label: "An element arrives on a stream",
+      table: false,
+      stream: true,
+      timing: [],
+    },
+  ];
 
 /** The three timing inputs a periodic trigger can have. */
 type TimingField = "minute" | "hour" | "day_of_week";
@@ -371,7 +371,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
                   value={name}
                   required
                   onChange={(e) => setName(e.target.value)}
-                />                
+                />
               </Form.Group>
             </Col>
             <Col md={6}>
@@ -382,7 +382,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
                 roles={roles}
                 blank="Admin only"
                 onChange={setMinRole}
-              >               
+              >
               </OptionalRoleSelect>
             </Col>
           </Row>
@@ -442,7 +442,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
                       </Form.Select>
                       {streamEvent && streams.length === 0 && (
                         <Form.Text muted>
-                          <T text="No streams yet. A stream is created in Streams, and a trigger naming one that does not exist is refused on save." />
+                          <T text="No streams yet. A stream is created in Streams." />
                         </Form.Text>
                       )}
                     </Form.Group>
@@ -592,47 +592,47 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
                   )}
                 </div>
               ) : (
-              <>
-              <Form.Group className="mb-3" controlId="triggerAction">
-                <Form.Label><T text="Action" /></Form.Label>
-                <Form.Select
-                  value={actionName}
-                  onChange={(e) => {
-                    setActionName(e.target.value);
-                    // A different action has different settings; carrying the old
-                    // values over would post settings the new one never declared.
-                    setConfig({});
-                  }}
-                >
-                  {actions.map((a) => (
-                    <option key={a.name} value={a.name}>
-                      {a.name}
-                    </option>
-                  ))}
-                </Form.Select>
-                {action && <Form.Text muted>{action.description}</Form.Text>}
-              </Form.Group>
+                <>
+                  <Form.Group className="mb-3" controlId="triggerAction">
+                    <Form.Label><T text="Action" /></Form.Label>
+                    <Form.Select
+                      value={actionName}
+                      onChange={(e) => {
+                        setActionName(e.target.value);
+                        // A different action has different settings; carrying the old
+                        // values over would post settings the new one never declared.
+                        setConfig({});
+                      }}
+                    >
+                      {actions.map((a) => (
+                        <option key={a.name} value={a.name}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </Form.Select>
+                    {action && <Form.Text muted>{action.description}</Form.Text>}
+                  </Form.Group>
 
-              {/* Rendered from the server's `config_spec`: this screen has no
+                  {/* Rendered from the server's `config_spec`: this screen has no
                   knowledge of any particular action's settings. */}
-              <SettingsFields
-                spec={spec}
-                values={config}
-                idPrefix="trigger-cfg"
-                // What a *code* setting's editor declares: `row` and `old` exist
-                // exactly where this event has them, which is the same rule the
-                // sandbox binds by. The screen knows the event; the setting knows
-                // it is code; neither knows both, so this is where they meet.
-                codeScope={{ table: specTable, event: when }}
-                onChange={(field, value) =>
-                  setConfig((prev) => ({ ...prev, [field]: value }))
-                }
-              />
-              <Form.Text muted>
-                <T text="Values are formulas over the event:" /> <code>row.title</code>,{" "}
-                <code>user.email</code>, <code>payload.n</code>.
-              </Form.Text>
-              </>
+                  <SettingsFields
+                    spec={spec}
+                    values={config}
+                    idPrefix="trigger-cfg"
+                    // What a *code* setting's editor declares: `row` and `old` exist
+                    // exactly where this event has them, which is the same rule the
+                    // sandbox binds by. The screen knows the event; the setting knows
+                    // it is code; neither knows both, so this is where they meet.
+                    codeScope={{ table: specTable, event: when }}
+                    onChange={(field, value) =>
+                      setConfig((prev) => ({ ...prev, [field]: value }))
+                    }
+                  />
+                  <Form.Text muted>
+                    <T text="Values are formulas over the event:" /> <code>row.title</code>,{" "}
+                    <code>user.email</code>, <code>payload.n</code>.
+                  </Form.Text>
+                </>
               )}
             </Card.Body>
           </Card>

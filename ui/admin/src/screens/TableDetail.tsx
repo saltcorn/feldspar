@@ -318,7 +318,6 @@ export function TableDetail({ table }: { table: string }) {
 function TableData({
   table,
   rowCount,
-  configured,
   provided,
   metadata,
   writes,
@@ -476,26 +475,6 @@ function TableData({
       setError(errorMessage(err, "Could not delete the rows."));
     } finally {
       setBusy(false);
-    }
-  };
-
-  const forget = async () => {
-    if (
-      !window.confirm(
-        t(
-          'Forget the settings for "{name}"?\n\nIt returns to admin-only. The table and its rows are not touched.',
-          { name: table },
-        ),
-      )
-    ) {
-      return;
-    }
-    setError(null);
-    try {
-      await api.deleteTableSettings(table);
-      onChange();
-    } catch (err) {
-      setError(errorMessage(err, "Could not forget the settings."));
     }
   };
 

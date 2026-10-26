@@ -242,7 +242,7 @@ export function AgentForm({ agentId }: { agentId?: string }) {
                 <Form.Label>
                   <T text="Name" /><span className="text-danger"> *</span>
                 </Form.Label>
-                <Form.Control value={name} required onChange={(e) => setName(e.target.value)} />                
+                <Form.Control value={name} required onChange={(e) => setName(e.target.value)} />
               </Form.Group>
             </Col>
             <Col md={6}>
@@ -310,9 +310,6 @@ export function AgentForm({ agentId }: { agentId?: string }) {
                         </option>
                       ))}
                     </Form.Select>
-                    <Form.Text muted>
-                      <T text="One of the provider's models. Models, their prices and the default are set on the provider." />
-                    </Form.Text>
                   </Form.Group>
                 </Col>
               </Row>
