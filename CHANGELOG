@@ -2,6 +2,44 @@
 
 Changes in reverse chronological order.
 
+## Workspace test suite green again
+
+`cargo test --workspace` had 8 failures after the agent-skill and MCP work. Their causes and
+fixes:
+
+- **The design document had fallen behind.** The crate table in §2 now has `sc-mcp` and the new
+  edges into it, plus `sc-auth → sc-log` and `sc-module → sc-api`/`sc-auth`/`sc-files`. The
+  diagram also has the `sc-core-traits → sc-mcp → sc-email` arrows. The §9.2 ER diagram now
+  draws `_fd_agent_memory`, `_fd_guest_sessions`, `_fd_mcp_servers`, `_fd_run_parts` and
+  `_fd_table_edits`, with their relationships.
+- **Admin i18n.** Fifteen call sites passed a computed string to `t()`, which the extractor
+  cannot read. Each label now goes through `t()` as a literal where it is defined, using the
+  `t: Translator["t"] = format` parameter `backupSchedules.ts` already uses:
+  - `kindLabels(t)` replaces `KIND_LABELS`.
+  - `runAction(…, t)`.
+  - `kindHeading(kind, t)` replaces `KIND_HEADINGS`.
+  - `nameProblem(name, t)` (MCP servers).
+  - `serviceState(service, t)`.
+  - In `credits.ts` and `roleGrants.ts`: the badges, `bucketSourceLabel`, `entryLabel`, and the
+    form bodies' messages. Interpolated messages use placeholders (`"Granted by {source}"`).
+- **Saving another settings section no longer re-applies the logging switches.** Before, every
+  `POST /api/settings` re-applied Log SQL and the verbosity from storage. Now only a save that
+  names `log_sql` or `log_verbosity` does. In the test binary, where many servers share one
+  process, the old behaviour let one test's unrelated save switch off another test's Log SQL.
+  Clear all, which also resets the switches, now shares a `logging_switches()` lock with the
+  test that checks them.
+- **Tests updated for deliberate changes:**
+  - The traits endpoint test now names the five traits that have no target and only defaulted
+    settings: `ask_user`, `memory`, `plan_approval`, `prompt_picker` and `speech`.
+  - The v1 import now brings BooksDB's `AddBook` workflow across, so the builder's
+    `triggerActions` is `["TrimPages", "AddBook"]`. The "not the application's trigger" check
+    now uses a made-up name.
+  - `module_consent.rs` marks its `_sc_users` as v1's table.
+  - The credit rollover test gave its grant and debit 800 ms to land before the period ended.
+    Under a full parallel run that was not always enough. It now waits out a 4 s period.
+- **Tests:** `entities.test.ts` checks that kinds and Run links take the screen's `t`.
+  `settings_admin_api` checks that saving the Email section leaves Log SQL alone.
+
 ## v1 import: calculated summary fields, `Array_Agg`, and deleted summary fields
 
 Two columns of a real v1 backup (fanacity) were refused on import.

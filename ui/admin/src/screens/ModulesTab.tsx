@@ -607,6 +607,7 @@ function ModuleCard({
   onConfigure: (values: Record<string, string>) => void;
   onGrant: (permissions: ModulePermissionSet) => void;
 }) {
+  const { t } = useT();
   const status = moduleStatus(module);
   const census = unsupportedSentence(module);
   const [values, setValues] = useState<Record<string, string>>(() =>
@@ -732,11 +733,11 @@ function ModuleCard({
             <div className="text-secondary mb-1"><T text="Services" /></div>
             <ul className="list-unstyled mb-2">
               {module.services.map((service) => {
-                const state = serviceState(service);
+                const state = serviceState(service, t);
                 return (
                   <li key={service.name}>
                     <code>{service.name}</code>{" "}
-                    <StatusBadge tone={state.tone}><T text={state.label} /></StatusBadge>
+                    <StatusBadge tone={state.tone}>{state.label}</StatusBadge>
                     {service.description && (
                       <span className="text-secondary"> — {service.description}</span>
                     )}

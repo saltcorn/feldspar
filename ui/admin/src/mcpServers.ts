@@ -4,6 +4,7 @@
 // browser.
 
 import type { ListMcpServersResponse, TestMcpServerResponse } from "./client";
+import { format, type Translator } from "./i18n";
 
 export type McpServerItem = ListMcpServersResponse[number];
 export type McpTestResult = TestMcpServerResponse;
@@ -73,12 +74,12 @@ export function bodyFromForm(form: McpServerForm) {
 /** Why `name` will be refused, or null. The server checks the same, but the
  * admin should not have to save to learn the rule: a server's tools are
  * offered as `<name>__<tool>`. */
-export function nameProblem(name: string): string | null {
+export function nameProblem(name: string, t: Translator["t"] = format): string | null {
   const n = name.trim();
-  if (n === "") return "A name is required.";
-  if (n.length > 24) return "At most 24 characters.";
-  if (!/^[a-z0-9_-]+$/.test(n)) return "Lowercase letters, digits, - and _ only.";
-  if (n.includes("__")) return "No double underscore: tools are named <server>__<tool>.";
+  if (n === "") return t("A name is required.");
+  if (n.length > 24) return t("At most 24 characters.");
+  if (!/^[a-z0-9_-]+$/.test(n)) return t("Lowercase letters, digits, - and _ only.");
+  if (n.includes("__")) return t("No double underscore: tools are named <server>__<tool>.");
   return null;
 }
 

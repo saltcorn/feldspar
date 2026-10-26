@@ -4,6 +4,7 @@
 // browser.
 
 import type { ListLlmModelsResponse } from "./client";
+import { format, type Translator } from "./i18n";
 
 export type ModelItem = ListLlmModelsResponse[number];
 
@@ -37,13 +38,20 @@ export type ModelKind = "chat" | "embedding" | "image" | "speech";
 /** Every kind, in the order the Models card lists them. */
 export const MODEL_KINDS: ModelKind[] = ["chat", "embedding", "image", "speech"];
 
-/** The heading a kind's models are listed under. */
-export const KIND_HEADINGS: Record<ModelKind, string> = {
-  chat: "Chat models",
-  embedding: "Embedding models",
-  image: "Image models",
-  speech: "Speech models",
-};
+/** The heading a kind's models are listed under, in the screen's language
+ * when it passes its `t`. */
+export function kindHeading(kind: ModelKind, t: Translator["t"] = format): string {
+  switch (kind) {
+    case "chat":
+      return t("Chat models");
+    case "embedding":
+      return t("Embedding models");
+    case "image":
+      return t("Image models");
+    case "speech":
+      return t("Speech models");
+  }
+}
 
 /** A model's kind; a row from before kinds is chat. */
 export function kindOf(m: Pick<ModelItem, "kind">): ModelKind {

@@ -735,6 +735,7 @@ async fn a_null_clears_a_setting_back_to_its_default() -> sc_error::Result<()> {
 /// the database, and change nothing about the server the admin is watching.
 #[tokio::test]
 async fn saving_the_development_settings_moves_the_logging_switches() -> sc_error::Result<()> {
+    let _switches = crate::logging_switches().lock().await;
     let (mut client, catalog, _db) = setup().await?;
 
     // The screen is handed the checkbox and the five levels, and nothing here
@@ -788,6 +789,26 @@ async fn saving_the_development_settings_moves_the_logging_switches() -> sc_erro
     let stored = sc_config::development_settings(&catalog).await?;
     assert!(stored.log_sql);
     assert_eq!(stored.verbosity, sc_log::Verbosity::Info);
+
+    // A save of another section says nothing about logging, so it leaves the
+    // switches where they are — and here, where many servers share one
+    // process, it is what keeps one test's save from turning off another's.
+    // The process is moved by hand first, so a re-apply of what is stored
+    // would show.
+    sc_log::set_log_sql(false);
+    let (status, saved) = client
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": { EMAIL_FROM: "Feldspar <feldspar@example.com>" }})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert!(
+        !sc_log::log_sql_enabled(),
+        "a save of the Email section re-applied the stored Log SQL"
+    );
+    sc_log::set_log_sql(true);
 
     // Unticking it is the half that has to work as well: a switch that only
     // turns on is a server that has to be restarted to be quiet again.

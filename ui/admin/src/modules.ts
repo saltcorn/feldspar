@@ -13,6 +13,7 @@
 // (§10), and saying so is this screen's obligation rather than an omission.
 
 import type { ListModulesResponse } from "./client";
+import { format, type Translator } from "./i18n";
 
 /** One installed module, as `listModules` describes it. */
 export type Module = ListModulesResponse["modules"][number];
@@ -302,7 +303,10 @@ export function suppliedSummary(module: Module): string {
 
 /** One of a module's services, as its card shows it: running, restarting after
  * a failure (how many times, and why), or stopped (TODO-imap M5.2). */
-export function serviceState(service: Module["services"][number]): {
+export function serviceState(
+  service: Module["services"][number],
+  t: Translator["t"] = format,
+): {
   label: string;
   tone: "green" | "yellow" | "red";
   detail: string | null;
@@ -316,18 +320,18 @@ export function serviceState(service: Module["services"][number]): {
   switch (service.state) {
     case "running":
       return {
-        label: "Running",
+        label: t("Running"),
         tone: "green",
         detail: restarts && service.last_error ? `${restarts}; last: ${service.last_error}` : restarts,
       };
     case "restarting":
       return {
-        label: "Restarting",
+        label: t("Restarting"),
         tone: "yellow",
         detail: service.last_error ? `it failed: ${service.last_error}` : restarts,
       };
     default:
-      return { label: "Stopped", tone: "red", detail: service.last_error ?? null };
+      return { label: t("Stopped"), tone: "red", detail: service.last_error ?? null };
   }
 }
 

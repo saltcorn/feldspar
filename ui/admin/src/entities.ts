@@ -6,6 +6,7 @@
 
 import { appUrl } from "./adminAddress";
 import type { ListEntitiesResponse } from "./client";
+import { format, type Translator } from "./i18n";
 
 export type Entity = ListEntitiesResponse[number];
 
@@ -26,15 +27,20 @@ export type EntityKind = (typeof ENTITY_KINDS)[number];
  * fire triggers. */
 export const DIAGRAM_KINDS: readonly EntityKind[] = ["table", "trigger", "stream"];
 
-/** A kind's name, singular for a row's badge and plural for the filter. */
-export const KIND_LABELS: Record<EntityKind, { one: string; many: string }> = {
-  table: { one: "Table", many: "Tables" },
-  file_store: { one: "File store", many: "File stores" },
-  trigger: { one: "Trigger", many: "Triggers" },
-  stream: { one: "Stream", many: "Streams" },
-  agent: { one: "Agent", many: "Agents" },
-  application: { one: "Application", many: "Applications" },
-};
+/** Each kind's name, singular for a row's badge and plural for the filter, in
+ * the screen's language when it passes its `t`. */
+export function kindLabels(
+  t: Translator["t"] = format,
+): Record<EntityKind, { one: string; many: string }> {
+  return {
+    table: { one: t("Table"), many: t("Tables") },
+    file_store: { one: t("File store"), many: t("File stores") },
+    trigger: { one: t("Trigger"), many: t("Triggers") },
+    stream: { one: t("Stream"), many: t("Streams") },
+    agent: { one: t("Agent"), many: t("Agents") },
+    application: { one: t("Application"), many: t("Applications") },
+  };
+}
 
 /** How many entities the "Recently edited" section shows. */
 export const RECENT_COUNT = 5;
@@ -69,32 +75,34 @@ export type RunAction =
  * — a table's rows, a store's files, a trigger's test run, a chat with an
  * agent, the running application. `null` for one that cannot be run now (a
  * trigger switched off or broken; an agent that is not usable). `openApp` is
- * where an application is served, given its subdomain. */
+ * where an application is served, given its subdomain; the label is in the
+ * screen's language when it passes its `t`. */
 export function runAction(
   entity: Entity,
   openApp: (subdomain: string) => string = (subdomain) => appUrl(subdomain),
+  t: Translator["t"] = format,
 ): RunAction | null {
   if (!entity.runnable) return null;
   const name = encodeURIComponent(entity.name);
   switch (entity.kind) {
     case "table":
-      return { type: "link", label: "Data", href: `#/tables/${name}/data`, external: false };
+      return { type: "link", label: t("Data"), href: `#/tables/${name}/data`, external: false };
     case "file_store":
-      return { type: "link", label: "Browse", href: `#/files/${name}`, external: false };
+      return { type: "link", label: t("Browse"), href: `#/files/${name}`, external: false };
     case "trigger":
-      return { type: "test-run", label: "Test run" };
+      return { type: "test-run", label: t("Test run") };
     case "stream":
       return {
         type: "link",
-        label: "Observe",
+        label: t("Observe"),
         href: `#/streams/${encodeURIComponent(entity.id)}/observe`,
         external: false,
       };
     case "agent":
-      return { type: "link", label: "Chat", href: `#/agents/${name}/chat`, external: false };
+      return { type: "link", label: t("Chat"), href: `#/agents/${name}/chat`, external: false };
     case "application":
       return entity.subdomain
-        ? { type: "link", label: "Open", href: openApp(entity.subdomain), external: true }
+        ? { type: "link", label: t("Open"), href: openApp(entity.subdomain), external: true }
         : null;
     default:
       return null;
@@ -119,7 +127,7 @@ export function matchesFilter(entity: Entity, filter: EntityFilter): boolean {
   }
   const words = filter.query.toLowerCase().split(/\s+/).filter((w) => w !== "");
   if (words.length === 0) return true;
-  const label = KIND_LABELS[entity.kind as EntityKind];
+  const label = kindLabels()[entity.kind as EntityKind];
   const haystack = [
     entity.name,
     entity.description,

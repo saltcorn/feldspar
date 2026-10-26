@@ -4663,7 +4663,13 @@ pub fn admin_handlers_with(
                 // the next restart: an admin ticks "Log SQL" precisely because
                 // something is happening in the server they are looking at, and
                 // a switch that needed a restart would have thrown that away.
-                development.apply();
+                // Only a save that names one of them moves them: a save of
+                // another section has nothing to say about the process's logging.
+                if values.contains_key(sc_config::LOG_SQL)
+                    || values.contains_key(sc_config::LOG_VERBOSITY)
+                {
+                    development.apply();
+                }
                 // And the enabled locales move now too, for the same reason:
                 // an admin who has just turned French on reloads the page to
                 // see it, not the server.

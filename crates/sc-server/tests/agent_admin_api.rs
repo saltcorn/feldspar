@@ -384,6 +384,20 @@ async fn the_traits_endpoint_declares_each_traits_configuration() -> sc_error::R
     // save a valid agent. `http` is the other, for the same reason: the web is
     // not a target it could name, and a blank form is `fetch_web`, read-only,
     // over public hosts.
+    //
+    // The rest change how the conversation goes rather than what the agent
+    // reaches, so they name no target either and every setting has a default:
+    // `ask_user` and `plan_approval` (a tool name and the prompts around it),
+    // `memory` (the agent's own store, keyed by the agent), `speech` (a voice
+    // and a speed), and `prompt_picker`, whose list-or-table choice is checked
+    // as a whole by the trait rather than by any one field being required.
+    const NO_TARGET: [&str; 5] = [
+        "ask_user",
+        "memory",
+        "plan_approval",
+        "prompt_picker",
+        "speech",
+    ];
     for trait_ in traits {
         let spec = trait_["config_spec"].as_array().unwrap();
         assert!(!spec.is_empty(), "{trait_}");
@@ -394,7 +408,9 @@ async fn the_traits_endpoint_declares_each_traits_configuration() -> sc_error::R
             );
             continue;
         }
-        if trait_["name"] == json!("http") {
+        if trait_["name"] == json!("http")
+            || NO_TARGET.iter().any(|name| trait_["name"] == json!(name))
+        {
             continue;
         }
         assert!(

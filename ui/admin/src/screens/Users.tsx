@@ -636,7 +636,7 @@ function RoleGrantsDialog({
             )}
             {grants?.grants.map((g) => {
               const state = grantState(g);
-              const badge = grantStateBadge(state);
+              const badge = grantStateBadge(state, t);
               return (
                 <tr key={g.id}>
                   <td>{roleLabel(g.role, roles)}</td>
@@ -649,7 +649,7 @@ function RoleGrantsDialog({
                     {g.expires_at ? new Date(g.expires_at).toLocaleString() : t("Until revoked")}
                   </td>
                   <td>
-                    <StatusBadge tone={badge.tone}>{t(badge.label)}</StatusBadge>
+                    <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
                   </td>
                   <td>
                     {(state === "in_force" || state === "pending") && (
@@ -761,9 +761,9 @@ function CreditsDialog({ user, onClose }: { user: UserRow | null; onClose: () =>
   const grant = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    const body = creditGrantBody(form);
+    const body = creditGrantBody(form, t);
     if (typeof body === "string") {
-      setError(t(body));
+      setError(body);
       return;
     }
     if (await run(() => api.grantUserCredits(user.id, body), "Could not grant the credits.")) {
@@ -774,9 +774,9 @@ function CreditsDialog({ user, onClose }: { user: UserRow | null; onClose: () =>
   const saveThreshold = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    const body = thresholdBody(threshold);
+    const body = thresholdBody(threshold, t);
     if (typeof body === "string") {
-      setError(t(body));
+      setError(body);
       return;
     }
     await run(() => api.setUserCreditThreshold(user.id, body), "Could not set the threshold.");
@@ -826,7 +826,7 @@ function CreditsDialog({ user, onClose }: { user: UserRow | null; onClose: () =>
               </tr>
             )}
             {credits?.buckets.map((b) => {
-              const badge = bucketStateBadge(bucketState(b));
+              const badge = bucketStateBadge(bucketState(b), t);
               return (
                 <tr key={b.id}>
                   <td>{b.remaining}</td>
@@ -835,12 +835,12 @@ function CreditsDialog({ user, onClose }: { user: UserRow | null; onClose: () =>
                     <div className="text-muted small">{b.kind}</div>
                   </td>
                   <td>
-                    {t(bucketSourceLabel(b))}
+                    {bucketSourceLabel(b, t)}
                     {b.note && <div className="text-muted small">{b.note}</div>}
                   </td>
                   <td>{b.expires_at ? new Date(b.expires_at).toLocaleString() : t("Never")}</td>
                   <td>
-                    <StatusBadge tone={badge.tone}>{t(badge.label)}</StatusBadge>
+                    <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
                   </td>
                 </tr>
               );
@@ -870,7 +870,7 @@ function CreditsDialog({ user, onClose }: { user: UserRow | null; onClose: () =>
               <tr key={e.id}>
                 <td>{new Date(e.created_at).toLocaleString()}</td>
                 <td>
-                  {t(entryLabel(e))}
+                  {entryLabel(e, t)}
                   {entryTokens(e) && <div className="text-muted small">{entryTokens(e)}</div>}
                   {e.note && <div className="text-muted small">{e.note}</div>}
                 </td>

@@ -29,10 +29,10 @@ import Table from "react-bootstrap/Table";
 import { api, errorMessage } from "../api";
 import type { ListLlmModelSettingsResponse, TestLlmModelResponse } from "../client";
 import {
-  KIND_HEADINGS,
   capabilitySummary,
   groupByKind,
   guessKind,
+  kindHeading,
   kindOf,
   kindsServedBy,
   namesToOffer,
@@ -320,7 +320,7 @@ export function LlmModels({
           groupByKind(models).map(({ kind, models: ofKind }) => (
             <div key={kind} className="mb-3">
               <h4 className="h5 mt-2">
-                <T text={KIND_HEADINGS[kind]} />
+                {kindHeading(kind, t)}
               </h4>
               <Table responsive className="card-table table-vcenter mb-0">
                 <thead>
@@ -440,7 +440,7 @@ export function LlmModels({
                 >
                   {kindsServedBy(backend).map((k) => (
                     <option key={k} value={k}>
-                      {t(KIND_HEADINGS[k])}
+                      {kindHeading(k, t)}
                     </option>
                   ))}
                 </Form.Select>

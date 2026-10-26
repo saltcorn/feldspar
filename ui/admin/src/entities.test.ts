@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   configHref,
+  kindLabels,
   matchesFilter,
   recentlyEdited,
   runAction,
@@ -135,6 +136,13 @@ describe("links", () => {
       href: "https://blog.example.com",
       external: true,
     });
+  });
+
+  it("names kinds and Run links in the screen's language when given its t", () => {
+    const shout = (text: string) => text.toUpperCase();
+    expect(kindLabels().trigger).toEqual({ one: "Trigger", many: "Triggers" });
+    expect(kindLabels(shout).file_store).toEqual({ one: "FILE STORE", many: "FILE STORES" });
+    expect(runAction(greet, undefined, shout)).toEqual({ type: "test-run", label: "TEST RUN" });
   });
 
   it("offers no Run link for an entity that cannot run now", () => {

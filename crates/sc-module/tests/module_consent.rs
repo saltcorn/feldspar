@@ -122,7 +122,7 @@ mod deno {
         );
         for (request, says) in [
             (
-                json!({ "store": { "table": "_sc_users", "id": 1, "fields": { "access_token": "password" } } }),
+                json!({ "store": { "table": "_sc_users", "id": 1, "fields": { "access_token": "password" } } }), // v1's users table: no such table here
                 "is not a table",
             ),
             (

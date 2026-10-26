@@ -205,6 +205,8 @@ graph TD
   coretraits --> agent["sc-agent"]
   coretraits --> app["sc-app"]
   coretraits --> repomap["sc-repomap"]
+  coretraits --> mcp["sc-mcp"]
+  mcp --> email
   coreact --> api["sc-api"]
   server --> module["sc-module"]
   viewpattern["sc-viewpattern"] --> app
@@ -293,8 +295,9 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
 | `sc-email` | `sc-catalog` `sc-config` `sc-error` |
-| `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
+| `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-query` `sc-types` |
+| `sc-mcp` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-query` `sc-types` |
 | `sc-action` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-dataset` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
@@ -308,11 +311,11 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-live` | `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
 | `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
 | `sc-viewpattern` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
-| `sc-module` | `sc-action` `sc-app` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
+| `sc-module` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
-| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
+| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -1819,6 +1822,17 @@ erDiagram
     int min_role
     json attributes "sparse: the strong/cheap model roles, the budgets, the loop-control limits"
   }
+  AGENTMEMORY["_fd_agent_memory"] {
+    int id PK "an integer: SQLite's full-text index is keyed by it"
+    text agent "-> _fd_agents.name; the only agent that reads it"
+    uuid user_id "nullable, NOT a foreign key; null for a run with no user"
+    uuid run_id "nullable: null for one the consolidation wrote"
+    timestamp written_at
+    text kind "memory | preferences"
+    bool personal "only its own user may read it back"
+    text topic "full-text indexed with contents"
+    text contents
+  }
   MODELS["_fd_models"] {
     uuid id PK
     text name UK
@@ -2120,6 +2134,36 @@ erDiagram
     text name PK "SQLite only: a transaction-local setting, e.g. sc.changeset"
     text value "deleted before its transaction commits"
   }
+  GUESTSESSIONS["_fd_guest_sessions"] {
+    text token_hash PK "SHA-256 of the guest cookie token"
+    text public_id "what a table stores and session.id reads; not the cookie"
+    uuid application_id "by value: a guest of one application only"
+    timestamp expires_at
+  }
+  MCPSERVERS["_fd_mcp_servers"] {
+    uuid id PK
+    text name UK "an agent's tools from it are name__tool"
+    text description
+    text url
+    text transport "streamable_http | sse"
+    json headers "values are redacted secrets"
+    json config "allow_private_network, timeout_secs"
+    json attributes
+  }
+  RUNPARTS["_fd_run_parts"] {
+    uuid id PK
+    uuid run_id "-> _fd_runs.id, by value, deleted with it"
+    text kind "rows | image | audio"
+    text mime_type
+    text summary
+    json data "a rows part's rows, or an image's or clip's name"
+    bytes content "an image's or clip's bytes; null for rows"
+    timestamp created_at
+  }
+  TABLEEDITS["_fd_table_edits"] {
+    text name PK "the table, by name"
+    timestamp updated_at "its last edit; bookkeeping, not definition"
+  }
 
   ROLES ||--o{ USERS : "role -- enforced FK"
   USERS ||--o{ SESSIONS : "user_id -- by value"
@@ -2133,6 +2177,13 @@ erDiagram
   LLMMODELS |o--o{ AGENTS : "model -- by name, or the default"
   LLMMODELS }o--o{ AGENTS : "attributes.strong/cheap -- a role's model, by name"
   AGENTS ||--o{ RUNS : "subject -- by name, when kind = agent"
+  AGENTS ||--o{ AGENTMEMORY : "agent -- by name"
+  USERS |o--o{ AGENTMEMORY : "user_id -- by value, nullable"
+  RUNS |o--o{ AGENTMEMORY : "run_id -- by value, nullable"
+  RUNS ||--o{ RUNPARTS : "run_id -- by value, deleted with the run"
+  MCPSERVERS }o--o{ AGENTS : "traits -- mcp_server tool config, by name"
+  APPS ||--o{ GUESTSESSIONS : "application_id -- by value"
+  TABLES ||--o| TABLEEDITS : "name -- by name, even with no overlay row"
   TRIGGERS ||--o{ WFVERSIONS : "workflow -- by value, append-only"
   WFVERSIONS ||--o{ RUNS : "version -- a run is pinned to the one it started on"
   RUNS ||--o{ TRACES : "run -- by value, when tracing is on"

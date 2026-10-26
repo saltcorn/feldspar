@@ -156,7 +156,7 @@ export function McpServers() {
         : cur,
     );
 
-  const problem = editing ? nameProblem(editing.name) : null;
+  const problem = editing ? nameProblem(editing.name, t) : null;
 
   return (
     <>
@@ -272,7 +272,7 @@ export function McpServers() {
                   isInvalid={editing.name !== "" && problem !== null}
                   onChange={(e) => setEditing({ ...editing, name: e.target.value })}
                 />
-                <Form.Control.Feedback type="invalid">{problem ? t(problem) : null}</Form.Control.Feedback>
+                <Form.Control.Feedback type="invalid">{problem}</Form.Control.Feedback>
                 <Form.Text muted>
                   <T text="An agent offers this server's tools as name__tool." />
                 </Form.Text>

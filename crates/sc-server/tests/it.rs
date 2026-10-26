@@ -213,6 +213,18 @@ pub(crate) fn module_registries() -> &'static tokio::sync::RwLock<()> {
     LOCK.get_or_init(|| tokio::sync::RwLock::new(()))
 }
 
+/// The process's two logging switches (`sc_log::log_sql_enabled`, the
+/// verbosity), held by the tests in this binary that move them: saving the
+/// Development section, and Clear all, which resets them to the defaults.
+///
+/// Like [`module_registries`], a global for good reason in a server that is one
+/// process, shared here by many servers in one: without the lock, one test's
+/// reset lands between another's save and its check of what the save did.
+pub(crate) fn logging_switches() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    &LOCK
+}
+
 #[path = "app_none_framework.rs"]
 mod app_none_framework;
 #[path = "app_preview.rs"]
