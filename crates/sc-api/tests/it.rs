@@ -37,6 +37,8 @@ mod custom_queries;
 mod default_values;
 #[path = "file_field_write.rs"]
 mod file_field_write;
+#[path = "full_text_search.rs"]
+mod full_text_search;
 #[path = "generated_client_csrf.rs"]
 mod generated_client_csrf;
 #[path = "graphql_aggregates.rs"]
@@ -95,3 +97,5 @@ mod v1_table_history;
 mod v1_table_reads;
 #[path = "v1_table_writes.rs"]
 mod v1_table_writes;
+#[path = "vector_fields.rs"]
+mod vector_fields;

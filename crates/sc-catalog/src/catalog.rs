@@ -340,6 +340,8 @@ impl Catalog {
         // and a database that cannot say is one without geometry, not a
         // catalog that cannot start.
         let _ = catalog.primary.detect_spatial().await;
+        // And pgvector (TODO-agent-skills AS2.2), on the same terms.
+        let _ = catalog.primary.detect_vector().await;
         catalog.reload().await?;
         Ok(catalog)
     }

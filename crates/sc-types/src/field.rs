@@ -230,6 +230,14 @@ pub struct FormField {
     /// What to tell the admin when [`pattern`](FormField::pattern) does not
     /// match — v1's `attributes.re_invalid_error`.
     pub pattern_error: Option<String>,
+    /// The environment variable a **blank** value leaves the job to —
+    /// `ANDROID_HOME` for the React Native module's SDK directory. The admin UI
+    /// shows the variable's value on the server under the empty control, so a
+    /// cleared setting that still takes effect from the environment says so.
+    ///
+    /// Presentation only, like [`sublabel`](FormField::sublabel): the module
+    /// itself decides what a blank value means.
+    pub env_fallback: Option<String>,
     // Post-MVP (§6.2, §6.3, §12): `fieldview: FieldViewRef` and
     // `visibility: Option<Formula>`. Both name types that do not exist yet —
     // fieldviews and formulas are out of MVP scope — so they are left out rather
@@ -254,6 +262,7 @@ impl FormField {
             sublabel: None,
             pattern: None,
             pattern_error: None,
+            env_fallback: None,
         }
     }
 
@@ -269,6 +278,13 @@ impl FormField {
     /// [`sublabel`](FormField::sublabel)).
     pub fn sublabel(mut self, text: impl Into<String>) -> FormField {
         self.sublabel = Some(text.into());
+        self
+    }
+
+    /// Say that a blank value leaves the job to environment variable `name`
+    /// (see [`env_fallback`](FormField::env_fallback)).
+    pub fn env_fallback(mut self, name: impl Into<String>) -> FormField {
+        self.env_fallback = Some(name.into());
         self
     }
 

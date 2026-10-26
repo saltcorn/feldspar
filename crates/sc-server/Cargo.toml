@@ -62,6 +62,7 @@ sc-python.workspace = true
 # arrive a layer above in the next phase; this crate needs the provider seam
 # because it is the one that serves the admin API.
 sc-llm.workspace = true
+sc-mcp.workspace = true
 # The agents themselves (§11.2): the record, the trait seam, the loop and the
 # runs the chat socket drives. `sc-core-traits` is the built-in trait set the
 # registry is assembled from — the same arrangement `sc-core-actions` has with
@@ -207,6 +208,10 @@ path = "tests/it.rs"
 [[test]]
 name = "build_updates_client"
 path = "tests/build_updates_client.rs"
+
+[[test]]
+name = "build_jobs"
+path = "tests/build_jobs.rs"
 
 [[test]]
 name = "build_from_a_sentence"

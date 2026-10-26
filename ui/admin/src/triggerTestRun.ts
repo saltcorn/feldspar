@@ -68,7 +68,7 @@ export function rowSummary(row: unknown): string | null {
 /** Whether this trigger's event carries a row, and so whether "no row" is a
  * thing worth saying about it. Mirrors `EventKind::is_table_event`. */
 export function isTableEvent(when: string): boolean {
-  return when === "insert" || when === "update" || when === "delete";
+  return ["insert", "update", "insert_or_update", "delete"].includes(when);
 }
 
 /** The outcome of a test run that reached the action, either way. */

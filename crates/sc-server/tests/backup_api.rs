@@ -142,10 +142,15 @@ struct Server {
     /// Where this server's file store keeps its files.
     files: std::path::PathBuf,
     db: TestDb,
+    _engine: Arc<sc_workflow::WorkflowEngineTask>,
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
+    setup_in(TestDb::new().await?).await
+}
+
+/// [`setup`] over a database the caller made — one with pgvector, say.
+async fn setup_in(db: TestDb) -> sc_error::Result<Server> {
     // Neutralise any `users` table inherited from the template database before
     // bootstrap introspects, exactly as the other server tests do.
     db.client()
@@ -169,12 +174,16 @@ async fn setup() -> sc_error::Result<Server> {
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
     sc_llm::bootstrap_llm_providers(&catalog).await?;
+    sc_mcp::bootstrap_mcp_servers(&catalog).await?;
     sc_viewpattern::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_db_connections(&catalog).await?;
     sc_analytics::bootstrap_workspaces(&catalog).await?;
     let agents = install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
+    // Standing in for `serve`, which starts the engine: a restored workflow is
+    // run here, not only read back.
+    let (engine, _handle) = sc_server::start_workflow_engine(&catalog, &dispatcher);
     // A scripted stream provider, so a stream can be saved and restored without
     // a broker: what matters here is the row, secret setting and all.
     let mut streams = sc_stream::StreamRegistry::new();
@@ -233,6 +242,7 @@ async fn setup() -> sc_error::Result<Server> {
         catalog,
         files: temp_dir(),
         db,
+        _engine: engine,
     })
 }
 
@@ -1047,7 +1057,8 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     // is the only way to recognise it in the v1 database afterwards.
     assert_eq!(imported["extra"]["legacy_id"], json!(1));
     assert_eq!(imported["role"], json!(1));
-    assert!(warned("account was imported with no password"), "{report}");
+    // Its v1 bcrypt hash came with it, so it signs in with the password it had.
+    assert!(!warned("with no password"), "{report}");
 
     // --- the file ------------------------------------------------------------
     let (status, listing) = server
@@ -1076,7 +1087,16 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     //
     // Every one of these is a line an admin reads on the screen that ran the
     // restore, which is the difference between an import and a surprise.
-    assert!(warned("`AddBook`") && warned("workflow"), "{report}");
+    // v1's workflow crossed step for step: one form, its answer under the step.
+    assert!(!warned("`AddBook`"), "{report}");
+    assert!(
+        report["restored"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == &json!("trigger `AddBook`: with its workflow (1 step)")),
+        "{report}"
+    );
     // A v1 action this system does not have is refused by name by the ordinary
     // trigger validation, not quietly turned into the nearest thing that exists.
     assert!(warned("TrimPages") && warned("modify_row"), "{report}");
@@ -1292,6 +1312,299 @@ async fn restore_everything(server: &mut Server, archive: &[u8]) -> Value {
         .await;
     assert_eq!(status, StatusCode::OK, "{report}");
     report
+}
+
+/// A Saltcorn 1 backup of an order-entry app with the things the first import
+/// left behind (a redacted copy of a real one: its LLM key is a placeholder):
+/// stored calculated fields — two aggregations, a calculation and a join — a
+/// key from `users` onto `order`, a bcrypt password, an `Agent` action from
+/// v1's agents plugin and a workflow.
+const V1_ORDERS_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-feldsparimport.zip");
+
+/// What the import of [`V1_ORDERS_BACKUP`] has to get right, read back through
+/// the admin API and then *used*: the calculated fields compute, the user's
+/// reference is there, the agent has its tools, and the workflow runs.
+#[tokio::test]
+async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported()
+-> sc_error::Result<()> {
+    let mut server = setup().await?;
+    let report = restore_everything(&mut server, V1_ORDERS_BACKUP).await;
+    let warned = |text: &str| report_has(&report, "warnings", text);
+
+    // --- stored calculated fields, as calculated fields ----------------------
+    let calc = |fields: &Value, name: &str| -> Value {
+        fields
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no `{name}`: {fields} / {report}"))["kind"]
+            .clone()
+    };
+    let (_, order) = server
+        .client
+        .send("GET", "/api/tables/order/fields", None)
+        .await;
+    let (_, lines) = server
+        .client
+        .send("GET", "/api/tables/order_line/fields", None)
+        .await;
+    assert_eq!(
+        calc(&order, "total")["expression"],
+        json!("order_lineↃorder.sum(r => r.qty*r.unit_price)")
+    );
+    assert_eq!(
+        calc(&order, "n_for_gift")["expression"],
+        json!("order_lineↃorder.filter(r => r.gift === true).length")
+    );
+    assert_eq!(calc(&lines, "sum")["expression"], json!("qty*unit_price"));
+    assert_eq!(
+        calc(&lines, "for_export")["expression"],
+        json!("orderⱵfor_export")
+    );
+
+    // And they compute, from the rows v1 stored the inputs of.
+    let (status, rows) = server
+        .client
+        .send("GET", "/api/tables/order/rows", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    let first = &rows[0];
+    assert_eq!(first["name"], json!("My things"));
+    assert!(
+        (first["total"].as_f64().unwrap_or_default() - 9.95).abs() < 1e-9,
+        "{rows}"
+    );
+    assert_eq!(first["n_for_gift"], json!(1), "{rows}");
+
+    // --- the users table's key onto a table of the backup ---------------------
+    let (_, user_fields) = server
+        .client
+        .send("GET", "/api/tables/users/fields", None)
+        .await;
+    assert_eq!(
+        calc(&user_fields, "current_order")["target_table"],
+        json!("order")
+    );
+    assert!(!warned("current_order"), "{report}");
+
+    // --- the account keeps its v1 password ------------------------------------
+    let hash: String = server
+        .db
+        .client()
+        .await?
+        .query_one(
+            "SELECT password_hash FROM users WHERE email = 'tanielsen@gmail.com'",
+            &[],
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?
+        .get(0);
+    assert!(hash.starts_with("$2a$10$"), "{hash}");
+    assert!(!warned("with no password"), "{report}");
+
+    // --- the agent, its tools and its provider --------------------------------
+    let (_, agents) = server.client.send("GET", "/api/agents", None).await;
+    let agent = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == json!("MyAgent"))
+        .unwrap_or_else(|| panic!("the agent: {agents} / {report}"));
+    assert_eq!(agent["provider"], json!("openai"));
+    let traits: Vec<&str> = agent["traits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["trait"].as_str())
+        .collect();
+    assert_eq!(
+        traits,
+        vec!["run_js_code", "query_table", "insert_row"],
+        "{agent}"
+    );
+    // The JavaScript tool is the agent's own, its code as v1 wrote it.
+    assert_eq!(
+        agent["traits"][0]["config"]["tool_name"],
+        json!("word_of_the_day")
+    );
+    assert_eq!(
+        agent["traits"][0]["config"]["code"],
+        json!("return \"Strawberry\"")
+    );
+
+    // --- the workflow, which runs ---------------------------------------------
+    let (_, triggers) = server.client.send("GET", "/api/triggers", None).await;
+    let id_of = |name: &str| {
+        triggers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no trigger `{name}`: {triggers} / {report}"))["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert!(
+        report_has(&report, "restored", "with its workflow (4 steps)"),
+        "{report}"
+    );
+    let (status, ran) = server
+        .client
+        .send(
+            "POST",
+            &format!("/api/triggers/{}/run", id_of("MyWorkflow")),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{ran}");
+    assert_eq!(ran["result"]["state"], json!("done"), "{ran}");
+    // v1's `{id}` reads `id` out of the run's context, which this loop never
+    // sets — v1 binds it as `id = NULL` — so, faithfully, it matches no order
+    // and nothing is discounted.
+    let (_, rows) = server
+        .client
+        .send("GET", "/api/tables/order/rows", None)
+        .await;
+    assert_eq!(rows[0]["discount"], Value::Null, "{ran} {rows}");
+
+    // The same workflow with the query v1 needed — `{id: order.id}`, the loop's
+    // item — into a fresh server: the loop and the row update do run.
+    let fixed = with_pack(V1_ORDERS_BACKUP, |pack| {
+        let steps = pack["triggers"][1]["steps"].as_array_mut().unwrap();
+        let modify = steps
+            .iter_mut()
+            .find(|s| s["name"] == json!("step3"))
+            .unwrap();
+        modify["configuration"]["query"] = json!("{id: order.id}");
+    });
+    let mut second = setup().await?;
+    restore_everything(&mut second, &fixed).await;
+    let (_, triggers) = second.client.send("GET", "/api/triggers", None).await;
+    let id = triggers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("MyWorkflow"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, ran) = second
+        .client
+        .send("POST", &format!("/api/triggers/{id}/run"), Some(json!({})))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{ran}");
+    assert_eq!(ran["result"]["state"], json!("done"), "{ran}");
+    let (_, rows) = second
+        .client
+        .send("GET", "/api/tables/order/rows", None)
+        .await;
+    assert_eq!(rows[0]["discount"], json!(0.15), "{ran} {rows}");
+
+    // …and not a trigger: nothing was added to the instance's trigger list.
+    assert!(
+        !triggers
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == json!("word_of_the_day")),
+        "{triggers}"
+    );
+    Ok(())
+}
+
+/// Two things a real v1 import tripped on: a key whose summary field is a
+/// (stored) calculated field of its target, and an `Array_Agg` aggregation. And
+/// a summary field v1 kept after the field it named was deleted.
+#[tokio::test]
+async fn a_v1_calculated_summary_field_and_an_array_aggregation_are_imported()
+-> sc_error::Result<()> {
+    let archive = with_pack(V1_ORDERS_BACKUP, |pack| {
+        let tables = pack["tables"].as_array_mut().unwrap();
+        for table in tables.iter_mut() {
+            let name = table["name"].as_str().unwrap().to_owned();
+            let fields = table["fields"].as_array_mut().unwrap();
+            match name.as_str() {
+                "order" => {
+                    fields.push(json!({
+                        "name": "label", "label": "Label", "type": "String",
+                        "calculated": true, "stored": true, "expression": "name + '!'",
+                        "attributes": {}
+                    }));
+                    fields.push(json!({
+                        "name": "qtys", "label": "Qtys", "type": "JSON",
+                        "calculated": true, "stored": true, "expression": "__aggregation",
+                        "attributes": { "table": "order_line", "ref": "order",
+                                        "agg_field": "qty@Integer", "aggregate": "Array_Agg",
+                                        "aggwhere": "" }
+                    }));
+                }
+                "order_line" | "users" => {
+                    let summary = if name == "users" {
+                        "deleted_long_ago"
+                    } else {
+                        "label"
+                    };
+                    for field in fields.iter_mut() {
+                        if field["type"] == json!("Key") {
+                            field["attributes"]["summary_field"] = json!(summary);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    let mut server = setup().await?;
+    let report = restore_everything(&mut server, &archive).await;
+    let kind = |fields: &Value, name: &str| -> Value {
+        fields
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no `{name}`: {fields} / {report}"))["kind"]
+            .clone()
+    };
+    let (_, lines) = server
+        .client
+        .send("GET", "/api/tables/order_line/fields", None)
+        .await;
+    assert_eq!(
+        kind(&lines, "order")["summary_field"],
+        json!("label"),
+        "{report}"
+    );
+    let (_, users) = server
+        .client
+        .send("GET", "/api/tables/users/fields", None)
+        .await;
+    assert_eq!(
+        kind(&users, "current_order")["summary_field"],
+        json!("id"),
+        "{report}"
+    );
+    let (_, order) = server
+        .client
+        .send("GET", "/api/tables/order/fields", None)
+        .await;
+    assert_eq!(
+        kind(&order, "qtys")["expression"],
+        json!("order_lineↃorder.map(r => r.qty)")
+    );
+    assert!(!report_has(&report, "warnings", "qtys"), "{report}");
+    assert!(!report_has(&report, "warnings", "summary"), "{report}");
+
+    let (status, rows) = server
+        .client
+        .send("GET", "/api/tables/order/rows", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(rows[0]["label"], json!("My things!"), "{rows}");
+    assert_eq!(rows[0]["qtys"], json!([5]), "{rows}");
+    Ok(())
 }
 
 /// A server with the `BooksDB` store defined at its own temp path, which is
@@ -1544,6 +1857,91 @@ async fn what_a_backup_includes_is_remembered_as_what_was_left_out() -> sc_error
 
 /// Rows without their table's metadata would be rows nothing could read, so the
 /// server narrows the payload rather than trusting it.
+/// A vector field, its values and its HNSW index cross a backup
+/// (TODO-agent-skills AS2.6): the field as `vector(3)` with its attributes,
+/// each value as the array it was, and the index as the constraint it is.
+#[tokio::test]
+async fn a_vector_field_its_values_and_its_index_travel_in_a_backup() -> sc_error::Result<()> {
+    let Some(db) = TestDb::with_pgvector().await? else {
+        return Ok(());
+    };
+    let mut source = setup_in(db).await?;
+    let client = &mut source.client;
+    let (status, body) = client
+        .send("POST", "/api/tables", Some(json!({ "name": "docs" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for field in [
+        json!({ "name": "id", "type": "int", "primary_key": true }),
+        json!({ "name": "title", "type": "text" }),
+        json!({ "name": "embedding", "type": "vector", "attributes": { "dimensions": 3 } }),
+    ] {
+        let (status, body) = client
+            .send("POST", "/api/tables/docs/fields", Some(field))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/tables/docs/constraints",
+            Some(json!({ "type": "vector_index", "fields": ["embedding"] })),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    for (title, v) in [("east", json!([1, 0, 0])), ("north", json!([0, 0.5, 0.25]))] {
+        let (status, body) = client
+            .send(
+                "POST",
+                "/api/tables/docs/rows",
+                Some(json!({ "title": title, "embedding": v })),
+            )
+            .await;
+        assert!(status.is_success(), "{body}");
+    }
+    let archive = backup_everything(&mut source).await;
+    let rows = entry(&archive, "tables/docs/rows.ndjson");
+    assert!(rows.contains("[0.0,0.5,0.25]"), "{rows}");
+
+    let Some(db) = TestDb::with_pgvector().await? else {
+        return Ok(());
+    };
+    let mut target = setup_in(db).await?;
+    restore_everything(&mut target, &archive).await;
+    let (status, fields) = target
+        .client
+        .send("GET", "/api/tables/docs/fields", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{fields}");
+    let embedding = fields
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "embedding")
+        .cloned()
+        .expect("the vector field");
+    assert_eq!(embedding["type"], json!("vector(3)"), "{embedding}");
+    let (status, rows) = target
+        .client
+        .send("GET", "/api/tables/docs/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(rows[1]["embedding"], json!([0.0, 0.5, 0.25]), "{rows}");
+    let (_, constraints) = target
+        .client
+        .send("GET", "/api/tables/docs/constraints", None)
+        .await;
+    assert!(
+        constraints
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == "vector_index" && c["fields"] == json!(["embedding"])),
+        "{constraints}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn rows_are_never_backed_up_without_their_table() -> sc_error::Result<()> {
     let mut server = setup().await?;
@@ -1852,6 +2250,29 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// The same zip with its `pack.json` edited by `edit` — a variant of a v1
+/// fixture without a second binary checked in.
+fn with_pack(archive: &[u8], edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+    let mut source = zip::ZipArchive::new(std::io::Cursor::new(archive)).expect("a zip");
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut edit = Some(edit);
+    for i in 0..source.len() {
+        let mut file = source.by_index(i).unwrap();
+        let name = file.name().to_owned();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        if name == "pack.json" {
+            let mut pack: Value = serde_json::from_slice(&bytes).unwrap();
+            (edit.take().unwrap())(&mut pack);
+            bytes = serde_json::to_vec(&pack).unwrap();
+        }
+        out.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut out, &bytes).unwrap();
+    }
+    out.finish().unwrap().into_inner()
+}
+
 /// The same zip without the entries `drop` picks out.
 fn without_entries(archive: &[u8], drop: impl Fn(&str) -> bool) -> Vec<u8> {
     let mut source = zip::ZipArchive::new(std::io::Cursor::new(archive)).expect("a zip");
@@ -2032,6 +2453,70 @@ async fn furnish_llm(server: &mut Server) -> sc_error::Result<()> {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    Ok(())
+}
+
+/// An agent whose trait still fails once the triggers are in — it names a
+/// trigger the backup does not carry — is restored without that trait, which is
+/// reported, rather than refused whole.
+#[tokio::test]
+async fn an_agent_is_restored_without_the_trait_naming_a_missing_trigger() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    furnish_llm(&mut source).await?;
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/triggers",
+            Some(json!({
+                "name": "say_hello", "description": "says hello", "when": "none",
+                "channel": null, "action": "run_js_code",
+                "configuration": { "code": "return 'hello'" },
+                "min_role": null, "enabled": true,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/agents",
+            Some(json!({
+                "name": "greeter", "description": "", "provider": "house", "model": null,
+                "system_prompt": "", "min_role": null, "attributes": {},
+                "traits": [
+                    { "trait": "run_trigger", "config": { "trigger": "say_hello" } },
+                    { "trait": "run_js_code", "config": { "tool_name": "word",
+                        "description": "a word", "code": "return 'yes'", "arguments": [] } },
+                ],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let archive = without_entries(&backup_everything(&mut source).await, |name| {
+        name == "triggers.json"
+    });
+
+    let mut target = setup().await?;
+    let report = restore_everything(&mut target, &archive).await;
+    assert!(
+        report_has(&report, "restored", "agent `greeter`"),
+        "{report}"
+    );
+    assert!(
+        report_has(
+            &report,
+            "warnings",
+            "agent `greeter`: the trait `run_trigger`"
+        ),
+        "{report}"
+    );
+    let agent = sc_agent::load_agent_by_name(&target.catalog, "greeter")
+        .await?
+        .expect("the agent, restored");
+    let traits: Vec<&str> = agent.traits.iter().map(|t| t.trait_.as_str()).collect();
+    assert_eq!(traits, ["run_js_code"]);
     Ok(())
 }
 
@@ -3546,4 +4031,131 @@ async fn stored_passwords(server: &Server) -> sc_error::Result<Vec<Option<String
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     Ok(rows.iter().map(|r| r.get::<_, Option<String>>(0)).collect())
+}
+
+/// MCP servers travel beside the LLM providers, their headers (a credential)
+/// with them, as a provider's API key does (TODO-agent-skills AS4.5).
+#[tokio::test]
+async fn mcp_servers_travel_with_their_headers() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    let def = sc_mcp::McpServerDef::new("docs", "https://mcp.example.com/mcp")
+        .header("Authorization", "Bearer mcp-backed-up");
+    sc_mcp::save_mcp_server(&source.catalog, &def).await?;
+
+    let (_, options) = source.client.send("GET", "/api/backup", None).await;
+    assert_eq!(options["available"]["llm_providers"], json!(1), "{options}");
+    let archive = backup_everything(&mut source).await;
+    assert!(entry(&archive, "mcp-servers.json").contains("Bearer mcp-backed-up"));
+
+    let mut target = setup().await?;
+    let report = restore_everything(&mut target, &archive).await;
+    assert!(
+        report_has(&report, "restored", "MCP server `docs`"),
+        "{report}"
+    );
+    let restored = sc_mcp::require_mcp_server(&target.catalog, "docs").await?;
+    assert_eq!(restored.url, def.url);
+    assert_eq!(restored.headers, def.headers);
+    assert_eq!(restored.id, def.id, "its identity, where it is free");
+    Ok(())
+}
+
+/// [`V1_ORDERS_BACKUP`] with an agent using every skill of v1's agents plugin,
+/// its memory table, a vector table and a memory consolidation
+/// (`fixtures/make-v1-agents-fixture.py`).
+const V1_AGENTS_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-feldsparimport-agents.zip");
+
+/// TODO-agent-skills AS12: every v1 skill crosses as a trait the restore
+/// accepts, and what the skills need outside the agent is there — the
+/// memories, the MCP server, the full-text constraint, the vector field's
+/// model, the provider's media models and the consolidation trigger.
+#[tokio::test]
+async fn a_v1_agent_with_every_skill_is_restored_with_every_trait() -> sc_error::Result<()> {
+    // The vector table needs pgvector.
+    let Some(db) = TestDb::with_pgvector().await? else {
+        return Ok(());
+    };
+    let mut server = setup_in(db).await?;
+    let report = restore_everything(&mut server, V1_AGENTS_BACKUP).await;
+
+    // Nothing about the agent is skipped but the SKILL.md to copy, and no
+    // trait was left out of it.
+    let about_agent: Vec<&Value> = report["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w.as_str().unwrap_or_default().contains("EverySkill"))
+        .collect();
+    assert_eq!(about_agent.len(), 1, "{report}");
+    assert!(
+        about_agent[0].as_str().unwrap().contains("External Skill"),
+        "{report}"
+    );
+
+    let (_, agents) = server.client.send("GET", "/api/agents", None).await;
+    let agent = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == json!("EverySkill"))
+        .unwrap_or_else(|| panic!("the agent: {agents} / {report}"));
+    assert_eq!(agent["traits"].as_array().unwrap().len(), 21, "{agent}");
+    assert_eq!(
+        agent["attributes"]["pickable_models"][0]["model"],
+        json!("gpt-5-mini"),
+        "{agent}"
+    );
+
+    // The memories moved into the memory store, filed under the agent.
+    let (status, memories) = server
+        .client
+        .send("GET", "/api/agent-memories?agent=EverySkill", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{memories}");
+    let memories = memories.as_array().unwrap().clone();
+    assert_eq!(memories.len(), 3, "{memories:?} / {report}");
+    assert!(
+        memories
+            .iter()
+            .any(|m| m["kind"] == json!("preferences") && m["personal"] == json!(true)),
+        "{memories:?}"
+    );
+    let (_, tables) = server.client.send("GET", "/api/tables", None).await;
+    assert!(
+        !tables.to_string().contains("AgentLongTermMemory"),
+        "{tables}"
+    );
+
+    // What the skills need of the rest of the installation.
+    let (_, servers) = server.client.send("GET", "/api/mcp-servers", None).await;
+    assert!(servers.to_string().contains("\"docs\""), "{servers}");
+    let (_, constraints) = server
+        .client
+        .send("GET", "/api/tables/document/constraints", None)
+        .await;
+    assert!(
+        constraints
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == json!("full_text_search")),
+        "{constraints}"
+    );
+    let (_, triggers) = server.client.send("GET", "/api/triggers", None).await;
+    let consolidate = triggers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("ConsolidateMemories"))
+        .unwrap_or_else(|| panic!("the consolidation: {triggers} / {report}"));
+    assert_eq!(consolidate["action"], json!("consolidate_memory"));
+
+    // Restoring the same file again does not write the memories twice.
+    restore_everything(&mut server, V1_AGENTS_BACKUP).await;
+    let (_, again) = server
+        .client
+        .send("GET", "/api/agent-memories?agent=EverySkill", None)
+        .await;
+    assert_eq!(again.as_array().unwrap().len(), 3, "{again}");
+    Ok(())
 }

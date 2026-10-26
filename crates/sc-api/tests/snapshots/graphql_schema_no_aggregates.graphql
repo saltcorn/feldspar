@@ -74,11 +74,11 @@ type Departments {
 	"""
 	Rows of `employees` whose `department` references this row.
 	"""
-	employees_by_department(where: EmployeesBoolExp, order_by: [EmployeesOrderBy!], limit: Int, offset: Int): [Employees!]
+	employees_by_department(where: EmployeesBoolExp, search: String, order_by: [EmployeesOrderBy!], limit: Int, offset: Int): [Employees!]
 	"""
 	Rows of `employees` whose `managed_department` references this row.
 	"""
-	employees_by_managed_department(where: EmployeesBoolExp, order_by: [EmployeesOrderBy!], limit: Int, offset: Int): [Employees!]
+	employees_by_managed_department(where: EmployeesBoolExp, search: String, order_by: [EmployeesOrderBy!], limit: Int, offset: Int): [Employees!]
 }
 
 input DepartmentsBoolExp {
@@ -257,7 +257,7 @@ type Query {
 	"""
 	Rows of `departments`.
 	"""
-	departments(where: DepartmentsBoolExp, order_by: [DepartmentsOrderBy!], limit: Int, offset: Int): [Departments!]!
+	departments(where: DepartmentsBoolExp, search: String, order_by: [DepartmentsOrderBy!], limit: Int, offset: Int): [Departments!]!
 	"""
 	The row of `departments` with this primary key.
 	"""
@@ -265,7 +265,7 @@ type Query {
 	"""
 	Rows of `employees`.
 	"""
-	employees(where: EmployeesBoolExp, order_by: [EmployeesOrderBy!], limit: Int, offset: Int): [Employees!]!
+	employees(where: EmployeesBoolExp, search: String, order_by: [EmployeesOrderBy!], limit: Int, offset: Int): [Employees!]!
 	"""
 	The row of `employees` with this primary key.
 	"""

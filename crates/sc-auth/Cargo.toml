@@ -23,6 +23,7 @@ sc-types.workspace = true
 # linked here — the parser and the two value conversions are all that is used.
 sc-expr.workspace = true
 argon2.workspace = true
+bcrypt.workspace = true
 sha2.workspace = true
 # The base64url of an API token's random bytes (§13.6).
 base64.workspace = true

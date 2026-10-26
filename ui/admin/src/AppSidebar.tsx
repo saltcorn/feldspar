@@ -218,9 +218,17 @@ function AppLink({
       )}
     </>
   );
+  const buildHost = link.target?.readiness.build_host;
+  // A variable no setting fills still reaches the build from the server's
+  // environment; the tooltip says so, or clearing the setting seems ignored.
+  const fromEnvironment = link.target?.readiness.from_environment ?? [];
   const title = missing.length
     ? missing.join("\n")
-    : folded
+    : buildHost
+      ? t("Builds on the build host {host}", { host: buildHost })
+      : fromEnvironment.length
+      ? fromEnvironment.join("\n")
+      : folded
       ? text
       : link.id === "build"
         ? "Rewrite this application's generated client, hooks and schema from its current definition, then build it"

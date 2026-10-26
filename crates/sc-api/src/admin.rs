@@ -627,7 +627,10 @@ pub fn admin_endpoints() -> EndpointSet {
         // scrollbar has to be as long as the rows the filter row leaves. A count
         // that ignored the filters would size the scroller to the whole table
         // and leave the last screen of it empty.
-        .query([QueryParam::new("filter", ValueType::Text).map()])
+        .query([
+            QueryParam::new("search", ValueType::Text),
+            QueryParam::new("filter", ValueType::Text).map(),
+        ])
         .output(TypeSchema::struct_of([StructField::new(
             "count",
             TypeSchema::int(),
@@ -1207,6 +1210,15 @@ pub fn admin_endpoints() -> EndpointSet {
     set.register(
         Endpoint::new("listLlmProviders", Method::Get, api().lit("llm-providers"))
             .output(TypeSchema::array(llm_provider_schema()))
+            // Read-only, and its keys come back as the secret sentinel: an
+            // agent setting up another agent needs the provider and model
+            // names `createAgent` takes, and none of the credentials.
+            .mcp(
+                "List the LLM providers: each one's name and id (what an agent's \
+                 `provider` names), backend and settings, with API keys masked. \
+                 Read the models of one with `listLlmModels`. Providers are set up \
+                 by an admin in the admin UI, not over this API.",
+            )
             .auth(AuthRequirement::admin()),
     );
 
@@ -1292,6 +1304,12 @@ pub fn admin_endpoints() -> EndpointSet {
                 .lit("models"),
         )
         .output(TypeSchema::array(llm_model_schema()))
+        .mcp(
+            "List a provider's models: each one's name (what an agent's `model` \
+             names), kind (chat, embedding, image, speech), whether it is the \
+             provider's default, and its settings — prices, context window, \
+             reasoning effort.",
+        )
         .auth(AuthRequirement::admin()),
     );
 
@@ -1335,8 +1353,9 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
-    // The model settings a backend declares, so the model form renders
-    // controls for a backend it knows nothing about.
+    // The model settings a backend declares for a kind of model (chat when
+    // `kind` is left out), so the model form renders controls for a backend
+    // it knows nothing about. A kind the backend does not serve is refused.
     set.register(
         Endpoint::new(
             "listLlmModelSettings",
@@ -1346,6 +1365,7 @@ pub fn admin_endpoints() -> EndpointSet {
                 .param("backend", ValueType::Text)
                 .lit("model-settings"),
         )
+        .query([QueryParam::new("kind", ValueType::Text)])
         .output(TypeSchema::array(form_field_schema()))
         .auth(AuthRequirement::admin()),
     );
@@ -1388,6 +1408,8 @@ pub fn admin_endpoints() -> EndpointSet {
                 StructField::new("config", TypeSchema::json()),
                 StructField::new("name", TypeSchema::text()),
                 StructField::new("model_config", TypeSchema::optional(TypeSchema::json())),
+                // The model's kind; left out is chat.
+                StructField::new("kind", TypeSchema::optional(TypeSchema::text())),
             ]))
             .output(TypeSchema::struct_of([
                 StructField::new("ok", TypeSchema::bool()),
@@ -1400,6 +1422,119 @@ pub fn admin_endpoints() -> EndpointSet {
                 StructField::new("prices", TypeSchema::json()),
             ]))
             .auth(AuthRequirement::admin()),
+    );
+
+    // --- MCP servers (TODO-agent-skills AS4) ---------------------------------
+    //
+    // Remote MCP servers an agent's `mcp_server` trait calls. A header's value
+    // is a secret, kept as a provider's API key is: it reads back as the
+    // sentinel, and a save that sends the sentinel back keeps what is stored.
+
+    set.register(
+        Endpoint::new("listMcpServers", Method::Get, api().lit("mcp-servers"))
+            .output(TypeSchema::array(mcp_server_schema()))
+            .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new("createMcpServer", Method::Post, api().lit("mcp-servers"))
+            .input(TypeSchema::Struct(mcp_server_fields()))
+            .output(mcp_server_schema())
+            .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "updateMcpServer",
+            Method::Put,
+            api().lit("mcp-servers").param("id", ValueType::Uuid),
+        )
+        .input(TypeSchema::Struct(mcp_server_fields()))
+        .output(mcp_server_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "deleteMcpServer",
+            Method::Delete,
+            api().lit("mcp-servers").param("id", ValueType::Uuid),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "deleted",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
+    );
+
+    // **Test.** Connects to the server the body describes (a saved one's
+    // header sentinels resolved when `id` names it), lists its tools and
+    // reports them, or the server's own refusal as `ok: false`: the refusal is
+    // the answer to "does this work?".
+    set.register(
+        Endpoint::new("testMcpServer", Method::Post, api().lit("mcp-server-test"))
+            .input(TypeSchema::Struct({
+                let mut fields = vec![StructField::new(
+                    "id",
+                    TypeSchema::optional(TypeSchema::uuid()),
+                )];
+                fields.extend(mcp_server_fields());
+                fields
+            }))
+            .output(mcp_server_test_schema())
+            .auth(AuthRequirement::admin()),
+    );
+
+    // A saved server's tools: the cached listing, or a fresh one with
+    // `refresh`. A server that cannot be reached is `ok: false`, as for Test.
+    set.register(
+        Endpoint::new(
+            "listMcpServerTools",
+            Method::Get,
+            api()
+                .lit("mcp-servers")
+                .param("id", ValueType::Uuid)
+                .lit("tools"),
+        )
+        .query([QueryParam::new("refresh", ValueType::Bool)])
+        .output(mcp_server_test_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    // --- agent memory (TODO-agent-skills AS8.3) -----------------------------
+    //
+    // What agents' `memory` traits stored, personal and shared, for the admin
+    // to read and delete. Every user's memories, which is why it is admin-only:
+    // a personal memory is otherwise only ever read back for its own user.
+
+    set.register(
+        Endpoint::new(
+            "listAgentMemories",
+            Method::Get,
+            api().lit("agent-memories"),
+        )
+        .query([
+            QueryParam::new("agent", ValueType::Text),
+            QueryParam::new("user", ValueType::Text),
+            QueryParam::new("kind", ValueType::Text),
+            QueryParam::new("search", ValueType::Text),
+            QueryParam::new("limit", ValueType::Int),
+        ])
+        .output(TypeSchema::array(agent_memory_schema()))
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "deleteAgentMemory",
+            Method::Delete,
+            api().lit("agent-memories").param("id", ValueType::Int),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "deleted",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
     );
 
     // --- modules (Saltcorn v1 JavaScript plugins) ---------------------------
@@ -1776,6 +1911,22 @@ pub fn admin_endpoints() -> EndpointSet {
              made and what came back. This is where to look when an agent or a \
              workflow did not do what was expected.",
         )
+        .auth(AuthRequirement::admin()),
+    );
+
+    // One display part a run's tool showed the person (TODO-agent-skills AS6.3):
+    // rows as `data`, an image or a clip as `content_base64`.
+    set.register(
+        Endpoint::new(
+            "getRunPart",
+            Method::Get,
+            api()
+                .lit("runs")
+                .param("id", ValueType::Uuid)
+                .lit("parts")
+                .param("part", ValueType::Uuid),
+        )
+        .output(run_part_schema())
         .auth(AuthRequirement::admin()),
     );
 
@@ -3282,6 +3433,53 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // --- build hosts (`TODO-build-hosts.md`) ---------------------------------
+    // The machines that build an application's targets for this server: a Mac
+    // for iOS while the server runs on Linux. Its agent authenticates with the
+    // token `createBuildHost` answers, once, on `/build-agent/*` and nothing
+    // else. Deleting a host is how its token is revoked.
+
+    set.register(
+        Endpoint::new("listBuildHosts", Method::Get, api().lit("build-hosts"))
+            .output(TypeSchema::array(build_host_schema()))
+            .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new("createBuildHost", Method::Post, api().lit("build-hosts"))
+            .input(build_host_input_schema())
+            .output(TypeSchema::struct_of([
+                StructField::new("host", build_host_schema()),
+                // Shown once: the table keeps only its hash.
+                StructField::new("token", TypeSchema::text()),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "updateBuildHost",
+            Method::Put,
+            api().lit("build-hosts").param("id", ValueType::Uuid),
+        )
+        .input(build_host_input_schema())
+        .output(build_host_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "deleteBuildHost",
+            Method::Delete,
+            api().lit("build-hosts").param("id", ValueType::Uuid),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "deleted",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // --- triggers -----------------------------------------------------------
     // A trigger is one event bound to one configured action (§10.2), stored in
     // `_fd_triggers`. These endpoints are the row ⇄ live-set path the SPA
@@ -4681,6 +4879,33 @@ fn api_token_grants_schema() -> TypeSchema {
     )
 }
 
+/// A build host as the admin API answers it: never its token or the token's hash.
+fn build_host_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("targets", TypeSchema::array(TypeSchema::text())),
+        StructField::new("created_at", TypeSchema::timestamp()),
+        StructField::new(
+            "last_seen_at",
+            TypeSchema::optional(TypeSchema::timestamp()),
+        ),
+        // Heard from within the last three heartbeats, and not turned away.
+        StructField::new("online", TypeSchema::bool()),
+        // What its agent last said: version, OS, readiness per target, and
+        // `refused` when the server turned it away (an agent too old).
+        StructField::new("report", TypeSchema::optional(TypeSchema::json())),
+    ])
+}
+
+/// What adding or changing a build host takes.
+fn build_host_input_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("targets", TypeSchema::array(TypeSchema::text())),
+    ])
+}
+
 /// One stored API token, as a list sees it.
 ///
 /// There is no field for the token and none for its hash, which is the same
@@ -4876,6 +5101,7 @@ fn row_read_params() -> Vec<QueryParam> {
         QueryParam::new("order", ValueType::Text),
         QueryParam::new("limit", ValueType::Int),
         QueryParam::new("offset", ValueType::Int),
+        QueryParam::new("search", ValueType::Text),
         QueryParam::new("filter", ValueType::Text).map(),
     ]
 }
@@ -5551,13 +5777,93 @@ fn llm_provider_input_schema() -> TypeSchema {
     TypeSchema::Struct(llm_provider_fields())
 }
 
+/// The fields of an MCP server an admin sets.
+fn mcp_server_fields() -> Vec<StructField> {
+    vec![
+        // Lowercase letters, digits, `-` and `_`: its tools are offered as
+        // `<name>__<tool>`.
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("description", TypeSchema::text()),
+        StructField::new("url", TypeSchema::text()),
+        // `streamable_http` (the default) or `sse`.
+        StructField::new("transport", TypeSchema::optional(TypeSchema::text())),
+        // Sent with every request. **On the way out each value is the
+        // sentinel**; sending it back keeps the stored value.
+        StructField::new(
+            "headers",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("value", TypeSchema::text()),
+            ])),
+        ),
+        StructField::new("allow_private_network", TypeSchema::bool()),
+        // Seconds one call may take; 0 is the default (60).
+        StructField::new("timeout_secs", TypeSchema::int()),
+    ]
+}
+
+/// One stored agent memory (TODO-agent-skills AS8.3).
+fn agent_memory_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::int()),
+        StructField::new("agent", TypeSchema::text()),
+        StructField::new("user_id", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("run_id", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("written_at", TypeSchema::text()),
+        StructField::new("kind", TypeSchema::text()),
+        StructField::new("personal", TypeSchema::bool()),
+        StructField::new("topic", TypeSchema::text()),
+        StructField::new("contents", TypeSchema::text()),
+    ])
+}
+
+/// An MCP server as reported to the admin UI, its header values redacted.
+fn mcp_server_schema() -> TypeSchema {
+    let mut fields = vec![StructField::new("id", TypeSchema::uuid())];
+    fields.extend(mcp_server_fields());
+    TypeSchema::Struct(fields)
+}
+
+/// What testing a server, or listing its tools, answers.
+fn mcp_server_test_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("ok", TypeSchema::bool()),
+        // The server's refusal on failure; a summary on success.
+        StructField::new("message", TypeSchema::text()),
+        StructField::new(
+            "server",
+            TypeSchema::optional(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("version", TypeSchema::text()),
+                StructField::new("protocol_version", TypeSchema::text()),
+                StructField::new("instructions", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("tools_list_changed", TypeSchema::bool()),
+            ])),
+        ),
+        StructField::new(
+            "tools",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("title", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("description", TypeSchema::text()),
+                StructField::new("input_schema", TypeSchema::json()),
+                StructField::new("read_only", TypeSchema::bool()),
+            ])),
+        ),
+    ])
+}
+
 /// The fields of a model row that an admin sets.
 fn llm_model_fields() -> Vec<StructField> {
     vec![
         // The vendor's model id, as sent on the wire.
         StructField::new("name", TypeSchema::text()),
         StructField::new("description", TypeSchema::text()),
-        // At most one per provider: saving one as the default clears the rest.
+        // `chat`, `embedding`, `image` or `speech` (TODO-agent-skills AS3.1);
+        // left out on create is chat. Fixed once saved.
+        StructField::new("kind", TypeSchema::optional(TypeSchema::text())),
+        // At most one per provider and kind: saving one as the default clears
+        // the rest of its kind.
         StructField::new("is_default", TypeSchema::bool()),
         // The model's settings, per the backend's `listLlmModelSettings`.
         // Blank settings are dropped on save and mean the built-in default.
@@ -5982,6 +6288,21 @@ fn run_schema() -> TypeSchema {
     TypeSchema::Struct(fields)
 }
 
+/// One stored display part (TODO-agent-skills AS6.3).
+fn run_part_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        // `rows` | `image` | `audio`.
+        StructField::new("kind", TypeSchema::text()),
+        StructField::new("mime_type", TypeSchema::text()),
+        StructField::new("summary", TypeSchema::text()),
+        // `{ title, view, columns, rows }` for rows, `{ name }` for a file.
+        StructField::new("data", TypeSchema::json()),
+        // The bytes of an image or a clip.
+        StructField::new("content_base64", TypeSchema::optional(TypeSchema::text())),
+    ])
+}
+
 /// A planner run's plan: its features, and one progress entry per session.
 fn run_plan_schema() -> TypeSchema {
     TypeSchema::struct_of([
@@ -6384,6 +6705,13 @@ fn application_schema() -> TypeSchema {
                 TypeSchema::struct_of([
                     StructField::new("ready", TypeSchema::bool()),
                     StructField::new("missing", TypeSchema::array(TypeSchema::text())),
+                    // The required variables no setting fills, which come from
+                    // the environment the server was started with, one sentence
+                    // each with the value.
+                    StructField::new("from_environment", TypeSchema::array(TypeSchema::text())),
+                    // The build host it is built on when this server cannot
+                    // build it itself (`TODO-build-hosts.md` B2.2).
+                    StructField::new("build_host", TypeSchema::optional(TypeSchema::text())),
                 ]),
             ),
         ])),
@@ -6752,8 +7080,10 @@ fn target_build_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("target", TypeSchema::text()),
         StructField::new("label", TypeSchema::text()),
-        // `running`, `succeeded` or `failed`.
+        // `queued` (waiting for a build host), `running`, `succeeded` or `failed`.
         StructField::new("status", TypeSchema::text()),
+        // The build host it is built on; none for a build on this server.
+        StructField::new("build_host", TypeSchema::optional(TypeSchema::text())),
         StructField::new("store", TypeSchema::text()),
         StructField::new("log_path", TypeSchema::text()),
         StructField::new("started_at", TypeSchema::timestamp()),
@@ -7468,6 +7798,15 @@ fn form_field_schema() -> TypeSchema {
         // (v1's `regexp`), and what to say when it does not, or null.
         StructField::new("pattern", TypeSchema::optional(TypeSchema::text())),
         StructField::new("pattern_error", TypeSchema::optional(TypeSchema::text())),
+        // The environment variable a blank value leaves the job to, and its
+        // value in the server's environment now (null when unset), or null.
+        StructField::new(
+            "env_fallback",
+            TypeSchema::optional(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("value", TypeSchema::optional(TypeSchema::text())),
+            ])),
+        ),
         // When the setting applies: every named setting holds one of its
         // values. Empty means always. The form hides a setting that does not
         // apply, and the server does not require it.
@@ -7521,6 +7860,12 @@ mod tests {
                 "restoreRow",
                 "revertRow",
                 "undoChangeset",
+                // The LLM providers and their models, read-only (the Paddi
+                // field report): an agent creating an agent needs the names
+                // `createAgent` takes. Setting one up stays an admin's, since
+                // it is where the secrets are.
+                "listLlmProviders",
+                "listLlmModels",
                 // Modules, behind their own area that is off unless granted: an
                 // agent writing Python needs a library installed to import it,
                 // and asking a human to click Install is the gap this closes.

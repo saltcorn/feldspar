@@ -9,17 +9,23 @@ import {
   capabilitySummary,
   formatPrice,
   formatTokens,
+  groupByKind,
+  guessKind,
+  kindOf,
+  kindsServedBy,
   modelOptions,
   namesToOffer,
+  priceSummary,
   type ModelItem,
 } from "./llmModels";
 
-function model(name: string, isDefault = false): ModelItem {
+function model(name: string, isDefault = false, kind?: string): ModelItem {
   return {
     id: name,
     provider_id: "p1",
     name,
     description: "",
+    kind,
     is_default: isDefault,
     config: {},
     capabilities: {},
@@ -94,5 +100,51 @@ describe("a model row's summary", () => {
 
   it("offers only fetched names that still have no row", () => {
     expect(namesToOffer(["a", "b", "c"], [model("b")])).toEqual(["a", "c"]);
+  });
+});
+
+describe("models by kind (TODO-agent-skills AS3.1)", () => {
+  it("lists each kind under its own heading, chat first, and a row with no kind is chat", () => {
+    const groups = groupByKind([
+      model("tts-1", true, "speech"),
+      model("gpt-5.1", true),
+      model("text-embedding-3-small", true, "embedding"),
+    ]);
+    expect(groups.map((g) => [g.kind, g.models.map((m) => m.name)])).toEqual([
+      ["chat", ["gpt-5.1"]],
+      ["embedding", ["text-embedding-3-small"]],
+      ["speech", ["tts-1"]],
+    ]);
+    expect(kindOf(model("x", false, "video"))).toBe("chat");
+    expect(kindsServedBy("anthropic")).toEqual(["chat"]);
+    expect(kindsServedBy("openai_chat")).toContain("image");
+  });
+
+  it("guesses a fetched name's kind", () => {
+    expect(guessKind("text-embedding-3-small")).toBe("embedding");
+    expect(guessKind("gpt-4o-mini-tts")).toBe("speech");
+    expect(guessKind("gpt-image-1")).toBe("image");
+    expect(guessKind("gpt-5.1")).toBe("chat");
+  });
+
+  it("offers an agent chat models only", () => {
+    const options = modelOptions(
+      [model("gpt-5.1", true), model("text-embedding-3-small", true, "embedding")],
+      "",
+    );
+    expect(options.map((o) => o.value)).toEqual(["", "gpt-5.1"]);
+  });
+
+  it("shows each kind's own prices", () => {
+    const blank = {
+      input: null,
+      cached_input: null,
+      cache_write: null,
+      output: null,
+    };
+    expect(priceSummary("embedding", { ...blank, input: 0.02 })).toBe("0.02/M input");
+    expect(priceSummary("image", { ...blank, per_image: 0.04 })).toBe("0.04 per image");
+    expect(priceSummary("speech", { ...blank, per_million_characters: 15 })).toBe("15/M characters");
+    expect(priceSummary("chat", blank)).toBe("unknown / unknown");
   });
 });

@@ -47,11 +47,31 @@ impl Reply {
         }
     }
 
+    /// A JSON body, served with `200` — a non-streaming endpoint's answer.
+    pub fn json(body: impl Into<String>) -> Reply {
+        Reply {
+            status: 200,
+            content_type: "application/json",
+            body: body.into(),
+            truncate: false,
+        }
+    }
+
     /// A JSON error body, served with `status` — what a rejected key looks like.
     pub fn error(status: u16, body: impl Into<String>) -> Reply {
         Reply {
             status,
             content_type: "application/json",
+            body: body.into(),
+            truncate: false,
+        }
+    }
+
+    /// A body of another type, served with `200` — an audio file.
+    pub fn typed(content_type: &'static str, body: impl Into<String>) -> Reply {
+        Reply {
+            status: 200,
+            content_type,
             body: body.into(),
             truncate: false,
         }
@@ -91,17 +111,24 @@ impl Requests {
     /// reached here is asserting on a request, and no request at all is the
     /// failure it is looking for.
     pub async fn next_body(&mut self) -> Result<serde_json::Value> {
+        Ok(self.next_request().await?.1)
+    }
+
+    /// The next request's **path** and body, the body parsed as JSON.
+    pub async fn next_request(&mut self) -> Result<(String, serde_json::Value)> {
         let raw = self
             .rx
             .recv()
             .await
             .ok_or_else(|| Error::msg("the client sent no request"))?;
+        let path = raw.split_whitespace().nth(1).unwrap_or_default().to_owned();
         let body = raw
             .split_once("\r\n\r\n")
             .map(|(_, body)| body)
             .unwrap_or("");
-        serde_json::from_str(body)
-            .map_err(|e| Error::msg(format!("request body was not JSON: {e}\n{raw}")))
+        let body = serde_json::from_str(body)
+            .map_err(|e| Error::msg(format!("request body was not JSON: {e}\n{raw}")))?;
+        Ok((path, body))
     }
 }
 

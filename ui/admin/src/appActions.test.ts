@@ -10,6 +10,7 @@ import {
   buildStarted,
   buildStatus,
   jobResult,
+  jobUnfinished,
   targetBuilding,
   targetFinished,
   targetStarted,
@@ -137,6 +138,21 @@ describe("a polled target job", () => {
       error: "SDK location not found",
     });
     expect(jobResult({ ...job, status: "succeeded" }).ok).toBe(false);
+  });
+
+  it("is followed while it waits for a build host, and says which host built it", () => {
+    expect(jobUnfinished({ status: "queued" })).toBe(true);
+    expect(jobUnfinished({ status: "running" })).toBe(true);
+    expect(jobUnfinished({ status: "succeeded" })).toBe(false);
+    const result = jobResult({
+      ...job,
+      status: "succeeded",
+      artifact: "ios-output/app.ipa",
+      size: 7,
+      build_host: "Mac mini",
+    });
+    const state = targetFinished(INITIAL_APP_ACTIONS, app, { name: "ios", label: "iOS app" }, result);
+    expect(state.outcome?.text).toMatch(/^Built on the build host "Mac mini"\. ios-output\/app\.ipa/);
   });
 });
 

@@ -207,8 +207,8 @@ pub fn openai_chat_config_spec() -> Vec<FormField> {
 /// can pick one and be shown its [`provider_config_spec`].
 ///
 /// The single place that enumerates them: a new backend is added here, to
-/// [`provider_config_spec`], to [`model_config_spec`](crate::model_config_spec)
-/// and to [`connect_model`].
+/// [`provider_config_spec`], to [`model_config_spec`](crate::model_config_spec),
+/// to [`connect_model`] and to the non-chat calls' endpoint (`endpoint.rs`).
 pub fn registered_backends() -> Vec<String> {
     vec![
         ANTHROPIC_BACKEND.to_owned(),
@@ -279,6 +279,15 @@ pub fn connect_model(provider: &LlmProviderDef, model: &LlmModelDef) -> Result<C
             model.name, provider.name
         )));
     }
+    if model.kind != crate::model::ModelKind::Chat {
+        return Err(Error::invalid(format!(
+            "LLM model `{}` of provider `{}` is {} model, not a chat model; an agent \
+             converses with a chat model",
+            model.name,
+            provider.name,
+            model.kind.with_article()
+        )));
+    }
     validate_model_config(&provider.backend, model)?;
     let name = model.name.trim();
     if name.is_empty() {
@@ -313,11 +322,20 @@ pub fn connect_model(provider: &LlmProviderDef, model: &LlmModelDef) -> Result<C
             )));
         }
     };
+    // Outside the call log, so what the log records is the request as sent —
+    // the row's reasoning effort and extra fields included.
+    let defaults = crate::RequestDefaults::from_config(
+        &crate::normalise_model_config(&model.config),
+        &format!("LLM model `{name}`"),
+    )?;
     Ok(ConnectedModel {
-        provider: Arc::new(crate::logging::LoggedProvider::new(
-            connected,
-            &provider.name,
-        )),
+        provider: crate::WithRequestDefaults::wrap(
+            Arc::new(crate::logging::LoggedProvider::new(
+                connected,
+                &provider.name,
+            )),
+            defaults,
+        ),
         provider_name: provider.name.clone(),
         backend: provider.backend.clone(),
         capabilities,

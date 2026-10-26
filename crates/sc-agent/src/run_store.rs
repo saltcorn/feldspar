@@ -93,7 +93,10 @@ fn run_fields() -> Vec<DataField> {
 
 /// Ensure the `_fd_runs` table exists, creating it if absent, and return it.
 pub async fn bootstrap_runs(catalog: &Catalog) -> Result<Table> {
-    catalog.bootstrap_table(RUNS_TABLE, &run_fields()).await
+    let table = catalog.bootstrap_table(RUNS_TABLE, &run_fields()).await?;
+    // What the runs' tools showed the person (TODO-agent-skills AS6.3).
+    crate::parts::bootstrap_run_parts(catalog).await?;
+    Ok(table)
 }
 
 /// Save a run: insert its row, or update it in place if one with its [`RunId`]
@@ -266,6 +269,7 @@ pub async fn delete_run(catalog: &Catalog, id: RunId) -> Result<bool> {
     if load_run(catalog, id).await?.is_none() {
         return Ok(false);
     }
+    crate::parts::delete_display_parts(catalog, id).await?;
     let delete = Delete::from(RUNS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
     exec(catalog, Statement::from(delete)).await?;
     Ok(true)

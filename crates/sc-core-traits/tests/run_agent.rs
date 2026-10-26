@@ -34,7 +34,8 @@ use sc_agent::{
 use sc_catalog::Catalog;
 use sc_core_actions::builtin_actions;
 use sc_core_traits::{
-    CFG_AGENT, CFG_PROMPT, CFG_TRUSTED_INPUT, builtin_traits, register_agent_actions,
+    CFG_AGENT, CFG_PROMPT, CFG_RUN_AS, CFG_TRIGGER, CFG_TRUSTED_INPUT, RUN_AS_EVENT_USER,
+    builtin_traits, register_agent_actions,
 };
 use sc_error::Result;
 use sc_llm::{ConnectedModel, LlmProvider};
@@ -446,9 +447,12 @@ async fn the_action_declares_the_settings_the_form_renders() -> Result<()> {
     let action = registry(&env).require("run_agent")?.clone();
     let spec = action.config_spec();
     let names: Vec<&str> = spec.iter().map(|f| f.name()).collect();
-    assert_eq!(names, vec![CFG_AGENT, CFG_PROMPT, CFG_TRUSTED_INPUT]);
+    assert_eq!(
+        names,
+        vec![CFG_AGENT, CFG_PROMPT, CFG_RUN_AS, CFG_TRUSTED_INPUT]
+    );
     assert!(spec[..2].iter().all(|f| f.required));
-    assert!(!spec[2].required);
+    assert!(spec[2..].iter().all(|f| !f.required));
     assert!(!action.description().is_empty());
     // And it is not one of `sc-core-actions`' built-ins: it needs the trait
     // registry and a provider connector, which no other action does.
@@ -599,5 +603,202 @@ async fn trusted_input_does_not_survive_a_cascade_from_untrusted_input() -> Resu
     .await?;
     let direct = providers.last().requests().remove(0);
     assert!(direct.tools.iter().any(|t| t.name == shell));
+    Ok(())
+}
+
+// --- tools that run triggers, and whose run it is ----------------------------
+
+/// A `none` trigger that files a summary from its payload, naming the user the
+/// event carries.
+fn file_note() -> Trigger {
+    Trigger::new("file_note", EventKind::None, "insert_row")
+        .min_role(40)
+        .config("table", "summaries")
+        .config(
+            "values",
+            json!({ "post": "payload.post", "summary": "user ? user.email : 'nobody'" }),
+        )
+}
+
+/// An agent whose one tool runs `file_note`.
+fn noter() -> Agent {
+    Agent::new("noter", "main")
+        .system_prompt("You file notes.")
+        .with_trait(EnabledTrait::new("run_trigger").config(CFG_TRIGGER, "file_note"))
+}
+
+/// `run_agent` over `noter`, asked directly with a prompt from the payload.
+fn ask_noter() -> Trigger {
+    Trigger::new("ask_noter", EventKind::None, "run_agent")
+        .config(CFG_AGENT, "noter")
+        .config(CFG_PROMPT, "payload.prompt")
+}
+
+/// [`setup`], with `agent`, `file_note` and `trigger` saved.
+async fn setup_noter(
+    script: impl IntoIterator<Item = Reply>,
+    agent: Agent,
+    trigger: Trigger,
+) -> Result<(Env, Arc<Scripted>)> {
+    let (env, providers) = setup(script).await?;
+    // The trigger first: an agent naming a trigger that is not there is
+    // refused on save.
+    save_trigger(&env.catalog, &registry(&env), &file_note()).await?;
+    save_agent(&env.catalog, &env.registry, &agent).await?;
+    save_trigger(&env.catalog, &registry(&env), &trigger).await?;
+    env.reload_triggers().await?;
+    Ok((env, providers))
+}
+
+/// The field report's first point: an agent a trigger started can run a
+/// trigger through its tools, because it is handed the dispatcher running it.
+#[tokio::test]
+async fn a_triggered_agent_runs_triggers_through_its_tools() -> Result<()> {
+    let (env, _providers) = setup_noter(
+        [
+            Reply::calls("run_file_note", json!({ "post": "Ubik" })),
+            Reply::says(ANSWER),
+        ],
+        noter(),
+        ask_noter(),
+    )
+    .await?;
+    let result = env
+        .dispatcher
+        .as_ref()
+        .expect("a dispatcher")
+        .run_trigger(
+            &env.catalog,
+            "ask_noter",
+            json!({ "prompt": "File a note about Ubik." }),
+            None,
+        )
+        .await?;
+    assert_eq!(result["answer"], json!(ANSWER), "{result}");
+    // The tool ran the trigger, rather than answering that it could not.
+    assert_eq!(
+        summaries(&env).await?,
+        vec![("Ubik".to_owned(), "nobody".to_owned())]
+    );
+    Ok(())
+}
+
+/// `run_as: event_user` runs the agent as whoever caused the event: its tools
+/// act as that user, and the run records them — the field report's second
+/// point.
+#[tokio::test]
+async fn an_agent_run_as_the_events_user_acts_and_is_recorded_as_them() -> Result<()> {
+    let (env, _providers) = setup_noter(
+        [
+            Reply::calls("run_file_note", json!({ "post": "Dune" })),
+            Reply::says(ANSWER),
+        ],
+        noter(),
+        ask_noter().config(CFG_RUN_AS, RUN_AS_EVENT_USER),
+    )
+    .await?;
+    let ada = common::reader("ada@example.com");
+    let caller = sc_api::caller_context_at(ada.role, Some(&ada));
+    let result = env
+        .dispatcher
+        .as_ref()
+        .expect("a dispatcher")
+        .run_trigger(
+            &env.catalog,
+            "ask_noter",
+            json!({ "prompt": "File a note about Dune." }),
+            Some(&caller),
+        )
+        .await?;
+    assert_eq!(result["answer"], json!(ANSWER), "{result}");
+    // The trigger the tool ran saw Ada as its `user`…
+    assert_eq!(
+        summaries(&env).await?,
+        vec![("Dune".to_owned(), "ada@example.com".to_owned())]
+    );
+    // …and the run is hers.
+    let runs = list_runs(&env.catalog, "noter").await?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].user, Some(ada.id));
+    Ok(())
+}
+
+/// As the event's user, the agent's own floor applies as it does in a chat;
+/// and it cannot be combined with the server's own tools.
+#[tokio::test]
+async fn an_agent_run_as_the_events_user_keeps_the_agents_floor() -> Result<()> {
+    let (env, providers) = setup_noter(
+        [Reply::says(ANSWER)],
+        noter().min_role(1),
+        ask_noter().config(CFG_RUN_AS, RUN_AS_EVENT_USER),
+    )
+    .await?;
+    let ada = common::reader("ada@example.com");
+    let caller = sc_api::caller_context_at(ada.role, Some(&ada));
+    let err = env
+        .dispatcher
+        .as_ref()
+        .expect("a dispatcher")
+        .run_trigger(
+            &env.catalog,
+            "ask_noter",
+            json!({ "prompt": "hi" }),
+            Some(&caller),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("role 1"), "{err}");
+    assert_eq!(providers.runs(), 0);
+
+    let both = ask_noter()
+        .config(CFG_RUN_AS, RUN_AS_EVENT_USER)
+        .config(CFG_TRUSTED_INPUT, true);
+    let err = save_trigger(&env.catalog, &registry(&env), &both)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains(CFG_TRUSTED_INPUT), "{err}");
+    Ok(())
+}
+
+/// An agent whose tool runs the trigger that runs the agent is one cascade:
+/// it stops at the dispatcher's depth limit, and the innermost model reads the
+/// limit as its tool's result instead of the loop running forever.
+#[tokio::test]
+async fn a_trigger_agent_trigger_loop_stops_at_the_depth_limit() -> Result<()> {
+    // The trigger the agent's tool runs is the one that runs the agent, so the
+    // agent is saved with a tool naming `file_note` and then pointed at
+    // `ask_noter` once that exists.
+    let (env, providers) = setup_noter(
+        [
+            Reply::calls("run_ask_noter", json!({ "prompt": "again" })),
+            Reply::says(ANSWER),
+        ],
+        noter(),
+        ask_noter(),
+    )
+    .await?;
+    let mut recursive = load_agent_by_name(&env.catalog, "noter")
+        .await?
+        .expect("noter");
+    recursive.traits = vec![EnabledTrait::new("run_trigger").config(CFG_TRIGGER, "ask_noter")];
+    save_agent(&env.catalog, &env.registry, &recursive).await?;
+    let result = env
+        .dispatcher
+        .as_ref()
+        .expect("a dispatcher")
+        .run_trigger(&env.catalog, "ask_noter", json!({ "prompt": "go" }), None)
+        .await?;
+    assert_eq!(result["answer"], json!(ANSWER), "{result}");
+    let runs = providers.runs();
+    assert!(
+        (2..=sc_action::MAX_DEPTH).contains(&runs),
+        "{runs} nested runs for a depth limit of {}",
+        sc_action::MAX_DEPTH
+    );
+    // The innermost run's tool call came back as the limit, in its own words.
+    let innermost = providers.all().pop().expect("a provider");
+    let last = innermost.requests().pop().expect("a request");
+    let said = format!("{:?}", last.messages);
+    assert!(said.contains("past the limit"), "{said}");
     Ok(())
 }

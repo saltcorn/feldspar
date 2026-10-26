@@ -265,6 +265,14 @@ pub trait Delegator: Send + Sync {
         Err(Error::config("this context cannot ask a model"))
     }
 
+    /// Record a non-chat model call a tool made for itself — an embedding, an
+    /// image, speech (TODO-agent-skills AS3.5) — in the asking run's ledger, and
+    /// charge it to the run's payer as a chat call is.
+    async fn record_call(&self, call: &sc_llm::ModelCall) -> Result<()> {
+        let _ = call;
+        Err(Error::config("this context cannot charge a model call"))
+    }
+
     /// What `role`'s model can do: whether a planner's model takes images,
     /// say.
     async fn capabilities(&self, role: ModelRole) -> Result<ModelCapabilities> {

@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentAttributes,
+  readEffort,
   readNumbers,
   readRoles,
   shellWarning,
@@ -63,6 +64,15 @@ describe("the agent's attributes", () => {
       { strong: { provider: "", model: "" }, cheap: { provider: "", model: "" } },
     );
     expect(saved).toEqual({ credits_per_1k_output: 0.5, credits_min_balance: 1 });
+  });
+  it("reads and saves the reasoning effort, and blank removes it", () => {
+    const none = { strong: { provider: "", model: "" }, cheap: { provider: "", model: "" } };
+    expect(readEffort({ reasoning_effort: "low" })).toBe("low");
+    expect(readEffort({})).toBe("");
+    expect(agentAttributes({}, {}, none, "none")).toEqual({ reasoning_effort: "none" });
+    expect(agentAttributes({ reasoning_effort: "low" }, {}, none, "")).toEqual({});
+    // A caller that does not edit it keeps what was stored.
+    expect(agentAttributes({ reasoning_effort: "low" }, {}, none)).toEqual({ reasoning_effort: "low" });
   });
 });
 

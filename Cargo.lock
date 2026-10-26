@@ -824,6 +824,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bcrypt"
+version = "0.19.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0cd0bd35a28836d528d2b58ad499bc3c5641d59379421b1be9eeb0c2f2b912a"
+dependencies = [
+ "base64 0.23.1",
+ "blowfish",
+ "getrandom 0.4.3",
+ "subtle",
+]
+
+[[package]]
 name = "bcrypt-pbkdf"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9010,6 +9022,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "chrono",
  "image",
  "regex-lite",
  "sc-action",
@@ -9038,6 +9051,7 @@ version = "0.1.0"
 dependencies = [
  "argon2 0.5.3",
  "base64 0.22.1",
+ "bcrypt",
  "chrono",
  "lru 0.12.5",
  "rust_decimal",
@@ -9105,10 +9119,12 @@ dependencies = [
  "sc-db-sqlite",
  "sc-dns",
  "sc-error",
+ "sc-expr",
  "sc-files",
  "sc-i18n",
  "sc-llm",
  "sc-log",
+ "sc-mcp",
  "sc-query",
  "sc-server",
  "sc-stan",
@@ -9186,7 +9202,9 @@ name = "sc-core-traits"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
+ "chrono",
  "htmd",
  "image",
  "libc",
@@ -9209,6 +9227,7 @@ dependencies = [
  "sc-files",
  "sc-llm",
  "sc-log",
+ "sc-mcp",
  "sc-query",
  "sc-repomap",
  "sc-test-harness",
@@ -9441,6 +9460,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-mcp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "reqwest",
+ "sc-catalog",
+ "sc-db",
+ "sc-email",
+ "sc-error",
+ "sc-query",
+ "sc-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "sc-model"
 version = "0.1.0"
 dependencies = [
@@ -9609,6 +9647,7 @@ dependencies = [
  "sc-live",
  "sc-llm",
  "sc-log",
+ "sc-mcp",
  "sc-model",
  "sc-module",
  "sc-python",

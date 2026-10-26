@@ -84,6 +84,7 @@ async fn call(
         modules,
         signals: Vec::new(),
         images: Vec::new(),
+        extras: Default::default(),
     };
     coding.call(config, tool, &args, &mut ctx).await
 }

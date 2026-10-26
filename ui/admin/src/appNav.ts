@@ -52,7 +52,12 @@ export type AppNavLink = {
 export type TargetLink = {
   name: string;
   label: string;
-  readiness: { ready: boolean; missing: string[] };
+  readiness: {
+    ready: boolean;
+    missing: string[];
+    from_environment?: string[];
+    build_host?: string | null;
+  };
 };
 
 /** A link's key among its siblings: an application has one link of each kind,

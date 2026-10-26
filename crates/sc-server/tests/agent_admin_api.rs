@@ -384,6 +384,20 @@ async fn the_traits_endpoint_declares_each_traits_configuration() -> sc_error::R
     // save a valid agent. `http` is the other, for the same reason: the web is
     // not a target it could name, and a blank form is `fetch_web`, read-only,
     // over public hosts.
+    //
+    // The rest change how the conversation goes rather than what the agent
+    // reaches, so they name no target either and every setting has a default:
+    // `ask_user` and `plan_approval` (a tool name and the prompts around it),
+    // `memory` (the agent's own store, keyed by the agent), `speech` (a voice
+    // and a speed), and `prompt_picker`, whose list-or-table choice is checked
+    // as a whole by the trait rather than by any one field being required.
+    const NO_TARGET: [&str; 5] = [
+        "ask_user",
+        "memory",
+        "plan_approval",
+        "prompt_picker",
+        "speech",
+    ];
     for trait_ in traits {
         let spec = trait_["config_spec"].as_array().unwrap();
         assert!(!spec.is_empty(), "{trait_}");
@@ -394,7 +408,9 @@ async fn the_traits_endpoint_declares_each_traits_configuration() -> sc_error::R
             );
             continue;
         }
-        if trait_["name"] == json!("http") {
+        if trait_["name"] == json!("http")
+            || NO_TARGET.iter().any(|name| trait_["name"] == json!(name))
+        {
             continue;
         }
         assert!(
@@ -777,4 +793,74 @@ async fn the_posted_agent_is_the_stored_agent() -> sc_error::Result<()> {
         );
     assert_eq!(stored, expected);
     Ok(())
+}
+
+/// What agents remember (TODO-agent-skills AS8.3): the store is installed with
+/// the agents, every user's memories are listed (and searched) for the admin,
+/// and one can be deleted.
+#[tokio::test]
+async fn the_admin_lists_searches_and_deletes_agent_memories() {
+    use sc_core_traits::memory::{NewMemory, store_memory};
+    let (mut client, catalog, _db) = setup().await.unwrap();
+    let (ada, bob) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    for (user, personal, contents) in [
+        (Some(ada), true, "Ada drinks Earl Grey tea"),
+        (Some(bob), true, "Bob prefers coffee"),
+        (None, false, "The library closes at five"),
+    ] {
+        store_memory(
+            &catalog,
+            &NewMemory {
+                agent: "librarian".into(),
+                user,
+                run: None,
+                kind: "memory".into(),
+                personal,
+                topic: String::new(),
+                contents: contents.into(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    let (status, all) = client
+        .send("GET", "/api/agent-memories?agent=librarian", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_eq!(all.as_array().unwrap().len(), 3);
+    let (_, other) = client
+        .send("GET", "/api/agent-memories?agent=someone_else", None)
+        .await;
+    assert_eq!(other, json!([]));
+
+    let (_, found) = client
+        .send(
+            "GET",
+            "/api/agent-memories?agent=librarian&search=tea",
+            None,
+        )
+        .await;
+    let found = found.as_array().unwrap().clone();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0]["contents"], json!("Ada drinks Earl Grey tea"));
+    assert_eq!(found[0]["user_id"], json!(ada.to_string()));
+    assert_eq!(found[0]["personal"], json!(true));
+
+    let (_, mine) = client
+        .send("GET", &format!("/api/agent-memories?user={bob}"), None)
+        .await;
+    assert_eq!(mine.as_array().unwrap().len(), 1);
+
+    let id = found[0]["id"].as_i64().unwrap();
+    let path = format!("/api/agent-memories/{id}");
+    let (status, deleted) = client.send("DELETE", &path, None).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    assert_eq!(deleted, json!({ "deleted": true }));
+    let (_, again) = client.send("DELETE", &path, None).await;
+    assert_eq!(again, json!({ "deleted": false }));
+    let (_, left) = client
+        .send("GET", "/api/agent-memories?agent=librarian", None)
+        .await;
+    assert_eq!(left.as_array().unwrap().len(), 2);
 }

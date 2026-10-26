@@ -43,7 +43,9 @@
 // a 24rem window has no room for and a full-screen one does.
 
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -72,7 +74,9 @@ import {
   type ComposerControl,
   type Conclusion,
   type ControlValue,
+  type DisplayRef,
   type Entry,
+  type UserRequest,
   type PreviewPane,
   type SocketLike,
   type ToolEntry as ToolCall,
@@ -498,7 +502,15 @@ export function AgentChat({
               </Alert>
             )}
             {entries.length === 0 && !error && <EmptyTranscript agent={agent} />}
-            <Transcript entries={entries} />
+            <TranscriptActions.Provider
+              value={{
+                runId: viewing ? viewing.run.id : chat.runId,
+                awaitingId: viewing ? null : (chat.awaiting?.id ?? null),
+                answer: viewing ? undefined : (request, value) => session.current?.answer(request, value),
+              }}
+            >
+              <Transcript entries={entries} />
+            </TranscriptActions.Provider>
             {chat.running && !viewing && (
               <div className="chat-thinking mb-3">
                 <span className="chat-dot" />
@@ -526,6 +538,7 @@ export function AgentChat({
                 values={chat.controlValues}
                 onDraft={setDraft}
                 onControl={(name, value) => session.current?.setControl(name, value)}
+                onPress={(name) => session.current?.press(name)}
                 onSend={send}
                 onAbort={() => session.current?.abort()}
               />
@@ -913,6 +926,7 @@ function Composer({
   values,
   onDraft,
   onControl,
+  onPress,
   onSend,
   onAbort,
 }: {
@@ -922,6 +936,7 @@ function Composer({
   values: Record<string, ControlValue>;
   onDraft: (text: string) => void;
   onControl: (name: string, value: ControlValue) => void;
+  onPress: (name: string) => void;
   onSend: () => void;
   onAbort: () => void;
 }) {
@@ -970,7 +985,9 @@ function Composer({
               key={control.name}
               control={control}
               value={values[control.name]}
+              disabled={running}
               onChange={onControl}
+              onPress={onPress}
             />
           ))}
         </div>
@@ -1009,12 +1026,53 @@ function Composer({
 function ComposerControlView({
   control,
   value,
+  disabled,
   onChange,
+  onPress,
 }: {
   control: ComposerControl;
   value: ControlValue | undefined;
+  disabled: boolean;
   onChange: (name: string, value: ControlValue) => void;
+  onPress: (name: string) => void;
 }) {
+  if (control.kind === "button") {
+    // Acts at once: sends its label as the message, with itself set.
+    return (
+      <button
+        type="button"
+        className="chat-control-toggle"
+        title={control.title}
+        disabled={disabled}
+        onClick={() => onPress(control.name)}
+      >
+        {control.label}
+      </button>
+    );
+  }
+  if (control.kind === "send") {
+    // Acts at once: the chosen option is sent as the message, and the select
+    // shows its prompt again.
+    return (
+      <select
+        className="chat-control-select"
+        aria-label={control.label ?? control.name}
+        title={control.title}
+        disabled={disabled}
+        value=""
+        onChange={(e) => {
+          if (e.target.value !== "") onChange(control.name, e.target.value);
+        }}
+      >
+        <option value="">{control.label ?? "Send…"}</option>
+        {control.options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
   if (control.kind === "toggle") {
     const on = value === true;
     return (
@@ -1063,8 +1121,193 @@ export function Transcript({ entries }: { entries: Entry[] }) {
   );
 }
 
+/** What the transcript's interactive entries need from the chat around them:
+ * the run their parts belong to, the question it waits on, and how to answer.
+ * A read-only transcript (a run's page, a past conversation) has no `answer`. */
+export const TranscriptActions = createContext<{
+  runId: string | null;
+  awaitingId: string | null;
+  answer?: (request: UserRequest, value: unknown) => void;
+}>({ runId: null, awaitingId: null });
+
+/** What a tool showed the person (TODO-agent-skills AS6.3): each part fetched
+ * by id and drawn — rows as a table, an image, a player. */
+function DisplayParts({ parts }: { parts: DisplayRef[] }) {
+  return (
+    <div className="chat-turn">
+      {parts.map((part) => (
+        <DisplayPartView key={part.id} part={part} />
+      ))}
+    </div>
+  );
+}
+
+function DisplayPartView({ part }: { part: DisplayRef }) {
+  const { runId } = useContext(TranscriptActions);
+  const [loaded, setLoaded] = useState<{ data: unknown; content_base64?: string | null } | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  useEffect(() => {
+    if (!runId) return;
+    let cancelled = false;
+    api
+      .getRunPart(runId, part.id)
+      .then((got) => {
+        if (!cancelled) setLoaded(got);
+      })
+      .catch((err) => {
+        if (!cancelled) setFailed(errorMessage(err, `Could not load ${part.summary}.`));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, part.id, part.summary]);
+
+  if (failed) return <div className="small text-danger">{failed}</div>;
+  if (!loaded) return <div className="small text-muted">{part.summary}</div>;
+  const source = `data:${part.mime_type};base64,${loaded.content_base64 ?? ""}`;
+  if (part.kind === "image" && /^image\/(jpeg|png|gif|webp)$/.test(part.mime_type)) {
+    return <img src={source} alt={part.summary} className="d-block my-2 border rounded" style={{ maxWidth: "100%" }} />;
+  }
+  if (part.kind === "audio") {
+    return <audio controls src={source} className="d-block my-2" aria-label={part.summary} />;
+  }
+  const rows = loaded.data as { title?: string | null; columns?: string[]; rows?: Record<string, unknown>[] };
+  const columns = rows.columns ?? Object.keys(rows.rows?.[0] ?? {});
+  return (
+    <div className="my-2">
+      {rows.title && <div className="fw-semibold small mb-1">{rows.title}</div>}
+      <div className="table-responsive border rounded">
+        <table className="table table-sm mb-0">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column}>{column}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(rows.rows ?? []).map((row, index) => (
+              <tr key={index}>
+                {columns.map((column) => (
+                  <td key={column}>{pretty(row[column])}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** A question the agent asked (AS6.1): answerable while the run waits on it,
+ * and only in the live chat. */
+function RequestCard({ request }: { request: UserRequest }) {
+  const { t } = useT();
+  const { awaitingId, answer } = useContext(TranscriptActions);
+  const open = answer !== undefined && awaitingId === request.id;
+  const [picked, setPicked] = useState<string[]>([]);
+  const [text, setText] = useState("");
+
+  return (
+    <div className="chat-turn">
+      <div className="border rounded p-3 mb-3">
+        <div className="mb-2" style={{ whiteSpace: "pre-wrap" }}>
+          {request.prompt}
+        </div>
+        {!open ? (
+          <div className="small text-muted">
+            <T text="This question is no longer waiting for an answer." />
+          </div>
+        ) : request.kind === "choice" ? (
+          <div className="d-flex flex-column gap-2">
+            {request.options.map((option) =>
+              request.multiple ? (
+                <label key={option.value} className="form-check">
+                  <input
+                    type="checkbox"
+                    className="form-check-input"
+                    checked={picked.includes(option.value)}
+                    onChange={(e) =>
+                      setPicked((p) =>
+                        e.target.checked ? [...p, option.value] : p.filter((v) => v !== option.value),
+                      )
+                    }
+                  />
+                  <span className="form-check-label">
+                    {option.label || option.value}
+                    {option.description && <div className="small text-muted">{option.description}</div>}
+                  </span>
+                </label>
+              ) : (
+                <button
+                  key={option.value}
+                  type="button"
+                  className="btn btn-outline-primary text-start"
+                  onClick={() => answer?.(request, option.value)}
+                >
+                  {option.label || option.value}
+                  {option.description && <div className="small text-muted">{option.description}</div>}
+                </button>
+              ),
+            )}
+            {request.multiple && (
+              <button
+                type="button"
+                className="btn btn-primary align-self-start"
+                disabled={picked.length === 0}
+                onClick={() => answer?.(request, picked)}
+              >
+                <T text="Answer" />
+              </button>
+            )}
+          </div>
+        ) : request.kind === "text" ? (
+          <form
+            className="d-flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (text.trim() !== "") answer?.(request, text);
+            }}
+          >
+            <input
+              className="form-control"
+              value={text}
+              placeholder={request.placeholder}
+              aria-label={t("Your answer")}
+              onChange={(e) => setText(e.target.value)}
+            />
+            <button type="submit" className="btn btn-primary" disabled={text.trim() === ""}>
+              <T text="Answer" />
+            </button>
+          </form>
+        ) : request.kind === "approve" ? (
+          <div className="d-flex gap-2">
+            <button type="button" className="btn btn-primary" onClick={() => answer?.(request, true)}>
+              {request.label}
+            </button>
+            <button type="button" className="btn btn-outline-secondary" onClick={() => answer?.(request, false)}>
+              <T text="Decline" />
+            </button>
+          </div>
+        ) : (
+          <button type="button" className="btn btn-primary" onClick={() => answer?.(request, true)}>
+            {request.label}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** One entry of the transcript. */
 function TranscriptEntry({ entry }: { entry: Entry }) {
+  if (entry.kind === "display") {
+    return <DisplayParts parts={entry.parts} />;
+  }
+  if (entry.kind === "request") {
+    return <RequestCard request={entry.request} />;
+  }
   if (entry.kind === "user") {
     return (
       <div className="chat-turn chat-turn-user">

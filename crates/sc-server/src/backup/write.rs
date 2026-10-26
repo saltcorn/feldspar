@@ -169,11 +169,13 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
         models,
         workspaces,
         fits,
+        // MCP servers travel with the providers (TODO-agent-skills AS4.5):
+        // their headers are secrets of the same kind as an API key.
         llm_providers: if has_table(catalog, sc_llm::LLM_PROVIDERS_TABLE)? {
             count(stored_llm_providers(catalog).await?.len())
         } else {
             0
-        },
+        } + count(stored_mcp_servers(catalog).await?.len()),
         agents: i64::try_from(sc_agent::list_agents(catalog).await?.len()).unwrap_or(i64::MAX),
         code_libraries: if has_table(catalog, sc_catalog::CODE_LIBRARIES_TABLE)? {
             count(sc_catalog::list_code_libraries(catalog).await?.len())
@@ -553,6 +555,17 @@ async fn write_entries<W: Write + Seek>(
         }
         contents.llm_providers = i64::try_from(providers.len()).unwrap_or(i64::MAX);
         zip.json("llm-providers.json", &Json::Array(providers))?;
+    }
+    // The MCP servers, headers included, beside the providers and under the
+    // same choice (TODO-agent-skills AS4.5).
+    if selection.llm_providers {
+        let servers: Vec<Json> = stored_mcp_servers(catalog)
+            .await?
+            .iter()
+            .map(crate::mcp_servers::backup_server_json)
+            .collect();
+        contents.llm_providers += i64::try_from(servers.len()).unwrap_or(i64::MAX);
+        zip.json("mcp-servers.json", &Json::Array(servers))?;
     }
 
     // --- agents -------------------------------------------------------------
@@ -1186,6 +1199,14 @@ fn zip_error(path: &str, message: &str) -> Error {
 /// naming it is restored onto an installation whose file supplies the same
 /// name, and is reported unrestorable elsewhere, like any agent whose provider
 /// is missing.
+/// The MCP servers defined here; none when the table was never made.
+async fn stored_mcp_servers(catalog: &Catalog) -> Result<Vec<sc_mcp::McpServerDef>> {
+    if !has_table(catalog, sc_mcp::MCP_SERVERS_TABLE)? {
+        return Ok(Vec::new());
+    }
+    sc_mcp::list_mcp_servers(catalog).await
+}
+
 async fn stored_llm_providers(catalog: &Catalog) -> Result<Vec<sc_llm::LlmProviderDef>> {
     Ok(sc_llm::list_llm_providers(catalog)
         .await?

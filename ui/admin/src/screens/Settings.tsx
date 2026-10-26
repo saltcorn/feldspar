@@ -62,6 +62,7 @@ import { SharedTranslationsPanel } from "./SharedTranslations";
 import { McpTokensPanel } from "./McpTokens";
 import { OAuthProvidersPanel } from "./OAuthProviders";
 import { ModulesTab } from "./ModulesTab";
+import { BuildHostsTab } from "./BuildHosts";
 import { PythonStatusPanel } from "./PythonStatus";
 import { TestEmail } from "./TestEmail";
 import { T, useT } from "../i18n";
@@ -123,6 +124,11 @@ export const BACKUP_TAB = "backup";
  * about the *installation* rather than about anything in it. */
 export const MODULES_TAB = "modules";
 
+/** The Build hosts tab's identity: the machines that build native apps for
+ * this server (`TODO-build-hosts.md`). A list of records, like Modules, not a
+ * bag of values. */
+export const BUILD_HOSTS_TAB = "build-hosts";
+
 /** Which tab is showing: a section's `name`, or {@link BACKUP_TAB}. */
 export type SettingsTab = string;
 
@@ -139,6 +145,7 @@ export function settingsTabs(sections: Section[]): TabSpec[] {
   return [
     ...sections.map((section) => ({ id: section.name, label: section.label })),
     { id: MODULES_TAB, label: "Modules" },
+    { id: BUILD_HOSTS_TAB, label: "Build hosts" },
     { id: BACKUP_TAB, label: "Backup" },
   ];
 }
@@ -309,6 +316,9 @@ export function Settings() {
         ))}
         <TabPanel id={MODULES_TAB} showing={tab}>
           <ModulesTab />
+        </TabPanel>
+        <TabPanel id={BUILD_HOSTS_TAB} showing={tab}>
+          <BuildHostsTab />
         </TabPanel>
         <TabPanel id={BACKUP_TAB} showing={tab}>
           <BackupTab />

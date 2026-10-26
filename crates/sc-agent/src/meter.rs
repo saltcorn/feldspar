@@ -125,6 +125,29 @@ impl Meter {
     }
 }
 
+impl Meter {
+    /// What a non-chat call (TODO-agent-skills AS3.5) costs in credits: its
+    /// priced cost at the rate per dollar, else its reported tokens at the
+    /// rates per token, else `None`.
+    ///
+    /// A call has a [`cost`](sc_llm::ModelCall::cost) of its own (per image,
+    /// per character, per embedded token), worked out where the call was made,
+    /// so this takes it rather than prices. Speech reports no tokens, so by the
+    /// token alone it is free: charge it by the dollar.
+    pub fn charge_call(&self, call: &sc_llm::ModelCall) -> Option<Decimal> {
+        if let (Some(rate), Some(cost)) = (
+            self.per_dollar,
+            call.cost.and_then(|c| Decimal::try_from(c).ok()),
+        ) {
+            return Some(sc_auth::credits(cost * rate));
+        }
+        if self.charges_tokens() {
+            return self.charge(&call.usage, &Prices::default());
+        }
+        None
+    }
+}
+
 /// A number attribute read exactly: a JSON number's own text, or a string.
 fn attr_decimal(attributes: &Attrs, key: &str) -> Option<Decimal> {
     match attributes.get(key)? {
@@ -149,6 +172,7 @@ mod tests {
             cached_input: None,
             cache_write: None,
             output: Some(15.0),
+            ..Prices::default()
         }
     }
 
@@ -217,5 +241,35 @@ mod tests {
             m.charge(&usage, &priced()),
             Some(sc_auth::credits(Decimal::new(12, 3) * Decimal::from(20)))
         );
+    }
+
+    #[test]
+    fn a_non_chat_call_is_charged_by_its_own_cost_or_its_tokens() {
+        let call = |cost: Option<f64>, input: u64| sc_llm::ModelCall {
+            kind: sc_llm::ModelKind::Image,
+            provider: "openai".into(),
+            model: "gpt-image-1".into(),
+            usage: Usage {
+                input_tokens: input,
+                ..Usage::default()
+            },
+            units: 1,
+            cost,
+            elapsed_ms: 0,
+        };
+        let by_dollar = Meter::of(&attrs(json!({ ATTR_CREDITS_PER_DOLLAR: 100 }))).unwrap();
+        // An image at 0.04 is 4 credits.
+        assert_eq!(
+            by_dollar.charge_call(&call(Some(0.04), 0)),
+            Some(Decimal::from(4))
+        );
+        assert_eq!(by_dollar.charge_call(&call(None, 10)), None);
+        let both = Meter::of(&attrs(json!({
+            ATTR_CREDITS_PER_DOLLAR: 100,
+            ATTR_CREDITS_PER_1K_INPUT: 1,
+        })))
+        .unwrap();
+        // Unpriced: its 2,000 tokens at 1 credit per thousand.
+        assert_eq!(both.charge_call(&call(None, 2_000)), Some(Decimal::from(2)));
     }
 }

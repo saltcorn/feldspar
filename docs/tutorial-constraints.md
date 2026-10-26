@@ -89,8 +89,18 @@ Press **Full-text search**, leave the language on `english`, and add it. This on
 text field of the table together** — here `title` and `blurb` — as a single searchable document.
 
 The language matters more than it looks: it decides how words are reduced to their stems, so
-`english` makes *running* match *runs* and `simple` does not. It has to be the same
-configuration a search uses, or the index simply never gets used.
+`english` makes *running* match *runs* and `simple` does not. A search uses the language of the
+index, so there is nothing to keep in step.
+
+The index is what a search reads. Try it on the application's REST API —
+`GET /api/books?search=running -horror` — or as GraphQL's `books(search: "running -horror")`:
+words are all required, `"a quoted phrase"` must appear as written, `-word` excludes and `or`
+offers an alternative. With no `order`, the best match comes first; `order=relevance,title`
+names that ordering explicitly. A table without the index can still be searched while it is
+small (up to 5,000 rows); past that, the search is refused and says to add the index.
+
+On SQLite the index is an FTS5 table kept beside `books`. It needs the table to have an integer
+key, and only `english` is stemmed there.
 
 Add a text field to `books` later and the index is **rebuilt** to cover it. That is not a
 courtesy: an index over every text field that quietly stopped covering one would be the sort of

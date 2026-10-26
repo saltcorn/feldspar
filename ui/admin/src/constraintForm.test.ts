@@ -75,6 +75,19 @@ describe("createConstraintBody", () => {
     expect(body).toEqual({ type: "full_text_search", language: "german" });
   });
 
+  it("sends the one vector field for a vector index, and no message", () => {
+    const body = createConstraintBody({
+      ...newConstraintForm("vector_index"),
+      fields: ["embedding"],
+      errorMessage: "ignored",
+    });
+    expect(body).toEqual({ type: "vector_index", fields: ["embedding"] });
+    expect(constraintFormError(newConstraintForm("vector_index"))).toBe(
+      "Choose the vector field to index.",
+    );
+    expect(constraintTypeLabel("vector_index")).toBe("Vector index");
+  });
+
   it("sends the formula, its name and its message, trimmed", () => {
     const body = createConstraintBody({
       ...newConstraintForm("formula"),

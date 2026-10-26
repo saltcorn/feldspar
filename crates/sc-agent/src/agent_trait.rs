@@ -23,6 +23,7 @@
 //! trigger carries the trigger's authority instead, and that difference is set at
 //! exactly one place: where the run is created.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_action::TriggerDispatcher;
@@ -37,6 +38,8 @@ use serde_json::Value as Json;
 use crate::context::Elidable;
 use crate::control::Signal;
 use crate::delegate::Delegator;
+use crate::interact::{ComposerControl, DisplayPart, UserRequest};
+use crate::ledger::CodeEvaluation;
 use crate::run::{RunId, RunMode};
 use crate::view::{AppPreviewer, AppRequester, BrowserDriver, HostCapabilities, ModuleManager};
 
@@ -241,6 +244,149 @@ pub trait AgentTrait: Send + Sync {
     fn run_ended(&self, config: &Attrs, run: RunId) {
         let _ = (config, run);
     }
+
+    /// Turn the person's answer to a question this trait asked
+    /// ([`TraitContext::await_user`]) into the text the model reads — the next
+    /// user message (TODO-agent-skills AS6.2).
+    ///
+    /// Called with an answer already checked against the request. The default
+    /// says the question and the answer in words.
+    async fn on_answer(
+        &self,
+        config: &Attrs,
+        request: &UserRequest,
+        value: &Json,
+    ) -> Result<String> {
+        let _ = config;
+        Ok(request.answer_text(value))
+    }
+
+    /// [`on_answer`](AgentTrait::on_answer), with a tool call's context: for a
+    /// trait whose answer *does* something before the model hears of it — an
+    /// approved proposal applied as the person who approved it
+    /// (`library_tools`). The default is `on_answer`.
+    ///
+    /// The request is the one the run stored, so its payload is what the
+    /// trait put there, never what the client sent; only `value` is theirs.
+    async fn on_answer_in(
+        &self,
+        config: &Attrs,
+        request: &UserRequest,
+        value: &Json,
+        ctx: &mut TraitContext<'_>,
+    ) -> Result<String> {
+        let _ = ctx;
+        self.on_answer(config, request, value).await
+    }
+
+    /// The controls this trait adds to the chat's input row (AS6.4). Their
+    /// values reach [`on_turn`](AgentTrait::on_turn) as [`Turn::controls`].
+    fn controls(&self, config: &Attrs) -> Vec<ComposerControl> {
+        let _ = config;
+        Vec::new()
+    }
+
+    /// The controls this trait adds for **this caller**, where they depend on
+    /// what the catalog holds — `prompt_picker`'s options read from a table,
+    /// as the caller (TODO-agent-skills AS10.5). The default is
+    /// [`controls`](AgentTrait::controls). What a chat surface lists, and what
+    /// a message's controls are checked against.
+    async fn controls_in(
+        &self,
+        config: &Attrs,
+        cx: &ControlsContext<'_>,
+    ) -> Result<Vec<ComposerControl>> {
+        let _ = cx;
+        Ok(self.controls(config))
+    }
+
+    /// A [`Button`](crate::ControlKind::Button) control this trait declared,
+    /// `control`, was pressed: the message that starts a turn carries it as
+    /// `true` (AS10.3).
+    ///
+    /// `Ok(Some(text))` answers the press here: `text` is the turn's answer,
+    /// **without a model call** — `run_js_code`'s button runs its code and
+    /// says what it returned. `Ok(None)` (the default) leaves the press an
+    /// ordinary message the model answers. `row` is the row whose event
+    /// started the run, when one did. An `Err` is the answer too, said as a
+    /// failure, so a press always ends its turn.
+    async fn on_press(
+        &self,
+        config: &Attrs,
+        control: &str,
+        row: Option<&Json>,
+        ctx: &mut TraitContext<'_>,
+    ) -> Result<Option<String>> {
+        let _ = (config, control, row, ctx);
+        Ok(None)
+    }
+
+    /// Called once when the model gives a turn's **final answer** — a reply
+    /// with no tool calls that ends the turn — for every enabled trait, in
+    /// trait order (TODO-agent-skills AS11.2). `speech` reads the answer aloud
+    /// here and attaches the audio as a display part.
+    ///
+    /// What it shows ([`AnswerContext::show`]) is attached to the answer, not
+    /// to a tool call, and the model never sees it; a model call it makes for
+    /// itself ([`AnswerContext::record_call`]) is ledgered and charged as a
+    /// tool's is. An `Err` is logged and otherwise ignored: the answer stands.
+    async fn on_final_answer(&self, config: &Attrs, cx: &mut AnswerContext<'_>) -> Result<()> {
+        let _ = (config, cx);
+        Ok(())
+    }
+}
+
+/// What [`AgentTrait::controls_in`] is given: where the options can come from,
+/// and who they are for.
+pub struct ControlsContext<'a> {
+    /// The live catalog.
+    pub catalog: &'a Catalog,
+    /// Who is chatting: a table read for the options is theirs.
+    pub caller: &'a RunCaller,
+    /// The name of the agent, for error messages.
+    pub agent: &'a str,
+}
+
+/// What [`AgentTrait::on_final_answer`] is given: the run, the answer, and
+/// where to put what it shows and what it spent.
+pub struct AnswerContext<'a> {
+    /// The live catalog.
+    pub catalog: &'a Catalog,
+    /// Who the run is for.
+    pub caller: &'a RunCaller,
+    /// The name of the agent.
+    pub agent: &'a str,
+    /// The run.
+    pub run: RunId,
+    /// The run's mode.
+    pub mode: RunMode,
+    /// The final answer's text.
+    pub answer: &'a str,
+    /// This trait instance's per-run state, as [`TraitContext::state`] reaches
+    /// it.
+    pub trait_state: &'a mut Json,
+    /// Parts shown to the person beside the answer. Reach it through
+    /// [`show`](AnswerContext::show).
+    pub display: Vec<DisplayPart>,
+    /// Non-chat model calls made, for the ledger and the payer. Reach it
+    /// through [`record_call`](AnswerContext::record_call).
+    pub calls: Vec<sc_llm::ModelCall>,
+}
+
+impl AnswerContext<'_> {
+    /// Show `part` to the person beside the answer. Refused when it is too
+    /// large.
+    pub fn show(&mut self, part: DisplayPart) -> Result<()> {
+        part.check()?;
+        self.display.push(part);
+        Ok(())
+    }
+
+    /// Record a non-chat model call made for the answer (speech), to be
+    /// ledgered as an aside and charged to the run's payer.
+    pub fn record_call(&mut self, call: sc_llm::ModelCall) {
+        self.calls.push(call);
+    }
 }
 
 /// What [`AgentTrait::session_header`] is given: the run, and this trait
@@ -262,6 +408,16 @@ pub struct SessionContext<'a> {
     /// This trait instance's per-run state, as [`TraitContext::state`] reaches
     /// it.
     pub trait_state: &'a mut Json,
+    /// The JavaScript engine, where the run has one (as
+    /// [`TraitContext::evaluator`]).
+    pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    /// The trigger dispatcher, where the run has one (as
+    /// [`TraitContext::triggers`]): what a code body in the header runs
+    /// through (`preload_code`, AS8.2).
+    pub triggers: Option<&'a Arc<TriggerDispatcher>>,
+    /// The row whose event started this run, for a run a trigger started on a
+    /// row event (`Runner::with_row`); `None` for a chat.
+    pub row: Option<&'a Json>,
 }
 
 /// What [`AgentTrait::after_tools`] is given: the run, this trait instance's
@@ -370,6 +526,11 @@ pub struct RunCaller {
     /// CSRF token, and an admin signed in to the application is not therefore
     /// at the admin console (security review #21).
     pub exposed: bool,
+    /// The trigger chain that started this run, when a trigger did
+    /// ([`chained`](Self::chained)): what a trigger run or a write made by one
+    /// of its tools carries on, so the cascade limit counts a trigger → agent →
+    /// trigger loop like any other. Empty for a chat.
+    pub chain: Vec<String>,
 }
 
 impl RunCaller {
@@ -380,6 +541,7 @@ impl RunCaller {
             user: Some(user),
             triggered: false,
             exposed: false,
+            chain: Vec::new(),
         }
     }
 
@@ -404,6 +566,7 @@ impl RunCaller {
             role: 1,
             triggered: false,
             exposed: false,
+            chain: Vec::new(),
         }
     }
 
@@ -436,7 +599,34 @@ impl RunCaller {
             role: 100,
             triggered: false,
             exposed: true,
+            chain: Vec::new(),
         }
+    }
+
+    /// A run a trigger started **as whoever caused the event**: `user` at
+    /// their own role, or — nobody signed in — the public role, exactly as
+    /// [`anonymous`](Self::anonymous). Never the server's own tools, because the
+    /// prompt is still computed from the event ([`triggered`](Self::triggered)).
+    ///
+    /// What `run_agent`'s `run_as: event_user` makes, so an application that
+    /// starts an agent through `POST /api/actions/<trigger>` gets tools that see
+    /// what the signed-in person may see, and a run that records them.
+    pub fn event_user(user: Option<User>) -> RunCaller {
+        let caller = match user {
+            Some(user) => RunCaller::user(user),
+            None => RunCaller::anonymous(),
+        };
+        RunCaller {
+            triggered: true,
+            ..caller
+        }
+    }
+
+    /// This caller, carrying `chain` — the firing chain of the trigger that
+    /// started the run — on to what its tools do.
+    pub fn chained(mut self, chain: Vec<String>) -> RunCaller {
+        self.chain = chain;
+        self
     }
 
     /// Whether this is an anonymous visitor's run ([`anonymous`](Self::anonymous)),
@@ -456,16 +646,17 @@ impl RunCaller {
     }
 
     /// The trigger chain a write or a trigger run made by one of this run's
-    /// tools carries: empty — a tool call is not a trigger firing — or, for a
-    /// run of [untrusted origin](Self::untrusted_origin), the
+    /// tools carries: the [`chain`](Self::chain) that started the run — empty
+    /// for a chat, since a tool call is not itself a trigger firing — and, for
+    /// a run of [untrusted origin](Self::untrusted_origin), the
     /// [`UNTRUSTED_ORIGIN`](sc_catalog::UNTRUSTED_ORIGIN) mark, so a
     /// `trusted_input` trigger the write fires does not hand the server's
     /// tools back to the prompt that caused it (security review #32).
     pub fn tool_chain(&self) -> Vec<String> {
         if self.untrusted_origin() {
-            sc_catalog::untrusted_chain(Vec::new())
+            sc_catalog::untrusted_chain(self.chain.clone())
         } else {
-            Vec::new()
+            self.chain.clone()
         }
     }
 
@@ -551,6 +742,23 @@ pub struct TraitContext<'a> {
     /// Images this call's result carries beside its text. Reach it through
     /// [`attach_image`](TraitContext::attach_image).
     pub images: Vec<ImagePart>,
+    /// What this call shows the person, asks them, and ran (TODO-agent-skills
+    /// AS5, AS6). Reach it through [`show`](TraitContext::show),
+    /// [`await_user`](TraitContext::await_user) and
+    /// [`record_code`](TraitContext::record_code).
+    pub extras: CallExtras,
+}
+
+/// What a tool call produces besides its result, for the loop to take after
+/// the call.
+#[derive(Debug, Default)]
+pub struct CallExtras {
+    /// Parts shown to the person and not the model.
+    pub display: Vec<DisplayPart>,
+    /// A question that ends the turn until the person answers.
+    pub awaiting: Option<UserRequest>,
+    /// Model-written code this call evaluated, for the ledger.
+    pub code: Vec<CodeEvaluation>,
 }
 
 impl TraitContext<'_> {
@@ -577,6 +785,35 @@ impl TraitContext<'_> {
     /// result; offering an image tool is the trait's decision.
     pub fn attach_image(&mut self, image: ImagePart) {
         self.images.push(image);
+    }
+
+    /// Show `part` to the person, beside this call's result, without the model
+    /// seeing it (TODO-agent-skills AS6.3). Refused when it is too large.
+    pub fn show(&mut self, part: DisplayPart) -> Result<()> {
+        part.check()?;
+        self.extras.display.push(part);
+        Ok(())
+    }
+
+    /// Ask the person `request`: the turn ends after this round of tools, and
+    /// the run waits for the answer, which reaches this trait's
+    /// [`on_answer`](AgentTrait::on_answer) (AS6.1). One request per round: a
+    /// second is refused.
+    pub fn await_user(&mut self, request: UserRequest) -> Result<()> {
+        request.check()?;
+        if self.extras.awaiting.is_some() {
+            return Err(Error::invalid(
+                "this tool has already asked the person something this turn",
+            ));
+        }
+        self.extras.awaiting = Some(request);
+        Ok(())
+    }
+
+    /// Keep `evaluation` — the source of model-written code and how it went —
+    /// in the run's ledger, for review (AS5.3).
+    pub fn record_code(&mut self, evaluation: CodeEvaluation) {
+        self.extras.code.push(evaluation);
     }
 
     /// How to mount a preview, or the configuration error that says this
@@ -683,8 +920,33 @@ pub struct Turn<'a> {
     pub step: u32,
     /// The run's mode.
     pub mode: RunMode,
+    /// The values of the chat's composer controls sent with the message that
+    /// started this turn, by control name (TODO-agent-skills AS6.4); empty when
+    /// none were sent.
+    pub controls: BTreeMap<String, Json>,
+    /// This trait instance's per-run state, read-only, as
+    /// [`session_header`](AgentTrait::session_header) and its tools left it
+    /// (`None` before it wrote any). Set by the loop before each trait's
+    /// [`on_turn`](AgentTrait::on_turn), so a trait that computed something once
+    /// per session (`preload_rows` placed in the system prompt, AS8.1) can
+    /// append that same text on every step without computing it again.
+    pub state: Option<&'a Json>,
+    /// The live catalog, for a trait that reads rows into the turn
+    /// (`search_table` and `similar_rows` in their `every_message` mode,
+    /// TODO-agent-skills AS7.1, AS7.3). `None` for a turn built outside a run.
+    pub catalog: Option<&'a Catalog>,
+    /// The JavaScript engine, where the run has one (as
+    /// [`TraitContext::evaluator`]): a read under an ownership formula that
+    /// does not translate to SQL needs it.
+    pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    /// The conversation as it is about to be sent, so a trait can read the
+    /// message that started this turn ([`Turn::user_message`]). Empty for a
+    /// turn built outside a run.
+    pub messages: &'a [sc_llm::LlmMessage],
     /// Paragraphs appended to the system prompt, in the order traits added them.
     extra_system: Vec<String>,
+    /// Paragraphs sent after the conversation, in the order traits added them.
+    extra_context: Vec<String>,
 }
 
 impl<'a> Turn<'a> {
@@ -695,11 +957,23 @@ impl<'a> Turn<'a> {
             agent,
             step,
             mode: RunMode::Act,
+            controls: BTreeMap::new(),
+            state: None,
+            catalog: None,
+            evaluator: None,
+            messages: &[],
             extra_system: Vec::new(),
+            extra_context: Vec::new(),
         }
     }
 
     /// Append a paragraph to the system prompt for this turn only.
+    ///
+    /// For text that is the **same on every step** of a session — rows
+    /// preloaded once, a picked prompt. The system prompt comes before the
+    /// conversation, so text that changes from one message to the next would
+    /// make the host's prompt cache miss on the whole conversation after it;
+    /// that is [`append_context`](Turn::append_context)'s.
     ///
     /// Blank text is dropped rather than stored, so a trait that computed nothing
     /// to say does not push a stray blank line into the prompt.
@@ -708,6 +982,47 @@ impl<'a> Turn<'a> {
         if !text.trim().is_empty() {
             self.extra_system.push(text);
         }
+    }
+
+    /// Append a paragraph of context for this turn only, sent **after the
+    /// conversation**, as a last user message the run does not keep.
+    ///
+    /// For what changes with every message — rows found for the user's latest
+    /// question — so the system prompt, the tools and the conversation so far
+    /// stay a byte-identical prefix the host can cache. Blank text is dropped.
+    pub fn append_context(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if !text.trim().is_empty() {
+            self.extra_context.push(text);
+        }
+    }
+
+    /// Everything [`append_context`](Turn::append_context) added, in order.
+    pub fn extra_context(&self) -> &[String] {
+        &self.extra_context
+    }
+
+    /// The trailing message the context is sent as, or `None` when there is
+    /// none.
+    pub fn context_message(&self) -> Option<sc_llm::LlmMessage> {
+        (!self.extra_context.is_empty()).then(|| {
+            sc_llm::LlmMessage::user(format!(
+                "<context>\nThe system added this for the latest message; it is not \
+                 from the user.\n\n{}\n</context>",
+                self.extra_context.join("\n\n")
+            ))
+        })
+    }
+
+    /// The text of the latest user message in the conversation — the one this
+    /// turn answers — or `None` when there is none (AS7.1's `every_message`).
+    pub fn user_message(&self) -> Option<&str> {
+        self.messages.iter().rev().find_map(|m| match m {
+            sc_llm::LlmMessage::User { content } if !content.trim().is_empty() => {
+                Some(content.as_str())
+            }
+            _ => None,
+        })
     }
 
     /// Everything appended, in order.

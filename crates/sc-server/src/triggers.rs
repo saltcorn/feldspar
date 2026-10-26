@@ -116,7 +116,9 @@ pub async fn install_triggers_with_adapters(
     for adapter in adapters {
         dispatcher = dispatcher.with_adapter(adapter);
     }
-    let dispatcher = Arc::new(dispatcher);
+    // Shared so an agent a trigger starts can be handed the dispatcher its
+    // tools run triggers through (`run_agent`).
+    let dispatcher = dispatcher.into_shared();
     dispatcher
         .reload(catalog)
         .await

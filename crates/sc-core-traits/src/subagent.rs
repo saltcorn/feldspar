@@ -73,6 +73,12 @@ pub const CFG_WHEN_TO_USE: &str = "when_to_use";
 pub const CFG_MAX_STEPS: &str = "max_steps";
 /// How deep delegation may nest below this agent.
 pub const CFG_MAX_DEPTH: &str = "max_depth";
+/// Text put before the briefing: what the sub-agent starts on, whatever the
+/// parent writes (TODO-agent-skills AS9.5).
+pub const CFG_HANDOVER_PROMPT: &str = "handover_prompt";
+/// Text put after the report the parent reads: what it should do with it
+/// (AS9.5).
+pub const CFG_HANDOFF_PROMPT: &str = "handoff_prompt";
 
 /// The deepest chain an admin may configure.
 ///
@@ -123,6 +129,17 @@ impl AgentTrait for Subagent {
             FormField::new(CFG_MAX_DEPTH, BasicType::Int)
                 .label("Maximum delegation depth")
                 .default_value(DEFAULT_MAX_DEPTH),
+            // v1's two prompts: one the admin puts in front of every briefing
+            // (the sub-agent's standing orders for this caller), and one the
+            // parent reads after every report (what to do with it).
+            FormField::new(CFG_HANDOVER_PROMPT, BasicType::Text)
+                .label("Handover prompt")
+                .sublabel("Put before every briefing the sub-agent is sent")
+                .multiline(),
+            FormField::new(CFG_HANDOFF_PROMPT, BasicType::Text)
+                .label("Handoff prompt")
+                .sublabel("Put after every report, for this agent to act on")
+                .multiline(),
         ]
     }
 
@@ -253,14 +270,22 @@ impl AgentTrait for Subagent {
         ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
         let agent = configured_agent(config)?;
-        delegate(
+        let mut report = delegate_with(
             ctx,
             &agent,
             args,
             config_u32(config, CFG_MAX_STEPS)?,
             max_depth(config)?,
+            &config_str(config, CFG_HANDOVER_PROMPT),
         )
-        .await
+        .await?;
+        // After the report, never inside it: the answer stays verbatim, and
+        // what the parent is to do with it is a field of its own.
+        let handoff = config_str(config, CFG_HANDOFF_PROMPT);
+        if !handoff.is_empty() {
+            report["handoff"] = Json::String(handoff);
+        }
+        Ok(report)
     }
 }
 
@@ -277,7 +302,22 @@ pub(crate) async fn delegate(
     max_steps: Option<u32>,
     max_depth: u32,
 ) -> Result<Json> {
-    let briefing = briefing(agent, ctx.agent, args)?;
+    delegate_with(ctx, agent, args, max_steps, max_depth, "").await
+}
+
+/// [`delegate`], with `handover` put before the briefing when it is not empty.
+async fn delegate_with(
+    ctx: &mut TraitContext<'_>,
+    agent: &str,
+    args: &Json,
+    max_steps: Option<u32>,
+    max_depth: u32,
+    handover: &str,
+) -> Result<Json> {
+    let mut briefing = briefing(agent, ctx.agent, args)?;
+    if !handover.trim().is_empty() {
+        briefing = format!("{}\n\n{briefing}", handover.trim());
+    }
     let delegate = ctx.require_delegate()?;
 
     let outcome = delegate
@@ -310,6 +350,14 @@ pub(crate) async fn delegate(
                  circles: {reason}. Its transcript is run {}. Do the work here, or \
                  ask for it differently.",
                 outcome.steps, outcome.run
+            ),
+            // Nobody chats with a sub-agent, so its question has nobody to
+            // answer it (TODO-agent-skills AS6).
+            sc_agent::Conclusion::AwaitingUser { request } => format!(
+                "`{agent}` stopped to ask the person a question, which a sub-agent \
+                 cannot: \"{}\" (run {}). Answer it yourself in a new briefing, or ask \
+                 the person here.",
+                request.prompt, outcome.run
             ),
             _ => format!(
                 "`{agent}` finished without reporting anything (run {}). It may \

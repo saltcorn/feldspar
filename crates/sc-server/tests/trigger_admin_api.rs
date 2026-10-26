@@ -802,7 +802,11 @@ async fn the_actions_describe_their_own_settings() -> sc_error::Result<()> {
     assert_eq!(
         names,
         vec![
+            // Summarises an agent's memories per user (TODO-agent-skills AS8.5).
+            "consolidate_memory",
             "delete_rows",
+            // Back-fills a vector field's embeddings (TODO-agent-skills AS2.5).
+            "embed_rows",
             "fetch",
             // The one model action is registered beside `run_agent` and for
             // the same reason (Stan TODO 7.5): it needs the model provider

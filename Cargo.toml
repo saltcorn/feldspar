@@ -85,6 +85,10 @@ members = [
     # above them, because what a module supplies *is* an `Action` (§15).
     "crates/sc-module",
     "crates/sc-llm",
+    # The MCP client (TODO-agent-skills AS4): remote MCP servers an agent's
+    # `mcp_server` trait calls. Beside `sc-llm`: stored definitions, HTTP, no
+    # agents.
+    "crates/sc-mcp",
     "crates/sc-email",
     # Layer 7 — agents: the agent record, the trait extension point, the loop
     "crates/sc-agent",
@@ -172,6 +176,7 @@ sc-stan = { path = "crates/sc-stan" }
 sc-stream = { path = "crates/sc-stream" }
 sc-module = { path = "crates/sc-module" }
 sc-llm = { path = "crates/sc-llm" }
+sc-mcp = { path = "crates/sc-mcp" }
 sc-email = { path = "crates/sc-email" }
 sc-agent = { path = "crates/sc-agent" }
 sc-workflow = { path = "crates/sc-workflow" }
@@ -248,6 +253,10 @@ icu_plurals = "2"
 # `std` pulls in `getrandom` (via rand_core) so a random salt can be drawn from
 # the OS CSPRNG (`OsRng`) when hashing.
 argon2 = { version = "0.5", features = ["std"] }
+# bcrypt, verify-only: the hash Saltcorn 1 stores (`$2a$…`), so an account
+# imported from a v1 backup can still sign in with its old password (and is
+# rehashed with argon2id when it does).
+bcrypt = { version = "0.19", default-features = false, features = ["std"] }
 # SHA-256 for session tokens at rest (§7.2). A *fast* hash on purpose: a session
 # token is 256 bits of uniform randomness, so there is no dictionary for a slow
 # hash to defeat — argon2 above is for passwords, which are guessable.

@@ -44,6 +44,7 @@ use serde_json::Value as Json;
 use crate::agent::{Agent, DEFAULT_MAX_STEPS, ModelRole};
 use crate::context::{Compaction, ContextState, ContextVerdict, FALLBACK_CONTEXT_BUDGET};
 use crate::control::{ControlLimits, LoopControl, RoundCall, Signal, Verdict, fingerprint};
+use crate::interact::{DisplayRef, UserRequest};
 use crate::ledger::{Ledger, LedgerStep};
 
 /// What the driver must do next to advance an [`AgentLoop`].
@@ -118,6 +119,13 @@ pub enum Conclusion {
     Stuck {
         /// What the detectors saw, for the admin.
         reason: String,
+    },
+    /// A tool asked the person something, and the run waits for the answer
+    /// (TODO-agent-skills AS6.1). Continued by an answer naming the request, or
+    /// by an ordinary message, which leaves the question unanswered.
+    AwaitingUser {
+        /// What was asked.
+        request: UserRequest,
     },
 }
 
@@ -216,7 +224,8 @@ impl Conclusion {
             Conclusion::MaxSteps
             | Conclusion::Aborted
             | Conclusion::OverBudget { .. }
-            | Conclusion::Stuck { .. } => None,
+            | Conclusion::Stuck { .. }
+            | Conclusion::AwaitingUser { .. } => None,
         }
     }
 }
@@ -243,6 +252,10 @@ pub struct ToolOutcome {
     pub signals: Vec<Signal>,
     /// Images the result carries beside its text (TODO §7b).
     pub images: Vec<sc_llm::ImagePart>,
+    /// What the call showed the person, stored (AS6.3). Never in a request.
+    pub display: Vec<DisplayRef>,
+    /// What the call asked the person, which ends the turn (AS6.1).
+    pub awaiting: Option<UserRequest>,
 }
 
 impl ToolOutcome {
@@ -264,6 +277,8 @@ impl ToolOutcome {
             fingerprint: None,
             signals: Vec::new(),
             images: Vec::new(),
+            display: Vec::new(),
+            awaiting: None,
         }
     }
 
@@ -282,6 +297,8 @@ impl ToolOutcome {
             fingerprint: None,
             signals: Vec::new(),
             images: Vec::new(),
+            display: Vec::new(),
+            awaiting: None,
         }
     }
 
@@ -303,6 +320,19 @@ impl ToolOutcome {
     /// Attach the images the trait produced, returning `self` for chaining.
     pub fn with_images(mut self, images: Vec<sc_llm::ImagePart>) -> ToolOutcome {
         self.images.extend(images);
+        self
+    }
+
+    /// Attach the references to what the call showed the person, returning
+    /// `self` for chaining.
+    pub fn with_display(mut self, display: Vec<DisplayRef>) -> ToolOutcome {
+        self.display.extend(display);
+        self
+    }
+
+    /// Attach what the call asked the person, returning `self` for chaining.
+    pub fn with_awaiting(mut self, request: Option<UserRequest>) -> ToolOutcome {
+        self.awaiting = request;
         self
     }
 
@@ -359,6 +389,14 @@ pub struct AgentLoop {
     /// accounting (TODO §9). The transcript in `messages` stays whole.
     #[serde(default)]
     context: ContextState,
+    /// What each tool call showed the person, by tool call id (AS6.3): kept
+    /// beside the transcript, so it never reaches a request.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    display: BTreeMap<String, Vec<DisplayRef>>,
+    /// The composer controls sent with the message that started this turn
+    /// (AS6.4).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    controls: BTreeMap<String, Json>,
     /// Which side is next.
     phase: Phase,
 }
@@ -368,6 +406,13 @@ pub struct AgentLoop {
 /// reordered by the admin hands no trait another's state.
 pub fn trait_state_key(index: usize, trait_name: &str) -> String {
     format!("{index}:{trait_name}")
+}
+
+/// The key what a final answer showed the person is kept under in
+/// [`AgentLoop::display`], beside the tool calls' ids: `answer:` and the
+/// answer's position in the transcript (TODO-agent-skills AS11.2).
+pub fn answer_display_key(message_index: usize) -> String {
+    format!("answer:{message_index}")
 }
 
 impl Default for AgentLoop {
@@ -396,6 +441,8 @@ impl AgentLoop {
             trait_state: BTreeMap::new(),
             control: LoopControl::default(),
             context: ContextState::default(),
+            display: BTreeMap::new(),
+            controls: BTreeMap::new(),
             phase: Phase::Model,
         }
     }
@@ -435,6 +482,17 @@ impl AgentLoop {
     /// silently appending it there is how a question gets answered before it was
     /// asked. A chat client holds the message until the turn ends.
     pub fn push_user(&mut self, text: impl Into<String>) -> Result<()> {
+        self.push_user_with(text, BTreeMap::new())
+    }
+
+    /// [`push_user`](AgentLoop::push_user), with the composer controls the
+    /// message was sent with (AS6.4): what [`Turn::controls`](crate::Turn::controls)
+    /// holds for every step of the turn it starts.
+    pub fn push_user_with(
+        &mut self,
+        text: impl Into<String>,
+        controls: BTreeMap<String, Json>,
+    ) -> Result<()> {
         // A turn boundary is the start of the run or the end of a turn. Anywhere
         // else the history is half-built — an assistant message awaiting its tool
         // results, or a question already on its way to the model.
@@ -446,6 +504,7 @@ impl AgentLoop {
             ));
         }
         self.messages.push(LlmMessage::user(text));
+        self.controls = controls;
         // The person has weighed in, so whatever was repeating starts again.
         self.control.reset();
         self.phase = Phase::Model;
@@ -541,6 +600,7 @@ impl AgentLoop {
             elapsed_ms: u64::try_from(meta.elapsed.as_millis()).unwrap_or(u64::MAX),
             signals: Vec::new(),
             compacted: self.context.take_pending(),
+            kind: sc_llm::ModelKind::Chat,
         });
         self.messages.push(answer.message());
         self.phase = if answer.tool_calls.is_empty() {
@@ -553,6 +613,26 @@ impl AgentLoop {
             Phase::Tools {
                 calls: answer.tool_calls,
             }
+        };
+        Ok(())
+    }
+
+    /// End the turn just started with `text` as its answer, without a model
+    /// call: what a trait answers a composer button with (TODO-agent-skills
+    /// AS10.3's `run_js_code` button). The answer is an assistant message, so
+    /// the model reads it as said on a later turn; no step is counted.
+    pub fn answered_without_model(&mut self, text: impl Into<String>) -> Result<()> {
+        if !matches!(self.phase, Phase::Model)
+            || !matches!(self.messages.last(), Some(LlmMessage::User { .. }))
+        {
+            return Err(Error::msg(
+                "a turn can be answered without the model only right after the person spoke",
+            ));
+        }
+        let text = text.into();
+        self.messages.push(LlmMessage::assistant(text.clone()));
+        self.phase = Phase::Done {
+            conclusion: Conclusion::Answered { answer: text },
         };
         Ok(())
     }
@@ -610,7 +690,18 @@ impl AgentLoop {
         }
 
         let last = outcomes.len().saturating_sub(1);
+        let mut awaiting = None;
         for (i, mut outcome) in outcomes.into_iter().enumerate() {
+            if !outcome.display.is_empty() {
+                self.display
+                    .entry(outcome.call.id.clone())
+                    .or_default()
+                    .append(&mut outcome.display);
+            }
+            // The first question asked this round is the one waited on.
+            if awaiting.is_none() {
+                awaiting = outcome.awaiting.take();
+            }
             // On the result, not the system prompt: the cached prefix survives.
             if i == last
                 && let Verdict::Continue { note: Some(note) } = &verdict
@@ -625,6 +716,14 @@ impl AgentLoop {
             self.messages.push(message);
         }
         self.cap_images();
+        // A question waits for the person whatever loop control thought: they
+        // are the one who can say what happens next.
+        if let Some(request) = awaiting {
+            self.phase = Phase::Done {
+                conclusion: Conclusion::AwaitingUser { request },
+            };
+            return Ok(());
+        }
         self.phase = match verdict {
             // Every call has its result first, so a person can continue the
             // conversation from here.
@@ -668,6 +767,58 @@ impl AgentLoop {
                 content.push_str(IMAGE_STUB);
             }
         }
+    }
+
+    /// The question the run is waiting on, when it is waiting on one.
+    pub fn pending_request(&self) -> Option<&UserRequest> {
+        match &self.phase {
+            Phase::Done {
+                conclusion: Conclusion::AwaitingUser { request },
+            } => Some(request),
+            _ => None,
+        }
+    }
+
+    /// The question `id` names, when it is the one the run is waiting on — or
+    /// the refusal of an answer to anything else: a question answered, passed
+    /// over by an ordinary message, or never asked (AS6.2).
+    pub fn awaited(&self, id: &str) -> Result<&UserRequest> {
+        match self.pending_request() {
+            Some(request) if request.id == id => Ok(request),
+            _ => Err(Error::invalid(
+                "that question is no longer waiting for an answer; it was answered, or the \
+                 conversation moved on",
+            )),
+        }
+    }
+
+    /// What each tool call showed the person, by tool call id.
+    pub fn display(&self) -> &BTreeMap<String, Vec<DisplayRef>> {
+        &self.display
+    }
+
+    /// Attach `refs` to the last message, the final answer, under
+    /// [`answer_display_key`] (AS11.2).
+    pub fn show_with_answer(&mut self, refs: Vec<DisplayRef>) {
+        if refs.is_empty() {
+            return;
+        }
+        let index = self.messages.len().saturating_sub(1);
+        self.display
+            .entry(answer_display_key(index))
+            .or_default()
+            .extend(refs);
+    }
+
+    /// The composer controls sent with the message that started this turn.
+    pub fn controls(&self) -> &BTreeMap<String, Json> {
+        &self.controls
+    }
+
+    /// Set the composer controls of the turn just started — for the first
+    /// message, which a run is created with.
+    pub fn set_controls(&mut self, controls: BTreeMap<String, Json>) {
+        self.controls = controls;
     }
 
     /// Stop the run where it is.
@@ -899,6 +1050,27 @@ mod tests {
             })
         );
         assert_eq!(run.step(), 1);
+    }
+
+    #[test]
+    fn a_turn_can_be_answered_without_the_model() {
+        let mut run = AgentLoop::new(5);
+        run.push_user("Press").unwrap();
+        run.answered_without_model("Pressed.").unwrap();
+        assert_eq!(
+            run.next_step(),
+            Step::Done(Conclusion::Answered {
+                answer: "Pressed.".to_owned()
+            })
+        );
+        assert_eq!(run.step(), 0, "no model call is counted");
+        assert!(matches!(
+            run.messages().last(),
+            Some(LlmMessage::Assistant { .. })
+        ));
+        // Only straight after the person spoke.
+        assert!(run.answered_without_model("again").is_err());
+        run.push_user("Next").unwrap();
     }
 
     #[test]

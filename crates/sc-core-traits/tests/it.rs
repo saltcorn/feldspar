@@ -28,6 +28,8 @@ mod admin_copilot_apps;
 mod admin_copilot_build;
 #[path = "admin_copilot_triggers.rs"]
 mod admin_copilot_triggers;
+#[path = "agent_context.rs"]
+mod agent_context;
 #[path = "build_application.rs"]
 mod build_application;
 #[path = "builder_agent_traits.rs"]
@@ -60,12 +62,24 @@ mod docs_agents;
 mod host_privileges;
 #[path = "http_fetch.rs"]
 mod http_fetch;
+#[path = "library_tools.rs"]
+mod library_tools;
+#[path = "media.rs"]
+mod media;
 #[path = "query_table.rs"]
 mod query_table;
+#[path = "reaching_out.rs"]
+mod reaching_out;
+#[path = "retrieval.rs"]
+mod retrieval;
 #[path = "run_agent.rs"]
 mod run_agent;
+#[path = "run_js_code.rs"]
+mod run_js_code;
 #[path = "run_trigger.rs"]
 mod run_trigger;
+#[path = "sandbox.rs"]
+mod sandbox;
 #[path = "subagent.rs"]
 mod subagent;
 #[path = "write_rows.rs"]

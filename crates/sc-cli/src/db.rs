@@ -152,11 +152,16 @@ impl Serving<'_> {
             .map(|model| {
                 let mut def = sc_llm::LlmModelDef::new(def.id, &model.name);
                 for (key, value) in &model.settings {
+                    // `kind` is the row's, not a setting (TODO-agent-skills AS3.1).
+                    if key == "kind" {
+                        def.kind = sc_llm::ModelKind::parse(value.as_str().unwrap_or("?"))?;
+                        continue;
+                    }
                     def.config.insert(key.clone(), toml_to_json(value));
                 }
-                def
+                Ok(def)
             })
-            .collect();
+            .collect::<Result<_>>()?;
         sc_llm::HostLlmProvider::new(def, models, section.default_model_name()?).map(Some)
     }
 

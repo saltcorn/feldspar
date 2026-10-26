@@ -193,6 +193,16 @@ fn config_field(field: &Json, owner: &str) -> Result<Option<(FormField, Option<S
     {
         form_field = form_field.sublabel(text);
     }
+    // `env_fallback`: the environment variable a blank value leaves the job to.
+    // Not v1's; the admin UI shows the variable's value under the empty field.
+    if let Some(name) = field
+        .get("env_fallback")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        form_field = form_field.env_fallback(name);
+    }
     // v1's `attributes.regexp`: what a text value must look like, and the
     // sentence `re_invalid_error` says when it does not.
     let attributes = field.get("attributes");
@@ -448,6 +458,17 @@ mod tests {
         assert_eq!(fields[0].pattern_error.as_deref(), Some("Ten characters."));
         // An empty pattern is no pattern.
         assert_eq!(fields[1].pattern, None);
+    }
+
+    #[test]
+    fn a_setting_names_the_variable_a_blank_value_leaves_the_job_to() {
+        let (fields, issues) = translate(json!([
+            { "name": "android_home", "type": "String", "env_fallback": " ANDROID_HOME " },
+            { "name": "plain", "type": "String", "env_fallback": "" }
+        ]));
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(fields[0].env_fallback.as_deref(), Some("ANDROID_HOME"));
+        assert_eq!(fields[1].env_fallback, None);
     }
 
     #[test]

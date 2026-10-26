@@ -156,6 +156,14 @@ expose everything that agent can reach: a Member chatting with an agent that has
 over an admin-only trigger is refused *in the tool result*, by name. Set the agent's **Minimum
 role** to `40` and try it as a member to see the difference between the two floors.
 
+**A small tool that is only this agent's** does not need a trigger. Add a `run_js_code` trait
+instead: a **Tool name** (`word_of_the_day`), a **Description** the model reads, the **Code**,
+and the **Arguments** it takes as `[{ "name": "text", "type": "string" }]`. Each argument is a
+variable in the code (`return text.toUpperCase()`), the code has the same `db` and `fetch` a
+`run_js_code` trigger has, and it runs as whoever is chatting. Nothing appears in the trigger
+list, and an agent can have as many as it needs. A Saltcorn 1 agent's "Run JavaScript code"
+skills are imported as these.
+
 There are three more table grants beside `query_table`, each its own trait so that a read-only
 agent is the default shape: `insert_row`, `update_rows` and `delete_rows`. The last two
 **require a `where`** — a table rewritten by an omitted argument is the same accident as one
@@ -533,8 +541,9 @@ not stream — but open **Agents → helper → Chat** and the run is in the **H
 described as ``trigger `summarise_task` ``, with the prompt the formula built at the top of it and
 the agent's answer at the bottom.
 
-**The prompt is a formula**, in the same language as an `only_if`, a `where` and every field
-value: it reads `row`, `old`, `user` and `payload` under the same rule. Write it as a
+**The prompt is a formula, not a `{{ }}` template** — `payload.prompt`, or the template literal
+above — in the same language as an `only_if`, a `where` and every field value: it reads `row`,
+`old`, `user` and `payload` under the same rule. Write it as a
 **template literal** rather than `'…' + row.title`, because arithmetic in this language is
 null-guarded — a `+` with a null column computes null, and an agent with nothing to ask is
 refused rather than asked.
@@ -555,10 +564,18 @@ your application (**Applications → Todo → Edit**, tick it, **Build**) answer
 …guarded by the trigger's own **Minimum role**, like any other exposed trigger. Nothing about
 §13.2 changes because the action happens to be an agent.
 
-**A triggered run has no user.** Nobody was there, so it carries the *trigger's* authority — admin
-— and the run row records no user, which is exactly what an audit needs to be able to say. Read
-that sentence twice before you point a triggered agent at a table with an ownership formula: what
-protects a triggered run is the trigger's own `min_role`, not the caller's.
+**A triggered run has no user — unless you say whose it is.** By default nobody was there, so it
+carries the *trigger's* authority — admin — and the run row records no user, which is exactly what
+an audit needs to be able to say. Read that sentence twice before you point a triggered agent at a
+table with an ownership formula: what protects a triggered run is the trigger's own `min_role`,
+not the caller's.
+
+Set **Run the agent's tools as** to `event_user` and the run is instead the person who caused the
+event: the signed-in caller of `POST /api/actions/summarise_task`, or the user whose insert fired
+it, at their own role (the public role when nobody was signed in). Its tools see what that person
+may see, the run records them, and the agent's own **Minimum role** applies as it does in a chat.
+Either way, the agent's tools can run triggers: the run carries the firing's chain, so an agent
+whose tool runs the trigger that runs the agent stops at the cascade limit like any other loop.
 
 ## Step 7 — An agent that builds the app
 
@@ -759,6 +776,60 @@ Two things to know:
   form refuses headers without a host list: a key the model could send anywhere is a key it can be
   talked into sending anywhere. The model never sees the header's value.
 
+## Step 11 — An assistant inside your application
+
+The chat panel is the admin's. To put an agent in front of your **users**, expose it on the
+application (its **Agents** section on **Applications → Todo → Edit**, or `update_application`'s
+`agents` over MCP) and **Build**. The generated client then has `api.agents["helper"]`:
+
+```ts
+for await (const event of api.agents["helper"].chat("What is due this week?", { run })) {
+  // "run" first (keep its id to continue the conversation), then "text",
+  // "tool_call", "tool_result", "display" and finally "done"
+}
+```
+
+A turn is one `POST` answered with server-sent events, through the application's own session,
+so the agent runs **as the signed-in user**: their id and role are its tools' `user`, and every
+table tool reads what they may read. `runs.list()` lists their own conversations, and
+`runs.get(id)` reopens one.
+
+Tools that already exist as code belong in a **code library** (`exports.search = async ({ query })
+=> …`). Add the `library_tools` trait, name the library, and list the functions:
+
+```json
+[
+  { "name": "search_docs", "function": "search", "description": "Find the user's documents",
+    "parameters": { "type": "object", "properties": { "query": { "type": "string" } },
+                    "required": ["query"] } },
+  { "name": "propose_rename", "function": "proposeRename" }
+]
+```
+
+A function that should not change anything until the person agrees returns a **proposal**:
+
+```js
+exports.proposeRename = async ({ id, title }) => ({
+  $proposal: { prompt: `Rename document ${id} to "${title}"`, apply: "rename", payload: { id, title } },
+});
+exports.rename = async ({ id, title }) => db.docs.where({ id }).update({ title });
+```
+
+The chat ends its turn with `done` and `conclusion: "awaiting_user"`, carrying a request of kind
+`approve`; answer it with `answer(request.id, true, { run })`. Only then is `rename` called — as
+that user, with the payload the proposal stored — and the agent is told what it returned.
+
+Two model settings matter for an assistant that should answer in seconds:
+
+- **Reasoning effort** (on the model, **LLM providers → Models**, and per agent): a reasoning
+  model asked "hello" at its default effort can think for half a minute. `low` or `none` is the
+  usual setting for chat. **Extra request parameters** passes anything else the host takes, as a
+  JSON object merged into every request.
+- **Prompt caching** needs a stable prefix. The agent's prompt and tools are sent byte-identical
+  on every step, and what changes per message — rows `search_table` found for the latest
+  question — is sent after the conversation, not in the system prompt. Put the cached-input price
+  on the model and the cached tokens the host reports are charged at it.
+
 ## The traits you have
 
 | Trait | Configured with | What the agent gets |
@@ -768,6 +839,8 @@ Two things to know:
 | `update_rows` | a table, the fields it may change | updates the rows a `where` selects |
 | `delete_rows` | a table, a row bound | deletes the rows a `where` selects |
 | `run_trigger` | one trigger | runs it, with a payload it supplies |
+| `run_js_code` | a tool name, a description, the code, its arguments | one tool whose JavaScript lives in the agent, run as the caller |
+| `library_tools` | a code library, and per tool a name, a description, a JSON schema and the export | one tool per function the library exports, run as the caller; a function may return a `$proposal` the person approves before anything changes |
 | `coding` | a store, a sub-directory, five grants, a workflow and the bounds | browses, reads, greps and maps the code; writes and edits it under **May create and change files**; runs one `package.json` script under **May run the project's scripts**; runs the checks and the app's build under **May run the configured checks**; looks at the preview under **May look at the application's preview**; and has a shell under **May use a shell** (admins only). In the `planned` workflow it also plans and delegates a session per feature |
 | `build_application` | an application's subdomain | builds it, and gets the diagnostics — for an agent whose job is only to build one; a `coding` agent builds through its own `check` instead |
 | `admin_copilot` | four grants, two areas, and **no table** | describes and edits the schema itself, the triggers over it, and an application's custom SQL endpoints |

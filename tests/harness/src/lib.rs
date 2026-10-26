@@ -87,6 +87,21 @@ pub const POSTGIS_TEMPLATE_VAR: &str = "SC_TEST_POSTGIS_TEMPLATE";
 /// ```
 pub const DEFAULT_POSTGIS_TEMPLATE: &str = "feldspar_postgis_template";
 
+/// Environment variable naming the template a **pgvector** test database is
+/// cloned from (see [`TestDb::with_pgvector`]). Defaults to
+/// [`DEFAULT_PGVECTOR_TEMPLATE`].
+pub const PGVECTOR_TEMPLATE_VAR: &str = "SC_TEST_PGVECTOR_TEMPLATE";
+
+/// The template a pgvector test database is cloned from when
+/// [`PGVECTOR_TEMPLATE_VAR`] is unset. Made once, by a superuser, because
+/// installing pgvector needs one:
+///
+/// ```text
+/// sudo -u postgres createdb -O <test role> feldspar_pgvector_template
+/// sudo -u postgres psql -d feldspar_pgvector_template -c 'CREATE EXTENSION vector'
+/// ```
+pub const DEFAULT_PGVECTOR_TEMPLATE: &str = "feldspar_pgvector_template";
+
 /// Environment variable naming which `feldspar.toml` section the harness reads.
 /// Rarely needed; it exists so a machine with two test databases can point one
 /// test run at each.
@@ -145,6 +160,40 @@ impl TestDb {
     pub async fn with_postgis() -> Result<Option<TestDb>> {
         let template =
             env_var(POSTGIS_TEMPLATE_VAR).unwrap_or_else(|| DEFAULT_POSTGIS_TEMPLATE.to_owned());
+        TestDb::with_extension(
+            template,
+            "postgis",
+            "PostGIS",
+            "OPERATIONS.md §10, \"Geometry with PostGIS\"",
+        )
+        .await
+    }
+
+    /// A new database with **pgvector** installed, or `None` — with a line on
+    /// stderr saying what to do — on a machine that has no pgvector template
+    /// ([`DEFAULT_PGVECTOR_TEMPLATE`], or [`PGVECTOR_TEMPLATE_VAR`]). As
+    /// [`with_postgis`](TestDb::with_postgis), and for the same reason: the
+    /// extension needs a superuser to install.
+    pub async fn with_pgvector() -> Result<Option<TestDb>> {
+        let template =
+            env_var(PGVECTOR_TEMPLATE_VAR).unwrap_or_else(|| DEFAULT_PGVECTOR_TEMPLATE.to_owned());
+        TestDb::with_extension(
+            template,
+            "vector",
+            "pgvector",
+            "OPERATIONS.md, \"Vectors with pgvector\"",
+        )
+        .await
+    }
+
+    /// A database cloned from `template`, which must have the extension
+    /// `extname` (`what` in a sentence, documented in `docs`).
+    async fn with_extension(
+        template: String,
+        extname: &str,
+        what: &str,
+        docs: &str,
+    ) -> Result<Option<TestDb>> {
         let base = base_config()?;
         let admin = connect(&with_dbname(&base, MAINTENANCE_DB)).await?;
         let found = admin
@@ -153,22 +202,22 @@ impl TestDb {
             .map_err(|e| Error::database(format!("looking for {template}: {e}")))?;
         if found.is_empty() {
             eprintln!(
-                "skipped: this test needs PostGIS, and there is no `{template}` database to \
-                 clone one from (see OPERATIONS.md §10, \"Geometry with PostGIS\")"
+                "skipped: this test needs {what}, and there is no `{template}` database to \
+                 clone one from (see {docs})"
             );
             return Ok(None);
         }
         let db = TestDb::create(Some(template.clone())).await?;
-        let has_postgis = db
+        let has_extension = db
             .client()
             .await?
-            .query("SELECT 1 FROM pg_extension WHERE extname = 'postgis'", &[])
+            .query("SELECT 1 FROM pg_extension WHERE extname = $1", &[&extname])
             .await
-            .map_err(|e| Error::database(format!("looking for PostGIS: {e}")))?;
-        if has_postgis.is_empty() {
+            .map_err(|e| Error::database(format!("looking for {what}: {e}")))?;
+        if has_extension.is_empty() {
             eprintln!(
-                "skipped: this test needs PostGIS, and `{template}` does not have it; run \
-                 CREATE EXTENSION postgis in it as a superuser"
+                "skipped: this test needs {what}, and `{template}` does not have it; run \
+                 CREATE EXTENSION {extname} in it as a superuser"
             );
             return Ok(None);
         }

@@ -12,6 +12,12 @@
 //! Each follows Postgres exactly where the two could differ: `NULL` inputs are
 //! skipped, fewer than two values give `NULL`, and a negative argument to
 //! `sqrt` is an error rather than `NaN`.
+//!
+//! Two more stand in for pgvector (TODO-agent-skills AS2.1, AS2.3):
+//! `_fd_vector(x, n)` is what `CAST(x AS vector(n))` renders as here — the JSON
+//! array of a vector written to a column, as the little-endian `f32` blob it
+//! is stored as, refused when it is not `n` long — and
+//! `_fd_cosine_distance(a, b)` is pgvector's `<=>` over two of them.
 
 use rusqlite::functions::{Aggregate, Context, FunctionFlags};
 use rusqlite::{Connection, Error as SqlError, types::ValueRef};
@@ -35,7 +41,84 @@ pub(crate) fn register(connection: &Connection) -> rusqlite::Result<()> {
     connection
         .create_scalar_function("floor", 1, flags, |ctx| Ok(number(ctx, 0)?.map(f64::floor)))?;
     connection.create_aggregate_function("stddev_samp", 1, flags, StddevSamp)?;
+    connection.create_scalar_function("_fd_vector", 2, flags, |ctx| {
+        let Some(values) = vector(ctx, 0)? else {
+            return Ok(None);
+        };
+        let dimensions: i64 = ctx.get(1)?;
+        if values.len() as i64 != dimensions {
+            return Err(SqlError::UserFunctionError(
+                format!(
+                    "this vector has {} dimensions, and the field holds vectors of {dimensions}",
+                    values.len()
+                )
+                .into(),
+            ));
+        }
+        Ok(Some(sc_query::vector_blob(&values)))
+    })?;
+    connection.create_scalar_function("_fd_cosine_distance", 2, flags, |ctx| {
+        let (Some(a), Some(b)) = (vector(ctx, 0)?, vector(ctx, 1)?) else {
+            return Ok(None);
+        };
+        if a.len() != b.len() {
+            return Err(SqlError::UserFunctionError(
+                format!("different vector dimensions {} and {}", a.len(), b.len()).into(),
+            ));
+        }
+        let (mut dot, mut na, mut nb) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for (x, y) in a.iter().zip(&b) {
+            let (x, y) = (f64::from(*x), f64::from(*y));
+            dot += x * y;
+            na += x * x;
+            nb += y * y;
+        }
+        let distance = 1.0 - dot / (na.sqrt() * nb.sqrt());
+        // A zero vector has no direction; SQLite has no NaN to say so with, so
+        // it is NULL, which sorts after every distance in an ascending order.
+        Ok(Some(distance).filter(|d: &f64| d.is_finite()))
+    })?;
     Ok(())
+}
+
+/// Argument `i` as a vector: `None` for `NULL`, the floats of a stored blob, or
+/// those of a JSON array of numbers written as text.
+fn vector(ctx: &Context<'_>, i: usize) -> rusqlite::Result<Option<Vec<f32>>> {
+    let not_a_vector = || {
+        SqlError::UserFunctionError("a vector is an array of numbers, such as [0.5, 1, -2]".into())
+    };
+    match ctx.get_raw(i) {
+        ValueRef::Null => Ok(None),
+        ValueRef::Blob(bytes) => {
+            if bytes.len() % 4 != 0 {
+                return Err(not_a_vector());
+            }
+            Ok(Some(
+                bytes
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect(),
+            ))
+        }
+        ValueRef::Text(text) => {
+            let parsed: serde_json::Value =
+                serde_json::from_slice(text).map_err(|_| not_a_vector())?;
+            let serde_json::Value::Array(items) = parsed else {
+                return Err(not_a_vector());
+            };
+            items
+                .iter()
+                .map(|x| {
+                    x.as_f64()
+                        .map(|x| x as f32)
+                        .filter(|x| x.is_finite())
+                        .ok_or_else(not_a_vector)
+                })
+                .collect::<rusqlite::Result<Vec<f32>>>()
+                .map(Some)
+        }
+        ValueRef::Integer(_) | ValueRef::Real(_) => Err(not_a_vector()),
+    }
 }
 
 /// Argument `i` as a number: `None` for `NULL`, an error for text or bytes.
@@ -112,6 +195,51 @@ mod tests {
         assert!(
             conn.query_row("SELECT sqrt(-1)", [], |r| r.get::<_, f64>(0))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn vectors_are_blobs_and_their_distance_is_pgvectors() {
+        let conn = Connection::open_in_memory().expect("open");
+        register(&conn).expect("register");
+        let blob: Vec<u8> = conn
+            .query_row("SELECT _fd_vector('[1, 0.5]', 2)", [], |r| r.get(0))
+            .expect("a blob");
+        assert_eq!(blob, sc_query::vector_blob(&[1.0, 0.5]));
+        let err = conn
+            .query_row("SELECT _fd_vector('[1, 0.5]', 3)", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("has 2 dimensions"), "{err}");
+        assert!(
+            conn.query_row("SELECT _fd_vector('nope', 1)", [], |r| r
+                .get::<_, Vec<u8>>(0))
+                .is_err()
+        );
+        assert_eq!(
+            one(
+                &conn,
+                "SELECT _fd_cosine_distance('[1, 0]', _fd_vector('[1, 0]', 2))"
+            ),
+            Some(0.0)
+        );
+        let d = one(&conn, "SELECT _fd_cosine_distance('[1, 0]', '[-1, 0]')").unwrap();
+        assert!((d - 2.0).abs() < 1e-12, "{d}");
+        assert_eq!(
+            one(&conn, "SELECT _fd_cosine_distance('[0, 0]', '[1, 0]')"),
+            None
+        );
+        assert_eq!(
+            one(&conn, "SELECT _fd_cosine_distance(NULL, '[1, 0]')"),
+            None
+        );
+        assert!(
+            conn.query_row("SELECT _fd_cosine_distance('[1]', '[1, 0]')", [], |r| {
+                r.get::<_, Option<f64>>(0)
+            })
+            .is_err()
         );
     }
 

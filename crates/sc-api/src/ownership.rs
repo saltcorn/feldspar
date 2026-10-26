@@ -211,6 +211,9 @@ pub async fn read_row_values_as_in(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
+    if let Some(search) = &query.search {
+        crate::search::require_answerable(cat, table, search).await?;
+    }
     // The database enforces this table's ownership: run the read in a
     // caller-context transaction and let the policies decide, exactly as the
     // REST provider's RLS path does.

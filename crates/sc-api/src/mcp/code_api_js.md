@@ -29,7 +29,7 @@ into a second query: put it in a **code library** (below) and `lib()` it from bo
 
 ## What is in scope
 
-- `row` — the row the event is about (`insert`/`update`/`delete` triggers only; naming it
+- `row` — the row the event is about (`insert`/`update`/`insert_or_update`/`delete` triggers only; naming it
   anywhere else is a `ReferenceError`). `old` — the row before an update, `null` on insert.
 - `user` — the person who caused the event (`id`, `role`, `email`, …), or `null`.
 - `payload` — what a directly-run or scheduled trigger was called with, or `null`.

@@ -17,8 +17,10 @@
 //!
 //! ## What is imported, and what is not
 //!
-//! The kinds this system has: **tables**, their **fields**, their **rows**,
-//! **triggers** (v1 calls them actions), **files** and **users** — and the
+//! The kinds this system has: **tables**, their **fields** (calculated ones
+//! translated, [`formulas`]), their **rows**, **triggers** (v1 calls them
+//! actions) and **workflows** ([`workflows`]), **agents** with the LLM provider,
+//! MCP servers and memories they use ([`agents`]), **files** and **users** — and the
 //! **views**, **pages**, **library** and **menu**, which become one **Saltcorn
 //! UI application** named after the site (TODO "Saltcorn UI" §13, "The builder"
 //! §8). A view's configuration, a page's layout and a library item's layout cross
@@ -57,10 +59,11 @@
 //! Those two rewrites are the only places where "a layout crosses unchanged"
 //! gives way, and each is v1's own reading of the data rather than a new one.
 //!
-//! Password hashes are deliberately **not** carried: v1 hashes with bcrypt and
-//! this system with argon2id, and a bcrypt string in `password_hash` would not be
-//! a password that works, it would be a login that fails with an error. Imported
-//! accounts arrive with no password and are told to be given one.
+//! Password hashes **are** carried: v1 hashes with bcrypt, and this system
+//! verifies a bcrypt hash as well as its own argon2id, deciding by the hash
+//! (`sc_auth::HashScheme`) — and replaces it with argon2id the first time the
+//! account signs in. An account whose v1 hash is not one (empty, or a scheme
+//! neither system writes) arrives with no password and is reported.
 
 use std::collections::BTreeMap;
 
@@ -73,6 +76,12 @@ use sc_viewpattern::{CFG_SITE_NAME, MENU_CONFIG_KEY, SALTCORN_UI_FRAMEWORK, salt
 use super::archive::Entries;
 use super::{Available, Item, MANIFEST_FILE};
 use crate::handlers::csp_json;
+
+mod agents;
+mod formulas;
+mod workflows;
+
+use formulas::{V1Schema, calc_formula};
 
 /// The entry every v1 backup has and no Feldspar backup has: the application's
 /// metadata. What [`is_v1_backup`] recognises a file by.
@@ -136,21 +145,44 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
     let mut contents = Available::default();
     let mut notes: Vec<String> = Vec::new();
     let site = site_name(entries);
+    let schema = V1Schema::of(pack);
 
     // Users first, because every other table's references to them are rewritten
     // against the keys minted here.
-    let users = convert_users(entries, pack, &site, &mut notes);
+    let users = convert_users(entries, pack, &site, &schema, &mut notes);
     contents.users = i64::try_from(users.rows.len()).unwrap_or(i64::MAX);
     out.insert(super::USERS_FILE.to_owned(), pretty(&users.document)?);
     out.insert(super::USER_ROWS_FILE.to_owned(), ndjson(&users.rows)?);
     let user_keys = users.keys;
 
-    let mut wants_store = false;
+    // The agents before the tables, because what they need of a table — a
+    // full-text constraint, a vector field's embedding model — is written into
+    // the table's document, and v1's memory table is theirs, not a table.
+    let agents = agents::convert_agents(pack, &site, &mut notes);
+    let mut wants_store = agents.needs_store;
     for value in array(pack, "tables") {
         let Some(table) = value.as_object() else {
             continue;
         };
-        match convert_table(entries, table, &site, &user_keys, &mut notes) {
+        if name_of(table) == agents::V1_MEMORY_TABLE && agents.takes_memories() {
+            let memories = match table_rows(entries, agents::V1_MEMORY_TABLE) {
+                Ok(rows) => agents.convert_memories(&rows, |id| user_keys.rewrite(id), &mut notes),
+                Err(e) => {
+                    notes.push(format!(
+                        "the agents' memories were not imported: {}",
+                        e.causes()
+                    ));
+                    Vec::new()
+                }
+            };
+            if !memories.is_empty() {
+                out.insert(super::AGENT_MEMORY_FILE.to_owned(), ndjson(&memories)?);
+            }
+            continue;
+        }
+        match convert_table(
+            entries, table, &site, &schema, &user_keys, &agents, &mut notes,
+        ) {
             Ok(Some(converted)) => {
                 wants_store |= converted.has_file_field;
                 let rows = i64::try_from(converted.rows.len()).unwrap_or(i64::MAX);
@@ -175,7 +207,30 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
         }
     }
 
-    let triggers = convert_triggers(pack, &mut notes);
+    let triggers = convert_triggers(pack, &agents, &mut notes);
+    contents.agents = i64::try_from(agents.agents.len()).unwrap_or(i64::MAX);
+    // The MCP servers travel under the LLM providers' choice, as they do in a
+    // backup of this system's own.
+    contents.llm_providers =
+        i64::try_from(agents.providers.len() + agents.mcp_servers.len()).unwrap_or(i64::MAX);
+    if !agents.agents.is_empty() {
+        out.insert(
+            "agents.json".to_owned(),
+            pretty(&Json::Array(agents.agents))?,
+        );
+    }
+    if !agents.providers.is_empty() {
+        out.insert(
+            "llm-providers.json".to_owned(),
+            pretty(&Json::Array(agents.providers))?,
+        );
+    }
+    if !agents.mcp_servers.is_empty() {
+        out.insert(
+            "mcp-servers.json".to_owned(),
+            pretty(&Json::Array(agents.mcp_servers))?,
+        );
+    }
     contents.triggers = i64::try_from(triggers.len()).unwrap_or(i64::MAX);
     let trigger_names: Vec<String> = triggers
         .iter()
@@ -295,7 +350,9 @@ fn convert_table(
     entries: &Entries,
     table: &Map<String, Json>,
     site: &str,
+    schema: &V1Schema,
     user_keys: &UserKeys,
+    agents: &agents::ConvertedAgents,
     notes: &mut Vec<String>,
 ) -> Result<Option<ConvertedTable>> {
     let name = name_of(table);
@@ -324,7 +381,7 @@ fn convert_table(
             continue;
         };
         let field_name = name_of(field);
-        match convert_field(field, site) {
+        match convert_field(field, site, schema, &name) {
             Ok(Some((json, kind))) => {
                 fields.push(json);
                 converted.insert(field_name, kind);
@@ -337,7 +394,7 @@ fn convert_table(
         }
     }
 
-    let rows = match table_rows(entries, &name) {
+    let mut rows: Vec<Json> = match table_rows(entries, &name) {
         Ok(rows) => rows
             .iter()
             .map(|row| convert_row(row, &converted, user_keys))
@@ -350,6 +407,52 @@ fn convert_table(
             Vec::new()
         }
     };
+    // A v1 vector field whose dimensions its attributes do not say takes them
+    // from its values; one with no values to say either is left out, and its
+    // values with it.
+    let mut dropped = Vec::new();
+    fields.retain_mut(|field| {
+        if field.get("type").and_then(Json::as_str) != Some(VECTOR_UNSIZED) {
+            return true;
+        }
+        let field_name = field.get("name").and_then(Json::as_str).unwrap_or_default();
+        let found = rows.iter().find_map(|row| {
+            row.get(field_name)
+                .and_then(Json::as_array)
+                .map(|values| values.len())
+                .filter(|n| *n > 0)
+        });
+        match found {
+            Some(n) => {
+                field["type"] = json!(format!("vector({n})"));
+                true
+            }
+            None => {
+                notes.push(format!(
+                    "column `{name}.{field_name}` was not imported: it is a v1 `PGVector` \
+                     field whose number of dimensions neither its attributes nor its values \
+                     say; add it as a vector field of the embedding model's size"
+                ));
+                dropped.push(field_name.to_owned());
+                false
+            }
+        }
+    });
+    for row in &mut rows {
+        if let Some(obj) = row.as_object_mut() {
+            for column in &dropped {
+                obj.remove(column);
+            }
+        }
+    }
+
+    // v1 keeps its constraints in the pack as `constraints`, but they are
+    // expressed against v1's field semantics; the restore reads what the
+    // database reported, and an import has no database to report from. What
+    // is added is what the agents need (a full-text constraint where one
+    // searches the table).
+    let mut constraints = Vec::new();
+    agents.amend_table(&name, &mut fields, &mut constraints);
 
     let document = json!({
         "table": {
@@ -367,10 +470,7 @@ fn convert_table(
             "sync_enabled": false,
         },
         "fields": fields,
-        // v1 keeps its constraints in the pack as `constraints`, but they are
-        // expressed against v1's field semantics; the restore reads what the
-        // database reported, and an import has no database to report from.
-        "constraints": [],
+        "constraints": constraints,
     });
     Ok(Some(ConvertedTable {
         has_file_field: converted.values().any(|k| *k == V1Field::File),
@@ -393,26 +493,50 @@ enum V1Field {
     /// A file in the store this import creates — the one kind that makes the
     /// store necessary even when the archive carries no bytes for it.
     File,
+    /// Calculated: computed on read here, so the value v1 stored (if it stored
+    /// one) has no column to go in.
+    Calc,
+    /// A pgvector value (the `pgvector` plugin's `PGVector`), which v1's backup
+    /// writes as the text pgvector prints, `[0.1,0.2]`.
+    Vector,
 }
+
+/// The type a v1 `PGVector` field is given until its rows say its
+/// dimensions — never one that reaches the restore.
+const VECTOR_UNSIZED: &str = "vector";
 
 /// One v1 field as this system's `createField` shape, plus how its values must be
 /// read.
 ///
 /// `Ok(None)` for a field that is deliberately not imported; `Err` for one whose
 /// type has no counterpart, which the caller turns into a note.
-fn convert_field(field: &Map<String, Json>, site: &str) -> Result<Option<(Json, V1Field)>> {
+fn convert_field(
+    field: &Map<String, Json>,
+    site: &str,
+    schema: &V1Schema,
+    table: &str,
+) -> Result<Option<(Json, V1Field)>> {
     let name = name_of(field);
     if name.is_empty() {
         return Err(Error::invalid("it has no name"));
     }
     if flag(field, "calculated") {
-        // A v1 formula is JavaScript evaluated by v1; this system's calculated
-        // fields are `sc-expr` (§3.4). The column would arrive with a formula
-        // that does not parse, which is worse than a column that is not there.
-        return Err(Error::invalid(
-            "it is calculated, and a v1 formula is JavaScript rather than an \
-             `sc-expr` expression",
-        ));
+        // Stored or not, it is a calculated field here, and those are never
+        // stored (§3.4): the formula is translated ([`formulas`]) and the
+        // schema editor checks it when the restore adds the field.
+        let expression = calc_formula(schema, table, field)?;
+        let mut out = Map::new();
+        out.insert("name".to_owned(), json!(name));
+        out.insert("label".to_owned(), json!(text(field, "label")));
+        out.insert("description".to_owned(), json!(text(field, "description")));
+        if let Some(type_name) = calc_type(field) {
+            out.insert("type".to_owned(), json!(type_name));
+        }
+        out.insert(
+            "kind".to_owned(),
+            json!({ "type": "calc", "expression": expression }),
+        );
+        return Ok(Some((Json::Object(out), V1Field::Calc)));
     }
 
     let type_name = field.get("type").and_then(Json::as_str).unwrap_or_default();
@@ -483,6 +607,24 @@ fn convert_field(field: &Map<String, Json>, site: &str) -> Result<Option<(Json, 
         "JSON" => {
             out.insert("type".to_owned(), json!("json"));
         }
+        // The `pgvector` plugin's vector (TODO-agent-skills AS2.6). Its size is
+        // its `dimensions` attribute where it has one, else its values'.
+        "PGVector" => {
+            let dimensions = ["dimensions", "dims", "size"]
+                .iter()
+                .find_map(|key| match attrs.get(*key) {
+                    Some(Json::Number(n)) => n.as_u64(),
+                    Some(Json::String(s)) => s.trim().parse::<u64>().ok(),
+                    _ => None,
+                })
+                .filter(|n| *n > 0);
+            let type_name = match dimensions {
+                Some(n) => format!("vector({n})"),
+                None => VECTOR_UNSIZED.to_owned(),
+            };
+            out.insert("type".to_owned(), json!(type_name));
+            kind = V1Field::Vector;
+        }
         // A v1 colour is a `#rrggbb` string and there is no colour type here yet.
         "Color" => {
             out.insert("type".to_owned(), json!("text"));
@@ -512,9 +654,17 @@ fn convert_field(field: &Map<String, Json>, site: &str) -> Result<Option<(Json, 
             key.insert("type".to_owned(), json!("key"));
             key.insert("target_table".to_owned(), json!(target));
             key.insert("target_field".to_owned(), json!(target_field));
+            // v1 keeps a summary field by name only, so it can outlive the field
+            // it names; one the target no longer has is its key instead — v1's
+            // own fallback, and a name the schema editor would refuse.
             if let Some(summary) = attrs.get("summary_field").and_then(Json::as_str)
                 && !summary.is_empty()
             {
+                let summary = if schema.has_table(&target) && !schema.has_field(&target, summary) {
+                    target_field
+                } else {
+                    summary
+                };
                 key.insert("summary_field".to_owned(), json!(summary));
             }
             out.insert("kind".to_owned(), Json::Object(key));
@@ -556,13 +706,28 @@ fn convert_row(row: &Json, fields: &BTreeMap<String, V1Field>, user_keys: &UserK
             continue;
         };
         let value = match kind {
+            // Computed on read here; v1's stored value has nowhere to go.
+            V1Field::Calc => continue,
             V1Field::Plain | V1Field::File => value.clone(),
+            V1Field::Vector => vector_value(value),
             V1Field::DayOnlyDate => day_only(value),
             V1Field::UserKey => user_keys.rewrite(value),
         };
         out.insert(column.clone(), value);
     }
     Json::Object(out)
+}
+
+/// A v1 vector as the array of numbers it is here: pgvector's text, `[0.1,0.2]`,
+/// parsed; anything else as it was, for the restore to refuse by name.
+fn vector_value(value: &Json) -> Json {
+    match value
+        .as_str()
+        .map(|s| serde_json::from_str::<Json>(s.trim()))
+    {
+        Some(Ok(parsed @ Json::Array(_))) => parsed,
+        _ => value.clone(),
+    }
 }
 
 /// A v1 timestamp reduced to the day it names — `2026-09-02T00:00:00.000Z` to
@@ -572,6 +737,20 @@ fn day_only(value: &Json) -> Json {
         Some(text) if text.len() > 10 => json!(&text[..10]),
         _ => value.clone(),
     }
+}
+
+/// The type a v1 calculated field's values have, as this system names it — the
+/// scalar types alone, since a calculated `Key` or `File` is not one here.
+fn calc_type(field: &Map<String, Json>) -> Option<&'static str> {
+    Some(match field.get("type").and_then(Json::as_str)? {
+        "String" | "Color" => "string",
+        "Integer" => "integer",
+        "Float" => "float",
+        "Bool" => "bool",
+        "Date" => "timestamp",
+        "JSON" => "json",
+        _ => return None,
+    })
 }
 
 // --- users ----------------------------------------------------------------------
@@ -622,6 +801,7 @@ fn convert_users(
     entries: &Entries,
     pack: &Map<String, Json>,
     site: &str,
+    schema: &V1Schema,
     notes: &mut Vec<String>,
 ) -> ConvertedUsers {
     let roles: Vec<Json> = array(pack, "roles")
@@ -637,7 +817,7 @@ fn convert_users(
     let v1_users = array(pack, "tables")
         .into_iter()
         .find(|t| t.as_object().map(name_of).as_deref() == Some(V1_USERS));
-    let custom: Vec<Json> = v1_users
+    let custom: Vec<(Json, V1Field)> = v1_users
         .as_ref()
         .and_then(Json::as_object)
         .map(|table| array(table, "fields"))
@@ -649,8 +829,8 @@ fn convert_users(
             if V1_USER_COLUMNS.contains(&name.as_str()) {
                 return None;
             }
-            match convert_field(field, site) {
-                Ok(Some((json, _))) => Some(json),
+            match convert_field(field, site, schema, V1_USERS) {
+                Ok(Some(converted)) => Some(converted),
                 Ok(None) => None,
                 Err(e) => {
                     notes.push(format!(
@@ -674,7 +854,7 @@ fn convert_users(
         "unique": false,
         "primary_key": false,
     })];
-    fields.extend(custom.clone());
+    fields.extend(custom.iter().map(|(json, _)| json.clone()));
 
     let source = match table_rows(entries, V1_USERS) {
         Ok(rows) => rows,
@@ -686,9 +866,13 @@ fn convert_users(
             Vec::new()
         }
     };
-    let custom_names: Vec<String> = custom
+    let custom_kinds: BTreeMap<String, V1Field> = custom
         .iter()
-        .filter_map(|f| f.get("name").and_then(Json::as_str).map(str::to_owned))
+        .filter_map(|(f, kind)| {
+            f.get("name")
+                .and_then(Json::as_str)
+                .map(|name| (name.to_owned(), *kind))
+        })
         .collect();
 
     let mut keys = UserKeys::default();
@@ -720,22 +904,44 @@ fn convert_users(
             LEGACY_ID.to_owned(),
             user.get("id").cloned().unwrap_or(Json::Null),
         );
-        for name in &custom_names {
-            if let Some(value) = user.get(name) {
+        for (name, kind) in &custom_kinds {
+            if *kind != V1Field::Calc
+                && let Some(value) = user.get(name)
+            {
                 row.insert(name.clone(), value.clone());
             }
         }
-        // No `password_hash`: v1 hashes with bcrypt and this system verifies
-        // argon2id, so the stored string would not be a password that works.
-        without_password += 1;
+        // v1's bcrypt hash, verified as it is and rehashed at the first login.
+        match user.get("password").and_then(Json::as_str) {
+            Some(hash) if sc_auth::is_valid_hash(hash) => {
+                row.insert(sc_auth::COL_PASSWORD_HASH.to_owned(), json!(hash));
+            }
+            _ => without_password += 1,
+        }
         rows.push(Json::Object(row));
+    }
+    // A user's own reference to a user (`manager`) is rewritten once every
+    // account has its UUID, since it may name one further down the file.
+    let rewritten = custom_kinds
+        .iter()
+        .filter(|(_, kind)| matches!(kind, V1Field::UserKey | V1Field::DayOnlyDate));
+    for (name, kind) in rewritten {
+        for row in &mut rows {
+            if let Some(slot) = row.as_object_mut().and_then(|r| r.get_mut(name)) {
+                *slot = match kind {
+                    V1Field::UserKey => keys.rewrite(slot),
+                    _ => day_only(slot),
+                };
+            }
+        }
     }
     if without_password > 0 {
         notes.push(format!(
-            "{} imported with no password: Saltcorn 1 hashes passwords with bcrypt \
-             and this system with argon2id, so the stored hashes cannot be carried \
-             over. Set a password on each account, or have each user reset theirs.",
-            plural(without_password, "account was", "accounts were")
+            "{} imported with no password: the Saltcorn 1 backup holds no password \
+             hash this system can verify for {}. Set a password on each, or have each \
+             user reset theirs.",
+            plural(without_password, "account was", "accounts were"),
+            if without_password == 1 { "it" } else { "them" }
         ));
     }
 
@@ -887,20 +1093,36 @@ fn site_name(entries: &Entries) -> String {
 /// thing, and where they do not, `save_trigger` refuses the trigger by name —
 /// "unknown action `modify_row`" — which is a better answer than an action
 /// silently turned into the nearest one that exists.
-fn convert_triggers(pack: &Map<String, Json>, notes: &mut Vec<String>) -> Vec<Json> {
+fn convert_triggers(
+    pack: &Map<String, Json>,
+    agents: &agents::ConvertedAgents,
+    notes: &mut Vec<String>,
+) -> Vec<Json> {
     let mut out = Vec::new();
     for value in array(pack, "triggers") {
         let Some(trigger) = value.as_object() else {
             continue;
         };
         let name = name_of(trigger);
-        if trigger.contains_key("steps") {
-            notes.push(format!(
-                "trigger `{name}` was not imported: it is a v1 workflow, whose steps \
-                 are v1's own actions"
-            ));
+        // An agent here is not a trigger but an agent ([`agents`]).
+        if text(trigger, "action") == agents::AGENT_ACTION {
             continue;
         }
+        // A workflow crosses step for step ([`workflows`]), or not at all.
+        let workflow = if trigger.contains_key("steps") {
+            match workflows::convert_workflow(trigger) {
+                Ok(workflow) => Some(workflow),
+                Err(e) => {
+                    notes.push(format!(
+                        "workflow `{name}` was not imported: {}",
+                        e.causes()
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         let raw = trigger
             .get("when_trigger")
             .and_then(Json::as_str)
@@ -911,6 +1133,30 @@ fn convert_triggers(pack: &Map<String, Json>, notes: &mut Vec<String>) -> Vec<Js
             ));
             continue;
         };
+        // v1 consolidates every agent's memories at once; here the action
+        // names its agent, so there is one trigger per agent with a memory.
+        if text(trigger, "action") == agents::CONSOLIDATE_ACTION {
+            let consolidations = agents.consolidations(&name);
+            if consolidations.is_empty() {
+                notes.push(format!(
+                    "trigger `{name}` was not imported: it consolidates agents' memories,                      and no agent here has a memory"
+                ));
+            }
+            for (each, configuration) in consolidations {
+                let mut converted = json!({
+                    "name": each,
+                    "description": text(trigger, "description"),
+                    "when": when,
+                    "action": "consolidate_memory",
+                    "configuration": configuration,
+                });
+                if let Some(min_role) = trigger.get("min_role").and_then(Json::as_i64) {
+                    converted["min_role"] = json!(min_role);
+                }
+                out.push(converted);
+            }
+            continue;
+        }
         let mut out_trigger = Map::new();
         out_trigger.insert("name".to_owned(), json!(name));
         out_trigger.insert(
@@ -924,17 +1170,22 @@ fn convert_triggers(pack: &Map<String, Json>, notes: &mut Vec<String>) -> Vec<Js
         if matches!(when, "insert" | "update" | "delete") {
             out_trigger.insert("channel".to_owned(), json!(text(trigger, "table_name")));
         }
-        out_trigger.insert(
-            "action".to_owned(),
-            trigger.get("action").cloned().unwrap_or(Json::Null),
-        );
-        out_trigger.insert(
-            "configuration".to_owned(),
-            trigger
-                .get("configuration")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
-        );
+        if let Some(workflow) = workflow {
+            out_trigger.insert("body".to_owned(), json!(sc_action::TriggerBody::WORKFLOW));
+            out_trigger.insert("workflow".to_owned(), workflow);
+        } else {
+            out_trigger.insert(
+                "action".to_owned(),
+                trigger.get("action").cloned().unwrap_or(Json::Null),
+            );
+            out_trigger.insert(
+                "configuration".to_owned(),
+                trigger
+                    .get("configuration")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            );
+        }
         if let Some(min_role) = trigger.get("min_role").and_then(Json::as_i64) {
             out_trigger.insert("min_role".to_owned(), json!(min_role));
         }
@@ -1527,6 +1778,9 @@ fn role(obj: &Map<String, Json>, key: &str) -> i64 {
 mod tests {
     use super::*;
 
+    /// A bcrypt hash as v1's bcryptjs writes one (the OpenBSD vector for `U*U`).
+    const V1_HASH: &str = "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW";
+
     /// A small Saltcorn 1 archive, shaped exactly like a real one: a pack, a
     /// table's rows beside it, one user, one file, and the site name the store is
     /// named after.
@@ -1560,6 +1814,8 @@ mod tests {
                         { "name": "read_at", "type": "Date", "attributes": {} },
                         { "name": "borrowed_by", "type": "Key", "reftable_name": "users",
                           "refname": "id", "attributes": { "summary_field": "email" } },
+                        { "name": "returned_by", "type": "Key", "reftable_name": "users",
+                          "refname": "id", "attributes": { "summary_field": "deleted" } },
                         { "name": "cover", "type": "File" },
                         { "name": "shelf", "type": "Rating" },
                         { "name": "pages_left", "type": "Integer", "calculated": true,
@@ -1617,7 +1873,7 @@ mod tests {
             "tables/users.json".to_owned(),
             serde_json::to_vec(&json!([
                 { "id": 7, "email": "admin@foo.com", "role_id": 1, "disabled": false,
-                  "password": "$2a$10$notanargon2hash", "nickname": "Ada" }
+                  "password": V1_HASH, "nickname": "Ada" }
             ]))
             .unwrap(),
         );
@@ -1769,6 +2025,9 @@ mod tests {
             json!("email")
         );
         assert_eq!(field("borrowed_by")["type"], Json::Null);
+        // v1 does not keep a summary field in step with the target's fields; one
+        // the target no longer has becomes the key it points at.
+        assert_eq!(field("returned_by")["kind"]["summary_field"], json!("id"));
         // A v1 file field points into the store this import creates.
         assert_eq!(field("cover")["kind"]["type"], json!("file"));
         assert_eq!(field("cover")["kind"]["store"], json!("BooksDB"));
@@ -1786,6 +2045,57 @@ mod tests {
         assert!(rows[0].get("pages_left").is_none());
     }
 
+    /// The `pgvector` plugin's `PGVector` (TODO-agent-skills AS2.6): a vector
+    /// field of its `dimensions`, else of its values' length, and its values —
+    /// pgvector's text — as arrays. One that says neither is reported.
+    #[test]
+    fn a_pgvector_field_becomes_a_vector_of_its_dimensions() {
+        let mut archive = v1_archive();
+        let mut pack: Json = serde_json::from_slice(&archive[PACK]).unwrap();
+        pack["tables"].as_array_mut().unwrap().push(json!({
+            "name": "Docs",
+            "fields": [
+                { "name": "id", "type": "Integer", "primary_key": true },
+                { "name": "sized", "type": "PGVector", "attributes": { "dimensions": 3 } },
+                { "name": "unsized", "type": "PGVector", "attributes": {} },
+                { "name": "empty", "type": "PGVector" },
+            ],
+        }));
+        archive.insert(PACK.to_owned(), serde_json::to_vec(&pack).unwrap());
+        archive.insert(
+            "tables/Docs.json".to_owned(),
+            serde_json::to_vec(&json!([
+                { "id": 1, "sized": "[0.1,0.2,0.3]", "unsized": null, "empty": null },
+                { "id": 2, "sized": null, "unsized": "[1,0]", "empty": null },
+            ]))
+            .unwrap(),
+        );
+        let out = convert(&archive).expect("a conversion");
+        let table = document(&out, "tables/Docs/table.json");
+        let field = |name: &str| {
+            table["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["name"] == json!(name))
+                .cloned()
+        };
+        assert_eq!(field("sized").unwrap()["type"], json!("vector(3)"));
+        assert_eq!(field("unsized").unwrap()["type"], json!("vector(2)"));
+        assert!(field("empty").is_none());
+        let rows = rows_of(&out, "tables/Docs/rows.ndjson");
+        assert_eq!(rows[0]["sized"], json!([0.1, 0.2, 0.3]));
+        assert_eq!(rows[1]["unsized"], json!([1, 0]));
+        assert!(rows[0].get("empty").is_none());
+        let notes = notes(&out);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("`Docs.empty`") && n.contains("dimensions")),
+            "{notes:?}"
+        );
+    }
+
     /// Two columns v1 has and this system does not: the note is the point, since
     /// a column that quietly vanishes is a column an admin finds out about later.
     #[test]
@@ -1798,12 +2108,25 @@ mod tests {
                 .any(|n| n.contains("`Books.shelf`") && n.contains("`Rating`")),
             "{notes:?}"
         );
+        // A calculated column is not one of them any more: it crosses as a
+        // calculated field ([`formulas`]), for the schema editor to check.
         assert!(
-            notes
-                .iter()
-                .any(|n| n.contains("`Books.pages_left`") && n.contains("JavaScript")),
+            !notes.iter().any(|n| n.contains("`Books.pages_left`")),
             "{notes:?}"
         );
+        let table = document(&out, "tables/Books/table.json");
+        let pages_left = table["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .find(|f| f["name"] == json!("pages_left"))
+            .expect("the calculated column")
+            .clone();
+        assert_eq!(
+            pages_left["kind"],
+            json!({ "type": "calc", "expression": "500 - pages" })
+        );
+        assert_eq!(pages_left["type"], json!("integer"));
         // Views and pages are imported now; page groups still are not.
         assert!(
             !notes
@@ -1843,14 +2166,11 @@ mod tests {
         // The key is this system's, not v1's.
         let id = user["id"].as_str().expect("an id");
         assert!(Uuid::parse_str(id).is_ok(), "{id}");
-        // A v1 password hash is bcrypt and this system verifies argon2id, so it is
-        // left behind — with a note, because an account nobody can sign in to is
-        // not a detail.
-        assert!(user.get(sc_auth::COL_PASSWORD_HASH).is_none());
+        // A v1 password hash is bcrypt, which this system verifies too: it is
+        // carried as it is, and the account signs in with the password it had.
+        assert_eq!(user[sc_auth::COL_PASSWORD_HASH], json!(V1_HASH));
         assert!(
-            notes(&out)
-                .iter()
-                .any(|n| n.contains("1 account was imported with no password")),
+            !notes(&out).iter().any(|n| n.contains("with no password")),
             "{:?}",
             notes(&out)
         );
@@ -2229,5 +2549,133 @@ mod tests {
         assert_eq!(convert_event("Never"), Some("none"));
         assert_eq!(convert_event("Insert"), Some("insert"));
         assert_eq!(convert_event("Validate"), None);
+    }
+
+    /// A real v1 backup with an agent using every skill of v1's agents plugin
+    /// (`tests/fixtures/make-v1-agents-fixture.py`).
+    fn every_skill_archive() -> Entries {
+        let bytes: &[u8] =
+            include_bytes!("../../tests/fixtures/saltcorn-v1-feldsparimport-agents.zip");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a zip");
+        let mut entries = Entries::new();
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i).expect("an entry");
+            let mut data = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut data).expect("readable");
+            entries.insert(file.name().to_owned(), data);
+        }
+        entries
+    }
+
+    /// TODO-agent-skills AS12.13: every skill crosses, and the one note left
+    /// about the agent is the one that is not the importer's to do — copying a
+    /// SKILL.md the backup does not carry.
+    #[test]
+    fn every_v1_agent_skill_crosses_with_no_skill_left_behind() {
+        let out = convert(&every_skill_archive()).expect("converted");
+        let notes = notes(&out);
+        let about_agents: Vec<&String> = notes
+            .iter()
+            .filter(|n| {
+                ["EverySkill", "agent", "skill", "memor", "LLM", "MCP"]
+                    .iter()
+                    .any(|w| n.contains(w))
+            })
+            .collect();
+        assert_eq!(about_agents.len(), 1, "{about_agents:#?}");
+        assert!(
+            about_agents[0].contains("External Skill"),
+            "{about_agents:#?}"
+        );
+
+        let agents = document(&out, "agents.json");
+        let agent = agents
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == json!("EverySkill"))
+            .expect("the agent");
+        let traits: Vec<&str> = agent["traits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["trait"].as_str())
+            .collect();
+        assert_eq!(
+            traits,
+            [
+                "query_table",
+                "insert_row",
+                "run_js_code",
+                "run_js_code",
+                "run_trigger",
+                "subagent",
+                "http",
+                "search_table",
+                "similar_rows",
+                "preload_rows",
+                "preload_code",
+                "memory",
+                "mcp_server",
+                "web_search",
+                "generate_js",
+                "ask_user",
+                "plan_approval",
+                "generate_image",
+                "speech",
+                "skill_file",
+                "prompt_picker",
+            ]
+        );
+        assert_eq!(
+            agent["attributes"]["pickable_models"],
+            json!([ { "provider": "openai", "model": "gpt-5-mini", "label": "Fast" } ])
+        );
+
+        // What the skills need outside the agent.
+        assert!(!out.contains_key("tables/AgentLongTermMemory/table.json"));
+        assert_eq!(
+            rows_of(&out, "agent-memory.ndjson")
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        let servers = document(&out, "mcp-servers.json");
+        assert_eq!(servers[0]["name"], json!("docs"));
+        let chunks = document(&out, "tables/chunks/table.json");
+        let embedding = chunks["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == json!("embedding"))
+            .unwrap();
+        assert_eq!(
+            embedding["attributes"]["embed_model"],
+            json!("text-embedding-3-small")
+        );
+        let document_table = document(&out, "tables/document/table.json");
+        assert_eq!(
+            document_table["constraints"][0]["type"],
+            json!("full_text_search")
+        );
+        let triggers = document(&out, "triggers.json");
+        let consolidate = triggers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == json!("ConsolidateMemories"))
+            .expect("the consolidation");
+        assert_eq!(consolidate["action"], json!("consolidate_memory"));
+        assert_eq!(
+            consolidate["configuration"],
+            json!({ "agent": "EverySkill" })
+        );
+        // The generated images and the skill file need the store.
+        assert!(
+            out.keys().any(|k| k.ends_with("/store.json")),
+            "{:?}",
+            out.keys()
+        );
     }
 }

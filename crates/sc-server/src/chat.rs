@@ -15,17 +15,29 @@
 //!
 //! - `{"type":"start","agent":"librarian","run":"<uuid>"?}` — which agent this
 //!   socket is talking to, optionally continuing an existing run.
-//! - `{"type":"message","text":"…"}` — one user turn.
+//! - `{"type":"message","text":"…","controls":{…}?}` — one user turn, with
+//!   the values of the composer's controls (TODO-agent-skills AS6.4).
+//! - `{"type":"message","answers_request":"<id>","value":…,"controls":{…}?}`
+//!   — the answer to the question the run is waiting on (AS6.2), as the turn.
 //! - `{"type":"abort"}` — stop the turn that is running.
 //!
 //! The server sends:
 //!
 //! - `{"type":"text","delta":"…"}` / `{"type":"reasoning","delta":"…"}`
 //! - `{"type":"tool_call","id":…,"name":…,"arguments":{…}}`
-//! - `{"type":"tool_result","id":…,"name":…,"content":"…","is_error":bool}`
+//! - `{"type":"tool_result","id":…,"name":…,"content":"…","is_error":bool,
+//!   "display":[{id,kind,mime_type,summary}]?}` — `display` lists what the
+//!   tool showed the person and not the model (AS6.3), fetched with
+//!   `getRunPart`.
+//! - `{"type":"controls","controls":[…]}` — after `start`, for an agent whose
+//!   traits add controls to the composer (AS6.4); none is sent for one without.
+//! - `{"type":"awaiting","request":{…}}` — after `start` on a run that is
+//!   waiting for an answer: the question.
 //! - `{"type":"done","run":"<uuid>","state":"done"|"failed"|"aborted","answer":"…",
-//!   "conclusion":"answered"|"max_steps"|"aborted"|"over_budget"|"stuck"?,
-//!   "budget":"cost"|"wall_time"|"context"?,"reason":"…"?}`
+//!   "conclusion":"answered"|"max_steps"|"aborted"|"over_budget"|"stuck"
+//!   |"awaiting_user"?,"budget":"cost"|"wall_time"|"context"?,"reason":"…"?,
+//!   "request":{…}?}` — `request` is the question an `awaiting_user` turn
+//!   ended on (AS6.1).
 //!   — `conclusion` is present when the loop concluded, `budget` names the
 //!   budget an `over_budget` run ran out of, and `reason` says why a `stuck`
 //!   run was stopped.
@@ -116,10 +128,21 @@ enum ClientMessage {
         #[serde(default)]
         run: Option<Uuid>,
     },
-    /// One user turn.
+    /// One user turn: what the person typed, or their answer to the question
+    /// the run is waiting on.
     Message {
         /// What the person typed.
+        #[serde(default)]
         text: String,
+        /// The question answered, for an answer.
+        #[serde(default)]
+        answers_request: Option<String>,
+        /// The answer.
+        #[serde(default)]
+        value: Json,
+        /// The composer's controls.
+        #[serde(default)]
+        controls: std::collections::BTreeMap<String, Json>,
     },
     /// Stop the turn that is running.
     Abort,
@@ -374,7 +397,19 @@ async fn chat(socket: WebSocket, mut ctx: ChatContext) {
         match client {
             ClientMessage::Start { agent, run: run_id } => {
                 match start(&ctx, &agent, run_id).await {
-                    Ok(existing) => {
+                    Ok((existing, controls)) => {
+                        // Only an agent with controls has anything to say here,
+                        // so a plain chat's frames are as they were.
+                        if !controls.is_empty() {
+                            send(&tx, json!({ "type": "controls", "controls": controls }));
+                        }
+                        if let Some(request) = existing
+                            .as_ref()
+                            .and_then(|r| r.agent_loop().ok())
+                            .and_then(|state| state.pending_request().cloned())
+                        {
+                            send(&tx, json!({ "type": "awaiting", "request": request }));
+                        }
                         agent_name = Some(agent);
                         run = existing;
                     }
@@ -384,12 +419,25 @@ async fn chat(socket: WebSocket, mut ctx: ChatContext) {
             // Nothing is running: a stop that races the end of a turn is the
             // normal way this arrives, and it is not an error.
             ClientMessage::Abort => {}
-            ClientMessage::Message { text } => {
+            ClientMessage::Message {
+                text,
+                answers_request,
+                value,
+                controls,
+            } => {
+                let input = TurnInput {
+                    text,
+                    answer: answers_request.map(|id| sc_agent::Answer {
+                        answers_request: id,
+                        value,
+                    }),
+                    controls,
+                };
                 match turn(
                     &ctx,
                     agent_name.as_deref(),
                     &mut run,
-                    text,
+                    input,
                     &tx,
                     &mut receiver,
                 )
@@ -443,12 +491,23 @@ async fn chat(socket: WebSocket, mut ctx: ChatContext) {
 /// The agent is resolved here as well as on every turn, so a `start` naming an
 /// agent that does not exist — or one that is stored but not usable — says so
 /// while the composer is still empty rather than after the first message.
-async fn start(ctx: &ChatContext, agent: &str, run: Option<Uuid>) -> Result<Option<Run>> {
+async fn start(
+    ctx: &ChatContext,
+    agent: &str,
+    run: Option<Uuid>,
+) -> Result<(Option<Run>, Vec<sc_agent::ComposerControl>)> {
     let agents = Agents::load(&ctx.catalog, ctx.services.registry()).await?;
     let definition = agents.require(agent)?;
     may_chat(&ctx.caller, definition)?;
+    let controls = sc_agent::composer_controls_for(
+        &ctx.catalog,
+        &ctx.caller,
+        ctx.services.registry(),
+        definition,
+    )
+    .await?;
     let Some(id) = run else {
-        return Ok(None);
+        return Ok((None, controls));
     };
     let existing = sc_agent::require_run(&ctx.catalog, sc_agent::RunId(id)).await?;
     if existing.subject != definition.name {
@@ -457,7 +516,18 @@ async fn start(ctx: &ChatContext, agent: &str, run: Option<Uuid>) -> Result<Opti
             existing.subject, definition.name
         )));
     }
-    Ok(Some(existing))
+    Ok((Some(existing), controls))
+}
+
+/// What one turn is started with: what the person typed, or their answer to
+/// the question the run waits on, and the composer's controls.
+pub(crate) struct TurnInput {
+    /// What the person typed; ignored for an answer.
+    pub text: String,
+    /// The answer, when the turn is one.
+    pub answer: Option<sc_agent::Answer>,
+    /// The composer's controls.
+    pub controls: std::collections::BTreeMap<String, Json>,
 }
 
 /// How a turn ended, as far as the socket is concerned.
@@ -476,7 +546,7 @@ async fn turn(
     ctx: &ChatContext,
     agent_name: Option<&str>,
     run_slot: &mut Option<Run>,
-    text: String,
+    input: TurnInput,
     tx: &UnboundedSender<Json>,
     receiver: &mut SplitStream<WebSocket>,
 ) -> Result<Ended> {
@@ -523,17 +593,37 @@ async fn turn(
     // an aborted turn has a run to mark aborted.
     let mut run = match run_slot.take() {
         Some(mut run) if run.subject == agent.name => {
-            let mut state = run.agent_loop()?;
-            state.push_user(&text)?;
-            run.record(&state);
-            save_run(&ctx.catalog, &run).await?;
+            // Put back on failure, so a refused answer leaves the socket on
+            // its conversation.
+            let pushed = match &input.answer {
+                Some(answer) => runner.push_answer(&mut run, answer, input.controls).await,
+                None => {
+                    runner
+                        .push_message(&mut run, &input.text, input.controls)
+                        .await
+                }
+            };
+            if let Err(e) = pushed {
+                *run_slot = Some(run);
+                return Err(e);
+            }
             run
         }
         _ => {
+            if input.answer.is_some() {
+                return Err(Error::invalid(
+                    "there is no question to answer: this conversation has not started",
+                ));
+            }
+            sc_agent::check_controls(&runner.controls().await?, &input.controls)?;
+            let text = input.text;
             // The first message is the run's description: a history list carries
             // no transcript (that is what `getRun` is for), so without this a
             // list of conversations would be a list of timestamps.
-            let run = runner.new_run(&text)?.description(summarise(&text));
+            let mut run = runner.new_run(&text)?.description(summarise(&text));
+            let mut state = run.agent_loop()?;
+            state.set_controls(input.controls);
+            run.record(&state);
             save_run(&ctx.catalog, &run).await?;
             run
         }
@@ -654,6 +744,10 @@ pub(crate) fn done_event(run: &Run, conclusion: &Conclusion) -> Json {
             event["reason"] = json!(reason);
             "stuck"
         }
+        Conclusion::AwaitingUser { request } => {
+            event["request"] = json!(request);
+            "awaiting_user"
+        }
     };
     event["conclusion"] = json!(name);
     event
@@ -768,6 +862,11 @@ impl RunObserver for SocketObserver {
     fn on_tool_result(&self, outcome: &sc_agent::ToolOutcome) {
         send(&self.tx, tool_result_event(outcome));
     }
+
+    // What the final answer showed (a spoken answer, AS11.2).
+    fn on_display(&self, parts: &[sc_agent::DisplayRef]) {
+        send(&self.tx, json!({"type": "display", "display": parts}));
+    }
 }
 
 /// A finished tool call as the socket sends it: its text, and the images it
@@ -781,6 +880,9 @@ fn tool_result_event(outcome: &sc_agent::ToolOutcome) -> Json {
         "content": outcome.content,
         "is_error": outcome.is_error,
     });
+    if !outcome.display.is_empty() {
+        event["display"] = json!(outcome.display);
+    }
     if !outcome.images.is_empty() {
         event["images"] = outcome
             .images
@@ -916,6 +1018,31 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_that_asks_says_so_and_carries_the_question() {
+        let request = sc_agent::UserRequest::new(
+            "Approve the plan?",
+            sc_agent::RequestKind::Approve {
+                label: "Approve".into(),
+                payload: Json::Null,
+            },
+        );
+        let caller = RunCaller::system();
+        let mut state = sc_agent::AgentLoop::new(5);
+        state.push_user("plan it").expect("a message");
+        let run = Run::new("planner", &caller, &state);
+        let event = done_event(
+            &run,
+            &Conclusion::AwaitingUser {
+                request: request.clone(),
+            },
+        );
+        assert_eq!(event["conclusion"], json!("awaiting_user"));
+        assert_eq!(event["request"]["id"], json!(request.id));
+        assert_eq!(event["request"]["kind"], json!("approve"));
+        assert_eq!(event["answer"], json!(""));
+    }
+
+    #[test]
     fn the_client_messages_parse_as_the_protocol_documents_them() {
         let start: ClientMessage =
             serde_json::from_str(r#"{"type":"start","agent":"librarian"}"#).expect("start");
@@ -927,7 +1054,19 @@ mod tests {
         assert!(matches!(resumed, ClientMessage::Start { run: Some(_), .. }));
         let message: ClientMessage =
             serde_json::from_str(r#"{"type":"message","text":"hi"}"#).expect("message");
-        assert!(matches!(message, ClientMessage::Message { text } if text == "hi"));
+        assert!(
+            matches!(message, ClientMessage::Message { text, answers_request: None, .. } if text == "hi")
+        );
+        // An answer, with the composer's controls (TODO-agent-skills AS6).
+        let answer: ClientMessage = serde_json::from_str(
+            r#"{"type":"message","answers_request":"q1","value":["a"],"controls":{"model":"fast"}}"#,
+        )
+        .expect("answer");
+        assert!(matches!(
+            answer,
+            ClientMessage::Message { answers_request: Some(id), value, controls, .. }
+                if id == "q1" && value == json!(["a"]) && controls["model"] == json!("fast")
+        ));
         assert!(matches!(
             serde_json::from_str::<ClientMessage>(r#"{"type":"abort"}"#),
             Ok(ClientMessage::Abort)

@@ -182,6 +182,27 @@ fn additional_params(req: &LlmRequest, wire: Wire, caps: &ModelCapabilities) -> 
             }
         }
     }
+    // The effort, in each wire's own words (`request_options`).
+    if let Some(effort) = req.reasoning_effort {
+        match wire {
+            Wire::Chat => {
+                params.insert("reasoning_effort".to_owned(), json!(effort.as_str()));
+            }
+            Wire::Responses => {
+                params.insert("reasoning".to_owned(), json!({ "effort": effort.as_str() }));
+            }
+            Wire::Anthropic => {
+                params.insert(
+                    "output_config".to_owned(),
+                    json!({ "effort": effort.anthropic() }),
+                );
+            }
+        }
+    }
+    // Last, so the admin's escape hatch says what the request says.
+    for (key, value) in &req.extra_params {
+        params.insert(key.clone(), value.clone());
+    }
     (!params.is_empty()).then_some(Json::Object(params))
 }
 
@@ -963,6 +984,35 @@ mod tests {
             additional_params(&req, Wire::Chat, &caps(OPENAI_CHAT_BACKEND, "llama3.2")).unwrap();
         assert_eq!(chat["parallel_tool_calls"], json!(false));
         assert!(chat.get("prompt_cache_key").is_none());
+
+        // The effort and the passthrough, per wire; the passthrough wins.
+        let mut effort = LlmRequest::prompt("hi");
+        effort.reasoning_effort = Some(crate::ReasoningEffort::None);
+        let chat =
+            additional_params(&effort, Wire::Chat, &caps(OPENAI_CHAT_BACKEND, "glm-5")).unwrap();
+        assert_eq!(chat["reasoning_effort"], json!("none"));
+        let responses = additional_params(
+            &effort,
+            Wire::Responses,
+            &caps(OPENAI_RESPONSES_BACKEND, "gpt-5.1"),
+        )
+        .unwrap();
+        assert_eq!(responses["reasoning"], json!({ "effort": "none" }));
+        let anthropic = additional_params(
+            &effort,
+            Wire::Anthropic,
+            &caps(ANTHROPIC_BACKEND, "claude-sonnet-5"),
+        )
+        .unwrap();
+        assert_eq!(anthropic["output_config"], json!({ "effort": "low" }));
+        effort
+            .extra_params
+            .insert("reasoning_effort".into(), json!("high"));
+        effort.extra_params.insert("top_k".into(), json!(20));
+        let chat =
+            additional_params(&effort, Wire::Chat, &caps(OPENAI_CHAT_BACKEND, "glm-5")).unwrap();
+        assert_eq!(chat["reasoning_effort"], json!("high"));
+        assert_eq!(chat["top_k"], json!(20));
 
         // No tools, no parallel_tool_calls; nothing to say, no params at all.
         let bare = LlmRequest::prompt("hi");

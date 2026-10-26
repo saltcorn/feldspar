@@ -300,10 +300,18 @@ async fn streams_are_listed_and_triggers_name_their_channel() -> sc_error::Resul
         })
     };
     client
-        .ok("POST", "/api/triggers", Some(on("on_reading", "stream", "boiler")))
+        .ok(
+            "POST",
+            "/api/triggers",
+            Some(on("on_reading", "stream", "boiler")),
+        )
         .await;
     client
-        .ok("POST", "/api/triggers", Some(on("audit", "insert", "readings")))
+        .ok(
+            "POST",
+            "/api/triggers",
+            Some(on("audit", "insert", "readings")),
+        )
         .await;
 
     let list = client.ok("GET", "/api/entities", None).await;
@@ -317,8 +325,14 @@ async fn streams_are_listed_and_triggers_name_their_channel() -> sc_error::Resul
     assert!(boiler["channel"].is_null());
 
     // A trigger's channel is what the diagram joins it to.
-    assert_eq!(entity(&list, "trigger", "on_reading")["channel"], json!("boiler"));
-    assert_eq!(entity(&list, "trigger", "audit")["channel"], json!("readings"));
+    assert_eq!(
+        entity(&list, "trigger", "on_reading")["channel"],
+        json!("boiler")
+    );
+    assert_eq!(
+        entity(&list, "trigger", "audit")["channel"],
+        json!("readings")
+    );
     assert!(entity(&list, "table", "readings")["channel"].is_null());
 
     let deep = client.ok("GET", "/api/entities?deep=true", None).await;

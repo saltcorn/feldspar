@@ -37,8 +37,21 @@ pub const KEY_ORDER: &str = "order";
 pub const KEY_LIMIT: &str = "limit";
 /// How many rows to skip (`offset=100`).
 pub const KEY_OFFSET: &str = "offset";
+/// A full-text search (`search=rust -java`, TODO-agent-skills AS1.4).
+pub const KEY_SEARCH: &str = "search";
+/// The rows nearest a vector, or text embedded as one
+/// (`nearest=embedding.[0.1,0.2]`, `nearest=embedding.cheap flights`,
+/// TODO-agent-skills AS2.4).
+pub const KEY_NEAREST: &str = "nearest";
 /// Every reserved word, in the order the parser checks them.
-pub const RESERVED: [&str; 4] = [KEY_SELECT, KEY_ORDER, KEY_LIMIT, KEY_OFFSET];
+pub const RESERVED: [&str; 6] = [
+    KEY_SELECT,
+    KEY_ORDER,
+    KEY_LIMIT,
+    KEY_OFFSET,
+    KEY_SEARCH,
+    KEY_NEAREST,
+];
 
 /// The filters, ordering and bounds of one query string, as a [`RowQuery`].
 ///
@@ -52,13 +65,39 @@ pub const RESERVED: [&str; 4] = [KEY_SELECT, KEY_ORDER, KEY_LIMIT, KEY_OFFSET];
 /// one is **clamped** to it. A caller's number is a request, not a permission —
 /// a list endpoint with no bound is how a table ends up streamed into a response
 /// by accident.
+///
+/// A `search` narrows the rows to those matching it and, unless an `order` says
+/// otherwise, orders them best match first; an `order` names that ordering
+/// `relevance` (`order=relevance,title`).
 pub fn row_query(table: &Table, pairs: &[(String, String)], row_cap: u64) -> Result<RowQuery> {
-    let mut query = RowQuery::new().where_(filter_predicate(table, pairs)?);
-    if let Some(order) = first(pairs, KEY_ORDER) {
-        query = query.order_by(order_keys(table, order)?);
+    let mut query = RowQuery::new().where_(column_filters(table, pairs)?);
+    let search = match first(pairs, KEY_SEARCH) {
+        Some(phrase) => Some(crate::search::text_search(table, phrase, None)?),
+        None => None,
+    };
+    match (first(pairs, KEY_ORDER), &search) {
+        (Some(order), _) => {
+            query = query.order_by(order_keys_searching(table, order, search.as_ref())?);
+        }
+        (None, Some(search)) => query = query.order_by(vec![crate::search::relevance(search)]),
+        (None, None) => {}
+    }
+    if let Some(search) = search {
+        query = query.searching(search);
     }
     let limit = bound(first(pairs, KEY_LIMIT), KEY_LIMIT)?;
-    query = query.limit(limit.map_or(row_cap, |n| n.min(row_cap)));
+    // A nearest read is ordered nearest first, ahead of any `order`, and
+    // returns a handful of rows unless a `limit` asks for more.
+    let unbounded = match first(pairs, KEY_NEAREST) {
+        Some(spec) => {
+            let nearest = crate::vector::Nearest::parse(spec)?;
+            crate::vector::vector_field(table, &nearest.field)?;
+            query = query.nearest(nearest);
+            crate::vector::DEFAULT_NEAREST
+        }
+        None => row_cap,
+    };
+    query = query.limit(limit.unwrap_or(unbounded).min(row_cap));
     if let Some(offset) = bound(first(pairs, KEY_OFFSET), KEY_OFFSET)? {
         query = query.offset(offset);
     }
@@ -72,7 +111,22 @@ pub fn row_query(table: &Table, pairs: &[(String, String)], row_cap: u64) -> Res
 /// the ordering or the bound: the admin grid's scrollbar has to be as long as
 /// the rows the filter row leaves, and counting them through a second spelling
 /// of the same filters is how the two come to disagree.
+///
+/// A `search` is part of it: a count of a searched list counts the matches.
 pub fn filter_predicate(table: &Table, pairs: &[(String, String)]) -> Result<Option<Expr>> {
+    let filters = column_filters(table, pairs)?;
+    let Some(phrase) = first(pairs, KEY_SEARCH) else {
+        return Ok(filters);
+    };
+    let matched = Expr::TextMatch(Box::new(crate::search::text_search(table, phrase, None)?));
+    Ok(Some(match filters {
+        Some(filters) => filters.and(matched),
+        None => matched,
+    }))
+}
+
+/// The `column=op.value` filters, ANDed.
+fn column_filters(table: &Table, pairs: &[(String, String)]) -> Result<Option<Expr>> {
     let mut predicate: Option<Expr> = None;
     for (key, value) in pairs {
         if RESERVED.contains(&key.as_str()) {
@@ -197,11 +251,41 @@ fn split_list(items: &str) -> Vec<String> {
 
 /// `order=published.desc,title` as the row layer's ordering keys.
 pub fn order_keys(table: &Table, spec: &str) -> Result<Vec<OrderBy>> {
+    order_keys_searching(table, spec, None)
+}
+
+/// [`order_keys`] on a read with a search, where `relevance` — unless the table
+/// has a field of that name — is how well a row matches it.
+fn order_keys_searching(
+    table: &Table,
+    spec: &str,
+    search: Option<&sc_query::TextSearch>,
+) -> Result<Vec<OrderBy>> {
     let mut keys = Vec::new();
     for item in spec.split(',').filter(|s| !s.trim().is_empty()) {
         let mut parts = item.trim().split('.');
         let column = parts.next().unwrap_or_default();
-        if crate::user_rows::visible_field(table, column).is_none() {
+        let visible = crate::user_rows::visible_field(table, column).is_some();
+        if column == crate::search::RELEVANCE && !visible {
+            let Some(search) = search else {
+                return Err(Error::invalid(format!(
+                    "`order={column}` orders by how well a row matches a search, and this \
+                     read has no `{KEY_SEARCH}`"
+                )));
+            };
+            let rank = crate::search::relevance(search);
+            keys.push(match parts.next() {
+                None | Some("desc") => rank,
+                Some("asc") => OrderBy::asc(rank.expr),
+                Some(other) => {
+                    return Err(Error::invalid(format!(
+                        "`{column}` must be ordered `asc` or `desc`, not `{other}`"
+                    )));
+                }
+            });
+            continue;
+        }
+        if !visible {
             return Err(Error::invalid(format!(
                 "`{}` has no field `{column}` to order by",
                 table.name

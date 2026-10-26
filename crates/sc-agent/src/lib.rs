@@ -52,9 +52,11 @@ pub mod context;
 pub mod control;
 pub mod delegate;
 pub mod driver;
+pub mod interact;
 pub mod ledger;
 pub mod machine;
 pub mod meter;
+pub mod parts;
 pub mod registry;
 pub mod run;
 pub mod run_store;
@@ -69,15 +71,17 @@ pub mod testing;
 
 pub use agent::{
     ATTR_CHEAP, ATTR_CONTEXT_BUDGET, ATTR_MAX_COST, ATTR_MAX_IMAGES, ATTR_MAX_WALL_SECONDS,
-    ATTR_PARALLEL_TOOL_CALLS, ATTR_STRONG, DEFAULT_MAX_IMAGES, ModelRef, ModelRole,
+    ATTR_PARALLEL_TOOL_CALLS, ATTR_REASONING_EFFORT, ATTR_STRONG, DEFAULT_MAX_IMAGES, ModelRef,
+    ModelRole,
 };
 pub use agent::{
     ATTR_MAX_STEPS, ATTR_MAX_TOKENS, ATTR_TEMPERATURE, Agent, AgentId, DEFAULT_MAX_STEPS,
     EnabledTrait,
 };
+pub use agent::{ATTR_PICKABLE_MODELS, MODEL_CONTROL, MODEL_CONTROL_DEFAULT, PickableModel};
 pub use agent_trait::{
-    AfterToolsContext, AgentTrait, RunCaller, SessionContext, ToolsContext, TraitCheck,
-    TraitContext, Turn,
+    AfterToolsContext, AgentTrait, AnswerContext, CallExtras, ControlsContext, RunCaller,
+    SessionContext, ToolsContext, TraitCheck, TraitContext, Turn,
 };
 pub use context::{
     ATTR_KEEP_TURNS, COMPACT_PERCENT, Compaction, ContextState, ContextVerdict, DEFAULT_KEEP_TURNS,
@@ -92,16 +96,24 @@ pub use delegate::{
     ATTR_DELEGATED_BY, ATTR_PARENT_RUN, DEFAULT_MAX_DEPTH, DelegateRequest, Delegated, Delegator,
 };
 pub use driver::{
-    ProviderConnector, RunObserver, Runner, StablePrefix, StoredProviders, connect, stable_prefix,
+    ProviderConnector, RunObserver, Runner, StablePrefix, StoredProviders, composer_controls,
+    composer_controls_for, connect, stable_prefix,
 };
-pub use ledger::{ChildLedger, Ledger, LedgerStep, RoleTotals};
+pub use interact::{
+    Answer, ChoiceOption, ComposerControl, ControlKind, DisplayPart, DisplayRef, MAX_DISPLAY_ROWS,
+    RequestKind, UserRequest, check_controls,
+};
+pub use ledger::{ChildLedger, CodeEvaluation, Ledger, LedgerStep, RoleTotals};
 pub use machine::{
     AgentLoop, Budget, Budgets, Conclusion, IMAGE_STUB, Step, StepMeta, ToolOutcome,
-    trait_state_key,
+    answer_display_key, trait_state_key,
 };
 pub use meter::{
     ATTR_CREDITS_MIN_BALANCE, ATTR_CREDITS_PER_1K_INPUT, ATTR_CREDITS_PER_1K_OUTPUT,
     ATTR_CREDITS_PER_DOLLAR, Meter,
+};
+pub use parts::{
+    RUN_PARTS_TABLE, StoredPart, bootstrap_run_parts, load_display_part, save_display_part,
 };
 pub use registry::AgentRegistry;
 pub use run::{ATTR_MODE, ATTR_ROLE, Run, RunId, RunKind, RunMode, RunState};
@@ -113,7 +125,7 @@ pub use store::{
     AGENTS_TABLE, bootstrap_agents, delete_agent, list_agents, load_agent, load_agent_by_name,
     require_agent, save_agent,
 };
-pub use validate::{AgentIssue, Agents, validate_agent};
+pub use validate::{AgentIssue, Agents, validate_agent, validate_trait};
 pub use view::{
     AppHttpRequest, AppHttpResponse, AppPreviewer, AppRequester, BrowserAction, BrowserDriver,
     BrowserReport, BrowserRequest, HostCapabilities, ModuleInstall, ModuleManager, PreviewInfo,

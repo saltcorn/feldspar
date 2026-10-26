@@ -155,7 +155,9 @@ an arrow translates like any formula arrow) or from a preceding `map`, `distinct
 `DISTINCT`, and the terminal method picks the SQL form — `length` → `count(*)`, `sum(…)`
 → `coalesce(sum(…), 0)`, `some`/`every` → `EXISTS` / `NOT EXISTS`, `includes(x)` → `x =
 ANY (SELECT …)`, `join(sep)` → `string_agg(…, sep)` (unordered — accept nondeterministic
-order, or add an ordered variant later).
+order, or add an ordered variant later). A chain that ends with its `map` (or the `distinct` after it) has the
+mapped values themselves as its value, an array (v1's `Array_Agg`): `coalesce(jsonb_agg(…),
+jsonb_build_array())`, which SQLite spells `json_group_array`/`json_array`.
 
 **Reified evaluation** needs only a light prelude: the seven added methods are defined on
 `Array.prototype` inside the isolate (the sandbox is wholly ours) and everything else is

@@ -106,6 +106,11 @@ pub fn scalar_schema(ty: ValueType) -> Json {
                             {\"type\": \"Point\", \"coordinates\": [-0.12, 51.5]}",
             "required": ["type"],
         }),
+        ValueType::Vector => json!({
+            "type": "array",
+            "items": { "type": "number" },
+            "description": "a vector: an array of numbers of the field's dimensions",
+        }),
     }
 }
 

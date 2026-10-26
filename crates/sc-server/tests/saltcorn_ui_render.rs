@@ -874,7 +874,7 @@ async fn an_action_that_is_not_the_applications_is_refused_by_name() -> sc_error
 
     // Save time: v1's state action by its own name, and a trigger the
     // application does not declare.
-    for action in ["run_js_code", "AddBook"] {
+    for action in ["run_js_code", "ReturnBook"] {
         let view = View::new(app.id, "Runs something", "List", "Books")
             .min_role(1)
             .configuration(object(json!({
@@ -885,7 +885,7 @@ async fn an_action_that_is_not_the_applications_is_refused_by_name() -> sc_error
             .unwrap_err()
             .to_string();
         assert!(msg.contains(&format!("`{action}`")), "{msg}");
-        assert!(msg.contains("it declares TrimPages"), "{msg}");
+        assert!(msg.contains("it declares TrimPages, AddBook"), "{msg}");
     }
 
     // Run time: the application no longer declares TrimPages, and List Books
@@ -1906,7 +1906,11 @@ async fn the_builder_options_are_what_saltcorn_1_passes() -> sc_error::Result<()
         assert!(options.is_object(), "{name}: {step}");
         // What the differences below take out, checked for what it is here.
         assert_eq!(options["view_id"], json!(view.id.0.to_string()), "{name}");
-        assert_eq!(options["triggerActions"], json!(["TrimPages"]), "{name}");
+        assert_eq!(
+            options["triggerActions"],
+            json!(["TrimPages", "AddBook"]),
+            "{name}"
+        );
         ours.push((file, options.clone()));
     }
     let page = sc_viewpattern::load_page(&catalog, app.id, "BooksOverview")
@@ -1923,7 +1927,10 @@ async fn the_builder_options_are_what_saltcorn_1_passes() -> sc_error::Result<()
     let page_options = configurer.page_builder_options(&page).await?;
     drop(configurer);
     assert_eq!(page_options["page_id"], json!(page.id.0.to_string()));
-    assert_eq!(page_options["triggerActions"], json!(["TrimPages"]));
+    assert_eq!(
+        page_options["triggerActions"],
+        json!(["TrimPages", "AddBook"])
+    );
     // The image in the application's store, where its serve route finds it.
     assert_eq!(
         page_options["images"],
@@ -2096,10 +2103,10 @@ const V1_TABLE_IDS: [(u64, &str); 4] = [
 ///   triggers (§12), so v1's groups of them, and their config forms,
 ///   descriptions and constraints, are not here.
 /// - **Triggers.** The application's triggers are this server's: BooksDB's
-///   `TrimPages` rewritten as `run_js_code`, and its `AddBook` workflow not
-///   imported. v1 also leaves a table's trigger off a page, and nothing here is
-///   a table trigger. The trigger group and `triggerActions` go from both sides;
-///   the test checks ours name the application's trigger.
+///   `TrimPages` rewritten as `run_js_code`, and its `AddBook` workflow
+///   imported as a workflow. v1 also leaves a table's trigger off a page, and
+///   nothing here is a table trigger. The trigger group and `triggerActions` go
+///   from both sides; the test checks ours name the application's triggers.
 /// - **`users`** in `tables`: v1's account table; accounts here are this
 ///   server's, not a table an application has.
 /// - **Role names.** This server's built-in roles are `Admin` and `Public`.
@@ -2607,7 +2614,11 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
             "{rndid}: {}",
             refused.body
         );
-        assert!(!refused.body.contains("Hello, member"), "{rndid}: {}", refused.body);
+        assert!(
+            !refused.body.contains("Hello, member"),
+            "{rndid}: {}",
+            refused.body
+        );
     }
     let greeted = post_page_action(&mut member, "/page/Actions/action/9e1001", Some(&token)).await;
     assert_eq!(greeted.status, StatusCode::OK, "{}", greeted.body);

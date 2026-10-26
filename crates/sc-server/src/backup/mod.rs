@@ -141,6 +141,11 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub(crate) const USERS_FILE: &str = "users/users.json";
 /// The user accounts, one per line.
 pub(crate) const USER_ROWS_FILE: &str = "users/rows.ndjson";
+/// Agents' long-term memories (`_fd_agent_memory`), one per line, part of the
+/// Agents choice. Only an import writes it — v1 keeps memories in a table of
+/// the application (TODO-agent-skills AS12.4); a backup of this system leaves
+/// them on the installation they were written on.
+pub(crate) const AGENT_MEMORY_FILE: &str = "agent-memory.ndjson";
 /// The role grants the accounts hold (TODO-payments P3), one per line. Part of
 /// the Users choice: a grant is a user's, and names their role.
 pub(crate) const ROLE_GRANT_ROWS_FILE: &str = "users/role_grants.ndjson";

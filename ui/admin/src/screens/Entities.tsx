@@ -35,8 +35,7 @@ import {
   DIAGRAM_KINDS,
   ENTITY_KINDS,
   configHref,
-  kindLabel,
-  kindLabelPlural,
+  kindLabels,
   matchesFilter,
   recentlyEdited,
   runAction,
@@ -75,16 +74,17 @@ const KIND_LOOK: Record<EntityKind, { icon: ReactNode; color: string }> = {
 };
 
 /** Where each "Create …" button at the foot of the list goes. A table is
- * created from the tables list, whose dialog offers the ways to make one. Each
- * label is a `t("…")` of its own so the extractor can read it. */
-const CREATE: { kind: EntityKind; label: (t: Translator["t"]) => string; href: string }[] = [
-  { kind: "table", label: (t) => t("Create table"), href: "#/tables" },
-  { kind: "file_store", label: (t) => t("Create file store"), href: "#/file-stores/new" },
-  { kind: "trigger", label: (t) => t("Create trigger"), href: "#/triggers/new" },
-  { kind: "stream", label: (t) => t("Create stream"), href: "#/streams/new" },
-  { kind: "agent", label: (t) => t("Create agent"), href: "#/agents/new" },
-  { kind: "application", label: (t) => t("Create application"), href: "#/applications/new" },
-];
+ * created from the tables list, whose dialog offers the ways to make one. */
+function createButtons(t: Translator["t"]): { kind: EntityKind; label: string; href: string }[] {
+  return [
+    { kind: "table", label: t("Create table"), href: "#/tables" },
+    { kind: "file_store", label: t("Create file store"), href: "#/file-stores/new" },
+    { kind: "trigger", label: t("Create trigger"), href: "#/triggers/new" },
+    { kind: "stream", label: t("Create stream"), href: "#/streams/new" },
+    { kind: "agent", label: t("Create agent"), href: "#/agents/new" },
+    { kind: "application", label: t("Create application"), href: "#/applications/new" },
+  ];
+}
 
 export function Entities() {
   const { t } = useT();
@@ -238,7 +238,7 @@ export function Entities() {
                       onClick={() => setKinds((current) => toggleKind(current, kind))}
                     >
                       {KIND_LOOK[kind].icon}
-                      {kindLabelPlural(kind, t)}
+                      {kindLabels(t)[kind].many}
                     </button>
                   );
                 })}
@@ -296,10 +296,10 @@ export function Entities() {
 
           <div className="card-footer">
             <div className="btn-list">
-              {CREATE.map((create) => (
+              {createButtons(t).map((create) => (
                 <Button key={create.kind} variant="outline-secondary" href={create.href}>
                   <IconPlus className="icon-2" />
-                  {create.label(t)}
+                  {create.label}
                 </Button>
               ))}
             </div>
@@ -341,7 +341,7 @@ function EntityRow({
       <td>
         <span className={`badge bg-${look?.color ?? "secondary"}-lt d-inline-flex align-items-center gap-1`}>
           {look?.icon}
-          {kindLabel(kind, t)}
+          {kindLabels(t)[kind]?.one ?? entity.kind}
         </span>
       </td>
       <td>

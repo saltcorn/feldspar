@@ -364,6 +364,7 @@ mod tests {
             redirects: Vec::new(),
             status: 200,
             content_type: Some(content_type.to_owned()),
+            headers: Vec::new(),
             body: body.as_bytes().to_vec(),
             truncated: false,
         }

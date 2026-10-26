@@ -96,6 +96,9 @@ pub fn conclusion_words(conclusion: &Conclusion) -> String {
         Conclusion::Aborted => "was aborted".to_owned(),
         Conclusion::OverBudget { budget } => format!("ran out of its {budget} budget"),
         Conclusion::Stuck { reason } => format!("got stuck: {reason}"),
+        Conclusion::AwaitingUser { request } => {
+            format!("is waiting for the person to answer: {}", request.prompt)
+        }
     }
 }
 

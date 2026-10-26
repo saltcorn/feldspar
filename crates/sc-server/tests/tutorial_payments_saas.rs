@@ -83,7 +83,12 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
                 },
             ],
         ),
-        ("notes", 1, Some("owner === user.id"), vec![id(), owner(), field("text", "text")]),
+        (
+            "notes",
+            1,
+            Some("owner === user.id"),
+            vec![id(), owner(), field("text", "text")],
+        ),
         (
             "blends",
             1,
@@ -96,7 +101,12 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
             Some("owner === user.id && user.role <= 60"),
             vec![id(), owner(), field("text", "text")],
         ),
-        ("reminders", 1, None, vec![id(), user_key("user"), field("ends", "timestamp")]),
+        (
+            "reminders",
+            1,
+            None,
+            vec![id(), user_key("user"), field("ends", "timestamp")],
+        ),
     ];
     for (name, read, ownership, fields) in tables {
         schema_edit::apply(
@@ -226,7 +236,12 @@ async fn setup() -> sc_error::Result<Booted> {
     )
     .await;
     assert_eq!(configured.status, StatusCode::OK, "{}", configured.text);
-    assert_eq!(configured.json()["reads"], json!(["plans"]), "{}", configured.text);
+    assert_eq!(
+        configured.json()["reads"],
+        json!(["plans"]),
+        "{}",
+        configured.text
+    );
 
     // Steps 4–9.
     for trigger in triggers() {
@@ -248,7 +263,14 @@ async fn setup() -> sc_error::Result<Booted> {
         .with_api(api)
         .with_trigger(TriggerRef::new("subscribe"))
         .with_trigger(TriggerRef::new("manage_plan"));
-    for table in ["notes", "blends", "flights", "plans", "pay_objects", "role_grants"] {
+    for table in [
+        "notes",
+        "blends",
+        "flights",
+        "plans",
+        "pay_objects",
+        "role_grants",
+    ] {
         app = app.with_table(TableId(table.to_owned()));
     }
     booted.apps.mount(MountedApp::new_with(
@@ -289,14 +311,18 @@ fn path_of(url: &str) -> String {
 /// Whether the browser's user may write a row of `table`: the paywall.
 async fn may_write(browser: &mut Browser<'_>, table: &str) -> bool {
     let answer = browser
-        .send("POST", &format!("/api/{table}"), Some(json!({ "text": "Sencha, second steep" })))
+        .send(
+            "POST",
+            &format!("/api/{table}"),
+            Some(json!({ "text": "Sencha, second steep" })),
+        )
         .await;
     answer.status.is_success()
 }
 
 #[tokio::test]
-async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says() -> sc_error::Result<()>
-{
+async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says()
+-> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");
         return Ok(());
@@ -355,13 +381,31 @@ async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says() 
     assert_eq!(sent[0].subject, "Your Brew Notes trial ends tomorrow");
 
     // Ann subscribes to Pro, and pays on the test provider's page.
-    let started = ann.send("POST", "/api/actions/subscribe", Some(json!({ "plan": 2 }))).await;
+    let started = ann
+        .send("POST", "/api/actions/subscribe", Some(json!({ "plan": 2 })))
+        .await;
     assert_eq!(started.status, StatusCode::OK, "{}", started.text);
-    assert_eq!(started.json()["amount"], json!(1500), "the account's settings price it");
+    assert_eq!(
+        started.json()["amount"],
+        json!(1500),
+        "the account's settings price it"
+    );
     let page = path_of(started.json()["url"].as_str().unwrap());
-    let paid = send(&notes.router, "POST", Some(NOTES), &format!("{page}/pay"), &HashMap::new(), &[], Vec::new()).await;
+    let paid = send(
+        &notes.router,
+        "POST",
+        Some(NOTES),
+        &format!("{page}/pay"),
+        &HashMap::new(),
+        &[],
+        Vec::new(),
+    )
+    .await;
     assert_eq!(paid.status, StatusCode::SEE_OTHER, "{}", paid.text);
-    assert_eq!(paid.headers[header::LOCATION], format!("http://{NOTES}/welcome").as_str());
+    assert_eq!(
+        paid.headers[header::LOCATION],
+        format!("http://{NOTES}/welcome").as_str()
+    );
     assert!(may_write(&mut ann, "flights").await, "Pro now");
 
     // The account page: her subscription's renewal date, and her trial, from the API.
@@ -378,7 +422,11 @@ async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says() 
     assert!(sub["current_period_end"].is_string(), "{sub}");
     let grants = ann.ok("GET", "/api/role_grants", None).await;
     assert!(
-        grants.as_array().unwrap().iter().any(|g| g["source"] == json!("grant_role")),
+        grants
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["source"] == json!("grant_role")),
         "{grants}"
     );
 
@@ -392,11 +440,21 @@ async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says() 
     assert_eq!(notes.mail.sent().len(), 1);
 
     // The portal: down to Basic. Flights go; blends stay.
-    let portal = ann.send("POST", "/api/actions/manage_plan", Some(json!({}))).await;
+    let portal = ann
+        .send("POST", "/api/actions/manage_plan", Some(json!({})))
+        .await;
     assert_eq!(portal.status, StatusCode::OK, "{}", portal.text);
     let portal = path_of(portal.json()["url"].as_str().unwrap());
     let sub_ref = sub["provider_ref"].as_str().unwrap();
-    assert_eq!(press(&notes, &format!("{portal}/{sub_ref}/change"), "price=price_basic").await, StatusCode::SEE_OTHER);
+    assert_eq!(
+        press(
+            &notes,
+            &format!("{portal}/{sub_ref}/change"),
+            "price=price_basic"
+        )
+        .await,
+        StatusCode::SEE_OTHER
+    );
     assert!(!may_write(&mut ann, "flights").await);
     assert!(may_write(&mut ann, "blends").await);
     // The trial runs out: still Basic, from the subscription.
@@ -406,18 +464,35 @@ async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says() 
     assert!(may_write(&mut ann, "blends").await);
 
     // She cancels at the end of the period; the period ends. Free tier: notes only.
-    assert_eq!(press(&notes, &format!("{portal}/{sub_ref}/cancel"), "").await, StatusCode::SEE_OTHER);
-    assert!(may_write(&mut ann, "blends").await, "kept to the period's end");
-    assert_eq!(press(&notes, &format!("{portal}/{sub_ref}/renew"), "").await, StatusCode::SEE_OTHER);
+    assert_eq!(
+        press(&notes, &format!("{portal}/{sub_ref}/cancel"), "").await,
+        StatusCode::SEE_OTHER
+    );
+    assert!(
+        may_write(&mut ann, "blends").await,
+        "kept to the period's end"
+    );
+    assert_eq!(
+        press(&notes, &format!("{portal}/{sub_ref}/renew"), "").await,
+        StatusCode::SEE_OTHER
+    );
     assert!(!may_write(&mut ann, "blends").await);
     assert!(may_write(&mut ann, "notes").await);
-    let refused = ann.send("POST", "/api/actions/manage_plan", Some(json!({}))).await;
-    assert!(refused.status.is_success(), "a past customer still has a portal: {}", refused.text);
+    let refused = ann
+        .send("POST", "/api/actions/manage_plan", Some(json!({})))
+        .await;
+    assert!(
+        refused.status.is_success(),
+        "a past customer still has a portal: {}",
+        refused.text
+    );
 
     // A guest has no plan to buy.
     let mut guest = Browser::on(&notes.router, NOTES);
     guest.send("GET", "/", None).await;
-    let anonymous = guest.send("POST", "/api/actions/subscribe", Some(json!({ "plan": 1 }))).await;
+    let anonymous = guest
+        .send("POST", "/api/actions/subscribe", Some(json!({ "plan": 1 })))
+        .await;
     assert!(!anonymous.status.is_success(), "{}", error_of(&anonymous));
     Ok(())
 }

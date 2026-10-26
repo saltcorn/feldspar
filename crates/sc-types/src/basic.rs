@@ -18,6 +18,7 @@ use sc_error::{Error, Result};
 use sc_query::Value;
 
 use crate::geometry::{self, GeometryKind};
+use crate::vector;
 
 /// A database type the MVP understands, as one of a fixed set of scalar families
 /// (each mirroring a [`Value`] variant) plus an [`Other`](BasicType::Other)
@@ -50,6 +51,12 @@ pub enum BasicType {
     /// GeoJSON geometry object in a [`Value::Json`] (analytics TODO A5.1, see
     /// [`crate::geometry`]).
     Geometry(GeometryKind),
+    /// A vector of this many 32-bit floats (pgvector's `vector(n)` on Postgres,
+    /// a little-endian `f32` blob on SQLite), carried as a JSON array of
+    /// numbers in a [`Value::Json`] (TODO-agent-skills AS2.1, see
+    /// [`crate::vector`]). `Vector(0)` is only the bare `vector` a type picker
+    /// offers before the dimensions are given; no column has it.
+    Vector(u32),
     /// A backend type not mapped to any of the above. Still usable, but only
     /// through the catch-all display/edit path, where it is treated as text. The
     /// wrapped string is the backend's own type name so it survives round-trips.
@@ -65,6 +72,9 @@ impl BasicType {
     pub fn from_sql_type(sql_type: &str) -> BasicType {
         if let Some(kind) = GeometryKind::of_sql_type(sql_type) {
             return BasicType::Geometry(kind);
+        }
+        if let Some(dimensions) = vector::of_sql_type(sql_type) {
+            return BasicType::Vector(dimensions);
         }
         match sql_type.trim().to_ascii_lowercase().as_str() {
             "bool" | "boolean" => BasicType::Bool,
@@ -106,6 +116,7 @@ impl BasicType {
             BasicType::Time => "time",
             BasicType::Timestamp => "timestamptz",
             BasicType::Geometry(kind) => kind.sql_type(),
+            BasicType::Vector(dimensions) => vector::spelling(*dimensions),
             BasicType::Other(name) => name,
         }
     }
@@ -127,6 +138,7 @@ impl BasicType {
             BasicType::Time => "time",
             BasicType::Timestamp => "timestamp",
             BasicType::Geometry(kind) => kind.type_name(),
+            BasicType::Vector(dimensions) => vector::spelling(*dimensions),
             BasicType::Other(name) => name,
         }
     }
@@ -174,7 +186,7 @@ impl BasicType {
             BasicType::Date => "date",
             BasicType::Time => "time",
             BasicType::Timestamp => "timestamp",
-            BasicType::Geometry(_) => "json",
+            BasicType::Geometry(_) | BasicType::Vector(_) => "json",
             BasicType::Other(_) => return None,
         })
     }
@@ -209,6 +221,9 @@ impl BasicType {
         if let (BasicType::Geometry(kind), Value::Json(json)) = (self, value) {
             return geometry::check_geojson(*kind, json).is_ok();
         }
+        if let (BasicType::Vector(dimensions), Value::Json(json)) = (self, value) {
+            return vector::vector_value(*dimensions, json).is_ok();
+        }
         match self.value_kind() {
             Some(kind) => value.kind() == kind,
             // `Other` imposes no family constraint beyond "not a structured
@@ -240,6 +255,9 @@ impl BasicType {
         if let BasicType::Geometry(kind) = self {
             return json.is_null() || geometry::check_geojson(*kind, json).is_ok();
         }
+        if let BasicType::Vector(dimensions) = self {
+            return json.is_null() || vector::vector_value(*dimensions, json).is_ok();
+        }
         match json {
             Json::Null => true,
             Json::Bool(_) => matches!(self, BasicType::Bool),
@@ -270,6 +288,10 @@ impl BasicType {
         // A geometry says what is wrong with it, not only that it is wrong.
         if let (BasicType::Geometry(kind), Value::Json(json)) = (self, value) {
             return geometry::check_geojson(*kind, json);
+        }
+        // And a vector of the wrong length says both lengths.
+        if let (BasicType::Vector(dimensions), Value::Json(json)) = (self, value) {
+            return vector::vector_value(*dimensions, json).map(|_| ());
         }
         if self.accepts(value) {
             Ok(())

@@ -31,6 +31,8 @@ mod admin_workflow_editor;
 mod agent_admin_api;
 #[path = "agent_chat.rs"]
 mod agent_chat;
+#[path = "agent_interaction.rs"]
+mod agent_interaction;
 #[path = "analytics_api.rs"]
 mod analytics_api;
 #[path = "analytics_apps.rs"]
@@ -91,6 +93,8 @@ mod app_trigger_api;
 mod app_uploads;
 #[path = "backup_api.rs"]
 mod backup_api;
+#[path = "build_agent.rs"]
+mod build_agent;
 #[path = "builder_route.rs"]
 mod builder_route;
 #[path = "call_api.rs"]
@@ -107,10 +111,10 @@ mod concurrent_code_bodies;
 mod constraint_api;
 #[path = "db_connection_admin_api.rs"]
 mod db_connection_admin_api;
-#[path = "field_api.rs"]
-mod field_api;
 #[path = "entities_api.rs"]
 mod entities_api;
+#[path = "field_api.rs"]
+mod field_api;
 #[path = "file_manager.rs"]
 mod file_manager;
 #[path = "file_operations_api.rs"]
@@ -141,6 +145,8 @@ mod llm_credits;
 mod llm_provider_admin_api;
 #[path = "locale_negotiation.rs"]
 mod locale_negotiation;
+#[path = "mcp_client.rs"]
+mod mcp_client;
 #[path = "mcp_server.rs"]
 mod mcp_server;
 #[path = "metadata_tables_api.rs"]
@@ -207,6 +213,18 @@ mod router;
 pub(crate) fn module_registries() -> &'static tokio::sync::RwLock<()> {
     static LOCK: std::sync::OnceLock<tokio::sync::RwLock<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::RwLock::new(()))
+}
+
+/// The process's two logging switches (`sc_log::log_sql_enabled`, the
+/// verbosity), held by the tests in this binary that move them: saving the
+/// Development section, and Clear all, which resets them to the defaults.
+///
+/// Like [`module_registries`], a global for good reason in a server that is one
+/// process, shared here by many servers in one: without the lock, one test's
+/// reset lands between another's save and its check of what the save did.
+pub(crate) fn logging_switches() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    &LOCK
 }
 
 #[path = "app_none_framework.rs"]

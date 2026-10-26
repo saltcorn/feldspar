@@ -27,46 +27,19 @@ export type EntityKind = (typeof ENTITY_KINDS)[number];
  * fire triggers. */
 export const DIAGRAM_KINDS: readonly EntityKind[] = ["table", "trigger", "stream"];
 
-/** A kind's name, for a row's badge, in the screen's language when it passes
- * its `t`. Each label is a `t("…")` of its own so the extractor can read it. */
-export function kindLabel(kind: string, t: Translator["t"] = format): string {
-  switch (kind) {
-    case "table":
-      return t("Table");
-    case "file_store":
-      return t("File store");
-    case "trigger":
-      return t("Trigger");
-    case "stream":
-      return t("Stream");
-    case "agent":
-      return t("Agent");
-    case "application":
-      return t("Application");
-    default:
-      return kind;
-  }
-}
-
-/** A kind's plural name, for the type filter, in the screen's language when it
- * passes its `t`. */
-export function kindLabelPlural(kind: string, t: Translator["t"] = format): string {
-  switch (kind) {
-    case "table":
-      return t("Tables");
-    case "file_store":
-      return t("File stores");
-    case "trigger":
-      return t("Triggers");
-    case "stream":
-      return t("Streams");
-    case "agent":
-      return t("Agents");
-    case "application":
-      return t("Applications");
-    default:
-      return kind;
-  }
+/** Each kind's name, singular for a row's badge and plural for the filter, in
+ * the screen's language when it passes its `t`. */
+export function kindLabels(
+  t: Translator["t"] = format,
+): Record<EntityKind, { one: string; many: string }> {
+  return {
+    table: { one: t("Table"), many: t("Tables") },
+    file_store: { one: t("File store"), many: t("File stores") },
+    trigger: { one: t("Trigger"), many: t("Triggers") },
+    stream: { one: t("Stream"), many: t("Streams") },
+    agent: { one: t("Agent"), many: t("Agents") },
+    application: { one: t("Application"), many: t("Applications") },
+  };
 }
 
 /** How many entities the "Recently edited" section shows. */
@@ -102,7 +75,7 @@ export type RunAction =
  * — a table's rows, a store's files, a trigger's test run, a chat with an
  * agent, the running application. `null` for one that cannot be run now (a
  * trigger switched off or broken; an agent that is not usable). `openApp` is
- * where an application is served, given its subdomain. The label is in the
+ * where an application is served, given its subdomain; the label is in the
  * screen's language when it passes its `t`. */
 export function runAction(
   entity: Entity,
@@ -154,12 +127,12 @@ export function matchesFilter(entity: Entity, filter: EntityFilter): boolean {
   }
   const words = filter.query.toLowerCase().split(/\s+/).filter((w) => w !== "");
   if (words.length === 0) return true;
-
+  const label = kindLabels()[entity.kind as EntityKind];
   const haystack = [
     entity.name,
     entity.description,
     entity.kind,
-    kindLabel(entity.kind),
+    label?.one ?? "",
     ...(filter.deep ? [entity.definition ?? ""] : []),
   ]
     .join("\n")

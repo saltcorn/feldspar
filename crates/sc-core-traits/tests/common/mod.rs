@@ -76,7 +76,12 @@ impl Env {
 
     /// [`Env::new`] over a schema of the test's own.
     pub async fn with_schema(schema: &str) -> Result<Env> {
-        let db = TestDb::new().await?;
+        Env::with_db(TestDb::new().await?, schema).await
+    }
+
+    /// [`Env::with_schema`] over a database of the test's own making — one
+    /// with pgvector (`TestDb::with_pgvector`), say.
+    pub async fn with_db(db: TestDb, schema: &str) -> Result<Env> {
         db.client()
             .await?
             .batch_execute(schema)
@@ -183,8 +188,32 @@ impl Env {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         trait_.call(config, tool, &args, &mut ctx).await
+    }
+
+    /// A tool context for `caller` outside any run, for a test that drives a
+    /// trait-side helper (the sandbox) rather than a whole tool.
+    pub fn context<'a>(&'a self, caller: &'a RunCaller, state: &'a mut Json) -> TraitContext<'a> {
+        TraitContext {
+            catalog: &self.catalog,
+            caller,
+            agent: "librarian",
+            run: RunId::new(),
+            mode: sc_agent::RunMode::Act,
+            trait_state: state,
+            evaluator: self.evaluator.as_ref(),
+            triggers: self.dispatcher.as_ref(),
+            delegate: None,
+            previews: None,
+            browser: None,
+            requests: None,
+            modules: None,
+            signals: Vec::new(),
+            images: Vec::new(),
+            extras: Default::default(),
+        }
     }
 
     /// Give the tools the real JavaScript engine — what a table whose ownership
@@ -221,6 +250,7 @@ impl Env {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         let result = trait_.call(config, tool, &args, &mut ctx).await;
         (result, ctx.signals)
@@ -257,10 +287,9 @@ impl Env {
     /// catalog's write listener, so a row a trait writes raises the events a row
     /// written any other way raises.
     pub fn with_triggers(mut self, actions: ActionRegistry) -> Result<Env> {
-        let dispatcher = Arc::new(
-            TriggerDispatcher::new(Arc::new(actions))
-                .with_evaluator(Arc::new(DenoEvaluator::new())),
-        );
+        let dispatcher = TriggerDispatcher::new(Arc::new(actions))
+            .with_evaluator(Arc::new(DenoEvaluator::new()))
+            .into_shared();
         self.catalog.add_table_events(
             sc_catalog::TRIGGER_EVENTS,
             Arc::clone(&dispatcher) as Arc<dyn TableEvents>,
@@ -336,6 +365,7 @@ impl Env {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         trait_.call(config, &tool, &args, &mut ctx).await
     }

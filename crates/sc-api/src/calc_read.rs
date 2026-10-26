@@ -385,6 +385,12 @@ fn columns_of(expr: &Expr, table: &str, out: &mut Vec<String>) {
             }
         }
         Expr::Lit(_) | Expr::Param(_) | Expr::Subquery(_) => {}
+        Expr::TextMatch(search) | Expr::TextRank(search) => {
+            if search.table == table {
+                out.extend(search.columns.iter().cloned());
+            }
+        }
+        Expr::VectorDistance(distance) => columns_of(&distance.column, table, out),
         Expr::Binary { l, r, .. } => {
             columns_of(l, table, out);
             columns_of(r, table, out);

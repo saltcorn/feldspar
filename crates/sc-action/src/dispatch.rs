@@ -140,9 +140,32 @@ pub struct TriggerDispatcher {
     /// after the dispatcher exists (the dispatcher is what it is installed
     /// *on*), so it arrives on a handle that is already shared.
     engine: RwLock<Option<Arc<dyn crate::WorkflowEngine>>>,
+    /// The shared handle this dispatcher lives in, when it was shared through
+    /// [`into_shared`](TriggerDispatcher::into_shared) — so an action it is
+    /// running can hand *the* dispatcher on to something that keeps an `Arc`
+    /// (`run_agent`'s agent, whose tools run triggers). Weak, because a
+    /// dispatcher must not keep itself alive.
+    this: std::sync::Weak<TriggerDispatcher>,
 }
 
 impl TriggerDispatcher {
+    /// Share this dispatcher, remembering the handle so
+    /// [`shared`](TriggerDispatcher::shared) can answer it. What a server does
+    /// once its dispatcher is built; `Arc::new` works too, and leaves an action
+    /// that wants the shared handle without one.
+    pub fn into_shared(self) -> Arc<TriggerDispatcher> {
+        Arc::new_cyclic(|this| TriggerDispatcher {
+            this: this.clone(),
+            ..self
+        })
+    }
+
+    /// The shared handle this dispatcher lives in, if it was shared through
+    /// [`into_shared`](TriggerDispatcher::into_shared).
+    pub fn shared(&self) -> Option<Arc<TriggerDispatcher>> {
+        self.this.upgrade()
+    }
+
     /// A dispatcher over `registry`, with no triggers yet — a server calls
     /// [`reload`](TriggerDispatcher::reload) once the catalog is up.
     pub fn new(registry: Arc<ActionRegistry>) -> TriggerDispatcher {
@@ -152,6 +175,7 @@ impl TriggerDispatcher {
             services: ActionServices::default(),
             observer: RwLock::new(None),
             engine: RwLock::new(None),
+            this: std::sync::Weak::new(),
         }
     }
 
@@ -469,7 +493,7 @@ impl TriggerDispatcher {
         if !trigger.is_enabled() {
             return Err(Error::invalid(format!("trigger `{name}` is disabled")));
         }
-        let mut event = Event::new(trigger.when).payload(payload);
+        let mut event = Event::new(trigger.when.run_as(false)).payload(payload);
         if let Some(channel) = &trigger.channel {
             event = event.on(channel.clone());
         }
@@ -610,7 +634,8 @@ impl TriggerDispatcher {
         if !trigger.is_enabled() {
             return Err(Error::invalid(format!("trigger `{name}` is disabled")));
         }
-        let mut event = Event::new(trigger.when).payload(payload);
+        let with_row = row.is_some() && trigger.when.is_table_event();
+        let mut event = Event::new(trigger.when.run_as(with_row)).payload(payload);
         if let Some(channel) = &trigger.channel {
             event = event.on(channel.clone());
         }
@@ -626,7 +651,7 @@ impl TriggerDispatcher {
             }
             // `old` as well on an update, because a body that names it must not
             // find `undefined` where a real firing would have had a row.
-            if trigger.when == EventKind::Update {
+            if event.kind == EventKind::Update {
                 event = event.old_row(row.clone());
             }
             event = event.row(row);
@@ -849,8 +874,8 @@ pub async fn fire_trigger_with(
         event.origin(),
         sc_catalog::changeset::scope_if(event.changeset.clone(), action.run(&mut ctx)),
     )
-        .await
-        .map(Some)
+    .await
+    .map(Some)
 }
 
 /// What every action run is handed by the dispatcher running it: the
@@ -1058,5 +1083,18 @@ mod tests {
         assert!(!dispatcher.observes("authors", WriteOp::Insert));
         assert!(!dispatcher.observes("books", WriteOp::Update));
         assert!(!dispatcher.observes("books", WriteOp::Delete));
+    }
+
+    #[test]
+    fn an_insert_or_update_trigger_observes_both_writes_but_not_a_delete() {
+        let dispatcher = TriggerDispatcher::new(Arc::new(ActionRegistry::new()));
+        let geocode = Trigger::new("geocode", EventKind::InsertOrUpdate, "insert_row").on("places");
+        dispatcher
+            .set_triggers(Triggers::of(vec![geocode]))
+            .unwrap();
+        assert!(dispatcher.observes("places", WriteOp::Insert));
+        assert!(dispatcher.observes("places", WriteOp::Update));
+        assert!(!dispatcher.observes("places", WriteOp::Delete));
+        assert!(!dispatcher.observes("books", WriteOp::Insert));
     }
 }

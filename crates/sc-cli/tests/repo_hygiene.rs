@@ -775,7 +775,7 @@ fn the_design_records_what_the_agents_milestone_actually_built() {
         // §11.5: the agent as a trigger body.
         "`ProviderConnector` moved down to `sc-agent`",
         "registered apart from the built-in action set",
-        "triggered run is given no trigger dispatcher",
+        "triggered run is given the trigger dispatcher",
         // §11.3: the trigger half of `admin_copilot`, and the decision it turns
         // on — an action's settings are fetched when the model asks, not filled
         // in by a second, hidden inference call the way Saltcorn 1 did it.

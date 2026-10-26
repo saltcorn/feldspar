@@ -95,6 +95,9 @@ export function Agents() {
             >
               <T text="LLM providers" />
             </Button>
+            <Button variant="outline-secondary" onClick={() => navigate("/mcp-servers")}>
+              <T text="MCP servers" />
+            </Button>
             <Button onClick={() => navigate("/agents/new")}>
               <IconPlus className="icon-2" />
               <T text="New agent" />
@@ -161,6 +164,13 @@ export function Agents() {
                         href={`#/agents/${encodeURIComponent(agent.name)}/runs`}
                       >
                         <T text="Runs" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline-secondary"
+                        href={`#/agents/${encodeURIComponent(agent.name)}/memory`}
+                      >
+                        <T text="Memory" />
                       </Button>
                       <Button
                         size="sm"

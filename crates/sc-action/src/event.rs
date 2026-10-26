@@ -56,6 +56,16 @@ pub enum EventKind {
     Insert,
     /// A row of the channel's table was updated.
     Update,
+    /// A row was inserted into **or** updated in the channel's table — a
+    /// trigger-only kind: no event is ever raised as it. A write raises
+    /// [`Insert`](EventKind::Insert) or [`Update`](EventKind::Update), and a
+    /// trigger listening for this kind fires on either (see
+    /// [`listens_for`](EventKind::listens_for)), so its action still sees which
+    /// one happened. The archetype is a value derived from the row's other
+    /// fields (geocoding an address into latitude and longitude): it must be
+    /// computed whenever the row changes, and its own write-back is kept from
+    /// re-firing it by the trigger's `only_if`.
+    InsertOrUpdate,
     /// A row was deleted from the channel's table.
     Delete,
     /// No intrinsic event: the trigger runs only when something asks it to (the
@@ -91,9 +101,10 @@ pub enum EventKind {
 /// The single enumeration of the set: [`as_str`](EventKind::as_str),
 /// [`parse`](EventKind::parse) and the admin picker all derive from it, so a new
 /// kind is one line here plus one match arm.
-pub const EVENT_KINDS: [EventKind; 12] = [
+pub const EVENT_KINDS: [EventKind; 13] = [
     EventKind::Insert,
     EventKind::Update,
+    EventKind::InsertOrUpdate,
     EventKind::Delete,
     EventKind::None,
     EventKind::Login,
@@ -112,6 +123,7 @@ impl EventKind {
         match self {
             EventKind::Insert => "insert",
             EventKind::Update => "update",
+            EventKind::InsertOrUpdate => "insert_or_update",
             EventKind::Delete => "delete",
             EventKind::None => "none",
             EventKind::Login => "login",
@@ -149,8 +161,31 @@ impl EventKind {
     pub fn is_table_event(self) -> bool {
         matches!(
             self,
-            EventKind::Insert | EventKind::Update | EventKind::Delete
+            EventKind::Insert | EventKind::Update | EventKind::InsertOrUpdate | EventKind::Delete
         )
+    }
+
+    /// Whether a trigger whose event is `self` fires for an event of `kind`:
+    /// equality, except that [`InsertOrUpdate`](EventKind::InsertOrUpdate)
+    /// listens for both of the writes it names.
+    pub fn listens_for(self, kind: EventKind) -> bool {
+        self == kind
+            || (self == EventKind::InsertOrUpdate
+                && matches!(kind, EventKind::Insert | EventKind::Update))
+    }
+
+    /// The kind an event raised for a trigger of this kind is given when it is
+    /// run directly rather than by an occurrence — which is every kind itself,
+    /// except [`InsertOrUpdate`](EventKind::InsertOrUpdate), which no event is
+    /// ever raised as: run against a row it reads as the update of that row,
+    /// and with none as an insert, so its action sees one of the two kinds a
+    /// real firing would have given it.
+    pub fn run_as(self, with_row: bool) -> EventKind {
+        match self {
+            EventKind::InsertOrUpdate if with_row => EventKind::Update,
+            EventKind::InsertOrUpdate => EventKind::Insert,
+            kind => kind,
+        }
     }
 
     /// Whether this event's `channel` names something — a table for a table
@@ -494,7 +529,7 @@ mod tests {
         }
         // The set is enumerated once; a kind missing from EVENT_KINDS would make
         // this count wrong and its `parse` fail above.
-        assert_eq!(EVENT_KINDS.len(), 12);
+        assert_eq!(EVENT_KINDS.len(), 13);
     }
 
     #[test]
@@ -511,6 +546,9 @@ mod tests {
         assert!(EventKind::Insert.is_table_event());
         assert!(EventKind::Update.is_table_event());
         assert!(EventKind::Delete.is_table_event());
+        assert!(EventKind::InsertOrUpdate.is_table_event());
+        assert!(EventKind::InsertOrUpdate.has_channel());
+        assert!(!EventKind::InsertOrUpdate.is_periodic());
         for kind in EVENT_KINDS.iter().filter(|k| !k.is_table_event()) {
             assert!(!kind.is_table_event(), "{kind}");
         }
@@ -525,6 +563,28 @@ mod tests {
         assert!(EventKind::Weekly.is_periodic());
         assert!(!EventKind::None.is_periodic());
         assert!(!EventKind::Insert.is_periodic());
+    }
+
+    #[test]
+    fn insert_or_update_listens_for_both_writes_and_nothing_else() {
+        let either = EventKind::InsertOrUpdate;
+        assert!(either.listens_for(EventKind::Insert));
+        assert!(either.listens_for(EventKind::Update));
+        assert!(!either.listens_for(EventKind::Delete));
+        // Every other kind listens for exactly itself.
+        for kind in EVENT_KINDS.iter().filter(|k| **k != either) {
+            for other in EVENT_KINDS {
+                assert_eq!(kind.listens_for(other), *kind == other, "{kind} {other}");
+            }
+        }
+        // A plain insert or update trigger does not fire for the other write.
+        assert!(!EventKind::Insert.listens_for(EventKind::Update));
+        assert!(!EventKind::Update.listens_for(EventKind::Insert));
+        // Run directly, it is given one of the two kinds a write raises.
+        assert_eq!(either.run_as(true), EventKind::Update);
+        assert_eq!(either.run_as(false), EventKind::Insert);
+        assert_eq!(EventKind::Delete.run_as(true), EventKind::Delete);
+        assert_eq!(EventKind::parse("insert_or_update").unwrap(), either);
     }
 
     #[test]

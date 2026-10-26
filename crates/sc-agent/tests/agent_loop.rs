@@ -422,6 +422,57 @@ async fn a_trait_speaks_before_every_turn_and_the_run_records_its_caller() -> Re
     Ok(())
 }
 
+/// What changes per step is sent after the conversation, so each request's
+/// system prompt, tools and history are the previous request's, byte for
+/// byte, and a host's prompt cache can serve them (the field report's prompt
+/// caching point). The context is not kept on the run.
+#[tokio::test]
+async fn per_step_context_follows_a_byte_identical_prefix() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = catalog(&db).await?;
+    let registry = registry(Counter::new())?;
+    let agent = Agent::new("guided", "main")
+        .system_prompt("You are helpful.")
+        .with_trait(EnabledTrait::new("count").config("collection", "books"))
+        .with_trait(EnabledTrait::new("preamble").config("context", "The page is /books."));
+    save_agent(&catalog, &registry, &agent).await?;
+
+    let provider = Arc::new(FakeProvider::new([
+        Reply::calls("count_books", json!({})),
+        Reply::says("Three."),
+    ]));
+    let runner = Runner::new(
+        &catalog,
+        &registry,
+        &agent,
+        common::model(provider.clone()),
+        RunCaller::system(),
+    );
+    let (run, _) = runner.start("how many books?").await?;
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    // The same system prompt and tools on both steps.
+    assert_eq!(requests[0].system, requests[1].system);
+    assert_eq!(requests[0].system.as_deref(), Some("You are helpful."));
+    assert_eq!(requests[0].tools, requests[1].tools);
+    // The second request's history starts with the first's, without its
+    // context, and each ends on its own step's context.
+    let first = &requests[0].messages;
+    let second = &requests[1].messages;
+    assert_eq!(first[..first.len() - 1], second[..first.len() - 1]);
+    let last_text = |m: &[sc_llm::LlmMessage]| match m.last() {
+        Some(sc_llm::LlmMessage::User { content }) => content.clone(),
+        other => panic!("the request should end on the context: {other:?}"),
+    };
+    assert!(last_text(first).contains("The page is /books. (step 1)"));
+    assert!(last_text(second).contains("The page is /books. (step 2)"));
+    // The run keeps the conversation, not the context.
+    let stored = load_run(&catalog, run.id).await?.expect("run");
+    let kept = format!("{:?}", stored.agent_loop()?.messages());
+    assert!(!kept.contains("The page is"), "{kept}");
+    Ok(())
+}
+
 /// What a run says about itself while it happens (§16).
 ///
 /// The model call's own lines come from the provider decorator, which a

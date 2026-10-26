@@ -171,7 +171,7 @@ type TriggerItem = ListTriggersResponse[number];
 
 /** The events that happen *to a table's rows* — the ones whose channel is a
  * table name, and so the ones this page can show as "on this table" (§10.2). */
-const TABLE_EVENTS = ["insert", "update", "delete"];
+const TABLE_EVENTS = ["insert", "update", "insert_or_update", "delete"];
 
 /**
  * The triggers that fire on `table`'s rows, out of every trigger there is.
@@ -789,6 +789,10 @@ function Constraints({
             <IconPlus className="icon-2" />
             <T text="Full-text search" />
           </Button>
+          <Button size="sm" variant="outline-secondary" onClick={() => open("vector_index")}>
+            <IconPlus className="icon-2" />
+            <T text="Vector index" />
+          </Button>
           <Button size="sm" variant="outline-secondary" onClick={() => open("formula")}>
             <IconPlus className="icon-2" />
             <T text="Row constraint" />
@@ -847,6 +851,27 @@ function Constraints({
                   </Form.Text>
                 </Form.Group>
               )}
+              {form?.type === "vector_index" && (
+                <Form.Group className="mb-2" controlId="constraintVectorField">
+                  <Form.Label><T text="Vector field" /></Form.Label>
+                  <Form.Select
+                    value={form.fields[0] ?? ""}
+                    onChange={(e) => update({ fields: e.target.value ? [e.target.value] : [] })}
+                  >
+                    <option value=""><T text="Choose a field…" /></option>
+                    {columns
+                      .filter((field) => field.type.startsWith("vector("))
+                      .map((field) => (
+                        <option key={field.name} value={field.name}>
+                          {field.label || field.name}
+                        </option>
+                      ))}
+                  </Form.Select>
+                  <Form.Text muted>
+                    <T text="An HNSW index by cosine distance, which is what lets a nearest read (`?nearest=` in the REST API, `nearest:` in GraphQL) find the closest rows without reading every one. PostgreSQL with pgvector only; SQLite reads every row instead." />
+                  </Form.Text>
+                </Form.Group>
+              )}
               {form?.type === "full_text_search" && (
                 <Form.Group className="mb-2" controlId="constraintLanguage">
                   <Form.Label><T text="Language" /></Form.Label>
@@ -861,7 +886,7 @@ function Constraints({
                     ))}
                   </Form.Select>
                   <Form.Text muted>
-                    <T text="Indexes every text field of the table together. The language decides how words are reduced to their stems, so it has to match the one a search uses." />
+                    <T text="Indexes every text field of the table together, which is what lets a read search its rows (`?search=` in the REST API, `search:` in GraphQL). The language decides how words are reduced to their stems; on SQLite only English is stemmed, and the table needs an integer key." />
                   </Form.Text>
                 </Form.Group>
               )}

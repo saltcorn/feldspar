@@ -161,8 +161,22 @@ export function targetNotReadyNotice(
 
 /** What a finished job means for the news: the file, or why there is none. */
 export type TargetResult =
-  | { ok: true; store: string; artifact: string; size: number; logPath: string; log: string }
+  | {
+      ok: true;
+      store: string;
+      artifact: string;
+      size: number;
+      logPath: string;
+      log: string;
+      buildHost?: string;
+    }
   | { ok: false; error: string };
+
+/** Whether a job is still to finish: building, or waiting for a build host to
+ * take it. */
+export function jobUnfinished(job: Pick<TargetJob, "status">): boolean {
+  return job.status === "running" || job.status === "queued";
+}
 
 /** A finished job as a {@link TargetResult}. A job that says it succeeded but
  * names no artifact is reported as the failure it is, not as a file of size 0. */
@@ -175,6 +189,7 @@ export function jobResult(job: TargetJob): TargetResult {
       size: job.size ?? 0,
       logPath: job.log_path,
       log: job.log ?? "",
+      buildHost: job.build_host ?? undefined,
     };
   }
   return { ok: false, error: job.error || `The build ended as "${job.status}".` };
@@ -198,6 +213,7 @@ export function targetFinished(
           ok: true,
           title: `${target.label} built — ${app.name}`,
           text:
+            (result.buildHost ? `Built on the build host "${result.buildHost}". ` : "") +
             `${result.artifact} (${formatSize(result.size)}) in file store "${result.store}". ` +
             `Download it from Files.\nThe whole log: ${result.logPath}\n\n${result.log.trim()}`,
         }
@@ -267,7 +283,7 @@ async function follow(
   following.add(key);
   try {
     let current = job;
-    while (current.status === "running") {
+    while (jobUnfinished(current)) {
       await sleep(POLL_MS);
       current = await api.getApplicationTargetBuild(app.id, target.name);
     }
@@ -317,7 +333,7 @@ export async function resumeTargetBuilds(app: AppItem): Promise<void> {
     } catch {
       continue;
     }
-    if (job.status !== "running") continue;
+    if (!jobUnfinished(job)) continue;
     publish(targetStarted(state, app.id, target.name));
     void follow(app, target, job);
   }

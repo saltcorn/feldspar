@@ -474,3 +474,56 @@ describe("a secret field (TODO-imap M2)", () => {
     expect(created).toMatchObject({ name: "smtp_password", kind: { type: "secret" } });
   });
 });
+
+/** The vector type as `listFieldTypes` offers it: a basic type with attributes. */
+const VECTOR: FieldTypeItem = {
+  name: "vector",
+  label: "vector",
+  category: "basic",
+  config_spec: ["dimensions", "embed_from", "embed_provider", "embed_model"].map((name) => ({
+    name,
+    label: name,
+    type: name === "dimensions" ? "int" : "text",
+    required: name === "dimensions",
+    default: null,
+    options: [],
+    multiline: false,
+    secret: false,
+    create_only: false,
+    show_if: [],
+  })),
+};
+
+describe("a vector field (TODO-agent-skills AS2)", () => {
+  it("is created as `vector` with its dimensions and embedding as attributes", () => {
+    const body = createFieldBody(
+      {
+        ...newFieldForm("vector"),
+        name: "embedding",
+        attrs: { dimensions: "3", embed_from: "title", embed_model: "text-embedding-3-small" },
+      },
+      VECTOR,
+    );
+    expect(body.type).toBe("vector");
+    expect(body.attributes).toMatchObject({
+      dimensions: 3,
+      embed_from: "title",
+      embed_model: "text-embedding-3-small",
+    });
+  });
+
+  it("reads back from `vector(n)` onto the picker's `vector`, with its size", () => {
+    const form = fieldForm(
+      field({
+        name: "embedding",
+        type: "vector(3)",
+        sql_type: "vector(3)",
+        attributes: { embed_from: "title" },
+      }),
+    );
+    expect(form.typeName).toBe("vector");
+    expect(form.attrs.dimensions).toBe("3");
+    expect(form.attrs.embed_from).toBe("title");
+  });
+});
+

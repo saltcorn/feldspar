@@ -212,6 +212,15 @@ pub struct RowQuery {
     /// `predict("…")` of a model over it would read that model's dataset to
     /// compute itself, which would compute the field again, forever.
     pub sql_only: bool,
+    /// The full-text search this read is narrowed by, if any (TODO-agent-skills
+    /// AS1.3). Its match is already in [`filter`](Self::filter) — see
+    /// [`searching`](Self::searching) — and it is kept here so the read can ask
+    /// whether an index answers it before running it.
+    pub search: Option<sc_query::TextSearch>,
+    /// The vector this read is ordered nearest to, if any (TODO-agent-skills
+    /// AS2.4). Unresolved until the read runs — text is embedded then — and
+    /// put first in [`order`](Self::order) by [`crate::vector`].
+    pub nearest: Option<crate::vector::Nearest>,
 }
 
 /// At most `limit` rows for each distinct value of `by`, after skipping
@@ -312,6 +321,22 @@ impl RowQuery {
         self
     }
 
+    /// Narrow the read to the rows matching `search` — built by
+    /// [`crate::search::text_search`], which decides which fields the caller may
+    /// search. Order by [`crate::search::relevance`] for the best match first.
+    pub fn searching(mut self, search: sc_query::TextSearch) -> RowQuery {
+        self.search = Some(search.clone());
+        self.and_filter(Expr::TextMatch(Box::new(search)))
+    }
+
+    /// Order the rows nearest first to `nearest` — the distance comes before
+    /// any other ordering, and an unbounded read is bounded to
+    /// [`DEFAULT_NEAREST`](crate::vector::DEFAULT_NEAREST) rows.
+    pub fn nearest(mut self, nearest: crate::vector::Nearest) -> RowQuery {
+        self.nearest = Some(nearest);
+        self
+    }
+
     /// This query with `extra` ANDed into its filter — how an ownership
     /// predicate joins a caller's own one without either being able to drop the
     /// other.
@@ -331,6 +356,7 @@ pub async fn list_rows_query(
     query: &RowQuery,
     context: Option<&CallerContext>,
 ) -> Result<Json> {
+    let query = &*crate::vector::prepare(catalog, table, query).await?;
     let plan = CalcPlan::of(catalog, table)?;
     let rows = run_read(
         catalog,
@@ -373,6 +399,7 @@ pub async fn list_row_values_in(
     context: Option<&CallerContext>,
     executor: &Executor,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
+    let query = &*crate::vector::prepare(catalog, table, query).await?;
     let plan = CalcPlan::of(catalog, table)?;
     let rows = run_read_in(
         catalog,
@@ -655,6 +682,7 @@ pub async fn create_row_in(
     executor: &Executor,
 ) -> Result<Json> {
     let body = &fill_defaults(catalog, table, body, context.and_then(|c| c.user.as_ref())).await?;
+    let body = &*crate::vector::embed_insert(catalog, table, body).await?;
     let obj = require_object(body)?;
     reject_calc_writes(table, obj)?;
     reject_document_writes(table, obj)?;
@@ -672,7 +700,7 @@ pub async fn create_row_in(
             return Err(not_attachable(key, &value));
         }
         columns.push(key.clone());
-        values.push(Expr::lit(value));
+        values.push(sc_catalog::write_expr(table.field(key), value));
     }
     if columns.is_empty() {
         return Err(Error::invalid("no fields to insert"));
@@ -932,6 +960,13 @@ async fn update_row_unchecked_in(
     reject_calc_writes(table, obj)?;
     let guard = user_rows::and_guard(guard, user_rows::update_guard(table, id, obj, context)?);
     let pk = single_pk(table)?;
+    // An `embed_from` field is computed again when the update changes what its
+    // formula reads (TODO-agent-skills AS2.5).
+    let embedded = crate::vector::embed_update(catalog, table, obj, || {
+        read_row_in(catalog, table, &pk, id, context, executor)
+    })
+    .await?;
+    let obj = &*embedded;
     let mut assignments = Vec::with_capacity(obj.len());
     for (key, json) in obj {
         if key == &pk {
@@ -960,7 +995,10 @@ async fn update_row_unchecked_in(
                 return Err(not_attachable(key, &value));
             }
         }
-        assignments.push(Assignment::new(key.clone(), Expr::lit(value)));
+        assignments.push(Assignment::new(
+            key.clone(),
+            sc_catalog::write_expr(table.field(key), value),
+        ));
     }
     if assignments.is_empty() {
         // Only secrets sent back as their sentinel: nothing changes, and the

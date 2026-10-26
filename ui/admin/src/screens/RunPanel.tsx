@@ -27,7 +27,7 @@ import {
   scopeLabel,
   totalsLabel,
 } from "../runInfo";
-import { Transcript } from "./AgentChat";
+import { Transcript, TranscriptActions } from "./AgentChat";
 import { runTone } from "./WorkflowRuns";
 import { T, useT } from "../i18n";
 
@@ -227,7 +227,10 @@ export function AgentRunDetail({ run, onRefresh }: { run: GetRunResponse; onRefr
           <Card.Header><T text="Transcript" /></Card.Header>
           <Card.Body>
             {entries.length === 0 && <p className="text-secondary mb-0"><T text="Nothing was said." /></p>}
-            <Transcript entries={entries} />
+            {/* Read-only: a run's page shows what was asked, and answers in the chat. */}
+            <TranscriptActions.Provider value={{ runId: run.id, awaitingId: null }}>
+              <Transcript entries={entries} />
+            </TranscriptActions.Provider>
           </Card.Body>
         </Card>
         {/* The loop state as stored — what the transcript above is read out

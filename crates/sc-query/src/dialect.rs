@@ -17,6 +17,7 @@
 
 use sc_error::Result;
 
+use crate::search::{self, Fts5Index, TextSearch, WebQuery};
 use crate::{
     Assignment, BinOp, CaseArm, ColRef, Delete, Expr, InSet, Insert, Join, JoinKind, JsonStep,
     Nulls, OrderBy, OrderDir, Projection, Select, Source, Statement, UnOp, Update, Value,
@@ -66,6 +67,13 @@ pub trait SqlDialect {
     /// default.
     fn row_lock(&self) -> Option<&'static str> {
         Some(" FOR UPDATE")
+    }
+
+    /// The name a function or aggregate is spelled with in this dialect.
+    /// Expressions are built with Postgres's names; a dialect that spells one
+    /// differently maps it here. The name is structural, never user data.
+    fn function_name<'a>(&self, name: &'a str) -> &'a str {
+        name
     }
 
     /// Whether this is SQLite's spelling of SQL. The renderer never asks; the
@@ -510,7 +518,7 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
             Expr::Unary { op, e } => self.unary(*op, e),
             Expr::Func { name, args } => {
                 // The function name is structural (from the AST), not user data.
-                self.push(name);
+                self.push(self.dialect.function_name(name));
                 self.push("(");
                 for (i, a) in args.iter().enumerate() {
                     if i > 0 {
@@ -527,7 +535,7 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                 args,
             } => {
                 // Both the name and (structurally) the shape come from code.
-                self.push(func);
+                self.push(self.dialect.function_name(func));
                 self.push("(");
                 if *distinct {
                     self.push("DISTINCT ");
@@ -643,6 +651,16 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                         "invalid SQL type name in CAST: {type_name:?}"
                     )));
                 }
+                // SQLite has no vector type to cast to: a vector is a blob, and
+                // the driver's function makes one (see `crate::vector`).
+                if self.dialect.is_sqlite()
+                    && let Some(dimensions) = crate::vector::vector_cast_dimensions(type_name)
+                {
+                    self.push("_fd_vector(");
+                    self.expr(expr)?;
+                    self.push(&format!(", {dimensions})"));
+                    return Ok(());
+                }
                 self.push("CAST(");
                 self.expr(expr)?;
                 self.push(" AS ");
@@ -650,7 +668,212 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                 self.push(")");
                 Ok(())
             }
+            Expr::TextMatch(search) => self.text_match(search),
+            Expr::TextRank(search) => self.text_rank(search),
+            Expr::VectorDistance(distance) => self.vector_distance(distance),
         }
+    }
+
+    /// [`Expr::VectorDistance`]: pgvector's `<=>`, or the SQLite driver's
+    /// function over the stored blobs.
+    fn vector_distance(&mut self, d: &crate::VectorDistance) -> Result<()> {
+        if self.dialect.is_sqlite() {
+            self.push("_fd_cosine_distance(");
+            self.expr(&d.column)?;
+            self.push(", ");
+            self.bind(Value::Bytes(crate::vector::vector_blob(&d.to)))?;
+            self.push(")");
+            return Ok(());
+        }
+        self.push("(");
+        self.expr(&d.column)?;
+        self.push(" <=> CAST(");
+        self.bind(Value::Json(crate::vector::vector_json(&d.to)))?;
+        self.push(" AS vector))");
+        Ok(())
+    }
+
+    /// [`Expr::TextMatch`] — see [`crate::search`] for what each backend gets.
+    fn text_match(&mut self, s: &TextSearch) -> Result<()> {
+        let query = WebQuery::parse(&s.phrase);
+        if query.is_empty() {
+            // Nothing to look for matches nothing, as an empty tsquery does.
+            self.push("(1 = 0)");
+            return Ok(());
+        }
+        if !self.dialect.is_sqlite() {
+            let document = search::text_search_document(
+                self.dialect,
+                Some(&s.table),
+                &s.columns,
+                &s.language,
+            )?;
+            self.push("(");
+            self.push(&document);
+            self.push(" @@ ");
+            self.ts_query(s)?;
+            self.push(")");
+            return Ok(());
+        }
+        let Some(index) = &s.fts5 else {
+            return self.like_match(s, &query);
+        };
+        let restrict = fts5_restriction(s, index)?;
+        let mut parts = Vec::new();
+        if let Some(fts) = search::fts5_query(&query, restrict) {
+            parts.push((true, fts));
+        }
+        for fts in search::negative_only_groups(&query, restrict) {
+            parts.push((false, fts));
+        }
+        self.push("(");
+        for (i, (positive, fts)) in parts.into_iter().enumerate() {
+            if i > 0 {
+                self.push(" OR ");
+            }
+            self.ident(&s.table);
+            self.push(".");
+            self.ident(&index.key);
+            self.push(if positive { " IN (" } else { " NOT IN (" });
+            self.push("SELECT rowid FROM ");
+            self.ident(&index.name);
+            self.push(" WHERE ");
+            self.ident(&index.name);
+            self.push(" MATCH ");
+            self.bind(Value::Text(fts))?;
+            self.push(")");
+        }
+        self.push(")");
+        Ok(())
+    }
+
+    /// [`Expr::TextRank`]: `ts_rank` on Postgres, `-bm25` on an FTS5 index, and
+    /// the number of positive terms found on a scan.
+    fn text_rank(&mut self, s: &TextSearch) -> Result<()> {
+        let query = WebQuery::parse(&s.phrase);
+        if !self.dialect.is_sqlite() {
+            let document = search::text_search_document(
+                self.dialect,
+                Some(&s.table),
+                &s.columns,
+                &s.language,
+            )?;
+            self.push("ts_rank(");
+            self.push(&document);
+            self.push(", ");
+            self.ts_query(s)?;
+            self.push(")");
+            return Ok(());
+        }
+        let Some(index) = &s.fts5 else {
+            let positive: Vec<&search::Term> = query
+                .groups
+                .iter()
+                .flatten()
+                .filter(|t| !t.negated)
+                .collect();
+            if positive.is_empty() {
+                self.push("0.0");
+                return Ok(());
+            }
+            self.push("(");
+            for (i, term) in positive.into_iter().enumerate() {
+                if i > 0 {
+                    self.push(" + ");
+                }
+                self.push("CASE WHEN ");
+                self.like_term(s, &term.words)?;
+                self.push(" THEN 1.0 ELSE 0.0 END");
+            }
+            self.push(")");
+            return Ok(());
+        };
+        let restrict = fts5_restriction(s, index)?;
+        let Some(fts) = search::fts5_query(&query, restrict) else {
+            self.push("0.0");
+            return Ok(());
+        };
+        // bm25 is lower-is-better (and negative); negated, a better match is a
+        // bigger number, as `ts_rank`'s is. A row only the exclusions admitted
+        // has no score and ranks as nothing found.
+        self.push("coalesce((SELECT -bm25(");
+        self.ident(&index.name);
+        self.push(") FROM ");
+        self.ident(&index.name);
+        self.push(" WHERE ");
+        self.ident(&index.name);
+        self.push(" MATCH ");
+        self.bind(Value::Text(fts))?;
+        self.push(" AND rowid = ");
+        self.ident(&s.table);
+        self.push(".");
+        self.ident(&index.key);
+        self.push("), 0.0)");
+        Ok(())
+    }
+
+    /// `websearch_to_tsquery(cfg, $n)`, the phrase bound.
+    fn ts_query(&mut self, s: &TextSearch) -> Result<()> {
+        // Validated by `text_search_document`, which every caller renders first.
+        self.push(&format!(
+            "websearch_to_tsquery('{}'::regconfig, ",
+            s.language
+        ));
+        self.bind(Value::Text(s.phrase.clone()))?;
+        self.push(")");
+        Ok(())
+    }
+
+    /// A search with no index to answer it: every term a `LIKE` over the
+    /// columns, grouped as the phrase groups them.
+    fn like_match(&mut self, s: &TextSearch, query: &WebQuery) -> Result<()> {
+        self.push("(");
+        for (g, group) in query.groups.iter().enumerate() {
+            if g > 0 {
+                self.push(" OR ");
+            }
+            self.push("(");
+            for (i, term) in group.iter().enumerate() {
+                if i > 0 {
+                    self.push(" AND ");
+                }
+                if term.negated {
+                    self.push("(NOT ");
+                }
+                self.like_term(s, &term.words)?;
+                if term.negated {
+                    self.push(")");
+                }
+            }
+            self.push(")");
+        }
+        self.push(")");
+        Ok(())
+    }
+
+    /// Whether any of the columns contains `words`.
+    fn like_term(&mut self, s: &TextSearch, words: &[String]) -> Result<()> {
+        if s.columns.is_empty() {
+            return Err(sc_error::Error::query(
+                "a full-text search needs at least one column",
+            ));
+        }
+        let pattern = search::like_pattern(words);
+        self.push("(");
+        for (i, column) in s.columns.iter().enumerate() {
+            if i > 0 {
+                self.push(" OR ");
+            }
+            self.push("coalesce(");
+            self.ident(&s.table);
+            self.push(".");
+            self.ident(column);
+            self.push(", '') LIKE ");
+            self.bind(Value::Text(pattern.clone()))?;
+            self.push(" ESCAPE '\\'");
+        }
+        self.push(")");
+        Ok(())
     }
 
     fn unary(&mut self, op: UnOp, e: &Expr) -> Result<()> {
@@ -703,6 +926,21 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
         self.push(" END");
         Ok(())
     }
+}
+
+/// The columns an FTS5 search is restricted to, or `None` when it is over the
+/// whole index. A column the index does not hold cannot be searched through it.
+fn fts5_restriction<'s>(s: &'s TextSearch, index: &Fts5Index) -> Result<Option<&'s [String]>> {
+    if s.columns == index.columns {
+        return Ok(None);
+    }
+    if let Some(missing) = s.columns.iter().find(|c| !index.columns.contains(c)) {
+        return Err(sc_error::Error::query(format!(
+            "the full-text index `{}` does not hold the column `{missing}`",
+            index.name
+        )));
+    }
+    Ok(Some(&s.columns))
 }
 
 /// The SQL spelling of a binary operator in standard SQL — the default a

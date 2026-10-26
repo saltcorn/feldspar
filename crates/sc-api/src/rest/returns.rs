@@ -193,6 +193,9 @@ fn check(schema: &TypeSchema, value: &Json, at: &str) -> Result<(), String> {
                 // returns a plain number is understood just the same.
                 ValueType::Decimal => value.is_string() || value.is_number(),
                 ValueType::Geometry => value.is_object(),
+                ValueType::Vector => value
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(serde_json::Value::is_number)),
                 ValueType::Text
                 | ValueType::Bytes
                 | ValueType::Uuid

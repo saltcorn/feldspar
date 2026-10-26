@@ -165,6 +165,7 @@ fn constraint_json(constraint: &sc_catalog::TableConstraint) -> Json {
         }
         ConstraintKind::Index { fields, .. } => ("Index", json!({ "field": fields.first() })),
         ConstraintKind::FullTextSearch { .. } => ("Index", json!({ "field": "_fts" })),
+        ConstraintKind::VectorIndex { field } => ("Index", json!({ "field": field })),
         ConstraintKind::Formula { formula } => (
             "Formula",
             json!({ "formula": formula, "errormsg": errormsg }),

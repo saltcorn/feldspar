@@ -28,9 +28,7 @@ export function bucketState(bucket: CreditBucketRow): BucketState {
   return Number(bucket.remaining) > 0 ? "live" : "spent";
 }
 
-/** The badge words and tone for a bucket's state, in the screen's language
- * when it passes its `t`. Every user-facing string in this module takes the
- * same `t`, and is a `t("…")` of its own so the extractor can read it. */
+/** The badge words and tone for a bucket's state. */
 export function bucketStateBadge(
   state: BucketState,
   t: Translator["t"] = format,
@@ -60,7 +58,7 @@ export function entryLabel(entry: CreditEntryRow, t: Translator["t"] = format): 
         ? t("Granted by an admin")
         : t("Granted by {source}", { source: entry.source });
     case "debit": {
-      const what = [entry.agent && t("agent {agent}", { agent: entry.agent }), entry.model]
+      const what = [entry.agent && t("agent {name}", { name: entry.agent }), entry.model]
         .filter(Boolean)
         .join(", ");
       return what ? t("Model call ({what})", { what }) : t("Model call");

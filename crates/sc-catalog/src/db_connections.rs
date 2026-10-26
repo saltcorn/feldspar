@@ -500,6 +500,9 @@ pub async fn dial(catalog: &Catalog, def: &DbConnectionDef) -> Result<Arc<dyn Da
     // Whether it can hold geometry (analytics TODO A5.1): asked, never
     // installed, since the database is someone else's.
     let _ = driver.detect_spatial().await;
+    // And whether it can hold vectors (TODO-agent-skills AS2.2), on the same
+    // terms.
+    let _ = driver.detect_vector().await;
     Ok(driver)
 }
 

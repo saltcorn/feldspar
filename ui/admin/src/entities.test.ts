@@ -7,8 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   configHref,
-  kindLabel,
-  kindLabelPlural,
+  kindLabels,
   matchesFilter,
   recentlyEdited,
   runAction,
@@ -139,6 +138,13 @@ describe("links", () => {
     });
   });
 
+  it("names kinds and Run links in the screen's language when given its t", () => {
+    const shout = (text: string) => text.toUpperCase();
+    expect(kindLabels().trigger).toEqual({ one: "Trigger", many: "Triggers" });
+    expect(kindLabels(shout).file_store).toEqual({ one: "FILE STORE", many: "FILE STORES" });
+    expect(runAction(greet, undefined, shout)).toEqual({ type: "test-run", label: "TEST RUN" });
+  });
+
   it("offers no Run link for an entity that cannot run now", () => {
     expect(runAction({ ...greet, runnable: false })).toBeNull();
   });
@@ -149,11 +155,10 @@ describe("labels in the screen's language", () => {
   // came back bracketed went through `t` — the only way a catalogue can reach it.
   const t = (text: string) => `[${text}]`;
 
-  it("translates a kind's name, singular and plural, and leaves an unknown kind alone", () => {
-    expect(kindLabel("file_store")).toBe("File store");
-    expect(kindLabel("file_store", t)).toBe("[File store]");
-    expect(kindLabelPlural("agent", t)).toBe("[Agents]");
-    expect(kindLabel("widget", t)).toBe("widget");
+  it("translates a kind's name, singular and plural", () => {
+    expect(kindLabels().file_store.one).toBe("File store");
+    expect(kindLabels(t).file_store.one).toBe("[File store]");
+    expect(kindLabels(t).agent.many).toBe("[Agents]");
   });
 
   it("translates the Run link's label", () => {

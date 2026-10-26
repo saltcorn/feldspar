@@ -16,6 +16,7 @@
 pub mod api;
 pub mod app;
 pub mod auth;
+pub mod build_agent;
 pub mod cmdstan;
 pub mod config;
 pub mod db;
@@ -103,12 +104,20 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_llm::bootstrap_llm_providers(&catalog)
         .await
         .context("ensuring the LLM providers table exists")?;
+    sc_mcp::bootstrap_mcp_servers(&catalog)
+        .await
+        .context("ensuring the MCP servers table exists")?;
     sc_agent::bootstrap_agents(&catalog)
         .await
         .context("ensuring the agents table exists")?;
     sc_agent::bootstrap_runs(&catalog)
         .await
         .context("ensuring the runs table exists")?;
+    // Long-term agent memory (TODO-agent-skills AS8.3): a system table with a
+    // full-text constraint, read by the `memory` trait and the admin screen.
+    sc_core_traits::bootstrap_agent_memory(&catalog)
+        .await
+        .context("ensuring the agent memory table exists")?;
     // The Analytics UI's datasets and workspaces (analytics TODO A1). Models
     // bootstrap the datasets table too, because a model's dataset is a row of
     // it; this is for a server whose models are never installed.
@@ -133,6 +142,19 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
         }
         sc_db::SpatialSupport::Unavailable { reason } => {
             eprintln!("feldspar: geometry fields are unavailable: {reason}");
+        }
+    }
+    // Vectors (TODO-agent-skills AS2.2): pgvector on the same terms.
+    match sc_catalog::bootstrap_vector(&catalog)
+        .await
+        .context("looking for pgvector")?
+    {
+        sc_db::VectorSupport::Available { version } if version != "builtin" => {
+            eprintln!("feldspar: pgvector {version}; vector fields are available");
+        }
+        sc_db::VectorSupport::Available { .. } => {}
+        sc_db::VectorSupport::Unavailable { reason } => {
+            eprintln!("feldspar: vector fields are unavailable: {reason}");
         }
     }
     // The TLS settings the selected environment pins (§13.5), before anything

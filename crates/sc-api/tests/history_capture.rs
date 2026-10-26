@@ -432,6 +432,7 @@ async fn the_rename_script_gives_old_entries_changesets() -> Result<()> {
         )
         .await
         .map_err(|e| Error::database(e.to_string()))?;
+    #[allow(clippy::type_complexity)]
     let got: Vec<(String, String, Json, String, Option<String>, Option<i64>)> = rows
         .iter()
         .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5)))

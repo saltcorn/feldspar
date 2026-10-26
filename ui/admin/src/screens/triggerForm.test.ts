@@ -16,6 +16,8 @@ import { actionSpecTable, isStreamEvent } from "./TriggerForm";
 describe("the table an action's settings are read for", () => {
   it("is the chosen table on a row event", () => {
     expect(actionSpecTable("insert", "orders")).toBe("orders");
+    // Fires on either write, and is a table event like each of them.
+    expect(actionSpecTable("insert_or_update", "places")).toBe("places");
     expect(actionSpecTable("update", "orders")).toBe("orders");
     expect(actionSpecTable("delete", "orders")).toBe("orders");
   });
@@ -47,7 +49,7 @@ describe("which kinds name a stream", () => {
     // What this decides is the channel box: a table picker for a table event,
     // the stream picker for this one, and no box at all for the rest.
     expect(isStreamEvent("stream")).toBe(true);
-    for (const kind of ["insert", "update", "delete", "login", "none", "daily", "error", "startup", "often", "hourly", "weekly"]) {
+    for (const kind of ["insert", "update", "insert_or_update", "delete", "login", "none", "daily", "error", "startup", "often", "hourly", "weekly"]) {
       expect(isStreamEvent(kind)).toBe(false);
     }
     // A kind this bundle has never heard of names no stream, rather than

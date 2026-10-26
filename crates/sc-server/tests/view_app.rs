@@ -280,6 +280,7 @@ impl<'e> Run<'e> {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         let result = coding
             .call(&self.config, &format!("{tool}_apps_web"), &args, &mut ctx)

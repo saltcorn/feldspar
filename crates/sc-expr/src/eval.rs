@@ -1386,6 +1386,13 @@ mod tests {
             json!([{ "id": 1, "qty": 2 }, { "id": 2, "qty": 3 }]),
         );
         assert_eq!(ev.eval_value(c).await.unwrap(), json!(5));
+        // An array aggregate: the mapped values themselves.
+        let c = with_relation(
+            call("linesↃorder.map(r => r.qty)", Operation::Read),
+            "linesↃorder",
+            json!([{ "id": 1, "qty": 2 }, { "id": 2, "qty": 3 }]),
+        );
+        assert_eq!(ev.eval_value(c).await.unwrap(), json!([2, 3]));
         // A null-valued expression reads back as JSON null.
         let c = with_row(call("owner", Operation::Read), &[("owner", Value::Null)]);
         assert_eq!(ev.eval_value(c).await.unwrap(), serde_json::Value::Null);

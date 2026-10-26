@@ -921,7 +921,13 @@ pub fn admin_handlers_with(
                 // attribute specs, then the Key/File kinds — one list the field
                 // editor assembles its picker from (§3.4).
                 for basic in schema_edit::basic_field_types() {
-                    out.push(field_type_json(basic.name(), "basic", &[], &ctx.locale));
+                    // A vector's dimensions and embedding are attributes, and
+                    // the only basic type that has any (TODO-agent-skills AS2).
+                    let spec = match basic {
+                        sc_types::BasicType::Vector(_) => sc_types::vector::vector_attributes(),
+                        _ => Vec::new(),
+                    };
+                    out.push(field_type_json(basic.name(), "basic", &spec, &ctx.locale));
                 }
                 for name in registered_rich_types() {
                     let spec = rich_type_config_spec(&name)?;
@@ -1856,6 +1862,11 @@ pub fn admin_handlers_with(
                     })?;
                 let mut model = llm_model_from_body(id, existing.provider_id, &ctx.body)?;
                 model.attributes = existing.attributes.clone();
+                // A body that leaves the kind out keeps it; one that changes it
+                // is refused by the save.
+                if ctx.body.get("kind").is_none_or(Json::is_null) {
+                    model.kind = existing.kind;
+                }
                 // A rename breaks the agents naming it, and losing the default
                 // flag breaks the agents naming no model, so each is refused the
                 // way a delete is. Making *another* model the default is not a
@@ -1908,7 +1919,14 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let backend = ctx.path_param("backend")?;
-                let spec = resolve_options(&catalog, model_config_spec(backend)?).await?;
+                let kind = ctx
+                    .query
+                    .iter()
+                    .find(|(k, _)| k == "kind")
+                    .map_or(Ok(sc_llm::ModelKind::Chat), |(_, v)| {
+                        sc_llm::ModelKind::parse(v)
+                    })?;
+                let spec = resolve_options(&catalog, model_config_spec(backend, kind)?).await?;
                 Ok(HandlerResponse::ok(Json::Array(spec_json(
                     &spec,
                     &ctx.locale,
@@ -2013,10 +2031,18 @@ pub fn admin_handlers_with(
                         ..LlmProviderDef::new("test", &backend)
                     },
                 };
+                let kind =
+                    sc_llm::ModelKind::parse(obj.get("kind").and_then(Json::as_str).unwrap_or(""))?;
                 let model = LlmModelDef {
                     config: model_config,
-                    ..LlmModelDef::new(provider.id, &name)
+                    ..LlmModelDef::new(provider.id, &name).kind(kind)
                 };
+                if kind != sc_llm::ModelKind::Chat {
+                    sc_llm::validate_model_config(&provider.backend, &model)?;
+                    return Ok(HandlerResponse::ok(
+                        test_non_chat_model(&provider, &model).await,
+                    ));
+                }
                 // A structurally wrong config is an ordinary `Err`: it is the
                 // admin's typo, not the provider's answer, and the form should
                 // show it the way it shows a failed save.
@@ -2438,6 +2464,21 @@ pub fn admin_handlers_with(
                 Ok(HandlerResponse::ok(
                     run_json_with_workflow(&catalog, &run, &ctx.locale).await?,
                 ))
+            }
+        }
+    });
+
+    reg.register("getRunPart", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = sc_agent::RunId(parse_uuid(ctx.path_param("id")?, "run")?);
+                let part = parse_uuid(ctx.path_param("part")?, "part")?;
+                let stored = sc_agent::load_display_part(&catalog, id, part)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("run {id} has no part {part}")))?;
+                Ok(HandlerResponse::ok(run_part_json(&stored)))
             }
         }
     });
@@ -4622,7 +4663,13 @@ pub fn admin_handlers_with(
                 // the next restart: an admin ticks "Log SQL" precisely because
                 // something is happening in the server they are looking at, and
                 // a switch that needed a restart would have thrown that away.
-                development.apply();
+                // Only a save that names one of them moves them: a save of
+                // another section has nothing to say about the process's logging.
+                if values.contains_key(sc_config::LOG_SQL)
+                    || values.contains_key(sc_config::LOG_VERBOSITY)
+                {
+                    development.apply();
+                }
                 // And the enabled locales move now too, for the same reason:
                 // an admin who has just turned French on reloads the page to
                 // see it, not the server.
@@ -5172,7 +5219,15 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let apps = list_applications(&catalog).await?;
-                let out: Vec<Json> = apps.iter().map(application_api_json).collect();
+                let hosts = sc_app::list_build_hosts(&catalog).await?;
+                let out: Vec<Json> = apps
+                    .iter()
+                    .map(|app| {
+                        let mut body = application_api_json(app);
+                        builds_on_hosts(&mut body, &hosts);
+                        body
+                    })
+                    .collect();
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
         }
@@ -6392,12 +6447,41 @@ pub fn admin_handlers_with(
                     .await?
                     .ok_or_else(|| Error::not_found(format!("no application with id {id}")))?;
                 let spec = sc_app::app_target_spec(&app, &target)?;
-                // A machine without the toolchain is told so now, as a refusal,
-                // rather than by a job that fails minutes into an install.
-                sc_app::require_target_ready(&spec)?;
                 let store = app_source_from_config(&app.framework)?.store.0;
                 let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
                 let log_path = sc_app::target_log_path(&spec, &stamp);
+                // What this server cannot build goes to a build host that can,
+                // as a job it asks for (`TODO-build-hosts.md` B2.2).
+                if !sc_app::app_target_readiness(&app, &target)?.is_ready() {
+                    let hosts = sc_app::list_build_hosts(&catalog).await?;
+                    if sc_app::host_for_target(&hosts, &spec.name, chrono::Utc::now()).is_some() {
+                        let _queueing = sc_app::lock_build_queue().await;
+                        if let Some(open) = sc_app::latest_build_job(&catalog, id.0, &spec.name)
+                            .await?
+                            .filter(|j| j.state.is_open())
+                        {
+                            return Ok(HandlerResponse::ok(remote_job_json(&open)));
+                        }
+                        // A build host never generates code: the client and
+                        // runtime are written here before the job is queued.
+                        sc_app::prepare_remote_target(&catalog, &app, apps.triggers()).await?;
+                        let job = sc_app::queue_build_job(
+                            &catalog,
+                            sc_app::QueuedJob {
+                                application: id.0,
+                                target: &spec.name,
+                                label: &spec.label,
+                                store: &store,
+                                log_path: &log_path,
+                            },
+                        )
+                        .await?;
+                        return Ok(HandlerResponse::ok(remote_job_json(&job)));
+                    }
+                }
+                // A machine without the toolchain is told so now, as a refusal,
+                // rather than by a job that fails minutes into an install.
+                sc_app::require_target_ready(&spec)?;
                 // Owned, because `spec` moves into the build below.
                 let (name, label) = (spec.name.clone(), spec.label.clone());
                 let job = crate::target_builds::NewJob {
@@ -6483,22 +6567,32 @@ pub fn admin_handlers_with(
     // The latest build of a target: what the UI polls while one runs, and asks
     // after a reload to pick up a build that is still going.
     reg.register("getApplicationTargetBuild", {
+        let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
+            let catalog = catalog.clone();
             let apps = apps.clone();
             async move {
                 let id = parse_app_id(ctx.path_param("id")?)?;
                 let target = ctx.path_param("target")?;
-                let job = apps
-                    .target_builds()
-                    .get(&id.to_string(), target)
-                    .ok_or_else(|| {
-                        Error::not_found(format!(
+                // Report whichever build started last: the one on this server or
+                // the one on a build host.
+                let local = apps.target_builds().get(&id.to_string(), target);
+                let remote = sc_app::latest_build_job(&catalog, id.0, target).await?;
+                let body = match (local, remote) {
+                    (Some(local), Some(remote)) if remote.created_at > local.started_at => {
+                        remote_job_json(&remote)
+                    }
+                    (Some(local), _) => target_job_json(&local),
+                    (None, Some(remote)) => remote_job_json(&remote),
+                    (None, None) => {
+                        return Err(Error::not_found(format!(
                             "`{target}` has not been built for this application since the \
                              server started"
-                        ))
-                    })?;
-                Ok(HandlerResponse::ok(target_job_json(&job)))
+                        )));
+                    }
+                };
+                Ok(HandlerResponse::ok(body))
             }
         }
     });
@@ -7208,11 +7302,93 @@ pub fn admin_handlers_with(
         }
     });
 
+    // --- build hosts (`TODO-build-hosts.md`) ---------------------------------
+    //
+    // The registry a Mac is added to as a build host. Its agent talks to
+    // `/build-agent/*` (`crate::build_agent`) with the token `createBuildHost`
+    // answers once; every decision about that token is `sc_app::build_hosts`'s.
+
+    reg.register("listBuildHosts", {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let now = chrono::Utc::now();
+                let out: Vec<Json> = sc_app::list_build_hosts(&catalog)
+                    .await?
+                    .iter()
+                    .map(|host| build_host_json(host, now))
+                    .collect();
+                Ok(HandlerResponse::ok(Json::Array(out)))
+            }
+        }
+    });
+
+    reg.register("createBuildHost", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let obj = require_object(&ctx.body)?;
+                let (host, token) = sc_app::add_build_host(
+                    &catalog,
+                    str_field(obj, "name")?,
+                    &string_array_field(obj, "targets")?,
+                )
+                .await?;
+                Ok(HandlerResponse::ok(json!({
+                    "host": build_host_json(&host, chrono::Utc::now()),
+                    "token": token,
+                }))
+                .with_status(201))
+            }
+        }
+    });
+
+    reg.register("updateBuildHost", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_build_host_id(ctx.path_param("id")?)?;
+                let obj = require_object(&ctx.body)?;
+                let host = sc_app::update_build_host(
+                    &catalog,
+                    id,
+                    str_field(obj, "name")?,
+                    &string_array_field(obj, "targets")?,
+                )
+                .await?
+                .ok_or_else(|| Error::not_found(format!("there is no build host `{id}`")))?;
+                Ok(HandlerResponse::ok(build_host_json(
+                    &host,
+                    chrono::Utc::now(),
+                )))
+            }
+        }
+    });
+
+    reg.register("deleteBuildHost", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_build_host_id(ctx.path_param("id")?)?;
+                let deleted = sc_app::delete_build_host(&catalog, id).await?;
+                Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
+            }
+        }
+    });
+
     // --- the Analytics UI (analytics TODO A1.13) -----------------------------
     crate::analytics::register(&mut reg, catalog.clone());
     crate::public_datasets::register(&mut reg, catalog.clone(), fetch);
     // --- the home page's entities list ----------------------------------------
     crate::entities::register(&mut reg, catalog.clone(), apps.clone());
+    // --- remote MCP servers an agent calls (TODO-agent-skills AS4) -----------
+    crate::mcp_servers::register(&mut reg, catalog.clone());
+    // --- what agents remember (TODO-agent-skills AS8.3) ----------------------
+    crate::agent_memory::register(&mut reg, catalog.clone());
 
     reg
 }
@@ -7281,6 +7457,13 @@ pub(crate) fn constraint_json(constraint: &TableConstraint) -> Json {
         ConstraintKind::Formula { formula } => {
             (Vec::new(), None, None, None, Some(formula.clone()))
         }
+        ConstraintKind::VectorIndex { field } => (
+            vec![field.clone()],
+            None,
+            Some(sc_catalog::VECTOR_INDEX_METHOD.to_owned()),
+            None,
+            None,
+        ),
     };
     json!({
         "name": constraint.name,
@@ -7324,10 +7507,21 @@ fn constraint_from_body(obj: &Map<String, Json>) -> Result<(String, TableConstra
         "formula" => ConstraintKind::Formula {
             formula: non_empty_str_field(obj, "formula")?.trim().to_owned(),
         },
+        "vector_index" => {
+            let fields = string_array(obj, "fields")?;
+            let [field] = fields.as_slice() else {
+                return Err(Error::invalid(
+                    "a vector index is over one vector field: give `fields` as [\"<field>\"]",
+                ));
+            };
+            ConstraintKind::VectorIndex {
+                field: field.clone(),
+            }
+        }
         other => {
             return Err(Error::invalid(format!(
                 "`{other}` is not a constraint type; it is one of `unique`, `index`, \
-                 `full_text_search` or `formula`"
+                 `full_text_search`, `vector_index` or `formula`"
             )));
         }
     };
@@ -7611,6 +7805,7 @@ pub(crate) fn application_json(app: &Application) -> Json {
                     "readiness": {
                         "ready": readiness.is_ready(),
                         "missing": readiness.missing,
+                        "from_environment": readiness.from_environment,
                     },
                 })
             })
@@ -7902,7 +8097,7 @@ async fn create_builder_agent(
     if !list_llm_models(catalog, &provider)
         .await?
         .iter()
-        .any(|m| m.is_default)
+        .any(|m| m.is_default && m.kind == sc_llm::ModelKind::Chat)
     {
         return Err(Error::config(format!(
             "LLM provider `{}` has no default model, so the `{}` agent that builds this \
@@ -8786,12 +8981,13 @@ pub(crate) fn backup_file_meta_from_json(value: &Json) -> Result<(String, FileMe
 
 /// The table a trigger fires on, or `None` when it is not a table event.
 ///
-/// The channel *is* the table for `insert`/`update`/`delete` and is something
+/// The channel *is* the table for `insert`/`update`/`delete` (and
+/// `insert_or_update`) and is something
 /// else entirely for a channel-based or scheduled trigger, so the distinction is
 /// made once, here, rather than at each place that needs to ask.
 pub(crate) fn trigger_table(trigger: &Trigger) -> Option<&str> {
     match trigger.when {
-        EventKind::Insert | EventKind::Update | EventKind::Delete => trigger.channel.as_deref(),
+        when if when.is_table_event() => trigger.channel.as_deref(),
         _ => None,
     }
 }
@@ -9216,6 +9412,48 @@ async fn require_provider_by_id(catalog: &Catalog, raw: &str) -> Result<LlmProvi
         .ok_or_else(|| Error::not_found(format!("no LLM provider with id {}", id.0)))
 }
 
+/// *Test* for a non-chat model (TODO-agent-skills AS3.1): embed or speak one
+/// word, and say what came back. An image model is not tested, since every
+/// test would generate (and bill) an image.
+async fn test_non_chat_model(provider: &LlmProviderDef, model: &LlmModelDef) -> Json {
+    let prices = serde_json::to_value(model.prices()).unwrap_or(Json::Null);
+    let outcome = match model.kind {
+        sc_llm::ModelKind::Embedding => sc_llm::embed(provider, model, &["ok".to_owned()])
+            .await
+            .map(|e| {
+                format!(
+                    "a vector of {} dimensions",
+                    e.vectors.first().map_or(0, Vec::len)
+                )
+            }),
+        sc_llm::ModelKind::Speech => {
+            sc_llm::speak(provider, model, &sc_llm::SpeechRequest::new("ok"))
+                .await
+                .map(|s| format!("{} bytes of {} audio", s.bytes.len(), s.format))
+        }
+        _ => Err(Error::invalid(
+            "an image model is not tested here, since each test would generate (and bill) \
+             an image; it is checked the first time it is used",
+        )),
+    };
+    match outcome {
+        Ok(message) => json!({
+            "ok": true,
+            "message": message,
+            "model": model.name,
+            "capabilities": Json::Null,
+            "prices": prices,
+        }),
+        Err(e) => json!({
+            "ok": false,
+            "message": sc_error::format_causes(&e),
+            "model": model.name,
+            "capabilities": Json::Null,
+            "prices": prices,
+        }),
+    }
+}
+
 /// A model row as the API returns it (matching `llm_model_schema`): the row,
 /// plus the capabilities and prices it resolves to on its provider's backend.
 pub(crate) fn llm_model_json(provider: &LlmProviderDef, model: &LlmModelDef) -> Json {
@@ -9224,9 +9462,15 @@ pub(crate) fn llm_model_json(provider: &LlmProviderDef, model: &LlmModelDef) -> 
         "provider_id": model.provider_id.0,
         "name": model.name,
         "description": model.description,
+        "kind": model.kind.as_str(),
         "is_default": model.is_default,
         "config": Json::Object(model.config.clone()),
-        "capabilities": serde_json::to_value(model.capabilities(&provider.backend)).unwrap_or(Json::Null),
+        // Only a chat model has capabilities: the loop's to know.
+        "capabilities": if model.kind == sc_llm::ModelKind::Chat {
+            serde_json::to_value(model.capabilities(&provider.backend)).unwrap_or(Json::Null)
+        } else {
+            Json::Null
+        },
         "prices": serde_json::to_value(model.prices()).unwrap_or(Json::Null),
     })
 }
@@ -9247,6 +9491,7 @@ pub(crate) fn llm_model_from_body(
             .and_then(Json::as_str)
             .unwrap_or("")
             .to_owned(),
+        kind: sc_llm::ModelKind::parse(obj.get("kind").and_then(Json::as_str).unwrap_or(""))?,
         is_default: obj
             .get("is_default")
             .and_then(Json::as_bool)
@@ -9778,6 +10023,22 @@ fn run_json(run: &sc_agent::Run) -> Json {
     out
 }
 
+/// A stored display part (matching `run_part_schema`), its bytes in base64.
+pub(crate) fn run_part_json(stored: &sc_agent::StoredPart) -> Json {
+    use base64::Engine as _;
+    json!({
+        "id": stored.reference.id,
+        "kind": stored.reference.kind,
+        "mime_type": stored.reference.mime_type,
+        "summary": stored.reference.summary,
+        "data": stored.data,
+        "content_base64": stored
+            .content
+            .as_ref()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+    })
+}
+
 /// A planner run's plan (matching `run_plan_schema`), every field present.
 fn run_plan_json(plan: &sc_core_traits::Plan) -> Json {
     let word = |value: Json| value.as_str().unwrap_or_default().to_owned();
@@ -10052,7 +10313,9 @@ async fn agents_using_model(
                 named.provider.trim() == provider.name.trim()
                     && match named.model.as_deref() {
                         Some(name) => by_name && name == model.name,
-                        None => by_default && model.is_default,
+                        None => {
+                            by_default && model.is_default && model.kind == sc_llm::ModelKind::Chat
+                        }
                     }
             })
         })
@@ -10466,6 +10729,24 @@ fn api_token_json(token: &sc_auth::ApiToken) -> Json {
     })
 }
 
+/// A build host as the admin API answers it (`build_host_schema`).
+fn build_host_json(host: &sc_app::BuildHost, now: chrono::DateTime<chrono::Utc>) -> Json {
+    json!({
+        "id": host.id,
+        "name": host.name,
+        "targets": host.targets,
+        "created_at": host.created_at,
+        "last_seen_at": host.last_seen_at,
+        "online": host.is_online(now),
+        "report": host.report,
+    })
+}
+
+fn parse_build_host_id(raw: &str) -> Result<uuid::Uuid> {
+    uuid::Uuid::parse_str(raw)
+        .map_err(|_| Error::invalid(format!("`{raw}` is not a valid build host id")))
+}
+
 fn parse_api_token_id(raw: &str) -> Result<uuid::Uuid> {
     uuid::Uuid::parse_str(raw)
         .map_err(|_| Error::invalid(format!("`{raw}` is not a valid API token id")))
@@ -10627,7 +10908,50 @@ fn target_job_json(job: &crate::target_builds::TargetJob) -> Json {
         "size": job.artifact.as_ref().map(|a| a.size),
         "log": job.artifact.as_ref().map(|a| a.log.clone()),
         "error": job.error,
+        "build_host": Json::Null,
     })
+}
+
+/// A build host's job in the shape of [`target_job_json`], with its host.
+fn remote_job_json(job: &sc_app::BuildJob) -> Json {
+    json!({
+        "target": job.target,
+        "label": job.label,
+        "status": job.state.as_str(),
+        "store": job.store,
+        "log_path": job.log_path,
+        "started_at": job.started_at.unwrap_or(job.created_at).to_rfc3339(),
+        "finished_at": job.finished_at.map(|t| t.to_rfc3339()),
+        "artifact": job.artifact,
+        "size": job.size,
+        "log": job.log,
+        "error": job.error,
+        "build_host": job.host_name,
+    })
+}
+
+/// For each target of a listed application that this server can't build, check
+/// whether a build host can. If one can, mark the target ready and name the host.
+fn builds_on_hosts(body: &mut Json, hosts: &[sc_app::BuildHost]) {
+    let now = chrono::Utc::now();
+    let Some(targets) = body.get_mut("targets").and_then(Json::as_array_mut) else {
+        return;
+    };
+    for target in targets {
+        let name = target["name"].as_str().unwrap_or_default().to_owned();
+        let readiness = &mut target["readiness"];
+        if readiness["ready"] == json!(true) {
+            continue;
+        }
+        if let Some(host) = sc_app::host_for_target(hosts, &name, now) {
+            *readiness = json!({
+                "ready": true,
+                "missing": [],
+                "from_environment": [],
+                "build_host": host.name,
+            });
+        }
+    }
 }
 
 /// A stored identity provider as the Authentication tab lists it: the client
@@ -11631,12 +11955,27 @@ fn form_field_json(field: &FormField) -> Json {
         "sublabel": field.sublabel,
         "pattern": field.pattern,
         "pattern_error": field.pattern_error,
+        "env_fallback": env_fallback_json(field),
         "show_if": field
             .show_if
             .iter()
             .map(|c| json!({ "name": c.setting, "values": c.allowed }))
             .collect::<Vec<_>>(),
     })
+}
+
+/// The variable a blank `field` leaves the job to, with its value in the
+/// server's environment now (null when unset). A secret's value is not shown.
+fn env_fallback_json(field: &FormField) -> Json {
+    let Some(name) = &field.env_fallback else {
+        return Json::Null;
+    };
+    let value = std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let value = match value {
+        Some(_) if field.secret => Some(sc_types::SECRET_SENTINEL.to_owned()),
+        value => value,
+    };
+    json!({ "name": name, "value": value })
 }
 
 /// An [`Operation`] as the API returns it (matching `operation_schema`): what a

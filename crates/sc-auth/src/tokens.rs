@@ -629,9 +629,16 @@ async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
 /// Base64url rather than hex because this is retyped and pasted rather than read
 /// out, and unpadded because a `=` in a shell command is a thing to quote.
 fn new_token() -> String {
+    new_bearer_secret(TOKEN_PREFIX)
+}
+
+/// Make a new random token that starts with `prefix`, in the same way as an
+/// API token. Used for other tokens that are stored only as a hash, such as a
+/// build host's.
+pub fn new_bearer_secret(prefix: &str) -> String {
     let mut bytes = [0u8; TOKEN_BYTES];
     OsRng.fill_bytes(&mut bytes);
-    format!("{TOKEN_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+    format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
 /// What the database stores in place of the token: its SHA-256, hex-encoded.
@@ -639,7 +646,13 @@ fn new_token() -> String {
 /// The whole presented string is hashed, prefix included: what is checked is
 /// what arrived.
 fn token_hash(token: &str) -> String {
-    let digest = Sha256::digest(token.as_bytes());
+    bearer_secret_hash(token)
+}
+
+/// The hash that is stored instead of the token itself (SHA-256, as hex), the
+/// same as for an API token.
+pub fn bearer_secret_hash(secret: &str) -> String {
+    let digest = Sha256::digest(secret.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 

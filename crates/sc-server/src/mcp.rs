@@ -75,7 +75,7 @@ use std::time::Instant;
 
 use axum::body::Bytes;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use sc_api::mcp::{
     AdminTool, Area, Projection, ToolContext, ToolSet, areas_from_attrs, check_caller,
@@ -117,9 +117,6 @@ pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// The name this server introduces itself by in `initialize`.
 pub const MCP_SERVER_NAME: &str = "saltcorn-feldspar-admin";
-
-/// The header a bearer credential arrives in, and the scheme it must use.
-const BEARER_PREFIX: &str = "Bearer ";
 
 // --- JSON-RPC error codes ---------------------------------------------------
 // The standard four, plus the one MCP reserves for authorization. A tool that
@@ -214,7 +211,7 @@ pub(crate) async fn mcp(State(state): State<AppState>, request: Request) -> Resp
 
     // (4) The credential, and *only* the credential: any session cookie on this
     // request is ignored rather than accepted (module docs).
-    let presented = match bearer_token(&headers) {
+    let presented = match crate::security::bearer_token(&headers) {
         Some(token) => token,
         None => {
             return json_rpc_error(
@@ -749,12 +746,6 @@ impl sc_catalog::AdminHost for AdminHandlers {
     }
 }
 
-pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let token = value.strip_prefix(BEARER_PREFIX)?.trim();
-    (!token.is_empty()).then(|| token.to_owned())
-}
-
 /// Whether the peer is on this machine. An unknown peer is not.
 fn is_loopback(peer: Option<ConnectInfo<SocketAddr>>) -> bool {
     peer.is_some_and(|ConnectInfo(addr)| addr.ip().is_loopback())
@@ -800,40 +791,6 @@ fn json_rpc_error(status: StatusCode, id: Json, code: i64, message: impl Into<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
-
-    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
-        let mut map = HeaderMap::new();
-        for (name, value) in pairs {
-            map.insert(
-                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
-                HeaderValue::from_str(value).unwrap(),
-            );
-        }
-        map
-    }
-
-    #[test]
-    fn only_a_bearer_credential_is_read_and_a_cookie_never_is() {
-        assert_eq!(
-            bearer_token(&headers(&[("authorization", "Bearer fspk_abc")])).as_deref(),
-            Some("fspk_abc")
-        );
-        // A session cookie is not a credential on this route, whatever it says.
-        assert_eq!(
-            bearer_token(&headers(&[("cookie", "sc_session=live")])),
-            None
-        );
-        // Nor is another scheme, nor an empty token.
-        assert_eq!(
-            bearer_token(&headers(&[("authorization", "Basic dXNlcjpwdw==")])),
-            None
-        );
-        assert_eq!(
-            bearer_token(&headers(&[("authorization", "Bearer  ")])),
-            None
-        );
-    }
 
     #[test]
     fn an_unknown_peer_is_treated_as_remote() {

@@ -15,7 +15,7 @@ use std::sync::{Arc, RwLock};
 
 use sc_db::{
     DatabaseDriver, DbCapabilities, DescribedColumn, PhysicalTable, RowStream, SchemaChange,
-    SpatialSupport, Transaction,
+    SpatialSupport, Transaction, VectorSupport,
 };
 use sc_error::{Error, Result};
 use sc_query::{SqlDialect, Statement};
@@ -48,6 +48,9 @@ pub struct PgDriver {
     /// Whether the database has PostGIS, as last found out (see
     /// [`sc_db::SpatialSupport`]). Shared, so a clone answers the same.
     spatial: Arc<RwLock<SpatialSupport>>,
+    /// Whether the database has pgvector, as last found out (see
+    /// [`sc_db::VectorSupport`]). Shared, so a clone answers the same.
+    vector: Arc<RwLock<VectorSupport>>,
 }
 
 /// What an admin types to reach another Postgres database (§9's Connections
@@ -84,6 +87,9 @@ impl PgDriver {
             schema: None,
             spatial: Arc::new(RwLock::new(SpatialSupport::Unavailable {
                 reason: "PostGIS has not been looked for in this database yet".to_owned(),
+            })),
+            vector: Arc::new(RwLock::new(VectorSupport::Unavailable {
+                reason: "pgvector has not been looked for in this database yet".to_owned(),
             })),
         }
     }
@@ -280,6 +286,37 @@ impl PgDriver {
         }
     }
 
+    /// Whether the database has pgvector, as last found out.
+    pub fn vector(&self) -> VectorSupport {
+        self.vector
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_else(|e| e.into_inner().clone())
+    }
+
+    /// Ask the database whether it has pgvector, and remember the answer.
+    pub async fn detect_vector(&self) -> Result<VectorSupport> {
+        let client = self.client().await?;
+        let found = crate::pgvector::detect(&client).await?;
+        self.remember_vector(&found);
+        Ok(found)
+    }
+
+    /// Install pgvector where the role may, and remember the answer.
+    pub async fn enable_vector(&self) -> Result<VectorSupport> {
+        let client = self.client().await?;
+        let found = crate::pgvector::enable(&client).await?;
+        self.remember_vector(&found);
+        Ok(found)
+    }
+
+    fn remember_vector(&self, found: &VectorSupport) {
+        match self.vector.write() {
+            Ok(mut s) => *s = found.clone(),
+            Err(e) => *e.into_inner() = found.clone(),
+        }
+    }
+
     /// Check out a pooled connection.
     async fn client(&self) -> Result<Object> {
         self.pool
@@ -342,5 +379,17 @@ impl DatabaseDriver for PgDriver {
 
     async fn enable_spatial(&self) -> Result<SpatialSupport> {
         PgDriver::enable_spatial(self).await
+    }
+
+    fn vector(&self) -> VectorSupport {
+        PgDriver::vector(self)
+    }
+
+    async fn detect_vector(&self) -> Result<VectorSupport> {
+        PgDriver::detect_vector(self).await
+    }
+
+    async fn enable_vector(&self) -> Result<VectorSupport> {
+        PgDriver::enable_vector(self).await
     }
 }

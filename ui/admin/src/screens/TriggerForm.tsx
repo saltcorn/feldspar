@@ -61,35 +61,41 @@ const EVENT_KINDS: {
    * save, so offering it would be offering a field that cannot be saved. */
   timing: TimingField[];
 }[] = [
-    { value: "insert", label: "A row is inserted", table: true, timing: [] },
-    { value: "update", label: "A row is updated", table: true, timing: [] },
-    { value: "delete", label: "A row is deleted", table: true, timing: [] },
-    {
-      value: "none",
-      label: "Only when something asks (no event)",
-      table: false,
-      timing: [],
-    },
-    { value: "login", label: "A user signs in", table: false, timing: [] },
-    { value: "startup", label: "The server starts up", table: false, timing: [] },
-    { value: "error", label: "An error is reported", table: false, timing: [] },
-    { value: "often", label: "Every five minutes", table: false, timing: [] },
-    { value: "hourly", label: "Once an hour", table: false, timing: ["minute"] },
-    { value: "daily", label: "Once a day", table: false, timing: ["hour", "minute"] },
-    {
-      value: "weekly",
-      label: "Once a week",
-      table: false,
-      timing: ["day_of_week", "hour", "minute"],
-    },
-    {
-      value: "stream",
-      label: "An element arrives on a stream",
-      table: false,
-      stream: true,
-      timing: [],
-    },
-  ];
+  { value: "insert", label: "A row is inserted", table: true, timing: [] },
+  { value: "update", label: "A row is updated", table: true, timing: [] },
+  {
+    value: "insert_or_update",
+    label: "A row is inserted or updated",
+    table: true,
+    timing: [],
+  },
+  { value: "delete", label: "A row is deleted", table: true, timing: [] },
+  {
+    value: "none",
+    label: "Only when something asks (no event)",
+    table: false,
+    timing: [],
+  },
+  { value: "login", label: "A user signs in", table: false, timing: [] },
+  { value: "startup", label: "The server starts up", table: false, timing: [] },
+  { value: "error", label: "An error is reported", table: false, timing: [] },
+  { value: "often", label: "Every five minutes", table: false, timing: [] },
+  { value: "hourly", label: "Once an hour", table: false, timing: ["minute"] },
+  { value: "daily", label: "Once a day", table: false, timing: ["hour", "minute"] },
+  {
+    value: "weekly",
+    label: "Once a week",
+    table: false,
+    timing: ["day_of_week", "hour", "minute"],
+  },
+  {
+    value: "stream",
+    label: "An element arrives on a stream",
+    table: false,
+    stream: true,
+    timing: [],
+  },
+];
 
 /** The three timing inputs a periodic trigger can have. */
 type TimingField = "minute" | "hour" | "day_of_week";

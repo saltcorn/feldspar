@@ -1311,10 +1311,14 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          \n\
          - **A chat**: `src/useAgentChat.ts` is a starting point — \
          `const chat = useAgentChat(api.agents.helpdesk)` gives `messages`, \
-         `status`, `send(text)`, `stop()`, the conversation's `run` id, and \
-         `load(id)` to reopen one from `api.agents.helpdesk.runs.list()`. A \
-         message is a list of `parts` (`text`, `reasoning`, `tool`, `error`); draw \
-         them as this app needs. Under it, `chat(message, {{ run, signal }})` \
+         `status`, `send(text, controls?)`, `answer(requestId, value)`, `stop()`, \
+         the conversation's `run` id, and `load(id)` to reopen one from \
+         `api.agents.helpdesk.runs.list()`. A message is a list of `parts` \
+         (`text`, `reasoning`, `tool`, `display`, `request`, `error`); draw them as \
+         this app needs. A `request` part is a question the agent waits on, answered \
+         with `answer`; a `display` part is rows, an image or audio a tool showed the \
+         person, at `runs.partUrl(run, part.id)`; `controls()` lists the selects and \
+         buttons the agent adds to the input row. Under it, `chat(message, {{ run, signal }})` \
          streams events (`run`, `text`, `reasoning`, `tool_call`, `tool_result`, \
          `error`, `done`) and `applyAgentEvent(messages, event)` folds one in. \
          Aborting the `signal` stops the agent.\n\
@@ -1437,13 +1441,22 @@ const USE_AGENT_CHAT_TS: &str = r#"// A conversation with one of this applicatio
 // scaffold: it is yours to change — the transcript's shape, how errors show,
 // whether a new conversation starts on mount.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyAgentEvent, userMessage, type AgentChatApi, type AgentMessage } from "./feldspar/helper";
+import {
+  applyAgentEvent,
+  userMessage,
+  type AgentChatApi,
+  type AgentEvent,
+  type AgentMessage,
+} from "./feldspar/helper";
 
 export type AgentChatStatus = "idle" | "loading" | "streaming" | "error";
 
 /** `useAgentChat(api.agents.helpdesk)`: the messages of one conversation, and
- * `send` / `stop` / `load` to drive it. `initialRun` reopens a conversation
- * from `api.agents.helpdesk.runs.list()`. */
+ * `send` / `answer` / `stop` / `load` to drive it. `initialRun` reopens a
+ * conversation from `api.agents.helpdesk.runs.list()`. A message part of type
+ * `request` is a question the agent is waiting on: `answer(request.id, value)`.
+ * A part of type `display` is something a tool showed the person: an image's
+ * `src` is `agent.runs.partUrl(run, part.id)`. */
 export function useAgentChat(agent: AgentChatApi, initialRun?: string) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [run, setRun] = useState<string | undefined>(initialRun);
@@ -1480,40 +1493,57 @@ export function useAgentChat(agent: AgentChatApi, initialRun?: string) {
   // Leaving the page stops the agent rather than leaving it answering nobody.
   useEffect(() => () => turn.current?.abort(), []);
 
-  /** Say `text`, and stream the agent's answer into `messages`. */
-  const send = useCallback(
-    async (text: string) => {
-      if (!text.trim() || turn.current) return;
-      const controller = new AbortController();
-      turn.current = controller;
-      setError(null);
-      setStatus("streaming");
-      setMessages((m) => [...m, userMessage(text)]);
-      try {
-        for await (const event of agent.chat(text, { run, signal: controller.signal })) {
-          if (event.type === "run") setRun(event.run);
-          if (event.type === "error") setError(event.message);
-          setMessages((m) => applyAgentEvent(m, event));
-        }
-        setStatus("idle");
-      } catch (e) {
-        if (controller.signal.aborted) {
-          setStatus("idle");
-        } else {
-          setError(e instanceof Error ? e.message : String(e));
-          setStatus("error");
-        }
-      } finally {
-        turn.current = null;
+  /** Stream one turn's events into `messages`. */
+  const stream = useCallback(async (start: (signal: AbortSignal) => AsyncGenerator<AgentEvent>) => {
+    const controller = new AbortController();
+    turn.current = controller;
+    setError(null);
+    setStatus("streaming");
+    try {
+      for await (const event of start(controller.signal)) {
+        if (event.type === "run") setRun(event.run);
+        if (event.type === "error") setError(event.message);
+        setMessages((m) => applyAgentEvent(m, event));
       }
+      setStatus("idle");
+    } catch (e) {
+      if (controller.signal.aborted) {
+        setStatus("idle");
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus("error");
+      }
+    } finally {
+      turn.current = null;
+    }
+  }, []);
+
+  /** Say `text` — with the values of the agent's composer controls, if it has
+   * any (`agent.controls()`) — and stream the agent's answer into `messages`. */
+  const send = useCallback(
+    async (text: string, controls?: Record<string, unknown>) => {
+      if (!text.trim() || turn.current) return;
+      setMessages((m) => [...m, userMessage(text)]);
+      await stream((signal) => agent.chat(text, { run, signal, controls }));
     },
-    [agent, run],
+    [agent, run, stream],
+  );
+
+  /** Answer the question the agent is waiting on, as the next turn. */
+  const answer = useCallback(
+    async (requestId: string, value: unknown) => {
+      if (!run || turn.current) return;
+      const shown = typeof value === "string" ? value : JSON.stringify(value);
+      setMessages((m) => [...m, userMessage(shown)]);
+      await stream((signal) => agent.answer(requestId, value, { run, signal }));
+    },
+    [agent, run, stream],
   );
 
   /** Stop the agent's answer where it is. */
   const stop = useCallback(() => turn.current?.abort(), []);
 
-  return { messages, run, status, error, send, stop, load };
+  return { messages, run, status, error, send, answer, stop, load };
 }
 "#;
 

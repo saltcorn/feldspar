@@ -108,10 +108,19 @@ async fn declared_tables_are_created_once_and_a_second_sync_changes_nothing() ->
     assert!(first.issues.is_empty(), "{:?}", first.issues);
     assert_eq!(
         first.tables_created,
-        ["mail_accounts", "mail_folders", "mail_messages", "mail_attachments"]
+        [
+            "mail_accounts",
+            "mail_folders",
+            "mail_messages",
+            "mail_attachments"
+        ]
     );
     let accounts = cat.require("mail_accounts")?;
-    assert_eq!(accounts.primary_key, ["id"], "every module table is keyed by `id`");
+    assert_eq!(
+        accounts.primary_key,
+        ["id"],
+        "every module table is keyed by `id`"
+    );
     assert_eq!(accounts.label, "Mail accounts");
     assert!(accounts.field("imap_password").unwrap().is_secret());
     assert!(
@@ -208,7 +217,10 @@ async fn an_upgrade_adds_fields_keeps_the_admins_and_reports_a_changed_type() ->
     let report = sync(&cat, MODULE, &v2, &ModuleTables::new()).await;
     assert_eq!(report.fields_added, ["mail_folders.last_uid"]);
     assert!(
-        report.constraints_added.iter().any(|c| c.contains("path_last_uid")),
+        report
+            .constraints_added
+            .iter()
+            .any(|c| c.contains("path_last_uid")),
         "the new version's index is added: {:?}",
         report.constraints_added
     );
@@ -272,7 +284,10 @@ async fn a_declared_table_and_field_cannot_be_dropped_while_claimed() -> Result<
     .await
     .unwrap_err()
     .to_string();
-    assert!(refused.contains("while the module is installed"), "{refused}");
+    assert!(
+        refused.contains("while the module is installed"),
+        "{refused}"
+    );
     // The admin's own field is theirs to drop.
     drop(Operation::DropField {
         table: "mail_messages".into(),
@@ -405,13 +420,28 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     let staff_host = as_user(&cat, &staff);
     let ann_host = as_user(&cat, &ann);
     let bob_host = as_user(&cat, &bob);
-    assert_eq!(subjects(&staff_host).await, ["Order 17"], "shared, at min_role");
-    assert_eq!(subjects(&ann_host).await, ["Dinner?"], "her own, not the shared one");
-    assert!(subjects(&bob_host).await.is_empty(), "below min_role, owns nothing");
+    assert_eq!(
+        subjects(&staff_host).await,
+        ["Order 17"],
+        "shared, at min_role"
+    );
+    assert_eq!(
+        subjects(&ann_host).await,
+        ["Dinner?"],
+        "her own, not the shared one"
+    );
+    assert!(
+        subjects(&bob_host).await.is_empty(),
+        "below min_role, owns nothing"
+    );
     assert_eq!(count(&staff_host, "mail_attachments").await, 1);
     assert_eq!(count(&ann_host, "mail_attachments").await, 1);
     assert_eq!(count(&bob_host, "mail_attachments").await, 0);
-    assert_eq!(count(&staff_host, "mail_accounts").await, 1, "reads the shared account");
+    assert_eq!(
+        count(&staff_host, "mail_accounts").await,
+        1,
+        "reads the shared account"
+    );
     assert_eq!(count(&bob_host, "mail_accounts").await, 0);
 
     // Writes on the account itself: only rows the writer owns.
@@ -504,8 +534,15 @@ async fn a_file_fields_store_is_created_when_missing_and_reused_when_there() -> 
     ] }]));
     let report = sync(&cat, MODULE, &tables, &ModuleTables::new()).await;
     assert!(report.issues.is_empty(), "{:?}", report.issues);
-    assert!(report.stores_created.is_empty(), "the admin's store is used");
-    let field = cat.require("mail_attachments")?.field("file").cloned().unwrap();
+    assert!(
+        report.stores_created.is_empty(),
+        "the admin's store is used"
+    );
+    let field = cat
+        .require("mail_attachments")?
+        .field("file")
+        .cloned()
+        .unwrap();
     assert!(
         matches!(
             &field.kind,
@@ -522,7 +559,10 @@ async fn a_file_fields_store_is_created_when_missing_and_reused_when_there() -> 
     assert_eq!(def.backend, "local");
     assert_eq!(def.config["create"], json!(true));
     assert!(
-        def.config["path"].as_str().unwrap().ends_with("mail_files_2"),
+        def.config["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("mail_files_2"),
         "{:?}",
         def.config
     );
@@ -565,9 +605,15 @@ async fn a_module_installed_twice_changes_nothing_and_an_upgrade_adds_a_field() 
         }
     };
     let load = || async {
-        ModuleSet::load(&cat, &host, &installer, &surfaces(), &mut ActionRegistry::new())
-            .await
-            .unwrap()
+        ModuleSet::load(
+            &cat,
+            &host,
+            &installer,
+            &surfaces(),
+            &mut ActionRegistry::new(),
+        )
+        .await
+        .unwrap()
     };
 
     install("tables-module").await;
@@ -685,11 +731,15 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
     assert!(update(&bob, json!({ "label": "Bob's now" })).await.is_err());
 
     // The same through the REST API, as an application's page saves it.
-    let rest = sc_api::RestProvider::project("/api", &[accounts.clone()])
+    let rest = sc_api::RestProvider::project("/api", std::slice::from_ref(&accounts))
         .with_evaluator(evaluator.clone());
     let path = format!("/api/mail_accounts/{id}");
     let listed = rest
-        .handle(sc_api::ApiRequest::get("/api/mail_accounts"), &cat, Some(&ann))
+        .handle(
+            sc_api::ApiRequest::get("/api/mail_accounts"),
+            &cat,
+            Some(&ann),
+        )
         .await?;
     let mut row = listed.body[0].clone();
     row["display_name"] = json!("Ann A.");

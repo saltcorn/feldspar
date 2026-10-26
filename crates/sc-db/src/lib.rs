@@ -24,6 +24,7 @@ mod driver;
 mod row;
 mod schema;
 mod spatial;
+mod vector;
 
 pub use capabilities::{DbCapabilities, TX_SETTINGS_TABLE};
 pub use driver::{DatabaseDriver, Transaction};
@@ -33,6 +34,7 @@ pub use schema::{
     IndexOn, PhysicalConstraint, PhysicalConstraintKind, PhysicalTable, SchemaChange,
 };
 pub use spatial::SpatialSupport;
+pub use vector::VectorSupport;
 
 #[cfg(test)]
 mod tests {

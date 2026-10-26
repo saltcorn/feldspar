@@ -36,7 +36,9 @@ use serde_json::Value as Json;
 
 use crate::def::{LlmProviderDef, LlmProviderDefId, validate_provider_config};
 use crate::host::{host_llm_provider, is_host_llm_provider, read_only};
-use crate::model::{LlmModelDef, LlmModelDefId, normalise_model_config, validate_model_config};
+use crate::model::{
+    LlmModelDef, LlmModelDefId, ModelKind, normalise_model_config, validate_model_config,
+};
 
 /// Name of the providers table in the primary database.
 pub const LLM_PROVIDERS_TABLE: &str = "_fd_llm_providers";
@@ -395,8 +397,11 @@ pub const LLM_MODELS_TABLE: &str = "_fd_llm_models";
 
 /// The provider a model belongs to: a foreign key onto the providers' `id`.
 pub const COL_PROVIDER_ID: &str = "provider_id";
-/// Whether the model is its provider's default.
+/// Whether the model is its provider's default of its kind.
 pub const COL_IS_DEFAULT: &str = "is_default";
+/// The model's kind (`chat`, `embedding`, `image`, `speech`). Nullable,
+/// because it was added to a table that has rows; `NULL` is chat.
+pub const COL_KIND: &str = "kind";
 
 /// The fields of the `_fd_llm_models` table, in declaration order.
 ///
@@ -419,6 +424,7 @@ fn model_fields() -> Vec<DataField> {
         },
         DataField::plain(COL_NAME, text()).required(),
         DataField::plain(COL_DESCRIPTION, text()),
+        DataField::plain(COL_KIND, text()),
         DataField::plain(COL_IS_DEFAULT, TypeRef::Basic(BasicType::Bool)).required(),
         DataField::plain(COL_CONFIG, json()).required(),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
@@ -465,9 +471,10 @@ pub async fn bootstrap_llm_models(catalog: &Catalog) -> Result<Table> {
 /// Blank settings are dropped before the row is written, so a row records only
 /// where it differs from the built-in defaults.
 ///
-/// **At most one default per provider**, enforced in the same transaction as
-/// the write: saving a row as the default clears the flag on every other row of
-/// its provider, so two concurrent saves cannot both leave a default behind.
+/// **At most one default per provider and kind**, enforced in the same
+/// transaction as the write: saving a row as the default clears the flag on
+/// every other row of its provider and kind, so two concurrent saves cannot
+/// both leave a default behind.
 pub async fn save_llm_model(catalog: &Catalog, model: &LlmModelDef) -> Result<LlmModelDef> {
     let mut model = model.clone();
     model.name = model.name.trim().to_owned();
@@ -478,6 +485,10 @@ pub async fn save_llm_model(catalog: &Catalog, model: &LlmModelDef) -> Result<Ll
     let values = model_values(&model);
     let mut statements = Vec::new();
     if model.is_default {
+        let mut same_kind = Expr::col(COL_KIND).eq(Expr::lit(model.kind.as_str()));
+        if model.kind == ModelKind::Chat {
+            same_kind = same_kind.or(Expr::unary(sc_query::UnOp::IsNull, Expr::col(COL_KIND)));
+        }
         let clear = Update::new(
             LLM_MODELS_TABLE,
             vec![Assignment::new(
@@ -492,7 +503,8 @@ pub async fn save_llm_model(catalog: &Catalog, model: &LlmModelDef) -> Result<Ll
                     sc_query::BinOp::Ne,
                     Expr::col(COL_ID),
                     Expr::lit(model.id.0),
-                )),
+                ))
+                .and(same_kind),
         );
         statements.push(Statement::from(clear));
     }
@@ -540,6 +552,23 @@ pub async fn check_model_saveable(catalog: &Catalog, model: &LlmModelDef) -> Res
                 model.provider_id.0
             ))
         })?;
+    // A row cannot move to another provider: its prices and capabilities were
+    // entered for this one. Nor change kind: what names it expects that kind.
+    if let Some(stored) = load_llm_model(catalog, model.id).await? {
+        if stored.provider_id != model.provider_id {
+            return Err(Error::invalid(format!(
+                "LLM model `{name}` belongs to another provider and cannot be moved"
+            )));
+        }
+        if stored.kind != model.kind {
+            return Err(Error::invalid(format!(
+                "LLM model `{name}` is {} model and cannot become {} model; add a new \
+                 model instead",
+                stored.kind.with_article(),
+                model.kind.with_article()
+            )));
+        }
+    }
     validate_model_config(&provider.backend, model)?;
     if let Some(other) = load_llm_model_by_name(catalog, &provider, name).await?
         && other.id != model.id
@@ -547,15 +576,6 @@ pub async fn check_model_saveable(catalog: &Catalog, model: &LlmModelDef) -> Res
         return Err(Error::invalid(format!(
             "LLM provider `{}` already has a model named `{name}`",
             provider.name
-        )));
-    }
-    // A row cannot move to another provider: its prices and capabilities were
-    // entered for this one.
-    if let Some(stored) = load_llm_model(catalog, model.id).await?
-        && stored.provider_id != model.provider_id
-    {
-        return Err(Error::invalid(format!(
-            "LLM model `{name}` belongs to another provider and cannot be moved"
         )));
     }
     Ok(())
@@ -617,8 +637,8 @@ pub async fn list_llm_models(
     Ok(models)
 }
 
-/// The model an agent's (`provider`, `model`) pair names: the row called
-/// `model`, or the provider's default when `model` is blank.
+/// The model an agent's (`provider`, `model`) pair names: the chat model row
+/// called `model`, or the provider's default chat model when `model` is blank.
 ///
 /// The error says which is missing — no such model, or no default — because
 /// the two are fixed in different places.
@@ -627,23 +647,59 @@ pub async fn require_llm_model(
     provider: &LlmProviderDef,
     model: Option<&str>,
 ) -> Result<LlmModelDef> {
+    // A chat model is always a row: its capabilities and window are the
+    // loop's to know.
+    if let Some(name) = model.map(str::trim).filter(|m| !m.is_empty())
+        && load_llm_model_by_name(catalog, provider, name)
+            .await?
+            .is_none()
+    {
+        return Err(Error::not_found(format!(
+            "LLM provider `{}` has no model named `{name}`",
+            provider.name
+        )));
+    }
+    require_model_of_kind(catalog, provider, model, ModelKind::Chat).await
+}
+
+/// The model of `kind` that (`provider`, `model`) names (TODO-agent-skills
+/// AS3.1): the row called `model`, or the provider's default of that kind when
+/// `model` is blank.
+///
+/// A row of another kind is refused by name. A non-chat model named with no row
+/// is used by its name, with no prices: a provider serves more embedding,
+/// image and speech models than anybody will enter, and the name is all the
+/// call needs. ([`require_llm_model`] refuses a chat name with no row.)
+pub async fn require_model_of_kind(
+    catalog: &Catalog,
+    provider: &LlmProviderDef,
+    model: Option<&str>,
+    kind: ModelKind,
+) -> Result<LlmModelDef> {
+    let models = list_llm_models(catalog, provider).await?;
     match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(name) => load_llm_model_by_name(catalog, provider, name)
-            .await?
-            .ok_or_else(|| {
-                Error::not_found(format!(
-                    "LLM provider `{}` has no model named `{name}`",
-                    provider.name
-                ))
-            }),
-        None => list_llm_models(catalog, provider)
-            .await?
+        Some(name) => match models.into_iter().find(|m| m.name == name) {
+            Some(found) if found.kind == kind => Ok(found),
+            Some(found) => Err(Error::invalid(format!(
+                "LLM model `{name}` of provider `{}` is {} model, not {} model",
+                provider.name,
+                found.kind.with_article(),
+                kind.with_article()
+            ))),
+            None => Ok(LlmModelDef::new(provider.id, name).kind(kind)),
+        },
+        None => models
             .into_iter()
-            .find(|m| m.is_default)
+            .find(|m| m.kind == kind && m.is_default)
             .ok_or_else(|| {
+                // A chat model is what "model" means to most readers.
+                let kind = match kind {
+                    ModelKind::Chat => String::new(),
+                    other => format!("{other} "),
+                };
                 Error::not_found(format!(
-                    "LLM provider `{}` has no default model; mark one of its models as \
-                     the default, or name a model",
+                    "LLM provider `{}` has no default {kind}model; mark one of its {kind}models \
+                     as the default, or name a model",
                     provider.name
                 ))
             }),
@@ -699,6 +755,7 @@ fn model_columns() -> Vec<String> {
         COL_PROVIDER_ID,
         COL_NAME,
         COL_DESCRIPTION,
+        COL_KIND,
         COL_IS_DEFAULT,
         COL_CONFIG,
         COL_ATTRIBUTES,
@@ -715,6 +772,7 @@ fn model_values(model: &LlmModelDef) -> Vec<Value> {
         Value::Uuid(model.provider_id.0),
         Value::Text(model.name.trim().to_owned()),
         Value::Text(model.description.clone()),
+        Value::Text(model.kind.as_str().to_owned()),
         Value::Bool(model.is_default),
         Value::Json(Json::Object(model.config.clone())),
         Value::Json(Json::Object(model.attributes.clone())),
@@ -731,6 +789,12 @@ fn model_from_row(row: &Row) -> Result<LlmModelDef> {
         Some(Value::Text(t)) => t.clone(),
         Some(Value::Null) | None => String::new(),
         other => return Err(bad_model_column(COL_DESCRIPTION, "text", other)),
+    };
+    let kind = match row.get(COL_KIND) {
+        Some(Value::Text(t)) => ModelKind::parse(t)
+            .map_err(|e| Error::invalid(format!("{LLM_MODELS_TABLE}.{COL_KIND}: {e}")))?,
+        Some(Value::Null) | None => ModelKind::Chat,
+        other => return Err(bad_model_column(COL_KIND, "text", other)),
     };
     let is_default = match row.get(COL_IS_DEFAULT) {
         Some(Value::Bool(b)) => *b,
@@ -749,6 +813,7 @@ fn model_from_row(row: &Row) -> Result<LlmModelDef> {
         provider_id: LlmProviderDefId(uuid(COL_PROVIDER_ID)?),
         name,
         description,
+        kind,
         is_default,
         config: object(COL_CONFIG)?,
         attributes: object(COL_ATTRIBUTES)?,

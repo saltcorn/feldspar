@@ -46,6 +46,7 @@ import { AgentChat } from "./screens/AgentChat";
 import { AgentForm } from "./screens/AgentForm";
 import { Entities } from "./screens/Entities";
 import { AgentRuns } from "./screens/AgentRuns";
+import { AgentMemory } from "./screens/AgentMemory";
 import { Agents } from "./screens/Agents";
 import { Applications } from "./screens/Applications";
 import { ApplicationForm } from "./screens/ApplicationForm";
@@ -62,6 +63,7 @@ import { FirstUser } from "./screens/FirstUser";
 import { GraphqlExplorer } from "./screens/GraphqlExplorer";
 import { LlmProviders } from "./screens/LlmProviders";
 import { LlmProviderForm } from "./screens/LlmProviderForm";
+import { McpServers } from "./screens/McpServers";
 import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
 import { Settings } from "./screens/Settings";
@@ -217,8 +219,8 @@ export const NAV: NavItem[] = [
     icon: <IconRobot />,
     // The providers list is part of this section rather than one of its own: an
     // LLM provider exists to be pointed at by an agent, and nothing else in the
-    // admin UI has any use for one.
-    matches: ["/agents", "/llm-providers"],
+    // admin UI has any use for one. The same goes for an MCP server.
+    matches: ["/agents", "/llm-providers", "/mcp-servers"],
   },
   {
     // The Analytics UI: its own bundle under `/analytics/` (analytics TODO
@@ -758,6 +760,11 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   if (agentRunsMatch) {
     return <AgentRuns agent={decodeURIComponent(agentRunsMatch[1])} />;
   }
+  // What an agent remembers (AS8.3), keyed by its name as the memories are.
+  const agentMemoryMatch = path.match(/^\/agents\/([^/]+)\/memory$/);
+  if (agentMemoryMatch) {
+    return <AgentMemory agent={decodeURIComponent(agentMemoryMatch[1])} />;
+  }
   const agentEditMatch = path.match(/^\/agents\/([^/]+)\/edit$/);
   if (agentEditMatch) {
     return <AgentForm agentId={decodeURIComponent(agentEditMatch[1])} />;
@@ -776,6 +783,9 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   }
   if (path.startsWith("/llm-providers")) {
     return <LlmProviders />;
+  }
+  if (path.startsWith("/mcp-servers")) {
+    return <McpServers />;
   }
   if (path.startsWith("/db-connections")) {
     return <DbConnections />;

@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use sc_llm::Usage;
+use sc_llm::{ModelKind, Usage};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::ModelRole;
@@ -41,6 +41,38 @@ pub struct LedgerStep {
     /// summary call, always set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compacted: bool,
+    /// What kind of model call it was: a chat step, or an embedding, image or
+    /// speech call a tool made (TODO-agent-skills AS3.5), recorded as an aside.
+    #[serde(default, skip_serializing_if = "is_chat")]
+    pub kind: ModelKind,
+}
+
+fn is_chat(kind: &ModelKind) -> bool {
+    *kind == ModelKind::Chat
+}
+
+/// One evaluation of model-written JavaScript (TODO-agent-skills AS5.3):
+/// the source exactly as the model wrote it, and how it went — kept for an
+/// admin reviewing what an agent ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeEvaluation {
+    /// The model call whose tool calls ran it.
+    #[serde(default)]
+    pub step: u32,
+    /// The tool that ran it.
+    pub tool: String,
+    /// The source.
+    pub source: String,
+    /// Whether it returned a value.
+    pub ok: bool,
+    /// Why it did not, when it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// How long it took, in milliseconds.
+    pub elapsed_ms: u64,
+    /// How large its result was, in bytes of JSON.
+    #[serde(default)]
+    pub output_bytes: u64,
 }
 
 /// One role's totals.
@@ -116,6 +148,9 @@ pub struct Ledger {
     /// in the totals, not in the steps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     asides: Vec<LedgerStep>,
+    /// Model-written code the tools ran (TODO-agent-skills AS5.3), oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    code: Vec<CodeEvaluation>,
     /// Delegated runs' totals, one entry per child run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     children: Vec<ChildLedger>,
@@ -146,6 +181,16 @@ impl Ledger {
     /// The calls tools made for themselves, oldest first.
     pub fn asides(&self) -> &[LedgerStep] {
         &self.asides
+    }
+
+    /// Record one evaluation of model-written code.
+    pub fn record_code(&mut self, evaluation: CodeEvaluation) {
+        self.code.push(evaluation);
+    }
+
+    /// The model-written code the tools ran, oldest first.
+    pub fn code(&self) -> &[CodeEvaluation] {
+        &self.code
     }
 
     /// The summary calls, oldest first.
@@ -257,6 +302,7 @@ mod tests {
             elapsed_ms: 100,
             signals: Vec::new(),
             compacted: false,
+            kind: sc_llm::ModelKind::Chat,
         }
     }
 

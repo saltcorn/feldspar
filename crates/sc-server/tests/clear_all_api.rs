@@ -218,6 +218,8 @@ async fn ok(client: &mut Client, method: &str, path: &str, body: Value) -> Value
 #[tokio::test]
 async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> sc_error::Result<()>
 {
+    // Clear all resets the logging switches, which another test is checking.
+    let _switches = crate::logging_switches().lock().await;
     let mut server = setup().await?;
     let c = &mut server.client;
 

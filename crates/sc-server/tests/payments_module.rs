@@ -1520,10 +1520,22 @@ impl<'a> Shopper<'a> {
             router,
             cookies: HashMap::new(),
         };
-        let first = send(router, "GET", Some(SHOP), "/", &shopper.cookies, &[], Vec::new()).await;
+        let first = send(
+            router,
+            "GET",
+            Some(SHOP),
+            "/",
+            &shopper.cookies,
+            &[],
+            Vec::new(),
+        )
+        .await;
         keep(&mut shopper.cookies, &first);
         let login = shopper
-            .post("/api/login", json!({ "email": email, "password": password }))
+            .post(
+                "/api/login",
+                json!({ "email": email, "password": password }),
+            )
             .await;
         assert_eq!(login.status, StatusCode::OK, "{}", login.text);
         shopper
@@ -1545,7 +1557,16 @@ impl<'a> Shopper<'a> {
     }
 
     async fn get(&mut self, path: &str) -> Answer {
-        send(self.router, "GET", Some(SHOP), path, &self.cookies, &[], Vec::new()).await
+        send(
+            self.router,
+            "GET",
+            Some(SHOP),
+            path,
+            &self.cookies,
+            &[],
+            Vec::new(),
+        )
+        .await
     }
 }
 
@@ -1573,9 +1594,24 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
     let catalog = &server.catalog;
     // The binding is saved, the plans table is what the module may read, and the install
     // granted the role ceiling the manifest asked for.
-    assert_eq!(server.configured["issues"], json!([]), "{}", server.configured);
-    assert_eq!(server.configured["reads"], json!(["plans"]), "{}", server.configured);
-    assert_eq!(server.configured["permissions"]["roles"], json!(["50"]), "{}", server.configured);
+    assert_eq!(
+        server.configured["issues"],
+        json!([]),
+        "{}",
+        server.configured
+    );
+    assert_eq!(
+        server.configured["reads"],
+        json!(["plans"]),
+        "{}",
+        server.configured
+    );
+    assert_eq!(
+        server.configured["permissions"]["roles"],
+        json!(["50"]),
+        "{}",
+        server.configured
+    );
 
     for (role, name) in [(40, "Staff"), (60, "Pro"), (70, "Basic")] {
         sc_auth::save_role(catalog, &sc_auth::Role::new(role, name)).await?;
@@ -1595,8 +1631,15 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         .unwrap()
         .parse::<uuid::Uuid>()
         .unwrap();
-    let bob_id = create_user(catalog, "bob@example.com", "bob-password", 80).await?.id;
-    let role_of = |user| async move { sc_auth::effective_role(catalog, user, 80).await.unwrap().role };
+    let bob_id = create_user(catalog, "bob@example.com", "bob-password", 80)
+        .await?
+        .id;
+    let role_of = |user| async move {
+        sc_auth::effective_role(catalog, user, 80)
+            .await
+            .unwrap()
+            .role
+    };
     assert_eq!(role_of(ada_id).await, 80);
 
     // A guest cannot subscribe: a subscription's role is granted to an account.
@@ -1610,16 +1653,25 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         serde_json::to_vec(&json!({ "plan": 1 })).unwrap(),
     )
     .await;
-    assert!(error_of(&guest).contains("taken out by a signed-in user"), "{}", guest.text);
+    assert!(
+        error_of(&guest).contains("taken out by a signed-in user"),
+        "{}",
+        guest.text
+    );
 
     // Ada subscribes to Basic, and pays on the fake provider's page.
     let mut ada = Shopper::signed_in(&server.router, "ada@example.com", "ada-password").await;
-    let started = ada.post("/api/actions/subscribe", json!({ "plan": 1 })).await;
+    let started = ada
+        .post("/api/actions/subscribe", json!({ "plan": 1 }))
+        .await;
     assert_eq!(started.status, StatusCode::OK, "{}", started.text);
     let page = path_of(started.json()["url"].as_str().unwrap());
     let paid = press(&server, &format!("{page}/pay"), "").await;
     assert_eq!(paid.status, StatusCode::SEE_OTHER, "{}", paid.text);
-    assert_eq!(paid.headers[header::LOCATION], format!("http://{SHOP}/welcome").as_str());
+    assert_eq!(
+        paid.headers[header::LOCATION],
+        format!("http://{SHOP}/welcome").as_str()
+    );
 
     // The webhook read the plans table, found Basic, and granted its role to the period's end
     // plus three days of grace.
@@ -1631,7 +1683,11 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         .collect();
     assert_eq!(
         kinds,
-        [json!("checkout.completed"), json!("subscription.started"), json!("payment.succeeded")]
+        [
+            json!("checkout.completed"),
+            json!("subscription.started"),
+            json!("payment.succeeded")
+        ]
     );
     let grant_sql = "SELECT g.role, g.source, g.source_ref, g.revoked_at IS NOT NULL AS revoked, \
                      g.expires_at = o.current_period_end + interval '3 days' AS with_grace, \
@@ -1649,12 +1705,18 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
     // Bob reads none of it.
     let hers = ada.get("/api/pay_objects").await.json();
     let hers = hers.as_array().unwrap();
-    let sub = hers.iter().find(|o| o["kind"] == json!("subscription")).unwrap();
+    let sub = hers
+        .iter()
+        .find(|o| o["kind"] == json!("subscription"))
+        .unwrap();
     assert_eq!(sub["ref_table"], json!("plans"));
     assert_eq!(sub["ref_key"], json!(1));
     assert_eq!(sub["status"], json!("active"));
     assert!(sub["current_period_end"].is_string(), "{sub}");
-    assert!(hers.iter().any(|o| o["kind"] == json!("customer")), "{hers:?}");
+    assert!(
+        hers.iter().any(|o| o["kind"] == json!("customer")),
+        "{hers:?}"
+    );
     let mut bob = Shopper::signed_in(&server.router, "bob@example.com", "bob-password").await;
     assert_eq!(bob.get("/api/pay_objects").await.json(), json!([]));
     let sub_ref = sub["provider_ref"].as_str().unwrap().to_owned();
@@ -1663,46 +1725,97 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
     let portal = ada.post("/api/actions/portal", json!({})).await;
     assert_eq!(portal.status, StatusCode::OK, "{}", portal.text);
     let portal = path_of(portal.json()["url"].as_str().unwrap());
-    let shown = send(&server.router, "GET", Some(SHOP), &portal, &HashMap::new(), &[], Vec::new()).await;
+    let shown = send(
+        &server.router,
+        "GET",
+        Some(SHOP),
+        &portal,
+        &HashMap::new(),
+        &[],
+        Vec::new(),
+    )
+    .await;
     assert_eq!(shown.status, StatusCode::OK, "{}", shown.text);
-    assert!(shown.text.contains("<option>price_pro</option>"), "{}", shown.text);
-    assert!(shown.text.contains(&format!("href=\"http://{SHOP}/account\"")), "{}", shown.text);
-    let changed = press(&server, &format!("{portal}/{sub_ref}/change"), "price=price_pro").await;
+    assert!(
+        shown.text.contains("<option>price_pro</option>"),
+        "{}",
+        shown.text
+    );
+    assert!(
+        shown
+            .text
+            .contains(&format!("href=\"http://{SHOP}/account\"")),
+        "{}",
+        shown.text
+    );
+    let changed = press(
+        &server,
+        &format!("{portal}/{sub_ref}/change"),
+        "price=price_pro",
+    )
+    .await;
     assert_eq!(changed.status, StatusCode::SEE_OTHER, "{}", changed.text);
     assert_eq!(server.rows(grant_sql).await[0]["role"], json!(60));
     assert_eq!(role_of(ada_id).await, 60);
     let no_portal = bob.post("/api/actions/portal", json!({})).await;
-    assert!(error_of(&no_portal).contains("not a customer of \"shop\" yet"), "{}", no_portal.text);
+    assert!(
+        error_of(&no_portal).contains("not a customer of \"shop\" yet"),
+        "{}",
+        no_portal.text
+    );
 
     // A renewal whose card is declined: past due, and the grant is left to run out.
     let renewed = press(&server, &format!("{portal}/{sub_ref}/renew_fail"), "").await;
     assert_eq!(renewed.status, StatusCode::SEE_OTHER, "{}", renewed.text);
     let after = server.rows(grant_sql).await;
-    assert_eq!(after[0]["with_grace"], json!(false), "the period moved on; the grant did not");
+    assert_eq!(
+        after[0]["with_grace"],
+        json!(false),
+        "the period moved on; the grant did not"
+    );
     assert_eq!(role_of(ada_id).await, 60, "still within the old period");
     // Retried and paid: extended to the new period's end, with grace.
     press(&server, &format!("{portal}/{sub_ref}/retry"), "").await;
     assert_eq!(server.rows(grant_sql).await[0]["with_grace"], json!(true));
 
     // Her own buttons: back to Basic.
-    let back = ada.post("/api/actions/change_plan", json!({ "plan": 1 })).await;
+    let back = ada
+        .post("/api/actions/change_plan", json!({ "plan": 1 }))
+        .await;
     assert_eq!(back.status, StatusCode::OK, "{}", back.text);
     assert_eq!(role_of(ada_id).await, 70);
 
     // A price that is no plan's grants nothing new, and says so on the mirror row.
-    press(&server, &format!("{portal}/{sub_ref}/change"), "price=price_mystery").await;
+    press(
+        &server,
+        &format!("{portal}/{sub_ref}/change"),
+        "price=price_mystery",
+    )
+    .await;
     let issue = server
-        .rows(&format!("SELECT issue FROM pay_objects WHERE provider_ref = '{sub_ref}'"))
+        .rows(&format!(
+            "SELECT issue FROM pay_objects WHERE provider_ref = '{sub_ref}'"
+        ))
         .await;
     assert!(
-        issue[0]["issue"].as_str().unwrap_or_default().contains("price_mystery is no plan's"),
+        issue[0]["issue"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("price_mystery is no plan's"),
         "{issue:?}"
     );
     assert_eq!(server.rows(grant_sql).await[0]["role"], json!(70));
-    press(&server, &format!("{portal}/{sub_ref}/change"), "price=price_basic").await;
+    press(
+        &server,
+        &format!("{portal}/{sub_ref}/change"),
+        "price=price_basic",
+    )
+    .await;
 
     // Bob subscribes to a plan above the module's ceiling: nothing granted, an issue instead.
-    let bobs = bob.post("/api/actions/subscribe", json!({ "plan": 3 })).await;
+    let bobs = bob
+        .post("/api/actions/subscribe", json!({ "plan": 3 }))
+        .await;
     let bobs_page = path_of(bobs.json()["url"].as_str().unwrap());
     press(&server, &format!("{bobs_page}/pay"), "").await;
     let refused = server
@@ -1711,7 +1824,10 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         ))
         .await;
     assert!(
-        refused[0]["issue"].as_str().unwrap_or_default().contains("may only grant roles 50 to 99"),
+        refused[0]["issue"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("may only grant roles 50 to 99"),
         "{refused:?}"
     );
     assert_eq!(role_of(bob_id).await, 80);
@@ -1727,11 +1843,16 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
     assert_eq!(ended[0]["revoked"], json!(true), "{ended:?}");
     assert_eq!(role_of(ada_id).await, 80);
     let last: Vec<Value> = server
-        .rows("SELECT kind FROM pay_events WHERE kind LIKE 'subscription.%' ORDER BY id DESC LIMIT 2")
+        .rows(
+            "SELECT kind FROM pay_events WHERE kind LIKE 'subscription.%' ORDER BY id DESC LIMIT 2",
+        )
         .await
         .into_iter()
         .map(|r| r["kind"].clone())
         .collect();
-    assert_eq!(last, [json!("subscription.ended"), json!("subscription.canceled")]);
+    assert_eq!(
+        last,
+        [json!("subscription.ended"), json!("subscription.canceled")]
+    );
     Ok(())
 }

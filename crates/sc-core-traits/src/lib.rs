@@ -21,11 +21,13 @@
 //!
 //! ## The set
 //!
-//! Eleven traits over seven things an agent can be given. **Tables**:
+//! Twelve traits over seven things an agent can be given. **Tables**:
 //! [`QueryTable`] reads one, and [`InsertRow`], [`UpdateRows`] and
 //! [`DeleteRows`] are three separate opt-in grants over one — so a read-only
 //! agent is the default shape and each way of changing data is a deliberate act
-//! with a form field attached. **Actions**: [`RunTrigger`] exposes one configured
+//! with a form field attached. **Actions**: [`RunJsCode`] is one JavaScript
+//! body kept in the agent's own configuration, run as a `run_js_code` action
+//! body is; [`RunTrigger`] exposes one configured
 //! trigger, which is what connects an agent to the whole of §10 (and, once §10.3
 //! lands, to workflows unchanged, because a workflow is a trigger). **Code**:
 //! [`Coding`] is the whole loop over one configured file store (optionally
@@ -100,19 +102,35 @@
 //!   of failing mid-conversation.
 
 mod admin_copilot;
+mod ask_user;
 mod build_application;
 mod coding;
 mod delete_rows;
 mod files;
+mod generate_js;
 pub mod http;
 mod insert_row;
+mod library_tools;
+mod mcp_server;
+pub mod media;
+pub mod memory;
+mod plan_approval;
+mod preload;
 mod preview_pane;
+mod prompt_picker;
 mod query_table;
+mod retrieval;
 mod run_agent;
+mod run_js_code;
 mod run_trigger;
+pub mod sandbox;
+mod search_table;
+mod similar_rows;
+mod skill_file;
 mod subagent;
 mod table;
 mod update_rows;
+mod web_search;
 mod write;
 
 use std::sync::Arc;
@@ -130,6 +148,10 @@ pub use admin_copilot::{
     CFG_ALLOW_EDIT, CFG_ALLOW_TRIGGERS, TOOL_DELETE_QUERY, TOOL_DELETE_TRIGGER, TOOL_DESCRIBE,
     TOOL_DESCRIBE_ACTION, TOOL_DESCRIBE_APPS, TOOL_DESCRIBE_CODE_API, TOOL_DESCRIBE_TRIGGERS,
     TOOL_EDIT, TOOL_SAVE_QUERY, TOOL_SAVE_TRIGGER,
+};
+pub use ask_user::{
+    AskUser, CFG_ANSWER_PROMPT, CFG_ASK_PROMPT, CFG_ASK_TOOL_NAME, CFG_DISCUSS_LABEL,
+    CFG_DISCUSS_PROMPT, DEFAULT_ASK_TOOL, DISCUSS_VALUE,
 };
 pub use build_application::{BuildApplication, CFG_APPLICATION};
 pub use coding::{
@@ -150,21 +172,67 @@ pub use coding::{
     run_plan,
 };
 pub use delete_rows::DeleteRows;
+pub use generate_js::{
+    ARG_CODE, CFG_ALLOW_FETCH, CFG_ALLOW_LIBRARIES, CFG_CODE_DESCRIPTION, CFG_FETCH_HOSTS,
+    CFG_FOLLOW_UP_PROMPT, CFG_GEN_TIMEOUT, CFG_GEN_TOOL_DESCRIPTION, CFG_GEN_TOOL_NAME,
+    CFG_TABLE_ACCESS, CFG_TABLES, GenerateJs,
+};
 pub use http::Http;
 pub use insert_row::InsertRow;
+pub use library_tools::{CFG_LIBRARY, CFG_LIBRARY_TOOLS, LibraryTools, PROPOSAL_KEY};
+pub use mcp_server::{CFG_ALLOWED_TOOLS, CFG_READ_ONLY_TOOLS, CFG_SERVER, McpServer};
+pub use media::{GenerateImage, Speech};
+pub use plan_approval::{
+    CFG_APPROVAL_PROMPT, CFG_APPROVE_LABEL, CFG_DECLINE_PROMPT, CFG_PLAN_PROMPT,
+    CFG_PLAN_TOOL_NAME, DEFAULT_PLAN_TOOL, PlanApproval,
+};
 pub use preview_pane::{
     CFG_RELOAD_ON_TURN, CFG_URL, DEFAULT_RELOAD_ON_TURN, PreviewPane, configured_url, is_framable,
     reloads_on_turn,
 };
-pub use query_table::{DEFAULT_MAX_ROWS, QueryTable};
-pub use run_agent::{CFG_AGENT, CFG_PROMPT, CFG_TRUSTED_INPUT, RunAgent};
+pub use prompt_picker::{
+    CFG_LABEL_FIELD, CFG_PICKER_LABEL, CFG_PICKER_NAME, CFG_PROMPT_FIELD, CFG_PROMPT_TABLE,
+    CFG_PROMPT_WHERE, CFG_PROMPTS, CFG_SEND, CFG_SOURCE, MAX_PICKER_ROWS, PromptPicker,
+    SOURCE_PREDEFINED, SOURCE_TABLE,
+};
+pub use query_table::{CFG_RESULTS_VIEW, CFG_SHOW_RESULTS, DEFAULT_MAX_ROWS, QueryTable};
+pub use retrieval::{CFG_DOC_FORMAT, CFG_HIDDEN_FIELDS, CFG_MODE, MODE_EVERY_MESSAGE, MODE_TOOL};
+pub use run_agent::{
+    CFG_AGENT, CFG_PROMPT, CFG_RUN_AS, CFG_TRUSTED_INPUT, RUN_AS_EVENT_USER, RUN_AS_TRIGGER,
+    RunAgent,
+};
+pub use run_js_code::{
+    CFG_ARGUMENTS, CFG_BUTTON_LABEL, CFG_CODE, CFG_JS_MODE, CFG_TOOL_DESCRIPTION, CFG_TOOL_NAME,
+    JS_MODE_BUTTON, JS_MODE_TOOL, RunJsCode, button_control,
+};
 pub use run_trigger::{CFG_TRIGGER, RunTrigger};
+pub use search_table::{ARG_PHRASES, DEFAULT_SEARCH_ROWS, SearchTable};
+pub use similar_rows::{
+    ARG_QUERY, CFG_LIMIT, CFG_RELATION, CFG_VECTOR_FIELD, DEFAULT_SIMILAR_ROWS, SimilarRows,
+};
+pub use web_search::{
+    CFG_API_KEY, CFG_EXCLUDE_DOMAINS, CFG_HEADER, CFG_INCLUDE_DOMAINS, CFG_PROVIDER,
+    CFG_SEARCH_MAX_RESULTS, CFG_SEARCH_NAME, CFG_SEARCH_PRIVATE_NETWORK, CFG_URL_TEMPLATE,
+    PROVIDER_FIRECRAWL, PROVIDER_TAVILY, PROVIDER_URL_TEMPLATE, WebSearch,
+};
+// Context: preloaded rows and code, memory, skill files (TODO-agent-skills AS8).
+pub use memory::{
+    AgentMemory, CFG_MAX_MEMORIES, CFG_MEMORY_MAX_RESULTS, CFG_PERSONAL, CFG_PREFERENCES_IN_HEADER,
+    ConsolidateMemory, MEMORY_TABLE, TOOL_SEARCH_MEMORY, TOOL_STORE_MEMORY, bootstrap_agent_memory,
+};
+pub use preload::{
+    CFG_CONTENTS, CFG_FILTER, CFG_HEADING, CFG_PLACEMENT, CFG_PRELOAD_CODE, DEFAULT_PRELOAD_ROWS,
+    PLACEMENT_HEADER, PLACEMENT_SYSTEM, PreloadCode, PreloadRows,
+};
+pub use skill_file::{
+    CFG_READ_TOOL, CFG_SKILL_FILE, CFG_SKILL_MAX_CHARS, DEFAULT_SKILL_FILE, SkillFile,
+};
 // `subagent`'s own agent-name key is spelled `agent` too, so [`CFG_AGENT`] above
 // is it: one string, exported once, rather than two constants a reader would have
 // to check are equal.
 pub use subagent::{
-    ARG_CONTEXT, ARG_OUTPUT, ARG_TASK, CFG_MAX_DEPTH, CFG_MAX_STEPS, CFG_WHEN_TO_USE,
-    MAX_CONFIGURABLE_DEPTH, Subagent,
+    ARG_CONTEXT, ARG_OUTPUT, ARG_TASK, CFG_HANDOFF_PROMPT, CFG_HANDOVER_PROMPT, CFG_MAX_DEPTH,
+    CFG_MAX_STEPS, CFG_WHEN_TO_USE, MAX_CONFIGURABLE_DEPTH, Subagent,
 };
 pub use update_rows::{DEFAULT_MAX_WRITE_ROWS, UpdateRows};
 
@@ -173,6 +241,7 @@ pub use update_rows::{DEFAULT_MAX_WRITE_ROWS, UpdateRows};
 /// is saved and the collision check (§11.2) wants at the moment of saving.
 pub mod tool_names {
     pub use crate::admin_copilot::tool_names as admin_copilot;
+    pub use crate::ask_user::tool_name as ask_user;
     pub use crate::build_application::tool_name as build_application;
     pub use crate::coding::tool_names as coding;
     pub use crate::coding::{
@@ -191,10 +260,18 @@ pub mod tool_names {
     pub use crate::delete_rows::tool_name as delete_rows;
     pub use crate::http::tool_name as http;
     pub use crate::insert_row::tool_name as insert_row;
+    pub use crate::mcp_server::tool_name as mcp_server;
+    pub use crate::media::generate_image_tool_name as generate_image;
+    pub use crate::memory::tool_names as memory;
+    pub use crate::plan_approval::tool_name as plan_approval;
     pub use crate::query_table::tool_name as query_table;
     pub use crate::run_trigger::tool_name as run_trigger;
+    pub use crate::search_table::tool_name as search_table;
+    pub use crate::similar_rows::tool_name as similar_rows;
+    pub use crate::skill_file::tool_name as skill_file;
     pub use crate::subagent::tool_name as subagent;
     pub use crate::update_rows::tool_name as update_rows;
+    pub use crate::web_search::tool_name as web_search;
 }
 
 /// The built-in trait set a server installs.
@@ -228,7 +305,13 @@ pub fn register_agent_actions(
     traits: Arc<AgentRegistry>,
     providers: Arc<dyn ProviderConnector>,
 ) -> Result<()> {
-    registry.register(Arc::new(RunAgent::new(traits, providers)))
+    registry.register(Arc::new(RunAgent::new(
+        Arc::clone(&traits),
+        Arc::clone(&providers),
+    )))?;
+    // Summarising users' memories into their preferences goes through an
+    // agent's cheap role, so it needs the same two things (AS8.5).
+    registry.register(Arc::new(ConsolidateMemory::new(traits, providers)))
 }
 
 pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
@@ -239,10 +322,26 @@ pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
     registry.register(Arc::new(UpdateRows))?;
     registry.register(Arc::new(DeleteRows))?;
     registry.register(Arc::new(RunTrigger))?;
+    registry.register(Arc::new(RunJsCode))?;
+    registry.register(Arc::new(LibraryTools))?;
+    registry.register(Arc::new(AskUser))?;
+    registry.register(Arc::new(PlanApproval))?;
+    registry.register(Arc::new(PromptPicker))?;
     registry.register(Arc::new(Coding))?;
     registry.register(Arc::new(BuildApplication))?;
     registry.register(Arc::new(Subagent))?;
     registry.register(Arc::new(Http::new()?))?;
+    registry.register(Arc::new(McpServer::new()))?;
+    registry.register(Arc::new(WebSearch::new()?))?;
+    registry.register(Arc::new(GenerateJs))?;
+    registry.register(Arc::new(SearchTable))?;
+    registry.register(Arc::new(SimilarRows::new()))?;
+    registry.register(Arc::new(GenerateImage))?;
+    registry.register(Arc::new(Speech))?;
+    registry.register(Arc::new(PreloadRows))?;
+    registry.register(Arc::new(PreloadCode))?;
+    registry.register(Arc::new(AgentMemory))?;
+    registry.register(Arc::new(SkillFile))?;
     Ok(())
 }
 
@@ -257,16 +356,32 @@ mod tests {
             registry.names(),
             vec![
                 "admin_copilot",
+                "ask_user",
                 "build_application",
                 "coding",
                 "delete_rows",
+                "generate_image",
+                "generate_js",
                 "http",
                 "insert_row",
+                "library_tools",
+                "mcp_server",
+                "memory",
+                "plan_approval",
+                "preload_code",
+                "preload_rows",
                 "preview_pane",
+                "prompt_picker",
                 "query_table",
+                "run_js_code",
                 "run_trigger",
+                "search_table",
+                "similar_rows",
+                "skill_file",
+                "speech",
                 "subagent",
                 "update_rows",
+                "web_search",
             ]
         );
         // Every one of them describes itself and its configuration as data,
@@ -286,7 +401,23 @@ mod tests {
             assert!(!trait_.description().is_empty(), "{}", trait_.name());
             let spec = trait_.config_spec();
             assert!(!spec.is_empty(), "{}", trait_.name());
-            if !matches!(trait_.name(), "admin_copilot" | "http") {
+            // `speech` names no target either: a blank form reads answers
+            // aloud with the default provider's default speech model.
+            // `memory` names none: what it reaches is the agent's own memories.
+            // `ask_user` and `plan_approval` reach only the person in the chat,
+            // and every setting has v1's default. `prompt_picker` takes either
+            // predefined options or a table, so no one field is required; its
+            // `validate_config` asks for one of the two.
+            if !matches!(
+                trait_.name(),
+                "admin_copilot"
+                    | "http"
+                    | "speech"
+                    | "memory"
+                    | "ask_user"
+                    | "plan_approval"
+                    | "prompt_picker"
+            ) {
                 assert!(spec.iter().any(|f| f.required), "{}", trait_.name());
             }
         }
@@ -313,7 +444,39 @@ mod tests {
         };
         assert_eq!(
             spec("query_table"),
-            vec![CFG_TABLE, CFG_FIELDS, CFG_MAX_ROWS]
+            vec![
+                CFG_TABLE,
+                CFG_FIELDS,
+                CFG_MAX_ROWS,
+                CFG_SHOW_RESULTS,
+                CFG_RESULTS_VIEW
+            ]
+        );
+        // The two retrieval traits (TODO-agent-skills AS7): what they reach,
+        // how they are used, what the model is shown and in what form.
+        assert_eq!(
+            spec("search_table"),
+            vec![
+                CFG_TABLE,
+                CFG_MODE,
+                CFG_FIELDS,
+                CFG_HIDDEN_FIELDS,
+                CFG_MAX_ROWS,
+                CFG_DOC_FORMAT
+            ]
+        );
+        assert_eq!(
+            spec("similar_rows"),
+            vec![
+                CFG_TABLE,
+                CFG_VECTOR_FIELD,
+                CFG_RELATION,
+                CFG_MODE,
+                CFG_FIELDS,
+                CFG_HIDDEN_FIELDS,
+                CFG_LIMIT,
+                CFG_DOC_FORMAT
+            ]
         );
         // An insert has no row bound to declare — it writes one row — and a
         // delete has no field allow-list, because it takes the whole row and a
@@ -326,13 +489,31 @@ mod tests {
         );
         assert_eq!(spec("delete_rows"), vec![CFG_TABLE, CFG_MAX_ROWS]);
         assert_eq!(spec("run_trigger"), vec![CFG_TRIGGER]);
+        assert_eq!(
+            spec("run_js_code"),
+            vec![
+                CFG_JS_MODE,
+                CFG_BUTTON_LABEL,
+                CFG_TOOL_NAME,
+                CFG_TOOL_DESCRIPTION,
+                CFG_CODE,
+                CFG_ARGUMENTS
+            ]
+        );
         // The sub-agent it delegates to, then the sentence that tells the
         // *parent* model when to reach for it — the field that decides whether
         // delegation happens at the right moment — then the two bounds: what one
         // delegation may spend, and how deep a chain of them may go.
         assert_eq!(
             spec("subagent"),
-            vec![CFG_AGENT, CFG_WHEN_TO_USE, CFG_MAX_STEPS, CFG_MAX_DEPTH]
+            vec![
+                CFG_AGENT,
+                CFG_WHEN_TO_USE,
+                CFG_MAX_STEPS,
+                CFG_MAX_DEPTH,
+                CFG_HANDOVER_PROMPT,
+                CFG_HANDOFF_PROMPT,
+            ]
         );
 
         // The whole coding loop is **one** form: the scope filled in once — one
@@ -417,6 +598,8 @@ mod tests {
             tool_names::insert_row("books"),
             tool_names::update_rows("books"),
             tool_names::delete_rows("books"),
+            tool_names::search_table("books"),
+            tool_names::similar_rows("books"),
             tool_names::run_trigger("reindex"),
             tool_names::subagent("researcher"),
             tool_names::read_file(&scope),
@@ -446,6 +629,8 @@ mod tests {
                 "insert_into_books",
                 "update_books",
                 "delete_from_books",
+                "search_books",
+                "search_similar_books",
                 "run_reindex",
                 "delegate_to_researcher",
                 "read_file_app_src_web",

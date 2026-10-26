@@ -33,7 +33,8 @@ use sc_query::{BinOp, Expr, Projection, Select, Source};
 ///
 /// The empty-relation answer is a property of the function, so it lives here
 /// rather than with the caller: [`Sum`](AggFunc::Sum) and
-/// [`StringAgg`](AggFunc::StringAgg) coalesce, the rest do not.
+/// [`StringAgg`](AggFunc::StringAgg) and [`JsonAgg`](AggFunc::JsonAgg)
+/// coalesce, the rest do not.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AggFunc {
     /// `count(*)` with no value expression — rows, not values — or
@@ -55,6 +56,9 @@ pub enum AggFunc {
         /// The separator expression (a literal, bound on render).
         separator: Expr,
     },
+    /// `coalesce(jsonb_agg(v), jsonb_build_array())`: the values as a JSON
+    /// array, `[]` over no rows like the JS `map` it translates.
+    JsonAgg,
 }
 
 impl AggFunc {
@@ -67,6 +71,7 @@ impl AggFunc {
             AggFunc::Min => "min",
             AggFunc::Max => "max",
             AggFunc::StringAgg { .. } => "string_agg",
+            AggFunc::JsonAgg => "jsonb_agg",
         }
     }
 }
@@ -221,6 +226,13 @@ fn agg_parts(
         AggFunc::StringAgg { separator } => (
             vec![needs_value(value)?, separator.clone()],
             Some(Expr::lit("")),
+        ),
+        AggFunc::JsonAgg => (
+            vec![needs_value(value)?],
+            Some(Expr::Func {
+                name: "jsonb_build_array".into(),
+                args: vec![],
+            }),
         ),
     })
 }

@@ -14,6 +14,7 @@ use crate::capabilities::DbCapabilities;
 use crate::row::RowStream;
 use crate::schema::{DescribedColumn, PhysicalTable, SchemaChange};
 use crate::spatial::SpatialSupport;
+use crate::vector::VectorSupport;
 
 /// A single connected database: introspect its schema, run queries, change its
 /// schema, and open transactions (technical design §5).
@@ -130,6 +131,28 @@ pub trait DatabaseDriver: Send + Sync {
     /// not is not an error: the answer is "unavailable", saying why.
     async fn enable_spatial(&self) -> Result<SpatialSupport> {
         self.detect_spatial().await
+    }
+
+    /// Whether this database can hold vectors, as last found out by
+    /// [`detect_vector`](DatabaseDriver::detect_vector) or
+    /// [`enable_vector`](DatabaseDriver::enable_vector) (TODO-agent-skills
+    /// AS2.2).
+    ///
+    /// The default is the answer for a backend that stores vectors itself.
+    fn vector(&self) -> VectorSupport {
+        VectorSupport::builtin()
+    }
+
+    /// Ask the database whether it can hold vectors, and remember the answer.
+    async fn detect_vector(&self) -> Result<VectorSupport> {
+        Ok(self.vector())
+    }
+
+    /// Install pgvector where the connection's role may, then answer as
+    /// [`detect_vector`](DatabaseDriver::detect_vector) does. A role that may
+    /// not is not an error: the answer is "unavailable", saying why.
+    async fn enable_vector(&self) -> Result<VectorSupport> {
+        self.detect_vector().await
     }
 }
 

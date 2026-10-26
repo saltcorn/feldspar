@@ -371,6 +371,32 @@ pub fn build_router_with_apps(
         // what makes it safe to exempt from the CSRF middleware below, and is
         // the whole of the confused-deputy story rather than belt-and-braces.
         .route(MCP_ROUTE, axum::routing::post(crate::mcp::mcp))
+        // A build host's agent (`TODO-build-hosts.md`): by its bearer token and
+        // nothing else, so it is exempt from the CSRF check as `/mcp` is.
+        .route(
+            crate::build_agent::BUILD_AGENT_HEARTBEAT_ROUTE,
+            axum::routing::post(crate::build_agent::heartbeat),
+        )
+        .route(
+            crate::build_agent::BUILD_AGENT_CLAIM_ROUTE,
+            axum::routing::post(crate::build_agent::claim),
+        )
+        .route(
+            "/build-agent/jobs/{id}/project",
+            axum::routing::get(crate::build_agent::project),
+        )
+        .route(
+            "/build-agent/jobs/{id}/log",
+            axum::routing::post(crate::build_agent::log),
+        )
+        .route(
+            "/build-agent/jobs/{id}/artifact",
+            axum::routing::post(crate::build_agent::artifact),
+        )
+        .route(
+            "/build-agent/jobs/{id}/failed",
+            axum::routing::post(crate::build_agent::failed),
+        )
         // The far end of moving the admin UI to its own subdomain (Settings →
         // Development): a single-use token from the old host becomes a session
         // here, so following the move does not mean logging in again. A real

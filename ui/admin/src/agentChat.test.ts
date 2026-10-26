@@ -674,3 +674,117 @@ describe("grouping consecutive tool calls", () => {
     expect(group.kind === "tools" && group.calls.length).toBe(2);
   });
 });
+
+describe("interactive chat (TODO-agent-skills AS6.5)", () => {
+  const request = {
+    id: "q1",
+    prompt: "Which colour?",
+    kind: "choice" as const,
+    options: [
+      { value: "r", label: "Red" },
+      { value: "b", label: "Blue" },
+    ],
+    multiple: false,
+  };
+
+  it("ends a turn on a question, and answers it as the next turn", () => {
+    const { socket, chat } = session();
+    chat.send("paint the shelf");
+    socket.deliver({
+      type: "done",
+      run: "run-1",
+      state: "waiting",
+      answer: "",
+      conclusion: "awaiting_user",
+      request,
+    });
+    const asked = chat.current();
+    expect(asked.awaiting?.id).toBe("q1");
+    expect(asked.entries[asked.entries.length - 1]).toEqual({ kind: "request", request });
+    // No notice: the question is the ending.
+    expect(asked.entries.some((e) => e.kind === "notice")).toBe(false);
+
+    chat.answer(request, "b");
+    expect(socket.messages()[2]).toEqual({ type: "message", answers_request: "q1", value: "b" });
+    const answered = chat.current();
+    expect(answered.awaiting).toBeNull();
+    expect(answered.entries[answered.entries.length - 1]).toEqual({ kind: "user", text: "Blue" });
+    // A second answer, to a question no longer waiting, sends nothing.
+    chat.answer(request, "r");
+    expect(socket.messages()).toHaveLength(3);
+  });
+
+  it("an ordinary message passes the question over", () => {
+    const { socket, chat } = session();
+    socket.deliver({ type: "awaiting", request });
+    expect(chat.current().awaiting?.id).toBe("q1");
+    chat.send("never mind");
+    expect(chat.current().awaiting).toBeNull();
+  });
+
+  it("puts what a tool showed the person in the transcript, after the tool", () => {
+    const { socket, chat } = session();
+    chat.send("show me");
+    socket.deliver({ type: "tool_call", id: "c1", name: "show", arguments: {} });
+    const parts = [{ id: "p1", kind: "rows", mime_type: "application/json", summary: "Shelf (1 rows)" }];
+    socket.deliver({ type: "tool_result", id: "c1", name: "show", content: "shown", is_error: false, display: parts });
+    const entries = chat.current().entries;
+    expect(entries[entries.length - 1]).toEqual({ kind: "display", parts });
+  });
+
+  it("puts a spoken answer after the answer, live and reopened (AS11.2)", () => {
+    const parts = [{ id: "p2", kind: "audio", mime_type: "audio/mpeg", summary: "answer.mp3 (1 KB)" }];
+    const { socket, chat } = session();
+    chat.send("hello");
+    socket.deliver({ type: "text", delta: "Hello there." });
+    socket.deliver({ type: "display", display: parts });
+    const live = chat.current().entries;
+    expect(live[live.length - 1]).toEqual({ kind: "display", parts });
+
+    const entries = transcriptFromRun({
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "Hello there." },
+      ],
+      display: { "answer:1": parts },
+      phase: { phase: "done", conclusion: { conclusion: "answered", answer: "Hello there." } },
+    });
+    expect(entries.map((e) => e.kind)).toEqual(["user", "assistant", "display"]);
+  });
+
+  it("presses a button control: its label, sent at once with itself set", () => {
+    const { socket, chat } = session();
+    socket.deliver({
+      type: "controls",
+      controls: [
+        { kind: "select", name: "tone", label: "Tone", options: [{ value: "plain" }, { value: "fancy" }] },
+        { kind: "button", name: "run_it", label: "Run it" },
+      ],
+    });
+    // An option with no label is read by its value; a button has no standing value.
+    expect(chat.current().controlValues).toEqual({ tone: "plain" });
+    chat.press("run_it");
+    expect(socket.messages()[1]).toEqual({
+      type: "message",
+      text: "Run it",
+      controls: { tone: "plain", run_it: true },
+    });
+  });
+
+  it("reopens a stored run waiting on a question, with what its tools showed", () => {
+    const parts = [{ id: "p1", kind: "image", mime_type: "image/png", summary: "cover.png (1 KB)" }];
+    const entries = transcriptFromRun({
+      messages: [
+        { role: "user", content: "show and ask" },
+        { role: "assistant", content: "", tool_calls: [{ id: "c1", name: "show", arguments: {} }] },
+        { role: "tool_result", tool_call_id: "c1", name: "show", content: "shown" },
+      ],
+      display: { c1: parts },
+      phase: { phase: "done", conclusion: { conclusion: "awaiting_user", request } },
+    });
+    expect(entries.map((e) => e.kind)).toEqual(["user", "tool", "display", "request"]);
+    const { chat } = session("librarian", { runId: "run-1", entries });
+    expect(chat.current().awaiting?.id).toBe("q1");
+    expect(conclusionLabel({ conclusion: "awaiting_user" })).toBe("waiting for an answer");
+  });
+});

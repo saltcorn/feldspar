@@ -69,6 +69,57 @@ pub const DEFAULT_MAX_IMAGES: usize = 20;
 /// The attribute allowing several tool calls in one model turn. Absent is off
 /// (R§12): sequential calls are easier to fingerprint.
 pub const ATTR_PARALLEL_TOOL_CALLS: &str = "parallel_tool_calls";
+/// The attribute holding how much the model reasons before answering
+/// (`none` … `max`) — sparse: absent leaves the model row's setting, then the
+/// host's default. Wins over the model row's `reasoning_effort`.
+pub const ATTR_REASONING_EFFORT: &str = "reasoning_effort";
+/// The attribute listing the models a person may pick in the chat
+/// (TODO-agent-skills AS10.4): `[{"provider", "model"?, "label"?}]`. When set,
+/// the composer gets a [`MODEL_CONTROL`] select, and the pick answers that
+/// message's turn in place of the executor's model.
+pub const ATTR_PICKABLE_MODELS: &str = "pickable_models";
+/// The name of the composer control [`ATTR_PICKABLE_MODELS`] adds.
+pub const MODEL_CONTROL: &str = "model";
+/// The [`MODEL_CONTROL`] value that keeps the agent's own model.
+pub const MODEL_CONTROL_DEFAULT: &str = "";
+
+/// One model a person may pick in the chat ([`ATTR_PICKABLE_MODELS`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PickableModel {
+    /// The `_fd_llm_providers` name.
+    pub provider: String,
+    /// The model row's name under that provider, or `None` for its default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// What the person reads in the select; the pair when empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl PickableModel {
+    /// The pair it names.
+    pub fn model_ref(&self) -> ModelRef {
+        ModelRef::new(self.provider.trim(), self.model.as_deref())
+    }
+
+    /// The value the select sends for it: `provider/model`, or the provider
+    /// alone for its default model.
+    pub fn value(&self) -> String {
+        let named = self.model_ref();
+        match named.model {
+            Some(model) => format!("{}/{model}", named.provider),
+            None => named.provider,
+        }
+    }
+
+    /// What the person reads for it.
+    pub fn shown(&self) -> String {
+        match self.label.as_deref().map(str::trim) {
+            Some(label) if !label.is_empty() => label.to_owned(),
+            _ => self.value(),
+        }
+    }
+}
 
 /// Which of an agent's models answers a step (TODO §3).
 ///
@@ -449,6 +500,72 @@ impl Agent {
             .and_then(Json::as_bool)
             .unwrap_or(false)
     }
+
+    /// How much the model reasons before answering, if the agent says. A stored
+    /// value that names no level is an error, so a save names it rather than a
+    /// run silently sending the model row's.
+    pub fn reasoning_effort(&self) -> sc_error::Result<Option<sc_llm::ReasoningEffort>> {
+        sc_llm::ReasoningEffort::from_setting(
+            self.attributes.get(ATTR_REASONING_EFFORT),
+            &format!("agent `{}`: `{ATTR_REASONING_EFFORT}`", self.name),
+        )
+    }
+
+    /// The models a person may pick in the chat (AS10.4), in order; empty when
+    /// the agent offers no choice. A stored value of the wrong shape, or an
+    /// entry with no provider, is an error, as a role's is.
+    pub fn pickable_models(&self) -> sc_error::Result<Vec<PickableModel>> {
+        let entries = match self.attributes.get(ATTR_PICKABLE_MODELS) {
+            None | Some(Json::Null) => return Ok(Vec::new()),
+            Some(value) => value,
+        };
+        let models: Vec<PickableModel> = serde_json::from_value(entries.clone()).map_err(|e| {
+            sc_error::Error::invalid(format!(
+                "`{ATTR_PICKABLE_MODELS}` should be a list of \
+                     {{\"provider\", \"model\", \"label\"}}: {e}"
+            ))
+        })?;
+        let mut seen = std::collections::BTreeSet::new();
+        for model in &models {
+            if model.provider.trim().is_empty() {
+                return Err(sc_error::Error::invalid(format!(
+                    "every entry of `{ATTR_PICKABLE_MODELS}` needs a provider"
+                )));
+            }
+            if !seen.insert(model.value()) {
+                return Err(sc_error::Error::invalid(format!(
+                    "`{ATTR_PICKABLE_MODELS}` names {} twice",
+                    model.value()
+                )));
+            }
+        }
+        Ok(models)
+    }
+
+    /// The pickable model a [`MODEL_CONTROL`] value names, or `None` for the
+    /// agent's own (an empty value, or none sent).
+    pub fn picked_model(&self, value: Option<&Json>) -> sc_error::Result<Option<PickableModel>> {
+        let value = match value {
+            None | Some(Json::Null) => return Ok(None),
+            Some(Json::String(v)) if v == MODEL_CONTROL_DEFAULT => return Ok(None),
+            Some(Json::String(v)) => v,
+            Some(other) => {
+                return Err(sc_error::Error::invalid(format!(
+                    "`{MODEL_CONTROL}` should name a model, got {other}"
+                )));
+            }
+        };
+        self.pickable_models()?
+            .into_iter()
+            .find(|m| &m.value() == value)
+            .map(Some)
+            .ok_or_else(|| {
+                sc_error::Error::invalid(format!(
+                    "agent `{}` offers no model `{value}` to pick",
+                    self.name
+                ))
+            })
+    }
 }
 
 #[cfg(test)]
@@ -473,6 +590,40 @@ mod tests {
         assert_eq!(a.traits[0].config["table"], json!("books"));
         assert_eq!(a.traits[1].config["table"], json!("orders"));
         assert_eq!(a.min_role, Some(1));
+    }
+
+    #[test]
+    fn pickable_models_are_read_and_named_by_their_pair() {
+        let a = Agent::new("a", "house").attribute(
+            ATTR_PICKABLE_MODELS,
+            json!([
+                { "provider": "house", "model": "fast", "label": "Fast" },
+                { "provider": "other" },
+            ]),
+        );
+        let models = a.pickable_models().unwrap();
+        assert_eq!(models[0].value(), "house/fast");
+        assert_eq!(models[0].shown(), "Fast");
+        assert_eq!(models[1].value(), "other");
+        assert_eq!(models[1].shown(), "other");
+        assert_eq!(
+            a.picked_model(Some(&json!("other")))
+                .unwrap()
+                .unwrap()
+                .provider,
+            "other"
+        );
+        assert!(a.picked_model(Some(&json!(""))).unwrap().is_none());
+        assert!(a.picked_model(None).unwrap().is_none());
+        assert!(a.picked_model(Some(&json!("house/slow"))).is_err());
+        let twice = Agent::new("a", "house").attribute(
+            ATTR_PICKABLE_MODELS,
+            json!([{ "provider": "x" }, { "provider": "x" }]),
+        );
+        assert!(twice.pickable_models().is_err());
+        let blank =
+            Agent::new("a", "house").attribute(ATTR_PICKABLE_MODELS, json!([{ "provider": " " }]));
+        assert!(blank.pickable_models().is_err());
     }
 
     #[test]
@@ -565,6 +716,14 @@ mod tests {
         assert_eq!(a.max_wall_seconds(), Some(60));
         assert_eq!(a.context_budget(), Some(8000));
         assert!(a.parallel_tool_calls());
+        assert_eq!(a.reasoning_effort().unwrap(), None);
+        let a = a.attribute(ATTR_REASONING_EFFORT, "low");
+        assert_eq!(
+            a.reasoning_effort().unwrap(),
+            Some(sc_llm::ReasoningEffort::Low)
+        );
+        let a = a.attribute(ATTR_REASONING_EFFORT, "lots");
+        assert!(a.reasoning_effort().is_err());
         for role in ModelRole::ALL {
             assert_eq!(ModelRole::parse(role.as_str()).unwrap(), role);
         }

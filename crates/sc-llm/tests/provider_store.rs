@@ -18,11 +18,11 @@ use sc_error::Result;
 use sc_llm::{
     ANTHROPIC_BACKEND, CFG_API_KEY, CFG_BASE_URL, CFG_CONTEXT_WINDOW, CFG_EDIT_FORMAT,
     CFG_PRICE_INPUT, CFG_PRICE_OUTPUT, LLM_MODELS_TABLE, LlmModelDef, LlmProviderDef,
-    LlmProviderDefId, OPENAI_CHAT_BACKEND, OPENAI_RESPONSES_BACKEND, bootstrap_llm_providers,
-    check_provider_saveable, connect_model, delete_llm_model, delete_llm_provider, list_llm_models,
-    list_llm_providers, load_llm_model, load_llm_provider, load_llm_provider_by_name,
-    provider_config_spec, require_llm_model, require_llm_provider, save_llm_model,
-    save_llm_provider,
+    LlmProviderDefId, ModelKind, OPENAI_CHAT_BACKEND, OPENAI_RESPONSES_BACKEND,
+    bootstrap_llm_providers, check_provider_saveable, connect_model, delete_llm_model,
+    delete_llm_provider, list_llm_models, list_llm_providers, load_llm_model, load_llm_provider,
+    load_llm_provider_by_name, provider_config_spec, require_llm_model, require_llm_provider,
+    require_model_of_kind, save_llm_model, save_llm_provider,
 };
 use sc_test_harness::TestDb;
 use sc_types::{SECRET_SENTINEL, merge_secrets, redact_attrs};
@@ -468,5 +468,97 @@ async fn every_backend_stores_and_reconnects() -> Result<()> {
         assert_eq!(connected.provider.model(), model.name);
         assert_eq!(connected.backend, def.backend);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn each_kind_of_model_has_its_own_default_and_keeps_its_kind() -> Result<()> {
+    // TODO-agent-skills AS3.1.
+    let db = TestDb::new().await?;
+    let catalog = catalog(&db).await?;
+    let def = openai("main");
+    save_llm_provider(&catalog, &def).await?;
+
+    let chat = LlmModelDef::new(def.id, "gpt-5.1").default_model();
+    let small = LlmModelDef::new(def.id, "text-embedding-3-small")
+        .kind(ModelKind::Embedding)
+        .default_model()
+        .with(CFG_PRICE_INPUT, 0.02);
+    let large = LlmModelDef::new(def.id, "text-embedding-3-large").kind(ModelKind::Embedding);
+    for model in [&chat, &small, &large] {
+        save_llm_model(&catalog, model).await?;
+    }
+    // The kind is stored and read back.
+    let loaded = load_llm_model(&catalog, small.id).await?.expect("saved");
+    assert_eq!(loaded.kind, ModelKind::Embedding);
+    assert_eq!(loaded.prices().input, Some(0.02));
+
+    // Making another embedding model the default leaves the chat default be.
+    save_llm_model(&catalog, &large.clone().default_model()).await?;
+    let defaults: Vec<(String, ModelKind)> = list_llm_models(&catalog, &def)
+        .await?
+        .into_iter()
+        .filter(|m| m.is_default)
+        .map(|m| (m.name, m.kind))
+        .collect();
+    assert_eq!(
+        defaults,
+        [
+            ("gpt-5.1".to_owned(), ModelKind::Chat),
+            ("text-embedding-3-large".to_owned(), ModelKind::Embedding),
+        ]
+    );
+
+    // Each kind resolves to its own default, and a row of another kind is
+    // refused by name.
+    assert_eq!(
+        require_llm_model(&catalog, &def, None).await?.name,
+        "gpt-5.1"
+    );
+    assert_eq!(
+        require_model_of_kind(&catalog, &def, None, ModelKind::Embedding)
+            .await?
+            .name,
+        "text-embedding-3-large"
+    );
+    let err = require_llm_model(&catalog, &def, Some("text-embedding-3-small"))
+        .await
+        .expect_err("not chat");
+    assert!(
+        err.to_string()
+            .contains("is an embedding model, not a chat model"),
+        "{err}"
+    );
+    let err = require_model_of_kind(&catalog, &def, None, ModelKind::Image)
+        .await
+        .expect_err("no image default");
+    assert!(err.to_string().contains("no default image model"), "{err}");
+    // A non-chat model named with no row is used by its name, unpriced.
+    let unlisted =
+        require_model_of_kind(&catalog, &def, Some("dall-e-3"), ModelKind::Image).await?;
+    assert_eq!(
+        (unlisted.name.as_str(), unlisted.kind),
+        ("dall-e-3", ModelKind::Image)
+    );
+    assert_eq!(unlisted.prices().per_image, None);
+
+    // A chat model cannot connect as anything else, nor a row change kind.
+    let err = connect_model(&def, &small).expect_err("not chat");
+    assert!(err.to_string().contains("not a chat model"), "{err}");
+    let err = save_llm_model(&catalog, &small.clone().kind(ModelKind::Speech))
+        .await
+        .expect_err("kind is fixed");
+    assert!(err.to_string().contains("cannot become a speech"), "{err}");
+
+    // Anthropic serves chat only.
+    let claude = anthropic("claude");
+    save_llm_provider(&catalog, &claude).await?;
+    let err = save_llm_model(
+        &catalog,
+        &LlmModelDef::new(claude.id, "voyage").kind(ModelKind::Embedding),
+    )
+    .await
+    .expect_err("anthropic has no embeddings");
+    assert!(err.to_string().contains("chat models only"), "{err}");
     Ok(())
 }

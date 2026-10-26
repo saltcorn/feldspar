@@ -42,6 +42,7 @@
 mod code_body;
 mod code_fetch;
 mod delete_rows;
+mod embed_rows;
 mod fetch;
 mod fit_model;
 mod grant_role;
@@ -61,6 +62,7 @@ use sc_error::Result;
 
 pub use code_body::{CodeSurfaces, Hosts as CodeBodyHosts};
 pub use delete_rows::DeleteRows;
+pub use embed_rows::EmbedRows;
 pub use fetch::Fetch;
 pub use fit_model::FitModel;
 pub use grant_role::{GRANT_ROLE_SOURCE, GrantRole};
@@ -101,6 +103,7 @@ pub fn register_builtin_actions(registry: &mut ActionRegistry) -> Result<()> {
     registry.register(Arc::new(Publish))?;
     registry.register(Arc::new(Undo))?;
     registry.register(Arc::new(GrantRole))?;
+    registry.register(Arc::new(EmbedRows))?;
     Ok(())
 }
 
@@ -135,6 +138,7 @@ mod tests {
             registry.names(),
             vec![
                 "delete_rows",
+                "embed_rows",
                 "fetch",
                 "grant_role",
                 "insert_row",

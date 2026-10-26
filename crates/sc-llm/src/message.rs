@@ -319,6 +319,15 @@ pub struct LlmRequest {
     /// where the host takes one (OpenAI's `prompt_cache_key`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
+    /// How much the model reasons before answering. `None` sends nothing and
+    /// leaves the model row's setting, then the host's default
+    /// ([`request_options`](crate::request_options)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<crate::ReasoningEffort>,
+    /// Vendor-specific request fields merged into the body last — a model row's
+    /// `extra_params`, which win over what the adapter computed.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_params: serde_json::Map<String, serde_json::Value>,
 }
 
 impl LlmRequest {

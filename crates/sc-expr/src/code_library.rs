@@ -126,6 +126,13 @@ pub(crate) fn library_params(mut handles: Vec<&'static str>) -> Vec<&'static str
 /// Everything before the code is on **one line**, so a line number the engine
 /// reports is the author's plus one ([`LIBRARY_LINE_OFFSET`]). `require` is the
 /// body's refusal and `models` rides on `db` exactly as in a body.
+///
+/// The code goes in a **block of its own**, so a top-level declaration in it
+/// shadows a handle rather than redeclaring it: `async function models()` or
+/// `const db = …` in a library would otherwise compile in the save check, whose
+/// run has no such handles, and then fail in every importer that has them
+/// ("Identifier 'models' has already been declared"). A body gets the same
+/// freedom from being compiled as a nested function.
 pub(crate) fn library_definition(code: &str, handles: &[&str], wants_db: bool) -> String {
     let params = LIBRARY_PARAMS
         .iter()
@@ -139,8 +146,8 @@ pub(crate) fn library_definition(code: &str, handles: &[&str], wants_db: bool) -
         ""
     };
     format!(
-        "function ({params}) {{ \"use strict\"; const require = __scRequire(false); {models}\n\
-         {code}\n}}"
+        "function ({params}) {{ \"use strict\"; const require = __scRequire(false); {models}{{\n\
+         {code}\n}}}}"
     )
 }
 

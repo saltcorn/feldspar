@@ -76,6 +76,8 @@ impl ColType {
             BasicType::Time => ColType::Time,
             BasicType::Timestamp => ColType::Timestamp,
             BasicType::Geometry(_) => ColType::Geometry,
+            // A vector reads back as its JSON array of numbers.
+            BasicType::Vector(_) => ColType::Json,
             BasicType::Other(_) => ColType::Text,
         }
     }

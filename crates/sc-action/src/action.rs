@@ -558,6 +558,14 @@ impl<'a> ActionContext<'a> {
         self.triggers
     }
 
+    /// The shared handle of the dispatcher this action was fired by, for an
+    /// action that hands it on to something keeping an `Arc` — `run_agent`'s
+    /// agent. `None` where there is no dispatcher, or it was not shared through
+    /// [`TriggerDispatcher::into_shared`].
+    pub fn shared_triggers(&self) -> Option<Arc<TriggerDispatcher>> {
+        self.triggers.and_then(TriggerDispatcher::shared)
+    }
+
     /// The mail transport, or a configuration error naming the trigger.
     ///
     /// Fails for the same reason [`evaluator`](ActionContext::evaluator) does: a

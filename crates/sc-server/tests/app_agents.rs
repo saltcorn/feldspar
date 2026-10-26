@@ -123,6 +123,93 @@ fn helpdesk() -> Agent {
         .min_role(ROLE_MEMBER)
 }
 
+/// `interviewer`: asks, shows, and has a composer control (TODO-agent-skills
+/// AS6), through the test trait below.
+fn interviewer() -> Agent {
+    Agent::new("interviewer", "house")
+        .system_prompt("You interview people.")
+        .with_trait(EnabledTrait::new("interview"))
+        .min_role(ROLE_MEMBER)
+}
+
+/// A trait that asks (`ask`), shows (`show`) and adds a `tone` select.
+struct Interview;
+
+#[async_trait]
+impl sc_agent::AgentTrait for Interview {
+    fn name(&self) -> &str {
+        "interview"
+    }
+
+    fn description(&self) -> &str {
+        "Ask the person, and show them things"
+    }
+
+    fn config_spec(&self) -> Vec<sc_types::FormField> {
+        Vec::new()
+    }
+
+    fn tools(
+        &self,
+        _cx: &sc_agent::ToolsContext<'_>,
+        _config: &sc_types::Attrs,
+    ) -> Vec<sc_llm::ToolSpec> {
+        let object = json!({ "type": "object", "properties": {} });
+        vec![
+            sc_llm::ToolSpec::new("ask", "Ask which colour", object.clone()),
+            sc_llm::ToolSpec::new("show", "Show the shelf", object),
+        ]
+    }
+
+    async fn call(
+        &self,
+        _config: &sc_types::Attrs,
+        tool: &str,
+        _args: &Value,
+        ctx: &mut sc_agent::TraitContext<'_>,
+    ) -> Result<Value> {
+        if tool == "ask" {
+            ctx.await_user(sc_agent::UserRequest::new(
+                "Which colour?",
+                sc_agent::RequestKind::Choice {
+                    options: vec![
+                        sc_agent::ChoiceOption::new("r").label("Red"),
+                        sc_agent::ChoiceOption::new("b").label("Blue"),
+                    ],
+                    multiple: false,
+                },
+            ))?;
+            return Ok(json!("asked"));
+        }
+        ctx.show(sc_agent::DisplayPart::Rows {
+            title: Some("Shelf".into()),
+            view: None,
+            columns: vec!["title".into()],
+            rows: vec![json!({ "title": "Dune" })],
+        })?;
+        ctx.show(sc_agent::DisplayPart::Image {
+            mime_type: "image/png".into(),
+            data: b"\x89PNGbytes".to_vec(),
+            name: None,
+        })?;
+        Ok(json!("shown"))
+    }
+
+    fn controls(&self, _config: &sc_types::Attrs) -> Vec<sc_agent::ComposerControl> {
+        vec![sc_agent::ComposerControl {
+            name: "tone".into(),
+            label: "Tone".into(),
+            kind: sc_agent::ControlKind::Select {
+                options: vec![
+                    sc_agent::ChoiceOption::new("plain"),
+                    sc_agent::ChoiceOption::new("fancy"),
+                ],
+                default: None,
+            },
+        }]
+    }
+}
+
 fn greeter() -> Agent {
     Agent::new("greeter", "house")
         .system_prompt("You greet people.")
@@ -133,6 +220,7 @@ fn shop(tools: sc_app::ToolDetail) -> Application {
     Application::new("Shop", "shop", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
         .with_agent(AgentExposure::new("helpdesk").tools(tools))
+        .with_agent(AgentExposure::new("interviewer").tools(tools))
         .with_agent(
             AgentExposure::new("greeter")
                 .chat(false)
@@ -183,10 +271,13 @@ async fn serve(provider: Arc<dyn LlmProvider>, tools: sc_app::ToolDetail) -> Res
         )
         .await?;
 
-    let services = sc_server::install_agents(&catalog)
-        .await?
+    // The tables; then the built-in traits and the test's own.
+    sc_server::install_agents(&catalog).await?;
+    let mut registry = sc_core_traits::builtin_traits()?;
+    registry.register(Arc::new(Interview))?;
+    let services = sc_server::AgentServices::new(Arc::new(registry))
         .with_providers(Arc::new(Scripted(provider)));
-    for agent in [helpdesk(), greeter()] {
+    for agent in [helpdesk(), greeter(), interviewer()] {
         sc_agent::save_agent(&catalog, services.registry(), &agent).await?;
     }
     let apps = Arc::new(AppMounts::new(catalog.clone()).with_agents(services));
@@ -711,5 +802,138 @@ async fn a_client_that_goes_away_stops_the_agent() -> Result<()> {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    Ok(())
+}
+
+// --- interactive chat (TODO-agent-skills AS6.6) ------------------------------------
+
+#[tokio::test]
+async fn an_application_chat_shows_parts_asks_and_takes_the_answer() -> Result<()> {
+    let provider = Arc::new(FakeProvider::new([
+        Reply::calls("show", json!({})),
+        Reply::says("There it is."),
+        Reply::calls("ask", json!({})),
+        Reply::says("Blue it is."),
+    ]));
+    let server = serve(provider.clone(), sc_app::ToolDetail::None).await?;
+    let mut alice = Browser::new(&server);
+    alice.login("alice").await;
+
+    let controls = alice
+        .send("GET", "/api/_agents/interviewer/controls", None)
+        .await
+        .json();
+    assert_eq!(controls[0]["name"], "tone", "{controls}");
+    assert_eq!(controls[0]["kind"], "select");
+
+    // Display parts arrive even with tools hidden: they are the person's.
+    let turn = alice
+        .send(
+            "POST",
+            "/api/_agents/interviewer/chat",
+            Some(json!({ "message": "Show me the shelf", "controls": { "tone": "fancy" } })),
+        )
+        .await;
+    let events = turn.events();
+    let run = events[0]["run"].as_str().unwrap().to_owned();
+    let shown = events
+        .iter()
+        .find(|e| e["type"] == "display")
+        .unwrap_or_else(|| panic!("a display event: {events:#?}"));
+    let parts = shown["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 2);
+    assert!(
+        !events.iter().any(|e| e["type"] == "tool_call"),
+        "tools hidden"
+    );
+    let rows_id = parts[0]["id"].as_str().unwrap();
+    let image_id = parts[1]["id"].as_str().unwrap();
+    let rows = alice
+        .send(
+            "GET",
+            &format!("/api/_agents/interviewer/runs/{run}/parts/{rows_id}"),
+            None,
+        )
+        .await
+        .json();
+    assert_eq!(rows["rows"][0]["title"], "Dune", "{rows}");
+    let image = alice
+        .send(
+            "GET",
+            &format!("/api/_agents/interviewer/runs/{run}/parts/{image_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(image.content_type, "image/png");
+    assert_eq!(image.body, b"\x89PNGbytes");
+    // Somebody else's conversation's part is the same 404 as none at all.
+    let mut bob = Browser::new(&server);
+    bob.login("bob").await;
+    let theirs = bob
+        .send(
+            "GET",
+            &format!("/api/_agents/interviewer/runs/{run}/parts/{rows_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::NOT_FOUND);
+
+    // A turn that asks ends `awaiting_user`, with the question.
+    let asked = alice
+        .send(
+            "POST",
+            "/api/_agents/interviewer/chat",
+            Some(json!({ "message": "Paint it", "run": run })),
+        )
+        .await
+        .events();
+    let done = asked.last().unwrap();
+    assert_eq!(done["conclusion"], "awaiting_user", "{asked:#?}");
+    assert_eq!(done["state"], "waiting");
+    let request = done["request"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(done["request"]["kind"], "choice");
+
+    // Read back: the parts and the question are in the transcript.
+    let read = alice
+        .send("GET", &format!("/api/_agents/interviewer/runs/{run}"), None)
+        .await
+        .json();
+    assert_eq!(read["awaiting"]["id"], request.as_str());
+    let text = read.to_string();
+    assert!(text.contains(r#""type":"display""#), "{read}");
+    assert!(text.contains(r#""type":"request""#), "{read}");
+
+    // The answer is the next turn.
+    let answered = alice
+        .send(
+            "POST",
+            "/api/_agents/interviewer/chat",
+            Some(json!({ "answers_request": request, "value": "b", "run": run })),
+        )
+        .await
+        .events();
+    assert_eq!(text_of(&answered), "Blue it is.");
+    assert!(
+        format!("{:?}", provider.last_request().unwrap().messages).contains("My answer: Blue"),
+        "the model read the answer"
+    );
+
+    // Answering again is refused, in the stream.
+    let stale = alice
+        .send(
+            "POST",
+            "/api/_agents/interviewer/chat",
+            Some(json!({ "answers_request": request, "value": "r", "run": run })),
+        )
+        .await
+        .events();
+    assert!(
+        stale.iter().any(|e| e["type"] == "error"
+            && e["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("no longer waiting")),
+        "{stale:#?}"
+    );
     Ok(())
 }

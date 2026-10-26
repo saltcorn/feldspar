@@ -99,3 +99,45 @@ async fn a_request_maps_onto_chat_completions() {
     );
     assert!(image_message.contains("data:image/png;base64,"), "{body}");
 }
+
+#[tokio::test]
+async fn a_model_rows_reasoning_effort_and_extra_params_reach_the_host() {
+    // A host serving a reasoning model that should not think over "hello":
+    // the row says so once, and every request through `connect_model` says it.
+    let mut body = sse_events(&[chunk("Hi")]);
+    body.push_str("data: [DONE]\n\n");
+    let (base, mut requests) = common::serve_capturing(Reply::sse(body))
+        .await
+        .expect("the stub");
+    let provider = sc_llm::LlmProviderDef::new("tensor", OPENAI_CHAT_BACKEND)
+        .with(sc_llm::CFG_BASE_URL, format!("{base}/v1"));
+    let model = sc_llm::LlmModelDef::new(provider.id, "glm-5.3-flash")
+        .with(sc_llm::CFG_REASONING_EFFORT, "none")
+        .with(sc_llm::CFG_EXTRA_PARAMS, json!({ "top_p": 0.8 }));
+    let connected = sc_llm::connect_model(&provider, &model).expect("connected");
+    connected
+        .provider
+        .stream(LlmRequest::prompt("hello"))
+        .await
+        .expect("the stream")
+        .collect()
+        .await
+        .expect("collecting");
+    let sent = requests.next_body().await.expect("the request");
+    assert_eq!(sent["reasoning_effort"], json!("none"), "{sent}");
+    assert_eq!(sent["top_p"], json!(0.8), "{sent}");
+
+    // A request that sets its own effort (an agent's) wins over the row's.
+    let mut own = LlmRequest::prompt("plan the migration");
+    own.reasoning_effort = Some(sc_llm::ReasoningEffort::High);
+    connected
+        .provider
+        .stream(own)
+        .await
+        .expect("the stream")
+        .collect()
+        .await
+        .expect("collecting");
+    let sent = requests.next_body().await.expect("the second request");
+    assert_eq!(sent["reasoning_effort"], json!("high"), "{sent}");
+}

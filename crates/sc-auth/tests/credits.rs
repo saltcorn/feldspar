@@ -475,14 +475,21 @@ async fn an_allowance_rolls_over_none_all_or_capped_over_three_periods() -> Resu
 async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
     let f = fixture().await?;
     let user = create_user(&f.catalog, "late@example.com", "pw", 80).await?;
-    // The period, and its allowance, end just before the renewal arrives.
+    // The period, and its allowance, end just before the renewal arrives. The
+    // grant and the debit have to land inside the period, which under a full
+    // parallel test run can take well over a second, so the period is generous
+    // and the wait is for whatever is left of it.
+    let expires_at = Utc::now() + Duration::seconds(4);
     let first = NewCreditGrant {
-        expires_at: Some(Utc::now() + Duration::milliseconds(800)),
+        expires_at: Some(expires_at),
         ..allowance(user.id, "period", 1, None)
     };
     grant_credits(&f.catalog, first, None).await?;
     debit_credits(&f.catalog, debit(user.id, d(40), "s1"), None).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let left = (expires_at - Utc::now() + Duration::milliseconds(200))
+        .to_std()
+        .unwrap_or_default();
+    tokio::time::sleep(left).await;
     assert!(credit_balance(&f.catalog, user.id).await?.balance.is_zero());
 
     let renewed =

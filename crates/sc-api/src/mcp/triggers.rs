@@ -365,7 +365,7 @@ fn describe_action_description() -> String {
          be refused.\n\n\
          Many settings hold a formula or a template over the event rather than a \
          literal — `row`, `old`, `user` and `payload` are what is in scope, \
-         `row` and `old` only for `insert`/`update`/`delete`; a `none` trigger \
+         `row` and `old` only for `insert`/`update`/`insert_or_update`/`delete`; a `none` trigger \
          run through `POST /actions/<name>` gets the request body as `payload` — and \
          which ones do is said in each setting's own description. If you get this \
          wrong, `{TOOL_SAVE_TRIGGER}` says so and names the setting; it does not \
@@ -561,7 +561,9 @@ fn save_parameters() -> Json {
                 "type": "string",
                 "description":
                     "The event that fires it. `insert`/`update`/`delete` need a \
-                     `table`; `none` is run on demand; `often`, `hourly`, `daily` \
+                     `table`, and so does `insert_or_update`, which fires on \
+                     either an insert or an update (guard its own write-back \
+                     with `only_if`, e.g. `address !== old.address`); `none` is run on demand; `often`, `hourly`, `daily` \
                      and `weekly` are the scheduled ones and take `minute` and \
                      `hour`.",
                 "enum": events,
@@ -569,8 +571,8 @@ fn save_parameters() -> Json {
             ARG_TABLE: {
                 "type": "string",
                 "description":
-                    "The table an `insert`, `update` or `delete` trigger listens \
-                     to. Every other event refuses one.",
+                    "The table an `insert`, `update`, `insert_or_update` or \
+                     `delete` trigger listens to. Every other event refuses one.",
             },
             ARG_ONLY_IF: {
                 "type": "string",

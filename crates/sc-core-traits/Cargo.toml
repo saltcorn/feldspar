@@ -54,7 +54,13 @@ sc-log.workspace = true
 # built by the same `sc_app::build_application` the admin's Build button runs, so
 # there is one build path and one set of diagnostics to explain.
 sc-app.workspace = true
+# The MCP client the `mcp_server` trait calls a remote server through (AS9.1).
+sc-mcp.workspace = true
 async-trait.workspace = true
+# The agent memory store (TODO-agent-skills AS8.3): its identity key column
+# (`ColumnGenerator`) and the `written_at` stamp.
+sc-db.workspace = true
+chrono.workspace = true
 bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -73,6 +79,8 @@ uuid.workspace = true
 # The `http` trait's client — the workspace's one reqwest, on rustls, so an
 # agent's fetch shares a TLS stack with the `fetch` action and the LLM provider.
 reqwest.workspace = true
+# A model-written body's `fetch` answers binary bodies in base64 (AS5).
+base64.workspace = true
 # The `http` trait turns an HTML page into Markdown, walking the parsed tree
 # first to find the page's main content (see the workspace pin).
 htmd.workspace = true

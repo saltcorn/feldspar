@@ -92,6 +92,9 @@ pub(crate) enum Terminal<'a> {
     MaxBy(Selector<'a>),
     /// `.minBy(sel)` — the row with the least selector value.
     MinBy(Selector<'a>),
+    /// No terminal after a `map` (or the `distinct` after it): the mapped
+    /// values themselves, as an array — v1's `Array_Agg`.
+    Array,
 }
 
 impl Terminal<'_> {
@@ -244,13 +247,18 @@ fn build_chain<'a>(relation: &'a str, steps: &[Step<'a>]) -> Result<Chain<'a>> {
         }
     }
 
-    let terminal = terminal.ok_or_else(|| {
-        err(
-            relation,
-            "an aggregation needs a terminal method \
-             (e.g. `.length`, `.sum(…)`, `.some(…)`)",
-        )
-    })?;
+    let terminal = match terminal {
+        Some(terminal) => terminal,
+        None if map.is_some() => Terminal::Array,
+        None => {
+            return Err(err(
+                relation,
+                "an aggregation needs a terminal method \
+                 (e.g. `.length`, `.sum(…)`, `.some(…)`, or `.map(…)` for the values \
+                 as an array)",
+            ));
+        }
+    };
 
     if member.is_some() && !terminal.is_ordered_selection() {
         return Err(err(relation, "only `maxBy`/`minBy` produce a row"));
@@ -616,7 +624,7 @@ impl<'a> Chain<'a> {
             Terminal::Some(a) | Terminal::Every(a) => {
                 collect_child_fields(a.param, a.body, &mut out)
             }
-            Terminal::Length | Terminal::Includes(_) | Terminal::Join(_) => {}
+            Terminal::Length | Terminal::Includes(_) | Terminal::Join(_) | Terminal::Array => {}
         }
         if let Some(m) = self.member {
             out.push(
@@ -881,6 +889,20 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("not `orders`"), "got: {err}");
+    }
+
+    #[test]
+    fn a_chain_ending_in_its_map_is_the_values_as_an_array() {
+        assert!(validate("order_linesↃorder.map(r => r.status)").is_ok());
+        assert!(
+            validate("order_linesↃorder.filter(r => r.qty > 1).map(r => r.status).distinct()")
+                .is_ok()
+        );
+        // A `filter` alone still leaves rows, not values.
+        let err = validate("order_linesↃorder.filter(r => r.qty > 1)")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs a terminal"), "got: {err}");
     }
 
     #[test]

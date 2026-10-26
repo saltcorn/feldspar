@@ -57,6 +57,8 @@ pub fn scalar_name(ty: ValueType) -> &'static str {
         ValueType::Time => TIME,
         ValueType::Timestamp => TIMESTAMP,
         ValueType::Geometry => GEO_JSON,
+        // An array of numbers: the JSON scalar carries it as it is.
+        ValueType::Vector => JSON,
     }
 }
 

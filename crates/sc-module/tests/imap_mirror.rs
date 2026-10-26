@@ -32,7 +32,9 @@ mod deno {
     use sc_api::{ApiProvider, ApiRequest, GraphqlProvider, Method, RestProvider};
     use sc_catalog::{Catalog, LIVE_EVENTS, TableEvents};
     use sc_expr::{CodeHost, DenoEvaluator, JsEvaluator};
-    use sc_live::{ChangeAccess, ConnectionInfo, Delivery, LikeRules, LiveHub, LiveLimits, RowFilter};
+    use sc_live::{
+        ChangeAccess, ConnectionInfo, Delivery, LikeRules, LiveHub, LiveLimits, RowFilter,
+    };
     use sc_module::{Backoff, ServiceSupervisor};
     use sc_stream::{
         RunningStream, Stream, StreamConfig, StreamProvider, StreamRegistry, StreamSupervisor,
@@ -110,9 +112,19 @@ mod deno {
     }
 
     impl Page {
-        async fn open(hub: &Arc<LiveHub>, cat: &Arc<Catalog>, stream: &Arc<RunningStream>, table: &str, user: &sc_auth::User) -> Page {
+        async fn open(
+            hub: &Arc<LiveHub>,
+            cat: &Arc<Catalog>,
+            stream: &Arc<RunningStream>,
+            table: &str,
+            user: &sc_auth::User,
+        ) -> Page {
             let (connection, queue) = hub
-                .connect(ConnectionInfo { app: "mail".to_owned(), user: Some(user.id), session: None })
+                .connect(ConnectionInfo {
+                    app: "mail".to_owned(),
+                    user: Some(user.id),
+                    session: None,
+                })
                 .expect("connects");
             connection.set_user(Some(user.clone()));
             let table = cat.require(table).unwrap();
@@ -122,7 +134,11 @@ mod deno {
                 filter: RowFilter::parse(&table, None, LikeRules::POSTGRES).unwrap(),
             };
             let (attached, _replay) = connection.attach_changes(stream, access).await;
-            Page { _connection: connection, queue, _attached: attached }
+            Page {
+                _connection: connection,
+                queue,
+                _attached: attached,
+            }
         }
 
         /// Every frame sent until none has come for `wait`.
@@ -135,7 +151,11 @@ mod deno {
         }
     }
 
-    async fn stream(supervisor: &Arc<StreamSupervisor>, name: &str, table: &str) -> Arc<RunningStream> {
+    async fn stream(
+        supervisor: &Arc<StreamSupervisor>,
+        name: &str,
+        table: &str,
+    ) -> Arc<RunningStream> {
         let mut stream = Stream::new(name, "table_changes");
         stream.configuration = json!({ "table": table }).as_object().cloned().unwrap();
         supervisor.start(stream).await.unwrap()
@@ -154,19 +174,28 @@ mod deno {
             return;
         };
         sc_expr::set_isolate_prime(sc_module::prime_v8);
-        for (user, subject) in [("ann1", "Ann one first"), ("ann2", "Ann two first"), ("bob1", "Bob one first"), ("bob2", "Bob two first")] {
+        for (user, subject) in [
+            ("ann1", "Ann one first"),
+            ("ann2", "Ann two first"),
+            ("bob1", "Bob one first"),
+            ("bob2", "Bob two first"),
+        ] {
             deliver(&mails, user, &format!("{user}.eml"), &plain_mail(subject));
         }
 
         let db = TestDb::new().await.unwrap();
         let cat = catalog(&db).await;
-        cat.set_formula_evaluator(Arc::new(DenoEvaluator::new())).unwrap();
+        cat.set_formula_evaluator(Arc::new(DenoEvaluator::new()))
+            .unwrap();
         let files_dir = store(&cat).await;
         // An application file store ann can read from, for an attachment.
-        let uploads_dir = std::env::temp_dir().join(format!("sc-module-mail-uploads-{}", std::process::id()));
+        let uploads_dir =
+            std::env::temp_dir().join(format!("sc-module-mail-uploads-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&uploads_dir);
         let mut uploads = sc_module::tables::local_store("uploads").unwrap();
-        uploads.config.insert("path".into(), json!(uploads_dir.display().to_string()));
+        uploads
+            .config
+            .insert("path".into(), json!(uploads_dir.display().to_string()));
         sc_catalog::save_file_store(&cat, &uploads).await.unwrap();
         sc_catalog::connect_file_store_def(&cat, &uploads).unwrap();
         cat.require_file_store("uploads")
@@ -179,19 +208,31 @@ mod deno {
             load_module(&cat, "imap-mirror", &["127.0.0.1:11993", "127.0.0.1:10465"]).await;
         let registry = Arc::new(registry);
 
-        sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await.unwrap();
-        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80).await.unwrap();
-        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80).await.unwrap();
+        sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User"))
+            .await
+            .unwrap();
+        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80)
+            .await
+            .unwrap();
+        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80)
+            .await
+            .unwrap();
 
         // The live hub, before any account exists, so the subscribers see every write.
         let mut streams = StreamRegistry::new();
-        streams.register(Arc::new(TableChanges) as Arc<dyn StreamProvider>).unwrap();
-        let supervisor = Arc::new(StreamSupervisor::new(Arc::new(streams), StreamConfig::default()));
+        streams
+            .register(Arc::new(TableChanges) as Arc<dyn StreamProvider>)
+            .unwrap();
+        let supervisor = Arc::new(StreamSupervisor::new(
+            Arc::new(streams),
+            StreamConfig::default(),
+        ));
         let messages_live = stream(&supervisor, "mail_live", "mail_messages").await;
         let accounts_live = stream(&supervisor, "accounts_live", "mail_accounts").await;
         let hub = LiveHub::new(LiveLimits::default());
         hub.set_streams(Arc::clone(&supervisor));
-        cat.add_table_events(LIVE_EVENTS, Arc::clone(&hub) as Arc<dyn TableEvents>).unwrap();
+        cat.add_table_events(LIVE_EVENTS, Arc::clone(&hub) as Arc<dyn TableEvents>)
+            .unwrap();
         let mut ann_messages = Page::open(&hub, &cat, &messages_live, "mail_messages", &ann).await;
         let mut bob_messages = Page::open(&hub, &cat, &messages_live, "mail_messages", &bob).await;
         let mut ann_accounts = Page::open(&hub, &cat, &accounts_live, "mail_accounts", &ann).await;
@@ -199,7 +240,12 @@ mod deno {
 
         // Two personal mirror accounts each, saved by each user as themselves.
         let mut ids = std::collections::BTreeMap::new();
-        for (user, login) in [(&ann, "ann1"), (&ann, "ann2"), (&bob, "bob1"), (&bob, "bob2")] {
+        for (user, login) in [
+            (&ann, "ann1"),
+            (&ann, "ann2"),
+            (&bob, "bob1"),
+            (&bob, "bob2"),
+        ] {
             let values = json!({
                 "owner": user.id.to_string(), "label": login, "email": format!("{login}@example.com"),
                 "display_name": login, "mode": "mirror", "min_role": 1,
@@ -220,89 +266,181 @@ mod deno {
         let services = ServiceSupervisor::new(&cat, &host, Backoff::default()).unwrap();
         services.start(&set).await;
         let messages = "SELECT id, subject, account, folder, uid, seen, answered, body_state FROM mail_messages ORDER BY id";
-        until(&db, "the four mails", Duration::from_secs(30), messages, |rows| {
-            rows.len() == 4 && rows.iter().all(|r| r["body_state"] == json!("full"))
-        })
+        until(
+            &db,
+            "the four mails",
+            Duration::from_secs(30),
+            messages,
+            |rows| rows.len() == 4 && rows.iter().all(|r| r["body_state"] == json!("full")),
+        )
         .await;
-        until(&db, "four accounts idle", Duration::from_secs(10),
-            "SELECT status FROM mail_accounts", |rows| rows.iter().all(|r| r["status"] == json!("idle")))
+        until(
+            &db,
+            "four accounts idle",
+            Duration::from_secs(10),
+            "SELECT status FROM mail_accounts",
+            |rows| rows.iter().all(|r| r["status"] == json!("idle")),
+        )
         .await;
 
         // New mail for both while they watch.
         tokio::time::sleep(Duration::from_secs(1)).await;
         deliver(&mails, "ann2", "ann-new.eml", &plain_mail("Ann two second"));
         deliver(&mails, "bob1", "bob-new.eml", &plain_mail("Bob one second"));
-        until(&db, "the new mail", Duration::from_secs(10), messages, |rows| {
-            rows.len() == 6 && rows.iter().all(|r| r["body_state"] == json!("full"))
-        })
+        until(
+            &db,
+            "the new mail",
+            Duration::from_secs(10),
+            messages,
+            |rows| rows.len() == 6 && rows.iter().all(|r| r["body_state"] == json!("full")),
+        )
         .await;
 
         // --- Live: each page is sent only its user's rows ------------------------------
         let account_of = |rows: &[Json], id: i64| {
-            rows.iter().find(|r| r["id"] == json!(id)).map(|r| r["account"].as_i64().unwrap())
+            rows.iter()
+                .find(|r| r["id"] == json!(id))
+                .map(|r| r["account"].as_i64().unwrap())
         };
         let all = query(&db, messages).await;
         for (who, page, mine, subject) in [
-            ("ann", &mut ann_messages, &ann_accounts_ids, "Ann two second"),
-            ("bob", &mut bob_messages, &bob_accounts_ids, "Bob one second"),
+            (
+                "ann",
+                &mut ann_messages,
+                &ann_accounts_ids,
+                "Ann two second",
+            ),
+            (
+                "bob",
+                &mut bob_messages,
+                &bob_accounts_ids,
+                "Bob one second",
+            ),
         ] {
             let frames = page.drain(Duration::from_millis(1500)).await;
             assert!(!frames.is_empty(), "{who} was sent their own mail");
             for frame in &frames {
                 let key = frame["key"].as_i64().unwrap();
-                let account = account_of(&all, key).unwrap_or_else(|| frame["row"]["account"].as_i64().unwrap());
-                assert!(mine.contains(&account), "{who} was sent message {key} of account {account}: {frame}");
+                let account = account_of(&all, key)
+                    .unwrap_or_else(|| frame["row"]["account"].as_i64().unwrap());
+                assert!(
+                    mine.contains(&account),
+                    "{who} was sent message {key} of account {account}: {frame}"
+                );
                 assert!(!frame.to_string().contains(PASSWORD));
             }
             assert!(
-                frames.iter().any(|f| f["row"]["subject"] == json!(subject) && f["row"]["body_state"] == json!("full")),
+                frames.iter().any(|f| f["row"]["subject"] == json!(subject)
+                    && f["row"]["body_state"] == json!("full")),
                 "{who} saw {subject:?} arrive: {frames:?}"
             );
         }
-        for (who, page, mine) in [("ann", &mut ann_accounts, &ann_accounts_ids), ("bob", &mut bob_accounts, &bob_accounts_ids)] {
+        for (who, page, mine) in [
+            ("ann", &mut ann_accounts, &ann_accounts_ids),
+            ("bob", &mut bob_accounts, &bob_accounts_ids),
+        ] {
             let frames = page.drain(Duration::from_millis(500)).await;
             assert!(!frames.is_empty(), "{who} was sent their accounts' status");
             for frame in &frames {
                 let key = frame["key"].as_i64().unwrap();
                 assert!(mine.contains(&key), "{who} was sent account {key}: {frame}");
                 let text = frame.to_string();
-                assert!(!text.contains(PASSWORD), "{who}'s live frame carries a password: {text}");
+                assert!(
+                    !text.contains(PASSWORD),
+                    "{who}'s live frame carries a password: {text}"
+                );
             }
         }
 
         // --- The row layer, REST and GraphQL -------------------------------------------------
-        let tables: Vec<_> = ["mail_accounts", "mail_folders", "mail_messages", "mail_attachments"]
-            .iter()
-            .map(|t| cat.require(t).unwrap())
-            .collect();
-        let rest = RestProvider::project("/api", &tables).with_evaluator(Arc::new(DenoEvaluator::new()));
+        let tables: Vec<_> = [
+            "mail_accounts",
+            "mail_folders",
+            "mail_messages",
+            "mail_attachments",
+        ]
+        .iter()
+        .map(|t| cat.require(t).unwrap())
+        .collect();
+        let rest =
+            RestProvider::project("/api", &tables).with_evaluator(Arc::new(DenoEvaluator::new()));
         let graphql = GraphqlProvider::project("/graphql", &tables).unwrap();
         for (who, user, mine, subjects) in [
-            ("ann", &ann, &ann_accounts_ids, ["Ann one first", "Ann two first", "Ann two second"]),
-            ("bob", &bob, &bob_accounts_ids, ["Bob one first", "Bob one second", "Bob two first"]),
+            (
+                "ann",
+                &ann,
+                &ann_accounts_ids,
+                ["Ann one first", "Ann two first", "Ann two second"],
+            ),
+            (
+                "bob",
+                &bob,
+                &bob_accounts_ids,
+                ["Bob one first", "Bob one second", "Bob two first"],
+            ),
         ] {
             let rows = as_user(&cat, user)
-                .call(json!({ "op": "select", "table": "mail_messages", "authority": "user",
-                              "select": ["subject"], "order": [{ "field": "subject" }] }))
+                .call(
+                    json!({ "op": "select", "table": "mail_messages", "authority": "user",
+                              "select": ["subject"], "order": [{ "field": "subject" }] }),
+                )
                 .await
                 .unwrap();
-            let seen: Vec<&str> = rows.as_array().unwrap().iter().map(|r| r["subject"].as_str().unwrap()).collect();
+            let seen: Vec<&str> = rows
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["subject"].as_str().unwrap())
+                .collect();
             assert_eq!(seen, subjects, "{who} through the row layer");
 
-            let listed = rest.handle(ApiRequest::get("/api/mail_messages"), &cat, Some(user)).await.unwrap();
+            let listed = rest
+                .handle(ApiRequest::get("/api/mail_messages"), &cat, Some(user))
+                .await
+                .unwrap();
             assert_eq!(listed.status, 200, "{}", listed.body);
-            let accounts: BTreeSet<i64> = listed.body.as_array().unwrap().iter().map(|r| r["account"].as_i64().unwrap()).collect();
-            assert_eq!(listed.body.as_array().unwrap().len(), 3, "{who}: {}", listed.body);
+            let accounts: BTreeSet<i64> = listed
+                .body
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["account"].as_i64().unwrap())
+                .collect();
+            assert_eq!(
+                listed.body.as_array().unwrap().len(),
+                3,
+                "{who}: {}",
+                listed.body
+            );
             assert!(accounts.is_subset(mine), "{who} through REST: {accounts:?}");
-            let own = rest.handle(ApiRequest::get("/api/mail_accounts"), &cat, Some(user)).await.unwrap();
-            let own_ids: BTreeSet<i64> = own.body.as_array().unwrap().iter().map(|r| r["id"].as_i64().unwrap()).collect();
+            let own = rest
+                .handle(ApiRequest::get("/api/mail_accounts"), &cat, Some(user))
+                .await
+                .unwrap();
+            let own_ids: BTreeSet<i64> = own
+                .body
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect();
             assert_eq!(&own_ids, mine, "{who}'s accounts through REST");
             for row in own.body.as_array().unwrap() {
                 assert_eq!(row["imap_password"], json!(SECRET_SENTINEL));
                 assert_eq!(row["smtp_password"], json!(SECRET_SENTINEL));
             }
-            let folders = rest.handle(ApiRequest::get("/api/mail_folders"), &cat, Some(user)).await.unwrap();
-            assert!(folders.body.as_array().unwrap().iter().all(|f| mine.contains(&f["account"].as_i64().unwrap())));
+            let folders = rest
+                .handle(ApiRequest::get("/api/mail_folders"), &cat, Some(user))
+                .await
+                .unwrap();
+            assert!(
+                folders
+                    .body
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|f| mine.contains(&f["account"].as_i64().unwrap()))
+            );
 
             let answer = graphql
                 .handle(
@@ -319,38 +457,85 @@ mod deno {
             let data = &answer.body["data"];
             // A key to `mail_accounts` cannot be followed here (its rule decides row by
             // row), so each message's account is looked up.
-            let got: BTreeSet<i64> = data["mail_messages"].as_array().unwrap().iter().map(|r| account_of(&all, r["id"].as_i64().unwrap()).unwrap()).collect();
-            assert_eq!(data["mail_messages"].as_array().unwrap().len(), 3, "{who} through GraphQL: {data}");
+            let got: BTreeSet<i64> = data["mail_messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| account_of(&all, r["id"].as_i64().unwrap()).unwrap())
+                .collect();
+            assert_eq!(
+                data["mail_messages"].as_array().unwrap().len(),
+                3,
+                "{who} through GraphQL: {data}"
+            );
             assert!(got.is_subset(mine), "{who} through GraphQL: {data}");
-            let got: BTreeSet<i64> = data["mail_accounts"].as_array().unwrap().iter().map(|r| r["id"].as_i64().unwrap()).collect();
+            let got: BTreeSet<i64> = data["mail_accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect();
             assert_eq!(&got, mine, "{who}'s accounts through GraphQL: {data}");
-            let theirs: BTreeSet<i64> = data["mail_folders"].as_array().unwrap().iter().map(|r| r["id"].as_i64().unwrap()).collect();
-            let expected: BTreeSet<i64> = folders.body.as_array().unwrap().iter().map(|f| f["id"].as_i64().unwrap()).collect();
+            let theirs: BTreeSet<i64> = data["mail_folders"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect();
+            let expected: BTreeSet<i64> = folders
+                .body
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["id"].as_i64().unwrap())
+                .collect();
             assert_eq!(theirs, expected, "{who}'s folders through GraphQL: {data}");
             for output in [&listed.body, &own.body, &answer.body] {
-                assert!(!output.to_string().contains(PASSWORD), "{who}: a password went out: {output}");
+                assert!(
+                    !output.to_string().contains(PASSWORD),
+                    "{who}: a password went out: {output}"
+                );
             }
         }
 
         // --- The client actions, in the worker, as their caller ---------------------------------
         let rows = query(&db, messages).await;
-        let question = rows.iter().find(|r| r["subject"] == json!("Ann one first")).unwrap()["id"].as_i64().unwrap();
-        let bobs = rows.iter().find(|r| r["subject"] == json!("Bob one first")).unwrap()["id"].as_i64().unwrap();
-        let sent = act(&cat, &registry, "mail_send", &ann, json!({
-            "account_id": ids["ann1"],
-            "to": "Shop <shop@example.com>",
-            "subject": "Re: Ann one first",
-            "text": "The answer.",
-            "in_reply_to": question,
-            "attachments": [{ "store": "uploads", "path": "quotes/q-17.pdf" }],
-        }))
+        let question = rows
+            .iter()
+            .find(|r| r["subject"] == json!("Ann one first"))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let bobs = rows
+            .iter()
+            .find(|r| r["subject"] == json!("Bob one first"))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let sent = act(
+            &cat,
+            &registry,
+            "mail_send",
+            &ann,
+            json!({
+                "account_id": ids["ann1"],
+                "to": "Shop <shop@example.com>",
+                "subject": "Re: Ann one first",
+                "text": "The answer.",
+                "in_reply_to": question,
+                "attachments": [{ "store": "uploads", "path": "quotes/q-17.pdf" }],
+            }),
+        )
         .await
         .unwrap();
         assert_eq!(sent["saved"], json!(true), "{sent}");
         let log = std::fs::read_to_string(sink_dir.join("log.jsonl")).unwrap();
         assert_eq!(log.lines().count(), 1, "{log}");
         let source = std::fs::read_to_string(sink_dir.join("1.eml")).unwrap();
-        assert!(source.contains("In-Reply-To: <Ann-one-first@example.com>"), "{source}");
+        assert!(
+            source.contains("In-Reply-To: <Ann-one-first@example.com>"),
+            "{source}"
+        );
         assert!(source.contains("q-17.pdf"), "{source}");
         let copy = until(&db, "the Sent copy", Duration::from_secs(10),
             &format!("SELECT m.subject, m.in_reply_to, m.thread_key, f.role FROM mail_messages m JOIN mail_folders f ON f.id = m.folder WHERE m.id = {}", sent["id"]),
@@ -358,22 +543,71 @@ mod deno {
         .await;
         assert_eq!(copy[0]["role"], json!("sent"));
         assert_eq!(copy[0]["thread_key"], json!("<Ann-one-first@example.com>"));
-        let answered = query(&db, &format!("SELECT answered FROM mail_messages WHERE id = {question}")).await;
+        let answered = query(
+            &db,
+            &format!("SELECT answered FROM mail_messages WHERE id = {question}"),
+        )
+        .await;
         assert_eq!(answered[0]["answered"], json!(true));
 
         // The other user's mail and accounts are "not found" to each action.
-        let refused = act(&cat, &registry, "mail_send", &bob, json!({ "account_id": ids["ann1"], "to": "x@example.com" })).await;
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_send",
+            &bob,
+            json!({ "account_id": ids["ann1"], "to": "x@example.com" }),
+        )
+        .await;
         assert!(refused.is_err_and(|e| e.to_string().contains("not found")));
-        let refused = act(&cat, &registry, "mail_set_flags", &ann, json!({ "message_ids": [bobs], "seen": true })).await.unwrap();
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_set_flags",
+            &ann,
+            json!({ "message_ids": [bobs], "seen": true }),
+        )
+        .await
+        .unwrap();
         assert_eq!(refused["missing"], json!([bobs]));
-        let refused = act(&cat, &registry, "mail_delete", &ann, json!({ "message_ids": [bobs] })).await.unwrap();
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_delete",
+            &ann,
+            json!({ "message_ids": [bobs] }),
+        )
+        .await
+        .unwrap();
         assert_eq!(refused["missing"], json!([bobs]));
-        let refused = act(&cat, &registry, "mail_fetch_body", &ann, json!({ "message_id": bobs })).await;
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_fetch_body",
+            &ann,
+            json!({ "message_id": bobs }),
+        )
+        .await;
         assert!(refused.is_err_and(|e| e.to_string().contains("not found")));
-        let refused = act(&cat, &registry, "mail_create_folder", &bob, json!({ "account_id": ids["ann2"], "name": "Mine" })).await;
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_create_folder",
+            &bob,
+            json!({ "account_id": ids["ann2"], "name": "Mine" }),
+        )
+        .await;
         assert!(refused.is_err_and(|e| e.to_string().contains("not found")));
         // And ann's own delete goes to her Trash.
-        let trashed = act(&cat, &registry, "mail_delete", &ann, json!({ "message_ids": [question] })).await.unwrap();
+        let trashed = act(
+            &cat,
+            &registry,
+            "mail_delete",
+            &ann,
+            json!({ "message_ids": [question] }),
+        )
+        .await
+        .unwrap();
         assert_eq!(trashed["trashed"], json!([question]), "{trashed}");
         let moved = query(&db, &format!("SELECT f.role FROM mail_messages m JOIN mail_folders f ON f.id = m.folder WHERE m.id = {question}")).await;
         assert_eq!(moved[0]["role"], json!("trash"));

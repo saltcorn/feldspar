@@ -15,7 +15,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::{have_npm, temp_root};
@@ -44,7 +44,7 @@ async fn call(host: &ModuleHost, name: &str, action: &str, row: Json) -> Json {
     value
 }
 
-fn deliver(spike: &PathBuf, eml: &str) {
+fn deliver(spike: &Path, eml: &str) {
     let status = std::process::Command::new(spike.join("servers/dovecot.sh"))
         .arg("deliver")
         .arg(spike.join("../test/fixtures/generated").join(eml))

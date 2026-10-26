@@ -45,6 +45,40 @@ What the fixture holds, and what the tests expect of it:
   *Show Books* with the legacy fixed state `{ id: 2 }`, so the page shows
   *War and Peace* only if the fold happened.
 
+## `saltcorn-v1-feldsparimport.zip`
+
+A real Saltcorn 1.7.0-beta.3 backup (taken 2026-10-26) of a small order-entry
+application, kept because it holds what the first importer could not carry:
+stored calculated fields on `order` (`total`, a Sum over `order_line`; and
+`n_for_gift`, a Count with a `where`) and on `order_line` (`sum`, a
+calculation, and `for_export`, a Ⱶ-join); a `Key` from `users` onto `order`;
+an account with a bcrypt password; an `Agent` action from `@saltcorn/agents`
+with a JavaScript tool and a Table skill; and a four-step workflow
+(`TableQuery`, `ForLoop`, `modify_row`, `TerminateWorkflow`).
+
+**Redacted** from the original: the `large-language-model` plugin's `api_key`
+is replaced by `sk-test-not-a-real-key`, and the cached `available_plugins` /
+`available_packs` lists are emptied. Nothing else was changed.
+
+## `saltcorn-v1-feldsparimport-agents.zip`
+
+`saltcorn-v1-feldsparimport.zip` with an agent, *EverySkill*, that uses every
+skill of `@saltcorn/agents` 1.0.4, and what those skills read: an
+`AgentLongTermMemory` table with three memories (as the Memory skill creates
+it), a `chunks` table with a three-dimensional `PGVector` field, a `prompts`
+table, an alternative LLM configuration *Fast*, and a daily
+`consolidate_agent_memory` action (TODO-agent-skills AS12.13). It is written by
+[`make-v1-agents-fixture.py`](./make-v1-agents-fixture.py), which comes out byte
+for byte the same each run.
+
+**It was not recorded by a running Saltcorn 1.** The skills' settings are in the
+shape each skill's own `configFields()` in the plugin's `skills/` directory
+writes, and the memory table is the one `LongTermMemory.js`'s `get_table()`
+creates. The keys are placeholders (`tvly-not-a-real-key`,
+`Bearer not-a-real-token`), and the MCP server is at `127.0.0.1:9`, which the
+MCP client refuses as a private address, so the import test never reaches a
+network.
+
 ## `builder-options/`
 
 What a real Saltcorn 1 passes to `builder.renderBuilder` when an admin opens the

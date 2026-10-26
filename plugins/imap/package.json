@@ -6,7 +6,7 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "test": "node --test --test-concurrency=1 test/"
+    "test": "node --test --test-concurrency=1 test/*.test.mjs"
   },
   "dependencies": {
     "@zone-eu/mailsplit": "5.4.20",
