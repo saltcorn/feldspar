@@ -656,9 +656,7 @@ pub fn local_operations() -> Vec<Operation> {
             .label("Suggest a directory")
             .description(
                 "Fills in a directory named after this store, inside the data directory \
-                 Saltcorn owns — the same place git stores are checked out into. Use it \
-                 when you have nowhere particular in mind; the directory is created when \
-                 the store is saved.",
+                 Saltcorn owns.",
             ),
     ]
 }
