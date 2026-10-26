@@ -97,6 +97,7 @@ async fn look(env: &Env, args: Json, role: u8) -> (Result<String>, Vec<ImagePart
         modules: None,
         signals: Vec::new(),
         images: Vec::new(),
+        extras: Default::default(),
     };
     let result = coding_trait
         .call(&coding(), "view_image_apps_web", &args, &mut ctx)

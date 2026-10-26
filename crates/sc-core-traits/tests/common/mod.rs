@@ -183,8 +183,32 @@ impl Env {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         trait_.call(config, tool, &args, &mut ctx).await
+    }
+
+    /// A tool context for `caller` outside any run, for a test that drives a
+    /// trait-side helper (the sandbox) rather than a whole tool.
+    pub fn context<'a>(&'a self, caller: &'a RunCaller, state: &'a mut Json) -> TraitContext<'a> {
+        TraitContext {
+            catalog: &self.catalog,
+            caller,
+            agent: "librarian",
+            run: RunId::new(),
+            mode: sc_agent::RunMode::Act,
+            trait_state: state,
+            evaluator: self.evaluator.as_ref(),
+            triggers: self.dispatcher.as_ref(),
+            delegate: None,
+            previews: None,
+            browser: None,
+            requests: None,
+            modules: None,
+            signals: Vec::new(),
+            images: Vec::new(),
+            extras: Default::default(),
+        }
     }
 
     /// Give the tools the real JavaScript engine — what a table whose ownership
@@ -221,6 +245,7 @@ impl Env {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         let result = trait_.call(config, tool, &args, &mut ctx).await;
         (result, ctx.signals)
@@ -336,6 +361,7 @@ impl Env {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         trait_.call(config, &tool, &args, &mut ctx).await
     }

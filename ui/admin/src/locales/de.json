@@ -986,5 +986,9 @@
   "Lowercase letters, digits, - and _ only.": "Nur Kleinbuchstaben, Ziffern, - und _.",
   "No double underscore: tools are named <server>__<tool>.": "Kein doppelter Unterstrich: Werkzeuge heißen <server>__<werkzeug>.",
   "LLM providers and MCP servers": "LLM-Anbieter und MCP-Server",
-  "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.": "{count} LLM-Anbieter und MCP-Server, mit ihren Modellen, API-Schlüsseln und Headern. Ein Agent wird nur wiederhergestellt, wenn sein Anbieter es wird."
+  "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.": "{count} LLM-Anbieter und MCP-Server, mit ihren Modellen, API-Schlüsseln und Headern. Ein Agent wird nur wiederhergestellt, wenn sein Anbieter es wird.",
+  "This question is no longer waiting for an answer.": "Diese Frage wartet nicht mehr auf eine Antwort.",
+  "Answer": "Antworten",
+  "Your answer": "Ihre Antwort",
+  "Decline": "Ablehnen"
 }

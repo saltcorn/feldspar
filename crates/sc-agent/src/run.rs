@@ -355,6 +355,9 @@ impl Run {
                 | Conclusion::OverBudget { .. }
                 | Conclusion::Stuck { .. },
             ) => RunState::Done,
+            // Waiting on a person (TODO-agent-skills AS6.1): live, and no clock
+            // makes it runnable — `wake_at` stays empty.
+            Some(Conclusion::AwaitingUser { .. }) => RunState::Waiting,
         };
         self.updated_at = Utc::now();
     }

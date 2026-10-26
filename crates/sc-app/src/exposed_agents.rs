@@ -538,6 +538,12 @@ pub enum AgentRoute {
     /// `…/runs/{id}`: one of them. The id is as it arrived; an id that is not
     /// one is the same 404 as a run that is somebody else's.
     Run(String),
+    /// `…/controls`: the controls the agent adds to a chat's input row
+    /// (TODO-agent-skills AS6.4).
+    Controls,
+    /// `…/runs/{id}/parts/{part}`: something a tool showed the person in that
+    /// conversation (AS6.3).
+    Part(String, String),
 }
 
 /// A request path that is one of `app`'s exposed agents' routes.
@@ -566,11 +572,16 @@ pub fn agent_route(app: &Application, path: &str) -> Option<AgentRequest> {
         .strip_prefix('/')?;
     let mut parts = rest.split('/');
     let name = percent_decode(parts.next()?);
-    let route = match (parts.next(), parts.next(), parts.next()) {
-        (Some("chat"), None, _) => AgentRoute::Chat,
-        (Some("prompt"), None, _) => AgentRoute::Prompt,
-        (Some("runs"), None, _) => AgentRoute::Runs,
-        (Some("runs"), Some(id), None) if !id.is_empty() => AgentRoute::Run(id.to_owned()),
+    let segments: Vec<&str> = parts.collect();
+    let route = match segments.as_slice() {
+        ["chat"] => AgentRoute::Chat,
+        ["prompt"] => AgentRoute::Prompt,
+        ["controls"] => AgentRoute::Controls,
+        ["runs"] => AgentRoute::Runs,
+        ["runs", id] if !id.is_empty() => AgentRoute::Run((*id).to_owned()),
+        ["runs", id, "parts", part] if !id.is_empty() && !part.is_empty() => {
+            AgentRoute::Part((*id).to_owned(), (*part).to_owned())
+        }
         _ => return None,
     };
     let exposure = app.agents.iter().find(|a| a.name == name)?.clone();
@@ -659,6 +670,17 @@ mod tests {
         assert_eq!(at("/api/_agents/copilot/chat"), None);
         assert_eq!(at("/api/_agents/helpdesk/delete"), None);
         assert_eq!(at("/api/_agents/helpdesk/runs/a/b"), None);
+        assert_eq!(
+            at("/api/_agents/helpdesk/controls"),
+            Some(("helpdesk".to_owned(), AgentRoute::Controls))
+        );
+        assert_eq!(
+            at("/api/_agents/helpdesk/runs/r/parts/p"),
+            Some((
+                "helpdesk".to_owned(),
+                AgentRoute::Part("r".to_owned(), "p".to_owned())
+            ))
+        );
         assert_eq!(at("/other/_agents/helpdesk/chat"), None);
     }
 

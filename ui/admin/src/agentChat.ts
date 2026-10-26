@@ -118,6 +118,8 @@ export type ServerEvent =
       is_error: boolean;
       /** Images the tool returned — a `view_app` screenshot (TODO §7b). */
       images?: ImagePart[];
+      /** What the tool showed the person and not the model (AS6.3). */
+      display?: DisplayRef[];
     }
   | {
       type: "done";
@@ -125,13 +127,17 @@ export type ServerEvent =
       state: string;
       answer: string;
       /** How the loop concluded, when it did: `answered`, `max_steps`,
-       * `aborted`, `over_budget` (with `budget`) or `stuck` (with `reason`). */
+       * `aborted`, `over_budget` (with `budget`), `stuck` (with `reason`) or
+       * `awaiting_user` (with `request`). */
       conclusion?: string;
       budget?: string;
       reason?: string;
+      request?: UserRequest;
     }
   | { type: "error"; message: string }
   | { type: "controls"; controls: unknown }
+  /** After `start` on a run waiting for an answer (AS6.1). */
+  | { type: "awaiting"; request: UserRequest }
   /** The loop compacted the context before its next model call (TODO §9). */
   | {
       type: "compaction";
@@ -141,6 +147,50 @@ export type ServerEvent =
       after_tokens: number;
       summary?: string;
     };
+
+/** Something a tool showed the person and not the model (TODO-agent-skills
+ * AS6.3), fetched with `getRunPart`. */
+export interface DisplayRef {
+  id: string;
+  kind: "rows" | "image" | "audio" | string;
+  mime_type: string;
+  summary: string;
+}
+
+/** One option of a question. */
+export interface RequestOption {
+  value: string;
+  label?: string;
+  description?: string;
+}
+
+/** A question a tool put to the person; the run waits for the answer
+ * (AS6.1). */
+export type UserRequest = { id: string; prompt: string } & (
+  | { kind: "choice"; options: RequestOption[]; multiple?: boolean }
+  | { kind: "text"; placeholder?: string }
+  | { kind: "approve"; label: string; payload?: unknown }
+  | { kind: "button"; label: string; payload?: unknown }
+);
+
+/** What an answer to `request` reads as in the transcript. */
+export function answerLabel(request: UserRequest, value: unknown): string {
+  switch (request.kind) {
+    case "choice": {
+      const label = (v: unknown) => {
+        const option = request.options.find((o) => o.value === v);
+        return option ? option.label || option.value : String(v);
+      };
+      return Array.isArray(value) ? value.map(label).join(", ") : label(value);
+    }
+    case "approve":
+      return value === true ? "Approved" : "Declined";
+    case "button":
+      return request.label;
+    default:
+      return String(value);
+  }
+}
 
 /** An image in a tool result, as the loop stores and streams it. */
 export interface ImagePart {
@@ -186,6 +236,8 @@ function imagesOf(images: ImagePart[] | undefined): { images?: string[] } {
  * its own, and is deliberately not invented until a trait asks for one. */
 export type ComposerControl =
   | { kind: "toggle"; name: string; label: string; title?: string; default?: boolean }
+  /** Sends a message at once — its label — with this control set to `true`. */
+  | { kind: "button"; name: string; label: string; title?: string }
   | {
       kind: "select";
       name: string;
@@ -213,6 +265,11 @@ export type Entry =
       /** Screenshots the result carried, as `data:` URLs, shown inline. */
       images?: string[];
     }
+  /** What a tool showed the person (AS6.3): fetched and drawn by id. */
+  | { kind: "display"; parts: DisplayRef[] }
+  /** A question the agent asked (AS6.1). Answerable while it is the one the
+   * run waits on. */
+  | { kind: "request"; request: UserRequest }
   /** A failure, in the transcript where it happened. A chat window that
    * silently stops is unfixable by the person watching it (§11.4). */
   | { kind: "error"; message: string }
@@ -245,6 +302,8 @@ export type ChatState = {
   controls: ComposerControl[];
   /** What each of those is set to, keyed by control name. */
   controlValues: Record<string, ControlValue>;
+  /** The question the run waits on, if it does (AS6.1). */
+  awaiting: UserRequest | null;
 };
 
 /** A conversation with nothing in it yet. */
@@ -256,6 +315,7 @@ export function emptyChat(): ChatState {
     lastState: null,
     controls: [],
     controlValues: {},
+    awaiting: null,
   };
 }
 
@@ -270,22 +330,33 @@ export function normalizeControls(value: unknown): ComposerControl[] {
   for (const raw of value) {
     const control = raw as Partial<ComposerControl> & Record<string, unknown>;
     if (typeof control?.name !== "string" || control.name === "") continue;
-    if (control.kind === "toggle") {
+    if (control.kind === "toggle" || control.kind === "button") {
       if (typeof control.label !== "string") continue;
-      controls.push({
-        kind: "toggle",
-        name: control.name,
-        label: control.label,
-        title: typeof control.title === "string" ? control.title : undefined,
-        default: control.default === true,
-      });
+      controls.push(
+        control.kind === "toggle"
+          ? {
+              kind: "toggle",
+              name: control.name,
+              label: control.label,
+              title: typeof control.title === "string" ? control.title : undefined,
+              default: control.default === true,
+            }
+          : {
+              kind: "button",
+              name: control.name,
+              label: control.label,
+              title: typeof control.title === "string" ? control.title : undefined,
+            },
+      );
     } else if (control.kind === "select") {
+      // An option with no label of its own is read by its value.
       const options = Array.isArray(control.options)
-        ? control.options.filter(
-            (option): option is { value: string; label: string } =>
-              typeof (option as { value?: unknown })?.value === "string" &&
-              typeof (option as { label?: unknown })?.label === "string",
-          )
+        ? control.options
+            .filter((option) => typeof (option as { value?: unknown })?.value === "string")
+            .map((option) => {
+              const { value, label } = option as { value: string; label?: unknown };
+              return { value, label: typeof label === "string" && label !== "" ? label : value };
+            })
         : [];
       // A select with nothing to select is a dead control, not a narrow one.
       if (options.length === 0) continue;
@@ -315,6 +386,8 @@ export function defaultControlValues(
   const values: Record<string, ControlValue> = {};
   for (const control of controls) {
     const had = previous[control.name];
+    // A button has no standing value: it is pressed, and sends.
+    if (control.kind === "button") continue;
     if (control.kind === "toggle") {
       values[control.name] = typeof had === "boolean" ? had : control.default === true;
     } else {
@@ -339,6 +412,9 @@ export function applyUserMessage(state: ChatState, text: string): ChatState {
     entries: [...state.entries, { kind: "user", text }],
     running: true,
     lastState: null,
+    // Answered, or passed over by an ordinary message: either way the question
+    // is no longer waiting.
+    awaiting: null,
   };
 }
 
@@ -364,8 +440,8 @@ export function applyEvent(state: ChatState, event: ServerEvent): ChatState {
           },
         ],
       };
-    case "tool_result":
-      return {
+    case "tool_result": {
+      const settled: ChatState = {
         ...state,
         entries: state.entries.map((entry) =>
           entry.kind === "tool" && entry.id === event.id && entry.result === null
@@ -378,6 +454,11 @@ export function applyEvent(state: ChatState, event: ServerEvent): ChatState {
             : entry,
         ),
       };
+      if (event.display && event.display.length > 0) {
+        settled.entries = [...settled.entries, { kind: "display", parts: event.display }];
+      }
+      return settled;
+    }
     case "error":
       // Appended, never replacing: a failure after two paragraphs and a tool
       // call is read alongside them, not instead of them.
@@ -392,17 +473,31 @@ export function applyEvent(state: ChatState, event: ServerEvent): ChatState {
         controlValues: defaultControlValues(controls, state.controlValues),
       };
     }
+    case "awaiting":
+      return withRequest(state, event.request);
     case "done": {
       const notice = conclusionNotice(event);
-      return {
+      const ended: ChatState = {
         ...state,
         entries: notice ? [...state.entries, { kind: "notice", message: notice }] : state.entries,
         running: false,
         runId: event.run ?? state.runId,
         lastState: event.state,
       };
+      return event.request ? withRequest(ended, event.request) : ended;
     }
   }
+}
+
+/** `state` waiting on `request`, which closes the transcript unless it is
+ * there already. */
+function withRequest(state: ChatState, request: UserRequest): ChatState {
+  const shown = state.entries.some((e) => e.kind === "request" && e.request.id === request.id);
+  return {
+    ...state,
+    entries: shown ? state.entries : [...state.entries, { kind: "request", request }],
+    awaiting: request,
+  };
 }
 
 /** A compaction as the server spells it: a socket event, or a stored run's
@@ -508,6 +603,8 @@ export function conclusionLabel(conclusion: Conclusion | null | undefined): stri
       return conclusion.budget === "credits" ? "out of credits" : "over budget";
     case "stuck":
       return "stuck";
+    case "awaiting_user":
+      return "waiting for an answer";
     default:
       return null;
   }
@@ -655,6 +752,8 @@ export function transcriptFromRun(context: unknown): Entry[] {
         const shown = imagesOf(message.images);
         if (shown.images) call.images = shown.images;
       }
+      const parts = displayOf(context, message.tool_call_id);
+      if (parts.length > 0) entries.push({ kind: "display", parts });
     }
   }
   markUpTo(Number.POSITIVE_INFINITY);
@@ -662,7 +761,25 @@ export function transcriptFromRun(context: unknown): Entry[] {
   const phase = (context as { phase?: { phase?: string; conclusion?: Conclusion } })?.phase;
   const notice = phase?.phase === "done" ? conclusionNotice(phase.conclusion) : null;
   if (notice) entries.push({ kind: "notice", message: notice });
+  const request = pendingRequest(context);
+  if (request) entries.push({ kind: "request", request });
   return entries;
+}
+
+/** What tool call `id` showed the person, from a stored run's loop state. */
+function displayOf(context: unknown, id: string | undefined): DisplayRef[] {
+  const display = (context as { display?: Record<string, unknown> })?.display;
+  const parts = id && display ? display[id] : undefined;
+  return Array.isArray(parts) ? (parts as DisplayRef[]) : [];
+}
+
+/** The question a stored run waits on, if it does. */
+export function pendingRequest(context: unknown): UserRequest | null {
+  const phase = (context as { phase?: { phase?: string; conclusion?: { conclusion?: string; request?: UserRequest } } })
+    ?.phase;
+  return phase?.phase === "done" && phase.conclusion?.conclusion === "awaiting_user"
+    ? (phase.conclusion.request ?? null)
+    : null;
 }
 
 /** The bit of `WebSocket` this model uses — so a test can be a plain object. */
@@ -695,6 +812,11 @@ export class ChatSession {
     }
     if (initial?.runId) {
       this.state = { ...this.state, runId: initial.runId };
+    }
+    // A reopened conversation that ended on a question is still waiting.
+    const last = initial?.entries?.[initial.entries.length - 1];
+    if (last?.kind === "request") {
+      this.state = { ...this.state, awaiting: last.request };
     }
     socket.onopen = () => {
       this.open = true;
@@ -754,6 +876,49 @@ export class ChatSession {
       // was composed with them, not to whatever they say when the socket opens.
       this.pending.push(frame);
     }
+  }
+
+  /** Answer the question the run waits on (AS6.2): the answer is the next
+   * turn, shown as what the person chose. */
+  answer(request: UserRequest, value: unknown): void {
+    if (this.state.running || this.state.awaiting?.id !== request.id) return;
+    this.update(applyUserMessage(this.state, answerLabel(request, value)));
+    this.sendFrame(
+      JSON.stringify({
+        type: "message",
+        answers_request: request.id,
+        value,
+        ...this.controlsField(),
+      }),
+    );
+  }
+
+  /** Press a button control: a message — its label — sent at once with that
+   * control `true`. */
+  press(name: string): void {
+    const control = this.state.controls.find((c) => c.name === name);
+    if (this.state.running || control?.kind !== "button") return;
+    this.update(applyUserMessage(this.state, control.label));
+    this.sendFrame(
+      JSON.stringify({
+        type: "message",
+        text: control.label,
+        controls: { ...this.state.controlValues, [name]: true },
+      }),
+    );
+  }
+
+  private sendFrame(frame: string): void {
+    if (this.open) {
+      this.socket.send(frame);
+    } else {
+      this.pending.push(frame);
+    }
+  }
+
+  private controlsField(): { controls?: Record<string, ControlValue> } {
+    const values = this.state.controlValues;
+    return Object.keys(values).length > 0 ? { controls: values } : {};
   }
 
   /** Set one composer control. Takes effect on the *next* message: a control is

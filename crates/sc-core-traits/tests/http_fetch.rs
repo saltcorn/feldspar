@@ -222,6 +222,7 @@ async fn fetch(env: &Env, run: RunId, config: &Attrs, args: Json) -> Result<Stri
         modules: None,
         signals: Vec::new(),
         images: Vec::new(),
+        extras: Default::default(),
     };
     let result = trait_.call(config, &tool, &args, &mut ctx).await?;
     Ok(result.as_str().expect("the result is text").to_owned())

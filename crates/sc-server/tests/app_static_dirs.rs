@@ -658,6 +658,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         coding.call(&config, &tool, &args, &mut ctx).await
     };
@@ -761,6 +762,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
         modules: None,
         signals: Vec::new(),
         images: Vec::new(),
+        extras: Default::default(),
     };
     let one = coding.call(&capped, &tool, &json!({}), &mut ctx).await?;
     assert_eq!(one["assets"].as_array().unwrap().len(), 1, "{one}");

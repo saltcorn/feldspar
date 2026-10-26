@@ -1017,5 +1017,9 @@
   "Lowercase letters, digits, - and _ only.": "Solo minúsculas, dígitos, - y _.",
   "No double underscore: tools are named <server>__<tool>.": "Sin doble guion bajo: las herramientas se llaman <servidor>__<herramienta>.",
   "LLM providers and MCP servers": "Proveedores de LLM y servidores MCP",
-  "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.": "{count} proveedores de LLM y servidores MCP, con sus modelos, claves de API y cabeceras. Un agente solo se restaura si se restaura el proveedor que usa."
+  "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.": "{count} proveedores de LLM y servidores MCP, con sus modelos, claves de API y cabeceras. Un agente solo se restaura si se restaura el proveedor que usa.",
+  "This question is no longer waiting for an answer.": "Esta pregunta ya no espera respuesta.",
+  "Answer": "Responder",
+  "Your answer": "Su respuesta",
+  "Decline": "Rechazar"
 }

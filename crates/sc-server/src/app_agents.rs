@@ -14,6 +14,14 @@
 //! has its id before the agent says anything. How much of a tool the client is
 //! told is the exposure's [`ToolDetail`].
 //!
+//! **Interactive chat** (TODO-agent-skills AS6): a tool's display parts — rows,
+//! an image, audio for the person and not the model — arrive as a `display`
+//! event whatever the [`ToolDetail`], since they are meant to be seen, and are
+//! fetched from `…/runs/{id}/parts/{part}`. A turn that ends on a question is
+//! `done` with `conclusion: "awaiting_user"` and the `request`; the answer is
+//! the next `chat` body, `{ answers_request, value, run }`. A chat body may
+//! carry `controls`, the values of what `…/controls` lists.
+//!
 //! **A client that goes away stops the agent.** The turn runs in a task that
 //! watches the response's channel; when the response is dropped — the page was
 //! closed, the `fetch` aborted — the drive is dropped with it and the run is
@@ -54,7 +62,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::agents::AgentServices;
 use crate::apps::MountedApp;
-use crate::chat::{done_event, error_event, may_chat, summarise};
+use crate::chat::{TurnInput, done_event, error_event, may_chat, summarise};
 use crate::router::{AppState, app_caller, error_status, json_error, log_failure, parse_query};
 
 /// The run attribute naming the application a run was started through.
@@ -310,8 +318,17 @@ async fn answer(
         (AgentRoute::Run(id), &Method::GET) if exposure.chat => get(&ctx, id).await,
         (AgentRoute::Run(id), &Method::PATCH) if exposure.chat => rename(&ctx, id, body).await,
         (AgentRoute::Run(id), &Method::DELETE) if exposure.chat => delete(&ctx, id).await,
+        (AgentRoute::Part(id, part), &Method::GET) if exposure.chat => {
+            part_of(&ctx, id, part).await
+        }
+        (AgentRoute::Controls, &Method::GET) if exposure.chat || exposure.prompt => {
+            let controls = sc_agent::composer_controls(ctx.services.registry(), &ctx.agent);
+            Ok(axum::Json(json!(controls)).into_response())
+        }
         // A route this exposure does not open is not there at all.
-        (AgentRoute::Chat | AgentRoute::Runs | AgentRoute::Run(_), _) if !exposure.chat => {
+        (AgentRoute::Chat | AgentRoute::Runs | AgentRoute::Run(_) | AgentRoute::Part(..), _)
+            if !exposure.chat =>
+        {
             Err(Error::not_found("not found"))
         }
         (AgentRoute::Prompt, _) if !exposure.prompt => Err(Error::not_found("not found")),
@@ -417,12 +434,40 @@ fn body_object(body: &Bytes) -> Result<serde_json::Map<String, Json>> {
     }
 }
 
-/// `POST …/chat`: one turn, `{ message, run? }`, streamed.
+/// `POST …/chat`: one turn, `{ message, run?, controls? }` or
+/// `{ answers_request, value, run, controls? }`, streamed.
 async fn chat(ctx: AgentCtx, body: &Bytes) -> Result<Response> {
     let obj = body_object(body)?;
+    let answer = match obj.get("answers_request") {
+        None | Some(Json::Null) => None,
+        Some(Json::String(id)) => Some(sc_agent::Answer {
+            answers_request: id.clone(),
+            value: obj.get("value").cloned().unwrap_or(Json::Null),
+        }),
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "`answers_request` should be a question's id, got {other}"
+            )));
+        }
+    };
     let text = match obj.get("message") {
         Some(Json::String(s)) if !s.trim().is_empty() => s.clone(),
+        _ if answer.is_some() => String::new(),
         _ => return Err(Error::invalid("a chat turn needs a `message`, as text")),
+    };
+    let controls = match obj.get("controls") {
+        None | Some(Json::Null) => std::collections::BTreeMap::new(),
+        Some(Json::Object(map)) => map.clone().into_iter().collect(),
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "`controls` should be an object of control values, got {other}"
+            )));
+        }
+    };
+    let input = TurnInput {
+        text,
+        answer,
+        controls,
     };
     // Continuing needs somebody to continue as: a conversation nobody can be
     // told apart from anybody else by is one nobody can come back to.
@@ -455,7 +500,7 @@ async fn chat(ctx: AgentCtx, body: &Bytes) -> Result<Response> {
         Ok(slot) => slot,
         Err(refused) => return Ok(refused),
     };
-    Ok(sse(start_turn(ctx, slot, existing, text, "chat")))
+    Ok(sse(start_turn(ctx, slot, existing, input, "chat")))
 }
 
 /// `POST …/prompt`: `{ prompt }` or `{ input }`, answered as JSON — or as a
@@ -476,7 +521,12 @@ async fn prompt(ctx: AgentCtx, body: &Bytes, stream: bool) -> Result<Response> {
         Ok(slot) => slot,
         Err(refused) => return Ok(refused),
     };
-    let rx = start_turn(ctx, slot, None, text, "prompt");
+    let input = TurnInput {
+        text,
+        answer: None,
+        controls: std::collections::BTreeMap::new(),
+    };
+    let rx = start_turn(ctx, slot, None, input, "prompt");
     if stream {
         return Ok(sse(rx));
     }
@@ -489,14 +539,14 @@ fn start_turn(
     ctx: AgentCtx,
     slot: TurnSlot,
     existing: Option<Run>,
-    text: String,
+    input: TurnInput,
     mode: &'static str,
 ) -> tokio::sync::mpsc::UnboundedReceiver<Json> {
     let (tx, rx) = unbounded_channel::<Json>();
     tokio::spawn(async move {
         // Held for as long as the turn runs.
         let _slot = slot;
-        if let Err(e) = drive_turn(&ctx, existing, text, mode, &tx).await {
+        if let Err(e) = drive_turn(&ctx, existing, input, mode, &tx).await {
             let message = match e.kind() {
                 ErrorKind::System => {
                     log_failure("an exposed agent's turn failed", &e);
@@ -523,7 +573,7 @@ enum Ending {
 async fn drive_turn(
     ctx: &AgentCtx,
     existing: Option<Run>,
-    text: String,
+    input: TurnInput,
     mode: &'static str,
     tx: &UnboundedSender<Json>,
 ) -> Result<()> {
@@ -557,15 +607,29 @@ async fn drive_turn(
 
     let mut run = match existing {
         Some(mut run) => {
-            let mut state = run.agent_loop()?;
-            state.push_user(&text)?;
-            run.record(&state);
-            save_run(&ctx.catalog, &run).await?;
+            match &input.answer {
+                Some(answer) => runner.push_answer(&mut run, answer, input.controls).await?,
+                None => {
+                    runner
+                        .push_message(&mut run, &input.text, input.controls)
+                        .await?;
+                }
+            }
             run
         }
         None => {
+            if input.answer.is_some() {
+                return Err(Error::invalid(
+                    "there is no question to answer: name the conversation in `run`",
+                ));
+            }
+            sc_agent::check_controls(&runner.controls(), &input.controls)?;
+            let text = input.text;
             let run = runner.new_run(&text)?.description(summarise(&text));
-            let run = ctx.claim(run, mode);
+            let mut run = ctx.claim(run, mode);
+            let mut state = run.agent_loop()?;
+            state.set_controls(input.controls);
+            run.record(&state);
             save_run(&ctx.catalog, &run).await?;
             run
         }
@@ -687,12 +751,37 @@ async fn list(ctx: &AgentCtx) -> Result<Response> {
     Ok(axum::Json(Json::Array(listed)).into_response())
 }
 
-/// `GET …/runs/{id}`: one conversation, with its transcript.
+/// `GET …/runs/{id}`: one conversation, with its transcript, and the question
+/// it is waiting on, if it is (`awaiting`).
 async fn get(ctx: &AgentCtx, id: &str) -> Result<Response> {
     let run = ctx.own_run(id).await?;
     let mut out = run_summary(&run);
     out["messages"] = Json::Array(transcript(&run, ctx.exposure.tools)?);
+    out["awaiting"] = json!(run.agent_loop()?.pending_request());
     Ok(axum::Json(out).into_response())
+}
+
+/// `GET …/runs/{id}/parts/{part}`: something a tool showed the person in this
+/// caller's conversation — rows as JSON, an image or a clip as itself.
+async fn part_of(ctx: &AgentCtx, id: &str, part: &str) -> Result<Response> {
+    let run = ctx.own_run(id).await?;
+    let missing = || Error::not_found("no such part");
+    let part = uuid::Uuid::parse_str(part).map_err(|_| missing())?;
+    let stored = sc_agent::load_display_part(&ctx.catalog, run.id, part)
+        .await?
+        .ok_or_else(missing)?;
+    let Some(content) = stored.content else {
+        return Ok(axum::Json(stored.data).into_response());
+    };
+    let mut response = (StatusCode::OK, content).into_response();
+    if let Ok(value) = HeaderValue::from_str(&stored.reference.mime_type) {
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=86400"),
+    );
+    Ok(response)
 }
 
 /// `PATCH …/runs/{id}`: `{ title }`.
@@ -759,7 +848,17 @@ fn run_summary(run: &Run) -> Json {
 /// The system prompt, the compaction summaries and the vendors' opaque replay
 /// items are the loop's and never leave the server.
 pub(crate) fn transcript(run: &Run, tools: ToolDetail) -> Result<Vec<Json>> {
-    Ok(transcript_of(run.agent_loop()?.messages(), tools))
+    let state = run.agent_loop()?;
+    let mut out = transcript_of(state.messages(), state.display(), tools);
+    // The question the run waits on closes the agent's last message.
+    if let Some(request) = state.pending_request()
+        && let Some(last) = out.last_mut()
+        && last["role"] == "assistant"
+        && let Some(parts) = last["parts"].as_array_mut()
+    {
+        parts.push(json!({ "type": "request", "request": request }));
+    }
+    Ok(out)
 }
 
 /// One message being built: its id, whether it is the agent's, its parts.
@@ -770,7 +869,11 @@ struct Building {
 }
 
 /// [`transcript`] over the messages themselves.
-fn transcript_of(messages: &[LlmMessage], tools: ToolDetail) -> Vec<Json> {
+fn transcript_of(
+    messages: &[LlmMessage],
+    display: &std::collections::BTreeMap<String, Vec<sc_agent::DisplayRef>>,
+    tools: ToolDetail,
+) -> Vec<Json> {
     let mut out: Vec<Building> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         match message {
@@ -800,6 +903,12 @@ fn transcript_of(messages: &[LlmMessage], tools: ToolDetail) -> Vec<Json> {
                 content,
                 ..
             } => {
+                // What the tool showed the person is theirs whatever the
+                // exposure says of tools.
+                if let Some(shown) = display.get(tool_call_id) {
+                    let parts = assistant_parts(&mut out, index);
+                    parts.extend(shown.iter().map(display_part));
+                }
                 if tools == ToolDetail::None {
                     continue;
                 }
@@ -855,6 +964,17 @@ fn assistant_parts(out: &mut Vec<Building>, index: usize) -> &mut Vec<Json> {
     &mut out[at].parts
 }
 
+/// A display reference as a transcript part.
+fn display_part(shown: &sc_agent::DisplayRef) -> Json {
+    json!({
+        "type": "display",
+        "id": shown.id,
+        "kind": shown.kind,
+        "mime_type": shown.mime_type,
+        "summary": shown.summary,
+    })
+}
+
 /// A tool call as a part, still running until its result settles it.
 fn tool_part(call: &ToolCall, tools: ToolDetail) -> Json {
     let mut part = json!({
@@ -897,6 +1017,12 @@ impl RunObserver for AppObserver {
     }
 
     fn on_tool_result(&self, outcome: &sc_agent::ToolOutcome) {
+        if !outcome.display.is_empty() {
+            let _ = self.tx.send(json!({
+                "type": "display",
+                "parts": outcome.display.iter().map(display_part).collect::<Vec<_>>(),
+            }));
+        }
         if self.tools == ToolDetail::None {
             return;
         }
@@ -975,7 +1101,11 @@ mod tests {
 
     #[test]
     fn a_transcript_is_one_agent_message_per_question_with_tools_as_shown() {
-        let names = transcript_of(&conversation(), ToolDetail::Names);
+        let names = transcript_of(
+            &conversation(),
+            &std::collections::BTreeMap::new(),
+            ToolDetail::Names,
+        );
         assert_eq!(names.len(), 2, "{names:#?}");
         assert_eq!(names[0]["role"], "user");
         assert_eq!(names[1]["role"], "assistant");
@@ -988,14 +1118,22 @@ mod tests {
             ])
         );
 
-        let full = transcript_of(&conversation(), ToolDetail::Full);
+        let full = transcript_of(
+            &conversation(),
+            &std::collections::BTreeMap::new(),
+            ToolDetail::Full,
+        );
         assert_eq!(full[1]["parts"][1]["arguments"], json!({ "id": 7 }));
         assert_eq!(
             full[1]["parts"][1]["result"],
             "[{\"id\":7,\"status\":\"shipped\"}]"
         );
 
-        let none = transcript_of(&conversation(), ToolDetail::None);
+        let none = transcript_of(
+            &conversation(),
+            &std::collections::BTreeMap::new(),
+            ToolDetail::None,
+        );
         assert_eq!(
             none[1]["parts"],
             json!([

@@ -971,5 +971,9 @@
   "Lowercase letters, digits, - and _ only.": "仅限小写字母、数字、- 和 _。",
   "No double underscore: tools are named <server>__<tool>.": "不能有双下划线：工具命名为 <服务器>__<工具>。",
   "LLM providers and MCP servers": "LLM 提供方和 MCP 服务器",
-  "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.": "{count} 个 LLM 提供方和 MCP 服务器，包括其模型、API 密钥和请求头。只有当智能体使用的提供方被恢复时，该智能体才会被恢复。"
+  "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.": "{count} 个 LLM 提供方和 MCP 服务器，包括其模型、API 密钥和请求头。只有当智能体使用的提供方被恢复时，该智能体才会被恢复。",
+  "This question is no longer waiting for an answer.": "此问题已不再等待回答。",
+  "Answer": "回答",
+  "Your answer": "您的回答",
+  "Decline": "拒绝"
 }

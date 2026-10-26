@@ -143,6 +143,7 @@ export type DeleteAgentResponse = { deleted: boolean };
 export type ListAgentTraitsResponse = Array<{ name: string; description: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }> }>;
 export type ListRunsResponse = Array<{ id: string; kind: string; subject: string; description: string; state: string; error?: string | null; user?: string | null; created_at: string; updated_at: string; subject_version?: number | null; current_step?: string | null; wake_at?: string | null; conclusion?: unknown | null; parent_run?: string | null }>;
 export type GetRunResponse = { id: string; kind: string; subject: string; description: string; state: string; error?: string | null; user?: string | null; created_at: string; updated_at: string; subject_version?: number | null; current_step?: string | null; wake_at?: string | null; conclusion?: unknown | null; parent_run?: string | null; context: unknown; attributes: unknown; trace: Array<{ id: string; seq: number; step: string; started_at: string; finished_at: string; attempt: number; outcome: string; error?: string | null; context: unknown }>; pending_form?: { fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; assign_to: string; min_role?: number | null } | null; plan?: { features: Array<{ id: string; title: string; description: string; kind: string; acceptance: Array<string>; files: Array<string>; pages: Array<string>; status: string; attempts: number; runs: Array<string> }>; progress: Array<{ feature: string; run: string; status: string; summary: string; check: string; diffstat: string }> } | null };
+export type GetRunPartResponse = { id: string; kind: string; mime_type: string; summary: string; data: unknown; content_base64?: string | null };
 export type GetRunDiffResponse = { run: string; runs: Array<string>; scopes: Array<{ store: string; root: string; files: Array<{ path: string; status: string; added?: number | null; removed?: number | null }>; moves: Array<{ from: string; to: string }>; stat: string; unified: string }> };
 export type DeleteRunResponse = { deleted: boolean };
 export type BrowseFilesRequest = { dir: string };
@@ -533,6 +534,7 @@ export interface ApiClient {
   listAgentTraits(): Promise<ListAgentTraitsResponse>;
   listRuns(agent: string): Promise<ListRunsResponse>;
   getRun(id: string): Promise<GetRunResponse>;
+  getRunPart(id: string, part: string): Promise<GetRunPartResponse>;
   getRunDiff(id: string): Promise<GetRunDiffResponse>;
   deleteRun(id: string): Promise<DeleteRunResponse>;
   browseFiles(store: string, body: BrowseFilesRequest): Promise<BrowseFilesResponse>;
@@ -1552,6 +1554,14 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("getRun", res);
       return (await res.json()) as GetRunResponse;
+    },
+    async getRunPart(id, part) {
+      const res = await doFetch(`${baseUrl}/api/runs/${encodeURIComponent(id)}/parts/${encodeURIComponent(part)}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getRunPart", res);
+      return (await res.json()) as GetRunPartResponse;
     },
     async getRunDiff(id) {
       const res = await doFetch(`${baseUrl}/api/runs/${encodeURIComponent(id)}/diff`, {

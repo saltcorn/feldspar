@@ -93,6 +93,7 @@ impl<'e> Session<'e> {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         coding
             .call(&self.config, &tool, &args, &mut ctx)

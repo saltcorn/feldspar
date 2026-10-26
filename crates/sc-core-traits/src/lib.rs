@@ -113,6 +113,7 @@ mod query_table;
 mod run_agent;
 mod run_js_code;
 mod run_trigger;
+pub mod sandbox;
 mod subagent;
 mod table;
 mod update_rows;

@@ -325,6 +325,7 @@ async fn a_green_check_mounts_the_runs_preview_and_leaves_the_live_mount() -> sc
         modules: None,
         signals: Vec::new(),
         images: Vec::new(),
+        extras: Default::default(),
     };
     let report = coding
         .call(&config, "check_apps_web", &json!({}), &mut ctx)
@@ -368,6 +369,7 @@ async fn a_green_check_mounts_the_runs_preview_and_leaves_the_live_mount() -> sc
         modules: None,
         signals: Vec::new(),
         images: Vec::new(),
+        extras: Default::default(),
     };
     let report = coding
         .call(&config, "check_apps_web", &json!({}), &mut ctx)

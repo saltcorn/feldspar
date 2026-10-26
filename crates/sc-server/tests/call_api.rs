@@ -228,6 +228,7 @@ impl Env {
             modules: None,
             signals: Vec::new(),
             images: Vec::new(),
+            extras: Default::default(),
         };
         coding_trait
             .call(config, TOOL, &args, &mut ctx)
@@ -420,6 +421,7 @@ async fn call_api_needs_someone_to_send_as_and_a_served_application() -> Result<
         modules: None,
         signals: Vec::new(),
         images: Vec::new(),
+        extras: Default::default(),
     };
     let err = coding_trait
         .call(&config, TOOL, &json!({"path": "/api/notes"}), &mut ctx)

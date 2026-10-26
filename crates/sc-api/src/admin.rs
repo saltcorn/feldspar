@@ -1863,6 +1863,22 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // One display part a run's tool showed the person (TODO-agent-skills AS6.3):
+    // rows as `data`, an image or a clip as `content_base64`.
+    set.register(
+        Endpoint::new(
+            "getRunPart",
+            Method::Get,
+            api()
+                .lit("runs")
+                .param("id", ValueType::Uuid)
+                .lit("parts")
+                .param("part", ValueType::Uuid),
+        )
+        .output(run_part_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
     // What a coding run changed, as a diff over the store — the run's own
     // changes and those of every session it delegated to (a planned run edits
     // nothing itself). Computed from the runs' change ledgers against what the
@@ -6130,6 +6146,21 @@ fn run_schema() -> TypeSchema {
         TypeSchema::optional(run_plan_schema()),
     ));
     TypeSchema::Struct(fields)
+}
+
+/// One stored display part (TODO-agent-skills AS6.3).
+fn run_part_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        // `rows` | `image` | `audio`.
+        StructField::new("kind", TypeSchema::text()),
+        StructField::new("mime_type", TypeSchema::text()),
+        StructField::new("summary", TypeSchema::text()),
+        // `{ title, view, columns, rows }` for rows, `{ name }` for a file.
+        StructField::new("data", TypeSchema::json()),
+        // The bytes of an image or a clip.
+        StructField::new("content_base64", TypeSchema::optional(TypeSchema::text())),
+    ])
 }
 
 /// A planner run's plan: its features, and one progress entry per session.

@@ -134,6 +134,16 @@ impl HttpClient {
                 .get(CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned);
+            let response_headers = response
+                .headers()
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        name.as_str().to_owned(),
+                        value.to_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect();
             let mut bytes = Vec::new();
             let mut truncated = false;
             while let Some(chunk) = response.chunk().await.map_err(|e| send_failed(&url, &e))? {
@@ -150,6 +160,7 @@ impl HttpClient {
                 redirects,
                 status: status.as_u16(),
                 content_type,
+                headers: response_headers,
                 body: bytes,
                 truncated,
             });
@@ -205,6 +216,8 @@ pub struct Response {
     pub redirects: Vec<Url>,
     pub status: u16,
     pub content_type: Option<String>,
+    /// The final response's headers, in order.
+    pub headers: Vec<(String, String)>,
     /// At most [`MAX_DOWNLOAD_BYTES`] of the body.
     pub body: Vec<u8>,
     /// Whether the body was longer than what was read.

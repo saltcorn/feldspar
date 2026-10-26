@@ -86,7 +86,9 @@ neither needs work.
   trait creates, as v1 does? (Proposed: a system table, so it is not in the application's
   schema, with an admin screen.)
 - Generated JavaScript: the same isolate pool as code bodies, or a separate one with lower
-  limits? (Proposed: the same pool, with a stricter per-call budget.)
+  limits? (Decided in AS5: the same pool, with a stricter per-call budget. V8 cannot cap the
+  heap of one context in a shared isolate, so the heap one call can fill is bounded by what
+  can reach it: rows per read, response size, result size.)
 
 ---
 
@@ -168,37 +170,40 @@ The server is an MCP server (`sc-server` `mcp.rs`); it cannot yet call one.
 
 `run_js_code` runs JavaScript an admin wrote. Code the model writes needs a narrower host.
 
-- [ ] **AS5.1** A grant set for one evaluation: `fetch` (through the `http` host policy),
+- [x] **AS5.1** A grant set for one evaluation: `fetch` (through the `http` host policy),
   tables (read-only or read-write, **as the caller**, through `sc-api`), code libraries
   (`lib()`), with nothing else in scope.
-- [ ] **AS5.2** Per-call limits: wall time, heap and output size, stricter than a code body's
-  (§3).
-- [ ] **AS5.3** The source of every evaluation is kept in the run's ledger, for review.
-- [ ] **AS5.4** Tests: a grant not given is a `ReferenceError` the model can read; a read-only
+- [x] **AS5.2** Per-call limits: wall time, heap and output size, stricter than a code body's
+  (§3). (`SandboxLimits`: 10 s by default, at most 30; 50 database calls, 200 rows a read, 10
+  requests of at most 1 MB, a 64 KB result. Heap: see §3.)
+- [x] **AS5.3** The source of every evaluation is kept in the run's ledger, for review.
+- [x] **AS5.4** Tests: a grant not given is a `ReferenceError` the model can read; a read-only
   table refuses a write; a timeout ends only that call.
 
 ## AS6 — Interactive chat
 
 Both chat surfaces show text and tool calls. They cannot ask, offer a button or show a result.
 
-- [ ] **AS6.1** `sc-agent`: a tool may return `Awaiting { request }`. The run's turn ends in a
+- [x] **AS6.1** `sc-agent`: a tool may return `Awaiting { request }`. The run's turn ends in a
   stored `awaiting_user` state holding a structured request: `choice` (options with
   descriptions, single or multiple), `text`, `approve` (label, payload) or `button`.
-- [ ] **AS6.2** The answer is the next user message, carrying `{ answers_request: id, value }`.
+- [x] **AS6.2** The answer is the next user message, carrying `{ answers_request: id, value }`.
   The trait that asked turns it into the text the model reads (`AgentTrait::on_answer`).
   Answering a stale request is refused.
-- [ ] **AS6.3** Display parts: a tool result can carry a part the **user** sees and the model
+- [x] **AS6.3** Display parts: a tool result can carry a part the **user** sees and the model
   does not. That can be rows (rendered as a table, or through a named view), an image, or
   audio. Display parts live in files, the transcript stores references to them, and they are
-  elided from the request.
-- [ ] **AS6.4** Composer extensions: a trait or agent attribute can add a control to the
+  elided from the request. (Stored in `_fd_run_parts` rather than a file store, which an
+  agent need not have; deleted with the run. The admin chat draws rows as a plain table:
+  rendering through a named view is left to AS7.4, which is the first trait to name one.)
+- [x] **AS6.4** Composer extensions: a trait or agent attribute can add a control to the
   chat's input row (a select, a button). Its value travels with the message as
   `{ controls: { name: value } }` and is given to `on_turn`.
-- [ ] **AS6.5** Admin chat (`AgentChat.tsx`, `RunPanel.tsx`): render requests, display parts
+- [x] **AS6.5** Admin chat (`AgentChat.tsx`, `RunPanel.tsx`): render requests, display parts
   and controls.
-- [ ] **AS6.6** Application chat: the same over `app_agents.rs` and the generated client's
+- [x] **AS6.6** Application chat: the same over `app_agents.rs` and the generated client's
   chat hook, so an application's own chat gets them for free.
-- [ ] **AS6.7** Tests: a run that asks, is resumed by the answer, and finishes; a refused stale
+- [x] **AS6.7** Tests: a run that asks, is resumed by the answer, and finishes; a refused stale
   answer; a display part that is not in the next request.
 
 ---

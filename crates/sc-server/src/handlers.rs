@@ -2468,6 +2468,21 @@ pub fn admin_handlers_with(
         }
     });
 
+    reg.register("getRunPart", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = sc_agent::RunId(parse_uuid(ctx.path_param("id")?, "run")?);
+                let part = parse_uuid(ctx.path_param("part")?, "part")?;
+                let stored = sc_agent::load_display_part(&catalog, id, part)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("run {id} has no part {part}")))?;
+                Ok(HandlerResponse::ok(run_part_json(&stored)))
+            }
+        }
+    });
+
     reg.register("getRunDiff", {
         let catalog = catalog.clone();
         move |ctx| {
@@ -9872,6 +9887,22 @@ fn run_json(run: &sc_agent::Run) -> Json {
         );
     }
     out
+}
+
+/// A stored display part (matching `run_part_schema`), its bytes in base64.
+pub(crate) fn run_part_json(stored: &sc_agent::StoredPart) -> Json {
+    use base64::Engine as _;
+    json!({
+        "id": stored.reference.id,
+        "kind": stored.reference.kind,
+        "mime_type": stored.reference.mime_type,
+        "summary": stored.reference.summary,
+        "data": stored.data,
+        "content_base64": stored
+            .content
+            .as_ref()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+    })
 }
 
 /// A planner run's plan (matching `run_plan_schema`), every field present.

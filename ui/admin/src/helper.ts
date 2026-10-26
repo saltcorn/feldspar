@@ -1703,7 +1703,44 @@ export type AgentPart =
       arguments?: unknown;
       result?: string;
     }
+  | AgentDisplayPart
+  | { type: "request"; request: AgentRequest }
   | { type: "error"; text: string };
+
+/** Something a tool showed the person and not the model: rows, an image or
+ * audio. Fetch it with `runs.partUrl(run, id)` (an image's `src`) or
+ * `runs.partRows(run, id)`. */
+export interface AgentDisplayPart {
+  type: "display";
+  id: string;
+  kind: "rows" | "image" | "audio";
+  mime_type: string;
+  summary: string;
+}
+
+/** One option of a question or a select. */
+export interface AgentOption {
+  value: string;
+  label?: string;
+  description?: string;
+}
+
+/** A question the agent is waiting on. Answer it with `answer(request.id,
+ * value, { run })`: an option's value (a list of them when `multiple`), text,
+ * or `true`/`false` to approve. */
+export type AgentRequest = { id: string; prompt: string; tool_call: string; trait_key: string } & (
+  | { kind: "choice"; options: AgentOption[]; multiple: boolean }
+  | { kind: "text"; placeholder?: string }
+  | { kind: "approve"; label: string; payload: unknown }
+  | { kind: "button"; label: string; payload: unknown }
+);
+
+/** A control the agent adds to the chat's input row; its value is sent in
+ * `controls`. */
+export type AgentControl = { name: string; label: string } & (
+  | { kind: "select"; options: AgentOption[]; default?: string }
+  | { kind: "button" }
+);
 
 /** A message of a conversation with an agent: what the person said, or
  * everything the agent did in answer to it. */
@@ -1722,13 +1759,16 @@ export type AgentEvent =
   | { type: "reasoning"; delta: string }
   | { type: "tool_call"; id: string; name: string; arguments?: unknown }
   | { type: "tool_result"; id: string; name: string; content?: string; is_error: boolean }
+  | { type: "display"; parts: AgentDisplayPart[] }
   | { type: "error"; message: string }
   | {
       type: "done";
       run: string | null;
       state: "done" | "failed" | "aborted" | "running" | "waiting";
       answer: string;
-      conclusion?: "answered" | "max_steps" | "aborted" | "over_budget" | "stuck";
+      conclusion?: "answered" | "max_steps" | "aborted" | "over_budget" | "stuck" | "awaiting_user";
+      /** The question an `awaiting_user` turn ended on. */
+      request?: AgentRequest;
     };
 
 /** A conversation in a history list. */
@@ -1740,9 +1780,10 @@ export interface AgentRunSummary {
   updated_at: string;
 }
 
-/** A conversation with its transcript. */
+/** A conversation with its transcript, and the question it waits on. */
 export interface AgentRun extends AgentRunSummary {
   messages: AgentMessage[];
+  awaiting: AgentRequest | null;
 }
 
 /** What a single prompt came to. */
@@ -1764,12 +1805,19 @@ export interface AgentChatOptions {
   run?: string;
   /** Stops the turn. The server stops the agent, and the run is `aborted`. */
   signal?: AbortSignal;
+  /** The values of the agent's composer controls (`controls()`). */
+  controls?: Record<string, unknown>;
 }
 
 /** Chat with an agent, and the history of the conversations. */
 export interface AgentChatApi {
   /** One turn: send `message`, and iterate over what the agent does in answer. */
   chat(message: string, options?: AgentChatOptions): AsyncGenerator<AgentEvent>;
+  /** Answer the question conversation `options.run` waits on, as the next
+   * turn. A question that is no longer waiting is refused. */
+  answer(requestId: string, value: unknown, options: AgentChatOptions & { run: string }): AsyncGenerator<AgentEvent>;
+  /** The controls the agent adds to the chat's input row. */
+  controls(): Promise<AgentControl[]>;
   runs: {
     /** The caller's own conversations with this agent, newest first. */
     list(): Promise<AgentRunSummary[]>;
@@ -1778,6 +1826,10 @@ export interface AgentChatApi {
     /** Give one a title of the caller's choosing. */
     rename(id: string, title: string): Promise<AgentRunSummary>;
     delete(id: string): Promise<{ deleted: true }>;
+    /** Where a display part's bytes are: an image's `src`, an audio's. */
+    partUrl(run: string, part: string): string;
+    /** A rows part: `{ title, view, columns, rows }`. */
+    partRows(run: string, part: string): Promise<{ title: string | null; view: string | null; columns: string[]; rows: Record<string, unknown>[] }>;
   };
 }
 
@@ -1800,7 +1852,8 @@ export function userMessage(text: string): AgentMessage {
  * part and its result settles it. `run` and `done` change no message — they
  * are the caller's to keep. A new array; the input is not changed. */
 export function applyAgentEvent(messages: AgentMessage[], event: AgentEvent): AgentMessage[] {
-  if (event.type === "run" || event.type === "done") return messages;
+  if (event.type === "run") return messages;
+  if (event.type === "done" && !event.request) return messages;
   const out = messages.slice();
   let last = out[out.length - 1];
   if (!last || last.role !== "assistant") {
@@ -1838,6 +1891,13 @@ export function applyAgentEvent(messages: AgentMessage[], event: AgentEvent): Ag
       else parts.push(settled);
       break;
     }
+    case "display":
+      parts.push(...event.parts);
+      break;
+    case "done":
+      // A turn that ended on a question: the question closes the message.
+      if (event.request) parts.push({ type: "request", request: event.request });
+      break;
     case "error":
       parts.push({ type: "error", text: event.message });
       break;
@@ -1895,13 +1955,25 @@ export function agentApi(doFetch: typeof fetch, url: string): AgentChatApi & Age
   const promptBody = (input: string | Record<string, AgentInputValue>) => (typeof input === "string" ? { prompt: input } : { input });
   return {
     chat(message, options = {}) {
-      return stream("chat", "/chat", { message, run: options.run }, options.signal);
+      return stream("chat", "/chat", { message, run: options.run, controls: options.controls }, options.signal);
     },
+    answer(requestId, value, options) {
+      return stream(
+        "answer",
+        "/chat",
+        { answers_request: requestId, value, run: options.run, controls: options.controls },
+        options.signal,
+      );
+    },
+    controls: () => json<AgentControl[]>("controls", "GET", "/controls"),
     runs: {
       list: () => json<AgentRunSummary[]>("runs.list", "GET", "/runs"),
       get: (id) => json<AgentRun>("runs.get", "GET", `/runs/${encodeURIComponent(id)}`),
       rename: (id, title) => json<AgentRunSummary>("runs.rename", "PATCH", `/runs/${encodeURIComponent(id)}`, { title }),
       delete: (id) => json<{ deleted: true }>("runs.delete", "DELETE", `/runs/${encodeURIComponent(id)}`),
+      partUrl: (run, part) => `${url}/runs/${encodeURIComponent(run)}/parts/${encodeURIComponent(part)}`,
+      partRows: (run, part) =>
+        json("runs.partRows", "GET", `/runs/${encodeURIComponent(run)}/parts/${encodeURIComponent(part)}`),
     },
     async prompt(input, options = {}) {
       const res = await doFetch(`${url}/prompt`, {

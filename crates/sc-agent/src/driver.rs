@@ -29,7 +29,7 @@ use serde_json::Value as Json;
 
 use crate::agent::{Agent, ModelRole};
 use crate::agent_trait::{
-    AfterToolsContext, RunCaller, SessionContext, ToolsContext, TraitContext, Turn,
+    AfterToolsContext, CallExtras, RunCaller, SessionContext, ToolsContext, TraitContext, Turn,
 };
 use crate::context::{Compaction, ContextVerdict, Elidable, SUMMARY_PERCENT, SUMMARY_PROMPT};
 use crate::delegate::{ATTR_DELEGATED_BY, ATTR_PARENT_RUN, DelegateRequest, Delegated, Delegator};
@@ -313,6 +313,106 @@ impl<'a> Runner<'a> {
         self.drive(run).await
     }
 
+    /// [`continue_run`](Runner::continue_run), with the composer controls the
+    /// message was sent with (TODO-agent-skills AS6.4).
+    pub async fn continue_run_with(
+        &self,
+        run: &mut Run,
+        message: impl Into<String>,
+        controls: std::collections::BTreeMap<String, Json>,
+    ) -> Result<Conclusion> {
+        self.push_message(run, message, controls).await?;
+        self.drive(run).await
+    }
+
+    /// Answer the question `run` is waiting on, and drive it on (AS6.2).
+    pub async fn answer_run(
+        &self,
+        run: &mut Run,
+        answer: &crate::interact::Answer,
+        controls: std::collections::BTreeMap<String, Json>,
+    ) -> Result<Conclusion> {
+        self.push_answer(run, answer, controls).await?;
+        self.drive(run).await
+    }
+
+    /// Add the person's `message` to `run`, with the composer controls it was
+    /// sent with — each checked against what the agent's traits declare
+    /// ([`controls`](Runner::controls)) — and save it, without driving: for a
+    /// surface that drives the run itself.
+    pub async fn push_message(
+        &self,
+        run: &mut Run,
+        message: impl Into<String>,
+        controls: std::collections::BTreeMap<String, Json>,
+    ) -> Result<()> {
+        crate::interact::check_controls(&self.controls(), &controls)?;
+        let mut state = run.agent_loop()?;
+        state.push_user_with(message, controls)?;
+        run.record(&state);
+        save_run(self.catalog, run).await
+    }
+
+    /// Add the person's answer to the question `run` is waiting on, as the
+    /// text the trait that asked makes of it, and save it, without driving.
+    ///
+    /// Refused when the question is not the one waited on — answered already,
+    /// passed over by an ordinary message, or never asked — and when the value
+    /// does not fit it.
+    pub async fn push_answer(
+        &self,
+        run: &mut Run,
+        answer: &crate::interact::Answer,
+        controls: std::collections::BTreeMap<String, Json>,
+    ) -> Result<()> {
+        crate::interact::check_controls(&self.controls(), &controls)?;
+        let mut state = run.agent_loop()?;
+        let request = state.awaited(&answer.answers_request)?.clone();
+        request.check_answer(&answer.value)?;
+        let text = match self.asker(&request.trait_key) {
+            Some((trait_, config)) => trait_.on_answer(config, &request, &answer.value).await?,
+            // The trait that asked has been removed since: the answer is still
+            // the person's, said in words.
+            None => request.answer_text(&answer.value),
+        };
+        state.push_user_with(text, controls)?;
+        run.record(&state);
+        save_run(self.catalog, run).await
+    }
+
+    /// Every composer control the agent's traits add to the chat (AS6.4).
+    pub fn controls(&self) -> Vec<crate::interact::ComposerControl> {
+        composer_controls(self.registry, self.agent)
+    }
+
+    /// The trait instance a state key names, with its configuration.
+    fn asker(&self, key: &str) -> Option<(Arc<dyn crate::AgentTrait>, &sc_types::Attrs)> {
+        self.agent
+            .traits
+            .iter()
+            .enumerate()
+            .find(|(index, enabled)| trait_state_key(*index, &enabled.trait_) == key)
+            .and_then(|(_, enabled)| {
+                self.registry
+                    .require(&enabled.trait_)
+                    .ok()
+                    .map(|t| (Arc::clone(t), &enabled.config))
+            })
+    }
+
+    /// Store what one call showed the person, answering the references.
+    async fn store_display(
+        &self,
+        run: RunId,
+        parts: &[crate::interact::DisplayPart],
+    ) -> Result<Vec<crate::interact::DisplayRef>> {
+        let mut refs = Vec::with_capacity(parts.len());
+        for part in parts {
+            refs.push(crate::parts::save_display_part(self.catalog, run, part).await?);
+        }
+        Ok(refs)
+    }
+
     /// The connected model for `role`: the executor, or the role's own model
     /// connected on first use. A role the agent leaves unset is the executor.
     pub async fn model(&self, role: ModelRole) -> Result<ConnectedModel> {
@@ -428,7 +528,15 @@ impl<'a> Runner<'a> {
                     };
                     let prepared = match self.model(role).await {
                         Ok(model) => self
-                            .request(messages, cache, step, mode, &model, run.id)
+                            .request(
+                                messages,
+                                cache,
+                                step,
+                                mode,
+                                &model,
+                                run.id,
+                                state.controls(),
+                            )
                             .await
                             .map(|request| (model, request)),
                         Err(e) => Err(e),
@@ -530,6 +638,9 @@ impl<'a> Runner<'a> {
                     }
                     for aside in spent.asides {
                         ledger.record_aside(aside);
+                    }
+                    for evaluation in spent.code {
+                        ledger.record_code(evaluation);
                     }
                 }
             }
@@ -677,6 +788,7 @@ impl<'a> Runner<'a> {
     /// The tools are sorted by name, so that the prefix — system prompt, then
     /// tools — is byte-identical from one step to the next and can be cached
     /// (TODO §9).
+    #[allow(clippy::too_many_arguments)]
     async fn request(
         &self,
         messages: Vec<LlmMessage>,
@@ -685,12 +797,14 @@ impl<'a> Runner<'a> {
         mode: RunMode,
         model: &ConnectedModel,
         run: RunId,
+        controls: &std::collections::BTreeMap<String, Json>,
     ) -> Result<LlmRequest> {
         let cx =
             ToolsContext::new(self.catalog, mode, &model.capabilities).for_caller(&self.caller);
         let prefix = stable_prefix(self.registry, self.agent, &cx)?;
         let mut turn = Turn::new(&self.caller, &self.agent.name, step);
         turn.mode = mode;
+        turn.controls = controls.clone();
         for enabled in &self.agent.traits {
             let trait_ = self.registry.require(&enabled.trait_)?;
             trait_.on_turn(&enabled.config, &mut turn).await?;
@@ -1063,14 +1177,40 @@ impl<'a> Runner<'a> {
                                 .map(|m| m.as_ref() as &dyn ModuleManager),
                             signals: Vec::new(),
                             images: Vec::new(),
+                            extras: CallExtras::default(),
                         };
                         let result = trait_
                             .call(&enabled.config, &call.name, &call.arguments, &mut ctx)
                             .await;
                         let signals = std::mem::take(&mut ctx.signals);
                         let images = std::mem::take(&mut ctx.images);
+                        let extras = std::mem::take(&mut ctx.extras);
+                        let step = state.step();
+                        lock(spent)
+                            .code
+                            .extend(extras.code.into_iter().map(|mut evaluation| {
+                                evaluation.step = step;
+                                evaluation
+                            }));
                         match result {
-                            Ok(value) => ToolOutcome::ok(call.clone(), &value).with_images(images),
+                            Ok(value) => {
+                                // What the call showed the person is stored now,
+                                // and the run keeps references (AS6.3); a part
+                                // that cannot be stored fails the call, so the
+                                // model is not told it showed something it did
+                                // not.
+                                match self.store_display(run, &extras.display).await {
+                                    Ok(display) => ToolOutcome::ok(call.clone(), &value)
+                                        .with_images(images)
+                                        .with_display(display)
+                                        .with_awaiting(extras.awaiting.map(|mut request| {
+                                            request.tool_call = call.id.clone();
+                                            request.trait_key = key.clone();
+                                            request
+                                        })),
+                                    Err(e) => ToolOutcome::failed(call.clone(), e),
+                                }
+                            }
                             Err(e) => ToolOutcome::failed(call.clone(), e),
                         }
                         .with_fingerprint(fingerprint)
@@ -1501,6 +1641,7 @@ fn conclusion_label(conclusion: &Conclusion) -> String {
         } => "stopped: the caller is out of LLM credits".to_owned(),
         Conclusion::OverBudget { budget } => format!("ran out of its {budget} budget"),
         Conclusion::Stuck { reason } => format!("was stopped as stuck ({reason})"),
+        Conclusion::AwaitingUser { .. } => "is waiting for the person to answer".to_owned(),
     }
 }
 
@@ -1524,6 +1665,8 @@ struct Spent {
     children: Vec<ChildLedger>,
     /// Model calls tools made for themselves.
     asides: Vec<LedgerStep>,
+    /// Model-written code tools evaluated (AS5.3).
+    code: Vec<crate::ledger::CodeEvaluation>,
 }
 
 /// The delegation one tool call is offered: the runner, plus what it needs to
@@ -1634,6 +1777,25 @@ impl Delegator for RunDelegation<'_, '_> {
     async fn capabilities(&self, role: ModelRole) -> Result<sc_llm::ModelCapabilities> {
         Ok(self.runner.model(role).await?.capabilities)
     }
+}
+
+/// Every composer control `agent`'s traits add to its chat (TODO-agent-skills
+/// AS6.4), in trait order: what a chat surface draws in its input row.
+pub fn composer_controls(
+    registry: &AgentRegistry,
+    agent: &Agent,
+) -> Vec<crate::interact::ComposerControl> {
+    agent
+        .traits
+        .iter()
+        .filter_map(|enabled| {
+            registry
+                .require(&enabled.trait_)
+                .ok()
+                .map(|t| t.controls(&enabled.config))
+        })
+        .flatten()
+        .collect()
 }
 
 /// A lock that survives a poisoned mutex: a panic elsewhere has already failed

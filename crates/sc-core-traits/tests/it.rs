@@ -68,6 +68,8 @@ mod run_agent;
 mod run_js_code;
 #[path = "run_trigger.rs"]
 mod run_trigger;
+#[path = "sandbox.rs"]
+mod sandbox;
 #[path = "subagent.rs"]
 mod subagent;
 #[path = "write_rows.rs"]

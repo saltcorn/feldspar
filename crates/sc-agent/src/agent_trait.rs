@@ -23,6 +23,7 @@
 //! trigger carries the trigger's authority instead, and that difference is set at
 //! exactly one place: where the run is created.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_action::TriggerDispatcher;
@@ -37,6 +38,8 @@ use serde_json::Value as Json;
 use crate::context::Elidable;
 use crate::control::Signal;
 use crate::delegate::Delegator;
+use crate::interact::{ComposerControl, DisplayPart, UserRequest};
+use crate::ledger::CodeEvaluation;
 use crate::run::{RunId, RunMode};
 use crate::view::{AppPreviewer, AppRequester, BrowserDriver, HostCapabilities, ModuleManager};
 
@@ -240,6 +243,29 @@ pub trait AgentTrait: Send + Sync {
     /// release and return.
     fn run_ended(&self, config: &Attrs, run: RunId) {
         let _ = (config, run);
+    }
+
+    /// Turn the person's answer to a question this trait asked
+    /// ([`TraitContext::await_user`]) into the text the model reads — the next
+    /// user message (TODO-agent-skills AS6.2).
+    ///
+    /// Called with an answer already checked against the request. The default
+    /// says the question and the answer in words.
+    async fn on_answer(
+        &self,
+        config: &Attrs,
+        request: &UserRequest,
+        value: &Json,
+    ) -> Result<String> {
+        let _ = config;
+        Ok(request.answer_text(value))
+    }
+
+    /// The controls this trait adds to the chat's input row (AS6.4). Their
+    /// values reach [`on_turn`](AgentTrait::on_turn) as [`Turn::controls`].
+    fn controls(&self, config: &Attrs) -> Vec<ComposerControl> {
+        let _ = config;
+        Vec::new()
     }
 }
 
@@ -551,6 +577,23 @@ pub struct TraitContext<'a> {
     /// Images this call's result carries beside its text. Reach it through
     /// [`attach_image`](TraitContext::attach_image).
     pub images: Vec<ImagePart>,
+    /// What this call shows the person, asks them, and ran (TODO-agent-skills
+    /// AS5, AS6). Reach it through [`show`](TraitContext::show),
+    /// [`await_user`](TraitContext::await_user) and
+    /// [`record_code`](TraitContext::record_code).
+    pub extras: CallExtras,
+}
+
+/// What a tool call produces besides its result, for the loop to take after
+/// the call.
+#[derive(Debug, Default)]
+pub struct CallExtras {
+    /// Parts shown to the person and not the model.
+    pub display: Vec<DisplayPart>,
+    /// A question that ends the turn until the person answers.
+    pub awaiting: Option<UserRequest>,
+    /// Model-written code this call evaluated, for the ledger.
+    pub code: Vec<CodeEvaluation>,
 }
 
 impl TraitContext<'_> {
@@ -577,6 +620,35 @@ impl TraitContext<'_> {
     /// result; offering an image tool is the trait's decision.
     pub fn attach_image(&mut self, image: ImagePart) {
         self.images.push(image);
+    }
+
+    /// Show `part` to the person, beside this call's result, without the model
+    /// seeing it (TODO-agent-skills AS6.3). Refused when it is too large.
+    pub fn show(&mut self, part: DisplayPart) -> Result<()> {
+        part.check()?;
+        self.extras.display.push(part);
+        Ok(())
+    }
+
+    /// Ask the person `request`: the turn ends after this round of tools, and
+    /// the run waits for the answer, which reaches this trait's
+    /// [`on_answer`](AgentTrait::on_answer) (AS6.1). One request per round: a
+    /// second is refused.
+    pub fn await_user(&mut self, request: UserRequest) -> Result<()> {
+        request.check()?;
+        if self.extras.awaiting.is_some() {
+            return Err(Error::invalid(
+                "this tool has already asked the person something this turn",
+            ));
+        }
+        self.extras.awaiting = Some(request);
+        Ok(())
+    }
+
+    /// Keep `evaluation` — the source of model-written code and how it went —
+    /// in the run's ledger, for review (AS5.3).
+    pub fn record_code(&mut self, evaluation: CodeEvaluation) {
+        self.extras.code.push(evaluation);
     }
 
     /// How to mount a preview, or the configuration error that says this
@@ -683,6 +755,10 @@ pub struct Turn<'a> {
     pub step: u32,
     /// The run's mode.
     pub mode: RunMode,
+    /// The values of the chat's composer controls sent with the message that
+    /// started this turn, by control name (TODO-agent-skills AS6.4); empty when
+    /// none were sent.
+    pub controls: BTreeMap<String, Json>,
     /// Paragraphs appended to the system prompt, in the order traits added them.
     extra_system: Vec<String>,
 }
@@ -695,6 +771,7 @@ impl<'a> Turn<'a> {
             agent,
             step,
             mode: RunMode::Act,
+            controls: BTreeMap::new(),
             extra_system: Vec::new(),
         }
     }

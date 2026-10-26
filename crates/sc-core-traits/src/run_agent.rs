@@ -278,6 +278,9 @@ fn conclusion_name(conclusion: &Conclusion) -> &'static str {
         Conclusion::Aborted => "aborted",
         Conclusion::OverBudget { .. } => "over_budget",
         Conclusion::Stuck { .. } => "stuck",
+        // Nobody is chatting with a triggered run: it is left waiting, and
+        // answered from the admin's chat.
+        Conclusion::AwaitingUser { .. } => "awaiting_user",
     }
 }
 

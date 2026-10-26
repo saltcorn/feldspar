@@ -2,6 +2,121 @@
 
 Changes in reverse chronological order.
 
+## Interactive chat: questions, display parts, composer controls (TODO-agent-skills AS6)
+
+A tool can now ask the person something and wait for the answer, show them things the model
+never sees, and read controls the chat's input row adds. Both chat surfaces support all three.
+
+- **Questions** (`sc-agent` `interact.rs`, AS6.1): `TraitContext::await_user(UserRequest)`
+  with a `choice` (options with labels and descriptions, single or `multiple`), `text`,
+  `approve` (a label and a payload) or `button`. After that round of tools, the turn ends as
+  `Conclusion::AwaitingUser { request }`, stored with the run in state `waiting` (`wake_at`
+  empty). Nothing holds a connection open. The loop records which tool call and which trait
+  instance asked.
+- **Answers** (AS6.2): `Runner::answer_run` (or `push_answer`, for a surface that drives the
+  run itself) takes `{ answers_request, value }`. The request must be the one the run waits
+  on, so an answer to a question that was answered, passed over by an ordinary message, or
+  never asked is refused with "no longer waiting". The value is checked against the request:
+  one of the options or a list of them, non-blank text, or `true`/`false`. The trait that
+  asked turns the answer into the user message the model reads, through the new
+  `AgentTrait::on_answer`. The default is "Your question: … / My answer: …", using option
+  labels. An ordinary message passes the question over.
+- **Display parts** (`parts.rs`, AS6.3): `TraitContext::show(DisplayPart)` takes rows (with a
+  title, an optional view name and columns), an image or audio, up to 1,000 rows or 16 MB. The
+  driver stores each part in the new `_fd_run_parts` table (bootstrapped with `_fd_runs`, and
+  deleted with its run). The run keeps a `DisplayRef { id, kind, mime_type, summary }` under
+  the tool call, in `AgentLoop::display`, beside the transcript rather than in it, so a part
+  never reaches a request. A part that cannot be stored fails the call.
+  `load_display_part` reads a part only through its own run.
+- **Composer controls** (AS6.4): the new `AgentTrait::controls(config)` declares a `select`
+  (options, a default), a `toggle`, or a `button` (sends its label at once with itself set to
+  `true`). A message's `controls` are checked against the declarations (unknown names and
+  values are refused), kept for the turn (`AgentLoop::controls`), and given to every step's
+  `on_turn` as `Turn::controls`. `Runner::continue_run_with` / `push_message` take them, and
+  `composer_controls(registry, agent)` lists them.
+- **Admin chat** (`chat.rs`, AS6.5): a `message` frame may carry `controls`, or be an answer
+  (`answers_request`, `value`). After `start`, the socket sends `controls` when the agent has
+  any, and `awaiting` when the run waits on a question. `tool_result` carries `display`, and
+  `done` carries `conclusion: "awaiting_user"` with the `request`. The new `getRunPart`
+  (`GET /api/runs/{id}/parts/{part}`) returns a part with its bytes in base64. In the UI
+  (`agentChat.ts`, `AgentChat.tsx`):
+  - questions render as cards: buttons or checkboxes for a choice, an input for text, Approve
+    and Decline, or a button. A card can be answered only while the run waits on it;
+  - display parts render as their own transcript entry: a table, an image or an audio
+    player, fetched by id;
+  - the composer renders `button` controls, and select options with no label read by their
+    value;
+  - a reopened conversation that waits on a question is answerable, and `RunPanel` shows the
+    parts.
+- **Application chat** (`app_agents.rs`, AS6.6): a `chat` body may be `{ answers_request,
+  value, run }` and may carry `controls`. A tool's parts arrive as a `display` event whatever
+  the exposure's tool detail, since they are meant to be seen. New routes:
+  `…/runs/{id}/parts/{part}` (rows as JSON, an image or clip as itself, only for the
+  conversation's owner) and `…/controls`. A conversation read back has `awaiting`, and its
+  transcript has `display` and `request` parts. The generated client's helpers gain
+  `AgentRequest`, `AgentDisplayPart`, `AgentControl` and `AgentOption`, `answer(requestId,
+  value, { run })`, `controls()`, and `runs.partUrl` / `runs.partRows`. `applyAgentEvent`
+  folds `display` and a question-ending `done` into the transcript. The scaffold's
+  `useAgentChat` gains `answer` and `send(text, controls?)`, and its AGENTS.md says how to
+  draw the new parts.
+
+Tests: `sc-agent` unit tests (answers checked against what was asked, the text the model
+reads, controls checked) and `tests/interactive.rs`:
+- a run that asks, waits stored as `waiting`, refuses a wrong value, is resumed by the answer
+  and finishes, then refuses the same answer as stale;
+- an ordinary message passing a question over;
+- display parts stored, readable only through their run, absent from the next request, and
+  deleted with the run;
+- a control reaching `on_turn`, and unknown controls or values refused.
+
+`sc-server`: the answer frame parses, `done` for a question, and `tests/app_agents.rs`
+covers an application's whole flow (controls listed, parts shown with tools hidden, fetched,
+not reachable by another user, a question asked, read back, answered, then refused as stale).
+Admin UI: a question answered as the next turn, a question passed over, parts after their
+tool, a button control pressed, and a stored run reopened while waiting. The generated
+helpers and the scaffold's hook were type-checked with `tsc --strict`.
+
+## Model-written JavaScript in a sandbox (TODO-agent-skills AS5)
+
+The host the `generate_js` trait (AS9.4) will run model-written code on:
+`sc_core_traits::sandbox::run_model_code(ctx, tool, source, bindings, &Grants,
+&SandboxLimits)`.
+
+- **Grants** (AS5.1): only what is granted is in scope, and everything else is a
+  `ReferenceError` the model can read:
+  - `db` with a table grant (`TableAccess::ReadOnly` or `ReadWrite`, optionally limited to
+    named tables);
+  - `fetch` with a network grant (a `HostPolicy`: an optional host allow-list, and public
+    addresses only unless the private network is opened, checked on every redirect by the
+    `http` trait's `HttpClient`);
+  - `lib()` imports with the libraries grant;
+  - never `fs`, `trigger`, `modfn`, `live` or v1's `Table`.
+
+  `db` is a `viewer_only` `TableHost`, so every plan runs as the caller whatever authority it
+  names, and §7.3's ownership and RLS decide each row. A read-only grant refuses
+  insert/update/delete by name, an allow-list refuses other tables, and `db.sql`,
+  `db.models` and row history are refused outright.
+- **Limits** (AS5.2): `SandboxLimits` defaults to 10 s (at most 30), 50 database calls, 200
+  rows a read, 10 requests of at most 1 MB each (refused, not truncated, and binary request
+  bodies refused), and a result of at most 64 KB of JSON. Same isolate pool as code bodies;
+  the heap is bounded by what can reach it (TODO §3).
+- **Ledger** (AS5.3): every evaluation, returned or thrown, is kept with its source, outcome,
+  error, time and result size, through `TraitContext::record_code`. The driver moves it into
+  the run's ledger as `CodeEvaluation` entries (`Ledger::code`), stamped with the step.
+- `TraitContext` gained `extras: CallExtras` (display parts, the question, code evaluations),
+  taken by the driver after each call. The `http` trait's client `Response` now carries the
+  response headers.
+
+Tests (AS5.4, `sc-core-traits` `tests/sandbox.rs`, on the real engine and Postgres):
+- `db`, `fetch`, `fs` and `trigger` without grants are `ReferenceError`s naming the surface,
+  while arguments are in scope;
+- a reader sees only their own rows (asking for more changes nothing);
+- a read-only grant refuses an insert, and `db.sql` is refused;
+- a read-write grant updates as the caller, and an allow-list refuses another table;
+- an endless loop ends at the timeout, and a too-large result is refused, with the engine
+  still answering the next call;
+- every evaluation is ledgered.
+
 ## An MCP client: remote MCP servers an agent will call (TODO-agent-skills AS4)
 
 This server is already an MCP server. Now it can also call one. A new crate, `sc-mcp`

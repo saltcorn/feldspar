@@ -311,6 +311,14 @@ pub(crate) async fn delegate(
                  ask for it differently.",
                 outcome.steps, outcome.run
             ),
+            // Nobody chats with a sub-agent, so its question has nobody to
+            // answer it (TODO-agent-skills AS6).
+            sc_agent::Conclusion::AwaitingUser { request } => format!(
+                "`{agent}` stopped to ask the person a question, which a sub-agent \
+                 cannot: \"{}\" (run {}). Answer it yourself in a new briefing, or ask \
+                 the person here.",
+                request.prompt, outcome.run
+            ),
             _ => format!(
                 "`{agent}` finished without reporting anything (run {}). It may \
                  have done the work and failed to say so. Ask again, stating in \

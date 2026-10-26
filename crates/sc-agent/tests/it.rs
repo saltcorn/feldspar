@@ -28,6 +28,8 @@ mod agent_store;
 mod context;
 #[path = "credits.rs"]
 mod credits;
+#[path = "interactive.rs"]
+mod interactive;
 #[path = "loop_control.rs"]
 mod loop_control;
 #[path = "roles_modes_budgets.rs"]

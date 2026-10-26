@@ -694,6 +694,7 @@ fn conclusion_label(conclusion: &Conclusion) -> String {
         Conclusion::MaxSteps => "max_steps".to_owned(),
         Conclusion::OverBudget { budget } => format!("over_budget ({budget})"),
         Conclusion::Aborted => "aborted".to_owned(),
+        Conclusion::AwaitingUser { .. } => "awaiting_user".to_owned(),
     }
 }
 

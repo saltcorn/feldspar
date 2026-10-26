@@ -1044,5 +1044,9 @@
   "Lowercase letters, digits, - and _ only.": "أحرف صغيرة وأرقام و- و_ فقط.",
   "No double underscore: tools are named <server>__<tool>.": "لا شرطة سفلية مزدوجة: تُسمّى الأدوات <server>__<tool>.",
   "LLM providers and MCP servers": "مزوّدو نماذج اللغة وخوادم MCP",
-  "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.": "{count} من مزوّدي نماذج اللغة وخوادم MCP، مع نماذجها ومفاتيح API والترويسات. لا يُستعاد الوكيل إلا إذا استُعيد المزوّد الذي يستخدمه."
+  "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.": "{count} من مزوّدي نماذج اللغة وخوادم MCP، مع نماذجها ومفاتيح API والترويسات. لا يُستعاد الوكيل إلا إذا استُعيد المزوّد الذي يستخدمه.",
+  "This question is no longer waiting for an answer.": "لم يعد هذا السؤال ينتظر إجابة.",
+  "Answer": "أجب",
+  "Your answer": "إجابتك",
+  "Decline": "رفض"
 }
