@@ -156,6 +156,14 @@ expose everything that agent can reach: a Member chatting with an agent that has
 over an admin-only trigger is refused *in the tool result*, by name. Set the agent's **Minimum
 role** to `40` and try it as a member to see the difference between the two floors.
 
+**A small tool that is only this agent's** does not need a trigger. Add a `run_js_code` trait
+instead: a **Tool name** (`word_of_the_day`), a **Description** the model reads, the **Code**,
+and the **Arguments** it takes as `[{ "name": "text", "type": "string" }]`. Each argument is a
+variable in the code (`return text.toUpperCase()`), the code has the same `db` and `fetch` a
+`run_js_code` trigger has, and it runs as whoever is chatting. Nothing appears in the trigger
+list, and an agent can have as many as it needs. A Saltcorn 1 agent's "Run JavaScript code"
+skills are imported as these.
+
 There are three more table grants beside `query_table`, each its own trait so that a read-only
 agent is the default shape: `insert_row`, `update_rows` and `delete_rows`. The last two
 **require a `where`** — a table rewritten by an omitted argument is the same accident as one
@@ -768,6 +776,7 @@ Two things to know:
 | `update_rows` | a table, the fields it may change | updates the rows a `where` selects |
 | `delete_rows` | a table, a row bound | deletes the rows a `where` selects |
 | `run_trigger` | one trigger | runs it, with a payload it supplies |
+| `run_js_code` | a tool name, a description, the code, its arguments | one tool whose JavaScript lives in the agent, run as the caller |
 | `coding` | a store, a sub-directory, five grants, a workflow and the bounds | browses, reads, greps and maps the code; writes and edits it under **May create and change files**; runs one `package.json` script under **May run the project's scripts**; runs the checks and the app's build under **May run the configured checks**; looks at the preview under **May look at the application's preview**; and has a shell under **May use a shell** (admins only). In the `planned` workflow it also plans and delegates a session per feature |
 | `build_application` | an application's subdomain | builds it, and gets the diagnostics — for an agent whose job is only to build one; a `coding` agent builds through its own `check` instead |
 | `admin_copilot` | four grants, two areas, and **no table** | describes and edits the schema itself, the triggers over it, and an application's custom SQL endpoints |

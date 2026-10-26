@@ -64,6 +64,8 @@ mod http_fetch;
 mod query_table;
 #[path = "run_agent.rs"]
 mod run_agent;
+#[path = "run_js_code.rs"]
+mod run_js_code;
 #[path = "run_trigger.rs"]
 mod run_trigger;
 #[path = "subagent.rs"]

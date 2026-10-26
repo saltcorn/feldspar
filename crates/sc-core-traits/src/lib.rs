@@ -21,11 +21,13 @@
 //!
 //! ## The set
 //!
-//! Eleven traits over seven things an agent can be given. **Tables**:
+//! Twelve traits over seven things an agent can be given. **Tables**:
 //! [`QueryTable`] reads one, and [`InsertRow`], [`UpdateRows`] and
 //! [`DeleteRows`] are three separate opt-in grants over one — so a read-only
 //! agent is the default shape and each way of changing data is a deliberate act
-//! with a form field attached. **Actions**: [`RunTrigger`] exposes one configured
+//! with a form field attached. **Actions**: [`RunJsCode`] is one JavaScript
+//! body kept in the agent's own configuration, run as a `run_js_code` action
+//! body is; [`RunTrigger`] exposes one configured
 //! trigger, which is what connects an agent to the whole of §10 (and, once §10.3
 //! lands, to workflows unchanged, because a workflow is a trigger). **Code**:
 //! [`Coding`] is the whole loop over one configured file store (optionally
@@ -109,6 +111,7 @@ mod insert_row;
 mod preview_pane;
 mod query_table;
 mod run_agent;
+mod run_js_code;
 mod run_trigger;
 mod subagent;
 mod table;
@@ -158,6 +161,7 @@ pub use preview_pane::{
 };
 pub use query_table::{DEFAULT_MAX_ROWS, QueryTable};
 pub use run_agent::{CFG_AGENT, CFG_PROMPT, CFG_TRUSTED_INPUT, RunAgent};
+pub use run_js_code::{CFG_ARGUMENTS, CFG_CODE, CFG_TOOL_DESCRIPTION, CFG_TOOL_NAME, RunJsCode};
 pub use run_trigger::{CFG_TRIGGER, RunTrigger};
 // `subagent`'s own agent-name key is spelled `agent` too, so [`CFG_AGENT`] above
 // is it: one string, exported once, rather than two constants a reader would have
@@ -239,6 +243,7 @@ pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
     registry.register(Arc::new(UpdateRows))?;
     registry.register(Arc::new(DeleteRows))?;
     registry.register(Arc::new(RunTrigger))?;
+    registry.register(Arc::new(RunJsCode))?;
     registry.register(Arc::new(Coding))?;
     registry.register(Arc::new(BuildApplication))?;
     registry.register(Arc::new(Subagent))?;
@@ -264,6 +269,7 @@ mod tests {
                 "insert_row",
                 "preview_pane",
                 "query_table",
+                "run_js_code",
                 "run_trigger",
                 "subagent",
                 "update_rows",
@@ -326,6 +332,10 @@ mod tests {
         );
         assert_eq!(spec("delete_rows"), vec![CFG_TABLE, CFG_MAX_ROWS]);
         assert_eq!(spec("run_trigger"), vec![CFG_TRIGGER]);
+        assert_eq!(
+            spec("run_js_code"),
+            vec![CFG_TOOL_NAME, CFG_TOOL_DESCRIPTION, CFG_CODE, CFG_ARGUMENTS]
+        );
         // The sub-agent it delegates to, then the sentence that tells the
         // *parent* model when to reach for it — the field that decides whether
         // delegation happens at the right moment — then the two bounds: what one

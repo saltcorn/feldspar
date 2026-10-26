@@ -1415,8 +1415,17 @@ async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported(
         .collect();
     assert_eq!(
         traits,
-        vec!["run_trigger", "query_table", "insert_row"],
+        vec!["run_js_code", "query_table", "insert_row"],
         "{agent}"
+    );
+    // The JavaScript tool is the agent's own, its code as v1 wrote it.
+    assert_eq!(
+        agent["traits"][0]["config"]["tool_name"],
+        json!("word_of_the_day")
+    );
+    assert_eq!(
+        agent["traits"][0]["config"]["code"],
+        json!("return \"Strawberry\"")
     );
 
     // --- the workflow, which runs ---------------------------------------------
@@ -1489,17 +1498,15 @@ async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported(
         .await;
     assert_eq!(rows[0]["discount"], json!(0.15), "{ran} {rows}");
 
-    // The JavaScript tool is a trigger the agent runs, and it answers.
-    let (status, word) = server
-        .client
-        .send(
-            "POST",
-            &format!("/api/triggers/{}/run", id_of("word_of_the_day")),
-            Some(json!({})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{word}");
-    assert_eq!(word["result"], json!("Strawberry"));
+    // …and not a trigger: nothing was added to the instance's trigger list.
+    assert!(
+        !triggers
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == json!("word_of_the_day")),
+        "{triggers}"
+    );
     Ok(())
 }
 

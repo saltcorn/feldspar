@@ -710,9 +710,9 @@ workflow) found what the first importer left behind. Fixture:
 - [x] **F10.3** v1 bcrypt password hashes are carried; `verify_password` picks the scheme from
   the hash, and a login with a bcrypt hash rehashes it with argon2id.
 - [x] **F10.4** v1's `Agent` action becomes an agent: Table skills as `query_table` /
-  `insert_row`, JavaScript tools as `run_js_code` triggers run through `run_trigger`, and the
-  LLM plugin's settings as the provider. Agents refused for want of a trigger are retried
-  after the triggers.
+  `insert_row`, JavaScript tools as the new `run_js_code` agent trait (code kept in the agent,
+  no trigger), Trigger skills as `run_trigger`, and the LLM plugin's settings as the provider.
+  Agents refused for want of a trigger are retried after the triggers.
 - [x] **F10.5** v1 workflows cross step for step (`TableQuery`, `ForLoop`, `SetContext`,
   `UserForm`, `TerminateWorkflow`, `modify_row` on a table, other actions by name), with
   their variables rewritten to where this engine keeps them.

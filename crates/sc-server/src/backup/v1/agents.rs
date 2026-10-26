@@ -10,11 +10,12 @@
 //! | v1 skill | here |
 //! |---|---|
 //! | `Table` (query, insert) | `query_table` and/or `insert_row` on that table |
-//! | `Run JavaScript code` | a `run_js_code` trigger of the tool's name, and `run_trigger` on it |
+//! | `Run JavaScript code` | `run_js_code`, the code kept in the agent |
 //! | `Trigger` | `run_trigger` on that trigger |
 //!
-//! A JavaScript tool's arguments were bare variables in v1; here they are the
-//! trigger's `payload`, so the code is given a line binding them by name first.
+//! A JavaScript tool's arguments are bare variables in its code in both
+//! systems, so the code crosses as written. Nothing is added to the trigger
+//! list: the tool is the agent's own.
 //!
 //! The provider is v1's `large-language-model` plugin configuration — the
 //! vendor, the key and the default model — when it names a vendor this system
@@ -33,13 +34,11 @@ pub(super) const AGENT_ACTION: &str = "Agent";
 /// The v1 plugin holding the LLM settings.
 const LLM_PLUGIN: &str = "large-language-model";
 
-/// What v1's agents became: the agents, the provider they call, and the
-/// triggers their JavaScript tools became.
+/// What v1's agents became: the agents, and the provider they call.
 #[derive(Default)]
 pub(super) struct ConvertedAgents {
     pub(super) agents: Vec<Json>,
     pub(super) providers: Vec<Json>,
-    pub(super) triggers: Vec<Json>,
 }
 
 pub(super) fn convert_agents(pack: &Map<String, Json>, notes: &mut Vec<String>) -> ConvertedAgents {
@@ -104,8 +103,7 @@ pub(super) fn convert_agents(pack: &Map<String, Json>, notes: &mut Vec<String>) 
                         ));
                         continue;
                     }
-                    out.triggers.push(js_tool_trigger(skill, &tool, min_role));
-                    traits.push(json!({ "trait": "run_trigger", "config": { "trigger": tool } }));
+                    traits.push(js_tool(skill, &tool));
                 }
                 "Trigger" => {
                     let trigger = text(skill, "trigger_name");
@@ -132,50 +130,34 @@ pub(super) fn convert_agents(pack: &Map<String, Json>, notes: &mut Vec<String>) 
         }
         out.agents.push(value);
     }
-    match out.triggers.len() {
-        0 => {}
-        1 => notes.push(
-            "1 JavaScript agent tool became a trigger of its name, which the agent runs \
-             as the tool `run_<name>`"
-                .to_owned(),
-        ),
-        n => notes.push(format!(
-            "{n} JavaScript agent tools became triggers of their names, which the agent \
-             runs as the tools `run_<name>`"
-        )),
-    }
     out
 }
 
-/// One v1 JavaScript tool as the trigger its agent runs. Its arguments arrive
-/// as the payload, bound by name before the tool's own code.
-fn js_tool_trigger(skill: &Map<String, Json>, tool: &str, min_role: Option<i64>) -> Json {
-    let args: Vec<String> = array(skill, "toolargs")
+/// One v1 JavaScript tool as a `run_js_code` trait: its name, description,
+/// code and arguments, with v1's argument types read as JSON Schema's.
+fn js_tool(skill: &Map<String, Json>, tool: &str) -> Json {
+    let arguments: Vec<Json> = array(skill, "toolargs")
         .iter()
-        .filter_map(|a| a.get("name").and_then(Json::as_str))
-        .map(str::trim)
-        .filter(|a| !a.is_empty())
-        .map(str::to_owned)
+        .filter_map(Json::as_object)
+        .filter(|a| !text(a, "name").trim().is_empty())
+        .map(|a| {
+            let type_ = match text(a, "argtype").as_str() {
+                t @ ("number" | "integer" | "boolean" | "object" | "array") => t.to_owned(),
+                _ => "string".to_owned(),
+            };
+            json!({
+                "name": text(a, "name").trim(),
+                "type": type_,
+                "description": text(a, "description"),
+            })
+        })
         .collect();
-    let mut code = String::new();
-    if !args.is_empty() {
-        code.push_str(&format!(
-            "const {{ {} }} = payload ?? {{}};\n",
-            args.join(", ")
-        ));
-    }
-    code.push_str(&text(skill, "js_code"));
-    let mut trigger = json!({
-        "name": tool,
+    json!({ "trait": "run_js_code", "config": {
+        "tool_name": tool,
         "description": text(skill, "tool_description"),
-        "when": "none",
-        "action": "run_js_code",
-        "configuration": { "code": code },
-    });
-    if let Some(role) = min_role {
-        trigger["min_role"] = json!(role);
-    }
-    trigger
+        "code": text(skill, "js_code"),
+        "arguments": arguments,
+    } })
 }
 
 /// The LLM provider v1's `large-language-model` plugin was configured with, in
@@ -297,7 +279,9 @@ mod tests {
                       "tool_description": "the word", "js_code": "return \"Strawberry\"",
                       "toolargs": [ { "name": "" } ] },
                     { "skill_type": "Run JavaScript code", "tool_name": "echo",
-                      "js_code": "return text", "toolargs": [ { "name": "text" } ] },
+                      "js_code": "return text",
+                      "toolargs": [ { "name": "text", "argtype": "string",
+                                      "description": "what to say" } ] },
                     { "skill_type": "Table", "table_name": "document", "query": "on",
                       "insert": true, "hidden_fields": "secret" },
                     { "skill_type": "Retrieval" } ] } },
@@ -319,26 +303,22 @@ mod tests {
         assert_eq!(agent["provider"], json!("openai"));
         assert_eq!(agent["system_prompt"], json!("Be brief"));
         assert_eq!(agent["min_role"], json!(40));
+        // The JavaScript tools are the agent's own, code and arguments as written.
         assert_eq!(
             agent["traits"],
             json!([
-                { "trait": "run_trigger", "config": { "trigger": "word_of_the_day" } },
-                { "trait": "run_trigger", "config": { "trigger": "echo" } },
+                { "trait": "run_js_code", "config": { "tool_name": "word_of_the_day",
+                    "description": "the word", "code": "return \"Strawberry\"",
+                    "arguments": [] } },
+                { "trait": "run_js_code", "config": { "tool_name": "echo",
+                    "description": "", "code": "return text",
+                    "arguments": [ { "name": "text", "type": "string",
+                                     "description": "what to say" } ] } },
                 { "trait": "query_table", "config": { "table": "document",
                                                        "fields": ["id", "contents"] } },
                 { "trait": "insert_row", "config": { "table": "document" } },
             ])
         );
-        // The tools are triggers, their arguments bound from the payload.
-        assert_eq!(
-            out.triggers[0]["configuration"]["code"],
-            json!("return \"Strawberry\"")
-        );
-        assert_eq!(
-            out.triggers[1]["configuration"]["code"],
-            json!("const { text } = payload ?? {};\nreturn text")
-        );
-        assert_eq!(out.triggers[1]["when"], json!("none"));
         // The provider is the plugin's settings, its model the default.
         assert_eq!(
             out.providers,

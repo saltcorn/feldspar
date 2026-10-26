@@ -35,14 +35,23 @@ layer. All five are closed (TODO F10).
   agent (`backup/v1/agents.rs`):
   - `sys_prompt`, `model` and `min_role` carry over;
   - a Table skill becomes `query_table` (hidden fields excluded) and/or `insert_row`;
-  - a "Run JavaScript code" tool becomes a `run_js_code` trigger of the tool's name, run through
-    `run_trigger`, with its arguments bound from `payload`;
+  - a "Run JavaScript code" tool becomes a `run_js_code` **agent trait** (below). The code and
+    arguments stay in the agent, and no trigger is created;
   - a Trigger skill becomes `run_trigger`; other skills are reported.
 
   The `large-language-model` plugin's settings become the LLM provider (`AI SDK`/OpenAI →
   `openai_responses`, Anthropic, OpenAI-compatible), with its model as the default. Agents now
   restore before triggers, as before, but an agent refused on that first pass is tried again
-  after the triggers, because a `run_trigger` trait needs its trigger.
+  after the triggers, because a `run_trigger` trait (a v1 Trigger skill) needs its trigger.
+- **New agent trait `run_js_code`** (`sc-core-traits/src/run_js_code.rs`): one JavaScript tool
+  kept in the agent's own configuration. Its settings are `tool_name` (the tool name, used
+  verbatim, so an agent can have many), `description`, `code` and `arguments`
+  (`[{name, type, description}]`, which becomes the tool's JSON schema). The body runs through
+  `TriggerDispatcher::run_code`, with the same `db`/`fetch`/`lib()`/`trigger()` surfaces as a
+  `run_js_code` action, as the run's caller. Each argument is a bare variable (as in v1),
+  `args` holds them all, and an omitted argument is `null`. Argument names that would hide
+  the body's own (`db`, `user`, `args`, …) are refused on save. Documented in
+  `tutorial-agents.md` Step 4 and the traits table.
 - **Workflows.** v1 workflows used to be dropped. They now cross step for step
   (`backup/v1/workflows.rs`): `TableQuery` → a `run_js_code` step over `db.table(…)`, `ForLoop`
   → `for_each`, `SetContext` → `set`, `UserForm` → `user_form` (answers under the step),
@@ -60,11 +69,14 @@ layer. All five are closed (TODO F10).
   vector), and `backup::v1::{formulas, agents, workflows}` plus the updated converter tests.
   Postgres tests:
   - `sc-auth/tests/login.rs::a_saltcorn_1_bcrypt_hash_signs_in_and_is_rehashed`;
+  - `sc-core-traits/tests/run_js_code.rs`: the tool is named and shaped by its configuration,
+    the code runs with its arguments as variables and creates no trigger, it reads the
+    database as the caller, and reserved argument names are refused;
   - `backup_api::a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported`, which
     imports the real backup (fixture with the LLM key redacted) and checks that the calc
     fields compute (`total` 9.95, `n_for_gift` 1), the users key exists, the bcrypt hash
-    arrived, and the agent has its traits and provider. It runs the workflow and the JS tool,
-    then imports a variant with `{id: order.id}` and checks that the loop discounts the order.
+    arrived, and the agent has its traits (the JS tool as `run_js_code`, with no trigger)
+    and provider. It runs the workflow, then imports a variant with `{id: order.id}` and checks that the loop discounts the order.
   - `backup_api.rs` now starts the workflow engine, as `serve` does.
 
 ## Triggers: an "inserted or updated" event

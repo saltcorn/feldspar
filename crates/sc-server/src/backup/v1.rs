@@ -186,8 +186,7 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
     }
 
     let agents = agents::convert_agents(pack, &mut notes);
-    let mut triggers = convert_triggers(pack, &mut notes);
-    triggers.extend(agents.triggers);
+    let triggers = convert_triggers(pack, &mut notes);
     contents.agents = i64::try_from(agents.agents.len()).unwrap_or(i64::MAX);
     contents.llm_providers = i64::try_from(agents.providers.len()).unwrap_or(i64::MAX);
     if !agents.agents.is_empty() {
