@@ -2,6 +2,41 @@
 
 Changes in reverse chronological order.
 
+## Saltcorn 1 import: every agent skill gets a deliberate outcome
+
+Each of the 23 skills of v1's agents plugin (`~/agents/skills`) now either becomes the trait
+that does the same job or is reported, with what the imported agent is missing (TODO F10.8).
+In `backup/v1/agents.rs`:
+
+- **Subagent** becomes `subagent` on that agent. The target's v1 description becomes
+  `when_to_use`, since v1 described the tool that way. A handover or handoff prompt has no
+  counterpart and is reported. The agents are written to `agents.json` with the agents they
+  delegate to first, so a chain (A → B → C) restores in one pass. In a cycle the rest keep
+  the backup's order.
+- **Fetch** becomes `http` named `web_page`, so the tool is still `fetch_web_page`, with
+  `may_send` because v1 allowed POST/PUT/DELETE. It stays on public addresses only, as every
+  `http` trait does. A cookie jar is reported.
+- **Table** carries `max_rows`. A `list_view` is reported.
+- **Run JavaScript code** in Button mode is reported as a chat button, not a tool. It used to
+  get the misleading note "it has no name".
+- Each converted skill's **additional prompt** (`add_sys_prompt`) is appended to the agent's
+  system prompt. A skill that is not converted does not add its prompt, so the prompt never
+  mentions a tool the agent does not have.
+- **Compaction** is reported as built in. **Adaptive Feedback** (empty in v1) is skipped
+  without a note. Each of the other skills (both retrievals, Preload Data, Memory, MCP, Web
+  search, Generate and run JavaScript code, Ask user question, Plan approval, Image
+  generation, Text to speech, External Skill, Model and Prompt picker) gets a note that says
+  what is missing.
+
+In the restore (`backup/restore.rs`), an agent that is still refused after the triggers are in
+is checked one trait at a time with the new `sc_agent::validate_trait`, which is factored out
+of `validate_agent`. The failing traits (for example `run_trigger` on a trigger the backup
+does not carry, such as a v1 workflow left out under F10.7) are dropped with a warning each,
+and the agent is saved with the rest. Before this change the whole agent was lost.
+
+Tests: three new unit tests in `backup/v1/agents.rs`, and
+`an_agent_is_restored_without_the_trait_naming_a_missing_trigger` in `backup_api.rs`.
+
 ## Saltcorn 1 import: calculated fields, users' keys, passwords, agents and workflows
 
 Importing a real v1 backup (`sc-backup-tntestfeldsparimport-…zip`) showed five gaps in the data

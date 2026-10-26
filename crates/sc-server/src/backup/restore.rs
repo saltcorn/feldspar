@@ -2545,14 +2545,40 @@ async fn restore_agents(
                 .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
                 .map(sc_agent::AgentId)
                 .unwrap_or_else(sc_agent::AgentId::new);
-            let agent = agent_from_body(id, &value)?;
+            let mut agent = agent_from_body(id, &value)?;
+            let Err(e) = sc_agent::save_agent(catalog, registry.as_ref(), &agent).await else {
+                return Ok(Vec::new());
+            };
+            // On the retry, a trait that is wrong on its own (a trigger the
+            // backup did not carry) costs that trait, not the whole agent.
+            if retry.is_none() {
+                return Err(e);
+            }
+            let mut kept = Vec::new();
+            let mut dropped = Vec::new();
+            for enabled in std::mem::take(&mut agent.traits) {
+                match sc_agent::validate_trait(catalog, registry.as_ref(), &name, &enabled).await {
+                    Ok(()) => kept.push(enabled),
+                    Err(why) => dropped.push(format!("`{}` ({})", enabled.trait_, why.causes())),
+                }
+            }
+            if dropped.is_empty() {
+                return Err(e);
+            }
+            agent.traits = kept;
             sc_agent::save_agent(catalog, registry.as_ref(), &agent).await?;
-            Ok(String::new())
+            Ok(dropped)
         }
         .await;
         match result {
             Err(_) if retry.is_none() => refused.push(name),
-            result => report.outcome(&format!("agent `{name}`"), result),
+            Ok(dropped) => {
+                report.did(format!("agent `{name}`"));
+                for trait_ in dropped {
+                    report.skipped(format!("agent `{name}`: the trait {trait_} was left out"));
+                }
+            }
+            Err(e) => report.outcome(&format!("agent `{name}`"), Err(e)),
         }
     }
     refused

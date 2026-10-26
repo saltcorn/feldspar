@@ -721,6 +721,12 @@ workflow) found what the first importer left behind. Fixture:
   should refuse it, or the translator should inline the field's formula.
 - [ ] **F10.7** A v1 workflow step's `only_if`, a `ForLoop` index variable, and v1's locks and
   error-handler steps have no counterpart yet; such a workflow is reported and left out.
+- [x] **F10.8** Every v1 agent skill gets a deliberate outcome: `Subagent` as `subagent`
+  (targets written first, so chains restore), `Fetch` as `http`, Table's `max_rows`, each
+  converted skill's additional prompt appended to the agent's system prompt, a Button-mode
+  JavaScript skill and built-in compaction reported as what they are, and a note for the rest.
+  A restored agent whose trait still fails (a trigger that was not imported) keeps its other
+  traits, the failing one dropped with a warning.
 
 ---
 

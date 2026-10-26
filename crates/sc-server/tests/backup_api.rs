@@ -2274,6 +2274,70 @@ async fn furnish_llm(server: &mut Server) -> sc_error::Result<()> {
     Ok(())
 }
 
+/// An agent whose trait still fails once the triggers are in — it names a
+/// trigger the backup does not carry — is restored without that trait, which is
+/// reported, rather than refused whole.
+#[tokio::test]
+async fn an_agent_is_restored_without_the_trait_naming_a_missing_trigger() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    furnish_llm(&mut source).await?;
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/triggers",
+            Some(json!({
+                "name": "say_hello", "description": "says hello", "when": "none",
+                "channel": null, "action": "run_js_code",
+                "configuration": { "code": "return 'hello'" },
+                "min_role": null, "enabled": true,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/agents",
+            Some(json!({
+                "name": "greeter", "description": "", "provider": "house", "model": null,
+                "system_prompt": "", "min_role": null, "attributes": {},
+                "traits": [
+                    { "trait": "run_trigger", "config": { "trigger": "say_hello" } },
+                    { "trait": "run_js_code", "config": { "tool_name": "word",
+                        "description": "a word", "code": "return 'yes'", "arguments": [] } },
+                ],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let archive = without_entries(&backup_everything(&mut source).await, |name| {
+        name == "triggers.json"
+    });
+
+    let mut target = setup().await?;
+    let report = restore_everything(&mut target, &archive).await;
+    assert!(
+        report_has(&report, "restored", "agent `greeter`"),
+        "{report}"
+    );
+    assert!(
+        report_has(
+            &report,
+            "warnings",
+            "agent `greeter`: the trait `run_trigger`"
+        ),
+        "{report}"
+    );
+    let agent = sc_agent::load_agent_by_name(&target.catalog, "greeter")
+        .await?
+        .expect("the agent, restored");
+    let traits: Vec<&str> = agent.traits.iter().map(|t| t.trait_.as_str()).collect();
+    assert_eq!(traits, ["run_js_code"]);
+    Ok(())
+}
+
 /// The provider the configuration file supplies is the operator's, and so is
 /// its key: a backup leaves it out, beside the admin's provider it carries.
 #[tokio::test]

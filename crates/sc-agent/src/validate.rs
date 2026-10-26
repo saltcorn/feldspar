@@ -16,7 +16,7 @@ use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_types::validate_attrs;
 
-use crate::agent::{Agent, ModelRef, ModelRole};
+use crate::agent::{Agent, EnabledTrait, ModelRef, ModelRole};
 use crate::agent_trait::{ToolsContext, TraitCheck};
 use crate::registry::AgentRegistry;
 use crate::store::list_agents;
@@ -132,20 +132,10 @@ pub async fn validate_agent(
                 enabled.trait_.trim()
             ))
         };
-        let trait_ = registry
-            .require(enabled.trait_.trim())
-            .map_err(|e| where_(e.to_string()))?;
-        validate_attrs(&trait_.config_spec(), &enabled.config)
-            .map_err(|e| where_(e.to_string()))?;
-        trait_
-            .validate_config(&TraitCheck {
-                catalog,
-                config: &enabled.config,
-                agent: name,
-                host: registry.host(),
-            })
+        validate_trait(catalog, registry, name, enabled)
             .await
             .map_err(|e| where_(e.to_string()))?;
+        let trait_ = registry.require(enabled.trait_.trim())?;
 
         // Over every mode: a tool offered only while planning must still not
         // collide with another trait's. The same tool in two modes is one tool.
@@ -187,6 +177,29 @@ pub async fn validate_agent(
     }
 
     Ok(())
+}
+
+/// Check one enabled trait on its own: the name resolves, the values are of the
+/// declared shapes, and the trait's own check passes. What
+/// [`validate_agent`] runs for each trait, without the collision check that
+/// needs the others — so a caller can tell *which* traits keep an agent from
+/// saving (a restore drops those and keeps the agent).
+pub async fn validate_trait(
+    catalog: &Catalog,
+    registry: &AgentRegistry,
+    agent: &str,
+    enabled: &EnabledTrait,
+) -> Result<()> {
+    let trait_ = registry.require(enabled.trait_.trim())?;
+    validate_attrs(&trait_.config_spec(), &enabled.config)?;
+    trait_
+        .validate_config(&TraitCheck {
+            catalog,
+            config: &enabled.config,
+            agent,
+            host: registry.host(),
+        })
+        .await
 }
 
 /// The provider's backend and the model row `named` resolves to.

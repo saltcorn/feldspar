@@ -113,7 +113,7 @@ pub use store::{
     AGENTS_TABLE, bootstrap_agents, delete_agent, list_agents, load_agent, load_agent_by_name,
     require_agent, save_agent,
 };
-pub use validate::{AgentIssue, Agents, validate_agent};
+pub use validate::{AgentIssue, Agents, validate_agent, validate_trait};
 pub use view::{
     AppHttpRequest, AppHttpResponse, AppPreviewer, AppRequester, BrowserAction, BrowserDriver,
     BrowserReport, BrowserRequest, HostCapabilities, ModuleInstall, ModuleManager, PreviewInfo,
