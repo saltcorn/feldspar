@@ -316,26 +316,32 @@ Both chat surfaces show text and tool calls. They cannot ask, offer a button or 
 Each task replaces a note in `crates/sc-server/src/backup/v1/agents.rs` (`missing_counterpart`
 and the partial-skill notes) with a conversion, and adds a unit test in that file.
 
-- [ ] **AS12.1** Retrieval by full-text search → `search_table`; Table's search → `query_table`
+- [x] **AS12.1** Retrieval by full-text search → `search_table`; Table's search → `query_table`
   `search`, with the restore creating the full-text constraint when v1's table had none.
-- [ ] **AS12.2** Retrieval by embedding → `similar_rows`; pgvector fields → `Vector`.
-- [ ] **AS12.3** Preload Data → `preload_rows` / `preload_code`. v1's `preload_query` is
+- [x] **AS12.2** Retrieval by embedding → `similar_rows`; pgvector fields → `Vector`.
+- [x] **AS12.3** Preload Data → `preload_rows` / `preload_code`. v1's `preload_query` is
   translated by `formulas.rs`; a query that cannot be translated is reported.
-- [ ] **AS12.4** Memory → `memory`; the rows of v1's `AgentLongTermMemory` table are moved into
+- [x] **AS12.4** Memory → `memory`; the rows of v1's `AgentLongTermMemory` table are moved into
   `_fd_agent_memory`, with `agent_trigger_id` mapped to the agent; `consolidate_agent_memory`
-  triggers → `consolidate_memory`.
-- [ ] **AS12.5** Model Context Protocol → an MCP connection (with its header as a secret) plus
+  triggers → `consolidate_memory`. (A pack's triggers carry no ids, so a memory goes to the one
+  agent with a Memory skill unless the backup says its trigger id; a preferences row is copied
+  to each. One `consolidate_memory` trigger per such agent. The rows travel as
+  `agent-memory.ndjson`, restored under the Agents choice.)
+- [x] **AS12.5** Model Context Protocol → an MCP connection (with its header as a secret) plus
   `mcp_server`.
-- [ ] **AS12.6** Web search → `web_search`; Fetch's cookie jar → `http` `cookies`.
-- [ ] **AS12.7** Generate and run JavaScript code → `generate_js`.
-- [ ] **AS12.8** Ask user question → `ask_user`; Plan approval → `plan_approval`; Button-mode
+- [x] **AS12.6** Web search → `web_search`; Fetch's cookie jar → `http` `cookies`.
+- [x] **AS12.7** Generate and run JavaScript code → `generate_js`.
+- [x] **AS12.8** Ask user question → `ask_user`; Plan approval → `plan_approval`; Button-mode
   JavaScript → `run_js_code` `mode: button`.
-- [ ] **AS12.9** Model picker → `pickable_models` from v1's `alt_config` names, as far as they
+- [x] **AS12.9** Model picker → `pickable_models` from v1's `alt_config` names, as far as they
   map to imported providers; Prompt picker → `prompt_picker`.
-- [ ] **AS12.10** Image generation → `generate_image`; Text to speech → `speech`.
-- [ ] **AS12.11** External Skill → `skill_file`, with the note kept: the file itself is not in
+- [x] **AS12.10** Image generation → `generate_image`; Text to speech → `speech`.
+- [x] **AS12.11** External Skill → `skill_file`, with the note kept: the file itself is not in
   the backup and has to be copied to the store.
-- [ ] **AS12.12** Table `list_view` → `query_table` `show_results` (the view, if it was
+- [x] **AS12.12** Table `list_view` → `query_table` `show_results` (the view, if it was
   imported); Subagent handover/handoff → the new `subagent` fields.
-- [ ] **AS12.13** The v1 fixture (`sc-server/tests/fixtures/`) gains an agent using every
-  skill, and the import test asserts that no skill note is left.
+- [x] **AS12.13** The v1 fixture (`sc-server/tests/fixtures/`) gains an agent using every
+  skill, and the import test asserts that no skill note is left. (A derived file,
+  `saltcorn-v1-feldsparimport-agents.zip`, written by `make-v1-agents-fixture.py`, so the real
+  backup stays as it was recorded. Restoring it showed that full-text search ignored `string`
+  fields, and that a trigger naming an agent saved on the retry pass was refused; both fixed.)

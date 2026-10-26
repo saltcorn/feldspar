@@ -79,7 +79,7 @@ pub use constraint::{
     ConstraintKind, META_KEY as CONSTRAINT_META_KEY, TableConstraint, VECTOR_INDEX_METHOD,
     constrained_fields, create_constraint_steps, drop_constraint_steps, formula_fields,
     full_text_columns, full_text_constraint, full_text_expression, indexed_text_search,
-    validate_formula, vector_index, violated_constraint,
+    is_full_text_field, validate_formula, vector_index, violated_constraint,
 };
 pub use db_connections::{
     BACKENDS, DB_CONNECTIONS_TABLE, DEFAULT_PORT, DEFAULT_SCHEMA, DbConnectionDef, DbConnectionId,

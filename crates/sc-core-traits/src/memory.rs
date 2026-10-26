@@ -49,7 +49,7 @@ use sc_catalog::{
 use sc_db::{ColumnGenerator, Row};
 use sc_error::{Error, Result};
 use sc_llm::{LlmMessage, LlmRequest, ToolSpec};
-use sc_query::{Delete, Expr, Insert, OrderBy, Select, Source, Statement, Value};
+use sc_query::{BinOp, Delete, Expr, Insert, OrderBy, Select, Source, Statement, Value};
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
@@ -194,6 +194,40 @@ pub struct NewMemory {
 /// read rule could then never give it back to anyone — or, worse, a later
 /// change to the rule could give it to everyone.
 pub async fn store_memory(catalog: &Catalog, memory: &NewMemory) -> Result<()> {
+    insert_memory(catalog, memory, Utc::now()).await
+}
+
+/// Write a memory brought in from elsewhere, keeping when it was written —
+/// what a restore does with v1's memories (TODO-agent-skills AS12.4).
+/// `Ok(false)` when the same memory (agent, user, kind and contents) is
+/// already here, so restoring the same file twice adds nothing the second time.
+pub async fn import_memory(
+    catalog: &Catalog,
+    memory: &NewMemory,
+    written_at: DateTime<Utc>,
+) -> Result<bool> {
+    let same = Expr::col(COL_MEMORY_AGENT)
+        .eq(Expr::lit(memory.agent.as_str()))
+        .and(Expr::binary(
+            BinOp::IsNotDistinct,
+            Expr::col(COL_MEMORY_USER),
+            Expr::lit(Value::from(memory.user)),
+        ))
+        .and(Expr::col(COL_MEMORY_KIND).eq(Expr::lit(memory.kind.as_str())))
+        .and(Expr::col(COL_MEMORY_CONTENTS).eq(Expr::lit(memory.contents.trim())));
+    let select = Select::from(Source::table(MEMORY_TABLE)).filter(same).limit(1);
+    if !rows(catalog, select).await?.is_empty() {
+        return Ok(false);
+    }
+    insert_memory(catalog, memory, written_at).await?;
+    Ok(true)
+}
+
+async fn insert_memory(
+    catalog: &Catalog,
+    memory: &NewMemory,
+    written_at: DateTime<Utc>,
+) -> Result<()> {
     if memory.personal && memory.user.is_none() {
         return Err(Error::invalid(
             "a personal memory needs a user to belong to, and this run has none",
@@ -221,7 +255,7 @@ pub async fn store_memory(catalog: &Catalog, memory: &NewMemory) -> Result<()> {
             Expr::lit(memory.agent.as_str()),
             Expr::lit(Value::from(memory.user)),
             Expr::lit(Value::from(memory.run)),
-            Expr::lit(Utc::now()),
+            Expr::lit(written_at),
             Expr::lit(memory.kind.as_str()),
             Expr::lit(memory.personal),
             Expr::lit(memory.topic.trim()),

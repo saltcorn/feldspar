@@ -2,6 +2,81 @@
 
 Changes in reverse chronological order.
 
+## The v1 importer converts every agent skill (TODO-agent-skills AS12)
+
+A Saltcorn 1 agent now imports with nothing left behind: every skill of `@saltcorn/agents`
+crosses as the trait that does its job, and what a skill needs outside the agent is set up too.
+The only note left is External Skill's: the SKILL.md file is not in the backup.
+
+- **The conversions** (`sc-server` `backup/v1/agents.rs`):
+  - Retrieval by full-text search becomes `search_table`.
+  - Retrieval by embedding becomes `similar_rows`. The vector field gets `embed_provider` and
+    `embed_model`: the LLM plugin's `embed_model`, the alternative configuration's when the
+    skill names one, or `text-embedding-3-small`.
+  - Preload Data becomes `preload_rows` or `preload_code`, placed in the system prompt as v1
+    placed it. Its `add_sys_prompt` becomes the rows' heading. Its query's free names become
+    `row?.<name>` (except `user` and JavaScript's globals). A query that does not parse is
+    reported. Code that returns `systemPrompt`/`interactions` is reported, because here the keys
+    are `system_prompt`/`messages`.
+  - Memory becomes `memory` (personal; `inject_personal_prefs` becomes
+    `preferences_in_header`).
+  - Model Context Protocol becomes an MCP server definition (its name is the label as a valid
+    server name, its header a secret, in `mcp-servers.json`) plus `mcp_server`.
+  - Web search becomes `web_search` (`url_template`, `tavily` or `firecrawl`). Fetch's cookie
+    jar becomes `http` `cookies`.
+  - Generate and run JavaScript code becomes `generate_js`: tables become `read`/`write`
+    `table_access`, and "system functions" becomes `allow_libraries`.
+  - Ask user question becomes `ask_user`, and Plan approval becomes `plan_approval`. A
+    Button-mode JavaScript skill becomes `run_js_code` `mode: button`.
+  - Image generation becomes `generate_image` (saved under `agent-images` in the imported file
+    store). Text to speech becomes `speech`. Both name the provider and a model of their kind.
+    An Anthropic provider has neither kind, so these skills are reported instead.
+  - External Skill becomes `skill_file` over `skills/<dir>` in the imported store, with a note
+    that says what to copy there.
+  - Model picker becomes `pickable_models`, from the alternative configurations on the
+    imported vendor (same endpoint and key, where they say one). Those become chat models of the
+    provider. The others are reported. An agent's own `alt_config` becomes its model.
+  - Prompt picker becomes `prompt_picker`: predefined prompts (`options_array` or
+    `options_obj`), or a table with a fixed `where`. A query that is not a literal object is
+    reported.
+  - Table `list_view` becomes `query_table` `show_results`, with `results_view` when the view is
+    in the backup. Subagent handover/handoff prompts become `subagent`'s fields. Compaction is no
+    longer reported, because it is built in.
+  - A table an agent searches (FTS retrieval, or a Table query, which in v1 always matched
+    phrases) gets a full-text constraint in its `table.json`.
+  - The provider gains a model of each kind a skill needs (embedding, image, speech): the
+    plugin's setting or v1's default. The first model of each kind is that kind's default.
+- **Memories** (AS12.4): v1's `AgentLongTermMemory` table is not imported as a table. Its rows
+  go to a new backup entry, `agent-memory.ndjson`, and the restore writes them into
+  `_fd_agent_memory` under the Agents choice, through a new `sc_core_traits::memory::import_memory`.
+  That function keeps `written_at` and skips a memory already there, so a second restore adds
+  nothing. Each user id is the imported account's UUID, repointed to the account already on the
+  server when there is one. `Episodic` becomes `memory` and `PersonalPreferences` becomes
+  `preferences`. A pack's triggers carry no ids, so a memory goes to its agent by
+  `agent_trigger_id` when the backup says it, and otherwise to the single agent with a Memory
+  skill. A preferences row is copied to every such agent. Rows that cannot be placed are
+  reported. A `consolidate_agent_memory` trigger becomes one `consolidate_memory` trigger per
+  agent with memory.
+- **Restore order**: a trigger can name an agent that is only saved on the agents' retry pass
+  (`consolidate_memory` does). When agents are still to be retried, a refused trigger is now held
+  back and tried again after them, the same way agents are retried after triggers
+  (`TriggerPass`).
+- **Full-text search reads `string` fields** (`sc_catalog::is_full_text_field`). Until now only
+  bare `text` columns were indexed and searched. The `string` rich type (also stored as text, and
+  what the admin and the v1 importer create) was left out. So a table made only of `string`
+  fields could have no full-text constraint, and `search_table` refused it. The full-text
+  constraint, the schema editor's rebuild of it, and the row layer's search all use the new
+  predicate now.
+- **Tests**: a unit test for each conversion in `agents.rs`. A new fixture,
+  `saltcorn-v1-feldsparimport-agents.zip`, is written by `make-v1-agents-fixture.py` from the
+  real order-entry backup. It adds an agent with every skill, the memory table, a pgvector table
+  and a consolidation. `v1.rs` checks that converting it leaves no skill note except External
+  Skill's. `backup_api.rs` restores it into Postgres with pgvector: the agent has all 21 traits,
+  the memories are in the store (and not doubled by a second restore), and the MCP server, the
+  full-text constraint and the consolidation trigger are all there.
+  `trigger_admin_api::the_actions_describe_their_own_settings` now expects `consolidate_memory`,
+  which AS8.5 registered.
+
 ## Context: preload_rows, preload_code, memory, consolidate_memory, skill_file (TODO-agent-skills AS8)
 
 Counterparts for v1's "Preload Data", "Memory" and "External Skill (SKILL.md)" skills. None of

@@ -3967,3 +3967,103 @@ async fn mcp_servers_travel_with_their_headers() -> sc_error::Result<()> {
     assert_eq!(restored.id, def.id, "its identity, where it is free");
     Ok(())
 }
+
+/// [`V1_ORDERS_BACKUP`] with an agent using every skill of v1's agents plugin,
+/// its memory table, a vector table and a memory consolidation
+/// (`fixtures/make-v1-agents-fixture.py`).
+const V1_AGENTS_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-feldsparimport-agents.zip");
+
+/// TODO-agent-skills AS12: every v1 skill crosses as a trait the restore
+/// accepts, and what the skills need outside the agent is there — the
+/// memories, the MCP server, the full-text constraint, the vector field's
+/// model, the provider's media models and the consolidation trigger.
+#[tokio::test]
+async fn a_v1_agent_with_every_skill_is_restored_with_every_trait() -> sc_error::Result<()> {
+    // The vector table needs pgvector.
+    let Some(db) = TestDb::with_pgvector().await? else {
+        return Ok(());
+    };
+    let mut server = setup_in(db).await?;
+    let report = restore_everything(&mut server, V1_AGENTS_BACKUP).await;
+
+    // Nothing about the agent is skipped but the SKILL.md to copy, and no
+    // trait was left out of it.
+    let about_agent: Vec<&Value> = report["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w.as_str().unwrap_or_default().contains("EverySkill"))
+        .collect();
+    assert_eq!(about_agent.len(), 1, "{report}");
+    assert!(
+        about_agent[0].as_str().unwrap().contains("External Skill"),
+        "{report}"
+    );
+
+    let (_, agents) = server.client.send("GET", "/api/agents", None).await;
+    let agent = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == json!("EverySkill"))
+        .unwrap_or_else(|| panic!("the agent: {agents} / {report}"));
+    assert_eq!(agent["traits"].as_array().unwrap().len(), 21, "{agent}");
+    assert_eq!(
+        agent["attributes"]["pickable_models"][0]["model"],
+        json!("gpt-5-mini"),
+        "{agent}"
+    );
+
+    // The memories moved into the memory store, filed under the agent.
+    let (status, memories) = server
+        .client
+        .send("GET", "/api/agent-memories?agent=EverySkill", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{memories}");
+    let memories = memories.as_array().unwrap().clone();
+    assert_eq!(memories.len(), 3, "{memories:?} / {report}");
+    assert!(
+        memories
+            .iter()
+            .any(|m| m["kind"] == json!("preferences") && m["personal"] == json!(true)),
+        "{memories:?}"
+    );
+    let (_, tables) = server.client.send("GET", "/api/tables", None).await;
+    assert!(
+        !tables.to_string().contains("AgentLongTermMemory"),
+        "{tables}"
+    );
+
+    // What the skills need of the rest of the installation.
+    let (_, servers) = server.client.send("GET", "/api/mcp-servers", None).await;
+    assert!(servers.to_string().contains("\"docs\""), "{servers}");
+    let (_, constraints) = server
+        .client
+        .send("GET", "/api/tables/document/constraints", None)
+        .await;
+    assert!(
+        constraints
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == json!("full_text_search")),
+        "{constraints}"
+    );
+    let (_, triggers) = server.client.send("GET", "/api/triggers", None).await;
+    let consolidate = triggers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("ConsolidateMemories"))
+        .unwrap_or_else(|| panic!("the consolidation: {triggers} / {report}"));
+    assert_eq!(consolidate["action"], json!("consolidate_memory"));
+
+    // Restoring the same file again does not write the memories twice.
+    restore_everything(&mut server, V1_AGENTS_BACKUP).await;
+    let (_, again) = server
+        .client
+        .send("GET", "/api/agent-memories?agent=EverySkill", None)
+        .await;
+    assert_eq!(again.as_array().unwrap().len(), 3, "{again}");
+    Ok(())
+}

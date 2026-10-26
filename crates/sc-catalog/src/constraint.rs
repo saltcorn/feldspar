@@ -54,6 +54,7 @@ use sc_types::BasicType;
 use serde_json::{Value as Json, json};
 
 use crate::catalog::SchemaStep;
+use crate::field::DataField;
 use crate::projection::SchemaProjection;
 use crate::table::Table;
 
@@ -536,11 +537,18 @@ pub fn full_text_columns(table: &Table) -> Vec<String> {
     table
         .fields
         .iter()
-        .filter(|f| {
-            !f.is_calc() && !f.is_secret() && f.base.type_.as_basic() == Some(&BasicType::Text)
-        })
+        .filter(|f| is_full_text_field(f))
         .map(|f| f.base.name.clone())
         .collect()
+}
+
+/// Whether full-text search reads `field`: a stored text column — `text`, or
+/// a rich type stored as text, such as `string` — that is neither calculated
+/// nor a secret.
+pub fn is_full_text_field(field: &DataField) -> bool {
+    !field.is_calc()
+        && !field.is_secret()
+        && BasicType::from_sql_type(field.base.type_.sql_type()) == BasicType::Text
 }
 
 /// The `to_tsvector` expression a full-text index is over — **one** definition

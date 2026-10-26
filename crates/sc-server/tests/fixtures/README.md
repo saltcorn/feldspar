@@ -60,6 +60,25 @@ with a JavaScript tool and a Table skill; and a four-step workflow
 is replaced by `sk-test-not-a-real-key`, and the cached `available_plugins` /
 `available_packs` lists are emptied. Nothing else was changed.
 
+## `saltcorn-v1-feldsparimport-agents.zip`
+
+`saltcorn-v1-feldsparimport.zip` with an agent, *EverySkill*, that uses every
+skill of `@saltcorn/agents` 1.0.4, and what those skills read: an
+`AgentLongTermMemory` table with three memories (as the Memory skill creates
+it), a `chunks` table with a three-dimensional `PGVector` field, a `prompts`
+table, an alternative LLM configuration *Fast*, and a daily
+`consolidate_agent_memory` action (TODO-agent-skills AS12.13). It is written by
+[`make-v1-agents-fixture.py`](./make-v1-agents-fixture.py), which comes out byte
+for byte the same each run.
+
+**It was not recorded by a running Saltcorn 1.** The skills' settings are in the
+shape each skill's own `configFields()` in the plugin's `skills/` directory
+writes, and the memory table is the one `LongTermMemory.js`'s `get_table()`
+creates. The keys are placeholders (`tvly-not-a-real-key`,
+`Bearer not-a-real-token`), and the MCP server is at `127.0.0.1:9`, which the
+MCP client refuses as a private address, so the import test never reaches a
+network.
+
 ## `builder-options/`
 
 What a real Saltcorn 1 passes to `builder.renderBuilder` when an admin opens the

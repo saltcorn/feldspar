@@ -46,8 +46,8 @@ use serde_json::{Map, Value as Json};
 use super::archive::{Archive, RowReader};
 use super::values;
 use super::{
-    Available, CREDIT_ROWS_FILES, MANIFEST_FILE, ROLE_GRANT_ROWS_FILE, SSL_SECTION, Selection,
-    USER_ROWS_FILE, USERS_FILE,
+    AGENT_MEMORY_FILE, Available, CREDIT_ROWS_FILES, MANIFEST_FILE, ROLE_GRANT_ROWS_FILE,
+    SSL_SECTION, Selection, USER_ROWS_FILE, USERS_FILE,
 };
 use crate::apps::AppMounts;
 use crate::handlers::{
@@ -320,15 +320,31 @@ pub async fn restore_backup(
     // order serves both: the agents are tried first, and one refused (a
     // `run_trigger` naming a trigger not saved yet) is tried again after the
     // triggers. Only what is refused then is reported.
+    // A trigger refused while some agents are still to come may name one of
+    // them (`consolidate_memory` does), so it is tried again after them.
     let mut refused_agents = Vec::new();
     if selection.agents {
         refused_agents = restore_agents(catalog, apps, &archive, None, &mut report).await;
     }
+    let mut refused_triggers = Vec::new();
     if selection.triggers {
-        restore_triggers(catalog, apps, &archive, &selection, &mut report).await;
+        let pass = if refused_agents.is_empty() {
+            TriggerPass::All
+        } else {
+            TriggerPass::Deferring
+        };
+        refused_triggers =
+            restore_triggers(catalog, apps, &archive, &selection, pass, &mut report).await;
     }
     if !refused_agents.is_empty() {
         restore_agents(catalog, apps, &archive, Some(&refused_agents), &mut report).await;
+    }
+    if !refused_triggers.is_empty() {
+        let pass = TriggerPass::Retry(&refused_triggers);
+        restore_triggers(catalog, apps, &archive, &selection, pass, &mut report).await;
+    }
+    if selection.agents {
+        restore_agent_memories(catalog, &archive, &user_ids, &mut report).await;
     }
 
     // --- the SSL settings ---------------------------------------------------
@@ -2654,25 +2670,122 @@ async fn restore_agents(
     refused
 }
 
+/// Restore the agents' long-term memories (TODO-agent-skills AS12.4), each
+/// about the user as this restore keeps them: an account already here by email
+/// is the one a memory of the backup's account belongs to. A memory already
+/// here is not written twice.
+async fn restore_agent_memories(
+    catalog: &Catalog,
+    archive: &Archive,
+    repointed: &BTreeMap<String, String>,
+    report: &mut RestoreReport,
+) {
+    if !archive.contains(AGENT_MEMORY_FILE) {
+        return;
+    }
+    if let Err(e) = sc_core_traits::bootstrap_agent_memory(catalog).await {
+        report.skipped(format!("agents' memories: {}", e.causes()));
+        return;
+    }
+    let mut added = 0;
+    let mut kept = 0;
+    let mut reader = archive.rows(AGENT_MEMORY_FILE);
+    while let Some(batch) = reader.next_batch().await {
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(e) => {
+                report.skipped(format!("agents' memories: {}", e.causes()));
+                break;
+            }
+        };
+        for bad in &batch.bad {
+            report.skipped(format!("a memory in `{AGENT_MEMORY_FILE}`, {bad}"));
+        }
+        for row in &batch.rows {
+            match restore_agent_memory(catalog, row, repointed).await {
+                Ok(true) => added += 1,
+                Ok(false) => kept += 1,
+                Err(e) => report.skipped(format!(
+                    "a memory of agent `{}`: {}",
+                    row.get("agent").and_then(Json::as_str).unwrap_or_default(),
+                    e.causes()
+                )),
+            }
+        }
+    }
+    if added > 0 {
+        report.did(format!(
+            "agents' memories: {}",
+            counted(added, "memory", "memories")
+        ));
+    }
+    if kept > 0 {
+        report.skipped(format!(
+            "{} already here, not written again",
+            counted(kept, "agent memory was", "agent memories were")
+        ));
+    }
+}
+
+/// One line of [`AGENT_MEMORY_FILE`]. `Ok(false)` is "already here".
+async fn restore_agent_memory(
+    catalog: &Catalog,
+    row: &Json,
+    repointed: &BTreeMap<String, String>,
+) -> Result<bool> {
+    let text = |key: &str| row.get(key).and_then(Json::as_str).unwrap_or("").to_owned();
+    let user = match row.get("user_id").and_then(Json::as_str) {
+        None => None,
+        Some(id) => {
+            let id = repointed.get(id).map_or(id, String::as_str);
+            Some(
+                uuid::Uuid::parse_str(id)
+                    .map_err(|e| Error::invalid(format!("its user `{id}` is not a UUID: {e}")))?,
+            )
+        }
+    };
+    let written_at = row
+        .get("written_at")
+        .and_then(Json::as_str)
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .map_or_else(chrono::Utc::now, |at| at.with_timezone(&chrono::Utc));
+    let memory = sc_core_traits::memory::NewMemory {
+        agent: text("agent"),
+        user,
+        run: None,
+        kind: text("kind"),
+        personal: row.get("personal").and_then(Json::as_bool).unwrap_or(false),
+        topic: text("topic"),
+        contents: text("contents"),
+    };
+    sc_core_traits::memory::import_memory(catalog, &memory, written_at).await
+}
+
+/// The triggers, or with `pass` set to [`TriggerPass::Retry`] only the ones of
+/// those names. On a [`TriggerPass::Deferring`] pass — there are agents still to
+/// retry, which a trigger may run — a refused trigger is not reported but
+/// returned, to be tried again once those agents are here.
 async fn restore_triggers(
     catalog: &Catalog,
     apps: &AppMounts,
     archive: &Archive,
     selection: &Selection,
+    pass: TriggerPass<'_>,
     report: &mut RestoreReport,
-) {
+) -> Vec<String> {
+    let mut refused = Vec::new();
     let document = match archive.json("triggers.json") {
         Ok(document) => document,
         Err(e) => {
             report.skipped(format!("triggers: {}", e.causes()));
-            return;
+            return refused;
         }
     };
     let dispatcher = match triggers_of(apps) {
         Ok(dispatcher) => dispatcher,
         Err(e) => {
             report.skipped(format!("triggers: {}", e.causes()));
-            return;
+            return refused;
         }
     };
     let mut any = false;
@@ -2682,6 +2795,11 @@ async fn restore_triggers(
             .and_then(Json::as_str)
             .unwrap_or("a trigger")
             .to_owned();
+        if let TriggerPass::Retry(only) = pass
+            && !only.contains(&name)
+        {
+            continue;
+        }
         let result = async {
             let id = value
                 .get("id")
@@ -2709,6 +2827,10 @@ async fn restore_triggers(
                 Some(steps) => restore_workflow(catalog, &dispatcher, &trigger, steps).await,
                 None => Ok(String::new()),
             },
+            Err(_) if matches!(pass, TriggerPass::Deferring) => {
+                refused.push(name);
+                continue;
+            }
             Err(e) => Err(e),
         };
         report.outcome(&format!("trigger `{name}`"), result);
@@ -2721,6 +2843,18 @@ async fn restore_triggers(
             e.causes()
         ));
     }
+    refused
+}
+
+/// Which pass of [`restore_triggers`] this is.
+#[derive(Clone, Copy)]
+enum TriggerPass<'a> {
+    /// Every trigger, each outcome reported.
+    All,
+    /// Every trigger, a refused one returned rather than reported.
+    Deferring,
+    /// Only these, each outcome reported.
+    Retry(&'a [String]),
 }
 
 /// The SSL settings, checked against their declarations on the way in like any

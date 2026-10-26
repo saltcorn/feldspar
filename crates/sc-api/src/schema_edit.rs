@@ -2191,10 +2191,7 @@ impl Plan {
         }
         self.constraints
             .push((table.to_owned(), ConstraintOp::Drop(Box::new(fts.clone()))));
-        let has_text = projected
-            .fields
-            .iter()
-            .any(|f| !f.is_calc() && f.base.type_.as_basic() == Some(&sc_types::BasicType::Text));
+        let has_text = projected.fields.iter().any(sc_catalog::is_full_text_field);
         if has_text {
             self.constraints
                 .push((table.to_owned(), ConstraintOp::Add(Box::new(fts))));

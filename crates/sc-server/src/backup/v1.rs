@@ -19,8 +19,8 @@
 //!
 //! The kinds this system has: **tables**, their **fields** (calculated ones
 //! translated, [`formulas`]), their **rows**, **triggers** (v1 calls them
-//! actions) and **workflows** ([`workflows`]), **agents** and the LLM provider
-//! they call ([`agents`]), **files** and **users** — and the
+//! actions) and **workflows** ([`workflows`]), **agents** with the LLM provider,
+//! MCP servers and memories they use ([`agents`]), **files** and **users** — and the
 //! **views**, **pages**, **library** and **menu**, which become one **Saltcorn
 //! UI application** named after the site (TODO "Saltcorn UI" §13, "The builder"
 //! §8). A view's configuration, a page's layout and a library item's layout cross
@@ -155,12 +155,34 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
     out.insert(super::USER_ROWS_FILE.to_owned(), ndjson(&users.rows)?);
     let user_keys = users.keys;
 
-    let mut wants_store = false;
+    // The agents before the tables, because what they need of a table — a
+    // full-text constraint, a vector field's embedding model — is written into
+    // the table's document, and v1's memory table is theirs, not a table.
+    let agents = agents::convert_agents(pack, &site, &mut notes);
+    let mut wants_store = agents.needs_store;
     for value in array(pack, "tables") {
         let Some(table) = value.as_object() else {
             continue;
         };
-        match convert_table(entries, table, &site, &schema, &user_keys, &mut notes) {
+        if name_of(table) == agents::V1_MEMORY_TABLE && agents.takes_memories() {
+            let memories = match table_rows(entries, agents::V1_MEMORY_TABLE) {
+                Ok(rows) => agents.convert_memories(&rows, |id| user_keys.rewrite(id), &mut notes),
+                Err(e) => {
+                    notes.push(format!(
+                        "the agents' memories were not imported: {}",
+                        e.causes()
+                    ));
+                    Vec::new()
+                }
+            };
+            if !memories.is_empty() {
+                out.insert(super::AGENT_MEMORY_FILE.to_owned(), ndjson(&memories)?);
+            }
+            continue;
+        }
+        match convert_table(
+            entries, table, &site, &schema, &user_keys, &agents, &mut notes,
+        ) {
             Ok(Some(converted)) => {
                 wants_store |= converted.has_file_field;
                 let rows = i64::try_from(converted.rows.len()).unwrap_or(i64::MAX);
@@ -185,10 +207,12 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
         }
     }
 
-    let agents = agents::convert_agents(pack, &mut notes);
-    let triggers = convert_triggers(pack, &mut notes);
+    let triggers = convert_triggers(pack, &agents, &mut notes);
     contents.agents = i64::try_from(agents.agents.len()).unwrap_or(i64::MAX);
-    contents.llm_providers = i64::try_from(agents.providers.len()).unwrap_or(i64::MAX);
+    // The MCP servers travel under the LLM providers' choice, as they do in a
+    // backup of this system's own.
+    contents.llm_providers =
+        i64::try_from(agents.providers.len() + agents.mcp_servers.len()).unwrap_or(i64::MAX);
     if !agents.agents.is_empty() {
         out.insert(
             "agents.json".to_owned(),
@@ -199,6 +223,12 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
         out.insert(
             "llm-providers.json".to_owned(),
             pretty(&Json::Array(agents.providers))?,
+        );
+    }
+    if !agents.mcp_servers.is_empty() {
+        out.insert(
+            "mcp-servers.json".to_owned(),
+            pretty(&Json::Array(agents.mcp_servers))?,
         );
     }
     contents.triggers = i64::try_from(triggers.len()).unwrap_or(i64::MAX);
@@ -322,6 +352,7 @@ fn convert_table(
     site: &str,
     schema: &V1Schema,
     user_keys: &UserKeys,
+    agents: &agents::ConvertedAgents,
     notes: &mut Vec<String>,
 ) -> Result<Option<ConvertedTable>> {
     let name = name_of(table);
@@ -415,6 +446,14 @@ fn convert_table(
         }
     }
 
+    // v1 keeps its constraints in the pack as `constraints`, but they are
+    // expressed against v1's field semantics; the restore reads what the
+    // database reported, and an import has no database to report from. What
+    // is added is what the agents need (a full-text constraint where one
+    // searches the table).
+    let mut constraints = Vec::new();
+    agents.amend_table(&name, &mut fields, &mut constraints);
+
     let document = json!({
         "table": {
             // v1 has no separate label for a table; its name is what was shown.
@@ -431,10 +470,7 @@ fn convert_table(
             "sync_enabled": false,
         },
         "fields": fields,
-        // v1 keeps its constraints in the pack as `constraints`, but they are
-        // expressed against v1's field semantics; the restore reads what the
-        // database reported, and an import has no database to report from.
-        "constraints": [],
+        "constraints": constraints,
     });
     Ok(Some(ConvertedTable {
         has_file_field: converted.values().any(|k| *k == V1Field::File),
@@ -1049,7 +1085,11 @@ fn site_name(entries: &Entries) -> String {
 /// thing, and where they do not, `save_trigger` refuses the trigger by name —
 /// "unknown action `modify_row`" — which is a better answer than an action
 /// silently turned into the nearest one that exists.
-fn convert_triggers(pack: &Map<String, Json>, notes: &mut Vec<String>) -> Vec<Json> {
+fn convert_triggers(
+    pack: &Map<String, Json>,
+    agents: &agents::ConvertedAgents,
+    notes: &mut Vec<String>,
+) -> Vec<Json> {
     let mut out = Vec::new();
     for value in array(pack, "triggers") {
         let Some(trigger) = value.as_object() else {
@@ -1085,6 +1125,30 @@ fn convert_triggers(pack: &Map<String, Json>, notes: &mut Vec<String>) -> Vec<Js
             ));
             continue;
         };
+        // v1 consolidates every agent's memories at once; here the action
+        // names its agent, so there is one trigger per agent with a memory.
+        if text(trigger, "action") == agents::CONSOLIDATE_ACTION {
+            let consolidations = agents.consolidations(&name);
+            if consolidations.is_empty() {
+                notes.push(format!(
+                    "trigger `{name}` was not imported: it consolidates agents' memories,                      and no agent here has a memory"
+                ));
+            }
+            for (each, configuration) in consolidations {
+                let mut converted = json!({
+                    "name": each,
+                    "description": text(trigger, "description"),
+                    "when": when,
+                    "action": "consolidate_memory",
+                    "configuration": configuration,
+                });
+                if let Some(min_role) = trigger.get("min_role").and_then(Json::as_i64) {
+                    converted["min_role"] = json!(min_role);
+                }
+                out.push(converted);
+            }
+            continue;
+        }
         let mut out_trigger = Map::new();
         out_trigger.insert("name".to_owned(), json!(name));
         out_trigger.insert(
@@ -2472,5 +2536,133 @@ mod tests {
         assert_eq!(convert_event("Never"), Some("none"));
         assert_eq!(convert_event("Insert"), Some("insert"));
         assert_eq!(convert_event("Validate"), None);
+    }
+
+    /// A real v1 backup with an agent using every skill of v1's agents plugin
+    /// (`tests/fixtures/make-v1-agents-fixture.py`).
+    fn every_skill_archive() -> Entries {
+        let bytes: &[u8] =
+            include_bytes!("../../tests/fixtures/saltcorn-v1-feldsparimport-agents.zip");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a zip");
+        let mut entries = Entries::new();
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i).expect("an entry");
+            let mut data = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut data).expect("readable");
+            entries.insert(file.name().to_owned(), data);
+        }
+        entries
+    }
+
+    /// TODO-agent-skills AS12.13: every skill crosses, and the one note left
+    /// about the agent is the one that is not the importer's to do — copying a
+    /// SKILL.md the backup does not carry.
+    #[test]
+    fn every_v1_agent_skill_crosses_with_no_skill_left_behind() {
+        let out = convert(&every_skill_archive()).expect("converted");
+        let notes = notes(&out);
+        let about_agents: Vec<&String> = notes
+            .iter()
+            .filter(|n| {
+                ["EverySkill", "agent", "skill", "memor", "LLM", "MCP"]
+                    .iter()
+                    .any(|w| n.contains(w))
+            })
+            .collect();
+        assert_eq!(about_agents.len(), 1, "{about_agents:#?}");
+        assert!(
+            about_agents[0].contains("External Skill"),
+            "{about_agents:#?}"
+        );
+
+        let agents = document(&out, "agents.json");
+        let agent = agents
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == json!("EverySkill"))
+            .expect("the agent");
+        let traits: Vec<&str> = agent["traits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["trait"].as_str())
+            .collect();
+        assert_eq!(
+            traits,
+            [
+                "query_table",
+                "insert_row",
+                "run_js_code",
+                "run_js_code",
+                "run_trigger",
+                "subagent",
+                "http",
+                "search_table",
+                "similar_rows",
+                "preload_rows",
+                "preload_code",
+                "memory",
+                "mcp_server",
+                "web_search",
+                "generate_js",
+                "ask_user",
+                "plan_approval",
+                "generate_image",
+                "speech",
+                "skill_file",
+                "prompt_picker",
+            ]
+        );
+        assert_eq!(
+            agent["attributes"]["pickable_models"],
+            json!([ { "provider": "openai", "model": "gpt-5-mini", "label": "Fast" } ])
+        );
+
+        // What the skills need outside the agent.
+        assert!(!out.contains_key("tables/AgentLongTermMemory/table.json"));
+        assert_eq!(
+            rows_of(&out, "agent-memory.ndjson")
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        let servers = document(&out, "mcp-servers.json");
+        assert_eq!(servers[0]["name"], json!("docs"));
+        let chunks = document(&out, "tables/chunks/table.json");
+        let embedding = chunks["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == json!("embedding"))
+            .unwrap();
+        assert_eq!(
+            embedding["attributes"]["embed_model"],
+            json!("text-embedding-3-small")
+        );
+        let document_table = document(&out, "tables/document/table.json");
+        assert_eq!(
+            document_table["constraints"][0]["type"],
+            json!("full_text_search")
+        );
+        let triggers = document(&out, "triggers.json");
+        let consolidate = triggers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == json!("ConsolidateMemories"))
+            .expect("the consolidation");
+        assert_eq!(consolidate["action"], json!("consolidate_memory"));
+        assert_eq!(
+            consolidate["configuration"],
+            json!({ "agent": "EverySkill" })
+        );
+        // The generated images and the skill file need the store.
+        assert!(
+            out.keys().any(|k| k.ends_with("/store.json")),
+            "{:?}",
+            out.keys()
+        );
     }
 }

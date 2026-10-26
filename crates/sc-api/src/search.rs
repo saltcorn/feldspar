@@ -21,7 +21,6 @@
 use sc_catalog::{Catalog, Table, full_text_columns, full_text_constraint, indexed_text_search};
 use sc_error::{Error, Result};
 use sc_query::{Expr, OrderBy, Projection, Select, Source, TextSearch, Value};
-use sc_types::BasicType;
 
 use crate::user_rows::visible_field;
 
@@ -68,7 +67,7 @@ pub fn text_search(table: &Table, phrase: &str, fields: Option<&[String]>) -> Re
                         "a secret"
                     } else if field.is_calc() {
                         "a calculated field"
-                    } else if field.base.type_.as_basic() != Some(&BasicType::Text) {
+                    } else if !sc_catalog::is_full_text_field(field) {
                         "not a text field"
                     } else {
                         "not searchable"
