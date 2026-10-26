@@ -132,7 +132,7 @@ export type MintForm = {
  * the expiry is the only bound a credential has that does not need somebody to
  * remember it. */
 export function emptyMint(fields: FieldSpec[]): MintForm {
-  return { label: "", grants: defaultGrants(fields), all: false, expiresInDays: "90" };
+  return { label: "", grants: defaultGrants(fields), all: true, expiresInDays: "90" };
 }
 
 /** Why this form cannot be submitted yet, in a sentence, or `null`.

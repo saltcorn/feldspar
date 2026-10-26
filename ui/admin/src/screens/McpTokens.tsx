@@ -221,7 +221,7 @@ export function McpTokensPanel({ enabled }: { enabled: boolean }) {
                   checked={form.all}
                   onChange={(e) => setForm({ ...form, all: e.target.checked })}
                 />
-                {(fields ?? []).map((field) => (
+                {(form.all ? [] : (fields ?? [])).map((field) => (
                   <Form.Check
                     key={field.name}
                     type="checkbox"
@@ -320,7 +320,7 @@ export function McpTokensPanel({ enabled }: { enabled: boolean }) {
                 </table>
               </div>
             )}
-            
+
           </>
         )}
       </div>
