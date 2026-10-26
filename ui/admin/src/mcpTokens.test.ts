@@ -233,7 +233,8 @@ describe("minting", () => {
     expect(request.grants?.allow_all).toBe(true);
     expect(request.grants?.allow_drop).toBe(false);
     expect(request.grants?.allow_modules).toBe(true);
-    expect(emptyMint(fields).all).toBe(false);
+    // A new token starts with every grant: the toggle is on, not off.
+    expect(emptyMint(fields).all).toBe(true);
   });
 
   it("omits the expiry entirely for a token that never lapses", () => {

@@ -7,6 +7,7 @@
 // source reads, and the body the "Grant a role" form sends.
 
 import type { GrantUserRoleRequest, ListUserRoleGrantsResponse } from "./client";
+import { format, type Translator } from "./i18n";
 
 /** One grant, as `listUserRoleGrants` answers it. */
 export type RoleGrantRow = ListUserRoleGrantsResponse["grants"][number];
@@ -22,16 +23,19 @@ export function grantState(grant: RoleGrantRow, now: Date = new Date()): GrantSt
 }
 
 /** The badge words and tone for a state. */
-export function grantStateBadge(state: GrantState): { label: string; tone: "green" | "blue" | "secondary" | "red" } {
+export function grantStateBadge(
+  state: GrantState,
+  t: Translator["t"] = format,
+): { label: string; tone: "green" | "blue" | "secondary" | "red" } {
   switch (state) {
     case "in_force":
-      return { label: "In force", tone: "green" };
+      return { label: t("In force"), tone: "green" };
     case "pending":
-      return { label: "Not started", tone: "blue" };
+      return { label: t("Not started"), tone: "blue" };
     case "ended":
-      return { label: "Ended", tone: "secondary" };
+      return { label: t("Ended"), tone: "secondary" };
     case "revoked":
-      return { label: "Revoked", tone: "red" };
+      return { label: t("Revoked"), tone: "red" };
   }
 }
 

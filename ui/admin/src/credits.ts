@@ -12,6 +12,7 @@ import type {
   GrantUserCreditsRequest,
   SetUserCreditThresholdRequest,
 } from "./client";
+import { format, type Translator } from "./i18n";
 
 export type CreditBucketRow = GetUserCreditsResponse["buckets"][number];
 export type CreditEntryRow = GetUserCreditsResponse["entries"][number];
@@ -27,36 +28,45 @@ export function bucketState(bucket: CreditBucketRow): BucketState {
   return Number(bucket.remaining) > 0 ? "live" : "spent";
 }
 
-/** The badge words and tone for a bucket's state. */
-export function bucketStateBadge(state: BucketState): { label: string; tone: "green" | "secondary" | "red" } {
+/** The badge words and tone for a bucket's state, in the screen's language
+ * when it passes its `t`. Every user-facing string in this module takes the
+ * same `t`, and is a `t("…")` of its own so the extractor can read it. */
+export function bucketStateBadge(
+  state: BucketState,
+  t: Translator["t"] = format,
+): { label: string; tone: "green" | "secondary" | "red" } {
   switch (state) {
     case "live":
-      return { label: "Available", tone: "green" };
+      return { label: t("Available"), tone: "green" };
     case "spent":
-      return { label: "Used up", tone: "secondary" };
+      return { label: t("Used up"), tone: "secondary" };
     case "expired":
-      return { label: "Expired", tone: "red" };
+      return { label: t("Expired"), tone: "red" };
   }
 }
 
 /** Who granted a bucket, for a human. An admin's key is a random id that means
  * nothing to read; a module's (an invoice, a pack) is what tells two apart. */
-export function bucketSourceLabel(bucket: CreditBucketRow): string {
-  if (bucket.source === "admin") return "By an admin";
+export function bucketSourceLabel(bucket: CreditBucketRow, t: Translator["t"] = format): string {
+  if (bucket.source === "admin") return t("By an admin");
   return `${bucket.source}: ${bucket.key}`;
 }
 
 /** What an entry was, in a few words: a grant, a model call, or a notice. */
-export function entryLabel(entry: CreditEntryRow): string {
+export function entryLabel(entry: CreditEntryRow, t: Translator["t"] = format): string {
   switch (entry.kind) {
     case "grant":
-      return entry.source === "admin" ? "Granted by an admin" : `Granted by ${entry.source}`;
+      return entry.source === "admin"
+        ? t("Granted by an admin")
+        : t("Granted by {source}", { source: entry.source });
     case "debit": {
-      const what = [entry.agent && `agent ${entry.agent}`, entry.model].filter(Boolean).join(", ");
-      return what ? `Model call (${what})` : "Model call";
+      const what = [entry.agent && t("agent {agent}", { agent: entry.agent }), entry.model]
+        .filter(Boolean)
+        .join(", ");
+      return what ? t("Model call ({what})", { what }) : t("Model call");
     }
     case "low_balance":
-      return "Fell below the low-balance threshold";
+      return t("Fell below the low-balance threshold");
     default:
       return entry.kind;
   }
@@ -81,17 +91,20 @@ export function newCreditGrantForm(): CreditGrantForm {
 }
 
 /** The request body, or a sentence saying what is wrong with the form. */
-export function creditGrantBody(form: CreditGrantForm): GrantUserCreditsRequest | string {
+export function creditGrantBody(
+  form: CreditGrantForm,
+  t: Translator["t"] = format,
+): GrantUserCreditsRequest | string {
   const amount = form.amount.trim();
   if (!AMOUNT.test(amount) || Number(amount) <= 0) {
-    return "The amount must be a number of credits greater than 0, like 100 or 2.5.";
+    return t("The amount must be a number of credits greater than 0, like 100 or 2.5.");
   }
   const days = form.days.trim();
   let expires_in_days: number | null = null;
   if (days !== "") {
     const n = Number(days);
     if (!Number.isInteger(n) || n < 1) {
-      return "Days must be a whole number of at least 1, or blank for credits that never expire.";
+      return t("Days must be a whole number of at least 1, or blank for credits that never expire.");
     }
     expires_in_days = n;
   }
@@ -100,11 +113,14 @@ export function creditGrantBody(form: CreditGrantForm): GrantUserCreditsRequest 
 }
 
 /** The threshold box's value as the server takes it: blank clears it. */
-export function thresholdBody(text: string): SetUserCreditThresholdRequest | string {
+export function thresholdBody(
+  text: string,
+  t: Translator["t"] = format,
+): SetUserCreditThresholdRequest | string {
   const value = text.trim();
   if (value === "") return { threshold: null };
   if (!AMOUNT.test(value)) {
-    return "The threshold must be a number of credits, like 10, or blank for none.";
+    return t("The threshold must be a number of credits, like 10, or blank for none.");
   }
   return { threshold: value };
 }

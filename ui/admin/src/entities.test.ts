@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   configHref,
+  kindLabel,
+  kindLabelPlural,
   matchesFilter,
   recentlyEdited,
   runAction,
@@ -139,6 +141,24 @@ describe("links", () => {
 
   it("offers no Run link for an entity that cannot run now", () => {
     expect(runAction({ ...greet, runnable: false })).toBeNull();
+  });
+});
+
+describe("labels in the screen's language", () => {
+  // A stand-in translator: what reaches it is the English key, so a label that
+  // came back bracketed went through `t` — the only way a catalogue can reach it.
+  const t = (text: string) => `[${text}]`;
+
+  it("translates a kind's name, singular and plural, and leaves an unknown kind alone", () => {
+    expect(kindLabel("file_store")).toBe("File store");
+    expect(kindLabel("file_store", t)).toBe("[File store]");
+    expect(kindLabelPlural("agent", t)).toBe("[Agents]");
+    expect(kindLabel("widget", t)).toBe("widget");
+  });
+
+  it("translates the Run link's label", () => {
+    const greet = entity({ kind: "trigger", name: "greet" });
+    expect(runAction(greet, undefined, t)).toEqual({ type: "test-run", label: "[Test run]" });
   });
 });
 

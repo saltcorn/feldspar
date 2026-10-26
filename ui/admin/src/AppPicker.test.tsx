@@ -30,10 +30,10 @@ function render(props: Partial<Parameters<typeof AppPicker>[0]> = {}) {
 }
 
 describe("AppPicker", () => {
-  it("shows an Application caption over the current name, with a caret", () => {
+  it("shows a Selected application caption over the current name, with a caret", () => {
     const html = render();
     expect(html).toMatch(
-      /app-picker-caption">Application<\/span><span class="app-picker-name">Helpdesk</,
+      /app-picker-caption">Selected application<\/span><span class="app-picker-name">Helpdesk</,
     );
     expect(html).toContain("app-picker-caret");
     expect(html).toContain('aria-expanded="false"');

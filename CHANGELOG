@@ -2,6 +2,28 @@
 
 Changes in reverse chronological order.
 
+## Test suite green again: drifted docs, a v1 table name, and unreadable i18n call sites
+
+A full `cargo test --workspace` failed only in `sc-cli`'s `it` target (four hygiene checks), and
+the admin SPA's vitest run had two stale assertions.
+
+- **§2's dependency table** caught up with the manifests: `sc-auth` → `sc-log`,
+  `sc-core-traits` → `sc-email`, `sc-module` → `sc-api`, `sc-auth`, `sc-files`.
+- **§9.2's ER diagram** now draws `_fd_guest_sessions` (keyed by application) and
+  `_fd_table_edits` (keyed by table name).
+- `sc-module`'s consent test refuses `_fd_users` rather than v1's `_sc_users`.
+- **Admin i18n**: twelve `t(variable)` / `<T text={…}>` call sites the extractor cannot read are
+  gone. The helpers that produced those strings now take the screen's `t` (defaulting to
+  `format`, the convention `backupSchedules.ts` already uses) and translate their own literals:
+  `kindLabel` / `kindLabelPlural` replace `KIND_LABELS`, and `runAction`, `serviceState`,
+  `grantStateBadge`, `bucketStateBadge`, `bucketSourceLabel`, `entryLabel`, `creditGrantBody`
+  and `thresholdBody` take a `t`. The "Create …" buttons hold `(t) => t("…")`. The
+  `Granted by …` and `Model call (…)` labels became placeholder messages.
+- Stale vitest assertions updated to the deliberate changes they predate: the app picker's
+  caption is "Selected application" (530a886d), and a new MCP token starts with every grant
+  (e6a7bed8).
+- Test: `entities.test.ts` › "labels in the screen's language".
+
 ## Session lifetime: a sign-in reads the stored setting
 
 Report: Settings → Authentication → Session lifetime set to 8760 hours, yet users still had to

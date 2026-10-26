@@ -293,7 +293,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
 | `sc-email` | `sc-catalog` `sc-config` `sc-error` |
-| `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
+| `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-query` `sc-types` |
 | `sc-action` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-dataset` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
@@ -308,9 +308,9 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-live` | `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
 | `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
 | `sc-viewpattern` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
-| `sc-module` | `sc-action` `sc-app` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
+| `sc-module` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
-| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-repomap` `sc-types` |
+| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-repomap` `sc-types` |
 | `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
@@ -1746,6 +1746,12 @@ erDiagram
     uuid user_id "deliberately NOT a foreign key"
     timestamp expires_at
   }
+  GUESTSESSIONS["_fd_guest_sessions"] {
+    text token_hash PK "SHA-256 of the guest cookie token"
+    text public_id "gs_...: what a table stores and session.id reads"
+    uuid application_id "the application it belongs to"
+    timestamp expires_at "logged, unlike _fd_sessions"
+  }
   APITOKENS["_fd_api_tokens"] {
     text token_hash PK "SHA-256 of the bearer token"
     uuid id UK "the public handle a list reports and a revoke names"
@@ -1772,6 +1778,10 @@ erDiagram
     int min_role_read
     int min_role_write
     json attributes
+  }
+  TABLEEDITS["_fd_table_edits"] {
+    text name PK "the physical table; no overlay row needed"
+    timestamp updated_at "when it was last edited"
   }
   FIELDS["_fd_fields"] {
     uuid id UK
@@ -2116,6 +2126,7 @@ erDiagram
   USERS ||--o{ PASSWORDTOKENS : "user_id -- by value"
   USERS |o--o{ RUNS : "user_id -- by value, nullable"
   TABLES ||--o{ FIELDS : "table_name -- same subject, joined by name"
+  TABLES ||--o| TABLEEDITS : "name -- by name, bookkeeping"
   FIELDS }o--o| TABLES : "attributes.target_table -- Key fields"
   LLM ||--o{ AGENTS : "provider -- by name"
   LLM ||--o{ LLMMODELS : "provider_id"
@@ -2136,6 +2147,7 @@ erDiagram
   APPS ||--o{ TRANSLATIONS : "application -- by value, deleted with the app"
   APPS |o--o{ CODELIBS : "application_id -- by value, deleted with the app"
   APPS ||--o{ UPLOADS : "application -- by value, the slot's"
+  APPS ||--o{ GUESTSESSIONS : "application_id -- by value"
   VIEWS }o--o{ LIBRARY : "library_id -- inside configuration JSON"
   PAGES }o--o{ LIBRARY : "library_id -- inside layout JSON"
   VIEWS }o--o| TABLES : "table_name -- by name"
