@@ -2,6 +2,71 @@
 
 Changes in reverse chronological order.
 
+## Saltcorn 1 import: calculated fields, users' keys, passwords, agents and workflows
+
+Importing a real v1 backup (`sc-backup-tntestfeldsparimport-…zip`) showed five gaps in the data
+layer. All five are closed (TODO F10).
+
+- **Calculated fields.** v1 fields that were calculated, stored or not, used to be dropped. Now
+  each becomes a non-stored calc field (Feldspar does not store them), translated in
+  `backup/v1/formulas.rs`:
+  - a plain calculation (`qty*unit_price`) and a Ⱶ-join (`orderⱵfor_export`) cross unchanged;
+  - a dot-join through keys (`customer.region.label`) becomes `customerⱵregionⱵlabel`;
+  - an aggregation (`__aggregation` plus attributes) becomes a formula over the incoming
+    relation with the Claudian antisigma: Count → `.length`, Sum/Avg/Min/Max → `.sum("f")`…,
+    CountUnique → `.distinct("f").length`, Array_Agg → `.map(…)`, Latest/Earliest →
+    `.maxBy`/`.minBy`. v1's `aggwhere` becomes `.filter(r => …)` with child fields read as
+    `r.x`. Percent true/false has no counterpart and is reported.
+  - A calculated child field has no column, and `.sum("sum")` over one passes validation but
+    fails on read (TODO F10.6). So the importer writes the child's formula into the arrow
+    instead: `order_lineↃorder.sum(r => r.qty*r.unit_price)`.
+- **A key from `users` onto a backup table** (`users.current_order → order`) failed because
+  the users' columns were added before any table existed. The restore now adds the users
+  table's references with the other tables' references and its calc fields with theirs. After
+  every table's rows are in, it writes the reference values into the accounts it inserted
+  (`restore_user_references`). Accounts that were already on the server are left as they are.
+- **Passwords.** `sc_auth::verify_password` now detects the scheme from the stored hash
+  (`HashScheme::of`: a PHC argon2 string, or a strictly shaped `$2a$/$2b$/$2x$/$2y$` bcrypt
+  hash, via the `bcrypt` crate). On a successful login, `authenticate` replaces a non-argon2
+  hash with a fresh argon2id one. Nothing new is ever hashed with bcrypt. The v1 importer
+  now carries `password` into `password_hash`, so imported users sign in with their old
+  password. An account without a valid hash still arrives with no password and a note.
+- **Agents.** A v1 trigger whose action is `Agent` (`@saltcorn/agents`) now becomes a Feldspar
+  agent (`backup/v1/agents.rs`):
+  - `sys_prompt`, `model` and `min_role` carry over;
+  - a Table skill becomes `query_table` (hidden fields excluded) and/or `insert_row`;
+  - a "Run JavaScript code" tool becomes a `run_js_code` trigger of the tool's name, run through
+    `run_trigger`, with its arguments bound from `payload`;
+  - a Trigger skill becomes `run_trigger`; other skills are reported.
+
+  The `large-language-model` plugin's settings become the LLM provider (`AI SDK`/OpenAI →
+  `openai_responses`, Anthropic, OpenAI-compatible), with its model as the default. Agents now
+  restore before triggers, as before, but an agent refused on that first pass is tried again
+  after the triggers, because a `run_trigger` trait needs its trigger.
+- **Workflows.** v1 workflows used to be dropped. They now cross step for step
+  (`backup/v1/workflows.rs`): `TableQuery` → a `run_js_code` step over `db.table(…)`, `ForLoop`
+  → `for_each`, `SetContext` → `set`, `UserForm` → `user_form` (answers under the step),
+  `TerminateWorkflow` → an empty `set` that ends the run, `modify_row` on a chosen table →
+  `update_rows` (query object as `where`, row expression as assignments). Any other action
+  crosses by name. Every formula is rewritten for this engine's context: a variable a step
+  defines becomes where that step puts it (`orders` → `context.step1`), and any other bare
+  name becomes `context.<name>`. A step `only_if`, a loop index variable, and v1's locks and
+  error handlers have no counterpart, so such a workflow is reported and not imported
+  (TODO F10.7).
+- `sc_expr::rewrite_free_refs` / `object_literal_entries` (new `rewrite.rs`): rewrite a
+  JavaScript expression by its free references, by span, leaving the rest of the text as
+  written, and take an object literal apart. The importer uses these for all of the above.
+- Tests: unit tests in `sc-expr` (`rewrite`), `sc-auth` (`password`: the OpenBSD `$2a$`
+  vector), and `backup::v1::{formulas, agents, workflows}` plus the updated converter tests.
+  Postgres tests:
+  - `sc-auth/tests/login.rs::a_saltcorn_1_bcrypt_hash_signs_in_and_is_rehashed`;
+  - `backup_api::a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported`, which
+    imports the real backup (fixture with the LLM key redacted) and checks that the calc
+    fields compute (`total` 9.95, `n_for_gift` 1), the users key exists, the bcrypt hash
+    arrived, and the agent has its traits and provider. It runs the workflow and the JS tool,
+    then imports a variant with `{id: order.id}` and checks that the loop discounts the order.
+  - `backup_api.rs` now starts the workflow engine, as `serve` does.
+
 ## Triggers: an "inserted or updated" event
 
 A trigger can now listen for `insert_or_update` ("A row is inserted or updated" in the trigger

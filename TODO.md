@@ -695,6 +695,33 @@ that must hold.
   (`describe_applications` shows `access`; `update_application` changes it with
   `allow_access_changes`).
 
+## F10 — Saltcorn 1 import: the data layer
+
+A real v1 backup (orders with stored calculated fields, a key from `users`, an agent and a
+workflow) found what the first importer left behind. Fixture:
+`sc-server/tests/fixtures/saltcorn-v1-feldsparimport.zip`.
+
+- [x] **F10.1** v1 calculated fields, stored or not, become non-stored calc fields: a plain
+  calculation or a Ⱶ-join as written, a dot-join (`publisher.name`) as the Ⱶ-path it means,
+  an aggregation as a formula over the incoming relation (`childↃkey…`). A calculated child
+  field has no column, so it is inlined into the aggregation's arrow.
+- [x] **F10.2** A reference (or calculated field) on the users table onto a table of the
+  backup is added after the tables, and its values written after their rows.
+- [x] **F10.3** v1 bcrypt password hashes are carried; `verify_password` picks the scheme from
+  the hash, and a login with a bcrypt hash rehashes it with argon2id.
+- [x] **F10.4** v1's `Agent` action becomes an agent: Table skills as `query_table` /
+  `insert_row`, JavaScript tools as `run_js_code` triggers run through `run_trigger`, and the
+  LLM plugin's settings as the provider. Agents refused for want of a trigger are retried
+  after the triggers.
+- [x] **F10.5** v1 workflows cross step for step (`TableQuery`, `ForLoop`, `SetContext`,
+  `UserForm`, `TerminateWorkflow`, `modify_row` on a table, other actions by name), with
+  their variables rewritten to where this engine keeps them.
+- [ ] **F10.6** `sc-expr`: an aggregation (`.sum("f")`) or join over a *calculated* field
+  passes validation and then fails on every read (`column … does not exist`). Validation
+  should refuse it, or the translator should inline the field's formula.
+- [ ] **F10.7** A v1 workflow step's `only_if`, a `ForLoop` index variable, and v1's locks and
+  error-handler steps have no counterpart yet; such a workflow is reported and left out.
+
 ---
 
 ## Open questions

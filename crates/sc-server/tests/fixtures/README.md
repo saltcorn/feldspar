@@ -45,6 +45,21 @@ What the fixture holds, and what the tests expect of it:
   *Show Books* with the legacy fixed state `{ id: 2 }`, so the page shows
   *War and Peace* only if the fold happened.
 
+## `saltcorn-v1-feldsparimport.zip`
+
+A real Saltcorn 1.7.0-beta.3 backup (taken 2026-10-26) of a small order-entry
+application, kept because it holds what the first importer could not carry:
+stored calculated fields on `order` (`total`, a Sum over `order_line`; and
+`n_for_gift`, a Count with a `where`) and on `order_line` (`sum`, a
+calculation, and `for_export`, a Ⱶ-join); a `Key` from `users` onto `order`;
+an account with a bcrypt password; an `Agent` action from `@saltcorn/agents`
+with a JavaScript tool and a Table skill; and a four-step workflow
+(`TableQuery`, `ForLoop`, `modify_row`, `TerminateWorkflow`).
+
+**Redacted** from the original: the `large-language-model` plugin's `api_key`
+is replaced by `sk-test-not-a-real-key`, and the cached `available_plugins` /
+`available_packs` lists are emptied. Nothing else was changed.
+
 ## `builder-options/`
 
 What a real Saltcorn 1 passes to `builder.renderBuilder` when an admin opens the

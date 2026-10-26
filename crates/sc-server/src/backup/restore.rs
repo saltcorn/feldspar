@@ -132,10 +132,11 @@ pub async fn restore_backup(
     //
     // An account that is already here keeps its own id, so the rows that pointed
     // at the backup's id for it are pointed at this one as they go in.
-    let mut user_ids = BTreeMap::new();
+    let mut users = RestoredUsers::default();
     if selection.users {
-        user_ids = restore_users(catalog, &archive, contents.users, &mut report).await;
+        users = restore_users(catalog, &archive, contents.users, &mut report).await;
     }
+    let user_ids = users.repointed.clone();
 
     // --- modules, before anything that might be one of theirs ----------------
     //
@@ -185,7 +186,21 @@ pub async fn restore_backup(
             restore_fields(catalog, &archive, name, pass, &mut report).await;
         }
     }
-    restore_calc_fields(catalog, &archive, &restored_tables, &mut report).await;
+    // The users table's own references wait for the same pass, for the same
+    // reason: a `Key` from `users` onto a table of the backup has nothing to
+    // resolve against until that table is here.
+    for (field_name, field) in users.deferred_fields(FieldPass::Reference) {
+        let result = add_field(catalog, sc_auth::USERS_TABLE, &field).await;
+        report.outcome(&format!("column `users.{field_name}`"), result);
+    }
+    restore_calc_fields(
+        catalog,
+        &archive,
+        &restored_tables,
+        users.deferred_fields(FieldPass::Calc),
+        &mut report,
+    )
+    .await;
 
     // The key the backup's Secret values were sealed with, to open each one and
     // seal it again under this server's own key — which is never replaced, so a
@@ -231,6 +246,10 @@ pub async fn restore_backup(
         .await;
         rewind_identities(catalog, &table, &mut report).await;
     }
+
+    // The accounts' values for those references, now that the rows they point
+    // at are in.
+    restore_user_references(catalog, &archive, &users, &mut report).await;
 
     // The ownership formula and row-level security, now that every column is
     // here and the rows are in. The formula is checked against the columns it
@@ -296,11 +315,19 @@ pub async fn restore_backup(
     if selection.llm_providers {
         restore_llm_providers(catalog, &archive, &mut report).await;
     }
+    // An agent may run a trigger and a trigger may run an agent, so neither
+    // order serves both: the agents are tried first, and one refused (a
+    // `run_trigger` naming a trigger not saved yet) is tried again after the
+    // triggers. Only what is refused then is reported.
+    let mut refused_agents = Vec::new();
     if selection.agents {
-        restore_agents(catalog, apps, &archive, &mut report).await;
+        refused_agents = restore_agents(catalog, apps, &archive, None, &mut report).await;
     }
     if selection.triggers {
         restore_triggers(catalog, apps, &archive, &selection, &mut report).await;
+    }
+    if !refused_agents.is_empty() {
+        restore_agents(catalog, apps, &archive, Some(&refused_agents), &mut report).await;
     }
 
     // --- the SSL settings ---------------------------------------------------
@@ -343,13 +370,14 @@ async fn restore_users(
     archive: &Archive,
     expected: i64,
     report: &mut RestoreReport,
-) -> BTreeMap<String, String> {
+) -> RestoredUsers {
+    let mut out = RestoredUsers::default();
     let mut repointed = BTreeMap::new();
     let document = match archive.json(USERS_FILE) {
         Ok(document) => document,
         Err(e) => {
             report.skipped(format!("users: {}", e.causes()));
-            return repointed;
+            return out;
         }
     };
 
@@ -365,7 +393,7 @@ async fn restore_users(
 
     if catalog.require(sc_auth::USERS_TABLE).is_err() {
         report.skipped("users: this server has no users table");
-        return repointed;
+        return out;
     }
 
     // The columns an admin added to the users table where the backup was taken —
@@ -390,13 +418,20 @@ async fn restore_users(
                 break;
             }
         }
+        // A reference or a calculated field is added with the tables' own, once
+        // what it reads is here ([`restore_backup`]); its values follow the rows
+        // ([`restore_user_references`]).
+        if FieldPass::of(field) != FieldPass::Plain {
+            out.deferred.push((name, field.clone()));
+            continue;
+        }
         let result = add_field(catalog, sc_auth::USERS_TABLE, field).await;
         report.outcome(&format!("column `users.{name}`"), result);
     }
 
     let Ok(table) = catalog.require(sc_auth::USERS_TABLE) else {
         report.skipped("users: this server has no users table");
-        return repointed;
+        return out;
     };
     let existing = existing_users(catalog).await.unwrap_or_default();
     let mut restored = 0;
@@ -443,6 +478,13 @@ async fn restore_users(
         }
         let (inserted, problems) = insert_rows(catalog, &table, &fresh).await;
         restored += inserted;
+        for (index, user) in fresh.iter().enumerate() {
+            if !problems.iter().any(|(i, _)| *i == index)
+                && let Some(id) = user.get(sc_auth::COL_ID).and_then(Json::as_str)
+            {
+                out.inserted.insert(id.to_owned());
+            }
+        }
         for (index, problem) in problems {
             let email = fresh[index]
                 .get(sc_auth::COL_EMAIL)
@@ -457,7 +499,120 @@ async fn restore_users(
     check_count(report, USER_ROWS_FILE, "users", Some(expected), lines);
     restore_role_grants(catalog, archive, &repointed, report).await;
     restore_credits(catalog, archive, &repointed, report).await;
-    repointed
+    out.repointed = repointed;
+    out
+}
+
+/// What [`restore_users`] did that the rest of the restore needs.
+#[derive(Default)]
+struct RestoredUsers {
+    /// The backup's id of each account kept here under another id, mapped to
+    /// that one — what [`repoint_users`] rewrites the rows' references with.
+    repointed: BTreeMap<String, String>,
+    /// The ids of the accounts this restore inserted.
+    inserted: BTreeSet<String>,
+    /// The users table's references and calculated fields, by name, held back
+    /// until the tables they read are here.
+    deferred: Vec<(String, Map<String, Json>)>,
+}
+
+impl RestoredUsers {
+    fn deferred_fields(&self, pass: FieldPass) -> Vec<(String, Map<String, Json>)> {
+        self.deferred
+            .iter()
+            .filter(|(_, field)| FieldPass::of(field) == pass)
+            .cloned()
+            .collect()
+    }
+}
+
+/// The values of the users table's deferred references, written into the
+/// accounts this restore inserted — after every table's rows, because what they
+/// point at is one of those rows.
+///
+/// Only those accounts: one that was already here is left exactly as it is, as
+/// [`restore_users`] promises. A value whose row is not here is reported and
+/// left null rather than failing the account.
+async fn restore_user_references(
+    catalog: &Catalog,
+    archive: &Archive,
+    users: &RestoredUsers,
+    report: &mut RestoreReport,
+) {
+    let Ok(table) = catalog.require(sc_auth::USERS_TABLE) else {
+        return;
+    };
+    let columns: Vec<String> = users
+        .deferred_fields(FieldPass::Reference)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| table.field(name).is_some())
+        .collect();
+    if columns.is_empty() || users.inserted.is_empty() {
+        return;
+    }
+    let mut written = 0;
+    let mut reader = archive.rows(USER_ROWS_FILE);
+    while let Some(batch) = reader.next_batch().await {
+        let Ok(batch) = batch else {
+            // Already reported when the accounts were read.
+            break;
+        };
+        for user in repoint_users(&table, batch.rows, &users.repointed) {
+            let Some(id) = user.get(sc_auth::COL_ID).and_then(Json::as_str) else {
+                continue;
+            };
+            if !users.inserted.contains(id) {
+                continue;
+            }
+            let email = user
+                .get(sc_auth::COL_EMAIL)
+                .and_then(Json::as_str)
+                .unwrap_or_default();
+            let result = async {
+                let mut assignments = Vec::new();
+                for column in &columns {
+                    match user.get(column) {
+                        None | Some(Json::Null) => {}
+                        Some(value) => assignments.push(sc_query::Assignment::new(
+                            column.clone(),
+                            Expr::lit(values::column_value(&table, column, value)?),
+                        )),
+                    }
+                }
+                if assignments.is_empty() {
+                    return Ok(false);
+                }
+                let id = values::column_value(&table, sc_auth::COL_ID, &Json::from(id))?;
+                let update = sc_query::Update::new(table.name.clone(), assignments)
+                    .filter(Expr::col(sc_auth::COL_ID).eq(Expr::lit(id)));
+                catalog
+                    .primary()
+                    .query(&Statement::from(update))
+                    .await?
+                    .try_collect()
+                    .await?;
+                Ok::<_, Error>(true)
+            }
+            .await;
+            match result {
+                Ok(true) => written += 1,
+                Ok(false) => {}
+                Err(e) => report.skipped(format!(
+                    "the references of user `{email}` ({}): {}",
+                    columns.join(", "),
+                    e.causes()
+                )),
+            }
+        }
+    }
+    if written > 0 {
+        report.did(format!(
+            "the {} of {}",
+            columns.join(", "),
+            counted(written, "user", "users")
+        ));
+    }
 }
 
 /// The LLM credits the restored accounts hold (TODO-payments P6), after the
@@ -839,9 +994,13 @@ async fn restore_calc_fields(
     catalog: &Catalog,
     archive: &Archive,
     tables: &[String],
+    users: Vec<(String, Map<String, Json>)>,
     report: &mut RestoreReport,
 ) {
-    let mut pending = Vec::new();
+    let mut pending: Vec<(String, String, Map<String, Json>)> = users
+        .into_iter()
+        .map(|(field_name, field)| (sc_auth::USERS_TABLE.to_owned(), field_name, field))
+        .collect();
     for name in tables {
         match missing_fields(catalog, archive, name, FieldPass::Calc) {
             Ok(missing) => pending.extend(
@@ -2343,24 +2502,30 @@ async fn restore_code_libraries(catalog: &Catalog, archive: &Archive, report: &m
     }
 }
 
+/// The agents, or with `retry` only the ones of those names. On the first
+/// pass a refused agent is not reported but returned, for [`restore_backup`] to
+/// try again once the triggers it may name are here; on the retry every outcome
+/// is reported.
 async fn restore_agents(
     catalog: &Catalog,
     apps: &AppMounts,
     archive: &Archive,
+    retry: Option<&[String]>,
     report: &mut RestoreReport,
-) {
+) -> Vec<String> {
+    let mut refused = Vec::new();
     let document = match archive.json("agents.json") {
         Ok(document) => document,
         Err(e) => {
             report.skipped(format!("agents: {}", e.causes()));
-            return;
+            return refused;
         }
     };
     let services = match agents_of(apps) {
         Ok(services) => services,
         Err(e) => {
             report.skipped(format!("agents: {}", e.causes()));
-            return;
+            return refused;
         }
     };
     let registry = services.registry();
@@ -2370,6 +2535,9 @@ async fn restore_agents(
             .and_then(Json::as_str)
             .unwrap_or("an agent")
             .to_owned();
+        if retry.is_some_and(|only| !only.contains(&name)) {
+            continue;
+        }
         let result = async {
             let id = value
                 .get("id")
@@ -2382,8 +2550,12 @@ async fn restore_agents(
             Ok(String::new())
         }
         .await;
-        report.outcome(&format!("agent `{name}`"), result);
+        match result {
+            Err(_) if retry.is_none() => refused.push(name),
+            result => report.outcome(&format!("agent `{name}`"), result),
+        }
     }
+    refused
 }
 
 async fn restore_triggers(

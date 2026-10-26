@@ -142,6 +142,7 @@ struct Server {
     /// Where this server's file store keeps its files.
     files: std::path::PathBuf,
     db: TestDb,
+    _engine: Arc<sc_workflow::WorkflowEngineTask>,
 }
 
 async fn setup() -> sc_error::Result<Server> {
@@ -175,6 +176,9 @@ async fn setup() -> sc_error::Result<Server> {
     let agents = install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
+    // Standing in for `serve`, which starts the engine: a restored workflow is
+    // run here, not only read back.
+    let (engine, _handle) = sc_server::start_workflow_engine(&catalog, &dispatcher);
     // A scripted stream provider, so a stream can be saved and restored without
     // a broker: what matters here is the row, secret setting and all.
     let mut streams = sc_stream::StreamRegistry::new();
@@ -233,6 +237,7 @@ async fn setup() -> sc_error::Result<Server> {
         catalog,
         files: temp_dir(),
         db,
+        _engine: engine,
     })
 }
 
@@ -1047,7 +1052,8 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     // is the only way to recognise it in the v1 database afterwards.
     assert_eq!(imported["extra"]["legacy_id"], json!(1));
     assert_eq!(imported["role"], json!(1));
-    assert!(warned("account was imported with no password"), "{report}");
+    // Its v1 bcrypt hash came with it, so it signs in with the password it had.
+    assert!(!warned("with no password"), "{report}");
 
     // --- the file ------------------------------------------------------------
     let (status, listing) = server
@@ -1076,7 +1082,16 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     //
     // Every one of these is a line an admin reads on the screen that ran the
     // restore, which is the difference between an import and a surprise.
-    assert!(warned("`AddBook`") && warned("workflow"), "{report}");
+    // v1's workflow crossed step for step: one form, its answer under the step.
+    assert!(!warned("`AddBook`"), "{report}");
+    assert!(
+        report["restored"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == &json!("trigger `AddBook`: with its workflow (1 step)")),
+        "{report}"
+    );
     // A v1 action this system does not have is refused by name by the ordinary
     // trigger validation, not quietly turned into the nearest thing that exists.
     assert!(warned("TrimPages") && warned("modify_row"), "{report}");
@@ -1292,6 +1307,200 @@ async fn restore_everything(server: &mut Server, archive: &[u8]) -> Value {
         .await;
     assert_eq!(status, StatusCode::OK, "{report}");
     report
+}
+
+/// A Saltcorn 1 backup of an order-entry app with the things the first import
+/// left behind (a redacted copy of a real one: its LLM key is a placeholder):
+/// stored calculated fields — two aggregations, a calculation and a join — a
+/// key from `users` onto `order`, a bcrypt password, an `Agent` action from
+/// v1's agents plugin and a workflow.
+const V1_ORDERS_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-feldsparimport.zip");
+
+/// What the import of [`V1_ORDERS_BACKUP`] has to get right, read back through
+/// the admin API and then *used*: the calculated fields compute, the user's
+/// reference is there, the agent has its tools, and the workflow runs.
+#[tokio::test]
+async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported()
+-> sc_error::Result<()> {
+    let mut server = setup().await?;
+    let report = restore_everything(&mut server, V1_ORDERS_BACKUP).await;
+    let warned = |text: &str| report_has(&report, "warnings", text);
+
+    // --- stored calculated fields, as calculated fields ----------------------
+    let calc = |fields: &Value, name: &str| -> Value {
+        fields
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no `{name}`: {fields} / {report}"))["kind"]
+            .clone()
+    };
+    let (_, order) = server
+        .client
+        .send("GET", "/api/tables/order/fields", None)
+        .await;
+    let (_, lines) = server
+        .client
+        .send("GET", "/api/tables/order_line/fields", None)
+        .await;
+    assert_eq!(
+        calc(&order, "total")["expression"],
+        json!("order_lineↃorder.sum(r => r.qty*r.unit_price)")
+    );
+    assert_eq!(
+        calc(&order, "n_for_gift")["expression"],
+        json!("order_lineↃorder.filter(r => r.gift === true).length")
+    );
+    assert_eq!(calc(&lines, "sum")["expression"], json!("qty*unit_price"));
+    assert_eq!(
+        calc(&lines, "for_export")["expression"],
+        json!("orderⱵfor_export")
+    );
+
+    // And they compute, from the rows v1 stored the inputs of.
+    let (status, rows) = server
+        .client
+        .send("GET", "/api/tables/order/rows", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    let first = &rows[0];
+    assert_eq!(first["name"], json!("My things"));
+    assert!(
+        (first["total"].as_f64().unwrap_or_default() - 9.95).abs() < 1e-9,
+        "{rows}"
+    );
+    assert_eq!(first["n_for_gift"], json!(1), "{rows}");
+
+    // --- the users table's key onto a table of the backup ---------------------
+    let (_, user_fields) = server
+        .client
+        .send("GET", "/api/tables/users/fields", None)
+        .await;
+    assert_eq!(
+        calc(&user_fields, "current_order")["target_table"],
+        json!("order")
+    );
+    assert!(!warned("current_order"), "{report}");
+
+    // --- the account keeps its v1 password ------------------------------------
+    let hash: String = server
+        .db
+        .client()
+        .await?
+        .query_one(
+            "SELECT password_hash FROM users WHERE email = 'tanielsen@gmail.com'",
+            &[],
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?
+        .get(0);
+    assert!(hash.starts_with("$2a$10$"), "{hash}");
+    assert!(!warned("with no password"), "{report}");
+
+    // --- the agent, its tools and its provider --------------------------------
+    let (_, agents) = server.client.send("GET", "/api/agents", None).await;
+    let agent = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == json!("MyAgent"))
+        .unwrap_or_else(|| panic!("the agent: {agents} / {report}"));
+    assert_eq!(agent["provider"], json!("openai"));
+    let traits: Vec<&str> = agent["traits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["trait"].as_str())
+        .collect();
+    assert_eq!(
+        traits,
+        vec!["run_trigger", "query_table", "insert_row"],
+        "{agent}"
+    );
+
+    // --- the workflow, which runs ---------------------------------------------
+    let (_, triggers) = server.client.send("GET", "/api/triggers", None).await;
+    let id_of = |name: &str| {
+        triggers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no trigger `{name}`: {triggers} / {report}"))["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert!(
+        report_has(&report, "restored", "with its workflow (4 steps)"),
+        "{report}"
+    );
+    let (status, ran) = server
+        .client
+        .send(
+            "POST",
+            &format!("/api/triggers/{}/run", id_of("MyWorkflow")),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{ran}");
+    assert_eq!(ran["result"]["state"], json!("done"), "{ran}");
+    // v1's `{id}` reads `id` out of the run's context, which this loop never
+    // sets — v1 binds it as `id = NULL` — so, faithfully, it matches no order
+    // and nothing is discounted.
+    let (_, rows) = server
+        .client
+        .send("GET", "/api/tables/order/rows", None)
+        .await;
+    assert_eq!(rows[0]["discount"], Value::Null, "{ran} {rows}");
+
+    // The same workflow with the query v1 needed — `{id: order.id}`, the loop's
+    // item — into a fresh server: the loop and the row update do run.
+    let fixed = with_pack(V1_ORDERS_BACKUP, |pack| {
+        let steps = pack["triggers"][1]["steps"].as_array_mut().unwrap();
+        let modify = steps
+            .iter_mut()
+            .find(|s| s["name"] == json!("step3"))
+            .unwrap();
+        modify["configuration"]["query"] = json!("{id: order.id}");
+    });
+    let mut second = setup().await?;
+    restore_everything(&mut second, &fixed).await;
+    let (_, triggers) = second.client.send("GET", "/api/triggers", None).await;
+    let id = triggers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("MyWorkflow"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, ran) = second
+        .client
+        .send("POST", &format!("/api/triggers/{id}/run"), Some(json!({})))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{ran}");
+    assert_eq!(ran["result"]["state"], json!("done"), "{ran}");
+    let (_, rows) = second
+        .client
+        .send("GET", "/api/tables/order/rows", None)
+        .await;
+    assert_eq!(rows[0]["discount"], json!(0.15), "{ran} {rows}");
+
+    // The JavaScript tool is a trigger the agent runs, and it answers.
+    let (status, word) = server
+        .client
+        .send(
+            "POST",
+            &format!("/api/triggers/{}/run", id_of("word_of_the_day")),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{word}");
+    assert_eq!(word["result"], json!("Strawberry"));
+    Ok(())
 }
 
 /// A server with the `BooksDB` store defined at its own temp path, which is
@@ -1850,6 +2059,29 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// The same zip with its `pack.json` edited by `edit` — a variant of a v1
+/// fixture without a second binary checked in.
+fn with_pack(archive: &[u8], edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+    let mut source = zip::ZipArchive::new(std::io::Cursor::new(archive)).expect("a zip");
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut edit = Some(edit);
+    for i in 0..source.len() {
+        let mut file = source.by_index(i).unwrap();
+        let name = file.name().to_owned();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        if name == "pack.json" {
+            let mut pack: Value = serde_json::from_slice(&bytes).unwrap();
+            (edit.take().unwrap())(&mut pack);
+            bytes = serde_json::to_vec(&pack).unwrap();
+        }
+        out.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut out, &bytes).unwrap();
+    }
+    out.finish().unwrap().into_inner()
 }
 
 /// The same zip without the entries `drop` picks out.

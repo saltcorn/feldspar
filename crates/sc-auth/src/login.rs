@@ -1,7 +1,9 @@
 //! Authenticating a user from credentials (technical design §7.2).
 //!
 //! This is the credential half of login: look up a user by their email
-//! identifier and check the supplied password against the stored argon2id hash.
+//! identifier and check the supplied password against the stored hash —
+//! argon2id, or the bcrypt a Saltcorn 1 import carried, which a successful
+//! login replaces with argon2id.
 //! Turning a successful authentication into a session cookie is the server's job
 //! (Phase 6); the session bookkeeping it relies on lives in
 //! [`session`](crate::session).
@@ -10,7 +12,7 @@ use sc_catalog::Catalog;
 use sc_error::Result;
 use sc_query::{Expr, Select, Source, Statement, Value};
 
-use crate::password::verify_password;
+use crate::password::{needs_rehash, verify_password};
 use crate::user::User;
 use crate::users::{COL_EMAIL, COL_PASSWORD_HASH, USERS_TABLE};
 
@@ -67,6 +69,20 @@ pub async fn authenticate(catalog: &Catalog, email: &str, password: &str) -> Res
     let user = User::from_row(&row)?;
     if user.is_disabled() {
         return Ok(None);
+    }
+
+    // A hash in a scheme this system does not write (bcrypt, from a Saltcorn 1
+    // import) is replaced now, while the plaintext is in hand — the only
+    // moment it ever is. Best-effort: the password was right, and a failed
+    // upgrade is tried again at the next login rather than refusing this one.
+    if needs_rehash(&hash)
+        && let Err(e) = crate::manage::set_user_password(catalog, user.id, password).await
+    {
+        sc_log::log_warn!(
+            "the legacy password hash of user {} could not be replaced: {}",
+            user.id,
+            sc_error::format_chain(&e)
+        );
     }
 
     // Served at the effective role, as every other way of loading a user is.

@@ -2607,7 +2607,11 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
             "{rndid}: {}",
             refused.body
         );
-        assert!(!refused.body.contains("Hello, member"), "{rndid}: {}", refused.body);
+        assert!(
+            !refused.body.contains("Hello, member"),
+            "{rndid}: {}",
+            refused.body
+        );
     }
     let greeted = post_page_action(&mut member, "/page/Actions/action/9e1001", Some(&token)).await;
     assert_eq!(greeted.status, StatusCode::OK, "{}", greeted.body);

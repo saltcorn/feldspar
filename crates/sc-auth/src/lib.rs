@@ -91,7 +91,8 @@ pub use manage::{
     update_user,
 };
 pub use password::{
-    RANDOM_PASSWORD_LENGTH, hash_password, is_valid_hash, random_password, verify_password,
+    HashScheme, RANDOM_PASSWORD_LENGTH, hash_password, is_valid_hash, needs_rehash,
+    random_password, verify_password,
 };
 pub use password_tokens::{
     COL_CREATED_AT as COL_PASSWORD_TOKEN_CREATED_AT,

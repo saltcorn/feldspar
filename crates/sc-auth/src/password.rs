@@ -9,6 +9,13 @@
 //! which embed the algorithm, version, parameters, and a random per-password
 //! salt, so a stored hash is self-describing and future parameter changes stay
 //! backward-compatible.
+//!
+//! **Verification decides the scheme from the stored hash itself**
+//! ([`HashScheme::of`]): argon2id is what this system writes, and bcrypt
+//! (`$2a$…`, `$2b$…`, `$2y$…`) is what Saltcorn 1 wrote — so an account imported
+//! from a v1 backup signs in with the password it always had. Nothing new is ever
+//! hashed with bcrypt; a login that verifies against one is told to replace it
+//! ([`needs_rehash`]), so imported hashes become argon2id one sign-in at a time.
 
 use argon2::Argon2;
 use argon2::password_hash::rand_core::{OsRng, RngCore};
@@ -71,18 +78,70 @@ pub fn hash_password(plaintext: &str) -> Result<String> {
     Ok(hash.to_string())
 }
 
-/// Whether `hash` is a well-formed PHC password-hash string. Used to reject
-/// obviously-corrupt stored hashes before they reach verification.
-pub fn is_valid_hash(hash: &str) -> bool {
-    PasswordHash::new(hash).is_ok()
+/// The algorithm a stored password hash was made with, read off the hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashScheme {
+    /// A PHC string — argon2id, what [`hash_password`] writes.
+    Phc,
+    /// A modular-crypt bcrypt hash, `$2a$`/`$2b$`/`$2x$`/`$2y$` — Saltcorn 1's.
+    Bcrypt,
 }
 
-/// Verify a plaintext password against a stored PHC hash.
+impl HashScheme {
+    /// The scheme `hash` is in, or `None` for a string that is neither.
+    pub fn of(hash: &str) -> Option<HashScheme> {
+        if is_bcrypt(hash) {
+            Some(HashScheme::Bcrypt)
+        } else if PasswordHash::new(hash).is_ok() {
+            Some(HashScheme::Phc)
+        } else {
+            None
+        }
+    }
+}
+
+/// `$2?$NN$` and 53 characters of bcrypt's base64 (22 of salt, 31 of hash):
+/// the one shape every bcrypt implementation writes.
+fn is_bcrypt(hash: &str) -> bool {
+    let bytes = hash.as_bytes();
+    bytes.len() == 60
+        && ["$2a$", "$2b$", "$2x$", "$2y$"]
+            .iter()
+            .any(|prefix| hash.starts_with(prefix))
+        && bytes[4..6].iter().all(u8::is_ascii_digit)
+        && bytes[6] == b'$'
+        && bytes[7..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'.' || *b == b'/')
+}
+
+/// Whether `hash` is a well-formed stored password hash in a scheme this
+/// system can verify. Used to reject obviously-corrupt stored hashes before
+/// they reach verification.
+pub fn is_valid_hash(hash: &str) -> bool {
+    HashScheme::of(hash).is_some()
+}
+
+/// Whether a hash that just verified should be replaced by a fresh
+/// [`hash_password`] of the same password — true for every scheme but the one
+/// this system writes.
+pub fn needs_rehash(hash: &str) -> bool {
+    HashScheme::of(hash) != Some(HashScheme::Phc)
+}
+
+/// Verify a plaintext password against a stored hash, in whichever scheme the
+/// hash says it is ([`HashScheme::of`]).
 ///
 /// Returns `Ok(true)` on a match and `Ok(false)` on a mismatch — the ordinary
 /// "wrong password" outcome, not an error. Only a genuinely broken stored hash
 /// or hasher failure yields [`Err`].
 pub fn verify_password(hash: &str, plaintext: &str) -> Result<bool> {
+    if HashScheme::of(hash) == Some(HashScheme::Bcrypt) {
+        // bcrypt reads at most 72 bytes of the password, as Saltcorn 1's
+        // bcryptjs did when it made the hash; truncating is what verifies it.
+        return bcrypt::verify(plaintext, hash)
+            .map_err(|e| Error::auth(format!("invalid stored password hash: {e}")));
+    }
     let parsed = PasswordHash::new(hash)
         .map_err(|e| Error::auth(format!("invalid stored password hash: {e}")))?;
     match Argon2::default().verify_password(plaintext.as_bytes(), &parsed) {
@@ -125,8 +184,28 @@ mod tests {
         assert!(!verify_password(&hash, "").unwrap());
     }
 
+    /// Saltcorn 1 hashed with bcryptjs, which writes `$2a$`. This is the
+    /// OpenBSD test vector for `U*U`, in that spelling.
+    const V1_BCRYPT: &str = "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW";
+
+    #[test]
+    fn a_saltcorn_1_bcrypt_hash_verifies_and_asks_to_be_replaced() {
+        assert_eq!(HashScheme::of(V1_BCRYPT), Some(HashScheme::Bcrypt));
+        assert!(is_valid_hash(V1_BCRYPT));
+        assert!(verify_password(V1_BCRYPT, "U*U").unwrap());
+        assert!(!verify_password(V1_BCRYPT, "U*V").unwrap());
+        assert!(needs_rehash(V1_BCRYPT));
+
+        let ours = hash_password("U*U").unwrap();
+        assert_eq!(HashScheme::of(&ours), Some(HashScheme::Phc));
+        assert!(!needs_rehash(&ours));
+        assert_eq!(HashScheme::of("not-a-hash"), None);
+        assert_eq!(HashScheme::of("$2a$10$notabcrypthash"), None);
+    }
+
     #[test]
     fn verify_errors_on_a_broken_stored_hash() {
+        assert!(verify_password("$2a$05$tooshort", "whatever").is_err());
         assert!(verify_password("not-a-hash", "whatever").is_err());
     }
 

@@ -248,6 +248,10 @@ icu_plurals = "2"
 # `std` pulls in `getrandom` (via rand_core) so a random salt can be drawn from
 # the OS CSPRNG (`OsRng`) when hashing.
 argon2 = { version = "0.5", features = ["std"] }
+# bcrypt, verify-only: the hash Saltcorn 1 stores (`$2a$…`), so an account
+# imported from a v1 backup can still sign in with its old password (and is
+# rehashed with argon2id when it does).
+bcrypt = { version = "0.19", default-features = false, features = ["std"] }
 # SHA-256 for session tokens at rest (§7.2). A *fast* hash on purpose: a session
 # token is 256 bits of uniform randomness, so there is no dictionary for a slow
 # hash to defeat — argon2 above is for passwords, which are guessable.
