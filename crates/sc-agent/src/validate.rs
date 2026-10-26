@@ -69,6 +69,22 @@ pub async fn validate_agent(
             priced.push((role, model.prices()));
         }
     }
+    // Each model a person may pick (AS10.4) resolves as a role's does, and is
+    // priced against the budgets as the executor it stands in for.
+    for picked in agent
+        .pickable_models()
+        .map_err(|e| problem(e.to_string()))?
+    {
+        let (_, model) = resolve_model(catalog, &picked.model_ref())
+            .await
+            .map_err(|e| match e.repr() {
+                sc_error::Repr::NotFound(msg) => {
+                    problem(format!("its pickable model `{}`: {msg}", picked.value()))
+                }
+                _ => e,
+            })?;
+        priced.push((ModelRole::Executor, model.prices()));
+    }
 
     // A cost budget cannot be kept against a model whose cost is unknown, so
     // it is refused here rather than silently never reached.

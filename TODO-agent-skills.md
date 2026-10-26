@@ -212,87 +212,100 @@ Both chat surfaces show text and tool calls. They cannot ask, offer a button or 
 
 ## AS7 — Retrieval
 
-- [ ] **AS7.1** `search_table` (needs AS1): tool `search_<table>`, `phrases[]`, fields and
+- [x] **AS7.1** `search_table` (needs AS1): tool `search_<table>`, `phrases[]`, fields and
   hidden fields, `max_rows`, `doc_format` (a template over the row), and a mode of `tool` or
   `every_message` (through `on_turn`).
-- [ ] **AS7.2** `query_table` gains a `search` argument when the table has a full-text
+- [x] **AS7.2** `query_table` gains a `search` argument when the table has a full-text
   constraint (needs AS1).
-- [ ] **AS7.3** `similar_rows` (needs AS2, AS3): a vector field, an optional relation from the
+- [x] **AS7.3** `similar_rows` (needs AS2, AS3): a vector field, an optional relation from the
   vector's table to the document table, `limit`, `doc_format`, and a mode of tool or
   `every_message`.
-- [ ] **AS7.4** `query_table` gains `show_results`: the rows go to the user as a display part
+- [x] **AS7.4** `query_table` gains `show_results`: the rows go to the user as a display part
   (needs AS6.3), through a named view if one is set, and the model gets a short summary
-  instead of the rows.
-- [ ] **AS7.5** Tests for each trait, including the caller's row-level security.
+  instead of the rows. (The part names the view, `results_view`; the chat surfaces still
+  draw it as a plain table, since rendering a view needs its application's view runtime.)
+- [x] **AS7.5** Tests for each trait, including the caller's row-level security.
 
 ## AS8 — Context: preload, memory, skill files
 
-- [ ] **AS8.1** `preload_rows`: a table, a filter formula over the triggering row and user,
+- [x] **AS8.1** `preload_rows`: a table, a filter formula over the triggering row and user,
   fields or a `contents` template, and whether it goes into the session header or the system
   prompt.
-- [ ] **AS8.2** `preload_code`: a JavaScript body (a `run_js_code`-style host) whose result is
+- [x] **AS8.2** `preload_code`: a JavaScript body (a `run_js_code`-style host) whose result is
   a string, or `{ system_prompt, messages }`. It runs once per session (`session_header`).
-- [ ] **AS8.3** The memory store: `_fd_agent_memory` (agent, user, run, written_at, kind,
+- [x] **AS8.3** The memory store: `_fd_agent_memory` (agent, user, run, written_at, kind,
   personal, topic, contents) with a full-text constraint (needs AS1), and an admin screen to
   read and delete memories (§3).
-- [ ] **AS8.4** `memory` trait: `store_in_memory` and `search_memory`. A personal memory is
+- [x] **AS8.4** `memory` trait: `store_in_memory` and `search_memory`. A personal memory is
   only ever read back for its own user. Optionally, it puts the user's consolidated
   preferences into the session header.
-- [ ] **AS8.5** `consolidate_memory` action: summarises a user's personal memories into one
+- [x] **AS8.5** `consolidate_memory` action: summarises a user's personal memories into one
   `preferences` memory through the agent's cheap role. Meant for a scheduled trigger.
-- [ ] **AS8.6** `skill_file`: a SKILL.md (and the files it references) read from a configured
+- [x] **AS8.6** `skill_file`: a SKILL.md (and the files it references) read from a configured
   file store and path and added to the prompt. Optionally, a `read_skill_file` tool for the
   files it references.
-- [ ] **AS8.7** Tests, including that a personal memory never reaches another user's run.
+- [x] **AS8.7** Tests, including that a personal memory never reaches another user's run.
 
 ## AS9 — Reaching out
 
-- [ ] **AS9.1** `mcp_server` (needs AS4): one configured connection. Its tools are offered as
+- [x] **AS9.1** `mcp_server` (needs AS4): one configured connection. Its tools are offered as
   `<server>__<tool>`, filtered by an optional allow-list, and refused by name in `plan` and
   `explore` unless they are marked read-only. (`sc-mcp` gives it `tools(def)`, cached, and
   `call_tool`, whose images go to `TraitContext::attach_image`. Its config key for the server
   must be `server`: `deleteMcpServer` already refuses a server an agent's `mcp_server` trait
   names by that key. Test that refusal with the trait, and record nothing for a remote
   server's own cost.)
-- [ ] **AS9.2** `web_search`: provider `url_template` (with a header), `tavily` or `firecrawl`
+- [x] **AS9.2** `web_search`: provider `url_template` (with a header), `tavily` or `firecrawl`
   (with an API key as a secret), and include/exclude domains. Results are title, URL and
   snippet, and the `http` trait reads the pages.
-- [ ] **AS9.3** `http` gains `cookies`: a jar kept in the trait's run state
+- [x] **AS9.3** `http` gains `cookies`: a jar kept in the trait's run state
   (`TraitContext::state`), sent only to the host that set each cookie.
-- [ ] **AS9.4** `generate_js` (needs AS5): tool name and description, a code description for
+- [x] **AS9.4** `generate_js` (needs AS5): tool name and description, a code description for
   the model, grants (fetch, tables read-only/read-write, libraries) and an optional follow-up
   prompt.
-- [ ] **AS9.5** `subagent` gains `handover_prompt` (prepended to the briefing) and
+- [x] **AS9.5** `subagent` gains `handover_prompt` (prepended to the briefing) and
   `handoff_prompt` (appended to the report the parent reads).
-- [ ] **AS9.6** Tests for each.
+- [x] **AS9.6** Tests for each.
 
 ## AS10 — Interaction
 
-- [ ] **AS10.1** `ask_user` (needs AS6.1, AS6.2): `ask_user_question` with choice or free-text
+- [x] **AS10.1** `ask_user` (needs AS6.1, AS6.2): `ask_user_question` with choice or free-text
   questions, a "discuss" option, and configurable answer and discuss prompts (v1's
-  `{{ question }}`, `{{ answer }}`).
-- [ ] **AS10.2** `plan_approval` (needs AS6.1, AS6.2): `submit_plan_for_approval` shows the
+  `{{ question }}`, `{{ answer }}`). (One question per call, where v1 allowed six in tabs:
+  a request is one question. "Discuss" is an extra choice option, `__discuss__`.)
+- [x] **AS10.2** `plan_approval` (needs AS6.1, AS6.2): `submit_plan_for_approval` shows the
   plan with an Approve button, and approving continues with `approval_prompt`. Consider whether
   this *is* `RunMode::Plan` for agents that are not coding agents: plan, approve, act.
-- [ ] **AS10.3** `run_js_code` gains `mode: button` (needs AS6.4): a button in the chat that
+  (Decided: **no**. A run's mode is fixed on its row when it starts, and only `coding`
+  withholds tools by mode; no table or action trait knows which of its tools are read-only.
+  "Plan, approve, act" would need a run that changes mode mid-conversation and every trait
+  to classify its tools. That is more than v1's skill, which is a prompt and a button. So
+  `plan_approval` is a tool and an `approve` request, with `decline_prompt` beside
+  `approval_prompt`.)
+- [x] **AS10.3** `run_js_code` gains `mode: button` (needs AS6.4): a button in the chat that
   runs the code with the triggering row and shows its result. It offers no tool.
-- [ ] **AS10.4** Model picker (needs AS6.4): an agent attribute `pickable_models` (a list of
+  (`AgentTrait::on_press` answers the press as the turn's answer, with no model call. `row`
+  is the run's triggering row (`Runner::with_row`), or null in a chat.)
+- [x] **AS10.4** Model picker (needs AS6.4): an agent attribute `pickable_models` (a list of
   provider/model pairs) that adds a select to the composer. The choice overrides the
   executor's model for that message, and validation checks each entry the way roles are
   checked.
-- [ ] **AS10.5** `prompt_picker` (needs AS6.4): options either predefined (label and system
+- [x] **AS10.5** `prompt_picker` (needs AS6.4): options either predefined (label and system
   prompt) or from a table (label field and prompt field, with a filter), and whether choosing
-  one sends it.
-- [ ] **AS10.6** Tests for each, through both chat surfaces' APIs.
+  one sends it. (Table options are read as the caller, through a new
+  `AgentTrait::controls_in`. Sending is a new control kind, `send`.)
+- [x] **AS10.6** Tests for each, through both chat surfaces' APIs.
 
 ## AS11 — Media
 
-- [ ] **AS11.1** `generate_image` (needs AS3.3, AS6.3): size, quality, format and transparency.
+- [x] **AS11.1** `generate_image` (needs AS3.3, AS6.3): size, quality, format and transparency.
   The image is saved to a configured file store and shown to the user as a display part. The
   model gets the file's name and size only, so it cannot make up a link.
-- [ ] **AS11.2** `speech` (needs AS3.4, AS6.3): voice, speed, format and instructions. The
+- [x] **AS11.2** `speech` (needs AS3.4, AS6.3): voice, speed, format and instructions. The
   final answer of each turn is spoken and attached as an audio display part. It offers no tool.
-- [ ] **AS11.3** Tests with the stub server from AS3.6.
+  (Through a new hook, `AgentTrait::on_final_answer`; the part is kept under
+  `answer:<message index>` beside the tool calls' parts. A triggered run is not spoken.)
+- [x] **AS11.3** Tests with the stub server from AS3.6. (`sc-core-traits` `tests/media.rs`.)
 
 ---
 

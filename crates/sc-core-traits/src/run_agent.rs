@@ -204,6 +204,11 @@ impl Action for RunAgent {
         if let Ok(evaluator) = ctx.evaluator() {
             runner = runner.with_evaluator(evaluator);
         }
+        // The row the event is about, for a trait whose session header is
+        // computed from it (`preload_rows`' filter, AS8.1).
+        if let Some(row) = &ctx.event.row {
+            runner = runner.with_row(row.clone());
+        }
 
         // Built here rather than through `Runner::start` for the one thing that
         // call cannot give it: a description. A run list carries no transcript,

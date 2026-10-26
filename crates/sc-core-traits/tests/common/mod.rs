@@ -76,7 +76,12 @@ impl Env {
 
     /// [`Env::new`] over a schema of the test's own.
     pub async fn with_schema(schema: &str) -> Result<Env> {
-        let db = TestDb::new().await?;
+        Env::with_db(TestDb::new().await?, schema).await
+    }
+
+    /// [`Env::with_schema`] over a database of the test's own making — one
+    /// with pgvector (`TestDb::with_pgvector`), say.
+    pub async fn with_db(db: TestDb, schema: &str) -> Result<Env> {
         db.client()
             .await?
             .batch_execute(schema)

@@ -23,10 +23,16 @@
 //! - **The tool is named by the configuration** (`tool_name`), verbatim, so one
 //!   agent can carry many of these; two that share a name are refused on save
 //!   like any other tool collision (§11.2).
+//! - **Or it is a button** (`mode: button`, TODO-agent-skills AS10.3): the
+//!   chat's input row gets a button labelled `button_label`, the trait offers
+//!   no tool, and pressing it runs the body — with `row`, the row whose event
+//!   started the run when one did — and shows what it returned as the turn's
+//!   answer, without a model call. v1's "Run JavaScript code" skill in Button
+//!   mode.
 
 use std::collections::BTreeSet;
 
-use sc_agent::{AgentTrait, ToolsContext, TraitCheck, TraitContext};
+use sc_agent::{AgentTrait, ComposerControl, ControlKind, ToolsContext, TraitCheck, TraitContext};
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
 use sc_types::{Attrs, BasicType, FormField};
@@ -42,6 +48,15 @@ pub const CFG_TOOL_DESCRIPTION: &str = "description";
 pub const CFG_CODE: &str = "code";
 /// The arguments the tool takes: `[{ name, type, description }]`.
 pub const CFG_ARGUMENTS: &str = "arguments";
+/// `tool` (the default: a tool the model calls) or `button` (a button in the
+/// chat the person presses).
+pub const CFG_JS_MODE: &str = "mode";
+/// The button's label, in `button` mode.
+pub const CFG_BUTTON_LABEL: &str = "button_label";
+/// [`CFG_JS_MODE`]: a tool the model calls.
+pub const JS_MODE_TOOL: &str = "tool";
+/// [`CFG_JS_MODE`]: a button the person presses.
+pub const JS_MODE_BUTTON: &str = "button";
 
 /// The binding that holds every argument at once.
 const ALL_ARGS: &str = "args";
@@ -75,10 +90,19 @@ impl AgentTrait for RunJsCode {
 
     fn config_spec(&self) -> Vec<FormField> {
         vec![
+            FormField::new(CFG_JS_MODE, BasicType::Text)
+                .label("Mode")
+                .options([JS_MODE_TOOL, JS_MODE_BUTTON])
+                .sublabel(
+                    "A tool the model calls, or a button in the chat that runs the code \
+                     and shows its result",
+                ),
+            FormField::new(CFG_BUTTON_LABEL, BasicType::Text)
+                .label("Button label")
+                .sublabel("In button mode: what the button says"),
             FormField::new(CFG_TOOL_NAME, BasicType::Text)
                 .label("Tool name")
-                .required()
-                .sublabel("What the model calls it: letters, digits, _ and -"),
+                .sublabel("In tool mode: what the model calls it: letters, digits, _ and -"),
             FormField::new(CFG_TOOL_DESCRIPTION, BasicType::Text)
                 .label("Description")
                 .multiline()
@@ -98,7 +122,11 @@ impl AgentTrait for RunJsCode {
     }
 
     async fn validate_config(&self, check: &TraitCheck<'_>) -> Result<()> {
-        tool_name(check.config)?;
+        if is_button(check.config)? {
+            button_label(check.config)?;
+        } else {
+            tool_name(check.config)?;
+        }
         if config_str(check.config, CFG_CODE).trim().is_empty() {
             return Err(Error::invalid(format!("`{CFG_CODE}` is required")));
         }
@@ -107,6 +135,10 @@ impl AgentTrait for RunJsCode {
     }
 
     fn tools(&self, _cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec> {
+        // A button offers the model nothing.
+        if is_button(config).unwrap_or(false) {
+            return Vec::new();
+        }
         // Infallible by contract: a configuration that no longer validates is
         // still described under the name it gives, so the reason it is invalid
         // can be reported against that name.
@@ -168,6 +200,92 @@ impl AgentTrait for RunJsCode {
             )
             .await
     }
+
+    fn controls(&self, config: &Attrs) -> Vec<ComposerControl> {
+        if !is_button(config).unwrap_or(false) {
+            return Vec::new();
+        }
+        let label = button_label(config).unwrap_or_else(|_| "Run".to_owned());
+        vec![ComposerControl {
+            name: button_control(&label),
+            label,
+            kind: ControlKind::Button,
+        }]
+    }
+
+    async fn on_press(
+        &self,
+        config: &Attrs,
+        _control: &str,
+        row: Option<&Json>,
+        ctx: &mut TraitContext<'_>,
+    ) -> Result<Option<String>> {
+        let label = button_label(config)?;
+        let code = config_str(config, CFG_CODE);
+        let dispatcher = ctx.require_triggers()?;
+        let mut scope = Attrs::new();
+        scope.insert("row".to_owned(), row.cloned().unwrap_or(Json::Null));
+        let caller = sc_api::caller_context_at(ctx.caller.role, ctx.caller.user.as_ref())
+            .chained(ctx.caller.tool_chain());
+        let result = dispatcher
+            .run_code(
+                ctx.catalog,
+                "run_js_code",
+                &format!("{}/{}", ctx.agent, button_control(&label)),
+                &code,
+                scope,
+                Some(&caller),
+                None,
+                None,
+            )
+            .await?;
+        Ok(Some(match result {
+            Json::Null => format!("\"{label}\" ran."),
+            Json::String(text) => text,
+            other => format!(
+                "```json\n{}\n```",
+                serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string())
+            ),
+        }))
+    }
+}
+
+/// Whether this configuration is a button rather than a tool.
+fn is_button(config: &Attrs) -> Result<bool> {
+    match config_str(config, CFG_JS_MODE).as_str() {
+        "" | JS_MODE_TOOL => Ok(false),
+        JS_MODE_BUTTON => Ok(true),
+        other => Err(Error::invalid(format!(
+            "`{CFG_JS_MODE}` is `{JS_MODE_TOOL}` or `{JS_MODE_BUTTON}`, not `{other}`"
+        ))),
+    }
+}
+
+/// The button's label, required in button mode.
+fn button_label(config: &Attrs) -> Result<String> {
+    match config_str(config, CFG_BUTTON_LABEL) {
+        label if label.is_empty() => Err(Error::invalid(format!(
+            "`{CFG_BUTTON_LABEL}` is required in `{JS_MODE_BUTTON}` mode"
+        ))),
+        label => Ok(label),
+    }
+}
+
+/// The composer control a button with `label` is sent as: `js_` and the label
+/// in lower case, with anything but letters and digits as `_`.
+pub fn button_control(label: &str) -> String {
+    let slug: String = label
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("js_{slug}")
 }
 
 /// The configured tool name, checked as a name every model vendor accepts.
@@ -288,6 +406,23 @@ mod tests {
         // No type is a string, as v1's tools default.
         let fine = arguments(&config(json!({ "arguments": [{ "name": "a" }] }))).unwrap();
         assert_eq!(fine[0].type_, "string");
+    }
+
+    #[test]
+    fn a_button_offers_a_control_and_no_tool() {
+        let button = config(json!({
+            "mode": "button", "button_label": "Count books!", "code": "return 1",
+        }));
+        assert!(is_button(&button).unwrap());
+        let controls = RunJsCode.controls(&button);
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0].name, "js_count_books_");
+        assert_eq!(controls[0].label, "Count books!");
+        assert!(matches!(controls[0].kind, ControlKind::Button));
+        // A tool has no control; a mode that is neither is refused.
+        assert!(RunJsCode.controls(&config(json!({ "tool_name": "t" }))).is_empty());
+        assert!(is_button(&config(json!({ "mode": "menu" }))).is_err());
+        assert!(button_label(&config(json!({ "mode": "button" }))).is_err());
     }
 
     fn arguments_err(config: Attrs) -> String {

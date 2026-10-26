@@ -135,6 +135,8 @@ export type ServerEvent =
       request?: UserRequest;
     }
   | { type: "error"; message: string }
+  /** What the final answer showed the person: a spoken answer (AS11.2). */
+  | { type: "display"; display: DisplayRef[] }
   | { type: "controls"; controls: unknown }
   /** After `start` on a run waiting for an answer (AS6.1). */
   | { type: "awaiting"; request: UserRequest }
@@ -245,6 +247,15 @@ export type ComposerControl =
       title?: string;
       options: { value: string; label: string }[];
       default?: string;
+    }
+  /** A select of messages (AS10.5): choosing one sends its value at once as
+   * the person's message, and the select goes back to empty. */
+  | {
+      kind: "send";
+      name: string;
+      label?: string;
+      title?: string;
+      options: { value: string; label: string }[];
     };
 
 /** What a control is currently set to, as it travels with a message. */
@@ -348,7 +359,7 @@ export function normalizeControls(value: unknown): ComposerControl[] {
               title: typeof control.title === "string" ? control.title : undefined,
             },
       );
-    } else if (control.kind === "select") {
+    } else if (control.kind === "select" || control.kind === "send") {
       // An option with no label of its own is read by its value.
       const options = Array.isArray(control.options)
         ? control.options
@@ -360,14 +371,20 @@ export function normalizeControls(value: unknown): ComposerControl[] {
         : [];
       // A select with nothing to select is a dead control, not a narrow one.
       if (options.length === 0) continue;
-      controls.push({
-        kind: "select",
-        name: control.name,
-        label: typeof control.label === "string" ? control.label : undefined,
-        title: typeof control.title === "string" ? control.title : undefined,
-        options,
-        default: typeof control.default === "string" ? control.default : undefined,
-      });
+      const label = typeof control.label === "string" ? control.label : undefined;
+      const title = typeof control.title === "string" ? control.title : undefined;
+      controls.push(
+        control.kind === "send"
+          ? { kind: "send", name: control.name, label, title, options }
+          : {
+              kind: "select",
+              name: control.name,
+              label,
+              title,
+              options,
+              default: typeof control.default === "string" ? control.default : undefined,
+            },
+      );
     }
   }
   return controls;
@@ -387,7 +404,7 @@ export function defaultControlValues(
   for (const control of controls) {
     const had = previous[control.name];
     // A button has no standing value: it is pressed, and sends.
-    if (control.kind === "button") continue;
+    if (control.kind === "button" || control.kind === "send") continue;
     if (control.kind === "toggle") {
       values[control.name] = typeof had === "boolean" ? had : control.default === true;
     } else {
@@ -465,6 +482,10 @@ export function applyEvent(state: ChatState, event: ServerEvent): ChatState {
       return { ...state, entries: [...state.entries, { kind: "error", message: event.message }] };
     case "compaction":
       return { ...state, entries: [...state.entries, compactionEntry(event)] };
+    case "display":
+      return event.display.length > 0
+        ? { ...state, entries: [...state.entries, { kind: "display", parts: event.display }] }
+        : state;
     case "controls": {
       const controls = normalizeControls(event.controls);
       return {
@@ -730,6 +751,9 @@ export function transcriptFromRun(context: unknown): Entry[] {
       if ((message.content ?? "") !== "") {
         entries.push({ kind: "assistant", text: message.content ?? "", reasoning: "" });
       }
+      // What the final answer showed: a spoken answer (AS11.2).
+      const spoken = displayOf(context, `answer:${index}`);
+      if (spoken.length > 0) entries.push({ kind: "display", parts: spoken });
       for (const call of message.tool_calls ?? []) {
         entries.push({
           kind: "tool",
@@ -925,7 +949,15 @@ export class ChatSession {
    * a modifier on what is about to be said, and a turn already in flight was
    * sent with the values it was sent with. */
   setControl(name: string, value: ControlValue): void {
-    if (!this.state.controls.some((control) => control.name === name)) return;
+    const control = this.state.controls.find((c) => c.name === name);
+    if (!control) return;
+    // A select of messages sends the one chosen, at once (AS10.5).
+    if (control.kind === "send") {
+      if (typeof value === "string" && control.options.some((o) => o.value === value)) {
+        this.send(value);
+      }
+      return;
+    }
     this.update({
       ...this.state,
       controlValues: { ...this.state.controlValues, [name]: value },

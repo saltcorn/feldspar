@@ -1486,6 +1486,38 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // --- agent memory (TODO-agent-skills AS8.3) -----------------------------
+    //
+    // What agents' `memory` traits stored, personal and shared, for the admin
+    // to read and delete. Every user's memories, which is why it is admin-only:
+    // a personal memory is otherwise only ever read back for its own user.
+
+    set.register(
+        Endpoint::new("listAgentMemories", Method::Get, api().lit("agent-memories"))
+            .query([
+                QueryParam::new("agent", ValueType::Text),
+                QueryParam::new("user", ValueType::Text),
+                QueryParam::new("kind", ValueType::Text),
+                QueryParam::new("search", ValueType::Text),
+                QueryParam::new("limit", ValueType::Int),
+            ])
+            .output(TypeSchema::array(agent_memory_schema()))
+            .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "deleteAgentMemory",
+            Method::Delete,
+            api().lit("agent-memories").param("id", ValueType::Int),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "deleted",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // --- modules (Saltcorn v1 JavaScript plugins) ---------------------------
     // A module, like a file store and an LLM provider, exists only as its stored
     // row plus what is on disk, and these endpoints are that row's lifecycle.
@@ -5675,6 +5707,21 @@ fn mcp_server_fields() -> Vec<StructField> {
         // Seconds one call may take; 0 is the default (60).
         StructField::new("timeout_secs", TypeSchema::int()),
     ]
+}
+
+/// One stored agent memory (TODO-agent-skills AS8.3).
+fn agent_memory_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::int()),
+        StructField::new("agent", TypeSchema::text()),
+        StructField::new("user_id", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("run_id", TypeSchema::optional(TypeSchema::text())),
+        StructField::new("written_at", TypeSchema::text()),
+        StructField::new("kind", TypeSchema::text()),
+        StructField::new("personal", TypeSchema::bool()),
+        StructField::new("topic", TypeSchema::text()),
+        StructField::new("contents", TypeSchema::text()),
+    ])
 }
 
 /// An MCP server as reported to the admin UI, its header values redacted.

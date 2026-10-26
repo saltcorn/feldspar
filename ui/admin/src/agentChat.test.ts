@@ -732,6 +732,26 @@ describe("interactive chat (TODO-agent-skills AS6.5)", () => {
     expect(entries[entries.length - 1]).toEqual({ kind: "display", parts });
   });
 
+  it("puts a spoken answer after the answer, live and reopened (AS11.2)", () => {
+    const parts = [{ id: "p2", kind: "audio", mime_type: "audio/mpeg", summary: "answer.mp3 (1 KB)" }];
+    const { socket, chat } = session();
+    chat.send("hello");
+    socket.deliver({ type: "text", delta: "Hello there." });
+    socket.deliver({ type: "display", display: parts });
+    const live = chat.current().entries;
+    expect(live[live.length - 1]).toEqual({ kind: "display", parts });
+
+    const entries = transcriptFromRun({
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "Hello there." },
+      ],
+      display: { "answer:1": parts },
+      phase: { phase: "done", conclusion: { conclusion: "answered", answer: "Hello there." } },
+    });
+    expect(entries.map((e) => e.kind)).toEqual(["user", "assistant", "display"]);
+  });
+
   it("presses a button control: its label, sent at once with itself set", () => {
     const { socket, chat } = session();
     socket.deliver({

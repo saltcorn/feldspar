@@ -31,6 +31,8 @@ mod admin_workflow_editor;
 mod agent_admin_api;
 #[path = "agent_chat.rs"]
 mod agent_chat;
+#[path = "agent_interaction.rs"]
+mod agent_interaction;
 #[path = "analytics_api.rs"]
 mod analytics_api;
 #[path = "analytics_apps.rs"]

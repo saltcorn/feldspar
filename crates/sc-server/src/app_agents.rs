@@ -322,7 +322,13 @@ async fn answer(
             part_of(&ctx, id, part).await
         }
         (AgentRoute::Controls, &Method::GET) if exposure.chat || exposure.prompt => {
-            let controls = sc_agent::composer_controls(ctx.services.registry(), &ctx.agent);
+            let controls = sc_agent::composer_controls_for(
+                &ctx.catalog,
+                &ctx.asker.caller,
+                ctx.services.registry(),
+                &ctx.agent,
+            )
+            .await?;
             Ok(axum::Json(json!(controls)).into_response())
         }
         // A route this exposure does not open is not there at all.
@@ -623,7 +629,7 @@ async fn drive_turn(
                     "there is no question to answer: name the conversation in `run`",
                 ));
             }
-            sc_agent::check_controls(&runner.controls(), &input.controls)?;
+            sc_agent::check_controls(&runner.controls().await?, &input.controls)?;
             let text = input.text;
             let run = runner.new_run(&text)?.description(summarise(&text));
             let mut run = ctx.claim(run, mode);
@@ -896,6 +902,10 @@ fn transcript_of(
                         parts.push(tool_part(call, tools));
                     }
                 }
+                // What the final answer showed: a spoken answer (AS11.2).
+                if let Some(shown) = display.get(&sc_agent::answer_display_key(index)) {
+                    parts.extend(shown.iter().map(display_part));
+                }
             }
             LlmMessage::ToolResult {
                 tool_call_id,
@@ -1014,6 +1024,14 @@ impl RunObserver for AppObserver {
             event["arguments"] = call.arguments.clone();
         }
         let _ = self.tx.send(event);
+    }
+
+    // What the final answer showed (a spoken answer, AS11.2).
+    fn on_display(&self, parts: &[sc_agent::DisplayRef]) {
+        let _ = self.tx.send(json!({
+            "type": "display",
+            "parts": parts.iter().map(display_part).collect::<Vec<_>>(),
+        }));
     }
 
     fn on_tool_result(&self, outcome: &sc_agent::ToolOutcome) {
@@ -1139,6 +1157,34 @@ mod tests {
             json!([
                 { "type": "text", "text": "Let me look." },
                 { "type": "text", "text": "It has shipped." },
+            ])
+        );
+    }
+
+    /// A spoken answer (AS11.2) follows the answer it reads, whatever the
+    /// exposure says of tools.
+    #[test]
+    fn what_the_final_answer_showed_follows_it() {
+        let audio = sc_agent::DisplayRef {
+            id: uuid::Uuid::new_v4(),
+            kind: "audio".to_owned(),
+            mime_type: "audio/mpeg".to_owned(),
+            summary: "answer.mp3 (1 KB)".to_owned(),
+        };
+        let display = std::collections::BTreeMap::from([(
+            sc_agent::answer_display_key(3),
+            vec![audio.clone()],
+        )]);
+        let none = transcript_of(&conversation(), &display, ToolDetail::None);
+        assert_eq!(
+            none[1]["parts"],
+            json!([
+                { "type": "text", "text": "Let me look." },
+                { "type": "text", "text": "It has shipped." },
+                {
+                    "type": "display", "id": audio.id, "kind": "audio",
+                    "mime_type": "audio/mpeg", "summary": "answer.mp3 (1 KB)",
+                },
             ])
         );
     }

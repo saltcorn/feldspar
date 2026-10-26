@@ -2,6 +2,267 @@
 
 Changes in reverse chronological order.
 
+## Context: preload_rows, preload_code, memory, consolidate_memory, skill_file (TODO-agent-skills AS8)
+
+Counterparts for v1's "Preload Data", "Memory" and "External Skill (SKILL.md)" skills. None of
+the context traits computes on every step: each builds its text once per session in
+`session_header`, and the text is stored with the run.
+
+- **`sc-agent`**: `SessionContext` gains `evaluator`, `triggers` and `row`, the row whose event
+  started the run. `Runner::with_row` sets that row, and `run_agent` passes the event's row.
+  `Turn` gains `state`: a read-only view of the trait instance's run state, which the loop sets
+  before each `on_turn`. A trait can now compute text in `session_header`, keep it in its state,
+  and append the same text to the system prompt on every step, so the prompt stays cacheable.
+- **`preload_rows`** (`sc-core-traits` `preload.rs`, AS8.1) offers no tool. It has `table`,
+  `filter`, `fields`, `contents`, `heading`, `max_rows` and `placement`. `filter` is a JavaScript
+  expression that gives a `where` object (the vocabulary `query_table` uses), with `user` and
+  `row` in scope. `row` is the triggering row, or null in a chat. The expression runs as a pure
+  code body with no `db` and no `fetch`. It is not a formula, because formulas have no object
+  literals. Rows are read through `read_rows_as` as the run's caller. `contents` is a
+  `{{field}}` template for each row; without one, each row is written as JSON. A template field
+  the trait does not read is refused on save. `placement` is `session_header` (the default) or
+  `system_prompt`.
+- **`preload_code`** (AS8.2): a JavaScript body that runs once per session through the trigger
+  dispatcher's `run_js_code` host, as the caller, with `prompt` (the first message) and
+  `trigger_row` in scope. A string result goes where `placement` says. An object
+  `{ system_prompt, messages }` sends `system_prompt` to the system prompt and writes `messages`
+  (strings or `{role, content}`) where `placement` says. A run with no dispatcher fails with a
+  configuration error. This includes a triggered run, because `run_agent` deliberately passes
+  no dispatcher.
+- **The memory store** (`memory.rs`, AS8.3): `_fd_agent_memory` is a system table, which
+  settles §3's question. Its columns are `id` (identity, as SQLite's FTS5 needs), `agent`,
+  `user_id`, `run_id`, `written_at`, `kind` (`memory` or `preferences`), `personal`, `topic` and
+  `contents`. It has a full-text constraint created with it, and `bootstrap_agent_memory`
+  creates both. The server's `install_agents` and `sc-cli`'s bootstrap call it. Every read goes
+  through `MemoryReader::visibility`: a user sees shared memories and their own personal ones; a
+  run with no user sees shared ones only; the admin sees everything. A personal memory with no
+  user is refused on write. The new admin API has `listAgentMemories` (`GET /api/agent-memories`,
+  with `agent`, `user`, `kind`, `search` and `limit`) and `deleteAgentMemory`
+  (`DELETE /api/agent-memories/{id}`). The admin UI's new screen `#/agents/<name>/memory` reads,
+  searches and deletes memories, and the agent list and runs screen link to it.
+- **`memory`** (AS8.4) has two fixed tools, `store_in_memory` (`contents`, `topic`) and
+  `search_memory` (`query`, ranked full-text). Its settings are `personal` (default on),
+  `preferences_in_header` (default on) and `max_results`. Memories belong to the agent by name.
+  A personal store is refused for a run with no user. With `preferences_in_header`, the user's
+  consolidated `preferences` memory goes into the session header.
+- **`consolidate_memory`** (AS8.5) is an action registered by `register_agent_actions`, with
+  settings `agent` and `max_memories`. For each user with personal memories of the agent (or
+  only the event's user, when the event has one), it sends that user's memories and current
+  preferences to the agent's cheap role and replaces their single `preferences` memory with the
+  answer. Each request carries one user's memories only.
+- **`skill_file`** (`skill_file.rs`, AS8.6): `store`, `root` (the skill's directory), `file`
+  (default `SKILL.md`), `read_tool` and `max_chars`. The SKILL.md goes into the session header,
+  along with the relative Markdown links it contains. `read_skill_file_<store>_<root>` reads a
+  file inside the skill's directory. Every read is the caller's, under §9's file rule.
+- **Tests** (AS8.7): `sc-core-traits` `tests/agent_context.rs` has 11 tests over Postgres and V8.
+  They cover rows narrowed by the filter, by the caller's ownership rule and by the triggering
+  row; the system-prompt placement; refusals on save; `preload_code`'s string and object
+  results; and the memory rule through the store, the tools and whole scripted runs, including
+  that a personal memory never reaches another user's run. They also cover consolidation per
+  user, and a skill file's header, its tool, its directory confinement and its store's role
+  floor. Unit tests in `memory.rs`, `preload.rs` and `skill_file.rs` cover the parts that need
+  no database. `sc-server` `agent_admin_api.rs` tests the admin endpoints, and
+  `AgentMemory.test.tsx` tests the screen.
+
+## Reaching out: mcp_server, web_search, http cookies, generate_js, subagent prompts (TODO-agent-skills AS9)
+
+Counterparts for v1's "Model Context Protocol", "Web search", "Generate and run JavaScript
+code" skills, the Fetch skill's cookie jar and the Subagent skill's two prompts.
+
+- **`mcp_server`** (`sc-core-traits` `mcp_server.rs`, AS9.1): `server` names a connection from
+  `_fd_mcp_servers` (`deleteMcpServer` already refuses a server named under that key). Each
+  remote tool is offered as `<server>__<tool>` (characters a provider refuses become `_`).
+  `allowed_tools` narrows the set. In `plan` and `explore` only tools marked read-only are
+  offered, either by the server (`readOnlyHint`) or by the admin (`read_only_tools`). A call
+  of any other tool in those modes is refused by name. `AgentTrait::tools` is synchronous, so
+  the trait keeps the last listing per catalog and server. That listing is refreshed (through
+  `sc-mcp`'s own cache) on save and load, once per session in `session_header`, and on every
+  call. A server that cannot be reached is logged on save. The session header then says the
+  tools may be missing, and the agent is not dropped. Images go to
+  `TraitContext::attach_image`. An `isError` result becomes an error the model reads. Nothing
+  is recorded for the remote server's own cost.
+- **`web_search`** (`web_search.rs`, AS9.2): the tool `<name>_search` (default `web_search`)
+  takes `query` and returns `{query, results: [{title, url, snippet}]}`. Providers:
+  `url_template` (`{{q}}` URL-encoded, plus one optional secret `header`), `tavily` and
+  `firecrawl` (secret `api_key`). Requests go through the `http` trait's client and guard. A
+  template may reach the private network only with `private_network`. Include/exclude domain
+  lists are passed as Tavily parameters or as `site:` operators, and every result is filtered
+  by them as well. A template's JSON answer is searched for its result list (Brave, SearXNG,
+  SerpAPI, Tavily and Firecrawl shapes, or a bare array). An answer with no result list is
+  shown as a page window. `WebSearch::with_endpoints` points the two vendors at a stand-in
+  for tests.
+- **`http` `cookies`** (`http/cookies.rs`, AS9.3): a `CookieJar` kept in the instance's run
+  state under `cookies`. `HttpClient::send_with_jar` sends and stores cookies on every hop,
+  redirects included. A cookie goes back only to the exact host that set it (`Domain` does
+  not widen it), under its `Path`, and over https only if it is `Secure`. `Max-Age<=0` or a
+  past `Expires` deletes a cookie. With a jar, GET responses are not served from the page
+  cache.
+- **`generate_js`** (`generate_js.rs`, AS9.4): the tool's argument is the code itself, with no
+  second inference call. The code runs through `sandbox::run_model_code` as the caller.
+  Settings: `tool_name`, `tool_description`, `code_description`, `allow_fetch` with optional
+  `fetch_hosts`, `table_access` (`none`/`read`/`write`) with optional `tables`,
+  `allow_libraries`, `timeout_seconds` (at most 30) and `follow_up_prompt`, which is returned
+  as `next` beside `result`. The tool description says exactly what is in scope. A fenced
+  code block is unwrapped. Every evaluation is ledgered with its source.
+- **`subagent`** (AS9.5): `handover_prompt` is put before the briefing the sub-agent starts
+  on. `handoff_prompt` is returned as `handoff` after the verbatim `answer` in the report the
+  parent reads.
+- Tests (AS9.6): `sc-core-traits` `tests/reaching_out.rs` uses local stubs for an MCP server,
+  three search engines and a cookie-setting site. It also runs a whole agent run over the MCP
+  tool with its ledger checked, and a delegation with both prompts. `sc-server`
+  `tests/mcp_client.rs` checks that `deleteMcpServer` refuses a server an agent's
+  `mcp_server` trait names, and deletes it once the agent stops naming it. That test's router
+  now installs agents. Unit tests cover each new module.
+
+## Interaction traits: ask_user, plan_approval, code buttons, prompt and model pickers (TODO-agent-skills AS10)
+
+Counterparts for v1's "Ask user question", "Plan approval", "Run JavaScript code" (Button
+mode), "Prompt picker" and "Model picker" skills. They are built on AS6's requests and composer
+controls.
+
+- **`ask_user`** (`sc-core-traits` `ask_user.rs`, AS10.1): the tool `ask_user_question`
+  (`tool_name` renames it) takes `question`, `type` (`single_select`, `multi_select` or
+  `free_text`), `options` (`{label, description}` or plain strings) and `allow_discussion`.
+  The run's turn ends on a choice or text request. `allow_discussion` adds an option labelled
+  `discuss_label` (default "Discuss instead") whose value is `__discuss__`. `on_answer` turns
+  the answer into v1's prompts: `answer_prompt` with `{{ question }}`, `{{ answer }}` and
+  `{{ answer_description }}`, and `discuss_prompt` with `{{ question }}`. Without them, the
+  defaults are v1's. There is one question per call. v1 allowed up to six, in tabs, but a
+  request is one question.
+- **`plan_approval`** (`plan_approval.rs`, AS10.2): the tool `submit_plan_for_approval` takes
+  `plan`. The plan is shown as an `approve` request with `approve_label`. Approving sends
+  `approval_prompt` and declining sends `decline_prompt`. **It is not `RunMode::Plan`:** a
+  run's mode is fixed when it starts, and only `coding` withholds tools by mode, so "plan,
+  approve, act" stays a prompt, a tool and a request, as in v1.
+- **`run_js_code` button mode** (AS10.3): settings `mode` (`tool`, the default, or `button`)
+  and `button_label`. A button adds a composer `button` control named
+  `js_<label slug>` (`button_control`) and offers no tool. A new hook,
+  `AgentTrait::on_press`, can answer a pressed button itself. The driver calls it at the
+  start of a turn whose message carries a pressed button (`Runner::press`). The returned
+  text becomes the turn's answer without a model call
+  (`AgentLoop::answered_without_model`): an assistant message is added, no step is counted,
+  and the text is streamed as a `text` delta. The code runs as `run_js_code` does, with
+  `row` (the run's triggering row, or null) in scope. A string result is the answer; any
+  other value is shown as JSON.
+- **`pickable_models`** (AS10.4): a new agent attribute, `[{provider, model?, label?}]`
+  (`Agent::pickable_models`, `PickableModel`). It adds a `model` select to the composer
+  (`MODEL_CONTROL`). The first option, with an empty value, is the agent's own model; each
+  pickable model's value is `provider/model`. `Runner::model_for_turn` connects the picked
+  model, through the runner's connector, in place of the executor for that message. Strong
+  and cheap role steps keep their own models. The connection is cached per runner. On save,
+  `validate_agent` resolves each entry as roles are resolved, and prices it for the cost and
+  credit budgets.
+- **`prompt_picker`** (`prompt_picker.rs`, AS10.5): settings `name` (default `prompt`),
+  `label`, `source` (`predefined` with `prompts: [{label, prompt}]`, or `table` with `table`,
+  `label_field`, `prompt_field` and a `where` filter) and `send`. Table rows are read as the
+  caller, up to 200. Without `send`, the picker is a select whose value is the option's
+  position or its row's primary key, so the prompt never reaches the browser, and `on_turn`
+  adds the chosen prompt to that turn's system prompt. With `send`, it is a new control
+  kind, `ControlKind::Send`, whose options are the prompts: choosing one sends it as the
+  message.
+- **Controls per caller** (`sc-agent`): a new hook, `AgentTrait::controls_in`, with a
+  `ControlsContext` (catalog, caller, agent). Its default is `controls`. A new function,
+  `composer_controls_for`, lists the controls with the model picker first.
+  `Runner::controls` is now async and checks a message's controls against that list. Both
+  chat surfaces (`chat.rs` `start`, `app_agents.rs` `…/controls`) list controls this way.
+- UI: `agentChat.ts` reads a `send` control, and choosing an option sends it.
+  `AgentChat.tsx` draws it as a select that resets after each choice. The generated
+  client's `AgentControl` (`typescript.rs` and the four `helper.ts` copies) gains
+  `{kind: "send"}`.
+- Tests (AS10.6): `sc-server` `tests/agent_interaction.rs`, run through both chat surfaces.
+  `ask_user` is answered with a choice and with "discuss instead", and `plan_approval` is
+  approved. A malformed approval is refused on the admin socket. The code button answers
+  with no model call and offers no tool, and the model reads its answer on the next turn.
+  The prompt pickers (predefined, from a table with a filter, and sending) and the model
+  picker are tested, including that a model or row the agent does not offer is refused. A
+  pickable model that does not resolve is refused on save. There are also unit tests in
+  `ask_user.rs`, `plan_approval.rs`, `prompt_picker.rs`, `run_js_code.rs`, and in
+  `sc-agent` `agent.rs` and `machine.rs`.
+
+## Media traits: generate_image and speech (TODO-agent-skills AS11)
+
+Counterparts for v1's "Image generation" and "Text to speech" skills, over `sc-llm`'s
+`generate_image` and `speak` (AS3) and the display parts of AS6.3.
+
+- **`generate_image`** (`sc-core-traits` `media.rs`, AS11.1): settings `store` and `root` (the
+  file store and sub-directory the image is saved to), `provider` and `model` (blank: the
+  default provider and its default image model), `size`, `quality`, `format` (png, jpeg, webp)
+  and `transparent`. The tool `generate_image_<store>[_<root>]` takes `prompt` and an optional
+  `name`. The write is checked as the run's caller before the image is paid for. The call is
+  charged through `Delegator::record_call` before the file is kept. The file is saved as
+  `<name>-<8 hex>.<format>`, with the caller as owner, and shown as an image part. The model
+  is told `{ file, bytes, shown_to_user, note }` and nothing else, so it has no URL to
+  invent. On save it checks the store, the tool name's length, that the provider is not
+  Anthropic, that the model is an image model, and the options (no transparent jpeg).
+- **`speech`** (AS11.2): settings `provider`, `model` (a speech model), `voice` (default
+  `alloy`), `speed` (default 1), `format` (default mp3) and `instructions`. It offers no
+  tool. Each final answer is spoken, cut at a sentence end to the 4,096-character limit, and
+  attached to the answer as an audio part. A run started by a trigger is not spoken.
+- **`AgentTrait::on_final_answer`** (`sc-agent`): a new hook, called once per final answer
+  (a model reply with no tool calls) for every enabled trait, with an `AnswerContext` (the
+  answer, `show`, `record_call`). The driver stores what it shows under
+  `answer_display_key(index)` (`answer:<message index>`) in the loop's `display` map
+  (`AgentLoop::show_with_answer`), and ledgers and charges each recorded call as an aside.
+  A failure is logged and the answer stands. `RunObserver::on_display` streams the parts:
+  the admin chat socket sends `{type: "display", display}`, which `agentChat.ts` renders,
+  and the application chat sends its existing `display` event. Both transcripts, after a
+  reload, show the parts after the answer (`app_agents.rs` `transcript_of`,
+  `agentChat.ts`).
+- Tests (AS11.3): `sc-core-traits` `tests/media.rs`, five runs against a stub
+  OpenAI-compatible host. An image is generated with the configured options, saved, shown,
+  named to the model only by file and size, and ledgered at the image price. A refusal from
+  the host reaches the model and saves nothing. The settings are checked on save. The final
+  answer is spoken with the configured voice, speed, format and instructions, attached under
+  the answer's key, and costed. A triggered run is not spoken. There are also unit tests in
+  `media.rs`, `app_agents.rs` (`what_the_final_answer_showed_follows_it`) and
+  `agentChat.test.ts` (a spoken answer, live and reopened).
+
+## Retrieval traits: search_table, similar_rows, query_table search and show_results (TODO-agent-skills AS7)
+
+Counterparts for v1's "Retrieval by full-text search" and "Retrieval by embedding" skills,
+and for the Table skill's `full_text_search` argument and `list_view`. Every one of them reads
+as the run's caller, in both of their modes.
+
+- **`search_table`** (`sc-core-traits` `search_table.rs`, AS7.1): the tool `search_<table>`
+  takes `phrases` (web-search syntax). Each phrase is searched in the caller's read
+  (`sc_api::search`), best match first, and a row matching several comes back once, up to
+  `max_rows` (default 20). The settings are `fields` (searched and shown), `hidden_fields`
+  (searched but not shown; a list or v1's comma-separated string), `doc_format` (a
+  `{{field}}` template; the model then gets one text per row instead of JSON), and `mode`.
+  With `mode: every_message` there is no tool. Before every model call, `on_turn` searches
+  the latest user message for any of its words and appends what it finds to the system
+  prompt. A lookup that fails is logged and skipped.
+- **`similar_rows`** (`similar_rows.rs`, AS7.3): `table` and `vector_field`, an optional
+  `relation` (a key field of that table leading to a document table), `limit` (default 10),
+  `fields`, `hidden_fields`, `doc_format` and `mode`. The tool `search_similar_<table>` takes
+  `phrase_or_question`, embeds it with the vector field's own model (the new
+  `sc_api::vector::embed_texts_metered`, charged to the run through
+  `Delegator::record_call`), and reads the nearest rows as the caller. Through a relation it
+  reads five chunks per document asked for, then the documents (as the caller too), each
+  once, in the order of their nearest chunk. Vector fields are never shown. On save it checks
+  that the field is a vector field with an embedding model, that the relation is a key field,
+  and that the template names only fields that are shown. `every_message` embeds the user
+  message before each model call. A small in-process cache keeps the steps of one turn from
+  embedding it again.
+- **`query_table` `search`** (AS7.2): offered in the schema only when the table has a
+  full-text search constraint. It matches against the text fields the allow-list leaves
+  visible, and orders by relevance unless `order_by` is given. Over a table without the
+  constraint, a guessed `search` is refused with the reason.
+- **`query_table` `show_results`** (AS7.4): with `show_results: true`, the rows go to the
+  person as a rows display part. The part names `results_view` as its view when one is set.
+  The model gets the count, the primary keys, `more_rows_available` and a note not to repeat
+  them, and the tool's description says the same.
+- **`sc-agent`**: `Turn` now carries `catalog`, `evaluator` and `messages`, plus
+  `Turn::user_message()`, the latest user message, so that `on_turn` can read rows as the
+  caller. `MAX_DISPLAY_ROWS` is exported.
+- Tests: `sc-core-traits` `tests/retrieval.rs`, on Postgres. It covers phrases, hidden fields,
+  documents, refused configurations, both modes, ownership per caller, `query_table` search
+  with and without the index, and `show_results`' display part. `similar_rows` uses pgvector
+  and an `/embeddings` stub, with and without a relation, and checks per-caller chunks and
+  documents. `common::Env::with_db` was added for a pgvector database.
+- Not done: the chat surfaces still draw a rows part as a plain table. Drawing it through the
+  named view needs the application's view runtime, which the admin chat does not have.
+
 ## Interactive chat: questions, display parts, composer controls (TODO-agent-skills AS6)
 
 A tool can now ask the person something and wait for the answer, show them things the model

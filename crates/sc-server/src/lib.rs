@@ -46,6 +46,7 @@ mod logging;
 mod lsp;
 mod mcp;
 mod mcp_servers;
+mod agent_memory;
 mod models;
 mod modules;
 mod oauth;

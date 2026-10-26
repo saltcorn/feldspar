@@ -109,7 +109,9 @@ async fn setup() -> sc_error::Result<(Client, Arc<Catalog>, String, TestDb)> {
     set_config(&catalog, MCP_ENABLED, json!(true)).await?;
     set_config(&catalog, MCP_LOOPBACK_ONLY, json!(true)).await?;
 
-    let apps = Arc::new(AppMounts::new(catalog.clone()));
+    // Agents installed, so one can name a server (AS9.1).
+    let agents = sc_server::install_agents(&catalog).await?;
+    let apps = Arc::new(AppMounts::new(catalog.clone()).with_agents(agents));
     let router = build_router_with_apps(
         &sc_api::admin_endpoints(),
         admin_handlers(catalog.clone(), apps.clone()),
@@ -261,5 +263,89 @@ async fn our_own_mcp_server_is_defined_tested_listed_and_called() -> sc_error::R
     let stored = sc_mcp::require_mcp_server(&catalog, "self").await?;
     assert_eq!(stored.headers["Authorization"], format!("Bearer {token}"));
     assert_eq!(stored.description, "Renamed description");
+    Ok(())
+}
+
+/// A server an agent's `mcp_server` trait names (in its `server` setting) is
+/// not deleted out from under the agent, and the refusal names the agent; once
+/// the agent no longer names it, it goes (TODO-agent-skills AS9.1).
+#[tokio::test]
+async fn a_server_an_agents_mcp_server_trait_names_is_not_deleted() -> sc_error::Result<()> {
+    let (mut client, catalog, url, _db) = setup().await?;
+    let token = mint(&mut client).await;
+    sc_llm::save_llm_provider(
+        &catalog,
+        &sc_llm::LlmProviderDef::new("house", sc_llm::ANTHROPIC_BACKEND)
+            .with(sc_llm::CFG_API_KEY, "sk-ant-test"),
+    )
+    .await?;
+    let provider = sc_llm::require_llm_provider(&catalog, "house").await?;
+    sc_llm::save_llm_model(
+        &catalog,
+        &sc_llm::LlmModelDef::new(provider.id, "claude-sonnet-4-5").default_model(),
+    )
+    .await?;
+
+    let (status, created) = client
+        .send(
+            "POST",
+            "/api/mcp-servers",
+            Some(json!({
+                "name": "self", "url": url, "transport": "streamable_http",
+                "headers": [{ "name": "Authorization", "value": format!("Bearer {token}") }],
+                "allow_private_network": true, "timeout_secs": 20,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    let agent = |traits: Value| {
+        json!({
+            "name": "librarian", "description": "", "provider": "house", "model": null,
+            "system_prompt": "You help.", "traits": traits, "min_role": null, "attributes": {},
+        })
+    };
+    let (status, saved) = client
+        .send(
+            "POST",
+            "/api/agents",
+            Some(agent(json!([
+                { "trait": "mcp_server", "config": { "server": "self" } },
+            ]))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{saved}");
+    assert_eq!(saved["error"], Value::Null, "{saved}");
+    let agent_id = saved["id"].as_str().unwrap().to_owned();
+
+    let (status, refused) = client
+        .send("DELETE", &format!("/api/mcp-servers/{id}"), None)
+        .await;
+    assert_ne!(status, StatusCode::OK, "{refused}");
+    assert!(
+        refused.to_string().contains("agent `librarian`"),
+        "{refused}"
+    );
+    assert!(
+        sc_mcp::load_mcp_server_by_name(&catalog, "self")
+            .await?
+            .is_some()
+    );
+
+    // Once the agent no longer names it, it can go.
+    let (status, edited) = client
+        .send(
+            "PUT",
+            &format!("/api/agents/{agent_id}"),
+            Some(agent(json!([]))),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    let (status, deleted) = client
+        .send("DELETE", &format!("/api/mcp-servers/{id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    assert_eq!(deleted["deleted"], json!(true));
     Ok(())
 }

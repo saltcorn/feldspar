@@ -77,8 +77,11 @@ pub use agent::{
     ATTR_MAX_STEPS, ATTR_MAX_TOKENS, ATTR_TEMPERATURE, Agent, AgentId, DEFAULT_MAX_STEPS,
     EnabledTrait,
 };
+pub use agent::{
+    ATTR_PICKABLE_MODELS, MODEL_CONTROL, MODEL_CONTROL_DEFAULT, PickableModel,
+};
 pub use agent_trait::{
-    AfterToolsContext, AgentTrait, CallExtras, RunCaller, SessionContext, ToolsContext, TraitCheck,
+    AfterToolsContext, AgentTrait, AnswerContext, CallExtras, ControlsContext, RunCaller, SessionContext, ToolsContext, TraitCheck,
     TraitContext, Turn,
 };
 pub use context::{
@@ -94,17 +97,17 @@ pub use delegate::{
     ATTR_DELEGATED_BY, ATTR_PARENT_RUN, DEFAULT_MAX_DEPTH, DelegateRequest, Delegated, Delegator,
 };
 pub use driver::{
-    ProviderConnector, RunObserver, Runner, StablePrefix, StoredProviders, composer_controls,
+    ProviderConnector, RunObserver, Runner, StablePrefix, StoredProviders, composer_controls, composer_controls_for,
     connect, stable_prefix,
 };
 pub use interact::{
-    Answer, ChoiceOption, ComposerControl, ControlKind, DisplayPart, DisplayRef, RequestKind,
-    UserRequest, check_controls,
+    Answer, ChoiceOption, ComposerControl, ControlKind, DisplayPart, DisplayRef, MAX_DISPLAY_ROWS,
+    RequestKind, UserRequest, check_controls,
 };
 pub use ledger::{ChildLedger, CodeEvaluation, Ledger, LedgerStep, RoleTotals};
 pub use machine::{
     AgentLoop, Budget, Budgets, Conclusion, IMAGE_STUB, Step, StepMeta, ToolOutcome,
-    trait_state_key,
+    answer_display_key, trait_state_key,
 };
 pub use meter::{
     ATTR_CREDITS_MIN_BALANCE, ATTR_CREDITS_PER_1K_INPUT, ATTR_CREDITS_PER_1K_OUTPUT,

@@ -267,6 +267,108 @@ pub trait AgentTrait: Send + Sync {
         let _ = config;
         Vec::new()
     }
+
+    /// The controls this trait adds for **this caller**, where they depend on
+    /// what the catalog holds — `prompt_picker`'s options read from a table,
+    /// as the caller (TODO-agent-skills AS10.5). The default is
+    /// [`controls`](AgentTrait::controls). What a chat surface lists, and what
+    /// a message's controls are checked against.
+    async fn controls_in(
+        &self,
+        config: &Attrs,
+        cx: &ControlsContext<'_>,
+    ) -> Result<Vec<ComposerControl>> {
+        let _ = cx;
+        Ok(self.controls(config))
+    }
+
+    /// A [`Button`](crate::ControlKind::Button) control this trait declared,
+    /// `control`, was pressed: the message that starts a turn carries it as
+    /// `true` (AS10.3).
+    ///
+    /// `Ok(Some(text))` answers the press here: `text` is the turn's answer,
+    /// **without a model call** — `run_js_code`'s button runs its code and
+    /// says what it returned. `Ok(None)` (the default) leaves the press an
+    /// ordinary message the model answers. `row` is the row whose event
+    /// started the run, when one did. An `Err` is the answer too, said as a
+    /// failure, so a press always ends its turn.
+    async fn on_press(
+        &self,
+        config: &Attrs,
+        control: &str,
+        row: Option<&Json>,
+        ctx: &mut TraitContext<'_>,
+    ) -> Result<Option<String>> {
+        let _ = (config, control, row, ctx);
+        Ok(None)
+    }
+
+    /// Called once when the model gives a turn's **final answer** — a reply
+    /// with no tool calls that ends the turn — for every enabled trait, in
+    /// trait order (TODO-agent-skills AS11.2). `speech` reads the answer aloud
+    /// here and attaches the audio as a display part.
+    ///
+    /// What it shows ([`AnswerContext::show`]) is attached to the answer, not
+    /// to a tool call, and the model never sees it; a model call it makes for
+    /// itself ([`AnswerContext::record_call`]) is ledgered and charged as a
+    /// tool's is. An `Err` is logged and otherwise ignored: the answer stands.
+    async fn on_final_answer(&self, config: &Attrs, cx: &mut AnswerContext<'_>) -> Result<()> {
+        let _ = (config, cx);
+        Ok(())
+    }
+}
+
+/// What [`AgentTrait::controls_in`] is given: where the options can come from,
+/// and who they are for.
+pub struct ControlsContext<'a> {
+    /// The live catalog.
+    pub catalog: &'a Catalog,
+    /// Who is chatting: a table read for the options is theirs.
+    pub caller: &'a RunCaller,
+    /// The name of the agent, for error messages.
+    pub agent: &'a str,
+}
+
+/// What [`AgentTrait::on_final_answer`] is given: the run, the answer, and
+/// where to put what it shows and what it spent.
+pub struct AnswerContext<'a> {
+    /// The live catalog.
+    pub catalog: &'a Catalog,
+    /// Who the run is for.
+    pub caller: &'a RunCaller,
+    /// The name of the agent.
+    pub agent: &'a str,
+    /// The run.
+    pub run: RunId,
+    /// The run's mode.
+    pub mode: RunMode,
+    /// The final answer's text.
+    pub answer: &'a str,
+    /// This trait instance's per-run state, as [`TraitContext::state`] reaches
+    /// it.
+    pub trait_state: &'a mut Json,
+    /// Parts shown to the person beside the answer. Reach it through
+    /// [`show`](AnswerContext::show).
+    pub display: Vec<DisplayPart>,
+    /// Non-chat model calls made, for the ledger and the payer. Reach it
+    /// through [`record_call`](AnswerContext::record_call).
+    pub calls: Vec<sc_llm::ModelCall>,
+}
+
+impl AnswerContext<'_> {
+    /// Show `part` to the person beside the answer. Refused when it is too
+    /// large.
+    pub fn show(&mut self, part: DisplayPart) -> Result<()> {
+        part.check()?;
+        self.display.push(part);
+        Ok(())
+    }
+
+    /// Record a non-chat model call made for the answer (speech), to be
+    /// ledgered as an aside and charged to the run's payer.
+    pub fn record_call(&mut self, call: sc_llm::ModelCall) {
+        self.calls.push(call);
+    }
 }
 
 /// What [`AgentTrait::session_header`] is given: the run, and this trait
@@ -288,6 +390,16 @@ pub struct SessionContext<'a> {
     /// This trait instance's per-run state, as [`TraitContext::state`] reaches
     /// it.
     pub trait_state: &'a mut Json,
+    /// The JavaScript engine, where the run has one (as
+    /// [`TraitContext::evaluator`]).
+    pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    /// The trigger dispatcher, where the run has one (as
+    /// [`TraitContext::triggers`]): what a code body in the header runs
+    /// through (`preload_code`, AS8.2).
+    pub triggers: Option<&'a Arc<TriggerDispatcher>>,
+    /// The row whose event started this run, for a run a trigger started on a
+    /// row event (`Runner::with_row`); `None` for a chat.
+    pub row: Option<&'a Json>,
 }
 
 /// What [`AgentTrait::after_tools`] is given: the run, this trait instance's
@@ -759,6 +871,25 @@ pub struct Turn<'a> {
     /// started this turn, by control name (TODO-agent-skills AS6.4); empty when
     /// none were sent.
     pub controls: BTreeMap<String, Json>,
+    /// This trait instance's per-run state, read-only, as
+    /// [`session_header`](AgentTrait::session_header) and its tools left it
+    /// (`None` before it wrote any). Set by the loop before each trait's
+    /// [`on_turn`](AgentTrait::on_turn), so a trait that computed something once
+    /// per session (`preload_rows` placed in the system prompt, AS8.1) can
+    /// append that same text on every step without computing it again.
+    pub state: Option<&'a Json>,
+    /// The live catalog, for a trait that reads rows into the turn
+    /// (`search_table` and `similar_rows` in their `every_message` mode,
+    /// TODO-agent-skills AS7.1, AS7.3). `None` for a turn built outside a run.
+    pub catalog: Option<&'a Catalog>,
+    /// The JavaScript engine, where the run has one (as
+    /// [`TraitContext::evaluator`]): a read under an ownership formula that
+    /// does not translate to SQL needs it.
+    pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    /// The conversation as it is about to be sent, so a trait can read the
+    /// message that started this turn ([`Turn::user_message`]). Empty for a
+    /// turn built outside a run.
+    pub messages: &'a [sc_llm::LlmMessage],
     /// Paragraphs appended to the system prompt, in the order traits added them.
     extra_system: Vec<String>,
 }
@@ -772,6 +903,10 @@ impl<'a> Turn<'a> {
             step,
             mode: RunMode::Act,
             controls: BTreeMap::new(),
+            state: None,
+            catalog: None,
+            evaluator: None,
+            messages: &[],
             extra_system: Vec::new(),
         }
     }
@@ -785,6 +920,17 @@ impl<'a> Turn<'a> {
         if !text.trim().is_empty() {
             self.extra_system.push(text);
         }
+    }
+
+    /// The text of the latest user message in the conversation — the one this
+    /// turn answers — or `None` when there is none (AS7.1's `every_message`).
+    pub fn user_message(&self) -> Option<&str> {
+        self.messages.iter().rev().find_map(|m| match m {
+            sc_llm::LlmMessage::User { content } if !content.trim().is_empty() => {
+                Some(content.as_str())
+            }
+            _ => None,
+        })
     }
 
     /// Everything appended, in order.

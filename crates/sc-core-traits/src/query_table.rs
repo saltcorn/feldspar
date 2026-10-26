@@ -18,9 +18,24 @@
 //!   allow-list is what the model may see, filter on and order by; `max_rows` is
 //!   a ceiling the `limit` argument is clamped to rather than a default it can
 //!   raise. An agent cannot widen its own grant by asking nicely.
+//!
+//! Two things it grew for v1's Table skill (TODO-agent-skills AS7.2, AS7.4):
+//!
+//! - **`search`**, offered only when the table has a full-text search
+//!   constraint: a phrase matched against the text fields the tool may see,
+//!   inside the same read, and ordering by relevance unless `order_by` says
+//!   otherwise. Offered only then because a search the index does not answer
+//!   is a scan, which the row layer refuses past a few thousand rows — a tool
+//!   that worked on the admin's test data and failed on the real table would be
+//!   worse than none.
+//! - **`show_results`**: the rows go to the **person** as a display part
+//!   (AS6.3), through a named view where one is set, and the model is told how
+//!   many there were and their keys, not what they say. The rows were for the
+//!   person; repeating them through the model costs tokens twice and paraphrases
+//!   the data.
 
-use sc_agent::{AgentTrait, ToolsContext, TraitCheck, TraitContext};
-use sc_catalog::Table;
+use sc_agent::{AgentTrait, DisplayPart, MAX_DISPLAY_ROWS, ToolsContext, TraitCheck, TraitContext};
+use sc_catalog::{Table, full_text_constraint};
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
 use sc_query::{Expr, OrderBy};
@@ -42,6 +57,12 @@ use crate::table::{
 /// conversation that gets more expensive and less coherent with each answer. An
 /// admin who wants a thousand rows says so.
 pub const DEFAULT_MAX_ROWS: i64 = 50;
+
+/// Whether the rows go to the person rather than to the model (AS7.4).
+pub const CFG_SHOW_RESULTS: &str = "show_results";
+/// The view the shown rows are rendered through, by name; empty for a plain
+/// table.
+pub const CFG_RESULTS_VIEW: &str = "results_view";
 
 /// Read rows of one configured table.
 pub struct QueryTable;
@@ -76,11 +97,19 @@ impl AgentTrait for QueryTable {
             FormField::new(CFG_MAX_ROWS, BasicType::Int)
                 .label("Maximum rows")
                 .default_value(DEFAULT_MAX_ROWS),
+            FormField::new(CFG_SHOW_RESULTS, BasicType::Bool)
+                .label("Show the rows to the user instead of the model")
+                .default_value(false),
+            FormField::new(CFG_RESULTS_VIEW, BasicType::Text)
+                .label("View to show them through")
+                .sublabel("Optional: the name of a view over this table")
+                .show_if(CFG_SHOW_RESULTS, vec![Json::Bool(true)]),
         ]
     }
 
     async fn validate_config(&self, check: &TraitCheck<'_>) -> Result<()> {
         check_table_config(check.catalog, check.config, DEFAULT_MAX_ROWS as u64)?;
+        shows_results(check.config)?;
         Ok(())
     }
 
@@ -101,10 +130,12 @@ impl AgentTrait for QueryTable {
         };
         let visible = visible_fields(&table, config).unwrap_or_default();
         let ceiling = max_rows(config, DEFAULT_MAX_ROWS as u64).unwrap_or(DEFAULT_MAX_ROWS as u64);
+        let searchable = searchable(&table, &visible);
+        let shown = shows_results(config).unwrap_or(false);
         vec![ToolSpec::new(
             name,
-            describe(&table, &visible, ceiling),
-            parameters(&table, &visible, ceiling),
+            describe(&table, &visible, ceiling, searchable, shown),
+            parameters(&table, &visible, ceiling, searchable),
         )]
     }
 
@@ -121,16 +152,25 @@ impl AgentTrait for QueryTable {
         let args = arguments(args, &ARGUMENTS)?;
 
         let filter = where_expr(&table, &visible, args.get(ARG_WHERE))?;
-        let order = order_by(&table, &visible, &args)?;
+        let mut order = order_by(&table, &visible, &args)?;
         let limit = requested_limit(&args, ceiling)?;
+        let search = match args.get(ARG_SEARCH).filter(|v| !v.is_null()) {
+            None => None,
+            Some(phrase) => Some(search_for(&table, &visible, phrase)?),
+        };
 
         // One more row than asked for, so "there are more" can be reported
         // rather than guessed at. A model that cannot tell a complete answer
         // from a truncated one will state the truncated one as fact.
-        let query = RowQuery::new()
-            .where_(filter)
-            .order_by(order)
-            .limit(limit.saturating_add(1));
+        let mut query = RowQuery::new().where_(filter);
+        if let Some(search) = search {
+            // Best match first, unless the model asked for another order.
+            if order.is_empty() {
+                order.push(sc_api::search::relevance(&search));
+            }
+            query = query.searching(search);
+        }
+        let query = query.order_by(order).limit(limit.saturating_add(1));
         let found = sc_api::read_rows_as(
             ctx.catalog,
             &table,
@@ -145,6 +185,9 @@ impl AgentTrait for QueryTable {
         let more = rows.len() as u64 > limit;
         rows.truncate(limit as usize);
         let rows: Vec<Json> = rows.iter().map(|row| project(row, &visible)).collect();
+        if shows_results(config)? {
+            return show(&table, config, &visible, rows, more, ctx);
+        }
         Ok(json!({
             "table": table.name,
             "rows": rows,
@@ -164,7 +207,13 @@ impl AgentTrait for QueryTable {
 /// label. Listing the fields here as well as in the parameter schema is
 /// deliberate: the description is the part a model reads when *choosing* a tool,
 /// and "does this table even have an author?" is the question it is choosing on.
-fn describe(table: &Table, visible: &[String], ceiling: u64) -> String {
+fn describe(
+    table: &Table,
+    visible: &[String],
+    ceiling: u64,
+    searchable: bool,
+    shown: bool,
+) -> String {
     let mut out = format!("Read rows of the `{}` table", table.name);
     if !table.description.trim().is_empty() {
         out.push_str(&format!(" ({})", table.description.trim()));
@@ -179,11 +228,23 @@ fn describe(table: &Table, visible: &[String], ceiling: u64) -> String {
     }
     out.push_str("\n\n");
     out.push_str(WHERE_HELP);
+    if searchable {
+        out.push_str(
+            "\n\n`search` matches a phrase against the text fields, in the syntax of a web \
+             search engine, best match first unless `order_by` is given.",
+        );
+    }
+    if shown {
+        out.push_str(
+            "\n\nThe rows are shown to the user directly, and you are told only how many \
+             there were and their keys: do not repeat or describe them.",
+        );
+    }
     out
 }
 
 /// The tool's JSON Schema, generated from the table.
-fn parameters(table: &Table, visible: &[String], ceiling: u64) -> Json {
+fn parameters(table: &Table, visible: &[String], ceiling: u64, searchable: bool) -> Json {
     // Only the stored fields: `where` and `order_by` become SQL, and a
     // calculated field has no column to put in it.
     let names: Vec<&str> = queryable_fields(table, visible)
@@ -200,7 +261,7 @@ fn parameters(table: &Table, visible: &[String], ceiling: u64) -> Json {
             ),
         );
     }
-    json!({
+    let mut schema = json!({
         "type": "object",
         "properties": {
             ARG_WHERE: where_,
@@ -225,7 +286,85 @@ fn parameters(table: &Table, visible: &[String], ceiling: u64) -> Json {
             },
         },
         "additionalProperties": false,
-    })
+    });
+    if searchable {
+        schema["properties"][ARG_SEARCH] = json!({
+            "type": "string",
+            "description":
+                "Only rows whose text fields match this phrase: words match in any order, \
+                 \"double quotes\" an exact phrase, a -minus excludes a word, `or` either side. \
+                 Not SQL.",
+        });
+    }
+    schema
+}
+
+/// Whether the tool offers `search`: the table has a full-text constraint, and
+/// the tool may see one of its text fields.
+fn searchable(table: &Table, visible: &[String]) -> bool {
+    full_text_constraint(table).is_some()
+        && crate::search_table::searched_columns(table, visible).is_ok()
+}
+
+/// The search a `search` argument asks for, refused by name where the tool
+/// does not offer one.
+fn search_for(table: &Table, visible: &[String], phrase: &Json) -> Result<sc_query::TextSearch> {
+    if full_text_constraint(table).is_none() {
+        return Err(Error::invalid(format!(
+            "`{ARG_SEARCH}` is not an argument of this tool: `{}` has no full-text search index",
+            table.name
+        )));
+    }
+    let phrase = phrase.as_str().ok_or_else(|| {
+        Error::invalid(format!("`{ARG_SEARCH}` should be a phrase, got {phrase}"))
+    })?;
+    crate::search_table::text_search(table, visible, phrase)
+}
+
+/// Whether the configuration shows the rows to the person.
+fn shows_results(config: &Attrs) -> Result<bool> {
+    match config.get(CFG_SHOW_RESULTS) {
+        None | Some(Json::Null) => Ok(false),
+        Some(Json::Bool(b)) => Ok(*b),
+        Some(other) => Err(Error::invalid(format!(
+            "`{CFG_SHOW_RESULTS}` should be true or false, got {other}"
+        ))),
+    }
+}
+
+/// Show `rows` to the person and tell the model what was shown (AS7.4).
+fn show(
+    table: &Table,
+    config: &Attrs,
+    visible: &[String],
+    mut rows: Vec<Json>,
+    more: bool,
+    ctx: &mut TraitContext<'_>,
+) -> Result<Json> {
+    let pk = sc_api::rows::single_pk(table)?;
+    let keys: Vec<Json> = rows
+        .iter()
+        .map(|r| r.get(&pk).cloned().unwrap_or(Json::Null))
+        .collect();
+    rows.truncate(MAX_DISPLAY_ROWS);
+    let count = keys.len();
+    let view = config_str(config, CFG_RESULTS_VIEW);
+    ctx.show(DisplayPart::Rows {
+        title: Some(format!("{} ({count})", table.name)),
+        view: (!view.is_empty()).then_some(view),
+        columns: visible.to_vec(),
+        rows,
+    })?;
+    Ok(json!({
+        "table": table.name,
+        "count": count,
+        "more_rows_available": more,
+        "shown_to_user": true,
+        "keys": { pk: keys },
+        "note": format!(
+            "The {count} rows were shown to the user. Do not repeat or describe them."
+        ),
+    }))
 }
 
 // --- the tool's arguments ---------------------------------------------------
@@ -236,9 +375,20 @@ const ARG_ORDER_BY: &str = "order_by";
 const ARG_DESCENDING: &str = "descending";
 /// How many rows at most.
 const ARG_LIMIT: &str = "limit";
+/// A full-text search phrase (AS7.2).
+const ARG_SEARCH: &str = "search";
 
 /// Every argument this tool takes — so one it does not is refused **by name**.
-const ARGUMENTS: [&str; 4] = [ARG_WHERE, ARG_ORDER_BY, ARG_DESCENDING, ARG_LIMIT];
+/// `search` is in the list even where the schema does not offer it, so that a
+/// model guessing it is told why it is not available rather than that it is
+/// unknown.
+const ARGUMENTS: [&str; 5] = [
+    ARG_WHERE,
+    ARG_ORDER_BY,
+    ARG_DESCENDING,
+    ARG_LIMIT,
+    ARG_SEARCH,
+];
 
 /// The `limit`, clamped to the configured ceiling.
 ///

@@ -112,6 +112,11 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_agent::bootstrap_runs(&catalog)
         .await
         .context("ensuring the runs table exists")?;
+    // Long-term agent memory (TODO-agent-skills AS8.3): a system table with a
+    // full-text constraint, read by the `memory` trait and the admin screen.
+    sc_core_traits::bootstrap_agent_memory(&catalog)
+        .await
+        .context("ensuring the agent memory table exists")?;
     // The Analytics UI's datasets and workspaces (analytics TODO A1). Models
     // bootstrap the datasets table too, because a model's dataset is a row of
     // it; this is for a server whose models are never installed.

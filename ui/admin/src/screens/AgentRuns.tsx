@@ -78,6 +78,12 @@ export function AgentRuns({ agent }: { agent: string }) {
             >
               <T text="Chat" />
             </Button>
+            <Button
+              variant="outline-secondary"
+              href={`#/agents/${encodeURIComponent(agent)}/memory`}
+            >
+              <T text="Memory" />
+            </Button>
             <Button variant="outline-secondary" onClick={() => void load()}>
               <T text="Refresh" />
             </Button>

@@ -1739,7 +1739,10 @@ export type AgentRequest = { id: string; prompt: string; tool_call: string; trai
  * `controls`. */
 export type AgentControl = { name: string; label: string } & (
   | { kind: "select"; options: AgentOption[]; default?: string }
+  | { kind: "toggle"; default: boolean }
   | { kind: "button" }
+  /** Choosing an option sends its value at once as the message. */
+  | { kind: "send"; options: AgentOption[] }
 );
 
 /** A message of a conversation with an agent: what the person said, or

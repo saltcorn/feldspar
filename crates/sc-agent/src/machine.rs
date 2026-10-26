@@ -408,6 +408,13 @@ pub fn trait_state_key(index: usize, trait_name: &str) -> String {
     format!("{index}:{trait_name}")
 }
 
+/// The key what a final answer showed the person is kept under in
+/// [`AgentLoop::display`], beside the tool calls' ids: `answer:` and the
+/// answer's position in the transcript (TODO-agent-skills AS11.2).
+pub fn answer_display_key(message_index: usize) -> String {
+    format!("answer:{message_index}")
+}
+
 impl Default for AgentLoop {
     fn default() -> Self {
         AgentLoop::new(DEFAULT_MAX_STEPS)
@@ -610,6 +617,26 @@ impl AgentLoop {
         Ok(())
     }
 
+    /// End the turn just started with `text` as its answer, without a model
+    /// call: what a trait answers a composer button with (TODO-agent-skills
+    /// AS10.3's `run_js_code` button). The answer is an assistant message, so
+    /// the model reads it as said on a later turn; no step is counted.
+    pub fn answered_without_model(&mut self, text: impl Into<String>) -> Result<()> {
+        if !matches!(self.phase, Phase::Model)
+            || !matches!(self.messages.last(), Some(LlmMessage::User { .. }))
+        {
+            return Err(Error::msg(
+                "a turn can be answered without the model only right after the person spoke",
+            ));
+        }
+        let text = text.into();
+        self.messages.push(LlmMessage::assistant(text.clone()));
+        self.phase = Phase::Done {
+            conclusion: Conclusion::Answered { answer: text },
+        };
+        Ok(())
+    }
+
     /// Feed back what the tools returned.
     ///
     /// Every call must be answered, in the order it was asked: a result missing
@@ -768,6 +795,19 @@ impl AgentLoop {
     /// What each tool call showed the person, by tool call id.
     pub fn display(&self) -> &BTreeMap<String, Vec<DisplayRef>> {
         &self.display
+    }
+
+    /// Attach `refs` to the last message, the final answer, under
+    /// [`answer_display_key`] (AS11.2).
+    pub fn show_with_answer(&mut self, refs: Vec<DisplayRef>) {
+        if refs.is_empty() {
+            return;
+        }
+        let index = self.messages.len().saturating_sub(1);
+        self.display
+            .entry(answer_display_key(index))
+            .or_default()
+            .extend(refs);
     }
 
     /// The composer controls sent with the message that started this turn.
@@ -1010,6 +1050,24 @@ mod tests {
             })
         );
         assert_eq!(run.step(), 1);
+    }
+
+    #[test]
+    fn a_turn_can_be_answered_without_the_model() {
+        let mut run = AgentLoop::new(5);
+        run.push_user("Press").unwrap();
+        run.answered_without_model("Pressed.").unwrap();
+        assert_eq!(
+            run.next_step(),
+            Step::Done(Conclusion::Answered {
+                answer: "Pressed.".to_owned()
+            })
+        );
+        assert_eq!(run.step(), 0, "no model call is counted");
+        assert!(matches!(run.messages().last(), Some(LlmMessage::Assistant { .. })));
+        // Only straight after the person spoke.
+        assert!(run.answered_without_model("again").is_err());
+        run.push_user("Next").unwrap();
     }
 
     #[test]

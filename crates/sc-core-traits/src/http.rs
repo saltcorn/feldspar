@@ -50,6 +50,7 @@
 
 pub mod cache;
 pub mod client;
+pub mod cookies;
 pub mod document;
 pub mod guard;
 pub mod page;
@@ -71,6 +72,7 @@ use crate::table::config_str;
 
 use cache::{Key, PageCache};
 use client::{HttpClient, Request};
+use cookies::CookieJar;
 use document::Document;
 use guard::{HostPolicy, parse_allowed_hosts};
 use page::View;
@@ -90,6 +92,12 @@ pub const CFG_MAX_CHARS: &str = "max_chars";
 pub const CFG_TIMEOUT: &str = "timeout_seconds";
 /// Whether loopback and private-network addresses may be reached.
 pub const CFG_PRIVATE_NETWORK: &str = "private_network";
+/// Whether cookies the servers set are kept and sent back for the rest of the
+/// run (TODO-agent-skills AS9.3).
+pub const CFG_COOKIES: &str = "cookies";
+
+/// Where an instance's cookie jar is kept in its run state.
+const STATE_COOKIES: &str = "cookies";
 
 /// The tool's name when the configuration does not give one.
 pub const DEFAULT_NAME: &str = "web";
@@ -145,6 +153,7 @@ struct Settings {
     may_send: bool,
     max_chars: usize,
     timeout: Duration,
+    cookies: bool,
 }
 
 impl Settings {
@@ -168,6 +177,7 @@ impl Settings {
             policy: HostPolicy::new(allowed, may(config, CFG_PRIVATE_NETWORK)),
             headers,
             may_send: may(config, CFG_MAY_SEND),
+            cookies: may(config, CFG_COOKIES),
             max_chars: bounded(
                 config,
                 CFG_MAX_CHARS,
@@ -275,6 +285,9 @@ impl AgentTrait for Http {
                 .default_value(DEFAULT_TIMEOUT_SECONDS as i64),
             FormField::new(CFG_PRIVATE_NETWORK, BasicType::Bool)
                 .label("May reach loopback and private-network addresses")
+                .default_value(false),
+            FormField::new(CFG_COOKIES, BasicType::Bool)
+                .label("Keep cookies for the conversation, each sent back only to the host that set it")
                 .default_value(false),
         ]
     }
@@ -403,7 +416,9 @@ impl AgentTrait for Http {
             url: url.to_string(),
             raw,
         };
-        let cacheable = method == Method::GET;
+        // A page behind a login differs by the cookies sent, so a jar's
+        // requests skip the cache.
+        let cacheable = method == Method::GET && !settings.cookies;
         let cached = match cacheable && !refresh {
             true => self.cache.get(&key),
             false => None,
@@ -411,9 +426,19 @@ impl AgentTrait for Http {
         let (doc, from_cache) = match cached {
             Some(doc) => (doc, true),
             None => {
-                let response = self
+                let mut jar: Option<CookieJar> = match settings.cookies {
+                    true => Some(
+                        ctx.state()
+                            .get(STATE_COOKIES)
+                            .cloned()
+                            .and_then(|j| serde_json::from_value(j).ok())
+                            .unwrap_or_default(),
+                    ),
+                    false => None,
+                };
+                let sent = self
                     .client
-                    .send(
+                    .send_with_jar(
                         &settings.policy,
                         Request {
                             method: method.clone(),
@@ -422,8 +447,20 @@ impl AgentTrait for Http {
                             body,
                             timeout: settings.timeout,
                         },
+                        jar.as_mut(),
                     )
-                    .await?;
+                    .await;
+                // Kept even when the request then failed: a redirect may have
+                // set what the next request needs.
+                if let Some(jar) = jar {
+                    let state = ctx.state();
+                    if !state.is_object() {
+                        *state = json!({});
+                    }
+                    state[STATE_COOKIES] = serde_json::to_value(&jar)
+                        .map_err(|e| Error::msg(format!("keeping the cookies failed: {e}")))?;
+                }
+                let response = sent?;
                 // Parsing a large page is CPU work; keep it off the runtime's
                 // threads, which are serving everything else.
                 let doc =

@@ -275,6 +275,18 @@ pub async fn embed_texts(
     field: &DataField,
     texts: &[String],
 ) -> Result<Vec<Vec<f32>>> {
+    Ok(embed_texts_metered(cat, table, field, texts).await?.vectors)
+}
+
+/// [`embed_texts`], answering what the call cost as well — for a caller that
+/// charges it, such as an agent's tool (`similar_rows`, TODO-agent-skills
+/// AS7.3), which hands it to the run's ledger.
+pub async fn embed_texts_metered(
+    cat: &Catalog,
+    table: &Table,
+    field: &DataField,
+    texts: &[String],
+) -> Result<sc_llm::Embeddings> {
     let name = &field.base.name;
     let dimensions = match field.base.type_.as_basic() {
         Some(BasicType::Vector(n)) => *n,
@@ -295,8 +307,8 @@ pub async fn embed_texts(
         sc_llm::ModelKind::Embedding,
     )
     .await?;
-    let vectors = sc_llm::embed(&provider, &model_def, texts).await?.vectors;
-    for vector in &vectors {
+    let embeddings = sc_llm::embed(&provider, &model_def, texts).await?;
+    for vector in &embeddings.vectors {
         sc_types::vector::check_length(dimensions, vector.len()).map_err(|_| {
             Error::invalid(format!(
                 "`{model}` makes vectors of {} dimensions, and `{}.{name}` holds vectors of \
@@ -306,7 +318,7 @@ pub async fn embed_texts(
             ))
         })?;
     }
-    Ok(vectors)
+    Ok(embeddings)
 }
 
 /// The fields of `table` computed by an `embed_from` formula.

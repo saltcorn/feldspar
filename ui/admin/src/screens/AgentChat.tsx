@@ -1050,6 +1050,29 @@ function ComposerControlView({
       </button>
     );
   }
+  if (control.kind === "send") {
+    // Acts at once: the chosen option is sent as the message, and the select
+    // shows its prompt again.
+    return (
+      <select
+        className="chat-control-select"
+        aria-label={control.label ?? control.name}
+        title={control.title}
+        disabled={disabled}
+        value=""
+        onChange={(e) => {
+          if (e.target.value !== "") onChange(control.name, e.target.value);
+        }}
+      >
+        <option value="">{control.label ?? "Send…"}</option>
+        {control.options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
   if (control.kind === "toggle") {
     const on = value === true;
     return (

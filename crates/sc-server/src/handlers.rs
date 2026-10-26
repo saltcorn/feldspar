@@ -7256,6 +7256,8 @@ pub fn admin_handlers_with(
     crate::entities::register(&mut reg, catalog.clone(), apps.clone());
     // --- remote MCP servers an agent calls (TODO-agent-skills AS4) -----------
     crate::mcp_servers::register(&mut reg, catalog.clone());
+    // --- what agents remember (TODO-agent-skills AS8.3) ----------------------
+    crate::agent_memory::register(&mut reg, catalog.clone());
 
     reg
 }

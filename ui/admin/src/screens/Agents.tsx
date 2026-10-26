@@ -168,6 +168,13 @@ export function Agents() {
                       <Button
                         size="sm"
                         variant="outline-secondary"
+                        href={`#/agents/${encodeURIComponent(agent.name)}/memory`}
+                      >
+                        <T text="Memory" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline-secondary"
                         href={`#/agents/${encodeURIComponent(agent.id)}/edit`}
                       >
                         <T text="Edit" />

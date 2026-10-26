@@ -9,11 +9,12 @@
 
 use std::time::{Duration, Instant};
 
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, LOCATION};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue, LOCATION, SET_COOKIE};
 use reqwest::{Method, StatusCode, Url};
 use sc_error::{Error, Result, format_causes};
 use serde_json::Value as Json;
 
+use super::cookies::CookieJar;
 use super::guard::{HostPolicy, PublicResolver};
 
 /// The most of a response body that is read. A documentation page is a few
@@ -56,6 +57,18 @@ impl HttpClient {
     /// A non-2xx status is **not** an error here: the caller decides, because a
     /// 404 page is still something a model can be shown a line of.
     pub async fn send(&self, policy: &HostPolicy, request: Request) -> Result<Response> {
+        self.send_with_jar(policy, request, None).await
+    }
+
+    /// [`send`](HttpClient::send), with a cookie jar: every hop carries the
+    /// cookies `jar` holds for its host, and what each hop sets is kept in it
+    /// (TODO-agent-skills AS9.3).
+    pub async fn send_with_jar(
+        &self,
+        policy: &HostPolicy,
+        request: Request,
+        mut jar: Option<&mut CookieJar>,
+    ) -> Result<Response> {
         let client = match policy.private_network() {
             true => &self.open,
             false => &self.public,
@@ -80,10 +93,16 @@ impl HttpClient {
             if remaining.is_zero() {
                 return Err(timed_out(&url));
             }
+            let mut hop_headers = headers.clone();
+            if let Some(cookie) = jar.as_deref().and_then(|j| j.header_for(&url))
+                && let Ok(value) = HeaderValue::from_str(&cookie)
+            {
+                hop_headers.insert(COOKIE, value);
+            }
             let mut builder = client
                 .request(method.clone(), url.clone())
                 .timeout(remaining)
-                .headers(headers.clone());
+                .headers(hop_headers);
             builder = match &body {
                 None => builder,
                 Some(Json::String(text)) => builder.body(text.clone()),
@@ -91,6 +110,13 @@ impl HttpClient {
             };
             let mut response = builder.send().await.map_err(|e| send_failed(&url, &e))?;
             let status = response.status();
+            if let Some(jar) = jar.as_deref_mut() {
+                for set in response.headers().get_all(SET_COOKIE) {
+                    if let Ok(set) = set.to_str() {
+                        jar.store(&url, set);
+                    }
+                }
+            }
 
             if status.is_redirection()
                 && let Some(location) = response.headers().get(LOCATION)

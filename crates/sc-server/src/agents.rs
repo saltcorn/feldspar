@@ -88,6 +88,9 @@ pub async fn install_agents_on(
     bootstrap_runs(catalog)
         .await
         .context("ensuring the runs table exists")?;
+    sc_core_traits::bootstrap_agent_memory(catalog)
+        .await
+        .context("ensuring the agent memory table exists")?;
     let registry = sc_core_traits::builtin_traits()
         .context("registering the built-in traits")?
         .with_host(host);

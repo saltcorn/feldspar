@@ -409,6 +409,15 @@ pub enum ControlKind {
     /// A button that sends a message at once — its label — with this control
     /// set to `true`.
     Button,
+    /// A select of messages: choosing an option sends its value at once as
+    /// the person's message, and the select goes back to empty
+    /// (TODO-agent-skills AS10.5's `prompt_picker` that sends its prompt).
+    /// Nothing need travel in `controls`; when it does, it is one of the
+    /// options.
+    Send {
+        /// The messages, each shown by its label.
+        options: Vec<ChoiceOption>,
+    },
 }
 
 /// Check the controls a message carries against those `declared`: every name
@@ -433,7 +442,7 @@ pub fn check_controls(declared: &[ComposerControl], sent: &BTreeMap<String, Json
             )));
         };
         let fine = match &control.kind {
-            ControlKind::Select { options, .. } => value
+            ControlKind::Select { options, .. } | ControlKind::Send { options } => value
                 .as_str()
                 .is_some_and(|v| options.iter().any(|o| o.value == v)),
             ControlKind::Toggle { .. } => value.is_boolean(),

@@ -499,7 +499,9 @@ async fn start(
     let agents = Agents::load(&ctx.catalog, ctx.services.registry()).await?;
     let definition = agents.require(agent)?;
     may_chat(&ctx.caller, definition)?;
-    let controls = sc_agent::composer_controls(ctx.services.registry(), definition);
+    let controls =
+        sc_agent::composer_controls_for(&ctx.catalog, &ctx.caller, ctx.services.registry(), definition)
+            .await?;
     let Some(id) = run else {
         return Ok((None, controls));
     };
@@ -609,7 +611,7 @@ async fn turn(
                     "there is no question to answer: this conversation has not started",
                 ));
             }
-            sc_agent::check_controls(&runner.controls(), &input.controls)?;
+            sc_agent::check_controls(&runner.controls().await?, &input.controls)?;
             let text = input.text;
             // The first message is the run's description: a history list carries
             // no transcript (that is what `getRun` is for), so without this a
@@ -855,6 +857,11 @@ impl RunObserver for SocketObserver {
 
     fn on_tool_result(&self, outcome: &sc_agent::ToolOutcome) {
         send(&self.tx, tool_result_event(outcome));
+    }
+
+    // What the final answer showed (a spoken answer, AS11.2).
+    fn on_display(&self, parts: &[sc_agent::DisplayRef]) {
+        send(&self.tx, json!({"type": "display", "display": parts}));
     }
 }
 

@@ -46,6 +46,7 @@ import { AgentChat } from "./screens/AgentChat";
 import { AgentForm } from "./screens/AgentForm";
 import { Entities } from "./screens/Entities";
 import { AgentRuns } from "./screens/AgentRuns";
+import { AgentMemory } from "./screens/AgentMemory";
 import { Agents } from "./screens/Agents";
 import { Applications } from "./screens/Applications";
 import { ApplicationForm } from "./screens/ApplicationForm";
@@ -758,6 +759,11 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   const agentRunsMatch = path.match(/^\/agents\/([^/]+)\/runs$/);
   if (agentRunsMatch) {
     return <AgentRuns agent={decodeURIComponent(agentRunsMatch[1])} />;
+  }
+  // What an agent remembers (AS8.3), keyed by its name as the memories are.
+  const agentMemoryMatch = path.match(/^\/agents\/([^/]+)\/memory$/);
+  if (agentMemoryMatch) {
+    return <AgentMemory agent={decodeURIComponent(agentMemoryMatch[1])} />;
   }
   const agentEditMatch = path.match(/^\/agents\/([^/]+)\/edit$/);
   if (agentEditMatch) {

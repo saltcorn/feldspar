@@ -319,7 +319,7 @@ async fn a_composer_control_reaches_on_turn_and_an_unknown_one_is_refused() -> R
         common::model(provider.clone()),
         RunCaller::system(),
     );
-    assert_eq!(runner.controls().len(), 1);
+    assert_eq!(runner.controls().await?.len(), 1);
     let (mut run, _) = runner.start("Hi").await?;
     let fancy: BTreeMap<String, Json> = [("tone".to_owned(), json!("fancy"))].into();
     runner
