@@ -63,6 +63,12 @@ const EVENT_KINDS: {
 }[] = [
   { value: "insert", label: "A row is inserted", table: true, timing: [] },
   { value: "update", label: "A row is updated", table: true, timing: [] },
+  {
+    value: "insert_or_update",
+    label: "A row is inserted or updated",
+    table: true,
+    timing: [],
+  },
   { value: "delete", label: "A row is deleted", table: true, timing: [] },
   {
     value: "none",

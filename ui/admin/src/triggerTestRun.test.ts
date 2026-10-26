@@ -108,8 +108,8 @@ describe("the row summary", () => {
 });
 
 describe("which events carry a row", () => {
-  it("is the three table events and nothing else", () => {
-    for (const when of ["insert", "update", "delete"]) {
+  it("is the table events and nothing else", () => {
+    for (const when of ["insert", "update", "insert_or_update", "delete"]) {
       expect(isTableEvent(when)).toBe(true);
     }
     for (const when of ["none", "login", "daily", "stream", "error"]) {

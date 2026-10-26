@@ -2991,8 +2991,11 @@ pub struct Trigger {
     pub id: TriggerId,                 // UUID: it is stored metadata (§9)
     pub name: String,                  // unique; the key an app, an API path and Run use
     pub description: String,
-    pub when: EventKind,               // insert/update/delete · none · login · startup ·
-                                       // error · often/hourly/daily/weekly · stream
+    pub when: EventKind,               // insert/update/insert_or_update/delete · none ·
+                                       // login · startup · error ·
+                                       // often/hourly/daily/weekly · stream
+                                       // (insert_or_update is trigger-only: it fires
+                                       // for an insert or an update event)
     pub channel: Option<String>,       // the table, for a table event; the stream, for a
                                        // stream event; nothing else has one
     pub only_if: Option<String>,       // a predicate over the affected row (table events),

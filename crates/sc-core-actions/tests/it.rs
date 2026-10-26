@@ -21,6 +21,8 @@ mod code_run_triggers;
 mod fetch_action;
 #[path = "grant_role.rs"]
 mod grant_role;
+#[path = "insert_or_update_trigger.rs"]
+mod insert_or_update_trigger;
 #[path = "row_actions.rs"]
 mod row_actions;
 #[path = "run_js_code.rs"]

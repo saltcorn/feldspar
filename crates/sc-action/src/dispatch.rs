@@ -469,7 +469,7 @@ impl TriggerDispatcher {
         if !trigger.is_enabled() {
             return Err(Error::invalid(format!("trigger `{name}` is disabled")));
         }
-        let mut event = Event::new(trigger.when).payload(payload);
+        let mut event = Event::new(trigger.when.run_as(false)).payload(payload);
         if let Some(channel) = &trigger.channel {
             event = event.on(channel.clone());
         }
@@ -610,7 +610,8 @@ impl TriggerDispatcher {
         if !trigger.is_enabled() {
             return Err(Error::invalid(format!("trigger `{name}` is disabled")));
         }
-        let mut event = Event::new(trigger.when).payload(payload);
+        let with_row = row.is_some() && trigger.when.is_table_event();
+        let mut event = Event::new(trigger.when.run_as(with_row)).payload(payload);
         if let Some(channel) = &trigger.channel {
             event = event.on(channel.clone());
         }
@@ -626,7 +627,7 @@ impl TriggerDispatcher {
             }
             // `old` as well on an update, because a body that names it must not
             // find `undefined` where a real firing would have had a row.
-            if trigger.when == EventKind::Update {
+            if event.kind == EventKind::Update {
                 event = event.old_row(row.clone());
             }
             event = event.row(row);
@@ -1058,5 +1059,18 @@ mod tests {
         assert!(!dispatcher.observes("authors", WriteOp::Insert));
         assert!(!dispatcher.observes("books", WriteOp::Update));
         assert!(!dispatcher.observes("books", WriteOp::Delete));
+    }
+
+    #[test]
+    fn an_insert_or_update_trigger_observes_both_writes_but_not_a_delete() {
+        let dispatcher = TriggerDispatcher::new(Arc::new(ActionRegistry::new()));
+        let geocode = Trigger::new("geocode", EventKind::InsertOrUpdate, "insert_row").on("places");
+        dispatcher
+            .set_triggers(Triggers::of(vec![geocode]))
+            .unwrap();
+        assert!(dispatcher.observes("places", WriteOp::Insert));
+        assert!(dispatcher.observes("places", WriteOp::Update));
+        assert!(!dispatcher.observes("places", WriteOp::Delete));
+        assert!(!dispatcher.observes("books", WriteOp::Insert));
     }
 }

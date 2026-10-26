@@ -171,7 +171,7 @@ type TriggerItem = ListTriggersResponse[number];
 
 /** The events that happen *to a table's rows* — the ones whose channel is a
  * table name, and so the ones this page can show as "on this table" (§10.2). */
-const TABLE_EVENTS = ["insert", "update", "delete"];
+const TABLE_EVENTS = ["insert", "update", "insert_or_update", "delete"];
 
 /**
  * The triggers that fire on `table`'s rows, out of every trigger there is.

@@ -2,6 +2,32 @@
 
 Changes in reverse chronological order.
 
+## Triggers: an "inserted or updated" event
+
+A trigger can now listen for `insert_or_update` ("A row is inserted or updated" in the trigger
+form): it fires whenever a row of its table changes, insert or update, but not on a delete. This
+is for a value derived from the row's other fields, e.g. geocoding an `address` into `lat` and
+`lng`, which has to be recomputed on every change.
+
+- `EventKind::InsertOrUpdate` only exists on triggers. Writes still raise `insert` or `update`
+  events, and `EventKind::listens_for` matches the new kind against both. The action therefore
+  still sees which write happened (`fetch`'s `event`, a module action's `mode`, a workflow's
+  event kind), and `old` is the pre-update row on an update and `null` on an insert, as before.
+- If the action writes back to the same row, that write is an update and would fire the
+  trigger again. Stop it with the trigger's `only_if`, e.g. `address !== old.address`. The
+  cascade depth limit still applies if the guard is left out.
+- When run directly (the Run button / `run_trigger`), the trigger gets an `update` event when it
+  is run against a row (with `old` set to that row) and an `insert` event when it is not
+  (`EventKind::run_as`).
+- Treated as a table event everywhere: validation requires a table, the trigger form shows the
+  table picker, the table page and the entity diagram link it to its table, and the MCP trigger
+  tools list it and describe the `only_if` guard.
+- Tests: `event::tests::insert_or_update_listens_for_both_writes_and_nothing_else` and
+  `dispatch::tests::an_insert_or_update_trigger_observes_both_writes_but_not_a_delete` (sc-action),
+  and `insert_or_update_trigger.rs` (sc-core-actions), which runs a geocoding-style
+  `update_rows` trigger against Postgres: it runs once on insert, once when the address changes,
+  not when another field changes, and not on delete. The admin UI tests cover the new kind too.
+
 ## Session lifetime: a sign-in reads the stored setting
 
 Report: Settings → Authentication → Session lifetime set to 8760 hours, yet users still had to

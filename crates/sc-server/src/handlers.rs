@@ -8786,12 +8786,13 @@ pub(crate) fn backup_file_meta_from_json(value: &Json) -> Result<(String, FileMe
 
 /// The table a trigger fires on, or `None` when it is not a table event.
 ///
-/// The channel *is* the table for `insert`/`update`/`delete` and is something
+/// The channel *is* the table for `insert`/`update`/`delete` (and
+/// `insert_or_update`) and is something
 /// else entirely for a channel-based or scheduled trigger, so the distinction is
 /// made once, here, rather than at each place that needs to ask.
 pub(crate) fn trigger_table(trigger: &Trigger) -> Option<&str> {
     match trigger.when {
-        EventKind::Insert | EventKind::Update | EventKind::Delete => trigger.channel.as_deref(),
+        when if when.is_table_event() => trigger.channel.as_deref(),
         _ => None,
     }
 }

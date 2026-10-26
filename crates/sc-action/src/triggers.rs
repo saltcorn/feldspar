@@ -106,7 +106,7 @@ impl Triggers {
     ) -> impl Iterator<Item = &Trigger> {
         self.triggers.iter().filter(move |t| {
             t.is_enabled()
-                && t.when == kind
+                && t.when.listens_for(kind)
                 // A table event must agree on the table and a stream event on
                 // the stream; nothing else has a channel, and validation has
                 // already ensured neither side invents one. `has_channel`

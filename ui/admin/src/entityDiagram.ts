@@ -77,7 +77,7 @@ export const HEAD_IN = "__in";
 export const HEAD_OUT = "__out";
 
 /** The events whose channel is a table. */
-const TABLE_EVENTS = ["insert", "update", "delete"];
+const TABLE_EVENTS = ["insert", "update", "insert_or_update", "delete"];
 
 /** A box's height: its heading and a row per field, or the one detail row. */
 export function nodeHeight(rows: number): number {
