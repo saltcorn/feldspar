@@ -314,6 +314,7 @@ pub async fn restore_backup(
     }
     if selection.llm_providers {
         restore_llm_providers(catalog, &archive, &mut report).await;
+        restore_mcp_servers(catalog, &archive, &mut report).await;
     }
     // An agent may run a trigger and a trigger may run an agent, so neither
     // order serves both: the agents are tried first, and one refused (a
@@ -2405,6 +2406,64 @@ async fn restore_llm_providers(catalog: &Catalog, archive: &Archive, report: &mu
             }
         } else {
             report.did(format!("{what}: {}", counted(added, "model", "models")));
+        }
+    }
+}
+
+/// Restore the MCP servers (TODO-agent-skills AS4.5), headers included. One
+/// already defined here under the same name is kept as it is, as a provider is.
+async fn restore_mcp_servers(catalog: &Catalog, archive: &Archive, report: &mut RestoreReport) {
+    if !archive.contains("mcp-servers.json") {
+        return;
+    }
+    let document = match archive.json("mcp-servers.json") {
+        Ok(document) => document,
+        Err(e) => {
+            report.skipped(format!("MCP servers: {}", e.causes()));
+            return;
+        }
+    };
+    if let Err(e) = sc_mcp::bootstrap_mcp_servers(catalog).await {
+        report.skipped(format!("MCP servers: {}", e.causes()));
+        return;
+    }
+    for value in array_list(&document) {
+        let name = value
+            .get("name")
+            .and_then(Json::as_str)
+            .unwrap_or("an MCP server")
+            .to_owned();
+        let what = format!("MCP server `{name}`");
+        let restored = async {
+            let backed_up = value
+                .get("id")
+                .and_then(Json::as_str)
+                .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+                .map(sc_mcp::McpServerDefId);
+            let mut def = crate::mcp_servers::server_from_body(
+                backed_up.unwrap_or_default(),
+                &value,
+                &std::collections::BTreeMap::new(),
+            )?;
+            if sc_mcp::load_mcp_server_by_name(catalog, &def.name)
+                .await?
+                .is_some()
+            {
+                return Ok(false);
+            }
+            if sc_mcp::load_mcp_server(catalog, def.id).await?.is_some() {
+                def.id = sc_mcp::McpServerDefId::new();
+            }
+            sc_mcp::save_mcp_server(catalog, &def).await?;
+            Ok::<_, sc_error::Error>(true)
+        }
+        .await;
+        match restored {
+            Ok(true) => report.did(what),
+            Ok(false) => report.skipped(format!(
+                "{what} is already defined here; its settings and headers were kept"
+            )),
+            Err(e) => report.outcome(&what, Err(e)),
         }
     }
 }

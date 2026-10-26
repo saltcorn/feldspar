@@ -39,6 +39,7 @@ sc-files.workspace = true
 # at connect time (§9): an overlay may be created lazily, but a table whose rows
 # *are* the definitions must exist before anything can list them.
 sc-llm.workspace = true
+sc-mcp.workspace = true
 # `_fd_agents` and `_fd_runs`, bootstrapped beside the other metadata tables.
 sc-agent.workspace = true
 # The trigger dispatcher `serve` starts its schedulers with, named in the

@@ -602,16 +602,41 @@ impl<'a> Runner<'a> {
         usage: sc_llm::Usage,
         cost: Option<f64>,
     ) -> Result<()> {
+        self.debit(run, key, model.provider.model(), usage, cost, |meter| {
+            meter.charge(&usage, &model.prices)
+        })
+        .await
+    }
+
+    /// Charge one non-chat call a tool made (TODO-agent-skills AS3.5) to the
+    /// payer, under `key`, at the call's own cost.
+    async fn charge_call(&self, run: RunId, key: String, call: &sc_llm::ModelCall) -> Result<()> {
+        self.debit(run, key, &call.model, call.usage, call.cost, |meter| {
+            meter.charge_call(call)
+        })
+        .await
+    }
+
+    /// Debit what `amount` works out for the payer's meter, if the run has a
+    /// payer. A call that cannot be priced is refused, naming the model.
+    async fn debit(
+        &self,
+        run: RunId,
+        key: String,
+        model: &str,
+        usage: sc_llm::Usage,
+        cost: Option<f64>,
+        amount: impl FnOnce(&crate::meter::Meter) -> Option<rust_decimal::Decimal>,
+    ) -> Result<()> {
         let Some((user, meter)) = self.payer()? else {
             return Ok(());
         };
-        let amount = meter.charge(&usage, &model.prices).ok_or_else(|| {
+        let amount = amount(&meter).ok_or_else(|| {
             Error::config(format!(
-                "agent `{}`: the model `{}` has no input and output prices, so its call \
-                 cannot be charged in LLM credits per dollar; set its prices, or charge \
-                 per 1,000 tokens as well",
+                "agent `{}`: the model `{model}` has no prices, so its call cannot be \
+                 charged in LLM credits per dollar; set its prices, or charge per 1,000 \
+                 tokens as well",
                 self.agent.name,
-                model.provider.model()
             ))
         })?;
         let debited = sc_auth::debit_credits(
@@ -622,7 +647,7 @@ impl<'a> Runner<'a> {
                 key,
                 run: Some(run.0),
                 agent: Some(self.agent.name.clone()),
-                model: Some(model.provider.model().to_owned()),
+                model: Some(model.to_owned()),
                 input_tokens: Some(usage.input_tokens),
                 output_tokens: Some(usage.output_tokens),
                 cost: cost
@@ -914,6 +939,7 @@ impl<'a> Runner<'a> {
             elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
             signals: Vec::new(),
             compacted: true,
+            kind: sc_llm::ModelKind::Chat,
         });
         self.charge(
             run,
@@ -1568,6 +1594,7 @@ impl Delegator for RunDelegation<'_, '_> {
             elapsed_ms: u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX),
             signals: Vec::new(),
             compacted: false,
+            kind: sc_llm::ModelKind::Chat,
         });
         // A tool may ask more than once in a step, so each ask is its own key.
         let key = format!(
@@ -1580,6 +1607,28 @@ impl Delegator for RunDelegation<'_, '_> {
             .charge(self.parent_run, key, &model, answer.usage, cost)
             .await?;
         Ok(answer.content.trim().to_owned())
+    }
+
+    async fn record_call(&self, call: &sc_llm::ModelCall) -> Result<()> {
+        lock(self.spent).asides.push(LedgerStep {
+            step: self.step,
+            role: ModelRole::Executor,
+            model: call.model.clone(),
+            usage: call.usage,
+            cost: call.cost,
+            elapsed_ms: call.elapsed_ms,
+            signals: Vec::new(),
+            compacted: false,
+            kind: call.kind,
+        });
+        let key = format!(
+            "{}:{}:{}:{}",
+            self.parent_run,
+            self.step,
+            call.kind,
+            uuid::Uuid::new_v4()
+        );
+        self.runner.charge_call(self.parent_run, key, call).await
     }
 
     async fn capabilities(&self, role: ModelRole) -> Result<sc_llm::ModelCapabilities> {

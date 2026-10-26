@@ -100,16 +100,27 @@ export type UpdateLlmProviderResponse = { id: string; name: string; description:
 export type DeleteLlmProviderResponse = { deleted: boolean };
 export type SetDefaultLlmProviderResponse = { id: string; name: string; description: string; backend: string; config: unknown; from_config_file: boolean; is_default: boolean };
 export type ListLlmProviderBackendsResponse = Array<{ name: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }> }>;
-export type ListLlmModelsResponse = Array<{ id: string; provider_id: string; name: string; description: string; is_default: boolean; config: unknown; capabilities: unknown; prices: unknown }>;
-export type CreateLlmModelRequest = { name: string; description: string; is_default: boolean; config: unknown };
-export type CreateLlmModelResponse = { id: string; provider_id: string; name: string; description: string; is_default: boolean; config: unknown; capabilities: unknown; prices: unknown };
-export type UpdateLlmModelRequest = { name: string; description: string; is_default: boolean; config: unknown };
-export type UpdateLlmModelResponse = { id: string; provider_id: string; name: string; description: string; is_default: boolean; config: unknown; capabilities: unknown; prices: unknown };
+export type ListLlmModelsResponse = Array<{ id: string; provider_id: string; name: string; description: string; kind?: string | null; is_default: boolean; config: unknown; capabilities: unknown; prices: unknown }>;
+export type CreateLlmModelRequest = { name: string; description: string; kind?: string | null; is_default: boolean; config: unknown };
+export type CreateLlmModelResponse = { id: string; provider_id: string; name: string; description: string; kind?: string | null; is_default: boolean; config: unknown; capabilities: unknown; prices: unknown };
+export type UpdateLlmModelRequest = { name: string; description: string; kind?: string | null; is_default: boolean; config: unknown };
+export type UpdateLlmModelResponse = { id: string; provider_id: string; name: string; description: string; kind?: string | null; is_default: boolean; config: unknown; capabilities: unknown; prices: unknown };
 export type DeleteLlmModelResponse = { deleted: boolean };
+export type ListLlmModelSettingsQuery = { kind?: string };
 export type ListLlmModelSettingsResponse = Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>;
 export type FetchLlmModelsResponse = { ok: boolean; message: string; names: Array<string> };
-export type TestLlmModelRequest = { provider_id?: string | null; backend: string; config: unknown; name: string; model_config?: unknown | null };
+export type TestLlmModelRequest = { provider_id?: string | null; backend: string; config: unknown; name: string; model_config?: unknown | null; kind?: string | null };
 export type TestLlmModelResponse = { ok: boolean; message: string; model: string; capabilities: unknown; prices: unknown };
+export type ListMcpServersResponse = Array<{ id: string; name: string; description: string; url: string; transport?: string | null; headers: Array<{ name: string; value: string }>; allow_private_network: boolean; timeout_secs: number }>;
+export type CreateMcpServerRequest = { name: string; description: string; url: string; transport?: string | null; headers: Array<{ name: string; value: string }>; allow_private_network: boolean; timeout_secs: number };
+export type CreateMcpServerResponse = { id: string; name: string; description: string; url: string; transport?: string | null; headers: Array<{ name: string; value: string }>; allow_private_network: boolean; timeout_secs: number };
+export type UpdateMcpServerRequest = { name: string; description: string; url: string; transport?: string | null; headers: Array<{ name: string; value: string }>; allow_private_network: boolean; timeout_secs: number };
+export type UpdateMcpServerResponse = { id: string; name: string; description: string; url: string; transport?: string | null; headers: Array<{ name: string; value: string }>; allow_private_network: boolean; timeout_secs: number };
+export type DeleteMcpServerResponse = { deleted: boolean };
+export type TestMcpServerRequest = { id?: string | null; name: string; description: string; url: string; transport?: string | null; headers: Array<{ name: string; value: string }>; allow_private_network: boolean; timeout_secs: number };
+export type TestMcpServerResponse = { ok: boolean; message: string; server?: { name: string; version: string; protocol_version: string; instructions?: string | null; tools_list_changed: boolean } | null; tools: Array<{ name: string; title?: string | null; description: string; input_schema: unknown; read_only: boolean }> };
+export type ListMcpServerToolsQuery = { refresh?: boolean };
+export type ListMcpServerToolsResponse = { ok: boolean; message: string; server?: { name: string; version: string; protocol_version: string; instructions?: string | null; tools_list_changed: boolean } | null; tools: Array<{ name: string; title?: string | null; description: string; input_schema: unknown; read_only: boolean }> };
 export type ListModulesResponse = { modules: Array<{ id: string; name: string; language: string; source: string; location: string; version?: string | null; configuration: unknown; permissions: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; actions: Array<{ name: string; description: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }> }>; functions: Array<{ name: string; description: string; is_async: boolean; arguments: Array<{ name: string; type?: string | null }> }>; table_providers: Array<string>; tables: Array<string>; reads: Array<string>; services: Array<{ name: string; description: string; state: string; restarts: number; last_error?: string | null }>; webhooks: Array<{ name: string; description: string; path: string }>; model_providers: Array<string>; stream_providers: Array<string>; view_patterns: Array<string>; csp_sources: Array<{ key: string; name: string; description: string; sources: unknown }>; unsupported: Array<{ key: string; count?: number | null }>; issues: Array<string>; loaded: boolean; api_version?: number | null }>; root: string; npm: boolean; npm_too_old?: { version: string; minimum: string } | null; node: boolean; python: boolean; pip: boolean; python_dir?: string | null; bundled: Array<{ id: string; name: string; language: string; title: string; description: string; supplies: Array<string>; installs: Array<string>; tables: Array<string>; services: Array<string>; webhooks: Array<{ name: string; path: string }>; permissions: unknown; installed: boolean }> };
 export type InstallModuleRequest = { source: string; location: string; language?: string | null };
 export type InstallModuleResponse = { id: string; name: string; language: string; source: string; location: string; version?: string | null; configuration: unknown; permissions: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; actions: Array<{ name: string; description: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }> }>; functions: Array<{ name: string; description: string; is_async: boolean; arguments: Array<{ name: string; type?: string | null }> }>; table_providers: Array<string>; tables: Array<string>; reads: Array<string>; services: Array<{ name: string; description: string; state: string; restarts: number; last_error?: string | null }>; webhooks: Array<{ name: string; description: string; path: string }>; model_providers: Array<string>; stream_providers: Array<string>; view_patterns: Array<string>; csp_sources: Array<{ key: string; name: string; description: string; sources: unknown }>; unsupported: Array<{ key: string; count?: number | null }>; issues: Array<string>; loaded: boolean; api_version?: number | null };
@@ -497,9 +508,15 @@ export interface ApiClient {
   createLlmModel(id: string, body: CreateLlmModelRequest): Promise<CreateLlmModelResponse>;
   updateLlmModel(id: string, body: UpdateLlmModelRequest): Promise<UpdateLlmModelResponse>;
   deleteLlmModel(id: string): Promise<DeleteLlmModelResponse>;
-  listLlmModelSettings(backend: string): Promise<ListLlmModelSettingsResponse>;
+  listLlmModelSettings(backend: string, query?: ListLlmModelSettingsQuery): Promise<ListLlmModelSettingsResponse>;
   fetchLlmModels(id: string): Promise<FetchLlmModelsResponse>;
   testLlmModel(body: TestLlmModelRequest): Promise<TestLlmModelResponse>;
+  listMcpServers(): Promise<ListMcpServersResponse>;
+  createMcpServer(body: CreateMcpServerRequest): Promise<CreateMcpServerResponse>;
+  updateMcpServer(id: string, body: UpdateMcpServerRequest): Promise<UpdateMcpServerResponse>;
+  deleteMcpServer(id: string): Promise<DeleteMcpServerResponse>;
+  testMcpServer(body: TestMcpServerRequest): Promise<TestMcpServerResponse>;
+  listMcpServerTools(id: string, query?: ListMcpServerToolsQuery): Promise<ListMcpServerToolsResponse>;
   listModules(): Promise<ListModulesResponse>;
   installModule(body: InstallModuleRequest): Promise<InstallModuleResponse>;
   updateModule(id: string, body: UpdateModuleRequest): Promise<UpdateModuleResponse>;
@@ -1320,8 +1337,11 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (!res.ok) throw await clientError("deleteLlmModel", res);
       return (await res.json()) as DeleteLlmModelResponse;
     },
-    async listLlmModelSettings(backend) {
-      const res = await doFetch(`${baseUrl}/api/llm-provider-backends/${encodeURIComponent(backend)}/model-settings`, {
+    async listLlmModelSettings(backend, query) {
+      const search = new URLSearchParams();
+      if (query?.kind !== undefined && query?.kind !== null) search.append("kind", String(query?.kind));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/llm-provider-backends/${encodeURIComponent(backend)}/model-settings${qs ? `?${qs}` : ""}`, {
         method: "GET",
         headers: requestHeaders("GET", false),
       });
@@ -1344,6 +1364,60 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("testLlmModel", res);
       return (await res.json()) as TestLlmModelResponse;
+    },
+    async listMcpServers() {
+      const res = await doFetch(`${baseUrl}/api/mcp-servers`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listMcpServers", res);
+      return (await res.json()) as ListMcpServersResponse;
+    },
+    async createMcpServer(body) {
+      const res = await doFetch(`${baseUrl}/api/mcp-servers`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createMcpServer", res);
+      return (await res.json()) as CreateMcpServerResponse;
+    },
+    async updateMcpServer(id, body) {
+      const res = await doFetch(`${baseUrl}/api/mcp-servers/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateMcpServer", res);
+      return (await res.json()) as UpdateMcpServerResponse;
+    },
+    async deleteMcpServer(id) {
+      const res = await doFetch(`${baseUrl}/api/mcp-servers/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteMcpServer", res);
+      return (await res.json()) as DeleteMcpServerResponse;
+    },
+    async testMcpServer(body) {
+      const res = await doFetch(`${baseUrl}/api/mcp-server-test`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("testMcpServer", res);
+      return (await res.json()) as TestMcpServerResponse;
+    },
+    async listMcpServerTools(id, query) {
+      const search = new URLSearchParams();
+      if (query?.refresh !== undefined && query?.refresh !== null) search.append("refresh", String(query?.refresh));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/mcp-servers/${encodeURIComponent(id)}/tools${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listMcpServerTools", res);
+      return (await res.json()) as ListMcpServerToolsResponse;
     },
     async listModules() {
       const res = await doFetch(`${baseUrl}/api/modules`, {

@@ -45,6 +45,7 @@ mod live;
 mod logging;
 mod lsp;
 mod mcp;
+mod mcp_servers;
 mod models;
 mod modules;
 mod oauth;

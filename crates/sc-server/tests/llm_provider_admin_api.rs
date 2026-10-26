@@ -1123,3 +1123,135 @@ async fn the_configuration_files_provider_is_usable_but_not_editable() -> sc_err
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn models_have_a_kind_with_its_own_settings_default_and_test() -> sc_error::Result<()> {
+    // TODO-agent-skills AS3.1.
+    let (mut client, _catalog, _db) = setup().await?;
+    let base = stub_provider(
+        200,
+        "application/json",
+        r#"{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}],"usage":{"prompt_tokens":1}}"#
+            .to_owned(),
+    )
+    .await;
+    let (status, created) = client
+        .send(
+            "POST",
+            "/api/llm-providers",
+            Some(
+                json!({ "name": "local", "description": "", "backend": "openai_chat",
+                         "config": { "base_url": base } }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let provider = created["id"].as_str().unwrap().to_owned();
+
+    // Each kind declares its own settings; Anthropic serves chat only.
+    let (status, spec) = client
+        .send(
+            "GET",
+            "/api/llm-provider-backends/openai_chat/model-settings?kind=embedding",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{spec}");
+    let names: Vec<&str> = spec
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["name"].as_str())
+        .collect();
+    assert_eq!(names, ["price_input"]);
+    let (status, refused) = client
+        .send(
+            "GET",
+            "/api/llm-provider-backends/anthropic/model-settings?kind=image",
+            None,
+        )
+        .await;
+    assert!(status.is_client_error(), "{status} {refused}");
+
+    // A chat default and an embedding default live side by side.
+    let chat = create_model(
+        &mut client,
+        &provider,
+        json!({ "name": "llama3.2", "description": "", "is_default": true, "config": {} }),
+    )
+    .await;
+    assert_eq!(chat["kind"], json!("chat"));
+    let embedding = create_model(
+        &mut client,
+        &provider,
+        json!({ "name": "nomic-embed-text", "description": "", "kind": "embedding",
+                "is_default": true, "config": { "price_input": 0.01 } }),
+    )
+    .await;
+    assert_eq!(embedding["kind"], json!("embedding"));
+    assert_eq!(embedding["capabilities"], Value::Null, "{embedding}");
+    let (_, listed) = client
+        .send(
+            "GET",
+            &format!("/api/llm-providers/{provider}/models"),
+            None,
+        )
+        .await;
+    let defaults = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["is_default"] == json!(true))
+        .count();
+    assert_eq!(defaults, 2, "{listed}");
+
+    // An edit that leaves the kind out keeps it; one that changes it is refused.
+    let id = embedding["id"].as_str().unwrap();
+    let (status, kept) = client
+        .send(
+            "PUT",
+            &format!("/api/llm-models/{id}"),
+            Some(
+                json!({ "name": "nomic-embed-text", "description": "Local embeddings",
+                         "is_default": true, "config": { "price_input": 0.01 } }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["kind"], json!("embedding"));
+    let (status, refused) = client
+        .send(
+            "PUT",
+            &format!("/api/llm-models/{id}"),
+            Some(
+                json!({ "name": "nomic-embed-text", "description": "", "kind": "chat",
+                         "is_default": true, "config": {} }),
+            ),
+        )
+        .await;
+    assert!(status.is_client_error(), "{status} {refused}");
+    assert!(
+        refused.to_string().contains("cannot become a chat model"),
+        "{refused}"
+    );
+
+    // *Test* embeds a word and says what came back.
+    let (status, tested) = client
+        .send(
+            "POST",
+            "/api/llm-model-test",
+            Some(json!({
+                "provider_id": provider,
+                "backend": "openai_chat",
+                "config": { "base_url": base },
+                "name": "nomic-embed-text",
+                "kind": "embedding",
+                "model_config": { "price_input": 0.01 },
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{tested}");
+    assert_eq!(tested["ok"], json!(true), "{tested}");
+    assert_eq!(tested["message"], json!("a vector of 3 dimensions"));
+    Ok(())
+}

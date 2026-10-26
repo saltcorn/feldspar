@@ -20,21 +20,85 @@ export type Capabilities = {
   vision: boolean;
 };
 
-/** A model's prices per million tokens. `null` is unknown, never zero. */
+/** A model's prices per million tokens (or per image, or per million
+ * characters). `null` or absent is unknown, never zero. */
 export type Prices = {
   input: number | null;
   cached_input: number | null;
   cache_write: number | null;
   output: number | null;
+  per_image?: number | null;
+  per_million_characters?: number | null;
 };
+
+/** What a model is called for (TODO-agent-skills AS3.1). */
+export type ModelKind = "chat" | "embedding" | "image" | "speech";
+
+/** Every kind, in the order the Models card lists them. */
+export const MODEL_KINDS: ModelKind[] = ["chat", "embedding", "image", "speech"];
+
+/** The heading a kind's models are listed under. */
+export const KIND_HEADINGS: Record<ModelKind, string> = {
+  chat: "Chat models",
+  embedding: "Embedding models",
+  image: "Image models",
+  speech: "Speech models",
+};
+
+/** A model's kind; a row from before kinds is chat. */
+export function kindOf(m: Pick<ModelItem, "kind">): ModelKind {
+  const kind = m.kind ?? "chat";
+  return (MODEL_KINDS as string[]).includes(kind) ? (kind as ModelKind) : "chat";
+}
+
+/** The kind a model's name suggests, for a name *Fetch models* offers:
+ * "text-embedding-3-small" is an embedding model, "tts-1" a speech one,
+ * "dall-e-3" and "gpt-image-1" image ones. Anything else is chat. */
+export function guessKind(name: string): ModelKind {
+  const n = name.toLowerCase();
+  if (n.includes("embed")) return "embedding";
+  if (n.includes("tts") || n.includes("speech")) return "speech";
+  if (n.includes("dall-e") || n.includes("image")) return "image";
+  return "chat";
+}
+
+/** The kinds a backend serves: Anthropic serves chat only. */
+export function kindsServedBy(backend: string): ModelKind[] {
+  return backend === "anthropic" ? ["chat"] : MODEL_KINDS;
+}
+
+/** The models grouped by kind, in [`MODEL_KINDS`] order, leaving out kinds
+ * with no models. */
+export function groupByKind(models: ModelItem[]): Array<{ kind: ModelKind; models: ModelItem[] }> {
+  return MODEL_KINDS.map((kind) => ({
+    kind,
+    models: models.filter((m) => kindOf(m) === kind),
+  })).filter((g) => g.models.length > 0);
+}
+
+/** A model's prices as its row shows them, by kind. */
+export function priceSummary(kind: ModelKind, prices: Prices): string {
+  switch (kind) {
+    case "embedding":
+      return `${formatPrice(prices.input)} input`;
+    case "image":
+      return prices.per_image !== null && prices.per_image !== undefined
+        ? `${prices.per_image} per image`
+        : `${formatPrice(prices.input)} / ${formatPrice(prices.output)}`;
+    case "speech":
+      return `${formatPrice(prices.per_million_characters)} characters`;
+    default:
+      return `${formatPrice(prices.input)} / ${formatPrice(prices.output)}`;
+  }
+}
 
 /** One option of the agent form's model select. `value` is what is saved:
  * the empty string is "the provider's default". */
 export type ModelOption = { value: string; label: string };
 
 /**
- * The agent form's model options for the chosen provider's `models`, given the
- * agent's current `model`.
+ * The agent form's model options for the chosen provider's chat `models`,
+ * given the agent's current `model`.
  *
  * - The first option is the provider's default, naming which model that is,
  *   or saying there is none — an agent saved that way would not validate, and
@@ -45,7 +109,8 @@ export type ModelOption = { value: string; label: string };
  *   the agent.
  */
 export function modelOptions(models: ModelItem[], current: string): ModelOption[] {
-  const byName = [...models].sort((a, b) => a.name.localeCompare(b.name));
+  // An agent converses: only a chat model can be its model.
+  const byName = models.filter((m) => kindOf(m) === "chat").sort((a, b) => a.name.localeCompare(b.name));
   const fallback = byName.find((m) => m.is_default);
   const options: ModelOption[] = [
     {
@@ -54,7 +119,10 @@ export function modelOptions(models: ModelItem[], current: string): ModelOption[
     },
   ];
   for (const m of byName) {
-    options.push({ value: m.name, label: m.is_default ? `${m.name} (default)` : m.name });
+    options.push({
+      value: m.name,
+      label: m.is_default ? `${m.name} (default)` : m.name,
+    });
   }
   if (current !== "" && byName.every((m) => m.name !== current)) {
     options.push({ value: current, label: `${current} (missing)` });

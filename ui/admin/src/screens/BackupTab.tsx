@@ -569,10 +569,10 @@ function IncludeFields({
             onChange={(e) => onChange({ ...selection, llm_providers: e.target.checked })}
             label={
               <>
-                <span className="fw-semibold"><T text="LLM providers" /></span>
+                <span className="fw-semibold"><T text="LLM providers and MCP servers" /></span>
                 <div className="text-muted small">
                   {t(
-                    "{count} LLM providers, with their models and API keys. An agent is only restored if the provider it uses is.",
+                    "{count} LLM providers and MCP servers, with their models, API keys and headers. An agent is only restored if the provider it uses is.",
                     { count: contents.llm_providers },
                   )}
                 </div>

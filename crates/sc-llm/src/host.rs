@@ -34,7 +34,9 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::def::{LlmProviderDef, LlmProviderDefId, validate_provider_config};
-use crate::model::{LlmModelDef, LlmModelDefId, normalise_model_config, validate_model_config};
+use crate::model::{
+    LlmModelDef, LlmModelDefId, ModelKind, normalise_model_config, validate_model_config,
+};
 
 /// The namespace the host provider's ids are derived in.
 const ID_NAMESPACE: Uuid = Uuid::from_u128(0x0b5f_31a7_8c2e_4d61_9a0e_6f4c_2d8b_e173);
@@ -92,11 +94,26 @@ impl HostLlmProvider {
             model.id = host_model_id(&def.name, &model.name);
             model.provider_id = def.id;
             model.is_default = model.name == default_model;
+            if model.is_default && model.kind != ModelKind::Chat {
+                return Err(Error::config(format!(
+                    "the `{}` LLM provider's default model `{}` is {} model; the default \
+                     model is the chat model agents call",
+                    def.name, model.name, model.kind
+                )));
+            }
             model.config = normalise_model_config(&model.config);
             validate_model_config(&def.backend, &model)?;
             checked.push(model);
         }
         checked.sort_by(|a, b| a.name.cmp(&b.name));
+        // Each other kind's default is its first model by name.
+        for kind in ModelKind::ALL {
+            if kind != ModelKind::Chat
+                && let Some(first) = checked.iter_mut().find(|m| m.kind == kind)
+            {
+                first.is_default = true;
+            }
+        }
         Ok(HostLlmProvider {
             def,
             models: checked,

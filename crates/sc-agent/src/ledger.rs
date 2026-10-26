@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use sc_llm::Usage;
+use sc_llm::{ModelKind, Usage};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::ModelRole;
@@ -41,6 +41,14 @@ pub struct LedgerStep {
     /// summary call, always set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compacted: bool,
+    /// What kind of model call it was: a chat step, or an embedding, image or
+    /// speech call a tool made (TODO-agent-skills AS3.5), recorded as an aside.
+    #[serde(default, skip_serializing_if = "is_chat")]
+    pub kind: ModelKind,
+}
+
+fn is_chat(kind: &ModelKind) -> bool {
+    *kind == ModelKind::Chat
 }
 
 /// One role's totals.
@@ -257,6 +265,7 @@ mod tests {
             elapsed_ms: 100,
             signals: Vec::new(),
             compacted: false,
+            kind: sc_llm::ModelKind::Chat,
         }
     }
 

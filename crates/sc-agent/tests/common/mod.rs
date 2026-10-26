@@ -244,6 +244,7 @@ impl AgentTrait for Tally {
                 object.clone(),
             ),
             ToolSpec::new("aside", "Use the run's own machinery", object.clone()),
+            ToolSpec::new("media", "Make an image of your own", object.clone()),
         ];
         if cx.mode == sc_agent::RunMode::Plan {
             tools.push(ToolSpec::new("note_plan", "Write down the plan", object));
@@ -283,6 +284,31 @@ impl AgentTrait for Tally {
                     .await?;
                 let caps = delegate.capabilities(sc_agent::ModelRole::Strong).await?;
                 Ok(json!({"saved": saved, "answer": answer, "vision": caps.vision}))
+            }
+            // A non-chat call made by the tool (TODO-agent-skills AS3.5),
+            // recorded as `args` say it went.
+            "media" => {
+                let delegate = ctx
+                    .delegate
+                    .ok_or_else(|| Error::config("this context cannot delegate"))?;
+                delegate
+                    .record_call(&sc_llm::ModelCall {
+                        kind: sc_llm::ModelKind::Image,
+                        provider: "main".into(),
+                        model: "gpt-image-1".into(),
+                        usage: sc_llm::Usage {
+                            input_tokens: args
+                                .get("input_tokens")
+                                .and_then(Json::as_u64)
+                                .unwrap_or(0),
+                            ..sc_llm::Usage::default()
+                        },
+                        units: 1,
+                        cost: args.get("cost").and_then(Json::as_f64),
+                        elapsed_ms: 5,
+                    })
+                    .await?;
+                Ok(json!("drawn"))
             }
             "nap" => {
                 let ms = args.get("ms").and_then(Json::as_u64).unwrap_or(0);

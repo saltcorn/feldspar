@@ -103,6 +103,9 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_llm::bootstrap_llm_providers(&catalog)
         .await
         .context("ensuring the LLM providers table exists")?;
+    sc_mcp::bootstrap_mcp_servers(&catalog)
+        .await
+        .context("ensuring the MCP servers table exists")?;
     sc_agent::bootstrap_agents(&catalog)
         .await
         .context("ensuring the agents table exists")?;

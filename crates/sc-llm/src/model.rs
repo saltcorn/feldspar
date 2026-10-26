@@ -32,10 +32,11 @@ use crate::capabilities::{
 };
 use crate::def::{
     ANTHROPIC_BACKEND, LlmProviderDefId, OPENAI_CHAT_BACKEND, OPENAI_RESPONSES_BACKEND,
-    unknown_backend,
+    registered_backends, unknown_backend,
 };
 use crate::pricing::{
-    CFG_PRICE_CACHE_WRITE, CFG_PRICE_CACHED_INPUT, CFG_PRICE_INPUT, CFG_PRICE_OUTPUT, Prices,
+    CFG_PRICE_CACHE_WRITE, CFG_PRICE_CACHED_INPUT, CFG_PRICE_INPUT, CFG_PRICE_OUTPUT,
+    CFG_PRICE_PER_IMAGE, CFG_PRICE_PER_MILLION_CHARACTERS, Prices,
 };
 use crate::provider::LlmProvider;
 
@@ -56,6 +57,81 @@ impl Default for LlmModelDefId {
     }
 }
 
+/// What a model is called for (TODO-agent-skills AS3.1): a conversation, or
+/// one of the three non-chat calls. Each kind has its own settings and its own
+/// default model per provider.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelKind {
+    /// A chat model, for agents: [`connect_model`](crate::connect_model).
+    #[default]
+    Chat,
+    /// Text in, vectors out: [`embed`](crate::embed).
+    Embedding,
+    /// A prompt in, an image out: [`generate_image`](crate::generate_image).
+    Image,
+    /// Text in, audio out: [`speak`](crate::speak).
+    Speech,
+}
+
+impl ModelKind {
+    /// Every kind, chat first.
+    pub const ALL: [ModelKind; 4] = [
+        ModelKind::Chat,
+        ModelKind::Embedding,
+        ModelKind::Image,
+        ModelKind::Speech,
+    ];
+
+    /// The kind's name, as stored and as the API spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelKind::Chat => "chat",
+            ModelKind::Embedding => "embedding",
+            ModelKind::Image => "image",
+            ModelKind::Speech => "speech",
+        }
+    }
+
+    /// The kind called `name`. Blank is chat; anything else unknown is refused,
+    /// naming the kinds there are.
+    pub fn parse(name: &str) -> Result<ModelKind> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(ModelKind::Chat);
+        }
+        ModelKind::ALL
+            .into_iter()
+            .find(|k| k.as_str() == name)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "unknown LLM model kind `{name}`; the kinds are {}",
+                    ModelKind::ALL.map(ModelKind::as_str).join(", ")
+                ))
+            })
+    }
+
+    /// The kind's name after its article: "an image", "a speech".
+    pub fn with_article(self) -> String {
+        match self {
+            ModelKind::Image | ModelKind::Embedding => format!("an {}", self.as_str()),
+            ModelKind::Chat | ModelKind::Speech => format!("a {}", self.as_str()),
+        }
+    }
+
+    /// Whether `backend` can serve a model of this kind. Anthropic serves
+    /// chat only; OpenAI and OpenAI-compatible hosts serve every kind.
+    pub fn served_by(self, backend: &str) -> bool {
+        self == ModelKind::Chat || backend != ANTHROPIC_BACKEND
+    }
+}
+
+impl std::fmt::Display for ModelKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// One model a provider serves: a row of `_fd_llm_models`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmModelDef {
@@ -67,8 +143,12 @@ pub struct LlmModelDef {
     pub name: String,
     /// A human description; empty when none was given.
     pub description: String,
-    /// Whether this is the provider's default model: the one an agent that
-    /// names the provider and no model calls. At most one per provider.
+    /// What the model is called for. Fixed once saved: its settings and the
+    /// things naming it depend on it.
+    pub kind: ModelKind,
+    /// Whether this is the provider's default model of its kind: for chat,
+    /// the one an agent that names the provider and no model calls. At most
+    /// one per provider and kind.
     pub is_default: bool,
     /// The model's settings, validated against
     /// [`model_config_spec`] for the provider's backend.
@@ -86,10 +166,17 @@ impl LlmModelDef {
             provider_id: provider,
             name: name.into(),
             description: String::new(),
+            kind: ModelKind::Chat,
             is_default: false,
             config: Attrs::new(),
             attributes: Attrs::new(),
         }
+    }
+
+    /// Set the kind, returning `self` for chaining.
+    pub fn kind(mut self, kind: ModelKind) -> LlmModelDef {
+        self.kind = kind;
+        self
     }
 
     /// Mark this as the provider's default, returning `self` for chaining.
@@ -167,15 +254,50 @@ impl std::fmt::Debug for ConnectedModel {
     }
 }
 
-/// The settings a model row declares on `backend` (§3a): the four prices, the
-/// context window and working budget, the edit format, and each capability
-/// override the backend can vary.
+/// The settings a model row of `kind` declares on `backend`.
+///
+/// A chat model (§3a) has the four prices, the context window and working
+/// budget, the edit format, and each capability override the backend can vary.
+/// The other kinds have only their prices: an embedding's per million input
+/// tokens, an image's per image or by its tokens, speech's per million
+/// characters. A kind the backend cannot serve is refused.
 ///
 /// All optional. A blank setting is the built-in default, so none has a
 /// default value of its own: a default here would be copied into the row and
 /// stop the built-in rule reaching it.
-pub fn model_config_spec(backend: &str) -> Result<Vec<FormField>> {
+pub fn model_config_spec(backend: &str, kind: ModelKind) -> Result<Vec<FormField>> {
+    if !registered_backends().iter().any(|b| b == backend) {
+        return Err(unknown_backend(backend));
+    }
+    if !kind.served_by(backend) {
+        return Err(Error::invalid(format!(
+            "LLM provider backend `{backend}` serves chat models only, not {kind} models; \
+             add an OpenAI or OpenAI-compatible provider for those"
+        )));
+    }
     let price = |key: &str, label: &str| FormField::new(key, BasicType::Float).label(label);
+    match kind {
+        ModelKind::Chat => {}
+        ModelKind::Embedding => {
+            return Ok(vec![price(
+                CFG_PRICE_INPUT,
+                "Input price per million tokens",
+            )]);
+        }
+        ModelKind::Image => {
+            return Ok(vec![
+                price(CFG_PRICE_PER_IMAGE, "Price per image"),
+                price(CFG_PRICE_INPUT, "Text input price per million tokens"),
+                price(CFG_PRICE_OUTPUT, "Image output price per million tokens"),
+            ]);
+        }
+        ModelKind::Speech => {
+            return Ok(vec![price(
+                CFG_PRICE_PER_MILLION_CHARACTERS,
+                "Price per million characters",
+            )]);
+        }
+    }
     let choice = |key: &str, label: &str, options: &[&str]| {
         FormField::new(key, BasicType::Text)
             .label(label)
@@ -281,7 +403,7 @@ pub fn normalise_model_config(config: &Attrs) -> Attrs {
 /// Check a model row's settings against `backend`'s model spec — the check a
 /// save goes through, and the one a load repeats.
 pub fn validate_model_config(backend: &str, model: &LlmModelDef) -> Result<()> {
-    let spec = model_config_spec(backend)?;
+    let spec = model_config_spec(backend, model.kind)?;
     let config = normalise_model_config(&model.config);
     validate_attrs(&spec, &config).map_err(|e| {
         if let Repr::Invalid(msg) = e.repr() {
@@ -295,6 +417,8 @@ pub fn validate_model_config(backend: &str, model: &LlmModelDef) -> Result<()> {
         CFG_PRICE_CACHED_INPUT,
         CFG_PRICE_CACHE_WRITE,
         CFG_PRICE_OUTPUT,
+        CFG_PRICE_PER_IMAGE,
+        CFG_PRICE_PER_MILLION_CHARACTERS,
     ] {
         if config
             .get(key)
@@ -325,13 +449,12 @@ pub fn validate_model_config(backend: &str, model: &LlmModelDef) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::def::registered_backends;
     use serde_json::json;
 
     #[test]
     fn every_backend_declares_model_settings_all_optional() {
         for backend in registered_backends() {
-            let spec = model_config_spec(&backend).unwrap();
+            let spec = model_config_spec(&backend, ModelKind::Chat).unwrap();
             for key in [
                 CFG_PRICE_INPUT,
                 CFG_PRICE_CACHED_INPUT,
@@ -353,10 +476,10 @@ mod tests {
                 );
             }
         }
-        assert!(model_config_spec("bedrock").is_err());
+        assert!(model_config_spec("bedrock", ModelKind::Chat).is_err());
         // Chat Completions has no native apply_patch to override.
         assert!(
-            model_config_spec(OPENAI_CHAT_BACKEND)
+            model_config_spec(OPENAI_CHAT_BACKEND, ModelKind::Chat)
                 .unwrap()
                 .iter()
                 .all(|f| f.name() != CFG_NATIVE_APPLY_PATCH)
@@ -397,5 +520,44 @@ mod tests {
         let model =
             LlmModelDef::new(provider, "claude-sonnet-5").with(CFG_NATIVE_APPLY_PATCH, "yes");
         assert!(validate_model_config(ANTHROPIC_BACKEND, &model).is_err());
+    }
+
+    #[test]
+    fn each_kind_has_its_own_prices_and_anthropic_serves_chat_only() {
+        assert_eq!(ModelKind::parse("").unwrap(), ModelKind::Chat);
+        assert_eq!(ModelKind::parse("speech").unwrap(), ModelKind::Speech);
+        let err = ModelKind::parse("video").unwrap_err().to_string();
+        assert!(err.contains("embedding, image, speech"), "{err}");
+
+        let names = |kind| -> Vec<String> {
+            model_config_spec(OPENAI_RESPONSES_BACKEND, kind)
+                .unwrap()
+                .iter()
+                .map(|f| f.name().to_owned())
+                .collect()
+        };
+        assert_eq!(names(ModelKind::Embedding), [CFG_PRICE_INPUT]);
+        assert!(names(ModelKind::Image).contains(&CFG_PRICE_PER_IMAGE.to_owned()));
+        assert_eq!(names(ModelKind::Speech), [CFG_PRICE_PER_MILLION_CHARACTERS]);
+        assert!(model_config_spec(OPENAI_CHAT_BACKEND, ModelKind::Image).is_ok());
+
+        let err = model_config_spec(ANTHROPIC_BACKEND, ModelKind::Embedding)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("chat models only"), "{err}");
+
+        // A chat setting on an embedding model is unknown to it.
+        let provider = LlmProviderDefId::new();
+        let model = LlmModelDef::new(provider, "text-embedding-3-small")
+            .kind(ModelKind::Embedding)
+            .with(CFG_CONTEXT_WINDOW, 8192);
+        assert!(validate_model_config(OPENAI_RESPONSES_BACKEND, &model).is_err());
+        let model = LlmModelDef::new(provider, "gpt-image-1")
+            .kind(ModelKind::Image)
+            .with(CFG_PRICE_PER_IMAGE, -0.04);
+        let err = validate_model_config(OPENAI_RESPONSES_BACKEND, &model)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("negative"), "{err}");
     }
 }

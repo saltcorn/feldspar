@@ -174,6 +174,7 @@ async fn setup_in(db: TestDb) -> sc_error::Result<Server> {
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
     sc_llm::bootstrap_llm_providers(&catalog).await?;
+    sc_mcp::bootstrap_mcp_servers(&catalog).await?;
     sc_viewpattern::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_db_connections(&catalog).await?;
     sc_analytics::bootstrap_workspaces(&catalog).await?;
@@ -3938,4 +3939,31 @@ async fn stored_passwords(server: &Server) -> sc_error::Result<Vec<Option<String
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     Ok(rows.iter().map(|r| r.get::<_, Option<String>>(0)).collect())
+}
+
+/// MCP servers travel beside the LLM providers, their headers (a credential)
+/// with them, as a provider's API key does (TODO-agent-skills AS4.5).
+#[tokio::test]
+async fn mcp_servers_travel_with_their_headers() -> sc_error::Result<()> {
+    let mut source = setup().await?;
+    let def = sc_mcp::McpServerDef::new("docs", "https://mcp.example.com/mcp")
+        .header("Authorization", "Bearer mcp-backed-up");
+    sc_mcp::save_mcp_server(&source.catalog, &def).await?;
+
+    let (_, options) = source.client.send("GET", "/api/backup", None).await;
+    assert_eq!(options["available"]["llm_providers"], json!(1), "{options}");
+    let archive = backup_everything(&mut source).await;
+    assert!(entry(&archive, "mcp-servers.json").contains("Bearer mcp-backed-up"));
+
+    let mut target = setup().await?;
+    let report = restore_everything(&mut target, &archive).await;
+    assert!(
+        report_has(&report, "restored", "MCP server `docs`"),
+        "{report}"
+    );
+    let restored = sc_mcp::require_mcp_server(&target.catalog, "docs").await?;
+    assert_eq!(restored.url, def.url);
+    assert_eq!(restored.headers, def.headers);
+    assert_eq!(restored.id, def.id, "its identity, where it is free");
+    Ok(())
 }

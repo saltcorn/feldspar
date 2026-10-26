@@ -1862,6 +1862,11 @@ pub fn admin_handlers_with(
                     })?;
                 let mut model = llm_model_from_body(id, existing.provider_id, &ctx.body)?;
                 model.attributes = existing.attributes.clone();
+                // A body that leaves the kind out keeps it; one that changes it
+                // is refused by the save.
+                if ctx.body.get("kind").is_none_or(Json::is_null) {
+                    model.kind = existing.kind;
+                }
                 // A rename breaks the agents naming it, and losing the default
                 // flag breaks the agents naming no model, so each is refused the
                 // way a delete is. Making *another* model the default is not a
@@ -1914,7 +1919,14 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let backend = ctx.path_param("backend")?;
-                let spec = resolve_options(&catalog, model_config_spec(backend)?).await?;
+                let kind = ctx
+                    .query
+                    .iter()
+                    .find(|(k, _)| k == "kind")
+                    .map_or(Ok(sc_llm::ModelKind::Chat), |(_, v)| {
+                        sc_llm::ModelKind::parse(v)
+                    })?;
+                let spec = resolve_options(&catalog, model_config_spec(backend, kind)?).await?;
                 Ok(HandlerResponse::ok(Json::Array(spec_json(
                     &spec,
                     &ctx.locale,
@@ -2019,10 +2031,18 @@ pub fn admin_handlers_with(
                         ..LlmProviderDef::new("test", &backend)
                     },
                 };
+                let kind =
+                    sc_llm::ModelKind::parse(obj.get("kind").and_then(Json::as_str).unwrap_or(""))?;
                 let model = LlmModelDef {
                     config: model_config,
-                    ..LlmModelDef::new(provider.id, &name)
+                    ..LlmModelDef::new(provider.id, &name).kind(kind)
                 };
+                if kind != sc_llm::ModelKind::Chat {
+                    sc_llm::validate_model_config(&provider.backend, &model)?;
+                    return Ok(HandlerResponse::ok(
+                        test_non_chat_model(&provider, &model).await,
+                    ));
+                }
                 // A structurally wrong config is an ordinary `Err`: it is the
                 // admin's typo, not the provider's answer, and the form should
                 // show it the way it shows a failed save.
@@ -7219,6 +7239,8 @@ pub fn admin_handlers_with(
     crate::public_datasets::register(&mut reg, catalog.clone(), fetch);
     // --- the home page's entities list ----------------------------------------
     crate::entities::register(&mut reg, catalog.clone(), apps.clone());
+    // --- remote MCP servers an agent calls (TODO-agent-skills AS4) -----------
+    crate::mcp_servers::register(&mut reg, catalog.clone());
 
     reg
 }
@@ -7926,7 +7948,7 @@ async fn create_builder_agent(
     if !list_llm_models(catalog, &provider)
         .await?
         .iter()
-        .any(|m| m.is_default)
+        .any(|m| m.is_default && m.kind == sc_llm::ModelKind::Chat)
     {
         return Err(Error::config(format!(
             "LLM provider `{}` has no default model, so the `{}` agent that builds this \
@@ -9241,6 +9263,48 @@ async fn require_provider_by_id(catalog: &Catalog, raw: &str) -> Result<LlmProvi
         .ok_or_else(|| Error::not_found(format!("no LLM provider with id {}", id.0)))
 }
 
+/// *Test* for a non-chat model (TODO-agent-skills AS3.1): embed or speak one
+/// word, and say what came back. An image model is not tested, since every
+/// test would generate (and bill) an image.
+async fn test_non_chat_model(provider: &LlmProviderDef, model: &LlmModelDef) -> Json {
+    let prices = serde_json::to_value(model.prices()).unwrap_or(Json::Null);
+    let outcome = match model.kind {
+        sc_llm::ModelKind::Embedding => sc_llm::embed(provider, model, &["ok".to_owned()])
+            .await
+            .map(|e| {
+                format!(
+                    "a vector of {} dimensions",
+                    e.vectors.first().map_or(0, Vec::len)
+                )
+            }),
+        sc_llm::ModelKind::Speech => {
+            sc_llm::speak(provider, model, &sc_llm::SpeechRequest::new("ok"))
+                .await
+                .map(|s| format!("{} bytes of {} audio", s.bytes.len(), s.format))
+        }
+        _ => Err(Error::invalid(
+            "an image model is not tested here, since each test would generate (and bill) \
+             an image; it is checked the first time it is used",
+        )),
+    };
+    match outcome {
+        Ok(message) => json!({
+            "ok": true,
+            "message": message,
+            "model": model.name,
+            "capabilities": Json::Null,
+            "prices": prices,
+        }),
+        Err(e) => json!({
+            "ok": false,
+            "message": sc_error::format_causes(&e),
+            "model": model.name,
+            "capabilities": Json::Null,
+            "prices": prices,
+        }),
+    }
+}
+
 /// A model row as the API returns it (matching `llm_model_schema`): the row,
 /// plus the capabilities and prices it resolves to on its provider's backend.
 pub(crate) fn llm_model_json(provider: &LlmProviderDef, model: &LlmModelDef) -> Json {
@@ -9249,9 +9313,15 @@ pub(crate) fn llm_model_json(provider: &LlmProviderDef, model: &LlmModelDef) -> 
         "provider_id": model.provider_id.0,
         "name": model.name,
         "description": model.description,
+        "kind": model.kind.as_str(),
         "is_default": model.is_default,
         "config": Json::Object(model.config.clone()),
-        "capabilities": serde_json::to_value(model.capabilities(&provider.backend)).unwrap_or(Json::Null),
+        // Only a chat model has capabilities: the loop's to know.
+        "capabilities": if model.kind == sc_llm::ModelKind::Chat {
+            serde_json::to_value(model.capabilities(&provider.backend)).unwrap_or(Json::Null)
+        } else {
+            Json::Null
+        },
         "prices": serde_json::to_value(model.prices()).unwrap_or(Json::Null),
     })
 }
@@ -9272,6 +9342,7 @@ pub(crate) fn llm_model_from_body(
             .and_then(Json::as_str)
             .unwrap_or("")
             .to_owned(),
+        kind: sc_llm::ModelKind::parse(obj.get("kind").and_then(Json::as_str).unwrap_or(""))?,
         is_default: obj
             .get("is_default")
             .and_then(Json::as_bool)
@@ -10077,7 +10148,9 @@ async fn agents_using_model(
                 named.provider.trim() == provider.name.trim()
                     && match named.model.as_deref() {
                         Some(name) => by_name && name == model.name,
-                        None => by_default && model.is_default,
+                        None => {
+                            by_default && model.is_default && model.kind == sc_llm::ModelKind::Chat
+                        }
                     }
             })
         })

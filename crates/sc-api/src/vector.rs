@@ -288,8 +288,14 @@ pub async fn embed_texts(
             table.name
         )));
     };
-    let provider = sc_llm::embedding_provider(cat, config.provider.as_deref()).await?;
-    let vectors = sc_llm::embed(&provider, &model, texts).await?;
+    let (provider, model_def) = sc_llm::resolve_model(
+        cat,
+        config.provider.as_deref(),
+        Some(&model),
+        sc_llm::ModelKind::Embedding,
+    )
+    .await?;
+    let vectors = sc_llm::embed(&provider, &model_def, texts).await?.vectors;
     for vector in &vectors {
         sc_types::vector::check_length(dimensions, vector.len()).map_err(|_| {
             Error::invalid(format!(

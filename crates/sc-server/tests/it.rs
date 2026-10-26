@@ -141,6 +141,8 @@ mod llm_credits;
 mod llm_provider_admin_api;
 #[path = "locale_negotiation.rs"]
 mod locale_negotiation;
+#[path = "mcp_client.rs"]
+mod mcp_client;
 #[path = "mcp_server.rs"]
 mod mcp_server;
 #[path = "metadata_tables_api.rs"]

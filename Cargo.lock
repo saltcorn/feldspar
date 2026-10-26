@@ -9122,6 +9122,7 @@ dependencies = [
  "sc-i18n",
  "sc-llm",
  "sc-log",
+ "sc-mcp",
  "sc-query",
  "sc-server",
  "sc-stan",
@@ -9454,6 +9455,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-mcp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "reqwest",
+ "sc-catalog",
+ "sc-db",
+ "sc-email",
+ "sc-error",
+ "sc-query",
+ "sc-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "sc-model"
 version = "0.1.0"
 dependencies = [
@@ -9622,6 +9642,7 @@ dependencies = [
  "sc-live",
  "sc-llm",
  "sc-log",
+ "sc-mcp",
  "sc-model",
  "sc-module",
  "sc-python",

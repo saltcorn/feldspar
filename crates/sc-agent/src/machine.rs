@@ -541,6 +541,7 @@ impl AgentLoop {
             elapsed_ms: u64::try_from(meta.elapsed.as_millis()).unwrap_or(u64::MAX),
             signals: Vec::new(),
             compacted: self.context.take_pending(),
+            kind: sc_llm::ModelKind::Chat,
         });
         self.messages.push(answer.message());
         self.phase = if answer.tool_calls.is_empty() {

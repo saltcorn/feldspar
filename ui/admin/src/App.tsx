@@ -62,6 +62,7 @@ import { FirstUser } from "./screens/FirstUser";
 import { GraphqlExplorer } from "./screens/GraphqlExplorer";
 import { LlmProviders } from "./screens/LlmProviders";
 import { LlmProviderForm } from "./screens/LlmProviderForm";
+import { McpServers } from "./screens/McpServers";
 import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
 import { Settings } from "./screens/Settings";
@@ -217,8 +218,8 @@ export const NAV: NavItem[] = [
     icon: <IconRobot />,
     // The providers list is part of this section rather than one of its own: an
     // LLM provider exists to be pointed at by an agent, and nothing else in the
-    // admin UI has any use for one.
-    matches: ["/agents", "/llm-providers"],
+    // admin UI has any use for one. The same goes for an MCP server.
+    matches: ["/agents", "/llm-providers", "/mcp-servers"],
   },
   {
     // The Analytics UI: its own bundle under `/analytics/` (analytics TODO
@@ -776,6 +777,9 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   }
   if (path.startsWith("/llm-providers")) {
     return <LlmProviders />;
+  }
+  if (path.startsWith("/mcp-servers")) {
+    return <McpServers />;
   }
   if (path.startsWith("/db-connections")) {
     return <DbConnections />;

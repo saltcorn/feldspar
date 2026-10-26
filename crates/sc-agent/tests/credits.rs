@@ -297,3 +297,62 @@ async fn a_rate_per_dollar_is_refused_until_every_model_has_a_price() -> Result<
     save_agent(&catalog, &registry, &fallback).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_tools_image_call_is_ledgered_and_charged_at_its_own_cost() -> Result<()> {
+    // TODO-agent-skills AS3.5.
+    let db = TestDb::new().await?;
+    let (catalog, user) = with_user(&db, 80).await?;
+    let registry = registry(Counter::new())?;
+    // 100 credits a dollar for a call with a cost, the token rates otherwise.
+    let agent = metered_agent().attribute(ATTR_CREDITS_PER_DOLLAR, 100);
+    grant(&catalog, &user, 20, "plenty").await?;
+
+    let provider = Arc::new(FakeProvider::new([
+        Reply::calls("media", json!({"cost": 0.04})),
+        Reply::calls("media", json!({"input_tokens": 20})),
+        Reply::says("two pictures"),
+    ]));
+    let models: Arc<dyn ProviderConnector> =
+        Arc::new(FakeModels::new().role(ModelRole::Executor, provider.clone()));
+    let runner = Runner::new(
+        &catalog,
+        &registry,
+        &agent,
+        common::model(provider.clone()),
+        RunCaller::user(user.clone()),
+    )
+    .with_connector(&models);
+    let (run, conclusion) = runner.start("draw twice").await?;
+    assert_eq!(conclusion.answer(), Some("two pictures"));
+
+    // Three chat calls at 2 credits; the priced image at 0.04 × 100 = 4; the
+    // unpriced one by its 20 input tokens at 100 a thousand = 2.
+    assert_eq!(balance(&catalog, &user).await?, Decimal::from(8));
+    let images: Vec<_> = debits(&catalog, &user)
+        .await?
+        .into_iter()
+        .filter(|e| e.key.contains(":image:"))
+        .collect();
+    assert_eq!(images.len(), 2);
+    let mut amounts: Vec<Decimal> = images.iter().map(|e| e.amount).collect();
+    amounts.sort();
+    assert_eq!(amounts, [Decimal::from(-4), Decimal::from(-2)]);
+    assert!(
+        images
+            .iter()
+            .all(|e| e.model.as_deref() == Some("gpt-image-1") && e.run == Some(run.id.0))
+    );
+
+    // Both are asides of the run's ledger, marked as image calls.
+    let stored = sc_agent::require_run(&catalog, run.id).await?;
+    let state = stored.agent_loop()?;
+    let asides = state.ledger().asides();
+    assert_eq!(asides.len(), 2);
+    assert!(asides.iter().all(|a| a.kind == sc_llm::ModelKind::Image));
+    assert_eq!(
+        asides.iter().filter_map(|a| a.cost).collect::<Vec<_>>(),
+        [0.04]
+    );
+    Ok(())
+}

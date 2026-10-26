@@ -207,8 +207,8 @@ pub fn openai_chat_config_spec() -> Vec<FormField> {
 /// can pick one and be shown its [`provider_config_spec`].
 ///
 /// The single place that enumerates them: a new backend is added here, to
-/// [`provider_config_spec`], to [`model_config_spec`](crate::model_config_spec)
-/// and to [`connect_model`].
+/// [`provider_config_spec`], to [`model_config_spec`](crate::model_config_spec),
+/// to [`connect_model`] and to the non-chat calls' endpoint (`endpoint.rs`).
 pub fn registered_backends() -> Vec<String> {
     vec![
         ANTHROPIC_BACKEND.to_owned(),
@@ -277,6 +277,15 @@ pub fn connect_model(provider: &LlmProviderDef, model: &LlmModelDef) -> Result<C
         return Err(Error::invalid(format!(
             "LLM model `{}` does not belong to provider `{}`",
             model.name, provider.name
+        )));
+    }
+    if model.kind != crate::model::ModelKind::Chat {
+        return Err(Error::invalid(format!(
+            "LLM model `{}` of provider `{}` is {} model, not a chat model; an agent \
+             converses with a chat model",
+            model.name,
+            provider.name,
+            model.kind.with_article()
         )));
     }
     validate_model_config(&provider.backend, model)?;

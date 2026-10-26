@@ -1,11 +1,9 @@
 //! Embeddings: text in, vectors out (TODO-agent-skills AS3.2, built for AS2's
 //! vector fields).
 //!
-//! The one non-chat call a vector field needs. It is not an [`LlmProvider`]
-//! method, because nothing about it streams, calls tools or carries a
-//! conversation: it is one request to the provider's `/embeddings` endpoint,
-//! which OpenAI and every OpenAI-compatible host (Ollama, vLLM, llama.cpp,
-//! OpenRouter, …) serve with the same shape:
+//! One request to the provider's `/embeddings` endpoint (see `endpoint.rs` for
+//! what the non-chat calls share), which OpenAI and every OpenAI-compatible
+//! host (Ollama, vLLM, llama.cpp, OpenRouter, …) serve with the same shape:
 //!
 //! ```text
 //! POST {base_url}/embeddings   { "model": "…", "input": ["…", "…"] }
@@ -14,8 +12,6 @@
 //!
 //! Anthropic has no embedding endpoint, so a provider of that backend is
 //! refused by name rather than sent a request that can only fail.
-//!
-//! [`LlmProvider`]: crate::LlmProvider
 
 use std::time::Duration;
 
@@ -23,10 +19,9 @@ use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use serde_json::{Value as Json, json};
 
-use crate::def::{
-    ANTHROPIC_BACKEND, CFG_API_KEY, CFG_BASE_URL, LlmProviderDef, OPENAI_CHAT_BACKEND,
-    OPENAI_RESPONSES_BACKEND,
-};
+use crate::def::LlmProviderDef;
+use crate::endpoint::{Endpoint, ModelCall, read_usage};
+use crate::model::{LlmModelDef, ModelKind};
 
 /// The most texts sent in one request. OpenAI takes 2,048; a smaller batch
 /// keeps a slow local host's request inside the timeout.
@@ -35,7 +30,16 @@ pub const EMBED_BATCH: usize = 128;
 /// How long one embedding request may take.
 const EMBED_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The provider an embedding is computed by: the one named, or the
+/// What [`embed`] returns: one vector per text, in order, and the call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Embeddings {
+    /// One vector per text.
+    pub vectors: Vec<Vec<f32>>,
+    /// What the call (every batch of it) used and cost.
+    pub call: ModelCall,
+}
+
+/// The provider a non-chat call is made with: the one named, or the
 /// installation's default when `name` is `None` or blank.
 pub async fn embedding_provider(catalog: &Catalog, name: Option<&str>) -> Result<LlmProviderDef> {
     match name.map(str::trim).filter(|n| !n.is_empty()) {
@@ -44,84 +48,52 @@ pub async fn embedding_provider(catalog: &Catalog, name: Option<&str>) -> Result
             .await?
             .ok_or_else(|| {
                 Error::config(
-                    "there is no LLM provider to compute embeddings with; add an OpenAI or \
-                     OpenAI-compatible provider on the LLM providers screen",
+                    "there is no LLM provider to call; add an OpenAI or OpenAI-compatible \
+                     provider on the LLM providers screen",
                 )
             }),
     }
 }
 
-/// Embed `texts` with `model` of `provider`: one vector per text, in order.
+/// The provider and model of `kind` a configuration names
+/// (TODO-agent-skills AS3.1): the provider named, or the installation's
+/// default; and the model named, or that provider's default of `kind`.
+pub async fn resolve_model(
+    catalog: &Catalog,
+    provider: Option<&str>,
+    model: Option<&str>,
+    kind: ModelKind,
+) -> Result<(LlmProviderDef, LlmModelDef)> {
+    let provider = embedding_provider(catalog, provider).await?;
+    let model = crate::storage::require_model_of_kind(catalog, &provider, model, kind).await?;
+    Ok((provider, model))
+}
+
+/// Embed `texts` with embedding model `model` of `provider`: one vector per
+/// text, in order, with what the call cost at the model's input price.
 ///
-/// Refused for an Anthropic provider (there is no endpoint), and for a reply
-/// that does not have one vector per text.
+/// Refused for a model of another kind, for an Anthropic provider (there is no
+/// endpoint), and for a reply that does not have one vector per text.
 pub async fn embed(
     provider: &LlmProviderDef,
-    model: &str,
+    model: &LlmModelDef,
     texts: &[String],
-) -> Result<Vec<Vec<f32>>> {
-    let model = model.trim();
-    if model.is_empty() {
-        return Err(Error::invalid(format!(
-            "an embedding needs a model of LLM provider `{}`, such as text-embedding-3-small",
-            provider.name
-        )));
-    }
-    let base_url = match provider.backend.as_str() {
-        ANTHROPIC_BACKEND => {
-            return Err(Error::invalid(format!(
-                "LLM provider `{}` is an Anthropic provider, and Anthropic has no embedding \
-                 endpoint; compute embeddings with an OpenAI or OpenAI-compatible provider",
-                provider.name
-            )));
-        }
-        OPENAI_RESPONSES_BACKEND => provider
-            .setting(CFG_BASE_URL)
-            .map(str::trim)
-            .filter(|u| !u.is_empty())
-            .unwrap_or(crate::openai::DEFAULT_BASE_URL),
-        OPENAI_CHAT_BACKEND => provider
-            .setting(CFG_BASE_URL)
-            .map(str::trim)
-            .filter(|u| !u.is_empty())
-            .ok_or_else(|| {
-                Error::config(format!("LLM provider `{}` has no base URL", provider.name))
-            })?,
-        other => return Err(crate::def::unknown_backend(other)),
-    };
-    let url = format!("{}/embeddings", base_url.trim_end_matches('/'));
-    let api_key = provider.setting(CFG_API_KEY).unwrap_or_default().trim();
-    let client = reqwest::Client::builder()
-        .timeout(EMBED_TIMEOUT)
-        .build()
-        .map_err(|e| Error::msg(format!("building the embedding client: {e}")))?;
-    let mut out = Vec::with_capacity(texts.len());
+) -> Result<Embeddings> {
+    let endpoint = Endpoint::new(provider, model, ModelKind::Embedding, EMBED_TIMEOUT)?;
+    let mut vectors = Vec::with_capacity(texts.len());
+    let mut usage = crate::Usage::default();
     for batch in texts.chunks(EMBED_BATCH) {
-        let mut request = client
-            .post(&url)
-            .json(&json!({ "model": model, "input": batch }));
-        if !api_key.is_empty() {
-            request = request.bearer_auth(api_key);
-        }
-        let failed = |e: &dyn std::fmt::Display| {
-            Error::msg(format!(
-                "LLM provider `{}` could not embed with `{model}`: {e}",
-                provider.name
-            ))
-        };
-        let response = request.send().await.map_err(|e| failed(&e))?;
-        let status = response.status();
-        let body = response.bytes().await.map_err(|e| failed(&e))?;
-        if !status.is_success() {
-            let text = String::from_utf8_lossy(&body);
-            let text: String = text.chars().take(500).collect();
-            return Err(failed(&format!("{status}: {text}")));
-        }
-        let parsed: Json = serde_json::from_slice(&body)
-            .map_err(|e| failed(&format!("the reply is not JSON: {e}")))?;
-        out.extend(read_embeddings(&parsed, batch.len()).map_err(|e| failed(&e))?);
+        let body = json!({ "model": endpoint.model(), "input": batch });
+        let (reply, _) = endpoint.post("/embeddings", &body, "embed").await?;
+        let parsed = endpoint.json(&reply, "embed")?;
+        vectors.extend(
+            read_embeddings(&parsed, batch.len()).map_err(|e| endpoint.failed("embed", &e))?,
+        );
+        usage.input_tokens += read_usage(&parsed).input_tokens;
     }
-    Ok(out)
+    let cost = model.prices().embedding_cost(usage.input_tokens);
+    let call = endpoint.finish(usage, texts.len() as u64, cost);
+    Ok(Embeddings { vectors, call })
 }
 
 /// The vectors of an `/embeddings` reply, in input order, or why it is not one
@@ -160,6 +132,7 @@ fn read_embeddings(reply: &Json, expected: usize) -> std::result::Result<Vec<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::def::{ANTHROPIC_BACKEND, CFG_API_KEY};
 
     #[test]
     fn a_reply_is_read_in_input_order() {
@@ -182,7 +155,8 @@ mod tests {
     #[tokio::test]
     async fn anthropic_is_refused_by_name() {
         let def = LlmProviderDef::new("claude", ANTHROPIC_BACKEND).with(CFG_API_KEY, "k");
-        let err = embed(&def, "any", &["x".to_owned()])
+        let model = LlmModelDef::new(def.id, "any").kind(ModelKind::Embedding);
+        let err = embed(&def, &model, &["x".to_owned()])
             .await
             .unwrap_err()
             .to_string();

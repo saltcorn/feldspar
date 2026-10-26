@@ -29,6 +29,10 @@
 //!   `_fd_llm_providers` and `_fd_llm_models`, and [`connect_model`] — a
 //!   provider and its models are named records an admin fills in, exactly as a
 //!   file store is.
+//! - The **non-chat calls** ([`embed`](mod@embed), [`image`], [`speech`], sharing
+//!   `endpoint.rs`): embeddings, image generation and text to speech against a
+//!   model row of that [`ModelKind`], each returning a [`ModelCall`] to log and
+//!   charge (TODO-agent-skills AS3).
 //! - The **host's provider** and the **default provider** ([`host`]): one
 //!   provider may come from `feldspar.toml` instead of a row — usable, listed,
 //!   never editable here — and the admin picks which provider is used when
@@ -52,8 +56,10 @@ pub mod anthropic;
 pub mod capabilities;
 pub mod def;
 pub mod embed;
+mod endpoint;
 pub mod estimate;
 pub mod host;
+pub mod image;
 pub mod listing;
 pub mod logging;
 pub mod message;
@@ -63,6 +69,7 @@ pub mod openai_chat;
 pub mod pricing;
 pub mod provider;
 mod rig_bridge;
+pub mod speech;
 pub mod storage;
 
 pub use capabilities::{
@@ -77,12 +84,14 @@ pub use def::{
     openai_chat_config_spec, openai_config_spec, provider_config_spec, registered_backends,
     validate_provider_config,
 };
-pub use embed::{embed, embedding_provider};
+pub use embed::{Embeddings, embed, embedding_provider, resolve_model};
+pub use endpoint::ModelCall;
 pub use estimate::{TokenEstimator, estimate_tokens, image_tokens};
 pub use host::{
     HostLlmProvider, default_llm_provider, host_llm_provider, host_provider_id,
     is_host_llm_provider, set_default_llm_provider, set_host_llm_provider,
 };
+pub use image::{GeneratedImage, ImageRequest, generate_image};
 pub use listing::{fetch_host_models, parse_model_listing};
 pub use logging::{LoggedProvider, request_summary, response_summary};
 pub use message::{
@@ -90,17 +99,19 @@ pub use message::{
     StopReason, ToolCall, ToolSpec, Usage,
 };
 pub use model::{
-    ConnectedModel, LlmModelDef, LlmModelDefId, model_config_spec, normalise_model_config,
-    validate_model_config,
+    ConnectedModel, LlmModelDef, LlmModelDefId, ModelKind, model_config_spec,
+    normalise_model_config, validate_model_config,
 };
 pub use pricing::{
-    CFG_PRICE_CACHE_WRITE, CFG_PRICE_CACHED_INPUT, CFG_PRICE_INPUT, CFG_PRICE_OUTPUT, Prices,
+    CFG_PRICE_CACHE_WRITE, CFG_PRICE_CACHED_INPUT, CFG_PRICE_INPUT, CFG_PRICE_OUTPUT,
+    CFG_PRICE_PER_IMAGE, CFG_PRICE_PER_MILLION_CHARACTERS, Prices,
 };
 pub use provider::{DeltaStream, LlmProvider, LlmStream};
+pub use speech::{Speech, SpeechRequest, speak};
 pub use storage::{
     LLM_MODELS_TABLE, LLM_PROVIDERS_TABLE, bootstrap_llm_models, bootstrap_llm_providers,
     check_model_saveable, check_provider_saveable, delete_llm_model, delete_llm_provider,
     list_llm_models, list_llm_providers, load_llm_model, load_llm_model_by_name, load_llm_provider,
-    load_llm_provider_by_name, require_llm_model, require_llm_provider, save_llm_model,
-    save_llm_provider,
+    load_llm_provider_by_name, require_llm_model, require_llm_provider, require_model_of_kind,
+    save_llm_model, save_llm_provider,
 };

@@ -2,6 +2,129 @@
 
 Changes in reverse chronological order.
 
+## An MCP client: remote MCP servers an agent will call (TODO-agent-skills AS4)
+
+This server is already an MCP server. Now it can also call one. A new crate, `sc-mcp`
+(layer 6, beside `sc-llm`), holds the definitions and the client that the `mcp_server` trait
+(AS9.1) will offer to agents. The server makes the calls itself, rather than handing a vendor
+the URL, so it works with every LLM backend.
+
+- **Definitions** (`def.rs`, `storage.rs`, AS4.1): `McpServerDef` has a name (lowercase
+  letters, digits, `-` and `_`, at most 24, no `__`, because its tools will be
+  `<name>__<tool>`), a description, a URL, a transport (`streamable_http`, the default, or
+  `sse`), headers, `allow_private_network`, and `timeout_secs` (0 means 60, at most 600).
+  They are stored in `_fd_mcp_servers`, bootstrapped at startup, with the same strict reading
+  as `_fd_llm_providers`. **Header values are secrets.** The admin API returns each one as the
+  sentinel, and `merge_headers` puts the stored value back when a save or test sends the
+  sentinel (header names are matched case-insensitively). A sentinel with nothing stored is
+  refused. Headers the client sets itself (`Accept`, `Mcp-Session-Id`,
+  `MCP-Protocol-Version`, …) are refused, and so is a credential in the URL.
+- **Client** (`client.rs`, AS4.2): each operation opens a session (`initialize` and
+  `notifications/initialized`), makes its request and closes the session. Over streamable
+  HTTP (2025-06-18) it reads a JSON answer, or an event stream up to the answer, keeps the
+  `Mcp-Session-Id`, sends `MCP-Protocol-Version`, and ends the session with a DELETE. Over
+  HTTP+SSE (2024-11-05) it opens the event stream, POSTs to the endpoint it names (refused on
+  another origin) and reads answers from the stream. `tools/list` follows `nextCursor` for up
+  to 20 pages. `tools/call` is held to the timeout. Revisions 2025-06-18, 2025-03-26 and
+  2024-11-05 are accepted. A result becomes `McpToolResult`: text parts, images (decoded),
+  a line for audio, resources and links, structured content when that is all there is, and
+  `isError`. A JSON-RPC error, a refusal (401/403 says to check the credential header) and a
+  timeout are errors naming the server and the method.
+- **Tool cache** (`cache.rs`): each server's listing is kept for 60 s when it says its list
+  can change, else for an hour. A call during which the server sends
+  `notifications/tools/list_changed` drops the listing, and so do saving or deleting the
+  definition and changing its URL, transport or headers.
+- **Guard** (`guard.rs`, AS4.4): without `allow_private_network`, a loopback, private,
+  link-local or reserved address literal is refused before anything is sent, and a name is
+  resolved to public addresses only (the `http` trait's rule, sharing `sc_email::is_public`).
+  Redirects are not followed.
+- **Admin API** (`sc-server` `mcp_servers.rs`): `listMcpServers`, `createMcpServer`,
+  `updateMcpServer`, `deleteMcpServer`, `testMcpServer` (`POST /api/mcp-server-test`, a form
+  with its saved headers resolved; a server that refuses is `ok: false` with its words) and
+  `listMcpServerTools` (`?refresh=true` for a fresh listing). Deleting or renaming a server is
+  refused while an agent's `mcp_server` trait names it in its `server` setting.
+- **Admin screen** (AS4.3): *Agents → MCP servers* (`#/mcp-servers`) lists the servers, edits
+  one in a dialog (URL, transport, header rows with masked values, timeout, private network)
+  with *Test connection* listing the server's tools (read-only ones marked), and has a
+  *Tools* button per server. Five locales gained the strings.
+- **Backup** (AS4.5): `mcp-servers.json`, headers included, under the LLM providers choice
+  (now labelled "LLM providers and MCP servers"; the count includes servers). Restore keeps a
+  server already defined here under the same name, and keeps the backup's id when it is free.
+
+Tests: `sc-mcp` unit tests (header redaction and merging, save checks, the event-stream
+parser split at every byte, listing and result conversion, the cache, the guard), plus stub
+servers for streamable HTTP with event-stream answers, a session id, a paged list and
+`list_changed`, and for HTTP+SSE, an endpoint on another origin, a private address refused
+before sending, and a timeout. `sc-server` `mcp_client.rs` runs the client against this
+server's own `/mcp` on a real socket: save with a token header that never comes back, test
+and list tools with the sentinel resolved, call `describe_schema`, an unknown tool, a wrong
+token, loopback without permission, and an update that keeps the key. `backup_api.rs`: a
+server and its header survive a round trip. Admin UI: the form's body, the name rule, the
+tools summary, and the nav.
+
+## Non-chat model calls: model kinds, images, speech, costs (TODO-agent-skills AS3)
+
+A provider's models now have a kind, and `sc-llm` can generate images and speak text as well
+as embed, each call costed and chargeable to an agent run's payer.
+
+- **Model kinds** (`sc-llm` `model.rs`, AS3.1): `LlmModelDef.kind` is `chat` (the default),
+  `embedding`, `image` or `speech`, stored in a new nullable `kind` column of `_fd_llm_models`
+  (added by the bootstrap; `NULL` reads as chat, so no migration SQL is needed). Each kind has
+  its own settings (`model_config_spec(backend, kind)`): a chat model keeps the prices,
+  window and capability overrides, an embedding model has an input price, an image model a
+  price per image (`price_per_image`) or token prices, a speech model a price per million
+  characters (`price_per_million_characters`). Anthropic serves chat only, and a non-chat
+  kind on it is refused by name. **Each kind has its own default** per provider: saving a
+  default clears only that kind's. A saved model cannot change kind or provider.
+  `require_llm_model` (what agents use) accepts only a chat model, `connect_model` refuses
+  any other, and the new `require_model_of_kind` / `resolve_model` find a model of a kind:
+  the row named, the provider's default of that kind, or (for a non-chat name with no row)
+  the name itself, unpriced. A vector field's `embed_model` now resolves this way. The
+  `feldspar.toml` provider's models take a `kind` key; its `default_model` must be a chat
+  model, and each other kind's default is its first model by name.
+- **Shared plumbing** (`endpoint.rs`): the endpoint URL and key of an OpenAI or
+  OpenAI-compatible provider, one POST, refusals naming the provider, model and status, and
+  a `ModelCall` record (kind, provider, model, usage, units, cost, elapsed) that every call
+  returns and logs at info (§16), as a chat call's summary line is.
+- **Embeddings** now take the model row and return `Embeddings { vectors, call }`, costed
+  at the input price over the reported tokens.
+- **Image generation** (`image.rs`, AS3.3): `generate_image(provider, model, ImageRequest)`
+  posts to `/images/generations` with only the options set (size, quality, `output_format`,
+  background), so `dall-e-3` and `gpt-image-1` both work. It reads `b64_json` or fetches
+  `url`, checks the bytes are an image and reports their format and media type, plus any
+  `revised_prompt`. A jpeg with a transparent background, an unknown format and an empty or
+  too-long prompt are refused before anything is sent. Costed per image, else by tokens.
+- **Text to speech** (`speech.rs`, AS3.4): `speak(provider, model, SpeechRequest)` posts to
+  `/audio/speech` with voice (default `alloy`), speed (0.25 to 4), format (mp3, opus, aac,
+  flac, wav, pcm) and instructions, and returns the audio. A JSON reply is refused as not
+  audio; text over 4,096 characters is refused before sending. Costed per character.
+- **Charging** (`sc-agent`, AS3.5): `Delegator::record_call(&ModelCall)` lets a tool's own
+  non-chat call land in the run's ledger as an aside (`LedgerStep.kind`, serialised only
+  when not chat) and be debited from the run's payer under `run:step:kind:uuid`.
+  `Meter::charge_call` charges the call's own cost at the rate per dollar, else its reported
+  tokens at the rates per token. The driver's charging was split so chat and non-chat calls
+  share one debit path; its "no prices" refusal now names any model.
+- **Admin API and UI**: model rows carry `kind` (create defaults to chat, and an update that
+  leaves it out keeps it), `capabilities` is null for a non-chat model, and
+  `listLlmModelSettings` takes `?kind=`. *Test* embeds or speaks one word for those kinds
+  and reports the vector size or audio bytes. Image models are not tested, since every test
+  would bill an image. The provider's Models card lists models under a heading per kind, with
+  each kind's prices. The add form has a kind select, and its settings follow the kind.
+  *Fetch models* guesses a fetched name's kind (`embed`, `tts`, `dall-e`/`image`). The agent
+  form's model pick-list offers chat models only. The clients were regenerated, and five
+  locales gained the new strings.
+
+Tests: `sc-llm` unit tests (kinds and their specs, per-kind costs, image and speech request
+checks and bodies, image format sniffing), `tests/model_calls.rs` (formerly `embed.rs`)
+against a stub server for each call (path, body, bytes, cost) and each refusal (host error,
+wrong vector count, not an image, no image, JSON for audio, wrong kind, Anthropic, bad
+request), `provider_store.rs` (per-kind defaults on Postgres, resolution, a fixed kind,
+Anthropic refusing an embedding model). `sc-agent`: `Meter::charge_call`, and a metered run
+whose tool records two image calls, one priced and one not, which are debited and ledgered.
+`sc-server`: per-kind settings, two defaults side by side, kind kept and refused on update,
+*Test* on an embedding model. Admin UI: grouping, kind guess, chat-only pick-list, per-kind
+prices.
+
 ## Vector fields (TODO-agent-skills AS2), and the embedding call (AS3.2)
 
 A table can hold embeddings and order its rows by how near they are to a vector or to a piece

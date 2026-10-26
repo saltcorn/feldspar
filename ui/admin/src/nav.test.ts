@@ -34,6 +34,7 @@ describe("the admin sidebar", () => {
   it("keeps the same arrangement for agents and their providers", () => {
     expect(NAV.map((item) => item.label)).not.toContain("LLM providers");
     expect(activeLabels("/llm-providers")).toEqual(["Agents"]);
+    expect(activeLabels("/mcp-servers")).toEqual(["Agents"]);
   });
 
   it("keeps the same arrangement for tables and their database connections", () => {

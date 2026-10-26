@@ -21,8 +21,13 @@ pub const CFG_PRICE_CACHED_INPUT: &str = "price_cached_input";
 pub const CFG_PRICE_CACHE_WRITE: &str = "price_cache_write";
 /// Model setting: the price of an output token, per million.
 pub const CFG_PRICE_OUTPUT: &str = "price_output";
+/// Model setting: the price of one generated image (an image model).
+pub const CFG_PRICE_PER_IMAGE: &str = "price_per_image";
+/// Model setting: the price of a million characters spoken (a speech model).
+pub const CFG_PRICE_PER_MILLION_CHARACTERS: &str = "price_per_million_characters";
 
-/// A model's prices, in currency units per million tokens. `None` is unknown.
+/// A model's prices, in currency units per million tokens (or per image, or
+/// per million characters). `None` is unknown.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Prices {
     /// Uncached input.
@@ -33,6 +38,12 @@ pub struct Prices {
     pub cache_write: Option<f64>,
     /// Output, including reasoning.
     pub output: Option<f64>,
+    /// One generated image, for an image model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_image: Option<f64>,
+    /// A million characters spoken, for a speech model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_million_characters: Option<f64>,
 }
 
 impl Prices {
@@ -50,7 +61,33 @@ impl Prices {
             cached_input: price(CFG_PRICE_CACHED_INPUT),
             cache_write: price(CFG_PRICE_CACHE_WRITE),
             output: price(CFG_PRICE_OUTPUT),
+            per_image: price(CFG_PRICE_PER_IMAGE),
+            per_million_characters: price(CFG_PRICE_PER_MILLION_CHARACTERS),
         }
+    }
+
+    /// What embedding `input_tokens` tokens cost: only the input is priced.
+    pub fn embedding_cost(&self, input_tokens: u64) -> Option<f64> {
+        self.input.map(|p| input_tokens as f64 * p / 1_000_000.0)
+    }
+
+    /// What generating `images` images that used `usage` cost: per image when
+    /// that price is set, else by the tokens the provider reported, when it
+    /// reported any and their prices are known.
+    pub fn image_cost(&self, images: u64, usage: &Usage) -> Option<f64> {
+        if let Some(p) = self.per_image {
+            return Some(images as f64 * p);
+        }
+        if usage.input_tokens == 0 && usage.output_tokens == 0 {
+            return None;
+        }
+        usage.cost(self)
+    }
+
+    /// What speaking `characters` characters cost.
+    pub fn speech_cost(&self, characters: u64) -> Option<f64> {
+        self.per_million_characters
+            .map(|p| characters as f64 * p / 1_000_000.0)
     }
 
     /// Whether a cost can be computed at all: the input and output prices are
@@ -126,6 +163,7 @@ mod tests {
             cached_input: Some(0.3),
             cache_write: Some(3.75),
             output: Some(15.0),
+            ..Prices::default()
         };
         let usage = Usage {
             input_tokens: 1_000_000,
@@ -168,5 +206,35 @@ mod tests {
         assert!(close(usage.cost(&partial), 1_000.0 / 1e6 + 20.0 / 1e6));
         // A step that used nothing is free only when the prices are known.
         assert!(close(Usage::default().cost(&partial), 0.0));
+    }
+
+    #[test]
+    fn each_kind_of_call_has_its_own_cost() {
+        let config = json!({
+            CFG_PRICE_INPUT: 0.02,
+            CFG_PRICE_PER_IMAGE: 0.04,
+            CFG_PRICE_PER_MILLION_CHARACTERS: 15,
+        });
+        let prices = Prices::from_config(config.as_object().unwrap());
+        assert!(close(prices.embedding_cost(500_000), 0.01));
+        assert!(close(prices.image_cost(2, &Usage::default()), 0.08));
+        assert!(close(prices.speech_cost(2_000), 0.03));
+        assert_eq!(Prices::default().embedding_cost(10), None);
+        assert_eq!(Prices::default().speech_cost(10), None);
+
+        // An image model priced by its tokens.
+        let by_tokens = Prices {
+            input: Some(5.0),
+            output: Some(40.0),
+            ..Prices::default()
+        };
+        let usage = Usage {
+            input_tokens: 100_000,
+            output_tokens: 10_000,
+            ..Usage::default()
+        };
+        assert!(close(by_tokens.image_cost(1, &usage), 0.5 + 0.4));
+        // No tokens reported and no price per image: unknown.
+        assert_eq!(by_tokens.image_cost(1, &Usage::default()), None);
     }
 }

@@ -85,6 +85,10 @@ members = [
     # above them, because what a module supplies *is* an `Action` (§15).
     "crates/sc-module",
     "crates/sc-llm",
+    # The MCP client (TODO-agent-skills AS4): remote MCP servers an agent's
+    # `mcp_server` trait calls. Beside `sc-llm`: stored definitions, HTTP, no
+    # agents.
+    "crates/sc-mcp",
     "crates/sc-email",
     # Layer 7 — agents: the agent record, the trait extension point, the loop
     "crates/sc-agent",
@@ -172,6 +176,7 @@ sc-stan = { path = "crates/sc-stan" }
 sc-stream = { path = "crates/sc-stream" }
 sc-module = { path = "crates/sc-module" }
 sc-llm = { path = "crates/sc-llm" }
+sc-mcp = { path = "crates/sc-mcp" }
 sc-email = { path = "crates/sc-email" }
 sc-agent = { path = "crates/sc-agent" }
 sc-workflow = { path = "crates/sc-workflow" }

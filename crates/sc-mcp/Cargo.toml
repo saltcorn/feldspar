@@ -1,0 +1,39 @@
+[package]
+name = "sc-mcp"
+description = "The MCP client: remote Model Context Protocol servers this one calls (layer 6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# No integration-test target of its own: the client is tested against this
+# server's own MCP endpoint in `sc-server`'s tests, and against small stubs in
+# the unit tests here.
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+sc-types.workspace = true
+# `_fd_mcp_servers` is stored metadata, read and written through the query
+# language, as `_fd_llm_providers` is.
+sc-catalog.workspace = true
+sc-query.workspace = true
+sc-db.workspace = true
+# `is_public`: the one definition of a public address, shared with the `http`
+# trait's guard and an SMTP override's check.
+sc-email.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+base64.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["net", "sync", "time"] }
+# `stream` (on in the workspace) reads an event stream as it arrives.
+reqwest.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
+
+[lints]
+workspace = true

@@ -131,34 +131,38 @@ use it.
 Today `sc-llm` only does chat. A provider's models need a **kind**, and the backends need three
 more calls.
 
-- [ ] **AS3.1** `LlmModelDef.kind`: `chat` (default), `embedding`, `image`, `speech`. The
+- [x] **AS3.1** `LlmModelDef.kind`: `chat` (default), `embedding`, `image`, `speech`. The
   provider admin screen lists models by kind, and each kind has its own default.
 - [x] **AS3.2** `embed(texts) -> Vec<Vec<f32>>`: OpenAI and OpenAI-compatible
   (`/embeddings`). Anthropic has no embedding endpoint, so it is refused by name. (Done with
-  AS2, which needs it: `sc_llm::embed`, named by provider and model name until AS3.1 gives
-  models a kind; not yet metered, AS3.5.)
-- [ ] **AS3.3** `generate_image(prompt, size, quality, format, background) -> bytes`: OpenAI
+  AS2, which needs it: `sc_llm::embed`. With AS3 it takes an embedding model row, resolved by
+  `sc_llm::resolve_model`, and is costed.)
+- [x] **AS3.3** `generate_image(prompt, size, quality, format, background) -> bytes`: OpenAI
   (`/images/generations`).
-- [ ] **AS3.4** `speak(text, voice, speed, format, instructions) -> bytes`: OpenAI
+- [x] **AS3.4** `speak(text, voice, speed, format, instructions) -> bytes`: OpenAI
   (`/audio/speech`).
-- [ ] **AS3.5** Costs: each call is metered and charged like a chat call (`meter.rs`, LLM
-  credits), with prices per kind on the model row.
-- [ ] **AS3.6** Tests against a stub server for each call and each refusal.
+- [x] **AS3.5** Costs: each call is metered and charged like a chat call (`meter.rs`, LLM
+  credits), with prices per kind on the model row. (Each call returns a `ModelCall`; a tool
+  hands it to `Delegator::record_call`, which ledgers it as an aside and debits the run's
+  payer. A call made outside a run, such as `embed_from` on a row write, is logged with its
+  cost and charged to nobody.)
+- [x] **AS3.6** Tests against a stub server for each call and each refusal.
 
 ## AS4 — An MCP client
 
 The server is an MCP server (`sc-server` `mcp.rs`); it cannot yet call one.
 
-- [ ] **AS4.1** An `McpConnection` definition (`_fd_mcp_servers`): name, URL, transport
+- [x] **AS4.1** An `McpConnection` definition (`_fd_mcp_servers`): name, URL, transport
   (streamable HTTP, then SSE), and headers whose values are secrets (stored as provider keys
   are, never returned by the admin API).
-- [ ] **AS4.2** Client: initialize, `tools/list` (cached with the server's `listChanged`),
+- [x] **AS4.2** Client: initialize, `tools/list` (cached with the server's `listChanged`),
   `tools/call` with a timeout, and results converted to tool-result text and images.
-- [ ] **AS4.3** Admin screen: add a server, test the connection, see its tools.
-- [ ] **AS4.4** Reaching private addresses is refused unless the definition allows it, as for
+- [x] **AS4.3** Admin screen: add a server, test the connection, see its tools.
+- [x] **AS4.4** Reaching private addresses is refused unless the definition allows it, as for
   `http` (`guard.rs`).
-- [ ] **AS4.5** Backup carries the definitions, with their secrets in the same place as LLM keys.
-- [ ] **AS4.6** Tests against an in-process MCP server (ours, `sc-server` `mcp.rs`).
+- [x] **AS4.5** Backup carries the definitions, with their secrets in the same place as LLM keys.
+  (`mcp-servers.json`, under the backup's LLM providers choice.)
+- [x] **AS4.6** Tests against an in-process MCP server (ours, `sc-server` `mcp.rs`).
 
 ## AS5 — Sandboxed, model-written JavaScript
 
@@ -240,7 +244,11 @@ Both chat surfaces show text and tool calls. They cannot ask, offer a button or 
 
 - [ ] **AS9.1** `mcp_server` (needs AS4): one configured connection. Its tools are offered as
   `<server>__<tool>`, filtered by an optional allow-list, and refused by name in `plan` and
-  `explore` unless they are marked read-only.
+  `explore` unless they are marked read-only. (`sc-mcp` gives it `tools(def)`, cached, and
+  `call_tool`, whose images go to `TraitContext::attach_image`. Its config key for the server
+  must be `server`: `deleteMcpServer` already refuses a server an agent's `mcp_server` trait
+  names by that key. Test that refusal with the trait, and record nothing for a remote
+  server's own cost.)
 - [ ] **AS9.2** `web_search`: provider `url_template` (with a header), `tavily` or `firecrawl`
   (with an API key as a secret), and include/exclude domains. Results are title, URL and
   snippet, and the `http` trait reads the pages.
