@@ -2,6 +2,33 @@
 
 Changes in reverse chronological order.
 
+## v1 import: calculated summary fields, `Array_Agg`, and deleted summary fields
+
+Two columns of a real v1 backup (fanacity) were refused on import.
+
+- **A key whose summary field is a calculated field.** The schema editor already accepted that,
+  but the restore adds keys before calculated fields (a calculated field may read through a
+  key), so the summary field was not there yet. The restore now adds such a key without its
+  summary field and sets the summary once the calculated fields are in
+  (`LaterSummaries` in `sc-server` `backup/restore.rs`). This applies to every restore, not
+  only v1 imports.
+- **A summary field that no longer exists.** v1 stores a key's summary field by name only, so
+  it can name a field that was deleted. The v1 importer now uses the key's target field (the
+  primary key) instead.
+- **Array aggregates.** An aggregation chain that ends with its `.map(…)` (or the `.distinct()`
+  after it) is now valid: its value is the mapped values as an array (`Terminal::Array` in
+  `sc-expr` `agg.rs`). This is what v1's `Array_Agg` already converted to
+  (`UserAtEventↃevent.map(r => r.attendee)`). It translates to
+  `COALESCE((SELECT jsonb_agg(v) …), jsonb_build_array())` (`AggFunc::JsonAgg`), so it is `[]`
+  over no rows like the JS `map`, and `.distinct()` becomes `jsonb_agg(DISTINCT v)`. The order of
+  the elements is not specified. A new `SqlDialect::function_name` hook lets SQLite spell these
+  `json_group_array` and `json_array`. On SQLite the value comes back as JSON text, because an
+  expression column has no declared type there (as for every computed column).
+- Tests: `sc-expr` (parse, SQL rendering, reified value, Postgres/JS parity), `sc-db-sqlite`
+  (rendered and run in SQLite, empty and not), the v1 converter (a deleted summary
+  field becomes `id`), and `a_v1_calculated_summary_field_and_an_array_aggregation_are_imported`
+  in `backup_api.rs`.
+
 ## The v1 importer converts every agent skill (TODO-agent-skills AS12)
 
 A Saltcorn 1 agent now imports with nothing left behind: every skill of `@saltcorn/agents`

@@ -84,7 +84,11 @@ impl V1Schema {
         schema
     }
 
-    fn has_field(&self, table: &str, field: &str) -> bool {
+    pub(super) fn has_table(&self, table: &str) -> bool {
+        self.tables.contains_key(table)
+    }
+
+    pub(super) fn has_field(&self, table: &str, field: &str) -> bool {
         self.tables
             .get(table)
             .is_some_and(|fields| fields.contains_key(field))
@@ -418,6 +422,11 @@ mod tests {
         assert_eq!(
             agg("CountUnique", "qty@Integer", "").unwrap(),
             "order_lineↃorder.distinct(\"qty\").length"
+        );
+        // v1's `Array_Agg` is the mapped values, with no terminal after them.
+        assert_eq!(
+            agg("Array_Agg", "qty@Integer", "").unwrap(),
+            "order_lineↃorder.map(r => r.qty)"
         );
         assert_eq!(
             agg("Latest at", "qty@Integer", "").unwrap(),

@@ -1018,6 +1018,17 @@ impl<'a> Translator<'a> {
             Terminal::MaxBy(sel) | Terminal::MinBy(sel) => {
                 self.ordered_selection(chain, &rel, &alias, sel, extra)
             }
+            Terminal::Array => {
+                let value = self.mapped_value(chain, &rel, &alias)?;
+                self.agg(
+                    &rel,
+                    &alias,
+                    AggFunc::JsonAgg,
+                    chain.distinct,
+                    Some(value),
+                    extra,
+                )
+            }
         }
     }
 
@@ -1136,8 +1147,8 @@ impl<'a> Translator<'a> {
         untranslatable("this aggregate needs a selector or a preceding `map`")
     }
 
-    /// The mapped value for `includes`/`join` (a preceding `map` is required by
-    /// validation).
+    /// The mapped value for `includes`/`join`/an array (a preceding `map` is
+    /// required by validation, and is what makes a chain an array).
     fn mapped_value(
         &mut self,
         chain: &Chain,
@@ -2244,6 +2255,19 @@ mod tests {
         assert!(sql.contains("jsonb_extract_path_text"), "got: {sql}");
         assert!(
             sql.contains("SELECT count(*) FROM \"reviews\""),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn an_array_of_a_relations_values_is_a_json_aggregate() {
+        let stmt = Select::from(Source::table("books")).columns(vec![Projection::expr(
+            value_expr("reviewsↃbook.map(r => r.reviewer)"),
+        )]);
+        let (sql, _) = Pg.render(&stmt.into()).unwrap();
+        assert!(
+            sql.contains("COALESCE((SELECT jsonb_agg(\"_fd_a1\".\"reviewer\") FROM \"reviews\"")
+                && sql.contains("jsonb_build_array()"),
             "got: {sql}"
         );
     }

@@ -159,4 +159,17 @@ async fn calc_field_values_agree_symbolic_and_reified() {
         reified_value(&ev, "double * 2", &[("double", Value::Int(200))]).await,
         "400"
     );
+
+    // An array aggregate: Postgres's jsonb text spaces its elements, so the
+    // two are compared as JSON.
+    let json = |text: String| serde_json::from_str::<serde_json::Value>(&text).unwrap();
+    let src = "reviewsↃbook.map(r => r.id)";
+    assert_eq!(
+        json(sql_value(&client, &empty, src).await),
+        serde_json::json!([1, 2])
+    );
+    assert_eq!(
+        json(reified_value(&ev, src, &[]).await),
+        serde_json::json!([1, 2])
+    );
 }

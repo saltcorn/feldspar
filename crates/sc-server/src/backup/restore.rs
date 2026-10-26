@@ -181,15 +181,19 @@ pub async fn restore_backup(
     // the columns it reads, and a join (`authorⱵname`) reads through a `Key` —
     // so the calculated fields wait for every reference. One pass per table would
     // make a backup's column order decide whether half of them survived.
+    // A reference whose summary field is a calculated field of its target
+    // cannot name it yet: it goes in without, and gets it after the last pass.
+    let mut summaries = LaterSummaries::default();
     for pass in [FieldPass::Plain, FieldPass::Reference] {
         for name in &restored_tables {
-            restore_fields(catalog, &archive, name, pass, &mut report).await;
+            restore_fields(catalog, &archive, name, pass, &mut summaries, &mut report).await;
         }
     }
     // The users table's own references wait for the same pass, for the same
     // reason: a `Key` from `users` onto a table of the backup has nothing to
     // resolve against until that table is here.
     for (field_name, field) in users.deferred_fields(FieldPass::Reference) {
+        let field = summaries.hold_back(catalog, sc_auth::USERS_TABLE, &field);
         let result = add_field(catalog, sc_auth::USERS_TABLE, &field).await;
         report.outcome(&format!("column `users.{field_name}`"), result);
     }
@@ -201,6 +205,7 @@ pub async fn restore_backup(
         &mut report,
     )
     .await;
+    summaries.apply(catalog, &mut report).await;
 
     // The key the backup's Secret values were sealed with, to open each one and
     // seal it again under this server's own key — which is never replaced, so a
@@ -983,6 +988,7 @@ async fn restore_fields(
     archive: &Archive,
     name: &str,
     pass: FieldPass,
+    summaries: &mut LaterSummaries,
     report: &mut RestoreReport,
 ) {
     let missing = match missing_fields(catalog, archive, name, pass) {
@@ -996,8 +1002,99 @@ async fn restore_fields(
         // The primary key travels as what it is — a field that says it is one —
         // so a restored table has the key the backup had, composite or not.
         // Nothing invents a key here or anywhere else (GOALS).
+        let field = summaries.hold_back(catalog, name, &field);
         let result = add_field(catalog, name, &field).await;
         report.outcome(&format!("column `{name}.{field_name}`"), result);
+    }
+}
+
+/// The references that went in without their summary field, because it names a
+/// field of the target that was not there yet — a calculated one, which waits
+/// for every reference (a calculated field may read through one).
+#[derive(Default)]
+struct LaterSummaries {
+    /// Table, field, and the summary field it is to get.
+    held: Vec<(String, String, String)>,
+}
+
+impl LaterSummaries {
+    /// `field` as it can be added now: without its summary field when its
+    /// target does not have that field yet, which is then remembered.
+    fn hold_back(
+        &mut self,
+        catalog: &Catalog,
+        table: &str,
+        field: &Map<String, Json>,
+    ) -> Map<String, Json> {
+        let Some(kind) = field.get("kind").and_then(Json::as_object) else {
+            return field.clone();
+        };
+        let text = |key: &str| kind.get(key).and_then(Json::as_str).unwrap_or_default();
+        let (target, summary) = (text("target_table"), text("summary_field"));
+        if text("type") != "key" || summary.is_empty() {
+            return field.clone();
+        }
+        let present = match catalog.get(target) {
+            Ok(Some(target)) => target.field(summary).is_some(),
+            // An unknown target is the schema editor's to refuse, by name.
+            _ => true,
+        };
+        if present {
+            return field.clone();
+        }
+        let name = field.get("name").and_then(Json::as_str).unwrap_or_default();
+        self.held
+            .push((table.to_owned(), name.to_owned(), summary.to_owned()));
+        let mut field = field.clone();
+        if let Some(Json::Object(kind)) = field.get_mut("kind") {
+            kind.remove("summary_field");
+        }
+        field
+    }
+
+    /// Give each held-back reference its summary field, now that the fields it
+    /// names are here. One still refused is reported, the reference kept.
+    async fn apply(self, catalog: &Catalog, report: &mut RestoreReport) {
+        for (table, field, summary) in self.held {
+            let result = async {
+                let live = catalog.require(&table)?;
+                let Some(DataFieldKind::Key {
+                    target_table,
+                    target_field,
+                    ..
+                }) = live.field(&field).map(|f| f.kind.clone())
+                else {
+                    // The reference itself was refused, and reported as such.
+                    return Ok(());
+                };
+                let kind = DataFieldKind::Key {
+                    target_table,
+                    target_field,
+                    summary_field: Some(sc_catalog::FieldId(summary.clone())),
+                };
+                schema_edit::apply(
+                    catalog,
+                    &[schema_edit::Operation::AlterField {
+                        table: table.clone(),
+                        field: field.clone(),
+                        settings: schema_edit::FieldSettings {
+                            kind: Some(kind),
+                            ..Default::default()
+                        },
+                    }],
+                    &schema_edit::ApplyOptions::default(),
+                )
+                .await
+                .map(|_| ())
+            }
+            .await;
+            if let Err(e) = result {
+                report.skipped(format!(
+                    "summary field `{summary}` of column `{table}.{field}`: {}",
+                    e.causes()
+                ));
+            }
+        }
     }
 }
 

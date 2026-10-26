@@ -16,6 +16,8 @@
 //!   Numbered is what makes a re-used parameter work: a named custom query whose
 //!   `:q` appears twice renders the same number twice and is bound once, exactly
 //!   as `$1` twice is under Postgres.
+//! - **JSON functions**: `jsonb_agg` is `json_group_array` and `jsonb_build_array`
+//!   is `json_array` ([`SqlDialect::function_name`]).
 //! - **`ILIKE`**: SQLite has no such operator, because it does not need one —
 //!   its `LIKE` is already case-insensitive for ASCII. Spelling it `LIKE` is the
 //!   whole of the divergence, which is why [`SqlDialect::binary_op`] is a hook
@@ -60,6 +62,16 @@ impl SqlDialect for SqliteDialect {
 
     fn is_sqlite(&self) -> bool {
         true
+    }
+
+    /// The JSON functions SQLite names differently from Postgres. SQLite's
+    /// `json_group_array` is `[]` over no rows, where `jsonb_agg` is null.
+    fn function_name<'a>(&self, name: &'a str) -> &'a str {
+        match name {
+            "jsonb_agg" => "json_group_array",
+            "jsonb_build_array" => "json_array",
+            other => other,
+        }
     }
 
     /// SQLite has no row locks: a write transaction (`BEGIN IMMEDIATE`) holds
@@ -158,6 +170,44 @@ mod tests {
 
         let (sql, _) = render(Delete::from("users").filter(Expr::col("id").eq(Expr::lit(7_i64))));
         assert_eq!(sql, "DELETE FROM \"users\" WHERE (\"id\" = ?1)");
+    }
+
+    #[test]
+    fn a_json_array_aggregate_is_sqlites_json_group_array() {
+        // What `sc-expr` builds for `childrenↃparent.map(r => r.v)`.
+        let agg = Expr::Func {
+            name: "COALESCE".into(),
+            args: vec![
+                Expr::Subquery(Box::new(Select::from(Source::table("t")).columns(vec![
+                    Projection::expr(Expr::Agg {
+                        func: "jsonb_agg".into(),
+                        distinct: false,
+                        args: vec![Expr::col("v")],
+                    }),
+                ]))),
+                Expr::Func {
+                    name: "jsonb_build_array".into(),
+                    args: vec![],
+                },
+            ],
+        };
+        let (sql, _) =
+            render(Select::from(Source::table("one")).columns(vec![Projection::expr(agg)]));
+        assert_eq!(
+            sql,
+            "SELECT COALESCE((SELECT json_group_array(\"v\") FROM \"t\"), json_array()) \
+             FROM \"one\""
+        );
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE one (x); INSERT INTO one VALUES (1); CREATE TABLE t (v);")
+            .unwrap();
+        let read = |conn: &rusqlite::Connection| -> String {
+            conn.query_row(&sql, [], |row| row.get(0)).unwrap()
+        };
+        assert_eq!(read(&conn), "[]");
+        conn.execute_batch("INSERT INTO t VALUES (2), (3);")
+            .unwrap();
+        assert_eq!(read(&conn), "[2,3]");
     }
 
     #[test]

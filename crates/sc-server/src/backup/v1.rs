@@ -654,9 +654,17 @@ fn convert_field(
             key.insert("type".to_owned(), json!("key"));
             key.insert("target_table".to_owned(), json!(target));
             key.insert("target_field".to_owned(), json!(target_field));
+            // v1 keeps a summary field by name only, so it can outlive the field
+            // it names; one the target no longer has is its key instead — v1's
+            // own fallback, and a name the schema editor would refuse.
             if let Some(summary) = attrs.get("summary_field").and_then(Json::as_str)
                 && !summary.is_empty()
             {
+                let summary = if schema.has_table(&target) && !schema.has_field(&target, summary) {
+                    target_field
+                } else {
+                    summary
+                };
                 key.insert("summary_field".to_owned(), json!(summary));
             }
             out.insert("kind".to_owned(), Json::Object(key));
@@ -1806,6 +1814,8 @@ mod tests {
                         { "name": "read_at", "type": "Date", "attributes": {} },
                         { "name": "borrowed_by", "type": "Key", "reftable_name": "users",
                           "refname": "id", "attributes": { "summary_field": "email" } },
+                        { "name": "returned_by", "type": "Key", "reftable_name": "users",
+                          "refname": "id", "attributes": { "summary_field": "deleted" } },
                         { "name": "cover", "type": "File" },
                         { "name": "shelf", "type": "Rating" },
                         { "name": "pages_left", "type": "Integer", "calculated": true,
@@ -2015,6 +2025,9 @@ mod tests {
             json!("email")
         );
         assert_eq!(field("borrowed_by")["type"], Json::Null);
+        // v1 does not keep a summary field in step with the target's fields; one
+        // the target no longer has becomes the key it points at.
+        assert_eq!(field("returned_by")["kind"]["summary_field"], json!("id"));
         // A v1 file field points into the store this import creates.
         assert_eq!(field("cover")["kind"]["type"], json!("file"));
         assert_eq!(field("cover")["kind"]["store"], json!("BooksDB"));

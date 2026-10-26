@@ -1515,6 +1515,98 @@ async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported(
     Ok(())
 }
 
+/// Two things a real v1 import tripped on: a key whose summary field is a
+/// (stored) calculated field of its target, and an `Array_Agg` aggregation. And
+/// a summary field v1 kept after the field it named was deleted.
+#[tokio::test]
+async fn a_v1_calculated_summary_field_and_an_array_aggregation_are_imported()
+-> sc_error::Result<()> {
+    let archive = with_pack(V1_ORDERS_BACKUP, |pack| {
+        let tables = pack["tables"].as_array_mut().unwrap();
+        for table in tables.iter_mut() {
+            let name = table["name"].as_str().unwrap().to_owned();
+            let fields = table["fields"].as_array_mut().unwrap();
+            match name.as_str() {
+                "order" => {
+                    fields.push(json!({
+                        "name": "label", "label": "Label", "type": "String",
+                        "calculated": true, "stored": true, "expression": "name + '!'",
+                        "attributes": {}
+                    }));
+                    fields.push(json!({
+                        "name": "qtys", "label": "Qtys", "type": "JSON",
+                        "calculated": true, "stored": true, "expression": "__aggregation",
+                        "attributes": { "table": "order_line", "ref": "order",
+                                        "agg_field": "qty@Integer", "aggregate": "Array_Agg",
+                                        "aggwhere": "" }
+                    }));
+                }
+                "order_line" | "users" => {
+                    let summary = if name == "users" {
+                        "deleted_long_ago"
+                    } else {
+                        "label"
+                    };
+                    for field in fields.iter_mut() {
+                        if field["type"] == json!("Key") {
+                            field["attributes"]["summary_field"] = json!(summary);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    let mut server = setup().await?;
+    let report = restore_everything(&mut server, &archive).await;
+    let kind = |fields: &Value, name: &str| -> Value {
+        fields
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no `{name}`: {fields} / {report}"))["kind"]
+            .clone()
+    };
+    let (_, lines) = server
+        .client
+        .send("GET", "/api/tables/order_line/fields", None)
+        .await;
+    assert_eq!(
+        kind(&lines, "order")["summary_field"],
+        json!("label"),
+        "{report}"
+    );
+    let (_, users) = server
+        .client
+        .send("GET", "/api/tables/users/fields", None)
+        .await;
+    assert_eq!(
+        kind(&users, "current_order")["summary_field"],
+        json!("id"),
+        "{report}"
+    );
+    let (_, order) = server
+        .client
+        .send("GET", "/api/tables/order/fields", None)
+        .await;
+    assert_eq!(
+        kind(&order, "qtys")["expression"],
+        json!("order_lineↃorder.map(r => r.qty)")
+    );
+    assert!(!report_has(&report, "warnings", "qtys"), "{report}");
+    assert!(!report_has(&report, "warnings", "summary"), "{report}");
+
+    let (status, rows) = server
+        .client
+        .send("GET", "/api/tables/order/rows", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(rows[0]["label"], json!("My things!"), "{rows}");
+    assert_eq!(rows[0]["qtys"], json!([5]), "{rows}");
+    Ok(())
+}
+
 /// A server with the `BooksDB` store defined at its own temp path, which is
 /// where a BooksDB import's files go.
 async fn setup_for_booksdb() -> sc_error::Result<Server> {

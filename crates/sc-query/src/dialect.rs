@@ -69,6 +69,13 @@ pub trait SqlDialect {
         Some(" FOR UPDATE")
     }
 
+    /// The name a function or aggregate is spelled with in this dialect.
+    /// Expressions are built with Postgres's names; a dialect that spells one
+    /// differently maps it here. The name is structural, never user data.
+    fn function_name<'a>(&self, name: &'a str) -> &'a str {
+        name
+    }
+
     /// Whether this is SQLite's spelling of SQL. The renderer never asks; the
     /// few hand-written statements whose functions differ between the two
     /// backends (the change log's JSON handling, §14.12) do.
@@ -511,7 +518,7 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
             Expr::Unary { op, e } => self.unary(*op, e),
             Expr::Func { name, args } => {
                 // The function name is structural (from the AST), not user data.
-                self.push(name);
+                self.push(self.dialect.function_name(name));
                 self.push("(");
                 for (i, a) in args.iter().enumerate() {
                     if i > 0 {
@@ -528,7 +535,7 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                 args,
             } => {
                 // Both the name and (structurally) the shape come from code.
-                self.push(func);
+                self.push(self.dialect.function_name(func));
                 self.push("(");
                 if *distinct {
                     self.push("DISTINCT ");
