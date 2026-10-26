@@ -47,6 +47,7 @@ sha2.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
 uuid.workspace = true
 # `process`: the build step spawns the bundler (design §13.3); `rt`: a
 # server-rendered site resizes an image off the async threads.

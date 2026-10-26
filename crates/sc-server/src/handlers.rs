@@ -5219,7 +5219,15 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let apps = list_applications(&catalog).await?;
-                let out: Vec<Json> = apps.iter().map(application_api_json).collect();
+                let hosts = sc_app::list_build_hosts(&catalog).await?;
+                let out: Vec<Json> = apps
+                    .iter()
+                    .map(|app| {
+                        let mut body = application_api_json(app);
+                        builds_on_hosts(&mut body, &hosts);
+                        body
+                    })
+                    .collect();
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
         }
@@ -6439,12 +6447,41 @@ pub fn admin_handlers_with(
                     .await?
                     .ok_or_else(|| Error::not_found(format!("no application with id {id}")))?;
                 let spec = sc_app::app_target_spec(&app, &target)?;
-                // A machine without the toolchain is told so now, as a refusal,
-                // rather than by a job that fails minutes into an install.
-                sc_app::require_target_ready(&spec)?;
                 let store = app_source_from_config(&app.framework)?.store.0;
                 let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
                 let log_path = sc_app::target_log_path(&spec, &stamp);
+                // What this server cannot build goes to a build host that can,
+                // as a job it asks for (`TODO-build-hosts.md` B2.2).
+                if !sc_app::app_target_readiness(&app, &target)?.is_ready() {
+                    let hosts = sc_app::list_build_hosts(&catalog).await?;
+                    if sc_app::host_for_target(&hosts, &spec.name, chrono::Utc::now()).is_some() {
+                        let _queueing = sc_app::lock_build_queue().await;
+                        if let Some(open) = sc_app::latest_build_job(&catalog, id.0, &spec.name)
+                            .await?
+                            .filter(|j| j.state.is_open())
+                        {
+                            return Ok(HandlerResponse::ok(remote_job_json(&open)));
+                        }
+                        // A build host never generates code: the client and
+                        // runtime are written here before the job is queued.
+                        sc_app::prepare_remote_target(&catalog, &app, apps.triggers()).await?;
+                        let job = sc_app::queue_build_job(
+                            &catalog,
+                            sc_app::QueuedJob {
+                                application: id.0,
+                                target: &spec.name,
+                                label: &spec.label,
+                                store: &store,
+                                log_path: &log_path,
+                            },
+                        )
+                        .await?;
+                        return Ok(HandlerResponse::ok(remote_job_json(&job)));
+                    }
+                }
+                // A machine without the toolchain is told so now, as a refusal,
+                // rather than by a job that fails minutes into an install.
+                sc_app::require_target_ready(&spec)?;
                 // Owned, because `spec` moves into the build below.
                 let (name, label) = (spec.name.clone(), spec.label.clone());
                 let job = crate::target_builds::NewJob {
@@ -6530,22 +6567,32 @@ pub fn admin_handlers_with(
     // The latest build of a target: what the UI polls while one runs, and asks
     // after a reload to pick up a build that is still going.
     reg.register("getApplicationTargetBuild", {
+        let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
+            let catalog = catalog.clone();
             let apps = apps.clone();
             async move {
                 let id = parse_app_id(ctx.path_param("id")?)?;
                 let target = ctx.path_param("target")?;
-                let job = apps
-                    .target_builds()
-                    .get(&id.to_string(), target)
-                    .ok_or_else(|| {
-                        Error::not_found(format!(
+                // Report whichever build started last: the one on this server or
+                // the one on a build host.
+                let local = apps.target_builds().get(&id.to_string(), target);
+                let remote = sc_app::latest_build_job(&catalog, id.0, target).await?;
+                let body = match (local, remote) {
+                    (Some(local), Some(remote)) if remote.created_at > local.started_at => {
+                        remote_job_json(&remote)
+                    }
+                    (Some(local), _) => target_job_json(&local),
+                    (None, Some(remote)) => remote_job_json(&remote),
+                    (None, None) => {
+                        return Err(Error::not_found(format!(
                             "`{target}` has not been built for this application since the \
                              server started"
-                        ))
-                    })?;
-                Ok(HandlerResponse::ok(target_job_json(&job)))
+                        )));
+                    }
+                };
+                Ok(HandlerResponse::ok(body))
             }
         }
     });
@@ -7255,6 +7302,84 @@ pub fn admin_handlers_with(
         }
     });
 
+    // --- build hosts (`TODO-build-hosts.md`) ---------------------------------
+    //
+    // The registry a Mac is added to as a build host. Its agent talks to
+    // `/build-agent/*` (`crate::build_agent`) with the token `createBuildHost`
+    // answers once; every decision about that token is `sc_app::build_hosts`'s.
+
+    reg.register("listBuildHosts", {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let now = chrono::Utc::now();
+                let out: Vec<Json> = sc_app::list_build_hosts(&catalog)
+                    .await?
+                    .iter()
+                    .map(|host| build_host_json(host, now))
+                    .collect();
+                Ok(HandlerResponse::ok(Json::Array(out)))
+            }
+        }
+    });
+
+    reg.register("createBuildHost", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let obj = require_object(&ctx.body)?;
+                let (host, token) = sc_app::add_build_host(
+                    &catalog,
+                    str_field(obj, "name")?,
+                    &string_array_field(obj, "targets")?,
+                )
+                .await?;
+                Ok(HandlerResponse::ok(json!({
+                    "host": build_host_json(&host, chrono::Utc::now()),
+                    "token": token,
+                }))
+                .with_status(201))
+            }
+        }
+    });
+
+    reg.register("updateBuildHost", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_build_host_id(ctx.path_param("id")?)?;
+                let obj = require_object(&ctx.body)?;
+                let host = sc_app::update_build_host(
+                    &catalog,
+                    id,
+                    str_field(obj, "name")?,
+                    &string_array_field(obj, "targets")?,
+                )
+                .await?
+                .ok_or_else(|| Error::not_found(format!("there is no build host `{id}`")))?;
+                Ok(HandlerResponse::ok(build_host_json(
+                    &host,
+                    chrono::Utc::now(),
+                )))
+            }
+        }
+    });
+
+    reg.register("deleteBuildHost", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_build_host_id(ctx.path_param("id")?)?;
+                let deleted = sc_app::delete_build_host(&catalog, id).await?;
+                Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
+            }
+        }
+    });
+
     // --- the Analytics UI (analytics TODO A1.13) -----------------------------
     crate::analytics::register(&mut reg, catalog.clone());
     crate::public_datasets::register(&mut reg, catalog.clone(), fetch);
@@ -7680,6 +7805,7 @@ pub(crate) fn application_json(app: &Application) -> Json {
                     "readiness": {
                         "ready": readiness.is_ready(),
                         "missing": readiness.missing,
+                        "from_environment": readiness.from_environment,
                     },
                 })
             })
@@ -10603,6 +10729,24 @@ fn api_token_json(token: &sc_auth::ApiToken) -> Json {
     })
 }
 
+/// A build host as the admin API answers it (`build_host_schema`).
+fn build_host_json(host: &sc_app::BuildHost, now: chrono::DateTime<chrono::Utc>) -> Json {
+    json!({
+        "id": host.id,
+        "name": host.name,
+        "targets": host.targets,
+        "created_at": host.created_at,
+        "last_seen_at": host.last_seen_at,
+        "online": host.is_online(now),
+        "report": host.report,
+    })
+}
+
+fn parse_build_host_id(raw: &str) -> Result<uuid::Uuid> {
+    uuid::Uuid::parse_str(raw)
+        .map_err(|_| Error::invalid(format!("`{raw}` is not a valid build host id")))
+}
+
 fn parse_api_token_id(raw: &str) -> Result<uuid::Uuid> {
     uuid::Uuid::parse_str(raw)
         .map_err(|_| Error::invalid(format!("`{raw}` is not a valid API token id")))
@@ -10764,7 +10908,50 @@ fn target_job_json(job: &crate::target_builds::TargetJob) -> Json {
         "size": job.artifact.as_ref().map(|a| a.size),
         "log": job.artifact.as_ref().map(|a| a.log.clone()),
         "error": job.error,
+        "build_host": Json::Null,
     })
+}
+
+/// A build host's job in the shape of [`target_job_json`], with its host.
+fn remote_job_json(job: &sc_app::BuildJob) -> Json {
+    json!({
+        "target": job.target,
+        "label": job.label,
+        "status": job.state.as_str(),
+        "store": job.store,
+        "log_path": job.log_path,
+        "started_at": job.started_at.unwrap_or(job.created_at).to_rfc3339(),
+        "finished_at": job.finished_at.map(|t| t.to_rfc3339()),
+        "artifact": job.artifact,
+        "size": job.size,
+        "log": job.log,
+        "error": job.error,
+        "build_host": job.host_name,
+    })
+}
+
+/// For each target of a listed application that this server can't build, check
+/// whether a build host can. If one can, mark the target ready and name the host.
+fn builds_on_hosts(body: &mut Json, hosts: &[sc_app::BuildHost]) {
+    let now = chrono::Utc::now();
+    let Some(targets) = body.get_mut("targets").and_then(Json::as_array_mut) else {
+        return;
+    };
+    for target in targets {
+        let name = target["name"].as_str().unwrap_or_default().to_owned();
+        let readiness = &mut target["readiness"];
+        if readiness["ready"] == json!(true) {
+            continue;
+        }
+        if let Some(host) = sc_app::host_for_target(hosts, &name, now) {
+            *readiness = json!({
+                "ready": true,
+                "missing": [],
+                "from_environment": [],
+                "build_host": host.name,
+            });
+        }
+    }
 }
 
 /// A stored identity provider as the Authentication tab lists it: the client
@@ -11768,12 +11955,27 @@ fn form_field_json(field: &FormField) -> Json {
         "sublabel": field.sublabel,
         "pattern": field.pattern,
         "pattern_error": field.pattern_error,
+        "env_fallback": env_fallback_json(field),
         "show_if": field
             .show_if
             .iter()
             .map(|c| json!({ "name": c.setting, "values": c.allowed }))
             .collect::<Vec<_>>(),
     })
+}
+
+/// The variable a blank `field` leaves the job to, with its value in the
+/// server's environment now (null when unset). A secret's value is not shown.
+fn env_fallback_json(field: &FormField) -> Json {
+    let Some(name) = &field.env_fallback else {
+        return Json::Null;
+    };
+    let value = std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let value = match value {
+        Some(_) if field.secret => Some(sc_types::SECRET_SENTINEL.to_owned()),
+        value => value,
+    };
+    json!({ "name": name, "value": value })
 }
 
 /// An [`Operation`] as the API returns it (matching `operation_schema`): what a

@@ -93,6 +93,8 @@ mod app_trigger_api;
 mod app_uploads;
 #[path = "backup_api.rs"]
 mod backup_api;
+#[path = "build_agent.rs"]
+mod build_agent;
 #[path = "builder_route.rs"]
 mod builder_route;
 #[path = "call_api.rs"]

@@ -9022,6 +9022,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "chrono",
  "image",
  "regex-lite",
  "sc-action",
@@ -9118,6 +9119,7 @@ dependencies = [
  "sc-db-sqlite",
  "sc-dns",
  "sc-error",
+ "sc-expr",
  "sc-files",
  "sc-i18n",
  "sc-llm",

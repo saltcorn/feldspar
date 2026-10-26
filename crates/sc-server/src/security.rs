@@ -41,7 +41,7 @@
 //!   app A's socket as the signed-in user (TODO.md "Live updates" §3 rule 2).
 
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
@@ -559,7 +559,18 @@ fn is_mutating(method: &Method) -> bool {
 /// standing in for everywhere else. Nothing is given up on the routes that do
 /// honour cookies, because they ignore this header and are still checked.
 fn is_bearer_authenticated(request: &Request) -> bool {
-    crate::mcp::bearer_token(request.headers()).is_some()
+    bearer_token(request.headers()).is_some()
+}
+
+/// The header a bearer credential arrives in, and the scheme it must use.
+const BEARER_PREFIX: &str = "Bearer ";
+
+/// The token in an `Authorization: Bearer …` header, if the request has one.
+/// Which token it is (an API token, a build host's) is for the route to check.
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = value.strip_prefix(BEARER_PREFIX)?.trim();
+    (!token.is_empty()).then(|| token.to_owned())
 }
 
 /// The v1 spelling of the CSRF header: what `saltcorn.js` sends on every ajax
@@ -973,5 +984,38 @@ mod tests {
         for forbidden in ["unsafe-eval", "blob:", "worker-src"] {
             assert!(!policy.contains(forbidden), "{forbidden} in {policy}");
         }
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn only_a_bearer_credential_is_read_and_a_cookie_never_is() {
+        assert_eq!(
+            bearer_token(&headers(&[("authorization", "Bearer fspk_abc")])).as_deref(),
+            Some("fspk_abc")
+        );
+        // A session cookie is not a credential on this route, whatever it says.
+        assert_eq!(
+            bearer_token(&headers(&[("cookie", "sc_session=live")])),
+            None
+        );
+        // Nor is another scheme, nor an empty token.
+        assert_eq!(
+            bearer_token(&headers(&[("authorization", "Basic dXNlcjpwdw==")])),
+            None
+        );
+        assert_eq!(
+            bearer_token(&headers(&[("authorization", "Bearer  ")])),
+            None
+        );
     }
 }

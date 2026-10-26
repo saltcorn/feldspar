@@ -16,6 +16,7 @@
 pub mod api;
 pub mod app;
 pub mod auth;
+pub mod build_agent;
 pub mod cmdstan;
 pub mod config;
 pub mod db;

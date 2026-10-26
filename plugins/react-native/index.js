@@ -168,12 +168,14 @@ const configuration_workflow = () => ({
             label: "Android SDK directory (ANDROID_HOME)",
             type: "String",
             sublabel: "Blank: the ANDROID_HOME the server was started with.",
+            env_fallback: "ANDROID_HOME",
           },
           {
             name: "java_home",
             label: "JDK directory (JAVA_HOME)",
             type: "String",
             sublabel: "Blank: the JAVA_HOME the server was started with.",
+            env_fallback: "JAVA_HOME",
           },
           { input_type: "section_header", label: "iOS" },
           {

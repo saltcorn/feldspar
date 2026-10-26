@@ -1005,6 +1005,96 @@ is for a value derived from the row's other fields, e.g. geocoding an `address` 
   `update_rows` trigger against Postgres: it runs once on insert, once when the address changes,
   not when another field changes, and not on delete. The admin UI tests cover the new kind too.
 
+## Build hosts: no job stays open forever, and no stale result is kept
+
+A review of the build hosts found ways a build could hang or report the wrong result.
+
+- An agent that asks for a new job while the server still counts it as running one lost that job
+  (it gave up after a failed upload, restarted, or never got the answer handing it over). That
+  job now fails at once, saying so. Before, the host's heartbeats kept its lease alive forever and
+  the target could not be built again.
+- A queued job fails once no online build host builds its target, for example when the Mac went
+  offline or was removed before taking it. Before, the admin UI showed "Building…" forever.
+- Two presses of Build at the same moment queue one job, not two (within one server process).
+- An artifact whose upload ends after the job's lease ran out is no longer stored over the last
+  good one. The agent is told why. A failed upload leaves no `.part` file, and an `app.apk` and
+  an `app.ipa` in one folder no longer share one.
+- Build commands and install steps never see `FELDSPAR_BUILD_TOKEN`, so a package's install
+  script can't take the build host's token.
+- The rest of the review is in `TODO-build-hosts.md` (B3.6–B3.18).
+
+## Build hosts: no secrets over plain http, no signing keys left behind
+
+A job carries the app's build secrets, and an Android job its signing key. The agent now protects
+them better.
+
+- `feldspar build-agent` refuses a plain `http://` server unless it is this machine (`localhost`,
+  `127.0.0.1`, `[::1]`). `--insecure-http` allows it for testing on a trusted network and prints a
+  warning.
+- After each build, successful or not, the agent deletes the signing keys (`*.jks`, `*.keystore`,
+  `*.p12`) from its workspace. The rest of the project stays for the next build.
+
+## Settings and build targets say when a variable comes from the server's environment
+
+Clearing the Android SDK or JDK setting in the React Native module did not stop the build, because
+the shell that started the server also set `ANDROID_HOME` and `JAVA_HOME`. That was confusing.
+Now a target's readiness lists each required variable that no setting fills but the server's
+environment does, with its value.
+
+- Under Settings → Modules, an empty setting that falls back to a variable says so with the
+  variable's value on the server: "Blank, so `ANDROID_HOME` comes from the server's environment:
+  /opt/sdk". A module declares the fallback with `env_fallback: "ANDROID_HOME"` on the field. The
+  React Native module does so for the Android SDK and JDK directories. A secret's value is masked.
+- The target button's tooltip shows these lines, for example "`ANDROID_HOME` is `/opt/sdk`, from
+  the environment feldspar was started with, not from a setting."
+- The build log starts with the same lines, also on a build host.
+- The applications list carries them as `readiness.from_environment`.
+
+## Build hosts: a build host builds the targets this server cannot
+
+When the server cannot build a target (iOS on Linux) but an online build host builds it and
+reported it ready, the build button now queues a job for that host (`TODO-build-hosts.md` B2).
+The artifact lands in the store at the usual path, as if the server had built it.
+
+- New system table `_fd_build_jobs`, created at boot. Jobs survive a restart. A second press of
+  the button joins the queued or running job, and the applications list says which host builds
+  the target.
+- The server regenerates the client and runtime before queueing: the build host never generates
+  code. The agent fetches the project as a zip, without `node_modules`, `.git`, the native
+  projects and the build's outputs, and without signing keys unless the job is for Android.
+- `feldspar build-agent` now claims jobs by long-polling `POST /build-agent/claim`, unpacks each
+  into a workspace it keeps per application (`--workspace`), and builds with the same code a
+  local build runs. The log goes to `build-logs/` in the store while the build runs; the
+  artifact is streamed back, or the reason it failed.
+- Heartbeats and log pieces renew the job's lease. A job whose host stops answering for 90
+  seconds fails, and says so.
+- The admin UI follows a queued job as it follows a running one, and names the build host.
+- Tests: a fake agent drives the routes (claim, project, log, artifact, failure, a lost lease, a
+  wrong token), and the real agent builds a job against a server on a real port.
+
+## Build hosts: a Mac can be registered to build native apps for the server
+
+The server usually runs on Linux and iOS builds need macOS. A Mac can now be registered as a
+build host (`TODO-build-hosts.md` B1). This first step connects it: jobs follow in B2.
+
+- Settings → Build hosts: add a host with a name and the targets it builds (`ios`,
+  `ios_simulator`). Its token is shown once, with the command that starts the agent. Hosts can be
+  renamed, given other targets, or removed, which revokes the token. The list shows whether each
+  host is online and what each of its targets still lacks.
+- `feldspar build-agent --server <url> --token-file <path>` runs on the Mac. It asks the server
+  for work, so the Mac needs only outbound HTTPS and no database. The token is read from a file
+  or `FELDSPAR_BUILD_TOKEN`, never from the command line.
+- Every 30 seconds the agent sends a heartbeat to `POST /build-agent/heartbeat`. The server
+  answers with the targets and their requirements, and the agent checks those on its own machine.
+  An agent speaking another protocol version is refused with the `feldspar` version to install.
+- The route takes the build host's bearer token and nothing else. A build host token opens no
+  other endpoint.
+- New system table `_fd_build_hosts`, created at boot. Only the token's hash is stored.
+- A target's `requires` are now parsed by `sc_app::target_requires`, which the module manifest
+  and the agent share.
+- Tests: the store against Postgres, the routes through the router, the agent against a real
+  server on a port, and the tab's helpers.
+
 ## Session lifetime: a sign-in reads the stored setting
 
 Report: Settings → Authentication → Session lifetime set to 8760 hours, yet users still had to

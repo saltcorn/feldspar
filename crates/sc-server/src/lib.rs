@@ -28,6 +28,8 @@ mod app_agents;
 mod apps;
 mod backup;
 mod browser;
+mod build_agent;
+mod build_archive;
 mod builder;
 mod change_log_cleanup;
 mod chat;
@@ -155,6 +157,10 @@ pub fn python_adapter(config: &ServerConfig) -> std::sync::Arc<sc_python::Python
 pub fn default_python_adapter() -> std::sync::Arc<sc_python::PythonRuntime> {
     python_adapter(&ServerConfig::default())
 }
+pub use build_agent::{
+    BUILD_AGENT_CLAIM_ROUTE, BUILD_AGENT_HEARTBEAT_ROUTE, BUILD_AGENT_JOBS_ROUTE,
+};
+pub use build_archive::{pack_project, remove_signing_keys, unpack_project};
 pub use builder::{BUILDER_BOOT_ID, BUILDER_PAGE_MODE, BUILDER_PREFIX, BUILDER_VIEW_MODES};
 pub use config::{
     DEFAULT_BIND, DEFAULT_HTTPS_PORT, LOOPBACK_BASE_DOMAIN, PythonMode, ServerConfig,

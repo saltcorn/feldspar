@@ -72,6 +72,10 @@ export type FieldSpec = {
   pattern?: string | null;
   /** What to say when {@link pattern} does not match (v1's `re_invalid_error`). */
   pattern_error?: string | null;
+  /** The environment variable a blank value leaves the job to, with its value
+   * on the server now (null when unset): shown under the empty control, so a
+   * cleared setting that still takes effect from the environment says so. */
+  env_fallback?: { name: string; value?: string | null } | null;
 };
 
 /** One condition of a `show_if`: setting `name` must hold one of `values`. */
@@ -237,9 +241,23 @@ export function SettingField({
       <Form.Text muted><T text="Chosen when this was created; it cannot be changed." /></Form.Text>
     ) : null;
   // The field's own description, under the control in every kind below.
-  const description = field.sublabel ? (
-    <Form.Text muted className="d-block">{field.sublabel}</Form.Text>
-  ) : null;
+  const fallback = field.env_fallback;
+  const fromEnvironment =
+    fallback?.value && asString(value).trim() === "" ? (
+      <Form.Text className="d-block text-info">
+        <T
+          text="Blank, so {name} comes from the server's environment: {value}"
+          values={{ name: <code>{fallback.name}</code>, value: <code>{fallback.value}</code> }}
+        />
+      </Form.Text>
+    ) : null;
+  const description =
+    field.sublabel || fromEnvironment ? (
+      <>
+        {field.sublabel && <Form.Text muted className="d-block">{field.sublabel}</Form.Text>}
+        {fromEnvironment}
+      </>
+    ) : null;
   const choices = field.options.length + extraOptions.length;
   if (choices > 0 || pickerHint !== undefined) {
     return (

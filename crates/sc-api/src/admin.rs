@@ -3433,6 +3433,53 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // --- build hosts (`TODO-build-hosts.md`) ---------------------------------
+    // The machines that build an application's targets for this server: a Mac
+    // for iOS while the server runs on Linux. Its agent authenticates with the
+    // token `createBuildHost` answers, once, on `/build-agent/*` and nothing
+    // else. Deleting a host is how its token is revoked.
+
+    set.register(
+        Endpoint::new("listBuildHosts", Method::Get, api().lit("build-hosts"))
+            .output(TypeSchema::array(build_host_schema()))
+            .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new("createBuildHost", Method::Post, api().lit("build-hosts"))
+            .input(build_host_input_schema())
+            .output(TypeSchema::struct_of([
+                StructField::new("host", build_host_schema()),
+                // Shown once: the table keeps only its hash.
+                StructField::new("token", TypeSchema::text()),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "updateBuildHost",
+            Method::Put,
+            api().lit("build-hosts").param("id", ValueType::Uuid),
+        )
+        .input(build_host_input_schema())
+        .output(build_host_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    set.register(
+        Endpoint::new(
+            "deleteBuildHost",
+            Method::Delete,
+            api().lit("build-hosts").param("id", ValueType::Uuid),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "deleted",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // --- triggers -----------------------------------------------------------
     // A trigger is one event bound to one configured action (§10.2), stored in
     // `_fd_triggers`. These endpoints are the row ⇄ live-set path the SPA
@@ -4830,6 +4877,33 @@ fn api_token_grants_schema() -> TypeSchema {
             .chain([crate::mcp::ALLOW_ALL])
             .map(|key| StructField::new(key, TypeSchema::optional(TypeSchema::bool()))),
     )
+}
+
+/// A build host as the admin API answers it: never its token or the token's hash.
+fn build_host_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("id", TypeSchema::uuid()),
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("targets", TypeSchema::array(TypeSchema::text())),
+        StructField::new("created_at", TypeSchema::timestamp()),
+        StructField::new(
+            "last_seen_at",
+            TypeSchema::optional(TypeSchema::timestamp()),
+        ),
+        // Heard from within the last three heartbeats, and not turned away.
+        StructField::new("online", TypeSchema::bool()),
+        // What its agent last said: version, OS, readiness per target, and
+        // `refused` when the server turned it away (an agent too old).
+        StructField::new("report", TypeSchema::optional(TypeSchema::json())),
+    ])
+}
+
+/// What adding or changing a build host takes.
+fn build_host_input_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("targets", TypeSchema::array(TypeSchema::text())),
+    ])
 }
 
 /// One stored API token, as a list sees it.
@@ -6631,6 +6705,13 @@ fn application_schema() -> TypeSchema {
                 TypeSchema::struct_of([
                     StructField::new("ready", TypeSchema::bool()),
                     StructField::new("missing", TypeSchema::array(TypeSchema::text())),
+                    // The required variables no setting fills, which come from
+                    // the environment the server was started with, one sentence
+                    // each with the value.
+                    StructField::new("from_environment", TypeSchema::array(TypeSchema::text())),
+                    // The build host it is built on when this server cannot
+                    // build it itself (`TODO-build-hosts.md` B2.2).
+                    StructField::new("build_host", TypeSchema::optional(TypeSchema::text())),
                 ]),
             ),
         ])),
@@ -6999,8 +7080,10 @@ fn target_build_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("target", TypeSchema::text()),
         StructField::new("label", TypeSchema::text()),
-        // `running`, `succeeded` or `failed`.
+        // `queued` (waiting for a build host), `running`, `succeeded` or `failed`.
         StructField::new("status", TypeSchema::text()),
+        // The build host it is built on; none for a build on this server.
+        StructField::new("build_host", TypeSchema::optional(TypeSchema::text())),
         StructField::new("store", TypeSchema::text()),
         StructField::new("log_path", TypeSchema::text()),
         StructField::new("started_at", TypeSchema::timestamp()),
@@ -7715,6 +7798,15 @@ fn form_field_schema() -> TypeSchema {
         // (v1's `regexp`), and what to say when it does not, or null.
         StructField::new("pattern", TypeSchema::optional(TypeSchema::text())),
         StructField::new("pattern_error", TypeSchema::optional(TypeSchema::text())),
+        // The environment variable a blank value leaves the job to, and its
+        // value in the server's environment now (null when unset), or null.
+        StructField::new(
+            "env_fallback",
+            TypeSchema::optional(TypeSchema::struct_of([
+                StructField::new("name", TypeSchema::text()),
+                StructField::new("value", TypeSchema::optional(TypeSchema::text())),
+            ])),
+        ),
         // When the setting applies: every named setting holds one of its
         // values. Empty means always. The form hides a setting that does not
         // apply, and the server does not require it.

@@ -758,6 +758,115 @@ pub fn declared_framework(name: &str) -> Option<FrameworkDecl> {
     installed_frameworks().find(name).cloned()
 }
 
+/// A target's `requires`: what the machine must have before it can build.
+///
+/// ```js
+/// requires: [
+///   { env: "ANDROID_HOME", directory: true, hint: "Set the Android SDK directory …" },
+///   { command: "pod", hint: "Install CocoaPods." },
+///   { os: "macos" },
+/// ]
+/// ```
+///
+/// Each entry names **exactly one** of `env`, `command` and `os`; `directory`
+/// belongs with `env` alone, `dir_env` (a variable naming one more directory
+/// to look for the program in) with `command` alone, and `hint` with any. Anything else is refused when
+/// the module loads — a check that silently checks nothing would let a target
+/// reach Gradle with the SDK it says it needs still missing.
+pub fn target_requires(target: &str, declared: Option<&Json>) -> Result<Vec<TargetRequirement>> {
+    let Some(json) = declared.filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let Json::Array(entries) = json else {
+        return Err(Error::invalid(format!(
+            "its target `{target}`'s `requires` is not a list"
+        )));
+    };
+    let mut out = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let bad = |why: &str| {
+            Error::invalid(format!(
+                "its target `{target}`'s `requires` entry {index} {why}"
+            ))
+        };
+        let Json::Object(entry) = entry else {
+            return Err(bad("is not an object"));
+        };
+        let text = |key: &str| -> Result<Option<String>> {
+            match entry.get(key) {
+                None | Some(Json::Null) => Ok(None),
+                Some(Json::String(s)) if !s.trim().is_empty() => Ok(Some(s.trim().to_owned())),
+                Some(_) => Err(bad(&format!("gives `{key}` something that is not a name"))),
+            }
+        };
+        let (env, command, os) = (text("env")?, text("command")?, text("os")?);
+        let dir_env = text("dir_env")?;
+        if dir_env.is_some() && command.is_none() {
+            return Err(bad(
+                "sets `dir_env`, which only a `command` requirement has",
+            ));
+        }
+        let directory = match entry.get("directory") {
+            None | Some(Json::Null) => false,
+            Some(Json::Bool(b)) => *b,
+            Some(_) => return Err(bad("gives `directory` a value that is not true or false")),
+        };
+        let kind = match (env, command, os) {
+            (Some(name), None, None) => TargetRequirementKind::Env { name, directory },
+            (None, Some(name), None) if !directory => {
+                TargetRequirementKind::Command { name, dir_env }
+            }
+            (None, None, Some(name)) if !directory => TargetRequirementKind::Os { name },
+            (None, None, None) => return Err(bad("names none of `env`, `command` and `os`")),
+            _ if directory && entry.get("env").is_none() => {
+                return Err(bad("sets `directory`, which only an `env` requirement has"));
+            }
+            _ => return Err(bad("names more than one of `env`, `command` and `os`")),
+        };
+        let hint = match entry.get("hint") {
+            None | Some(Json::Null) => String::new(),
+            Some(Json::String(s)) => s.trim().to_owned(),
+            Some(_) => return Err(bad("gives `hint` something that is not text")),
+        };
+        out.push(TargetRequirement { kind, hint });
+    }
+    Ok(out)
+}
+
+/// A target's `requires` as [`target_requires`] reads them: the wire format a
+/// build host is told its targets' requirements in (`TODO-build-hosts.md`).
+pub fn requires_json(requires: &[TargetRequirement]) -> Json {
+    Json::Array(
+        requires
+            .iter()
+            .map(|requirement| {
+                let mut entry = serde_json::Map::new();
+                match &requirement.kind {
+                    TargetRequirementKind::Env { name, directory } => {
+                        entry.insert("env".into(), Json::from(name.clone()));
+                        if *directory {
+                            entry.insert("directory".into(), Json::Bool(true));
+                        }
+                    }
+                    TargetRequirementKind::Command { name, dir_env } => {
+                        entry.insert("command".into(), Json::from(name.clone()));
+                        if let Some(dir_env) = dir_env {
+                            entry.insert("dir_env".into(), Json::from(dir_env.clone()));
+                        }
+                    }
+                    TargetRequirementKind::Os { name } => {
+                        entry.insert("os".into(), Json::from(name.clone()));
+                    }
+                }
+                if !requirement.hint.is_empty() {
+                    entry.insert("hint".into(), Json::from(requirement.hint.clone()));
+                }
+                Json::Object(entry)
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

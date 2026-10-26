@@ -210,6 +210,10 @@ name = "build_updates_client"
 path = "tests/build_updates_client.rs"
 
 [[test]]
+name = "build_jobs"
+path = "tests/build_jobs.rs"
+
+[[test]]
 name = "build_from_a_sentence"
 path = "tests/build_from_a_sentence.rs"
 

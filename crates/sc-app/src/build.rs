@@ -19,8 +19,10 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
+use std::sync::Arc;
 
 use bytes::Bytes;
+use sc_action::TriggerDispatcher;
 use sc_api::{EndpointSet, generate_app_client};
 use sc_catalog::{Attrs, Catalog, FileStoreId};
 use sc_error::{Context, Error, Result};
@@ -32,6 +34,7 @@ use tokio::sync::Mutex;
 use crate::api::app_endpoints_with;
 use crate::application::{Application, FrameworkRef};
 use crate::build_cache::build_key;
+use crate::build_hosts::BUILD_TOKEN_ENV;
 use crate::declared::{
     FrameworkDecl, FrameworkSet, TargetRequirement, TargetRequirementKind, TargetSpec,
     installed_frameworks,
@@ -315,10 +318,7 @@ pub async fn build_app(cat: &Catalog, source: &AppSource) -> Result<BuildReport>
 /// reads files off a disk, so both need a store that *is* a directory; an
 /// object-store-backed app is refused here with one message rather than two
 /// (§13.3).
-fn store_root(
-    store: &std::sync::Arc<dyn sc_files::FileStore>,
-    source: &AppSource,
-) -> Result<PathBuf> {
+fn store_root(store: &Arc<dyn sc_files::FileStore>, source: &AppSource) -> Result<PathBuf> {
     store.local_path("")?.ok_or_else(|| {
         Error::config(format!(
             "file store {:?} has no local path, so it cannot host a code framework's \
@@ -432,7 +432,7 @@ pub async fn build_application(
     cat: &Catalog,
     app: &Application,
     source: &AppSource,
-    dispatcher: Option<&std::sync::Arc<sc_action::TriggerDispatcher>>,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<BuildReport> {
     let (client_path, _) = emit_generated(cat, app, source, dispatcher).await?;
     let mut report = build_app(cat, source).await?;
@@ -505,7 +505,7 @@ pub async fn build_application_if_changed(
     cat: &Catalog,
     app: &Application,
     source: &AppSource,
-    dispatcher: Option<&std::sync::Arc<sc_action::TriggerDispatcher>>,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<BuildReport> {
     let (client_path, generated) = emit_generated(cat, app, source, dispatcher).await?;
     let store = cat.require_file_store(&source.store.0)?;
@@ -564,7 +564,7 @@ async fn emit_generated(
     cat: &Catalog,
     app: &Application,
     source: &AppSource,
-    dispatcher: Option<&std::sync::Arc<sc_action::TriggerDispatcher>>,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<(Option<String>, Vec<String>)> {
     let mut written =
         emit_client(cat, app, source, &app_endpoints_with(app, cat, dispatcher)?).await?;
@@ -673,7 +673,7 @@ fn sibling(path: &str, name: &str) -> String {
 pub async fn emit_app_client(
     cat: &Catalog,
     app: &Application,
-    dispatcher: Option<&std::sync::Arc<sc_action::TriggerDispatcher>>,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<Vec<String>> {
     let source = app_source_from_config(&app.framework)?;
     // Such an app's client is one file of a generated *directory* whose hooks are
@@ -802,6 +802,11 @@ pub struct TargetReadiness {
     /// What the target requires that this machine does not have, one sentence
     /// each with its hint — empty when it is ready.
     pub missing: Vec<String>,
+    /// Required variables that no setting provides, so the build takes them
+    /// from the environment feldspar was started with. One sentence each, with
+    /// the value (`` `ANDROID_HOME` is `/opt/sdk`, … ``). This explains why
+    /// clearing a setting in the admin UI doesn't stop the build working.
+    pub from_environment: Vec<String>,
 }
 
 impl TargetReadiness {
@@ -820,6 +825,17 @@ impl TargetReadiness {
 /// are listed, so the button can say so before it is pressed.
 pub fn target_readiness(spec: &TargetSpec) -> TargetReadiness {
     readiness_in(spec, |name| std::env::var(name).ok(), std::env::consts::OS)
+}
+
+/// Whether this machine meets `requires`, against its own environment: what a
+/// build host checks for the targets it builds, which come to it as
+/// requirements alone (`TODO-build-hosts.md`).
+pub fn requirements_readiness(requires: &[TargetRequirement]) -> TargetReadiness {
+    readiness_of(
+        requires,
+        |name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()),
+        std::env::consts::OS,
+    )
 }
 
 /// [`target_readiness`] of target `target` of `app`.
@@ -850,19 +866,47 @@ fn readiness_in(
     server_env: impl Fn(&str) -> Option<String>,
     os: &str,
 ) -> TargetReadiness {
-    let var = |name: &str| {
-        spec.env
-            .get(name)
-            .cloned()
-            .or_else(|| server_env(name))
-            .filter(|v| !v.trim().is_empty())
-    };
+    let own = |name: &str| spec.env.get(name).filter(|v| !v.trim().is_empty()).cloned();
+    let inherited = |name: &str| server_env(name).filter(|v| !v.trim().is_empty());
+    let var = |name: &str| own(name).or_else(|| inherited(name));
+    let mut readiness = readiness_of(&spec.requires, var, os);
+    let mut names: Vec<&str> = Vec::new();
+    for requirement in &spec.requires {
+        let name = match &requirement.kind {
+            TargetRequirementKind::Env { name, .. } => Some(name.as_str()),
+            TargetRequirementKind::Command { dir_env, .. } => dir_env.as_deref(),
+            TargetRequirementKind::Os { .. } => None,
+        };
+        if let Some(name) = name.filter(|n| !names.contains(n)) {
+            names.push(name);
+        }
+    }
+    readiness.from_environment = names
+        .into_iter()
+        .filter(|name| own(name).is_none())
+        .filter_map(|name| {
+            let value = inherited(name)?;
+            Some(format!(
+                "`{name}` is `{value}`, from the environment feldspar was started with, \
+                 not from a setting."
+            ))
+        })
+        .collect();
+    readiness
+}
+
+/// What of `requires` is missing, with `var` as the environment the build sees.
+fn readiness_of(
+    requires: &[TargetRequirement],
+    var: impl Fn(&str) -> Option<String>,
+    os: &str,
+) -> TargetReadiness {
     TargetReadiness {
-        missing: spec
-            .requires
+        missing: requires
             .iter()
             .filter_map(|requirement| why_missing(requirement, &var, os))
             .collect(),
+        from_environment: Vec::new(),
     }
 }
 
@@ -949,7 +993,7 @@ pub async fn build_application_target(
     app: &Application,
     spec: &TargetSpec,
     log_path: &str,
-    dispatcher: Option<&std::sync::Arc<sc_action::TriggerDispatcher>>,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<TargetReport> {
     let source = app_source_from_config(&app.framework)?;
     let store = cat.require_file_store(&source.store.0)?;
@@ -960,6 +1004,30 @@ pub async fn build_application_target(
     report.store = source.store.0.clone();
     report.git_repo = store.is_git_repo();
     Ok(report)
+}
+
+/// Prepare `app` for a target build on a build host by regenerating its client
+/// and runtime, just as [`build_application_target`] does before a local build.
+/// Build hosts never generate code, so the server does it before queueing the
+/// job. Returns the store root the project is packed from.
+pub async fn prepare_remote_target(
+    cat: &Catalog,
+    app: &Application,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
+) -> Result<PathBuf> {
+    let source = app_source_from_config(&app.framework)?;
+    let store = cat.require_file_store(&source.store.0)?;
+    let root = store_root(&store, &source)?;
+    emit_generated(cat, app, &source, dispatcher).await?;
+    Ok(root)
+}
+
+/// The directory of `app`'s file store a target build works in: what a build
+/// host's job is packed from, and where its log and artifact are written.
+pub fn app_store_root(cat: &Catalog, app: &Application) -> Result<PathBuf> {
+    let source = app_source_from_config(&app.framework)?;
+    let store = cat.require_file_store(&source.store.0)?;
+    store_root(&store, &source)
 }
 
 /// Run `spec` with `root` as the file-store root: install when needed, run the
@@ -999,6 +1067,11 @@ pub async fn run_target(spec: &TargetSpec, root: &Path, log_path: &str) -> Resul
     };
 
     use std::io::Write as _;
+    // A variable a cleared setting no longer gives still reaches the build from
+    // the environment; the log says so before anything runs.
+    for line in target_readiness(spec).from_environment {
+        let _ = writeln!(log, "{line}");
+    }
     // The install shares the installer's cache with every other build, so it
     // waits its turn under [`BUILD_LOCK`]; the native build after it does not,
     // or one APK would hold every web build for a quarter of an hour.
@@ -1021,6 +1094,7 @@ pub async fn run_target(spec: &TargetSpec, root: &Path, log_path: &str) -> Resul
     let status = Command::new(&spec.command)
         .args(&spec.args)
         .envs(&spec.env)
+        .env_remove(BUILD_TOKEN_ENV)
         .current_dir(&source_dir)
         .stdout(log.try_clone().with_context(|| log_path.to_owned())?)
         .stderr(log.try_clone().with_context(|| log_path.to_owned())?)
@@ -1408,6 +1482,7 @@ async fn run_install(
     let output = Command::new(&install.command)
         .args(&install.args)
         .envs(env)
+        .env_remove(BUILD_TOKEN_ENV)
         .current_dir(source_dir)
         .output()
         .await
@@ -1934,10 +2009,26 @@ mod tests {
         );
 
         // The target's own env (the module's settings) meets one; the server's
-        // environment the other.
+        // environment the other, which is said with its value.
         spec.env.insert("ANDROID_HOME".to_owned(), sdk.clone());
         let server = |name: &str| (name == "JAVA_HOME").then(|| sdk.clone());
-        assert!(readiness_in(&spec, server, "linux").is_ready());
+        let readiness = readiness_in(&spec, server, "linux");
+        assert!(readiness.is_ready());
+        assert_eq!(
+            readiness.from_environment,
+            [format!(
+                "`JAVA_HOME` is `{sdk}`, from the environment feldspar was started with, not \
+                 from a setting."
+            )]
+        );
+        // A blank setting leaves the variable to the environment, and says so.
+        spec.env.insert("ANDROID_HOME".to_owned(), " ".to_owned());
+        let both = |_: &str| Some(sdk.clone());
+        let readiness = readiness_in(&spec, both, "linux");
+        assert!(readiness.is_ready());
+        assert_eq!(readiness.from_environment.len(), 2);
+        assert!(readiness.from_environment[0].starts_with("`ANDROID_HOME`"));
+        spec.env.insert("ANDROID_HOME".to_owned(), sdk.clone());
 
         // A value that is not a directory is not met, and says what it was.
         spec.env
@@ -2205,6 +2296,54 @@ touch ran
         let log = read_log(&tmp);
         assert!(log.contains("install sees /opt/sdk"), "{log}");
         assert!(log.contains("gradle sees /opt/sdk and /opt/jdk"), "{log}");
+        assert!(!log.contains("from the environment"), "{log}");
+    }
+
+    /// A required variable no setting fills is taken from the environment the
+    /// server was started with, and the log says so with its value before the
+    /// build runs.
+    #[tokio::test]
+    async fn a_variable_from_the_servers_environment_is_named_in_the_log() {
+        let tmp = TempDir::new("targetinherit");
+        let web = tmp.path().join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        write_script(
+            &web,
+            "apk.sh",
+            "#!/bin/sh\nset -e\nmkdir -p out\nprintf x > out/app.apk\n",
+        );
+        let mut spec = target_spec("apk.sh");
+        spec.requires = vec![env_requirement("HOME", "")];
+        let home = std::env::var("HOME").unwrap();
+
+        run_target(&spec, tmp.path(), LOG).await.unwrap();
+        let log = read_log(&tmp);
+        assert!(
+            log.starts_with(&format!(
+                "`HOME` is `{home}`, from the environment feldspar was started with"
+            )),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_build_hosts_token_never_reaches_the_build() {
+        let tmp = TempDir::new("targettoken");
+        let web = tmp.path().join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        write_script(
+            &web,
+            "apk.sh",
+            "#!/bin/sh\nset -e\nmkdir -p out\nprintf %s \"${FELDSPAR_BUILD_TOKEN-unset}\" > out/app.apk\n",
+        );
+        // Only this test sets the variable, so no other test can see it change.
+        unsafe { std::env::set_var(BUILD_TOKEN_ENV, "fsbh_secret") };
+
+        run_target(&target_spec("apk.sh"), tmp.path(), LOG)
+            .await
+            .unwrap();
+        let apk = std::fs::read_to_string(web.join("out/app.apk")).unwrap();
+        assert_eq!(apk, "unset");
     }
 
     #[tokio::test]

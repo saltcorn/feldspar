@@ -45,7 +45,7 @@ describe("the current application's sidebar links", () => {
     const android = {
       name: "android",
       label: "Android APK",
-      readiness: { ready: true, missing: [] },
+      readiness: { ready: true, missing: [], from_environment: [] },
     };
     const native = { ...react, targets: [android] };
     const links = appNavLinks(native, null, admin);

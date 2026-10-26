@@ -19,6 +19,8 @@ mod api_queries;
 mod auth_token;
 #[path = "backup.rs"]
 mod backup;
+#[path = "build_agent.rs"]
+mod build_agent;
 #[path = "build_app.rs"]
 mod build_app;
 #[path = "build_script.rs"]
