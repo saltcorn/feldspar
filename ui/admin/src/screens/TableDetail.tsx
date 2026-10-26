@@ -562,11 +562,6 @@ function TableData({
                   to a table, it *is* the table, so forgetting it would be
                   deleting it — which is the item below, with the confirmation
                   that says so. */}
-              {/* Nor for a metadata table, whose row is what puts it on the
-                  list: forgetting it is the "remove" below. */}
-              {configured && !provided && !metadata && (
-                <Dropdown.Item onClick={() => void forget()}><T text="Forget settings" /></Dropdown.Item>
-              )}
               {/* Not on a metadata table: its rows are Saltcorn's own — the
                   users table among them — and emptying one in a click would
                   lock the admin out. Row by row, in the data grid, it still can. */}
@@ -1426,11 +1421,6 @@ function Settings({
           <Button type="submit" size="sm" disabled={busy}>
             <T text="Save settings" />
           </Button>
-          {settings?.configured && (
-            <Form.Text muted className="d-block mt-2">
-              &ldquo;<T text="Forget settings”, on the table-data menu above, returns the table to admin-only. It never touches the table or its rows." />
-            </Form.Text>
-          )}
         </Form>
       </Card.Body>
     </Card>
