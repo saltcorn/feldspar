@@ -200,9 +200,6 @@ export function BackupTab() {
             <div className="card-header">
               <div>
                 <h3 className="card-title"><T text="Restore" /></h3>
-                <p className="card-subtitle text-secondary mb-0">
-                  <T text="Read a backup file and put back the parts of it you choose. A Saltcorn 1 backup works too: its tables, rows, users, files and actions are imported, and the restore says what it could not bring across. Nothing already on this server is deleted or overwritten: tables, users and file stores that are already here are left as they are, and the restore says what it skipped. Restored applications are built and start serving straight away, so a restore that includes one takes as long as its build does." />
-                </p>
               </div>
             </div>
             <div className="card-body">
@@ -226,7 +223,9 @@ export function BackupTab() {
                   e.target.value = "";
                 }}
               />
-
+              <p className="form-hint mt-3 mb-0 text-secondary">
+                <T text="Restore a Feldspar or Saltcorn v1.x backup file to this instance." />
+              </p>
               {restore.stage === "done" && (
                 <div className="mt-3">
                   <RestoreReport report={restore.report} />
@@ -734,9 +733,8 @@ function RestoreReport({ report }: { report: RestoreBackupResponse }) {
           <strong>
             {report.restored.length === 0
               ? "Nothing was restored."
-              : `Restored ${report.restored.length} ${
-                  report.restored.length === 1 ? "thing" : "things"
-                }.`}
+              : `Restored ${report.restored.length} ${report.restored.length === 1 ? "thing" : "things"
+              }.`}
           </strong>
           {report.warnings.length > 0 && (
             <>
@@ -855,7 +853,7 @@ function AutomatedBackups({
         <div>
           <h3 className="card-title"><T text="Automated backups" /></h3>
           <p className="card-subtitle text-secondary mb-0">
-            <T text="Backups sent on a schedule to a directory on the server, an SFTP server or an S3-compatible bucket, each with its own choice of what to include. Backups there older than the retention period are deleted." />
+            <T text="Scheduled backups to a directory on the server, an SFTP server or an S3-compatible bucket, with a set retention period." />
           </p>
         </div>
         <div className="card-actions">
