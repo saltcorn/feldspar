@@ -1141,6 +1141,12 @@ fn constraint_from_backup(obj: &Map<String, Json>) -> Result<TableConstraint> {
         "full_text_search" => ConstraintKind::FullTextSearch {
             language: text("language").unwrap_or_else(|| "english".to_owned()),
         },
+        "vector_index" => ConstraintKind::VectorIndex {
+            field: fields
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::invalid("a vector index entry needs its `fields`"))?,
+        },
         "formula" => ConstraintKind::Formula {
             formula: text("formula")
                 .ok_or_else(|| Error::invalid("a row constraint entry needs a `formula`"))?,
@@ -1531,7 +1537,12 @@ async fn insert_batch(catalog: &Catalog, table: &Table, batch: &[Json]) -> Resul
         let mut row = Vec::with_capacity(columns.len());
         for column in &columns {
             let json = obj.get(column).unwrap_or(&Json::Null);
-            row.push(Expr::lit(values::column_value(table, column, json)?));
+            // A vector is cast to its column's type: SQLite stores the blob
+            // the cast makes.
+            row.push(sc_catalog::write_expr(
+                table.field(column),
+                values::column_value(table, column, json)?,
+            ));
         }
         rows.push(row);
     }

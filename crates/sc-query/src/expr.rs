@@ -264,6 +264,10 @@ pub enum Expr {
     /// every backend (AS1.2): what a read ordered by relevance orders by,
     /// descending.
     TextRank(Box<crate::TextSearch>),
+    /// The cosine distance from a vector column to a given vector, **lower is
+    /// nearer** on every backend (TODO-agent-skills AS2.3): what a `nearest`
+    /// read orders by, ascending. See [`crate::vector`].
+    VectorDistance(Box<crate::VectorDistance>),
 }
 
 impl Expr {

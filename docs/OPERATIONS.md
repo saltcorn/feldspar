@@ -24,6 +24,7 @@ Contents:
 8. [Day-to-day operations](#8-day-to-day-operations)
 9. [Bayesian models with Stan](#9-bayesian-models-with-stan)
 10. [Geometry with PostGIS](#10-geometry-with-postgis)
+11. [Vectors with pgvector](#11-vectors-with-pgvector)
 
 ---
 
@@ -884,6 +885,7 @@ Only relevant on a development machine (README §11).
 | `DATABASE_URL` | the maintenance connection per-test databases are created and dropped from. Overrides the `test` environment in `feldspar.toml` |
 | `SC_TEST_TEMPLATE` | the template each per-test database is cloned from; it must be **empty**, since every test inherits whatever is in it. Overrides `test_template` in the file. Leave it unset to use Postgres's `template1`; set it on a machine whose `template1` has a stale collation version |
 | `SC_TEST_POSTGIS_TEMPLATE` | the database a **PostGIS** test database is cloned from (default `feldspar_postgis_template`, §10.3). A test that needs PostGIS skips with a message when it does not exist |
+| `SC_TEST_PGVECTOR_TEMPLATE` | the database a **pgvector** test database is cloned from (default `feldspar_pgvector_template`, §11.3). A test that needs pgvector skips with a message when it does not exist |
 | `SC_TSC` | path to a TypeScript compiler for the generated-client type-check tests |
 | `SC_TEST_NPM`, `SC_TEST_MQTT_BROKER` | opt in to the tests that need a real npm registry and a real MQTT broker |
 | `SC_PRINT_SKILL` | print the generated `SKILL.md` during its test, for reading it |
@@ -1975,3 +1977,63 @@ from *Other map hosts* to stop it again.
 The layers are then drawn on a plain background, and labels are left off, because the fonts
 come from the base map. Or serve a style and its tiles yourself (for example with
 [Martin](https://martin.maplibre.org) or a PMTiles file behind a web server) and name its URL.
+
+## 11. Vectors with pgvector
+
+A **vector field** holds an embedding: a fixed number of floats (`vector(1536)`), which a read can
+order its rows by the cosine distance to — `?nearest=embedding.[0.1,…]` or
+`?nearest=embedding.some text` in REST, `nearest: { field, to }` in GraphQL. On **SQLite** this
+needs nothing: a vector is stored as a blob of 32-bit floats and the distance is computed by a
+function the driver registers, for every row of the table — so a nearest read of a SQLite table
+of more than 50,000 rows is refused. On **PostgreSQL** it needs the **pgvector** extension in
+Feldspar's database, and an HNSW **vector index** (a constraint on the table's Constraints tab)
+answers a nearest read without reading every row.
+
+### 11.1 Installing it
+
+pgvector is a package for the PostgreSQL server, matching its major version:
+
+```sh
+sudo apt install postgresql-17-pgvector      # Debian 13; postgresql-16-pgvector on Ubuntu 24.04
+```
+
+It is not a *trusted* extension, so adding it to the database needs a superuser, once:
+
+```sh
+sudo -u postgres psql -d feldspar -c 'CREATE EXTENSION IF NOT EXISTS vector'
+```
+
+On every start the server looks for it, and tries `CREATE EXTENSION vector` itself when its role
+may. It says what it found:
+
+```
+feldspar: pgvector 0.8.0; vector fields are available
+feldspar: vector fields are unavailable: vector fields need the pgvector extension, which is not
+          installed on this PostgreSQL server; install the `postgresql-17-pgvector` package …
+```
+
+Without it, everything else works and a vector field is refused with that sentence.
+
+### 11.2 Embeddings
+
+A vector field can be **computed**: its `embed_from` attribute is a formula over the row (such as
+`title + " " + body`), and its text is embedded on every insert, and on every update that
+changes a field the formula reads, by the field's `embed_model` of its `embed_provider` (blank
+for the default LLM provider). The provider must be OpenAI or OpenAI-compatible (Ollama, vLLM,
+llama.cpp, OpenRouter): Anthropic has no embedding endpoint. A write whose embedding cannot be
+computed fails, naming the field. The rows a table had before the field was added are filled in
+by the **`embed_rows`** action — run it once from a trigger after adding the field, or on a
+schedule. The field's dimensions must be the model's output size (1536 for
+`text-embedding-3-small`).
+
+### 11.3 For the test suite
+
+The tests that need pgvector clone their database from a template that already has it:
+
+```sh
+sudo -u postgres createdb -O <test role> feldspar_pgvector_template
+sudo -u postgres psql -d feldspar_pgvector_template -c 'CREATE EXTENSION vector'
+```
+
+Without it those tests print `skipped: this test needs pgvector…` and pass.
+`SC_TEST_PGVECTOR_TEMPLATE` names another template (§5.4).

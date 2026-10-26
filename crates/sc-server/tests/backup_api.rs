@@ -146,7 +146,11 @@ struct Server {
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
+    setup_in(TestDb::new().await?).await
+}
+
+/// [`setup`] over a database the caller made — one with pgvector, say.
+async fn setup_in(db: TestDb) -> sc_error::Result<Server> {
     // Neutralise any `users` table inherited from the template database before
     // bootstrap introspects, exactly as the other server tests do.
     db.client()
@@ -1760,6 +1764,91 @@ async fn what_a_backup_includes_is_remembered_as_what_was_left_out() -> sc_error
 
 /// Rows without their table's metadata would be rows nothing could read, so the
 /// server narrows the payload rather than trusting it.
+/// A vector field, its values and its HNSW index cross a backup
+/// (TODO-agent-skills AS2.6): the field as `vector(3)` with its attributes,
+/// each value as the array it was, and the index as the constraint it is.
+#[tokio::test]
+async fn a_vector_field_its_values_and_its_index_travel_in_a_backup() -> sc_error::Result<()> {
+    let Some(db) = TestDb::with_pgvector().await? else {
+        return Ok(());
+    };
+    let mut source = setup_in(db).await?;
+    let client = &mut source.client;
+    let (status, body) = client
+        .send("POST", "/api/tables", Some(json!({ "name": "docs" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for field in [
+        json!({ "name": "id", "type": "int", "primary_key": true }),
+        json!({ "name": "title", "type": "text" }),
+        json!({ "name": "embedding", "type": "vector", "attributes": { "dimensions": 3 } }),
+    ] {
+        let (status, body) = client
+            .send("POST", "/api/tables/docs/fields", Some(field))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/tables/docs/constraints",
+            Some(json!({ "type": "vector_index", "fields": ["embedding"] })),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    for (title, v) in [("east", json!([1, 0, 0])), ("north", json!([0, 0.5, 0.25]))] {
+        let (status, body) = client
+            .send(
+                "POST",
+                "/api/tables/docs/rows",
+                Some(json!({ "title": title, "embedding": v })),
+            )
+            .await;
+        assert!(status.is_success(), "{body}");
+    }
+    let archive = backup_everything(&mut source).await;
+    let rows = entry(&archive, "tables/docs/rows.ndjson");
+    assert!(rows.contains("[0.0,0.5,0.25]"), "{rows}");
+
+    let Some(db) = TestDb::with_pgvector().await? else {
+        return Ok(());
+    };
+    let mut target = setup_in(db).await?;
+    restore_everything(&mut target, &archive).await;
+    let (status, fields) = target
+        .client
+        .send("GET", "/api/tables/docs/fields", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{fields}");
+    let embedding = fields
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "embedding")
+        .cloned()
+        .expect("the vector field");
+    assert_eq!(embedding["type"], json!("vector(3)"), "{embedding}");
+    let (status, rows) = target
+        .client
+        .send("GET", "/api/tables/docs/rows?order=id", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(rows[1]["embedding"], json!([0.0, 0.5, 0.25]), "{rows}");
+    let (_, constraints) = target
+        .client
+        .send("GET", "/api/tables/docs/constraints", None)
+        .await;
+    assert!(
+        constraints
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == "vector_index" && c["fields"] == json!(["embedding"])),
+        "{constraints}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn rows_are_never_backed_up_without_their_table() -> sc_error::Result<()> {
     let mut server = setup().await?;

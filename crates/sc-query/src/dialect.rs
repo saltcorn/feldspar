@@ -644,6 +644,16 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                         "invalid SQL type name in CAST: {type_name:?}"
                     )));
                 }
+                // SQLite has no vector type to cast to: a vector is a blob, and
+                // the driver's function makes one (see `crate::vector`).
+                if self.dialect.is_sqlite()
+                    && let Some(dimensions) = crate::vector::vector_cast_dimensions(type_name)
+                {
+                    self.push("_fd_vector(");
+                    self.expr(expr)?;
+                    self.push(&format!(", {dimensions})"));
+                    return Ok(());
+                }
                 self.push("CAST(");
                 self.expr(expr)?;
                 self.push(" AS ");
@@ -653,7 +663,27 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
             }
             Expr::TextMatch(search) => self.text_match(search),
             Expr::TextRank(search) => self.text_rank(search),
+            Expr::VectorDistance(distance) => self.vector_distance(distance),
         }
+    }
+
+    /// [`Expr::VectorDistance`]: pgvector's `<=>`, or the SQLite driver's
+    /// function over the stored blobs.
+    fn vector_distance(&mut self, d: &crate::VectorDistance) -> Result<()> {
+        if self.dialect.is_sqlite() {
+            self.push("_fd_cosine_distance(");
+            self.expr(&d.column)?;
+            self.push(", ");
+            self.bind(Value::Bytes(crate::vector::vector_blob(&d.to)))?;
+            self.push(")");
+            return Ok(());
+        }
+        self.push("(");
+        self.expr(&d.column)?;
+        self.push(" <=> CAST(");
+        self.bind(Value::Json(crate::vector::vector_json(&d.to)))?;
+        self.push(" AS vector))");
+        Ok(())
     }
 
     /// [`Expr::TextMatch`] — see [`crate::search`] for what each backend gets.

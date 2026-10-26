@@ -524,7 +524,7 @@ impl RestProvider {
                     // filters are the honest exception: `?published=gte.2020` is
                     // a *string vocabulary* keyed by column, so it is typed as
                     // one rather than as a shape it does not have.
-                    .query(list_query_params())
+                    .query(list_query_params(table))
                     .output(TypeSchema::array(TypeSchema::json()))
                     .auth(read.clone())
                     .handler(HandlerRef::named(op_name("list", name))),
@@ -1531,8 +1531,11 @@ fn client_row(table: &Table, mut row: Json) -> Json {
 /// `?published=gte.2020-01-01`. Typing it as a map is honest about being a string
 /// vocabulary; typing it as anything narrower would be a promise the query string
 /// cannot keep.
-fn list_query_params() -> Vec<QueryParam> {
-    vec![
+///
+/// `nearest` (`embedding.[0.1,0.2]`, or `embedding.<text to embed>`) is only
+/// declared for a table with a vector field (TODO-agent-skills AS2.4).
+fn list_query_params(table: &Table) -> Vec<QueryParam> {
+    let mut params = vec![
         QueryParam::new("select", ValueType::Text),
         QueryParam::new("order", ValueType::Text),
         QueryParam::new("limit", ValueType::Int),
@@ -1540,8 +1543,19 @@ fn list_query_params() -> Vec<QueryParam> {
         // A full-text search phrase (TODO-agent-skills AS1.4); with no `order`,
         // the best match comes first.
         QueryParam::new("search", ValueType::Text),
-        QueryParam::new("filter", ValueType::Text).map(),
-    ]
+    ];
+    if table
+        .fields
+        .iter()
+        .any(|f| matches!(f.base.type_.as_basic(), Some(BasicType::Vector(n)) if *n > 0))
+    {
+        params.push(QueryParam::new(
+            crate::query_string::KEY_NEAREST,
+            ValueType::Text,
+        ));
+    }
+    params.push(QueryParam::new("filter", ValueType::Text).map());
+    params
 }
 
 /// What a `DELETE` answers with.

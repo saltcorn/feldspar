@@ -39,8 +39,19 @@ pub const KEY_LIMIT: &str = "limit";
 pub const KEY_OFFSET: &str = "offset";
 /// A full-text search (`search=rust -java`, TODO-agent-skills AS1.4).
 pub const KEY_SEARCH: &str = "search";
+/// The rows nearest a vector, or text embedded as one
+/// (`nearest=embedding.[0.1,0.2]`, `nearest=embedding.cheap flights`,
+/// TODO-agent-skills AS2.4).
+pub const KEY_NEAREST: &str = "nearest";
 /// Every reserved word, in the order the parser checks them.
-pub const RESERVED: [&str; 5] = [KEY_SELECT, KEY_ORDER, KEY_LIMIT, KEY_OFFSET, KEY_SEARCH];
+pub const RESERVED: [&str; 6] = [
+    KEY_SELECT,
+    KEY_ORDER,
+    KEY_LIMIT,
+    KEY_OFFSET,
+    KEY_SEARCH,
+    KEY_NEAREST,
+];
 
 /// The filters, ordering and bounds of one query string, as a [`RowQuery`].
 ///
@@ -75,7 +86,18 @@ pub fn row_query(table: &Table, pairs: &[(String, String)], row_cap: u64) -> Res
         query = query.searching(search);
     }
     let limit = bound(first(pairs, KEY_LIMIT), KEY_LIMIT)?;
-    query = query.limit(limit.map_or(row_cap, |n| n.min(row_cap)));
+    // A nearest read is ordered nearest first, ahead of any `order`, and
+    // returns a handful of rows unless a `limit` asks for more.
+    let unbounded = match first(pairs, KEY_NEAREST) {
+        Some(spec) => {
+            let nearest = crate::vector::Nearest::parse(spec)?;
+            crate::vector::vector_field(table, &nearest.field)?;
+            query = query.nearest(nearest);
+            crate::vector::DEFAULT_NEAREST
+        }
+        None => row_cap,
+    };
+    query = query.limit(limit.unwrap_or(unbounded).min(row_cap));
     if let Some(offset) = bound(first(pairs, KEY_OFFSET), KEY_OFFSET)? {
         query = query.offset(offset);
     }

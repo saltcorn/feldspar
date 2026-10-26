@@ -55,6 +55,7 @@ mod sync;
 mod table;
 mod table_meta;
 mod tx;
+mod vector;
 mod wakeups;
 
 pub use admin_host::{AdminCall, AdminHost};
@@ -75,10 +76,10 @@ pub use code_libraries::{
     load_code_library_by_name, reload_code_libraries, save_code_library, valid_code_library_name,
 };
 pub use constraint::{
-    ConstraintKind, META_KEY as CONSTRAINT_META_KEY, TableConstraint, constrained_fields,
-    create_constraint_steps, drop_constraint_steps, formula_fields, full_text_columns,
-    full_text_constraint, full_text_expression, indexed_text_search, validate_formula,
-    violated_constraint,
+    ConstraintKind, META_KEY as CONSTRAINT_META_KEY, TableConstraint, VECTOR_INDEX_METHOD,
+    constrained_fields, create_constraint_steps, drop_constraint_steps, formula_fields,
+    full_text_columns, full_text_constraint, full_text_expression, indexed_text_search,
+    validate_formula, vector_index, violated_constraint,
 };
 pub use db_connections::{
     BACKENDS, DB_CONNECTIONS_TABLE, DEFAULT_PORT, DEFAULT_SCHEMA, DbConnectionDef, DbConnectionId,
@@ -138,6 +139,7 @@ pub use table_meta::{
     load_table_meta_by_name, orphan_table_meta, save_table_meta, save_table_meta_row,
 };
 pub use tx::{AfterCommit, SharedTx};
+pub use vector::{VECTOR_SCAN_LIMIT, bootstrap_vector, write_expr};
 pub use wakeups::RunWakeups;
 
 #[cfg(test)]

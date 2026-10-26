@@ -135,6 +135,19 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
             eprintln!("feldspar: geometry fields are unavailable: {reason}");
         }
     }
+    // Vectors (TODO-agent-skills AS2.2): pgvector on the same terms.
+    match sc_catalog::bootstrap_vector(&catalog)
+        .await
+        .context("looking for pgvector")?
+    {
+        sc_db::VectorSupport::Available { version } if version != "builtin" => {
+            eprintln!("feldspar: pgvector {version}; vector fields are available");
+        }
+        sc_db::VectorSupport::Available { .. } => {}
+        sc_db::VectorSupport::Unavailable { reason } => {
+            eprintln!("feldspar: vector fields are unavailable: {reason}");
+        }
+    }
     // The TLS settings the selected environment pins (§13.5), before anything
     // reads a setting: from here every read of them — the boot's, the settings
     // screen's, `get-cfg`'s — sees the file's value, and a write is refused.

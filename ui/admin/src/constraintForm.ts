@@ -1,8 +1,9 @@
 // The model behind the constraint editor (design §5) — the half of it that is
 // not React.
 //
-// A table's constraints are four different things wearing one shape: a
-// jointly-unique key, an index, a full-text index and a row constraint. They
+// A table's constraints are five different things wearing one shape: a
+// jointly-unique key, an index, a full-text index, a vector index and a row
+// constraint. They
 // share a card and a modal because an admin asks one question of them ("what
 // rules does this table keep?"), and they share one request body because the
 // endpoint does — the `type` decides which of its fields are read.
@@ -21,13 +22,14 @@ import type { CreateConstraintRequest, ListConstraintsResponse } from "./client"
 /** One constraint as `listConstraints` reports it. */
 export type ConstraintItem = ListConstraintsResponse[number];
 
-/** The four kinds an admin can add. */
-export type ConstraintType = "unique" | "index" | "full_text_search" | "formula";
+/** The five kinds an admin can add. */
+export type ConstraintType = "unique" | "index" | "full_text_search" | "vector_index" | "formula";
 
 /** What the constraint modal holds while it is open. */
 export type ConstraintForm = {
   type: ConstraintType;
-  /** The fields ticked for a unique constraint, or the one field to index. */
+  /** The fields ticked for a unique constraint, or the one field to index
+   * (the one vector field, for a vector index). */
   fields: string[];
   /** The text-search configuration for a full-text index. */
   language: string;
@@ -91,6 +93,9 @@ export function constraintFormError(form: ConstraintForm): string | null {
   if (form.type === "index" && form.fields.length !== 1) {
     return "Choose the field to index.";
   }
+  if (form.type === "vector_index" && form.fields.length !== 1) {
+    return "Choose the vector field to index.";
+  }
   if (form.type === "full_text_search" && !form.language.trim()) {
     return "Choose a language for the search index.";
   }
@@ -117,7 +122,7 @@ export function constraintFormError(form: ConstraintForm): string | null {
  */
 export function createConstraintBody(form: ConstraintForm): CreateConstraintRequest {
   const body: CreateConstraintRequest = { type: form.type };
-  if (form.type === "unique" || form.type === "index") {
+  if (form.type === "unique" || form.type === "index" || form.type === "vector_index") {
     body.fields = form.fields;
   }
   if (form.type === "full_text_search") {
@@ -129,7 +134,12 @@ export function createConstraintBody(form: ConstraintForm): CreateConstraintRequ
   }
   // A message belongs to whichever kind can be *violated* by a row. An index
   // cannot be, so the form does not ask and the body does not carry one.
-  if (form.type !== "index" && form.type !== "full_text_search" && form.errorMessage.trim()) {
+  if (
+    form.type !== "index" &&
+    form.type !== "full_text_search" &&
+    form.type !== "vector_index" &&
+    form.errorMessage.trim()
+  ) {
     body.error_message = form.errorMessage.trim();
   }
   return body;
@@ -140,6 +150,7 @@ export function constraintTypeLabel(type: string): string {
   if (type === "unique") return "Jointly unique";
   if (type === "index") return "Index";
   if (type === "full_text_search") return "Full-text search";
+  if (type === "vector_index") return "Vector index";
   if (type === "formula") return "Row constraint";
   return type;
 }
@@ -161,6 +172,8 @@ export function constraintSummary(constraint: ConstraintItem): string {
       return constraint.expression ?? constraint.fields.join(", ");
     case "full_text_search":
       return `every text field (${constraint.language ?? "unknown"})`;
+    case "vector_index":
+      return `${constraint.fields[0] ?? ""} (nearest by cosine distance)`;
     case "formula":
       return constraint.formula ?? "";
     default:

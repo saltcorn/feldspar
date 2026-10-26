@@ -24,7 +24,9 @@ use async_graphql::dynamic::{
 use sc_catalog::{DataField, DataFieldKind, Table};
 use sc_error::{Error, Result};
 
-use super::args::{ARG_DISTINCT, ARG_LIMIT, ARG_OFFSET, ARG_ORDER_BY, ARG_SEARCH, ARG_WHERE};
+use super::args::{
+    ARG_DISTINCT, ARG_LIMIT, ARG_NEAREST, ARG_OFFSET, ARG_ORDER_BY, ARG_SEARCH, ARG_WHERE,
+};
 use super::limits::GraphqlLimits;
 use super::mutate::{self, ARG_OBJECT, ARG_PK_COLUMNS, ARG_SET};
 use super::names::{
@@ -267,11 +269,24 @@ fn row_field_resolver(field: &DataField, names: &SchemaNames) -> resolve::Resolv
     }
 }
 
-/// `where` / `search` / `order_by` / `limit` / `offset` on a collection field.
+/// `where` / `search` / `order_by` / `limit` / `offset` on a collection field,
+/// and `nearest` on one whose table has a vector field.
 fn list_arguments(field: Field, t: &TableNames) -> Field {
-    field
+    let field = field
         .argument(InputValue::new(ARG_WHERE, TypeRef::named(&t.bool_exp)))
-        .argument(InputValue::new(ARG_SEARCH, TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new(ARG_SEARCH, TypeRef::named(TypeRef::STRING)));
+    let field = match t.nearest {
+        // `{ field: "embedding", to: [0.1, …] | "text to embed" }`, as JSON:
+        // `to` is either, which no input object can say.
+        true => field.argument(
+            InputValue::new(ARG_NEAREST, TypeRef::named(names::JSON)).description(
+                "The rows nearest first: `{ field, to }`, where `to` is a vector or text \
+                 embedded with the field's model.",
+            ),
+        ),
+        false => field,
+    };
+    field
         .argument(InputValue::new(
             ARG_ORDER_BY,
             TypeRef::named_nn_list(&t.order_by),

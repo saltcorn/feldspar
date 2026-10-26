@@ -942,5 +942,8 @@
   "A user with a less privileged role cannot sign in to this application or call any of its endpoints. Public lets everybody in.": "Ein Benutzer mit einer weniger privilegierten Rolle kann sich nicht bei dieser Anwendung anmelden und keinen ihrer Endpunkte aufrufen. Öffentlich lässt alle zu.",
   "Nobody holds a more privileged role while using this application: an admin is served as this role. Admin caps nobody.": "Niemand hat bei der Verwendung dieser Anwendung eine privilegiertere Rolle: Ein Administrator wird mit dieser Rolle bedient. Administrator begrenzt niemanden.",
   "A formula that must hold for anybody to use this application, with {user} in scope as in an ownership formula ({null} when nobody is signed in), or a condition on the time. It sees the user’s own role, before the maximum above. Blank means no condition.": "Eine Formel, die erfüllt sein muss, damit jemand diese Anwendung verwenden kann, mit {user} im Gültigkeitsbereich wie in einer Eigentümerformel ({null}, wenn niemand angemeldet ist), oder eine Bedingung auf die Uhrzeit. Sie sieht die eigene Rolle des Benutzers, vor dem obigen Maximum. Leer bedeutet keine Bedingung.",
-  "Choose application": "Anwendung wählen"
+  "Choose application": "Anwendung wählen",
+  "Vector index": "Vektorindex",
+  "Vector field": "Vektorfeld",
+  "An HNSW index by cosine distance, which is what lets a nearest read (`?nearest=` in the REST API, `nearest:` in GraphQL) find the closest rows without reading every one. PostgreSQL with pgvector only; SQLite reads every row instead.": "Ein HNSW-Index nach Kosinusabstand, mit dem eine Nächste-Nachbarn-Abfrage (`?nearest=` in der REST-API, `nearest:` in GraphQL) die nächstgelegenen Zeilen findet, ohne jede einzelne zu lesen. Nur PostgreSQL mit pgvector; SQLite liest stattdessen jede Zeile."
 }

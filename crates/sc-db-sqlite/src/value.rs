@@ -65,6 +65,9 @@ pub(crate) enum Declared {
     Date,
     Time,
     Timestamp,
+    /// A vector (`vector(n)`, TODO-agent-skills AS2.1): a blob of
+    /// little-endian `f32`s, read back as a JSON array of numbers.
+    Vector,
     /// No declared type, or one this driver has no reading for — decode by
     /// storage class.
     Unknown,
@@ -100,6 +103,7 @@ pub(crate) fn declared(decl_type: &str) -> Declared {
         | "datetime"
         | "timestamp without time zone"
         | "timestamp with time zone" => Declared::Timestamp,
+        "vector" => Declared::Vector,
         _ => Declared::Unknown,
     }
 }
@@ -171,8 +175,40 @@ pub(crate) fn decode(raw: ValueRef<'_>, decl: Declared) -> Result<Value> {
                 .map_err(|e| Error::database(format!("column is not valid UTF-8 text: {e}")))?;
             decode_text(text, decl)
         }
-        ValueRef::Blob(bytes) => Value::Bytes(bytes.to_vec()),
+        ValueRef::Blob(bytes) => match decl {
+            Declared::Vector => {
+                vector_from_blob(bytes).unwrap_or_else(|| Value::Bytes(bytes.to_vec()))
+            }
+            _ => Value::Bytes(bytes.to_vec()),
+        },
     })
+}
+
+/// A vector blob as the JSON array a vector is above the driver, or `None`
+/// when its length is not a whole number of `f32`s (and the cell is then its
+/// bytes, as any surprising cell is — see [`decode`]).
+fn vector_from_blob(bytes: &[u8]) -> Option<Value> {
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let values: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    Some(Value::Json(serde_json::Value::Array(
+        values
+            .iter()
+            // The shortest decimal that reads back as the same `f32`, so 0.1
+            // written is 0.1 read.
+            .map(|x| {
+                format!("{x}")
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+                    .map_or(serde_json::Value::Null, serde_json::Value::Number)
+            })
+            .collect(),
+    )))
 }
 
 /// Text read through its declared type, falling back to the text itself
@@ -197,7 +233,7 @@ fn decode_text(text: &str, decl: Declared) -> Value {
             .trim()
             .parse::<Decimal>()
             .map_or_else(|_| Value::Text(text.to_owned()), Value::Decimal),
-        Declared::Json => {
+        Declared::Json | Declared::Vector => {
             serde_json::from_str(text).map_or_else(|_| Value::Text(text.to_owned()), Value::Json)
         }
         Declared::Uuid => {

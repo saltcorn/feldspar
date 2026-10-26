@@ -74,6 +74,7 @@ pub(crate) fn rewrite(e: &mut Expr, f: &mut dyn FnMut(&Expr) -> Option<Expr>) {
         Expr::Subquery(q) => rewrite_select(q, f),
         // A search names its table's columns by name, not through an alias.
         Expr::TextMatch(_) | Expr::TextRank(_) => {}
+        Expr::VectorDistance(distance) => rewrite(&mut distance.column, f),
         Expr::Cast { expr, .. } => rewrite(expr, f),
     }
 }
@@ -170,6 +171,7 @@ pub(crate) fn has_window_or_aggregate(e: &Expr) -> bool {
         | Expr::Subquery(_)
         | Expr::TextMatch(_)
         | Expr::TextRank(_) => false,
+        Expr::VectorDistance(distance) => has_window_or_aggregate(&distance.column),
         Expr::Binary { l, r, .. } => has_window_or_aggregate(l) || has_window_or_aggregate(r),
         Expr::Unary { e, .. } | Expr::Json { target: e, .. } | Expr::Cast { expr: e, .. } => {
             has_window_or_aggregate(e)

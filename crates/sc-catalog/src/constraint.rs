@@ -1,5 +1,6 @@
-//! Table constraints: jointly-unique keys, indexes, full-text indexes and row
-//! constraints (design §5, §9; TODO Phase 2).
+//! Table constraints: jointly-unique keys, indexes, full-text indexes, vector
+//! indexes and row constraints (design §5, §9; TODO Phase 2, TODO-agent-skills
+//! AS2.2).
 //!
 //! ## They live in the database
 //!
@@ -71,6 +72,13 @@ const INDEX_PREFIX: &str = "sc_ix_";
 const FTS_PREFIX: &str = "sc_fts_";
 /// See [`UNIQUE_PREFIX`].
 const FORMULA_PREFIX: &str = "sc_ck_";
+/// See [`UNIQUE_PREFIX`].
+const VECTOR_PREFIX: &str = "sc_vx_";
+
+/// The access method a vector index is built with: pgvector's HNSW graph, which
+/// answers a nearest read without a training step (unlike `ivfflat`) and keeps
+/// answering as rows are added.
+pub const VECTOR_INDEX_METHOD: &str = "hnsw";
 
 /// Postgres's identifier limit. A name longer than this is silently truncated by
 /// the backend, which would make two long names one name.
@@ -126,6 +134,13 @@ pub enum ConstraintKind {
         /// The formula's source.
         formula: String,
     },
+    /// An HNSW index over a vector field by cosine distance (TODO-agent-skills
+    /// AS2.2), which is what a `nearest` read on Postgres uses instead of
+    /// reading every row. pgvector only; SQLite has none.
+    VectorIndex {
+        /// The vector field.
+        field: String,
+    },
 }
 
 impl ConstraintKind {
@@ -136,6 +151,7 @@ impl ConstraintKind {
             ConstraintKind::Index { .. } => "index",
             ConstraintKind::FullTextSearch { .. } => "full_text_search",
             ConstraintKind::Formula { .. } => "formula",
+            ConstraintKind::VectorIndex { .. } => "vector_index",
         }
     }
 
@@ -145,6 +161,7 @@ impl ConstraintKind {
         match self {
             ConstraintKind::Unique { fields } => fields.clone(),
             ConstraintKind::Index { fields, .. } => fields.clone(),
+            ConstraintKind::VectorIndex { field } => vec![field.clone()],
             // A full-text index is over *every* text field, and a formula's
             // fields are the formula's business (the schema editor asks it).
             ConstraintKind::FullTextSearch { .. } | ConstraintKind::Formula { .. } => Vec::new(),
@@ -240,6 +257,7 @@ impl TableConstraint {
             }
             ConstraintKind::FullTextSearch { .. } => format!("{FTS_PREFIX}{table}"),
             ConstraintKind::Formula { .. } => format!("{FORMULA_PREFIX}{table}_{given}"),
+            ConstraintKind::VectorIndex { field } => format!("{VECTOR_PREFIX}{table}_{field}"),
         };
         truncate_ident(&raw)
     }
@@ -247,9 +265,15 @@ impl TableConstraint {
     /// Whether this is a constraint Saltcorn created, which is what makes it
     /// safe to drop by the route that created it.
     pub fn is_saltcorn(&self) -> bool {
-        [UNIQUE_PREFIX, INDEX_PREFIX, FTS_PREFIX, FORMULA_PREFIX]
-            .iter()
-            .any(|p| self.name.starts_with(p))
+        [
+            UNIQUE_PREFIX,
+            INDEX_PREFIX,
+            FTS_PREFIX,
+            FORMULA_PREFIX,
+            VECTOR_PREFIX,
+        ]
+        .iter()
+        .any(|p| self.name.starts_with(p))
     }
 
     /// Read a constraint back from what introspection found, or `None` when the
@@ -278,6 +302,13 @@ impl TableConstraint {
                 // guessing would be guessing at the one thing that decides
                 // whether the index answers a search at all.
                 Some(language) => ConstraintKind::FullTextSearch { language },
+                // An HNSW index is over a vector by construction: it is the
+                // only thing pgvector's method indexes.
+                None if method == VECTOR_INDEX_METHOD && columns.len() == 1 => {
+                    ConstraintKind::VectorIndex {
+                        field: columns[0].clone(),
+                    }
+                }
                 None => ConstraintKind::Index {
                     fields: columns.clone(),
                     expression: expression.clone(),
@@ -323,11 +354,11 @@ impl TableConstraint {
                 table: table.to_owned(),
                 name: self.name.clone(),
             },
-            ConstraintKind::Index { .. } | ConstraintKind::FullTextSearch { .. } => {
-                CommentTarget::Index {
-                    name: self.name.clone(),
-                }
-            }
+            ConstraintKind::Index { .. }
+            | ConstraintKind::FullTextSearch { .. }
+            | ConstraintKind::VectorIndex { .. } => CommentTarget::Index {
+                name: self.name.clone(),
+            },
             ConstraintKind::Formula { .. } => CommentTarget::Trigger {
                 table: table.to_owned(),
                 name: self.name.clone(),
@@ -386,6 +417,14 @@ pub fn create_constraint_steps(
                 dialect, projection, table, constraint, formula,
             )?)]
         }
+        ConstraintKind::VectorIndex { field } => {
+            vec![SchemaStep::Sql(vector_index_sql(
+                dialect,
+                table,
+                &constraint.name,
+                field,
+            )?)]
+        }
     };
     if let Some(meta) = constraint.meta() {
         steps.push(SchemaStep::Change(SchemaChange::SetComment {
@@ -420,7 +459,9 @@ pub fn drop_constraint_steps(
                 comment: None,
             }),
         ],
-        ConstraintKind::Index { .. } | ConstraintKind::FullTextSearch { .. } => {
+        ConstraintKind::Index { .. }
+        | ConstraintKind::FullTextSearch { .. }
+        | ConstraintKind::VectorIndex { .. } => {
             vec![SchemaStep::Change(SchemaChange::DropIndex {
                 name: constraint.name.clone(),
                 if_exists: true,
@@ -436,6 +477,53 @@ pub fn drop_constraint_steps(
             function = dialect.quote_ident(&function_name(&constraint.name)),
         ))],
     }
+}
+
+/// `CREATE INDEX … USING hnsw (field vector_cosine_ops)`: the index a nearest
+/// read by cosine distance uses. Raw SQL rather than a
+/// [`SchemaChange::CreateIndex`], because the operator class is part of the
+/// column list and that change has nowhere to say one.
+fn vector_index_sql(
+    dialect: &dyn SqlDialect,
+    table: &Table,
+    name: &str,
+    field: &str,
+) -> Result<String> {
+    if dialect.is_sqlite() {
+        return Err(Error::invalid(format!(
+            "a vector index needs PostgreSQL with pgvector; on SQLite a nearest read over \
+             `{}` reads every row instead, which it does for tables of up to {} rows",
+            table.name,
+            crate::VECTOR_SCAN_LIMIT
+        )));
+    }
+    let Some(found) = table.field(field) else {
+        return Err(Error::invalid(format!(
+            "`{}` has no field `{field}` to index",
+            table.name
+        )));
+    };
+    if !matches!(found.base.type_.as_basic(), Some(BasicType::Vector(n)) if *n > 0) {
+        return Err(Error::invalid(format!(
+            "a vector index is over a vector field, and `{}.{field}` is a {}",
+            table.name,
+            found.base.type_.name()
+        )));
+    }
+    Ok(format!(
+        "CREATE INDEX {} ON {} USING {VECTOR_INDEX_METHOD} ({} vector_cosine_ops);\n",
+        dialect.quote_ident(name),
+        dialect.quote_ident(&table.name),
+        dialect.quote_ident(field),
+    ))
+}
+
+/// The table's vector index on `field`, if it has one.
+pub fn vector_index<'t>(table: &'t Table, field: &str) -> Option<&'t TableConstraint> {
+    table
+        .constraints
+        .iter()
+        .find(|c| matches!(&c.kind, ConstraintKind::VectorIndex { field: f } if f == field))
 }
 
 /// The columns a full-text index covers: every stored text field of the table,

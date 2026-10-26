@@ -77,11 +77,11 @@ neither needs work.
 ## 3. Open questions
 
 - Vector fields on SQLite: brute-force cosine in Rust over a bounded scan, or `sqlite-vec`?
-  (Proposed: brute force with a row ceiling, so there is no new native dependency. Postgres
-  uses pgvector.)
+  (Decided in AS2: brute force, a registered SQL function over `f32` blobs, refused past
+  50,000 rows. Postgres uses pgvector.)
 - Should embeddings be computed on write by a stored field (`Vector` with `embed_from:
-  <formula>`), or by a trigger an admin adds? (Proposed: the field declares it, and an
-  `embed_rows` job back-fills.)
+  <formula>`), or by a trigger an admin adds? (Decided in AS2: the field declares it, and the
+  `embed_rows` action back-fills.)
 - Is long-term memory one system table per tenant (`_fd_agent_memory`), or a user table the
   trait creates, as v1 does? (Proposed: a system table, so it is not in the application's
   schema, with an admin screen.)
@@ -111,20 +111,20 @@ use it.
 
 ## AS2 — Vector fields
 
-- [ ] **AS2.1** `sc-types`: a `Vector { dimensions }` type, stored as `vector(n)` (pgvector) on
+- [x] **AS2.1** `sc-types`: a `Vector { dimensions }` type, stored as `vector(n)` (pgvector) on
   Postgres and as a little-endian `f32` blob on SQLite.
-- [ ] **AS2.2** `sc-db-postgres`: enable the extension on bootstrap when it is available, and
+- [x] **AS2.2** `sc-db-postgres`: enable the extension on bootstrap when it is available, and
   return a clear error that names the package when it is not. Add an HNSW index constraint
   kind.
-- [ ] **AS2.3** `sc-query`: `nearest(field, vector, k)` ordering by cosine distance, and the
+- [x] **AS2.3** `sc-query`: `nearest(field, vector, k)` ordering by cosine distance, and the
   distance as a selectable expression. On SQLite this is a bounded brute-force scan (§3).
-- [ ] **AS2.4** Rows API, REST and GraphQL: `nearest: { field, to: [..] | text }`. Text is
+- [x] **AS2.4** Rows API, REST and GraphQL: `nearest: { field, to: [..] | text }`. Text is
   embedded through AS3 with the field's configured model.
-- [ ] **AS2.5** A field-level `embed_from` formula with a provider and model: computed on
+- [x] **AS2.5** A field-level `embed_from` formula with a provider and model: computed on
   insert/update through AS3, plus an `embed_rows` job to back-fill (§3).
-- [ ] **AS2.6** Backup and restore carry vectors; the v1 importer maps pgvector fields (from
+- [x] **AS2.6** Backup and restore carry vectors; the v1 importer maps pgvector fields (from
   the `pgvector` plugin) to `Vector`.
-- [ ] **AS2.7** Tests: nearest-k on both backends, dimension mismatch refused on write, back-fill.
+- [x] **AS2.7** Tests: nearest-k on both backends, dimension mismatch refused on write, back-fill.
 
 ## AS3 — Non-chat model calls in `sc-llm`
 
@@ -133,8 +133,10 @@ more calls.
 
 - [ ] **AS3.1** `LlmModelDef.kind`: `chat` (default), `embedding`, `image`, `speech`. The
   provider admin screen lists models by kind, and each kind has its own default.
-- [ ] **AS3.2** `embed(texts) -> Vec<Vec<f32>>`: OpenAI and OpenAI-compatible
-  (`/embeddings`). Anthropic has no embedding endpoint, so it is refused by name.
+- [x] **AS3.2** `embed(texts) -> Vec<Vec<f32>>`: OpenAI and OpenAI-compatible
+  (`/embeddings`). Anthropic has no embedding endpoint, so it is refused by name. (Done with
+  AS2, which needs it: `sc_llm::embed`, named by provider and model name until AS3.1 gives
+  models a kind; not yet metered, AS3.5.)
 - [ ] **AS3.3** `generate_image(prompt, size, quality, format, background) -> bytes`: OpenAI
   (`/images/generations`).
 - [ ] **AS3.4** `speak(text, voice, speed, format, instructions) -> bytes`: OpenAI

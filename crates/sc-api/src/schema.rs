@@ -48,6 +48,10 @@ pub enum ValueType {
     /// TS an object with `type` and `coordinates`. Not in [`ALL`](ValueType::ALL): a custom query's
     /// parameter is not declared as one.
     Geometry,
+    /// A vector, carried as a JSON array of numbers (TODO-agent-skills AS2.1)
+    /// — TS `number[]`. Not in [`ALL`](ValueType::ALL), for the same reason as
+    /// [`Geometry`](ValueType::Geometry).
+    Vector,
 }
 
 impl ValueType {
@@ -71,6 +75,7 @@ impl ValueType {
             BasicType::Time => ValueType::Time,
             BasicType::Timestamp => ValueType::Timestamp,
             BasicType::Geometry(_) => ValueType::Geometry,
+            BasicType::Vector(_) => ValueType::Vector,
             BasicType::Other(_) => ValueType::Text,
         }
     }
@@ -97,6 +102,7 @@ impl ValueType {
             ValueType::Time => BasicType::Time,
             ValueType::Timestamp => BasicType::Timestamp,
             ValueType::Geometry => BasicType::Geometry(sc_types::GeometryKind::Any),
+            ValueType::Vector => BasicType::Vector(0),
         }
     }
 
@@ -116,6 +122,7 @@ impl ValueType {
             ValueType::Time => "time",
             ValueType::Timestamp => "timestamp",
             ValueType::Geometry => "geometry",
+            ValueType::Vector => "vector",
         }
     }
 
@@ -156,6 +163,7 @@ impl ValueType {
             ValueType::Geometry => {
                 "{ type: string; coordinates?: unknown; geometries?: unknown[] }"
             }
+            ValueType::Vector => "number[]",
             // Everything else is carried as a JSON string.
             ValueType::Decimal
             | ValueType::Text

@@ -47,6 +47,16 @@ impl Reply {
         }
     }
 
+    /// A JSON body, served with `200` — a non-streaming endpoint's answer.
+    pub fn json(body: impl Into<String>) -> Reply {
+        Reply {
+            status: 200,
+            content_type: "application/json",
+            body: body.into(),
+            truncate: false,
+        }
+    }
+
     /// A JSON error body, served with `status` — what a rejected key looks like.
     pub fn error(status: u16, body: impl Into<String>) -> Reply {
         Reply {

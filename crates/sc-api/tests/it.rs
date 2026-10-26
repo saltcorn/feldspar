@@ -97,3 +97,5 @@ mod v1_table_history;
 mod v1_table_reads;
 #[path = "v1_table_writes.rs"]
 mod v1_table_writes;
+#[path = "vector_fields.rs"]
+mod vector_fields;

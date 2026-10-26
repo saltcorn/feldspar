@@ -815,6 +815,10 @@ function Constraints({
             <IconPlus className="icon-2" />
             <T text="Full-text search" />
           </Button>
+          <Button size="sm" variant="outline-secondary" onClick={() => open("vector_index")}>
+            <IconPlus className="icon-2" />
+            <T text="Vector index" />
+          </Button>
           <Button size="sm" variant="outline-secondary" onClick={() => open("formula")}>
             <IconPlus className="icon-2" />
             <T text="Row constraint" />
@@ -870,6 +874,27 @@ function Constraints({
                   </Form.Select>
                   <Form.Text muted>
                     <T text="An index makes searching and joining on this field faster, and writes a little slower." />
+                  </Form.Text>
+                </Form.Group>
+              )}
+              {form?.type === "vector_index" && (
+                <Form.Group className="mb-2" controlId="constraintVectorField">
+                  <Form.Label><T text="Vector field" /></Form.Label>
+                  <Form.Select
+                    value={form.fields[0] ?? ""}
+                    onChange={(e) => update({ fields: e.target.value ? [e.target.value] : [] })}
+                  >
+                    <option value=""><T text="Choose a field…" /></option>
+                    {columns
+                      .filter((field) => field.type.startsWith("vector("))
+                      .map((field) => (
+                        <option key={field.name} value={field.name}>
+                          {field.label || field.name}
+                        </option>
+                      ))}
+                  </Form.Select>
+                  <Form.Text muted>
+                    <T text="An HNSW index by cosine distance, which is what lets a nearest read (`?nearest=` in the REST API, `nearest:` in GraphQL) find the closest rows without reading every one. PostgreSQL with pgvector only; SQLite reads every row instead." />
                   </Form.Text>
                 </Form.Group>
               )}

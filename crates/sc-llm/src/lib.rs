@@ -51,6 +51,7 @@
 pub mod anthropic;
 pub mod capabilities;
 pub mod def;
+pub mod embed;
 pub mod estimate;
 pub mod host;
 pub mod listing;
@@ -76,6 +77,7 @@ pub use def::{
     openai_chat_config_spec, openai_config_spec, provider_config_spec, registered_backends,
     validate_provider_config,
 };
+pub use embed::{embed, embedding_provider};
 pub use estimate::{TokenEstimator, estimate_tokens, image_tokens};
 pub use host::{
     HostLlmProvider, default_llm_provider, host_llm_provider, host_provider_id,

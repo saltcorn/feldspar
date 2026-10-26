@@ -16,6 +16,7 @@ mod driver;
 mod exec;
 mod geometry;
 mod introspect;
+mod pgvector;
 mod spatial;
 mod transaction;
 mod value;

@@ -55,7 +55,7 @@ const TABLES_SQL: &str = "\
 /// (analytics TODO A5.1).
 const COLUMNS_SQL: &str = "\
     SELECT c.table_schema, c.table_name, c.column_name, \
-           CASE WHEN c.udt_name = 'geometry' THEN ( \
+           CASE WHEN c.udt_name IN ('geometry', 'vector') THEN ( \
              SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
              JOIN pg_class t ON t.oid = a.attrelid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \

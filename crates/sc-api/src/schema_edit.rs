@@ -1102,6 +1102,7 @@ impl Plan {
         for spec in fields {
             let resolved = self.resolve_field(name, spec)?;
             check_spatial(catalog, &table.database, &resolved.field)?;
+            check_vector(catalog, &table.database, &resolved.field)?;
             if table.field(&resolved.field.base.name).is_some() {
                 return Err(Error::invalid(format!(
                     "table `{name}` is declared with two fields called `{}`",
@@ -1338,6 +1339,7 @@ impl Plan {
             .get(table)
             .ok_or_else(|| Error::not_found(format!("table `{table}` is not in the catalog")))?;
         check_spatial(catalog, &projected.database, &resolved.field)?;
+        check_vector(catalog, &projected.database, &resolved.field)?;
         if projected.field(&name).is_some() {
             return Err(Error::invalid(format!(
                 "table `{table}` already has a field `{name}`"
@@ -2308,6 +2310,12 @@ impl Plan {
         } else {
             resolve_field_type(type_name)?
         };
+        let storage = match storage {
+            TypeRef::Basic(BasicType::Vector(n)) => {
+                TypeRef::Basic(vector_storage(name, n, &spec.attributes)?)
+            }
+            other => other,
+        };
 
         if matches!(kind, DataFieldKind::Secret) {
             // A user's fields travel with their session — into `user` in a
@@ -2968,6 +2976,9 @@ pub fn basic_field_types() -> Vec<BasicType> {
     // The geometry types (analytics TODO A5.1), offered on every database; one
     // without PostGIS refuses them with a sentence when a field is saved.
     types.extend(sc_types::GeometryKind::ALL.map(BasicType::Geometry));
+    // A vector (TODO-agent-skills AS2.1), whose dimensions are an attribute;
+    // a Postgres database without pgvector refuses it with a sentence.
+    types.push(BasicType::Vector(0));
     types
 }
 
@@ -3028,6 +3039,96 @@ fn check_spatial(catalog: &Catalog, database: &DbId, field: &DataField) -> Resul
                 field.base.name
             ))
         })
+}
+
+/// A vector field needs pgvector in a Postgres database (TODO-agent-skills
+/// AS2.2); refused with the sentence naming the package when it is not there.
+fn check_vector(catalog: &Catalog, database: &DbId, field: &DataField) -> Result<()> {
+    if !matches!(field.base.type_, TypeRef::Basic(BasicType::Vector(_))) {
+        return Ok(());
+    }
+    catalog
+        .driver_named(database)?
+        .vector()
+        .require()
+        .map_err(|reason| {
+            Error::invalid(format!(
+                "field `{}` cannot be a vector: {reason}",
+                field.base.name
+            ))
+        })
+}
+
+/// The column type of a vector field `name`: `vector(n)` from the type itself,
+/// or from the `dimensions` attribute of a field created as plain `vector` —
+/// which is what the type picker offers. Both given must agree, and an
+/// `embed_from` formula must parse and name a model to embed with.
+fn vector_storage(name: &str, given: u32, attributes: &Attrs) -> Result<BasicType> {
+    use sc_types::vector::{ATTR_DIMENSIONS, ATTR_EMBED_FROM, ATTR_EMBED_MODEL, check_dimensions};
+    use serde_json::Value as Json;
+    let attribute = match attributes.get(ATTR_DIMENSIONS) {
+        None | Some(Json::Null) => None,
+        Some(Json::Number(n)) => n.as_u64(),
+        Some(Json::String(s)) if s.trim().is_empty() => None,
+        Some(Json::String(s)) => s.trim().parse::<u64>().ok(),
+        Some(_) => Some(0),
+    };
+    let attribute =
+        match attribute {
+            Some(n) => Some(u32::try_from(n).map_err(|_| {
+                Error::invalid(format!("field `{name}` has too many dimensions: {n}"))
+            })?),
+            None if attributes
+                .get(ATTR_DIMENSIONS)
+                .is_some_and(|v| !v.is_null()) =>
+            {
+                return Err(Error::invalid(format!(
+                    "field `{name}`: `{ATTR_DIMENSIONS}` is a whole number, such as 1536"
+                )));
+            }
+            None => None,
+        };
+    let dimensions = match (given, attribute) {
+        (0, None) => {
+            return Err(Error::invalid(format!(
+                "vector field `{name}` needs its number of dimensions: give the attribute \
+                 `{ATTR_DIMENSIONS}` (the embedding model's output size, such as 1536), or \
+                 the type `vector(1536)`"
+            )));
+        }
+        (0, Some(n)) => n,
+        (n, None) => n,
+        (n, Some(m)) if n == m => n,
+        (n, Some(m)) => {
+            return Err(Error::invalid(format!(
+                "vector field `{name}` is `vector({n})` but its `{ATTR_DIMENSIONS}` \
+                 attribute says {m}"
+            )));
+        }
+    };
+    check_dimensions(dimensions).map_err(|e| Error::invalid(format!("field `{name}`: {e}")))?;
+    if let Some(source) = attributes
+        .get(ATTR_EMBED_FROM)
+        .and_then(Json::as_str)
+        .filter(|s| !s.trim().is_empty())
+    {
+        sc_expr::Formula::parse(source).map_err(|e| {
+            Error::invalid(format!(
+                "field `{name}`: its `{ATTR_EMBED_FROM}` formula does not parse: {e}"
+            ))
+        })?;
+        if attributes
+            .get(ATTR_EMBED_MODEL)
+            .and_then(Json::as_str)
+            .is_none_or(|m| m.trim().is_empty())
+        {
+            return Err(Error::invalid(format!(
+                "field `{name}` is embedded from a formula and needs `{ATTR_EMBED_MODEL}`, \
+                 the embedding model to compute it with (such as text-embedding-3-small)"
+            )));
+        }
+    }
+    Ok(BasicType::Vector(dimensions))
 }
 
 /// A table or field name that can be a SQL identifier without quoting games.

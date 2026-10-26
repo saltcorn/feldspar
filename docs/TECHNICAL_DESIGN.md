@@ -811,6 +811,17 @@ because the kind is part of the column's SQL type, not an attribute of a field o
 field types are named `geometry`, `geometry_point`, `geometry_polygon`, … (never `point` or
 `polygon`, which are Postgres's own non-geographic types and keep meaning those).
 
+**A vector is a basic type too** (TODO-agent-skills AS2): `BasicType::Vector(n)`, an embedding
+of `n` 32-bit floats, whose value is a **JSON array of numbers** in a `Value::Json` for the same
+reason. Postgres stores pgvector's `vector(n)` (the driver speaks its binary form); SQLite stores
+a little-endian `f32` blob in a column declared `vector(n)`, which a write reaches through
+`CAST(? AS vector(n))` — rendered on SQLite as the driver's `_fd_vector(?, n)`. The picker offers
+one `vector` whose size is the `dimensions` attribute. A read orders by `Expr::VectorDistance`
+(pgvector's `<=>`, or `_fd_cosine_distance` on SQLite), answered by an HNSW `vector_index`
+constraint on Postgres and by a scan bounded at 50,000 rows otherwise. A field may be computed by
+an `embed_from` formula through `sc-llm`'s `embed` (an OpenAI-compatible `/embeddings` call);
+`sc_api::vector` holds the read and write halves and the `embed_rows` back-fill.
+
 ### 6.2 Fields — the `BaseField` / `DataField` / `FormField` split
 
 GOALS calls out that v1 conflated DB fields and form fields. v2 separates them explicitly:

@@ -921,7 +921,13 @@ pub fn admin_handlers_with(
                 // attribute specs, then the Key/File kinds — one list the field
                 // editor assembles its picker from (§3.4).
                 for basic in schema_edit::basic_field_types() {
-                    out.push(field_type_json(basic.name(), "basic", &[], &ctx.locale));
+                    // A vector's dimensions and embedding are attributes, and
+                    // the only basic type that has any (TODO-agent-skills AS2).
+                    let spec = match basic {
+                        sc_types::BasicType::Vector(_) => sc_types::vector::vector_attributes(),
+                        _ => Vec::new(),
+                    };
+                    out.push(field_type_json(basic.name(), "basic", &spec, &ctx.locale));
                 }
                 for name in registered_rich_types() {
                     let spec = rich_type_config_spec(&name)?;
@@ -7281,6 +7287,13 @@ pub(crate) fn constraint_json(constraint: &TableConstraint) -> Json {
         ConstraintKind::Formula { formula } => {
             (Vec::new(), None, None, None, Some(formula.clone()))
         }
+        ConstraintKind::VectorIndex { field } => (
+            vec![field.clone()],
+            None,
+            Some(sc_catalog::VECTOR_INDEX_METHOD.to_owned()),
+            None,
+            None,
+        ),
     };
     json!({
         "name": constraint.name,
@@ -7324,10 +7337,21 @@ fn constraint_from_body(obj: &Map<String, Json>) -> Result<(String, TableConstra
         "formula" => ConstraintKind::Formula {
             formula: non_empty_str_field(obj, "formula")?.trim().to_owned(),
         },
+        "vector_index" => {
+            let fields = string_array(obj, "fields")?;
+            let [field] = fields.as_slice() else {
+                return Err(Error::invalid(
+                    "a vector index is over one vector field: give `fields` as [\"<field>\"]",
+                ));
+            };
+            ConstraintKind::VectorIndex {
+                field: field.clone(),
+            }
+        }
         other => {
             return Err(Error::invalid(format!(
                 "`{other}` is not a constraint type; it is one of `unique`, `index`, \
-                 `full_text_search` or `formula`"
+                 `full_text_search`, `vector_index` or `formula`"
             )));
         }
     };

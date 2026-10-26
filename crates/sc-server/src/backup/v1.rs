@@ -363,7 +363,7 @@ fn convert_table(
         }
     }
 
-    let rows = match table_rows(entries, &name) {
+    let mut rows: Vec<Json> = match table_rows(entries, &name) {
         Ok(rows) => rows
             .iter()
             .map(|row| convert_row(row, &converted, user_keys))
@@ -376,6 +376,44 @@ fn convert_table(
             Vec::new()
         }
     };
+    // A v1 vector field whose dimensions its attributes do not say takes them
+    // from its values; one with no values to say either is left out, and its
+    // values with it.
+    let mut dropped = Vec::new();
+    fields.retain_mut(|field| {
+        if field.get("type").and_then(Json::as_str) != Some(VECTOR_UNSIZED) {
+            return true;
+        }
+        let field_name = field.get("name").and_then(Json::as_str).unwrap_or_default();
+        let found = rows.iter().find_map(|row| {
+            row.get(field_name)
+                .and_then(Json::as_array)
+                .map(|values| values.len())
+                .filter(|n| *n > 0)
+        });
+        match found {
+            Some(n) => {
+                field["type"] = json!(format!("vector({n})"));
+                true
+            }
+            None => {
+                notes.push(format!(
+                    "column `{name}.{field_name}` was not imported: it is a v1 `PGVector` \
+                     field whose number of dimensions neither its attributes nor its values \
+                     say; add it as a vector field of the embedding model's size"
+                ));
+                dropped.push(field_name.to_owned());
+                false
+            }
+        }
+    });
+    for row in &mut rows {
+        if let Some(obj) = row.as_object_mut() {
+            for column in &dropped {
+                obj.remove(column);
+            }
+        }
+    }
 
     let document = json!({
         "table": {
@@ -422,7 +460,14 @@ enum V1Field {
     /// Calculated: computed on read here, so the value v1 stored (if it stored
     /// one) has no column to go in.
     Calc,
+    /// A pgvector value (the `pgvector` plugin's `PGVector`), which v1's backup
+    /// writes as the text pgvector prints, `[0.1,0.2]`.
+    Vector,
 }
+
+/// The type a v1 `PGVector` field is given until its rows say its
+/// dimensions — never one that reaches the restore.
+const VECTOR_UNSIZED: &str = "vector";
 
 /// One v1 field as this system's `createField` shape, plus how its values must be
 /// read.
@@ -526,6 +571,24 @@ fn convert_field(
         "JSON" => {
             out.insert("type".to_owned(), json!("json"));
         }
+        // The `pgvector` plugin's vector (TODO-agent-skills AS2.6). Its size is
+        // its `dimensions` attribute where it has one, else its values'.
+        "PGVector" => {
+            let dimensions = ["dimensions", "dims", "size"]
+                .iter()
+                .find_map(|key| match attrs.get(*key) {
+                    Some(Json::Number(n)) => n.as_u64(),
+                    Some(Json::String(s)) => s.trim().parse::<u64>().ok(),
+                    _ => None,
+                })
+                .filter(|n| *n > 0);
+            let type_name = match dimensions {
+                Some(n) => format!("vector({n})"),
+                None => VECTOR_UNSIZED.to_owned(),
+            };
+            out.insert("type".to_owned(), json!(type_name));
+            kind = V1Field::Vector;
+        }
         // A v1 colour is a `#rrggbb` string and there is no colour type here yet.
         "Color" => {
             out.insert("type".to_owned(), json!("text"));
@@ -602,12 +665,25 @@ fn convert_row(row: &Json, fields: &BTreeMap<String, V1Field>, user_keys: &UserK
             // Computed on read here; v1's stored value has nowhere to go.
             V1Field::Calc => continue,
             V1Field::Plain | V1Field::File => value.clone(),
+            V1Field::Vector => vector_value(value),
             V1Field::DayOnlyDate => day_only(value),
             V1Field::UserKey => user_keys.rewrite(value),
         };
         out.insert(column.clone(), value);
     }
     Json::Object(out)
+}
+
+/// A v1 vector as the array of numbers it is here: pgvector's text, `[0.1,0.2]`,
+/// parsed; anything else as it was, for the restore to refuse by name.
+fn vector_value(value: &Json) -> Json {
+    match value
+        .as_str()
+        .map(|s| serde_json::from_str::<Json>(s.trim()))
+    {
+        Some(Ok(parsed @ Json::Array(_))) => parsed,
+        _ => value.clone(),
+    }
 }
 
 /// A v1 timestamp reduced to the day it names — `2026-09-02T00:00:00.000Z` to
@@ -1890,6 +1966,57 @@ mod tests {
         // with no column is a value nothing could read.
         assert!(rows[0].get("shelf").is_none());
         assert!(rows[0].get("pages_left").is_none());
+    }
+
+    /// The `pgvector` plugin's `PGVector` (TODO-agent-skills AS2.6): a vector
+    /// field of its `dimensions`, else of its values' length, and its values —
+    /// pgvector's text — as arrays. One that says neither is reported.
+    #[test]
+    fn a_pgvector_field_becomes_a_vector_of_its_dimensions() {
+        let mut archive = v1_archive();
+        let mut pack: Json = serde_json::from_slice(&archive[PACK]).unwrap();
+        pack["tables"].as_array_mut().unwrap().push(json!({
+            "name": "Docs",
+            "fields": [
+                { "name": "id", "type": "Integer", "primary_key": true },
+                { "name": "sized", "type": "PGVector", "attributes": { "dimensions": 3 } },
+                { "name": "unsized", "type": "PGVector", "attributes": {} },
+                { "name": "empty", "type": "PGVector" },
+            ],
+        }));
+        archive.insert(PACK.to_owned(), serde_json::to_vec(&pack).unwrap());
+        archive.insert(
+            "tables/Docs.json".to_owned(),
+            serde_json::to_vec(&json!([
+                { "id": 1, "sized": "[0.1,0.2,0.3]", "unsized": null, "empty": null },
+                { "id": 2, "sized": null, "unsized": "[1,0]", "empty": null },
+            ]))
+            .unwrap(),
+        );
+        let out = convert(&archive).expect("a conversion");
+        let table = document(&out, "tables/Docs/table.json");
+        let field = |name: &str| {
+            table["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["name"] == json!(name))
+                .cloned()
+        };
+        assert_eq!(field("sized").unwrap()["type"], json!("vector(3)"));
+        assert_eq!(field("unsized").unwrap()["type"], json!("vector(2)"));
+        assert!(field("empty").is_none());
+        let rows = rows_of(&out, "tables/Docs/rows.ndjson");
+        assert_eq!(rows[0]["sized"], json!([0.1, 0.2, 0.3]));
+        assert_eq!(rows[1]["unsized"], json!([1, 0]));
+        assert!(rows[0].get("empty").is_none());
+        let notes = notes(&out);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("`Docs.empty`") && n.contains("dimensions")),
+            "{notes:?}"
+        );
     }
 
     /// Two columns v1 has and this system does not: the note is the point, since

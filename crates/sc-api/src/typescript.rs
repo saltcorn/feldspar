@@ -1387,7 +1387,7 @@ fn offline_copy(base: &str, tables: &[TableClient<'_>]) -> String {
         let kind = |ty: ValueType| match ty {
             ValueType::Int | ValueType::Float => "number",
             ValueType::Bool => "boolean",
-            ValueType::Json | ValueType::Geometry => "json",
+            ValueType::Json | ValueType::Geometry | ValueType::Vector => "json",
             _ => "text",
         };
         let key_kind = match key.ty {

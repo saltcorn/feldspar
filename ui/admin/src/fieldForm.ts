@@ -163,6 +163,12 @@ export function fieldForm(field: FieldItem): FieldForm {
       },
     };
   }
+  const vector = /^vector\((\d+)\)$/.exec(field.type);
+  if (vector) {
+    // The picker offers one `vector`, whose size is an attribute; a field
+    // reads back as `vector(1536)`.
+    return { ...base, typeName: "vector", attrs: { ...base.attrs, dimensions: vector[1] } };
+  }
   if (kind && kind.type && kind.type !== "plain") {
     // Any other kind (today, File) is a text column plus parameters, so the
     // picker names the kind and the parameters are the attribute form's values.
@@ -254,7 +260,9 @@ function fieldTypeBody(
       kind: { type: selected.name, ...buildConfig(selected.config_spec, form.attrs) },
     };
   }
-  if (selected.category === "rich") {
+  if (selected.category === "rich" || selected.config_spec.length > 0) {
+    // A rich type's attributes, or a basic type's that has some: a vector's
+    // dimensions and how it is embedded.
     return { type: selected.name, attributes: buildConfig(selected.config_spec, form.attrs) };
   }
   return { type: selected.name };

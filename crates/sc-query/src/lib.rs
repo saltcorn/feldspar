@@ -20,6 +20,7 @@ mod named;
 pub mod search;
 mod statement;
 mod value;
+pub mod vector;
 
 pub use dialect::{SqlDialect, default_bin_op, render_policy_expr};
 pub use expr::{BinOp, CaseArm, ColRef, Expr, InSet, JsonStep, UnOp};
@@ -30,6 +31,7 @@ pub use statement::{
     Source, Statement, Update,
 };
 pub use value::Value;
+pub use vector::{VectorDistance, vector_blob, vector_cast_dimensions, vector_json};
 
 #[cfg(test)]
 mod tests {

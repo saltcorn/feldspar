@@ -211,6 +211,10 @@ pub struct TableNames {
     pub fields: Vec<String>,
     /// The inverse relations on this table's object type.
     pub relations: Vec<RelationNames>,
+    /// Whether the table has a vector field, which is what gives its list
+    /// fields a `nearest` argument (TODO-agent-skills AS2.4). A table without
+    /// one has no such argument rather than one that can only be refused.
+    pub nearest: bool,
 }
 
 impl TableNames {
@@ -271,6 +275,12 @@ impl TableNames {
             delete_by_pk_field: format!("delete_{name}_by_pk"),
             fields: Vec::new(),
             relations: Vec::new(),
+            nearest: table.fields.iter().any(|f| {
+                matches!(
+                    f.base.type_.as_basic(),
+                    Some(sc_types::BasicType::Vector(n)) if *n > 0
+                )
+            }),
         })
     }
 }

@@ -56,6 +56,7 @@ pub mod schema_edit;
 pub mod search;
 pub mod throttle;
 pub mod undo;
+pub mod vector;
 
 mod admin;
 mod analytics;

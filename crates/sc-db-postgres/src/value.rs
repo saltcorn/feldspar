@@ -68,6 +68,14 @@ impl PgParam<'_> {
             Value::Json(v) if crate::geometry::is_geometry_type(ty.name()) => {
                 encode_geometry(v, out)
             }
+            // A vector travels as a JSON array and pgvector takes its own
+            // binary form; a form may send the array's text.
+            Value::Json(v) if ty.name() == VECTOR_TYPE => encode_vector(v, out),
+            Value::Text(v) if ty.name() == VECTOR_TYPE => {
+                let json: serde_json::Value = serde_json::from_str(v)
+                    .map_err(|_| BoxError::from(format!("{v:?} is not a vector")))?;
+                encode_vector(&json, out)
+            }
             Value::Text(v) if crate::geometry::is_geometry_type(ty.name()) => {
                 let json: serde_json::Value = serde_json::from_str(v)
                     .map_err(|_| BoxError::from(format!("{v:?} is not a GeoJSON geometry")))?;
@@ -187,6 +195,77 @@ fn encode_geometry(
     Ok(IsNull::No)
 }
 
+/// pgvector's type name, which is all a parameter or column of it says about
+/// itself: an extension's type has no fixed OID.
+pub(crate) const VECTOR_TYPE: &str = "vector";
+
+/// A JSON array of numbers as pgvector's binary form: the dimension count and
+/// an unused word, as 16-bit integers, then each element as a big-endian
+/// `f32` (pgvector's `vector_recv`).
+fn encode_vector(
+    json: &serde_json::Value,
+    out: &mut BytesMut,
+) -> std::result::Result<IsNull, BoxError> {
+    let serde_json::Value::Array(items) = json else {
+        return Err(BoxError::from(format!(
+            "a vector is an array of numbers, not {json}"
+        )));
+    };
+    let dimensions = i16::try_from(items.len())
+        .map_err(|_| BoxError::from(format!("a vector of {} dimensions", items.len())))?;
+    out.extend_from_slice(&dimensions.to_be_bytes());
+    out.extend_from_slice(&0_i16.to_be_bytes());
+    for item in items {
+        let x = item
+            .as_f64()
+            .map(|x| x as f32)
+            .filter(|x| x.is_finite())
+            .ok_or_else(|| BoxError::from(format!("{item} is not a number of a vector")))?;
+        out.extend_from_slice(&x.to_be_bytes());
+    }
+    Ok(IsNull::No)
+}
+
+/// pgvector's binary form as the JSON array a vector is above the driver.
+fn decode_vector(raw: &[u8]) -> std::result::Result<serde_json::Value, String> {
+    let header = raw.get(..4).ok_or("a vector shorter than its header")?;
+    let dimensions = i16::from_be_bytes([header[0], header[1]]);
+    let body = &raw[4..];
+    if dimensions < 0 || body.len() != dimensions as usize * 4 {
+        return Err(format!(
+            "a vector of {dimensions} dimensions in {} bytes",
+            body.len()
+        ));
+    }
+    Ok(serde_json::Value::Array(
+        body.chunks_exact(4)
+            .map(|c| {
+                let x = f32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+                // The shortest decimal that reads back as the same `f32`, so
+                // 0.1 written is 0.1 read.
+                format!("{x}")
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+                    .map_or(serde_json::Value::Null, serde_json::Value::Number)
+            })
+            .collect(),
+    ))
+}
+
+/// A pgvector value's raw binary form, for [`decode`] to convert.
+struct RawVector<'a>(&'a [u8]);
+
+impl<'a> FromSql<'a> for RawVector<'a> {
+    fn from_sql(_ty: &Type, raw: &'a [u8]) -> std::result::Result<Self, BoxError> {
+        Ok(RawVector(raw))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == VECTOR_TYPE
+    }
+}
+
 /// A PostGIS value's raw binary form, for [`decode`] to convert.
 struct RawGeometry<'a>(&'a [u8]);
 
@@ -277,6 +356,14 @@ pub fn decode(row: &PgRow, idx: usize) -> Result<Value> {
             None => Value::Null,
             Some(RawGeometry(bytes)) => Value::Json(
                 crate::geometry::ewkb_to_geojson(bytes)
+                    .map_err(|e| Error::database(format!("column `{}`: {e}", column.name())))?,
+            ),
+        }
+    } else if ty.name() == VECTOR_TYPE {
+        match get::<Option<RawVector<'_>>>(row, idx)? {
+            None => Value::Null,
+            Some(RawVector(bytes)) => Value::Json(
+                decode_vector(bytes)
                     .map_err(|e| Error::database(format!("column `{}`: {e}", column.name())))?,
             ),
         }

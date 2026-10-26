@@ -21,3 +21,5 @@ mod introspect;
 mod query;
 #[path = "transaction.rs"]
 mod transaction;
+#[path = "vector.rs"]
+mod vector;

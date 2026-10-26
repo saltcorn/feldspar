@@ -45,6 +45,7 @@ mod operation;
 mod rich;
 mod rich_types;
 mod type_ref;
+pub mod vector;
 
 pub use attrs::Attrs;
 pub use basic::BasicType;

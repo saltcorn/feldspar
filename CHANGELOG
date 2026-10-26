@@ -2,6 +2,81 @@
 
 Changes in reverse chronological order.
 
+## Vector fields (TODO-agent-skills AS2), and the embedding call (AS3.2)
+
+A table can hold embeddings and order its rows by how near they are to a vector or to a piece
+of text, on both backends.
+
+- **The type** (`sc-types` `vector.rs`): `BasicType::Vector(n)`, `n` 32-bit floats. Its value
+  is a JSON array of numbers in a `Value::Json`, as a geometry's is GeoJSON; the type's name and
+  SQL type are both `vector(n)`. A value of the wrong length is refused with both lengths. The
+  field-type picker offers one `vector`, whose size is the `dimensions` attribute (1 to 16,000,
+  pgvector's limit); `vector(1536)` is accepted as a type name too.
+- **Storage.** Postgres stores pgvector's `vector(n)`: the driver encodes and decodes its binary
+  form and introspects the size with `format_type`. SQLite stores a little-endian `f32` blob in a
+  column declared `vector(n)`, which is how its driver knows to read the blob back as an array.
+  A write reaches the column through `CAST(value AS vector(n))` (`sc_catalog::write_expr`, used
+  by the row API's insert and update and by the restore), which the SQLite dialect renders as
+  `_fd_vector(value, n)`, a function the driver registers that also refuses the wrong length.
+- **pgvector** (`sc-db-postgres` `pgvector.rs`, `sc_db::VectorSupport`): `Catalog::init` looks
+  for it, and `feldspar serve` runs `CREATE EXTENSION vector` where its role may
+  (`sc_catalog::bootstrap_vector`) and says what it found. A Postgres database added under
+  Connections is asked too when it is dialled, and never has anything installed. Without it a vector field is refused
+  with a sentence naming the package (`postgresql-17-pgvector`) or the `CREATE EXTENSION` to
+  run. `OPERATIONS.md` §11 says how to install it, and the test harness gains
+  `TestDb::with_pgvector()` (template `feldspar_pgvector_template`).
+- **Vector index**: a constraint kind `vector_index` over one vector field, created as
+  `CREATE INDEX sc_vx_<table>_<field> … USING hnsw (field vector_cosine_ops)` and read back from
+  any one-column HNSW index. Refused on SQLite with what happens instead. The admin's Constraints
+  card has a *Vector index* button; the backup carries it.
+- **Nearest** (`sc-query` `vector.rs`): `Expr::VectorDistance`, the cosine distance from a
+  column to a vector, lower is nearer: pgvector's `<=>` on Postgres, the driver's
+  `_fd_cosine_distance` over the blobs on SQLite. It can be projected as well as ordered by.
+- **Row API, REST, GraphQL** (`sc-api` `vector.rs`): `RowQuery::nearest(Nearest { field, to })`,
+  where `to` is a vector or text. It is resolved inside the caller's read, so ownership, RLS and
+  the row cap apply: the distance goes first in the order, rows with no vector are left out, and
+  an unbounded read returns 10 rows. Text is embedded with the field's own model, since a
+  distance between two models' vectors means nothing. A read no index answers (every one on
+  SQLite, and one on Postgres without a vector index) is refused past 50,000 rows
+  (`VECTOR_SCAN_LIMIT`), naming the fix. REST takes `?nearest=embedding.[0.1,0.2,0.3]` or
+  `?nearest=embedding.some text`, and the list endpoint of a table with a vector field declares
+  it, so its generated client can send it. GraphQL list fields of such a table take
+  `nearest: JSON` (`{ field, to }`); tables without one keep their SDL unchanged. On the wire a
+  vector is `ValueType::Vector`: `number[]` in TypeScript, an array of numbers in an MCP tool's
+  schema, `JSON` in GraphQL.
+- **Computed embeddings**: a vector field's `embed_from` attribute is a formula over the row,
+  with `embed_model` and `embed_provider` (blank for the default provider). Its text is embedded
+  on insert when the write leaves the field out, and on every update that changes a field the
+  formula reads. A write whose embedding cannot be computed fails, naming the field, as a
+  default value does. The field is checked on save: the formula must parse and a model must be
+  named.
+- **Back-fill**: `sc_api::vector::embed_rows` embeds every row whose vector is empty, a batch
+  per request, as a system write; the new built-in action **`embed_rows`** (table, field,
+  `max_rows`) runs it from a trigger.
+- **The embedding call** (`sc-llm` `embed.rs`, AS3.2): `embed(provider, model, texts)` posts to
+  the provider's `/embeddings` (OpenAI and every OpenAI-compatible host), 128 texts a request,
+  and reads the vectors back in input order. An Anthropic provider is refused by name. Not yet
+  metered (AS3.5), and named by model name until models have a kind (AS3.1).
+- **Backup and import**: a backup carries vectors as arrays and the restore casts them back.
+  The Saltcorn 1 importer maps the `pgvector` plugin's `PGVector` fields to `vector(n)`, from
+  their `dimensions` attribute or else from their values, which it converts from pgvector's text
+  to arrays. A field with neither is reported and left out.
+- **Admin UI**: the field form sends a basic type's attributes when it has some (a vector's),
+  and reads a `vector(n)` field back onto the picker's `vector` with its size. Five locales
+  gained the new strings.
+
+Tests: `sc-types` (the type, its spelling, lengths, the blob, the distance), `sc-query`
+(rendering on both dialects), `sc-db-sqlite` (the two functions), `sc-db-postgres` (a
+pgvector round trip, nearest order, the refusal of a wrong length, the sentence without
+pgvector), `sc-llm` (the call against a stub server, a host's refusal, a short reply,
+Anthropic). `sc-api/tests/vector_fields.rs` runs one contract on both backends (values read back
+as written, the wrong length refused on write, nearest-k with and without a filter, rows with no
+vector left out, refusals by name), the HNSW index on Postgres, the refusal without pgvector, the
+scan limit on SQLite, the field checks, `embed_from` on insert and update with `embed_rows`'
+back-fill and a nearest read by text through an OpenAI-compatible stub, and `nearest` through
+REST and GraphQL. `sc-server`: the v1 `PGVector` conversion, a backup round trip of a vector
+field with its values and index, and the action list gains `embed_rows`.
+
 ## Full-text search in the query layer (TODO-agent-skills AS1)
 
 A table's full-text constraint is now something a read can use, on both backends.

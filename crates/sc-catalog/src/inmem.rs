@@ -625,6 +625,7 @@ fn eval(expr: &Expr, row: &ValueRow, table: &str) -> Result<Value> {
         Expr::Window { .. } => Err(unsupported(table, "a window function")),
         Expr::Subquery(_) => Err(unsupported(table, "a subquery inside an expression")),
         Expr::TextMatch(_) | Expr::TextRank(_) => Err(unsupported(table, "a full-text search")),
+        Expr::VectorDistance(_) => Err(unsupported(table, "a nearest read")),
         Expr::Param(index) => Err(unsupported(
             table,
             &format!("the unbound parameter ${}", index + 1),
