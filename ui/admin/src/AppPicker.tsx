@@ -80,7 +80,7 @@ export function AppPicker({
           <IconApps />
         </span>
         <span className="nav-link-title app-picker-text">
-          <span className="app-picker-caption"><T text="Application" /></span>
+          <span className="app-picker-caption"><T text="Selected application" /></span>
           <span className={`app-picker-name${current ? "" : " text-secondary"}`}>{label}</span>
         </span>
         <span className="app-picker-caret sidebar-wide-only">
