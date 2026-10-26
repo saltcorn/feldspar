@@ -137,7 +137,7 @@ export function DbConnections() {
               {connections?.length === 0 && (
                 <tr>
                   <td colSpan={4} className="text-muted">
-                    <T text="No database connections. Saltcorn is using its own database only; add a connection to list another PostgreSQL database's tables — or a SQLite file from one of the file stores — beside it." />
+                    <T text="No external database connections." />
                   </td>
                 </tr>
               )}
@@ -188,9 +188,6 @@ export function DbConnections() {
           </Table>
         </div>
 
-        <p className="text-muted small mt-3">
-          <T text="A connected database's tables appear in the tables list with the connection's name beside them. Saltcorn reads and writes their rows; it never changes their schema, and removing a connection changes nothing in the database it pointed at. Passwords are stored in the Saltcorn database and are never sent back to this screen — an existing one shows as ••••••••. They are not encrypted at rest, so treat database access as password access." />
-        </p>
       </PageBody>
 
       <ConnectionModal
@@ -313,64 +310,64 @@ function ConnectionModal({
           {form.backend === "sqlite" ? (
             <SqliteFilePicker form={form} onChange={onChange} />
           ) : (
-          <>
-          <div className="row">
-            <Form.Group className="mb-3 col-8">
-              <Form.Label><T text="Host" /></Form.Label>
-              <Form.Control
-                value={form.host}
-                onChange={(e) => set({ host: e.target.value })}
-                placeholder="db.example.com"
-              />
-            </Form.Group>
-            <Form.Group className="mb-3 col-4">
-              <Form.Label><T text="Port" /></Form.Label>
-              <Form.Control
-                value={form.port}
-                onChange={(e) => set({ port: e.target.value })}
-                placeholder="5432"
-              />
-            </Form.Group>
-          </div>
+            <>
+              <div className="row">
+                <Form.Group className="mb-3 col-8">
+                  <Form.Label><T text="Host" /></Form.Label>
+                  <Form.Control
+                    value={form.host}
+                    onChange={(e) => set({ host: e.target.value })}
+                    placeholder="db.example.com"
+                  />
+                </Form.Group>
+                <Form.Group className="mb-3 col-4">
+                  <Form.Label><T text="Port" /></Form.Label>
+                  <Form.Control
+                    value={form.port}
+                    onChange={(e) => set({ port: e.target.value })}
+                    placeholder="5432"
+                  />
+                </Form.Group>
+              </div>
 
-          <Form.Group className="mb-3">
-            <Form.Label><T text="Database" /></Form.Label>
-            <Form.Control
-              value={form.database}
-              onChange={(e) => set({ database: e.target.value })}
-            />
-          </Form.Group>
+              <Form.Group className="mb-3">
+                <Form.Label><T text="Database" /></Form.Label>
+                <Form.Control
+                  value={form.database}
+                  onChange={(e) => set({ database: e.target.value })}
+                />
+              </Form.Group>
 
-          <div className="row">
-            <Form.Group className="mb-3 col-6">
-              <Form.Label><T text="Username" /></Form.Label>
-              <Form.Control
-                value={form.username}
-                onChange={(e) => set({ username: e.target.value })}
-              />
-            </Form.Group>
-            <Form.Group className="mb-3 col-6">
-              <Form.Label><T text="Password" /></Form.Label>
-              <Form.Control
-                type="password"
-                value={form.password}
-                onChange={(e) => set({ password: e.target.value })}
-              />
-            </Form.Group>
-          </div>
+              <div className="row">
+                <Form.Group className="mb-3 col-6">
+                  <Form.Label><T text="Username" /></Form.Label>
+                  <Form.Control
+                    value={form.username}
+                    onChange={(e) => set({ username: e.target.value })}
+                  />
+                </Form.Group>
+                <Form.Group className="mb-3 col-6">
+                  <Form.Label><T text="Password" /></Form.Label>
+                  <Form.Control
+                    type="password"
+                    value={form.password}
+                    onChange={(e) => set({ password: e.target.value })}
+                  />
+                </Form.Group>
+              </div>
 
-          <Form.Group className="mb-3">
-            <Form.Label><T text="Schema" /></Form.Label>
-            <Form.Control
-              value={form.schema}
-              onChange={(e) => set({ schema: e.target.value })}
-              placeholder={t("public")}
-            />
-            <Form.Text className="text-muted">
-              <T text="One schema per connection: its tables are the ones that join the tables list." />
-            </Form.Text>
-          </Form.Group>
-          </>
+              <Form.Group className="mb-3">
+                <Form.Label><T text="Schema" /></Form.Label>
+                <Form.Control
+                  value={form.schema}
+                  onChange={(e) => set({ schema: e.target.value })}
+                  placeholder={t("public")}
+                />
+                <Form.Text className="text-muted">
+                  <T text="One schema per connection: its tables are the ones that join the tables list." />
+                </Form.Text>
+              </Form.Group>
+            </>
           )}
 
           {problem && <div className="text-muted small">{problem}</div>}
@@ -378,7 +375,7 @@ function ConnectionModal({
             <Alert variant={tested.connected ? "success" : "danger"} className="mb-0 mt-2">
               {tested.connected
                 ? `Connected. ${tested.tables} ${tested.tables === 1 ? "table" : "tables"}` +
-                  (form.backend === "sqlite" ? " in the file." : ` in schema ${form.schema || "public"}.`)
+                (form.backend === "sqlite" ? " in the file." : ` in schema ${form.schema || "public"}.`)
                 : (tested.error ?? "Could not connect.")}
             </Alert>
           )}
@@ -522,9 +519,8 @@ function SqliteFilePicker({
             <button
               key={entry.path}
               type="button"
-              className={`btn btn-link btn-sm d-block text-start w-100 text-decoration-none${
-                entry.path === form.filePath ? " fw-bold" : ""
-              }`}
+              className={`btn btn-link btn-sm d-block text-start w-100 text-decoration-none${entry.path === form.filePath ? " fw-bold" : ""
+                }`}
               onClick={() =>
                 entry.is_dir ? setDir(entry.path) : set({ filePath: entry.path })
               }
