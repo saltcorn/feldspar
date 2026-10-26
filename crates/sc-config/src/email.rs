@@ -69,14 +69,11 @@ pub fn email_section() -> ConfigSection {
     ConfigSection {
         name: "email",
         label: "Email",
-        description: "The SMTP server this installation sends mail through — test messages, and \
-                      every message a `send_email` action sends. Changes take effect on the next \
-                      message; nothing here needs a restart.",
+        description: "The SMTP server used by this instance to send mail.",
         fields: vec![
             ConfigDef::help(
                 FormField::new(SMTP_HOST, BasicType::Text).label("SMTP host"),
-                "The mail server's hostname, e.g. smtp.example.com. Leave empty to send no \
-                 mail: an action that tries to will say so rather than fail silently.",
+                "The mail server's hostname, e.g. smtp.example.com.",
             ),
             ConfigDef::help(
                 FormField::new(SMTP_PORT, BasicType::Int)
@@ -91,8 +88,7 @@ pub fn email_section() -> ConfigSection {
                     .options([SECURITY_STARTTLS, SECURITY_TLS, SECURITY_NONE])
                     .default_value(SECURITY_STARTTLS),
                 "starttls connects in the clear and upgrades (port 587). tls is encrypted from \
-                 the first byte (port 465). none is plain SMTP, which is only reasonable for a \
-                 relay on a network you trust — credentials are refused with it.",
+                 the first byte (port 465). none is local-network plain SMTP with no credentials.",
             ),
             ConfigDef::help(
                 FormField::new(SMTP_USERNAME, BasicType::Text).label("Username"),
@@ -102,20 +98,17 @@ pub fn email_section() -> ConfigSection {
                 FormField::new(SMTP_PASSWORD, BasicType::Text)
                     .label("Password")
                     .secret(),
-                "Stored in the database and never returned by the API. It is not encrypted at \
-                 rest: anyone who can read the database can read it.",
+                "Leave empty for a relay that does not authenticate.",
             ),
             ConfigDef::help(
                 FormField::new(EMAIL_FROM, BasicType::Text).label("From address"),
-                "What messages say they are from — either a bare address \
-                 (saltcorn@example.com) or a name and one (Saltcorn <saltcorn@example.com>). \
-                 Most providers refuse to relay a from-address they do not host.",
+                "From address on messages — either a bare address \
+                 (saltcorn@example.com) or a name and one (Saltcorn <saltcorn@example.com>).",
             ),
             ConfigDef::help(
                 FormField::new(SMTP_CERTIFICATE_NAME, BasicType::Text).label("Certificate name"),
                 "Only needed when the SMTP host is an IP address, or a name the server's \
-                 certificate is not issued for: the name the certificate is issued for, e.g. \
-                 mail.example.com. The connection still goes to the SMTP host; the certificate \
+                 certificate is not issued for: the certificate \
                  is checked against this name instead. Leave empty to check it against the host.",
             ),
             ConfigDef::help(
@@ -125,8 +118,7 @@ pub fn email_section() -> ConfigSection {
                     .default_value(CERTIFICATE_VERIFY),
                 "verify accepts only a certificate from a trusted CA, issued for the host (or the \
                  certificate name). accept_any accepts any certificate — self-signed, expired or \
-                 for another name: the connection is still encrypted, but anyone who can \
-                 intercept it can pose as the server and read the password. Use it only for a \
+                 for another name: the connection is still encrypted, but use it only for a \
                  server on a network you trust.",
             ),
         ],
