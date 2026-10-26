@@ -627,7 +627,10 @@ pub fn admin_endpoints() -> EndpointSet {
         // scrollbar has to be as long as the rows the filter row leaves. A count
         // that ignored the filters would size the scroller to the whole table
         // and leave the last screen of it empty.
-        .query([QueryParam::new("filter", ValueType::Text).map()])
+        .query([
+            QueryParam::new("search", ValueType::Text),
+            QueryParam::new("filter", ValueType::Text).map(),
+        ])
         .output(TypeSchema::struct_of([StructField::new(
             "count",
             TypeSchema::int(),
@@ -4876,6 +4879,7 @@ fn row_read_params() -> Vec<QueryParam> {
         QueryParam::new("order", ValueType::Text),
         QueryParam::new("limit", ValueType::Int),
         QueryParam::new("offset", ValueType::Int),
+        QueryParam::new("search", ValueType::Text),
         QueryParam::new("filter", ValueType::Text).map(),
     ]
 }

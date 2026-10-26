@@ -1537,6 +1537,9 @@ fn list_query_params() -> Vec<QueryParam> {
         QueryParam::new("order", ValueType::Text),
         QueryParam::new("limit", ValueType::Int),
         QueryParam::new("offset", ValueType::Int),
+        // A full-text search phrase (TODO-agent-skills AS1.4); with no `order`,
+        // the best match comes first.
+        QueryParam::new("search", ValueType::Text),
         QueryParam::new("filter", ValueType::Text).map(),
     ]
 }
@@ -2963,7 +2966,10 @@ mod tests {
         let p = RestProvider::project("/api", &[table("posts", AccessRules::default())]);
         let list = p.endpoints().find("listPosts").expect("the list endpoint");
         let names: Vec<&str> = list.query.iter().map(|q| q.name.as_str()).collect();
-        assert_eq!(names, vec!["select", "order", "limit", "offset", "filter"]);
+        assert_eq!(
+            names,
+            vec!["select", "order", "limit", "offset", "search", "filter"]
+        );
         // None of them is required: `listPosts()` still takes no argument.
         assert!(list.query.iter().all(|q| !q.required));
         // Writing endpoints declare none — a query string is a read's vocabulary.

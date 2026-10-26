@@ -97,16 +97,16 @@ neither needs work.
 The catalog can declare a `FullTextSearch` constraint, which creates an index, but no read can
 use it.
 
-- [ ] **AS1.1** `sc-query`: a `Search { fields, phrase, language }` predicate. On Postgres it is
+- [x] **AS1.1** `sc-query`: a `Search { fields, phrase, language }` predicate. On Postgres it is
   `to_tsvector(language, …) @@ websearch_to_tsquery(language, phrase)`, using the
   constraint's expression so the index is hit. On SQLite it uses FTS5 over a shadow table that
   the constraint maintains.
-- [ ] **AS1.2** A rank expression (`ts_rank` / `bm25`) and `order: "relevance"`.
-- [ ] **AS1.3** `sc-api` rows: a `search` parameter on `read_rows_as`. It is refused with
+- [x] **AS1.2** A rank expression (`ts_rank` / `bm25`) and `order: "relevance"`.
+- [x] **AS1.3** `sc-api` rows: a `search` parameter on `read_rows_as`. It is refused with
   instructions when the table has no full-text constraint and is not small enough to scan.
-- [ ] **AS1.4** REST (`?search=`), GraphQL (`search:` argument) and the generated client.
-- [ ] **AS1.5** Admin UI: create the constraint from the table screen and choose the language.
-- [ ] **AS1.6** Tests on both backends: ranking, a phrase with operators, a field the caller
+- [x] **AS1.4** REST (`?search=`), GraphQL (`search:` argument) and the generated client.
+- [x] **AS1.5** Admin UI: create the constraint from the table screen and choose the language.
+- [x] **AS1.6** Tests on both backends: ranking, a phrase with operators, a field the caller
   may not read is not matched (§7.3).
 
 ## AS2 — Vector fields

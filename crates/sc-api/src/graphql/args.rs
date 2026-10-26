@@ -30,6 +30,9 @@ pub const ARG_WHERE: &str = "where";
 pub const ARG_ORDER_BY: &str = "order_by";
 pub const ARG_LIMIT: &str = "limit";
 pub const ARG_OFFSET: &str = "offset";
+/// A full-text search phrase (TODO-agent-skills AS1.4). Without an `order_by`,
+/// the best match comes first.
+pub const ARG_SEARCH: &str = "search";
 /// `count(distinct: …)` — one column, because `count(DISTINCT a, b)` is not what
 /// `sc_query::Expr::Agg` spells.
 pub const ARG_DISTINCT: &str = "distinct";
@@ -98,8 +101,24 @@ fn filtered_and_ordered(table: &Table, ctx: &ResolverContext<'_>) -> Result<RowQ
     {
         query = query.where_(Some(expr));
     }
+    let search = match ctx.args.get(ARG_SEARCH).map(|a| a.as_value().clone()) {
+        None | Some(GqlValue::Null) => None,
+        Some(GqlValue::String(phrase)) => Some(crate::search::text_search(table, &phrase, None)?),
+        Some(_) => {
+            return Err(Error::invalid(format!(
+                "`{ARG_SEARCH}` on `{}` must be a string",
+                table.name
+            )));
+        }
+    };
     if let Some(arg) = ctx.args.get(ARG_ORDER_BY) {
         query = query.order_by(order_by(table, arg.as_value())?);
+    }
+    if let Some(search) = search {
+        if query.order.is_empty() {
+            query = query.order_by(vec![crate::search::relevance(&search)]);
+        }
+        query = query.searching(search);
     }
     Ok(query)
 }

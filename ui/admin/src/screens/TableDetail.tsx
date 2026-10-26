@@ -887,7 +887,7 @@ function Constraints({
                     ))}
                   </Form.Select>
                   <Form.Text muted>
-                    <T text="Indexes every text field of the table together. The language decides how words are reduced to their stems, so it has to match the one a search uses." />
+                    <T text="Indexes every text field of the table together, which is what lets a read search its rows (`?search=` in the REST API, `search:` in GraphQL). The language decides how words are reduced to their stems; on SQLite only English is stemmed, and the table needs an integer key." />
                   </Form.Text>
                 </Form.Group>
               )}

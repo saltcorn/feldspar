@@ -2521,12 +2521,26 @@ impl Plan {
     /// order the caller wrote it, then the policy DDL, which is emitted last
     /// because it may reference columns the DDL above it creates.
     fn steps(&mut self, catalog: &Catalog) -> Result<Vec<SchemaStep>> {
-        let mut steps: Vec<SchemaStep> = self.ddl.iter().cloned().map(SchemaStep::Change).collect();
         let dialect = catalog.primary().dialect();
+        // A full-text index is dropped *before* the columns change: on SQLite
+        // it is kept by triggers that name every text column, and SQLite
+        // refuses to drop or retype a column a trigger names. Its rebuild, if
+        // there is one, comes after, with the other constraints.
+        let is_fts_drop = |op: &ConstraintOp| matches!(op, ConstraintOp::Drop(c) if matches!(c.kind, ConstraintKind::FullTextSearch { .. }));
+        let mut steps: Vec<SchemaStep> = Vec::new();
+        for (table_name, op) in self.constraints.iter().filter(|(_, op)| is_fts_drop(op)) {
+            if let ConstraintOp::Drop(constraint) = op {
+                steps.extend(drop_constraint_steps(dialect, table_name, constraint));
+            }
+        }
+        steps.extend(self.ddl.iter().cloned().map(SchemaStep::Change));
         // After the columns (a constraint may name one this batch added) and
         // before the policies (which are the last thing that can reference
         // anything).
         for (table_name, op) in &self.constraints {
+            if is_fts_drop(op) {
+                continue;
+            }
             let Some(table) = self.projection.get(table_name) else {
                 continue;
             };

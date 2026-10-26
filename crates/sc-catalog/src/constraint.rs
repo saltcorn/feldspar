@@ -365,6 +365,14 @@ pub fn create_constraint_steps(
                 method: None,
             })]
         }
+        ConstraintKind::FullTextSearch { language } if dialect.is_sqlite() => {
+            vec![SchemaStep::Sql(fts5_create_sql(
+                dialect,
+                table,
+                &constraint.name,
+                language,
+            )?)]
+        }
         ConstraintKind::FullTextSearch { language } => {
             vec![SchemaStep::Change(SchemaChange::CreateIndex {
                 table: table.name.clone(),
@@ -403,6 +411,15 @@ pub fn drop_constraint_steps(
             name: constraint.name.clone(),
             if_exists: true,
         })],
+        // An FTS5 table is not an index and keeps its comment in a table of the
+        // driver's, which a dropped virtual table does not take with it.
+        ConstraintKind::FullTextSearch { .. } if dialect.is_sqlite() => vec![
+            SchemaStep::Sql(fts5_drop_sql(dialect, &constraint.name)),
+            SchemaStep::Change(SchemaChange::SetComment {
+                target: constraint.comment_target(table_name),
+                comment: None,
+            }),
+        ],
         ConstraintKind::Index { .. } | ConstraintKind::FullTextSearch { .. } => {
             vec![SchemaStep::Change(SchemaChange::DropIndex {
                 name: constraint.name.clone(),
@@ -421,49 +438,177 @@ pub fn drop_constraint_steps(
     }
 }
 
-/// The `to_tsvector` expression a full-text index is over — **one** definition,
-/// because an index and the search that hopes to use it must be the same
-/// expression or the index is simply never used.
+/// The columns a full-text index covers: every stored text field of the table,
+/// in field order, except a secret — its column holds ciphertext, and a search
+/// that matched it would be matching nothing anybody wrote.
 ///
-/// Every text field of the table, coalesced to the empty string (a null anywhere
-/// in a concatenation makes the whole vector null) and joined by spaces.
+/// One definition, read by the index's DDL and by every search that hopes to
+/// use the index: the two must name the same columns in the same order.
+pub fn full_text_columns(table: &Table) -> Vec<String> {
+    table
+        .fields
+        .iter()
+        .filter(|f| {
+            !f.is_calc() && !f.is_secret() && f.base.type_.as_basic() == Some(&BasicType::Text)
+        })
+        .map(|f| f.base.name.clone())
+        .collect()
+}
+
+/// The `to_tsvector` expression a full-text index is over — **one** definition
+/// ([`sc_query::text_search_document`]), because an index and the search that
+/// hopes to use it must be the same expression or the index is simply never
+/// used.
 pub fn full_text_expression(
     dialect: &dyn SqlDialect,
     table: &Table,
     language: &str,
 ) -> Result<String> {
-    let columns: Vec<String> = table
-        .fields
-        .iter()
-        .filter(|f| !f.is_calc() && f.base.type_.as_basic() == Some(&BasicType::Text))
-        .map(|f| format!("coalesce({}, '')", dialect.quote_ident(&f.base.name)))
-        .collect();
+    let columns = full_text_columns(table);
     if columns.is_empty() {
-        return Err(Error::invalid(format!(
-            "table `{}` has no text fields to index for full-text search",
-            table.name
-        )));
+        return Err(no_text_fields(table));
     }
     check_language(language)?;
-    // The configuration is cast to `regconfig` rather than passed as text: the
-    // two-argument `to_tsvector` is only immutable — and so only indexable —
-    // in its `regconfig` form.
-    Ok(format!(
-        "to_tsvector('{language}'::regconfig, {})",
-        columns.join(" || ' ' || ")
+    sc_query::text_search_document(dialect, None, &columns, language)
+}
+
+fn no_text_fields(table: &Table) -> Error {
+    Error::invalid(format!(
+        "table `{}` has no text fields to index for full-text search",
+        table.name
     ))
+}
+
+/// The table's full-text constraint, if it has one.
+pub fn full_text_constraint(table: &Table) -> Option<(&TableConstraint, &str)> {
+    table.constraints.iter().find_map(|c| match &c.kind {
+        ConstraintKind::FullTextSearch { language } => Some((c, language.as_str())),
+        _ => None,
+    })
+}
+
+/// A search for `phrase` over `columns` of `table` that its full-text constraint
+/// answers, or `None` when it has none (TODO-agent-skills AS1.1).
+///
+/// The value is the same on both backends: Postgres reads the document from the
+/// columns (and uses the index when they are all of [`full_text_columns`]),
+/// SQLite reads the FTS5 table the constraint keeps under its own name.
+pub fn indexed_text_search(
+    table: &Table,
+    columns: Vec<String>,
+    phrase: &str,
+) -> Option<sc_query::TextSearch> {
+    let (constraint, language) = full_text_constraint(table)?;
+    let fts5 = match table.primary_key.as_slice() {
+        [key] => Some(sc_query::Fts5Index {
+            name: constraint.name.clone(),
+            key: key.clone(),
+            columns: full_text_columns(table),
+        }),
+        _ => None,
+    };
+    Some(sc_query::TextSearch {
+        table: table.name.clone(),
+        columns,
+        language: language.to_owned(),
+        phrase: phrase.to_owned(),
+        fts5,
+    })
+}
+
+/// The SQLite counterpart of the Postgres full-text index: an FTS5 table over
+/// the table's text columns, kept in step by three triggers.
+///
+/// *External content* (`content=`): the FTS5 table holds the index and not a
+/// second copy of the text, and its rowids are the table's integer key — which
+/// is why one is required. A rowid that is not the key is renumbered by every
+/// table rebuild SQLite's `ALTER TABLE` makes necessary, and an index keyed by
+/// numbers that moved points at the wrong rows.
+///
+/// Everything is dropped first, so creating it again — what a change to the
+/// table's text fields does — starts from nothing, and so does one whose table
+/// was dropped from under it.
+fn fts5_create_sql(
+    dialect: &dyn SqlDialect,
+    table: &Table,
+    name: &str,
+    language: &str,
+) -> Result<String> {
+    let columns = full_text_columns(table);
+    if columns.is_empty() {
+        return Err(no_text_fields(table));
+    }
+    check_language(language)?;
+    let key = match table.primary_key.as_slice() {
+        [key]
+            if table
+                .field(key)
+                .is_some_and(|f| f.base.type_.as_basic() == Some(&BasicType::Int)) =>
+        {
+            key.clone()
+        }
+        _ => {
+            return Err(Error::invalid(format!(
+                "a full-text search index on SQLite needs a single integer primary key, which \
+                 `{}` does not have",
+                table.name
+            )));
+        }
+    };
+    let q = |ident: &str| dialect.quote_ident(ident);
+    let fts = q(name);
+    let quoted = |prefix: &str| -> String {
+        columns
+            .iter()
+            .map(|c| format!("{prefix}{}", q(c)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let (cols, new_vals, old_vals) = (quoted(""), quoted("new."), quoted("old."));
+    let (key_q, tbl) = (q(&key), q(&table.name));
+    let insert = format!("INSERT INTO {fts} (rowid, {cols}) VALUES (new.{key_q}, {new_vals});");
+    let delete = format!(
+        "INSERT INTO {fts} ({fts}, rowid, {cols}) VALUES ('delete', old.{key_q}, {old_vals});"
+    );
+    let mut sql = fts5_drop_sql(dialect, name);
+    sql.push_str(&format!(
+        "CREATE VIRTUAL TABLE {fts} USING fts5({cols}, content={content}, \
+         content_rowid={rowid}, tokenize={tokenize});\n\
+         CREATE TRIGGER {ai} AFTER INSERT ON {tbl} BEGIN {insert} END;\n\
+         CREATE TRIGGER {ad} AFTER DELETE ON {tbl} BEGIN {delete} END;\n\
+         CREATE TRIGGER {au} AFTER UPDATE ON {tbl} BEGIN {delete} {insert} END;\n\
+         INSERT INTO {fts} ({fts}) VALUES ('rebuild');\n",
+        content = dialect.quote_literal(&table.name),
+        rowid = dialect.quote_literal(&key),
+        tokenize = dialect.quote_literal(sc_query::search::fts5_tokenizer(language)),
+        ai = q(&format!("{name}_ai")),
+        ad = q(&format!("{name}_ad")),
+        au = q(&format!("{name}_au")),
+    ));
+    Ok(sql)
+}
+
+/// Drop a SQLite full-text index: its triggers, then its FTS5 table.
+fn fts5_drop_sql(dialect: &dyn SqlDialect, name: &str) -> String {
+    let mut sql = String::new();
+    for suffix in ["ai", "ad", "au"] {
+        sql.push_str(&format!(
+            "DROP TRIGGER IF EXISTS {};\n",
+            dialect.quote_ident(&format!("{name}_{suffix}"))
+        ));
+    }
+    sql.push_str(&format!(
+        "DROP TABLE IF EXISTS {};\n",
+        dialect.quote_ident(name)
+    ));
+    sql
 }
 
 /// A text-search configuration name is an identifier, not a string a caller
 /// composes: it is inlined into DDL that cannot be parameterised, so anything
 /// but a plain lowercase name is refused rather than escaped.
 fn check_language(language: &str) -> Result<()> {
-    let ok = !language.is_empty()
-        && language.len() <= 40
-        && language
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    if ok {
+    if sc_query::search::is_language_name(language) {
         Ok(())
     } else {
         Err(Error::invalid(format!(

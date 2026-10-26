@@ -78,12 +78,15 @@ pub(crate) fn introspect(conn: &Connection) -> Result<Vec<PhysicalTable>> {
 ///
 /// `sqlite_*` is SQLite's own reserved prefix (the sequence table behind
 /// `AUTOINCREMENT`, the statistics tables); a table named there is not one an
-/// admin made and not one they can use.
+/// admin made and not one they can use. Nor is a virtual table or the shadow
+/// tables behind one: a full-text index on SQLite is an FTS5 table (see
+/// [`fts5_indexes`]), and it is reported as a constraint of the table it
+/// indexes rather than as five tables of its own.
 pub(crate) fn table_names(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = prepare(
         conn,
-        "SELECT name FROM sqlite_master \
-         WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        "SELECT name FROM pragma_table_list \
+         WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     )?;
     let names = stmt
         .query_map([], |row| row.get::<_, String>(0))
@@ -152,6 +155,17 @@ pub(crate) fn physical_table(conn: &Connection, table: &str) -> Result<PhysicalT
             name: index.name.clone(),
             kind,
             comment: comment(conn, "index", "", &index.name)?,
+        });
+    }
+    for (name, columns) in fts5_indexes(conn, table)? {
+        constraints.push(PhysicalConstraint {
+            comment: comment(conn, "index", "", &name)?,
+            name,
+            kind: PhysicalConstraintKind::Index {
+                columns,
+                expression: None,
+                method: "fts5".to_owned(),
+            },
         });
     }
     for trigger in triggers(conn, table)? {
@@ -317,6 +331,90 @@ pub(crate) fn indexes(conn: &Connection, table: &str) -> Result<Vec<RawIndex>> {
         });
     }
     Ok(out)
+}
+
+/// The FTS5 tables whose content is `table`, each with the columns it indexes.
+///
+/// An external-content FTS5 table names its table only inside its own `CREATE
+/// VIRTUAL TABLE` statement (`content='t'`), so that is where this looks.
+pub(crate) fn fts5_indexes(conn: &Connection, table: &str) -> Result<Vec<(String, Vec<String>)>> {
+    let mut stmt = prepare(
+        conn,
+        "SELECT name, sql FROM sqlite_master \
+         WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%' ORDER BY name",
+    )?;
+    let virtual_tables = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| database(e, "reading virtual tables"))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| database(e, "reading virtual tables"))?;
+    Ok(virtual_tables
+        .into_iter()
+        .filter_map(|(name, sql)| {
+            let (content, columns) = fts5_arguments(&sql)?;
+            (content == table).then_some((name, columns))
+        })
+        .collect())
+}
+
+/// The content table and the columns of an FTS5 table's `CREATE VIRTUAL
+/// TABLE … USING fts5(…)` statement, or `None` when it is not an
+/// external-content FTS5 table.
+fn fts5_arguments(sql: &str) -> Option<(String, Vec<String>)> {
+    let lower = sql.to_ascii_lowercase();
+    let open = lower.find("using fts5(")? + "using fts5(".len();
+    let body = sql.get(open..sql.rfind(')')?)?;
+    let mut content = None;
+    let mut columns = Vec::new();
+    for arg in split_arguments(body) {
+        let arg = arg.trim();
+        match arg.split_once('=') {
+            Some((option, value)) => {
+                if option.trim().eq_ignore_ascii_case("content") {
+                    content = Some(unquote(value.trim()));
+                }
+            }
+            None => columns.push(unquote(arg)),
+        }
+    }
+    Some((content.filter(|c| !c.is_empty())?, columns))
+}
+
+/// The arguments of an FTS5 declaration, split on the commas outside quotes.
+fn split_arguments(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for c in body.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c == ',' => {
+                out.push(std::mem::take(&mut current));
+                continue;
+            }
+            None => {}
+        }
+        current.push(c);
+    }
+    out.push(current);
+    out
+}
+
+/// An identifier or string as written in SQL, without its quotes. A doubled
+/// quote inside is one quote — and reading `"a""b"` as two words would be
+/// wrong about a name somebody chose.
+fn unquote(text: &str) -> String {
+    for q in ['"', '\'', '`'] {
+        if text.len() >= 2 && text.starts_with(q) && text.ends_with(q) {
+            let doubled: String = [q, q].iter().collect();
+            return text[1..text.len() - 1].replace(&doubled, &q.to_string());
+        }
+    }
+    text.to_owned()
 }
 
 /// The names of the triggers on a table.

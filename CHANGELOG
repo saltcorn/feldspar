@@ -2,6 +2,60 @@
 
 Changes in reverse chronological order.
 
+## Full-text search in the query layer (TODO-agent-skills AS1)
+
+A table's full-text constraint is now something a read can use, on both backends.
+
+- **Query layer** (`sc-query` `search.rs`): `Expr::TextMatch` and `Expr::TextRank` over a
+  `TextSearch` (table, columns, language, phrase, and on SQLite the FTS5 table). The phrase is
+  web-search syntax: words, `"quoted phrases"`, `-exclusions` and `or`. On Postgres the match
+  is `to_tsvector(…) @@ websearch_to_tsquery(…)` and the rank is `ts_rank`. The document is
+  written by one function, `text_search_document`, which the constraint's index uses as well,
+  so a search over every text field hits the index. On SQLite the match is `key IN (SELECT
+  rowid FROM <fts5> WHERE … MATCH ?)` and the rank is `-bm25`. A search over some of the
+  index's columns becomes an FTS5 column filter. Every term is quoted as an FTS5 string, so
+  FTS5's own operators cannot be reached from a phrase. Without an index, SQLite falls back to
+  `LIKE` per term. Rank is "higher is better" on every backend, and the phrase is always bound,
+  never inlined.
+- **The constraint on SQLite** (`sc-catalog` `constraint.rs`): it used to emit a Postgres
+  expression index, which failed. It is now an external-content FTS5 table (`sc_fts_<table>`)
+  over the text columns, keyed by the table's integer primary key (now required on SQLite),
+  and kept in step by three triggers. English uses the Porter stemmer; other languages are not
+  stemmed. The SQLite driver reports it as the table's full-text constraint, and
+  virtual/shadow tables no longer show up as tables (`pragma_table_list`). The schema editor
+  drops a full-text index *before* the column changes in its batch, because SQLite refuses to
+  drop a column that a trigger names. The rebuild still comes afterwards.
+- **Secrets are not indexed.** `full_text_columns` (shared by the DDL and the search) leaves
+  out secret fields, since their columns hold ciphertext. A Postgres table whose existing
+  index still covers a secret column gets the new document the next time its text fields
+  change; until then its searches are scans.
+- **Rows API** (`sc-api` `search.rs`): `search::text_search(table, phrase, fields)` resolves
+  a search. It matches only text fields the caller can read: never a secret, and never a
+  column the API hides, such as the users table's password hash. A `fields` list narrows it
+  further, which is the shape an agent's allow-list will take. `RowQuery::searching` adds it
+  to the read and `search::relevance` orders by it. `read_rows_as` refuses a search that the
+  index does not answer if the table has more than 5,000 rows (`SCAN_LIMIT`), and the message
+  says to add the `full_text_search` constraint.
+- **REST, GraphQL and the clients**: `?search=` on every list endpoint, and on the admin
+  API's `listRows`/`countRows`, whose count includes the search. With no `order`, the best
+  match comes first, and `order=relevance` (or `relevance.asc`) names that ordering.
+  GraphQL list fields (root and child) take `search: String`. The generated clients gain
+  `search?: string`, and the four checked-in admin clients are regenerated. The offline copy
+  passes a searched `list()` to the server instead of ignoring the search, and fails when
+  offline.
+- **Admin UI**: creating the constraint and choosing its language was already on the table
+  screen. Its help text, the five translations of it and `docs/tutorial-constraints.md` now
+  say what the index is for and what SQLite needs.
+
+Tests: `sc-query` unit tests for phrase parsing, FTS5 query building and rendering on both
+dialects. `sc-api/tests/full_text_search.rs` covers both backends: ranking, exclusions,
+phrases, `or`, exclusion-only phrases, `order`, a secret that is never matched, and a
+`fields` restriction. On Postgres an `EXPLAIN` shows the search uses `sc_fts_posts`. On
+SQLite it checks that word fragments do not match, that update/delete reach the index, that
+adding and dropping text fields work, and that the scan refusal past 5,000 rows fires. A
+fourth test goes through the REST and GraphQL providers. The GraphQL SDL snapshots and schema
+tests are updated for the new argument.
+
 ## Saltcorn 1 import: every agent skill gets a deliberate outcome
 
 Each of the 23 skills of v1's agents plugin (`~/agents/skills`) now either becomes the trait

@@ -37,6 +37,8 @@ mod custom_queries;
 mod default_values;
 #[path = "file_field_write.rs"]
 mod file_field_write;
+#[path = "full_text_search.rs"]
+mod full_text_search;
 #[path = "generated_client_csrf.rs"]
 mod generated_client_csrf;
 #[path = "graphql_aggregates.rs"]

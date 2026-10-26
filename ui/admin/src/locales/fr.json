@@ -277,7 +277,7 @@
   "Icon": "Icône",
   "If it fails": "En cas d’échec",
   "Index": "Index",
-  "Indexes every text field of the table together. The language decides how words are reduced to their stems, so it has to match the one a search uses.": "Indexe tous les champs texte de la table ensemble. La langue détermine comment les mots sont réduits à leur racine ; elle doit donc correspondre à celle utilisée par une recherche.",
+  "Indexes every text field of the table together, which is what lets a read search its rows (`?search=` in the REST API, `search:` in GraphQL). The language decides how words are reduced to their stems; on SQLite only English is stemmed, and the table needs an integer key.": "Indexe ensemble tous les champs texte de la table, ce qui permet à une lecture de rechercher dans ses lignes (`?search=` dans l'API REST, `search:` en GraphQL). La langue détermine comment les mots sont réduits à leur radical ; sous SQLite, seul l'anglais est racinisé et la table doit avoir une clé entière.",
   "Input / output": "Entrée / sortie",
   "Install a module": "Installer un module",
   "Installed": "Installé",

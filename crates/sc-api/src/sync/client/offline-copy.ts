@@ -51,13 +51,14 @@ type PushAnswer = {
 /**
  * The options of a `list()` call (`select`, `filter`, `order`, `limit`,
  * `offset`), as the offline copy reads them when it answers the call itself
- * instead of asking the server.
+ * instead of asking the server. A `search` it never answers itself: see `list`.
  */
 type LocalQuery = {
   select?: string;
   order?: string;
   limit?: number;
   offset?: number;
+  search?: string;
   filter?: Record<string, string | undefined>;
 };
 
@@ -397,6 +398,15 @@ export class OfflineCopy implements OfflineSync {
     query: LocalQuery
   ): Promise<unknown[]> {
     await this.ready;
+    // A full-text search is the server's: its stemming and ranking are the
+    // database's, and a copy that matched words its own way would answer a
+    // different question with the same call. Offline, it fails rather than
+    // silently ignoring the search.
+    if (query.search !== undefined && query.search !== null) {
+      if (!online.list)
+        throw new Error(`a search of \`${name}\` is answered by the server`);
+      return online.list(query);
+    }
     // A `select` the server would refuse is refused here too, before anything is read.
     const select =
       query.select === undefined ? undefined : parseSelect(query.select);

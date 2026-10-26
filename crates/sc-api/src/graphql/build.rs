@@ -24,7 +24,7 @@ use async_graphql::dynamic::{
 use sc_catalog::{DataField, DataFieldKind, Table};
 use sc_error::{Error, Result};
 
-use super::args::{ARG_DISTINCT, ARG_LIMIT, ARG_OFFSET, ARG_ORDER_BY, ARG_WHERE};
+use super::args::{ARG_DISTINCT, ARG_LIMIT, ARG_OFFSET, ARG_ORDER_BY, ARG_SEARCH, ARG_WHERE};
 use super::limits::GraphqlLimits;
 use super::mutate::{self, ARG_OBJECT, ARG_PK_COLUMNS, ARG_SET};
 use super::names::{
@@ -267,10 +267,11 @@ fn row_field_resolver(field: &DataField, names: &SchemaNames) -> resolve::Resolv
     }
 }
 
-/// `where` / `order_by` / `limit` / `offset` on a collection field.
+/// `where` / `search` / `order_by` / `limit` / `offset` on a collection field.
 fn list_arguments(field: Field, t: &TableNames) -> Field {
     field
         .argument(InputValue::new(ARG_WHERE, TypeRef::named(&t.bool_exp)))
+        .argument(InputValue::new(ARG_SEARCH, TypeRef::named(TypeRef::STRING)))
         .argument(InputValue::new(
             ARG_ORDER_BY,
             TypeRef::named_nn_list(&t.order_by),
@@ -693,7 +694,7 @@ mod tests {
         )]);
         assert!(
             sdl.contains(
-                "departments(where: DepartmentsBoolExp, order_by: [DepartmentsOrderBy!], \
+                "departments(where: DepartmentsBoolExp, search: String, order_by: [DepartmentsOrderBy!], \
                  limit: Int, offset: Int): [Departments!]!"
             ),
             "{sdl}"
@@ -729,7 +730,7 @@ mod tests {
         ]);
         assert!(
             sdl.contains(
-                "employees(where: EmployeesBoolExp, order_by: [EmployeesOrderBy!], \
+                "employees(where: EmployeesBoolExp, search: String, order_by: [EmployeesOrderBy!], \
                  limit: Int, offset: Int): [Employees!]!"
             ),
             "{sdl}"

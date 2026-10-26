@@ -72,6 +72,8 @@ pub(crate) fn rewrite(e: &mut Expr, f: &mut dyn FnMut(&Expr) -> Option<Expr>) {
             }
         }
         Expr::Subquery(q) => rewrite_select(q, f),
+        // A search names its table's columns by name, not through an alias.
+        Expr::TextMatch(_) | Expr::TextRank(_) => {}
         Expr::Cast { expr, .. } => rewrite(expr, f),
     }
 }
@@ -162,7 +164,12 @@ pub(crate) fn substitute(e: &mut Expr, alias: &str, lookup: &dyn Fn(&str) -> Opt
 pub(crate) fn has_window_or_aggregate(e: &Expr) -> bool {
     match e {
         Expr::Window { .. } | Expr::Agg { .. } => true,
-        Expr::Col(_) | Expr::Lit(_) | Expr::Param(_) | Expr::Subquery(_) => false,
+        Expr::Col(_)
+        | Expr::Lit(_)
+        | Expr::Param(_)
+        | Expr::Subquery(_)
+        | Expr::TextMatch(_)
+        | Expr::TextRank(_) => false,
         Expr::Binary { l, r, .. } => has_window_or_aggregate(l) || has_window_or_aggregate(r),
         Expr::Unary { e, .. } | Expr::Json { target: e, .. } | Expr::Cast { expr: e, .. } => {
             has_window_or_aggregate(e)

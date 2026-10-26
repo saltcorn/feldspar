@@ -273,7 +273,7 @@
   "Icon": "图标",
   "If it fails": "如果失败",
   "Index": "索引",
-  "Indexes every text field of the table together. The language decides how words are reduced to their stems, so it has to match the one a search uses.": "将表中的所有文本字段一起建立索引。语言决定词语如何还原为词干，因此必须与搜索所使用的语言匹配。",
+  "Indexes every text field of the table together, which is what lets a read search its rows (`?search=` in the REST API, `search:` in GraphQL). The language decides how words are reduced to their stems; on SQLite only English is stemmed, and the table needs an integer key.": "将表中所有文本字段一起建立索引，使读取可以搜索这些行（REST API 中的 `?search=`，GraphQL 中的 `search:`）。语言决定单词如何被还原为词干；在 SQLite 上只有英语会进行词干提取，并且该表需要一个整数主键。",
   "Input / output": "输入 / 输出",
   "Install a module": "安装模块",
   "Installed": "已安装",

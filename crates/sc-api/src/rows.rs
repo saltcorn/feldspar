@@ -212,6 +212,11 @@ pub struct RowQuery {
     /// `predict("…")` of a model over it would read that model's dataset to
     /// compute itself, which would compute the field again, forever.
     pub sql_only: bool,
+    /// The full-text search this read is narrowed by, if any (TODO-agent-skills
+    /// AS1.3). Its match is already in [`filter`](Self::filter) — see
+    /// [`searching`](Self::searching) — and it is kept here so the read can ask
+    /// whether an index answers it before running it.
+    pub search: Option<sc_query::TextSearch>,
 }
 
 /// At most `limit` rows for each distinct value of `by`, after skipping
@@ -310,6 +315,14 @@ impl RowQuery {
     pub fn sql_only(mut self) -> RowQuery {
         self.sql_only = true;
         self
+    }
+
+    /// Narrow the read to the rows matching `search` — built by
+    /// [`crate::search::text_search`], which decides which fields the caller may
+    /// search. Order by [`crate::search::relevance`] for the best match first.
+    pub fn searching(mut self, search: sc_query::TextSearch) -> RowQuery {
+        self.search = Some(search.clone());
+        self.and_filter(Expr::TextMatch(Box::new(search)))
     }
 
     /// This query with `extra` ANDed into its filter — how an ownership

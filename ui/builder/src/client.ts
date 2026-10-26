@@ -48,9 +48,9 @@ export type CreateConstraintRequest = { type: string; fields?: Array<string> | n
 export type CreateConstraintResponse = { name: string; type: string; fields: Array<string>; expression?: string | null; method?: string | null; language?: string | null; formula?: string | null; error_message?: string | null; managed: boolean };
 export type DeleteConstraintResponse = { dropped: string };
 export type ListFieldTypesResponse = Array<{ name: string; label: string; category: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; pattern?: string | null; pattern_error?: string | null; show_if: Array<{ name: string; values: Array<unknown> }> }> }>;
-export type ListRowsQuery = { order?: string; limit?: number; offset?: number; filter?: Record<string, string> };
+export type ListRowsQuery = { order?: string; limit?: number; offset?: number; search?: string; filter?: Record<string, string> };
 export type ListRowsResponse = Array<unknown>;
-export type CountRowsQuery = { filter?: Record<string, string> };
+export type CountRowsQuery = { search?: string; filter?: Record<string, string> };
 export type CountRowsResponse = { count: number };
 export type CreateRowRequest = unknown;
 export type CreateRowResponse = unknown;
@@ -979,6 +979,7 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (query?.order !== undefined && query?.order !== null) search.append("order", String(query?.order));
       if (query?.limit !== undefined && query?.limit !== null) search.append("limit", String(query?.limit));
       if (query?.offset !== undefined && query?.offset !== null) search.append("offset", String(query?.offset));
+      if (query?.search !== undefined && query?.search !== null) search.append("search", String(query?.search));
       for (const [key, value] of Object.entries(query?.filter ?? {})) search.append(key, String(value));
       const qs = search.toString();
       const res = await doFetch(`${baseUrl}/api/tables/${encodeURIComponent(table)}/rows${qs ? `?${qs}` : ""}`, {
@@ -990,6 +991,7 @@ export function createClient(options: ClientOptions = {}): ApiClient {
     },
     async countRows(table, query) {
       const search = new URLSearchParams();
+      if (query?.search !== undefined && query?.search !== null) search.append("search", String(query?.search));
       for (const [key, value] of Object.entries(query?.filter ?? {})) search.append(key, String(value));
       const qs = search.toString();
       const res = await doFetch(`${baseUrl}/api/tables/${encodeURIComponent(table)}/rows/count${qs ? `?${qs}` : ""}`, {
