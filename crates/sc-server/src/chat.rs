@@ -499,9 +499,13 @@ async fn start(
     let agents = Agents::load(&ctx.catalog, ctx.services.registry()).await?;
     let definition = agents.require(agent)?;
     may_chat(&ctx.caller, definition)?;
-    let controls =
-        sc_agent::composer_controls_for(&ctx.catalog, &ctx.caller, ctx.services.registry(), definition)
-            .await?;
+    let controls = sc_agent::composer_controls_for(
+        &ctx.catalog,
+        &ctx.caller,
+        ctx.services.registry(),
+        definition,
+    )
+    .await?;
     let Some(id) = run else {
         return Ok((None, controls));
     };

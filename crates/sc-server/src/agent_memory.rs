@@ -42,12 +42,13 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 filter.agent = text("agent");
                 filter.kind = text("kind");
                 filter.search = text("search");
-                filter.user = match text("user") {
-                    None => None,
-                    Some(raw) => Some(raw.parse().map_err(|_| {
-                        Error::invalid(format!("`user` `{raw}` is not a user id"))
-                    })?),
-                };
+                filter.user =
+                    match text("user") {
+                        None => None,
+                        Some(raw) => Some(raw.parse().map_err(|_| {
+                            Error::invalid(format!("`user` `{raw}` is not a user id"))
+                        })?),
+                    };
                 let out: Vec<Json> = list_memories(&catalog, &filter)
                     .await?
                     .iter()

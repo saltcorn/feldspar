@@ -18,7 +18,7 @@
 use crate::common;
 
 use common::{Env, as_user, config, titles};
-use sc_agent::{AgentTrait, DisplayPart, RunCaller, Turn};
+use sc_agent::{DisplayPart, RunCaller, Turn};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation};
 use sc_catalog::{ConstraintKind, TableConstraint};
 use sc_core_traits::{

@@ -341,11 +341,20 @@ fn the_mail_module_ships_and_declares_the_tables_its_card_lists() {
     assert_eq!(imap.language, ModuleLanguage::JavaScript);
     assert!(imap.permissions.any_host(), "{:?}", imap.permissions);
     for package in ["imapflow", "nodemailer", "@zone-eu/mailsplit"] {
-        assert!(imap.installs.iter().any(|p| p == package), "{:?}", imap.installs);
+        assert!(
+            imap.installs.iter().any(|p| p == package),
+            "{:?}",
+            imap.installs
+        );
     }
     assert_eq!(
         imap.tables,
-        ["mail_accounts", "mail_folders", "mail_messages", "mail_attachments"]
+        [
+            "mail_accounts",
+            "mail_folders",
+            "mail_messages",
+            "mail_attachments"
+        ]
     );
 
     // `index.js` is JavaScript; node evaluates it (it requires nothing that

@@ -98,7 +98,14 @@ async fn preload_rows_puts_the_users_rows_in_the_session_header() -> Result<()> 
     // No tool: the rows arrive with the session.
     assert!(env.tools("preload_rows", &cfg).is_empty());
 
-    let (text, state) = header(&env, "preload_rows", &cfg, &as_user("ada@example.com"), None).await?;
+    let (text, state) = header(
+        &env,
+        "preload_rows",
+        &cfg,
+        &as_user("ada@example.com"),
+        None,
+    )
+    .await?;
     let text = text.expect("a header");
     assert!(text.starts_with("Your books:"), "{text}");
     assert!(text.contains("Dune (412 pages)"), "{text}");
@@ -116,7 +123,14 @@ async fn preload_rows_reads_as_the_caller() -> Result<()> {
     // reader their own, and the trait reads as the reader.
     env.own("books", "owner === user.email").await?;
     let cfg = preload("");
-    let (text, _) = header(&env, "preload_rows", &cfg, &as_user("bob@example.com"), None).await?;
+    let (text, _) = header(
+        &env,
+        "preload_rows",
+        &cfg,
+        &as_user("bob@example.com"),
+        None,
+    )
+    .await?;
     let text = text.unwrap();
     assert!(text.contains("Emma") && text.contains("Ubik"), "{text}");
     assert!(!text.contains("Dune"), "{text}");
@@ -129,15 +143,32 @@ async fn preload_rows_filters_on_the_triggering_row_into_the_system_prompt() -> 
     let mut cfg = preload("row ? { owner: row.owner } : { title: 'none' }");
     cfg.insert(CFG_PLACEMENT.to_owned(), json!(PLACEMENT_SYSTEM));
     let row = json!({ "id": 9, "owner": "bob@example.com" });
-    let (text, state) = header(&env, "preload_rows", &cfg, &RunCaller::triggered(), Some(&row)).await?;
+    let (text, state) = header(
+        &env,
+        "preload_rows",
+        &cfg,
+        &RunCaller::triggered(),
+        Some(&row),
+    )
+    .await?;
     // Nothing in the header: it went to the system prompt, kept in the run
     // state and appended on every step.
     assert!(text.is_none());
     let extra = appended(&env, "preload_rows", &cfg, &state).await?;
     assert_eq!(extra.len(), 1);
-    assert!(extra[0].contains("Emma (474 pages)") && !extra[0].contains("Dune"), "{extra:?}");
+    assert!(
+        extra[0].contains("Emma (474 pages)") && !extra[0].contains("Dune"),
+        "{extra:?}"
+    );
     // In a chat no row started, `row` is null rather than unbound.
-    let (text, _) = header(&env, "preload_rows", &preload("row ? { owner: row.owner } : { title: 'Dune' }"), &RunCaller::system(), None).await?;
+    let (text, _) = header(
+        &env,
+        "preload_rows",
+        &preload("row ? { owner: row.owner } : { title: 'Dune' }"),
+        &RunCaller::system(),
+        None,
+    )
+    .await?;
     let text = text.unwrap();
     assert!(text.contains("Dune") && !text.contains("Emma"), "{text}");
     Ok(())
@@ -174,7 +205,14 @@ async fn preload_code_runs_once_as_the_caller_and_says_where_its_text_goes() -> 
         ),
     )]);
     env.check("preload_code", &cfg).await?;
-    let (text, _) = header(&env, "preload_code", &cfg, &as_user("ada@example.com"), None).await?;
+    let (text, _) = header(
+        &env,
+        "preload_code",
+        &cfg,
+        &as_user("ada@example.com"),
+        None,
+    )
+    .await?;
     assert_eq!(
         text.as_deref(),
         Some("ada@example.com asked \"What should I read?\" and owns Dune, Ilium")
@@ -187,7 +225,10 @@ async fn preload_code_runs_once_as_the_caller_and_says_where_its_text_goes() -> 
     )]);
     let (text, state) = header(&env, "preload_code", &cfg, &RunCaller::system(), None).await?;
     assert_eq!(text.as_deref(), Some("Today is Monday."));
-    assert_eq!(appended(&env, "preload_code", &cfg, &state).await?, ["Answer in French."]);
+    assert_eq!(
+        appended(&env, "preload_code", &cfg, &state).await?,
+        ["Answer in French."]
+    );
 
     // A body that throws fails the session, naming the trait.
     let cfg = config(&[(CFG_PRELOAD_CODE, json!("throw new Error('no')"))]);
@@ -215,7 +256,13 @@ fn memory(personal: bool) -> Attrs {
 
 async fn search(env: &Env, cfg: &Attrs, caller: &RunCaller, query: &str) -> Result<Vec<String>> {
     let found = env
-        .call_tool("memory", cfg, TOOL_SEARCH_MEMORY, json!({ "query": query }), caller)
+        .call_tool(
+            "memory",
+            cfg,
+            TOOL_SEARCH_MEMORY,
+            json!({ "query": query }),
+            caller,
+        )
         .await?;
     Ok(found["memories"]
         .as_array()
@@ -242,10 +289,21 @@ async fn a_personal_memory_is_only_read_back_for_its_own_user() -> Result<()> {
     )
     .await?;
     // Ada finds it; Bob, a triggered run and an anonymous visitor do not.
-    assert_eq!(search(&env, &personal, &ada, "tea").await?, ["Ada drinks Earl Grey tea"]);
+    assert_eq!(
+        search(&env, &personal, &ada, "tea").await?,
+        ["Ada drinks Earl Grey tea"]
+    );
     assert!(search(&env, &personal, &bob, "tea").await?.is_empty());
-    assert!(search(&env, &personal, &RunCaller::triggered(), "tea").await?.is_empty());
-    assert!(search(&env, &personal, &RunCaller::anonymous(), "tea").await?.is_empty());
+    assert!(
+        search(&env, &personal, &RunCaller::triggered(), "tea")
+            .await?
+            .is_empty()
+    );
+    assert!(
+        search(&env, &personal, &RunCaller::anonymous(), "tea")
+            .await?
+            .is_empty()
+    );
 
     // A shared memory is everybody's.
     let shared = memory(false);
@@ -257,10 +315,16 @@ async fn a_personal_memory_is_only_read_back_for_its_own_user() -> Result<()> {
         &bob,
     )
     .await?;
-    assert_eq!(search(&env, &personal, &bob, "tea").await?, ["The tea room closes at five"]);
+    assert_eq!(
+        search(&env, &personal, &bob, "tea").await?,
+        ["The tea room closes at five"]
+    );
     let mut for_ada = search(&env, &personal, &ada, "tea").await?;
     for_ada.sort();
-    assert_eq!(for_ada, ["Ada drinks Earl Grey tea", "The tea room closes at five"]);
+    assert_eq!(
+        for_ada,
+        ["Ada drinks Earl Grey tea", "The tea room closes at five"]
+    );
 
     // Nobody to file it under, nothing personal stored.
     let err = env
@@ -312,12 +376,23 @@ async fn consolidated_preferences_reach_only_their_users_session() -> Result<()>
     let ada = RunCaller::user(reader("ada@example.com"));
     let bob = RunCaller::user(reader("bob@example.com"));
     let ada_id = ada.user.as_ref().unwrap().id;
-    replace_preferences(&env.catalog, "librarian", ada_id, "Ada likes short answers.").await?;
+    replace_preferences(
+        &env.catalog,
+        "librarian",
+        ada_id,
+        "Ada likes short answers.",
+    )
+    .await?;
     let cfg = memory(true);
     let (text, _) = header(&env, "memory", &cfg, &ada, None).await?;
     assert!(text.unwrap().contains("Ada likes short answers."));
     assert_eq!(header(&env, "memory", &cfg, &bob, None).await?.0, None);
-    assert_eq!(header(&env, "memory", &cfg, &RunCaller::system(), None).await?.0, None);
+    assert_eq!(
+        header(&env, "memory", &cfg, &RunCaller::system(), None)
+            .await?
+            .0,
+        None
+    );
     // Switched off, not even Ada's.
     let off = config(&[(sc_core_traits::CFG_PREFERENCES_IN_HEADER, json!(false))]);
     assert_eq!(header(&env, "memory", &off, &ada, None).await?.0, None);
@@ -362,7 +437,9 @@ impl ProviderConnector for Scripted {
         let script = self.scripts.lock().unwrap().pop().unwrap_or_default();
         let provider = Arc::new(FakeProvider::new(script));
         self.made.lock().unwrap().push(Arc::clone(&provider));
-        Ok(ConnectedModel::unconfigured(provider as Arc<dyn LlmProvider>))
+        Ok(ConnectedModel::unconfigured(
+            provider as Arc<dyn LlmProvider>,
+        ))
     }
 }
 
@@ -413,14 +490,20 @@ async fn a_personal_memory_never_reaches_another_users_run() -> Result<()> {
         &env,
         bob.clone(),
         vec![
-            Reply::calls(TOOL_SEARCH_MEMORY, json!({ "query": "penicillin allergic" })),
+            Reply::calls(
+                TOOL_SEARCH_MEMORY,
+                json!({ "query": "penicillin allergic" }),
+            ),
             Reply::says("I don't know."),
         ],
         "Who is allergic to penicillin?",
     )
     .await?;
     assert!(!sent.contains("Ada is allergic"), "{sent}");
-    assert!(sent.contains("\\\"count\\\":0") || sent.contains("\"count\":0"), "{sent}");
+    assert!(
+        sent.contains("\\\"count\\\":0") || sent.contains("\"count\":0"),
+        "{sent}"
+    );
 
     // Ada's next run finds it.
     let sent = run_once(
@@ -504,7 +587,9 @@ async fn consolidate_memory_summarises_each_users_own_memories() -> Result<()> {
         profiles.push((if about_ada { ada.id } else { bob.id }, profile));
     }
     for (user, profile) in profiles {
-        let preferences = preferences_of(&env.catalog, "librarian", user).await?.unwrap();
+        let preferences = preferences_of(&env.catalog, "librarian", user)
+            .await?
+            .unwrap();
         assert_eq!(preferences.contents, profile);
     }
     Ok(())
@@ -540,14 +625,26 @@ async fn a_skill_file_is_in_the_header_and_its_files_are_readable() -> Result<()
     assert!(text.contains("`forms/FORM.md`"), "{text}");
 
     let read = env
-        .call_tool("skill_file", &cfg, "read_skill_file_skills_pdf", json!({ "path": "forms/FORM.md" }), &caller)
+        .call_tool(
+            "skill_file",
+            &cfg,
+            "read_skill_file_skills_pdf",
+            json!({ "path": "forms/FORM.md" }),
+            &caller,
+        )
         .await?;
     assert_eq!(read["contents"], json!("Use black ink."));
     // Nothing outside the skill's directory.
     assert!(
-        env.call_tool("skill_file", &cfg, "read_skill_file_skills_pdf", json!({ "path": "../secret.txt" }), &caller)
-            .await
-            .is_err()
+        env.call_tool(
+            "skill_file",
+            &cfg,
+            "read_skill_file_skills_pdf",
+            json!({ "path": "../secret.txt" }),
+            &caller
+        )
+        .await
+        .is_err()
     );
 
     // Without the tool, the header does not offer it.
@@ -560,7 +657,9 @@ async fn a_skill_file_is_in_the_header_and_its_files_are_readable() -> Result<()
     // A missing skill fails the session, by name.
     let mut missing = cfg.clone();
     missing.insert(CFG_SKILL_FILE.to_owned(), json!("NOPE.md"));
-    let err = header(&env, "skill_file", &missing, &caller, None).await.unwrap_err();
+    let err = header(&env, "skill_file", &missing, &caller, None)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("NOPE.md"), "{err}");
     Ok(())
 }
@@ -571,7 +670,11 @@ async fn a_skill_in_a_store_the_caller_cannot_open_is_refused() -> Result<()> {
     let dir = env.with_file_store("admin_skills", Some(1)).await?;
     env.put(&dir, "SKILL.md", SKILL)?;
     let cfg = config(&[(CFG_STORE, json!("admin_skills"))]);
-    assert!(header(&env, "skill_file", &cfg, &as_user("ada@example.com"), None).await.is_err());
+    assert!(
+        header(&env, "skill_file", &cfg, &as_user("ada@example.com"), None)
+            .await
+            .is_err()
+    );
     let (text, _) = header(&env, "skill_file", &cfg, &RunCaller::system(), None).await?;
     assert!(text.unwrap().contains("PDF forms"));
     Ok(())

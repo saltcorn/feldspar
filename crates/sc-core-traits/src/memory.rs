@@ -215,7 +215,9 @@ pub async fn import_memory(
         ))
         .and(Expr::col(COL_MEMORY_KIND).eq(Expr::lit(memory.kind.as_str())))
         .and(Expr::col(COL_MEMORY_CONTENTS).eq(Expr::lit(memory.contents.trim())));
-    let select = Select::from(Source::table(MEMORY_TABLE)).filter(same).limit(1);
+    let select = Select::from(Source::table(MEMORY_TABLE))
+        .filter(same)
+        .limit(1);
     if !rows(catalog, select).await?.is_empty() {
         return Ok(false);
     }
@@ -234,7 +236,9 @@ async fn insert_memory(
         ));
     }
     if memory.contents.trim().is_empty() {
-        return Err(Error::invalid("there is nothing to remember: `contents` is empty"));
+        return Err(Error::invalid(
+            "there is nothing to remember: `contents` is empty",
+        ));
     }
     let insert = Insert::row(
         MEMORY_TABLE,
@@ -352,7 +356,12 @@ pub async fn list_memories(catalog: &Catalog, filter: &MemoryFilter) -> Result<V
         conditions.push(Expr::col(COL_MEMORY_KIND).eq(Expr::lit(kind.as_str())));
     }
     let mut order = Vec::new();
-    if let Some(phrase) = filter.search.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+    if let Some(phrase) = filter
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
         let search = memory_search(&table, phrase);
         conditions.push(Expr::TextMatch(Box::new(search.clone())));
         order.push(OrderBy::desc(Expr::TextRank(Box::new(search))));
@@ -725,7 +734,8 @@ impl AgentTrait for AgentMemory {
                 if query.is_empty() {
                     return Err(Error::invalid("`query` is required: the words to look for"));
                 }
-                let mut filter = MemoryFilter::new(MemoryReader::of(ctx.caller), max_results(config)?);
+                let mut filter =
+                    MemoryFilter::new(MemoryReader::of(ctx.caller), max_results(config)?);
                 filter.agent = Some(ctx.agent.to_owned());
                 filter.search = Some(query);
                 let found = list_memories(ctx.catalog, &filter).await?;
@@ -846,7 +856,9 @@ impl Action for ConsolidateMemory {
             .and_then(|s| s.parse::<Uuid>().ok());
         let users = match event_user {
             Some(user) => vec![user],
-            None => users_with_memories(ctx.catalog, &name).await.map_err(named)?,
+            None => users_with_memories(ctx.catalog, &name)
+                .await
+                .map_err(named)?,
         };
         let mut consolidated = Vec::new();
         let mut model = None;
@@ -973,6 +985,9 @@ mod tests {
             ],
         );
         assert!(brief.contains("(none)"));
-        assert!(brief.find("coffee").unwrap() < brief.find("tea").unwrap(), "{brief}");
+        assert!(
+            brief.find("coffee").unwrap() < brief.find("tea").unwrap(),
+            "{brief}"
+        );
     }
 }

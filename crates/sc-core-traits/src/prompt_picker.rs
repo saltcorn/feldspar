@@ -78,7 +78,10 @@ fn control_name(config: &Attrs) -> String {
 }
 
 fn sends(config: &Attrs) -> bool {
-    config.get(CFG_SEND).and_then(Json::as_bool).unwrap_or(false)
+    config
+        .get(CFG_SEND)
+        .and_then(Json::as_bool)
+        .unwrap_or(false)
 }
 
 fn from_table(config: &Attrs) -> Result<bool> {
@@ -157,7 +160,10 @@ fn table_source(catalog: &Catalog, config: &Attrs) -> Result<(Table, String, Str
         .find(|f| f.primary_key)
         .map(|f| f.base.name.clone())
         .ok_or_else(|| {
-            Error::invalid(format!("table `{}` has no primary key to name a row by", table.name))
+            Error::invalid(format!(
+                "table `{}` has no primary key to name a row by",
+                table.name
+            ))
         })?;
     Ok((table, label, prompt, pk))
 }
@@ -348,7 +354,9 @@ impl AgentTrait for PromptPicker {
         }
         let prompts = if from_table(config)? {
             let catalog = turn.catalog.ok_or_else(|| {
-                Error::config("`prompt_picker` reads its prompts from a table, and this turn has no catalog")
+                Error::config(
+                    "`prompt_picker` reads its prompts from a table, and this turn has no catalog",
+                )
             })?;
             table_prompts(catalog, config, turn.caller, turn.evaluator).await?
         } else {
@@ -383,7 +391,10 @@ mod tests {
         assert_eq!(select[0].name, "prompt");
         assert_eq!(options.len(), 3);
         assert_eq!(options[2].value, "1");
-        assert!(!format!("{select:?}").contains("verse"), "the prompt stays on the server");
+        assert!(
+            !format!("{select:?}").contains("verse"),
+            "the prompt stays on the server"
+        );
 
         let send = PromptPicker.controls(&config(json!({ "prompts": prompts, "send": true })));
         assert_eq!(

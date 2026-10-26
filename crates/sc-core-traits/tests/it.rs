@@ -20,8 +20,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-#[path = "agent_context.rs"]
-mod agent_context;
 #[path = "admin_copilot.rs"]
 mod admin_copilot;
 #[path = "admin_copilot_apps.rs"]
@@ -30,6 +28,8 @@ mod admin_copilot_apps;
 mod admin_copilot_build;
 #[path = "admin_copilot_triggers.rs"]
 mod admin_copilot_triggers;
+#[path = "agent_context.rs"]
+mod agent_context;
 #[path = "build_application.rs"]
 mod build_application;
 #[path = "builder_agent_traits.rs"]
@@ -62,18 +62,18 @@ mod docs_agents;
 mod host_privileges;
 #[path = "http_fetch.rs"]
 mod http_fetch;
+#[path = "library_tools.rs"]
+mod library_tools;
 #[path = "media.rs"]
 mod media;
 #[path = "query_table.rs"]
 mod query_table;
-#[path = "retrieval.rs"]
-mod retrieval;
 #[path = "reaching_out.rs"]
 mod reaching_out;
+#[path = "retrieval.rs"]
+mod retrieval;
 #[path = "run_agent.rs"]
 mod run_agent;
-#[path = "library_tools.rs"]
-mod library_tools;
 #[path = "run_js_code.rs"]
 mod run_js_code;
 #[path = "run_trigger.rs"]

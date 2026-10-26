@@ -1508,16 +1508,20 @@ pub fn admin_endpoints() -> EndpointSet {
     // a personal memory is otherwise only ever read back for its own user.
 
     set.register(
-        Endpoint::new("listAgentMemories", Method::Get, api().lit("agent-memories"))
-            .query([
-                QueryParam::new("agent", ValueType::Text),
-                QueryParam::new("user", ValueType::Text),
-                QueryParam::new("kind", ValueType::Text),
-                QueryParam::new("search", ValueType::Text),
-                QueryParam::new("limit", ValueType::Int),
-            ])
-            .output(TypeSchema::array(agent_memory_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            "listAgentMemories",
+            Method::Get,
+            api().lit("agent-memories"),
+        )
+        .query([
+            QueryParam::new("agent", ValueType::Text),
+            QueryParam::new("user", ValueType::Text),
+            QueryParam::new("kind", ValueType::Text),
+            QueryParam::new("search", ValueType::Text),
+            QueryParam::new("limit", ValueType::Int),
+        ])
+        .output(TypeSchema::array(agent_memory_schema()))
+        .auth(AuthRequirement::admin()),
     );
 
     set.register(

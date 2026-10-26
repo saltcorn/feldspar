@@ -232,7 +232,12 @@ impl AgentTrait for AskUser {
         )))
     }
 
-    async fn on_answer(&self, config: &Attrs, request: &UserRequest, value: &Json) -> Result<String> {
+    async fn on_answer(
+        &self,
+        config: &Attrs,
+        request: &UserRequest,
+        value: &Json,
+    ) -> Result<String> {
         let question = request.prompt.trim();
         let RequestKind::Choice { options, .. } = &request.kind else {
             // Free text.
@@ -264,7 +269,11 @@ impl AgentTrait for AskUser {
         let answer = if picked.is_empty() {
             "none of them".to_owned()
         } else {
-            picked.iter().map(|o| o.shown()).collect::<Vec<_>>().join(", ")
+            picked
+                .iter()
+                .map(|o| o.shown())
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         let description = picked
             .iter()
@@ -377,7 +386,12 @@ mod tests {
     #[test]
     fn templates_are_filled_as_v1_fills_them() {
         assert_eq!(
-            fill("Q: {{ question }} A: {{answer}} ({{! answer_description }}) {{ other }}", "Why?", "Because", "d"),
+            fill(
+                "Q: {{ question }} A: {{answer}} ({{! answer_description }}) {{ other }}",
+                "Why?",
+                "Because",
+                "d"
+            ),
             "Q: Why? A: Because (d) {{ other }}"
         );
         assert_eq!(fill("no braces", "q", "a", ""), "no braces");
@@ -399,7 +413,10 @@ mod tests {
         );
         let plain = config(json!({}));
         assert_eq!(
-            AskUser.on_answer(&plain, &request, &json!("Postgres")).await.unwrap(),
+            AskUser
+                .on_answer(&plain, &request, &json!("Postgres"))
+                .await
+                .unwrap(),
             "In answer to the question \"Which database?\", I choose: Postgres"
         );
         let custom = config(json!({
@@ -407,11 +424,17 @@ mod tests {
             "discuss_prompt": "Talk about {{ question }}",
         }));
         assert_eq!(
-            AskUser.on_answer(&custom, &request, &json!("Postgres")).await.unwrap(),
+            AskUser
+                .on_answer(&custom, &request, &json!("Postgres"))
+                .await
+                .unwrap(),
             "Postgres (the big one)"
         );
         assert_eq!(
-            AskUser.on_answer(&custom, &request, &json!(DISCUSS_VALUE)).await.unwrap(),
+            AskUser
+                .on_answer(&custom, &request, &json!(DISCUSS_VALUE))
+                .await
+                .unwrap(),
             "Talk about Which database?"
         );
         let text = UserRequest::new("Your name?", RequestKind::Text { placeholder: None });
@@ -426,7 +449,12 @@ mod tests {
 
     #[test]
     fn options_must_be_labelled_and_distinct() {
-        assert_eq!(options(Some(&json!(["a", { "label": "b" }]))).unwrap().len(), 2);
+        assert_eq!(
+            options(Some(&json!(["a", { "label": "b" }])))
+                .unwrap()
+                .len(),
+            2
+        );
         assert!(options(Some(&json!(["a", "a"]))).is_err());
         assert!(options(Some(&json!([{ "description": "x" }]))).is_err());
         assert!(options(None).is_err());

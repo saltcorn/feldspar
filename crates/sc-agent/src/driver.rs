@@ -543,8 +543,7 @@ impl<'a> Runner<'a> {
         for (index, enabled) in self.agent.traits.iter().enumerate() {
             let trait_ = self.registry.require(&enabled.trait_)?;
             let Some(control) = trait_.controls(&enabled.config).into_iter().find(|c| {
-                matches!(c.kind, crate::interact::ControlKind::Button)
-                    && pressed.contains(&c.name)
+                matches!(c.kind, crate::interact::ControlKind::Button) && pressed.contains(&c.name)
             }) else {
                 continue;
             };
@@ -2108,9 +2107,8 @@ fn model_picker(agent: &Agent) -> Option<crate::interact::ComposerControl> {
         return None;
     }
     let own = crate::agent::ModelRef::new(&agent.provider, agent.model.as_deref());
-    let mut options = vec![
-        ChoiceOption::new(crate::agent::MODEL_CONTROL_DEFAULT).label(format!("{own}")),
-    ];
+    let mut options =
+        vec![ChoiceOption::new(crate::agent::MODEL_CONTROL_DEFAULT).label(format!("{own}"))];
     options.extend(
         models
             .iter()

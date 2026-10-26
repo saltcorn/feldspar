@@ -291,7 +291,9 @@ fn check_table(decl: &TableDecl, earlier: &[TableDecl]) -> Result<()> {
     for (key, lists) in [("unique", &decl.unique), ("indexes", &decl.indexes)] {
         for fields in lists {
             if fields.is_empty() {
-                return Err(Error::invalid(format!("an entry of `{key}` names no fields")));
+                return Err(Error::invalid(format!(
+                    "an entry of `{key}` names no fields"
+                )));
             }
             for field in fields {
                 if field != MODULE_TABLE_KEY && !seen.contains(field.trim()) {

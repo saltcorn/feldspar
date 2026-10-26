@@ -36,9 +36,7 @@ pub(crate) mod deno {
     };
     use sc_api::code_host::TableHost;
     use sc_api::{ApiProvider, ApiRequest, RestProvider};
-    use sc_catalog::{
-        Catalog, SecretKey, TableEvents, bootstrap_field_meta, bootstrap_table_meta,
-    };
+    use sc_catalog::{Catalog, SecretKey, TableEvents, bootstrap_field_meta, bootstrap_table_meta};
     use sc_db::DatabaseDriver;
     use sc_db_postgres::PgDriver;
     use sc_expr::{CodeHost, DenoEvaluator, JsEvaluator};
@@ -118,7 +116,11 @@ pub(crate) mod deno {
         const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::new();
         for chunk in bytes.chunks(3) {
-            let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+            let b = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
             let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
             for i in 0..4 {
                 if i <= chunk.len() {
@@ -139,9 +141,16 @@ pub(crate) mod deno {
     ";
 
     pub(crate) async fn catalog(db: &TestDb) -> Arc<Catalog> {
-        db.client().await.unwrap().batch_execute(SCHEMA).await.unwrap();
+        db.client()
+            .await
+            .unwrap()
+            .batch_execute(SCHEMA)
+            .await
+            .unwrap();
         let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-        let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await.unwrap();
+        let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>)
+            .await
+            .unwrap();
         cat.set_secret_key(SecretKey::generate().unwrap());
         sc_auth::bootstrap(&cat).await.unwrap();
         sc_auth::bootstrap_roles(&cat).await.unwrap();
@@ -159,7 +168,8 @@ pub(crate) mod deno {
         let dir = std::env::temp_dir().join(format!("sc-module-mail-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut def = sc_module::tables::local_store("mail_files").unwrap();
-        def.config.insert("path".into(), json!(dir.display().to_string()));
+        def.config
+            .insert("path".into(), json!(dir.display().to_string()));
         sc_catalog::save_file_store(cat, &def).await.unwrap();
         sc_catalog::connect_file_store_def(cat, &def).unwrap();
         dir
@@ -176,7 +186,13 @@ pub(crate) mod deno {
         rows.iter().map(|r| r.get::<_, Json>(0)).collect()
     }
 
-    pub(crate) async fn until(db: &TestDb, what: &str, timeout: Duration, sql: &str, ready: impl Fn(&[Json]) -> bool) -> Vec<Json> {
+    pub(crate) async fn until(
+        db: &TestDb,
+        what: &str,
+        timeout: Duration,
+        sql: &str,
+        ready: impl Fn(&[Json]) -> bool,
+    ) -> Vec<Json> {
         let start = Instant::now();
         loop {
             let rows = query(db, sql).await;
@@ -196,7 +212,13 @@ pub(crate) mod deno {
 
     /// Run one of the module's actions as `user`, as a trigger with event None
     /// called by the app would.
-    pub(crate) async fn act(cat: &Catalog, registry: &ActionRegistry, action: &str, user: &sc_auth::User, payload: Json) -> sc_error::Result<Json> {
+    pub(crate) async fn act(
+        cat: &Catalog,
+        registry: &ActionRegistry,
+        action: &str,
+        user: &sc_auth::User,
+        payload: Json,
+    ) -> sc_error::Result<Json> {
         let event = Event::new(EventKind::None)
             .payload(payload)
             .caller(user.role, Some(user_json(user)));
@@ -214,8 +236,10 @@ pub(crate) mod deno {
 
     async fn subjects(cat: &Catalog, user: &sc_auth::User) -> Vec<String> {
         let rows = as_user(cat, user)
-            .call(json!({ "op": "select", "table": "mail_messages", "authority": "user",
-                          "select": ["subject"], "order": [{ "field": "subject" }] }))
+            .call(
+                json!({ "op": "select", "table": "mail_messages", "authority": "user",
+                          "select": ["subject"], "order": [{ "field": "subject" }] }),
+            )
             .await
             .unwrap();
         rows.as_array()
@@ -233,7 +257,12 @@ pub(crate) mod deno {
         cat: &Catalog,
         tag: &str,
         trusted: &[&str],
-    ) -> (Installer, Arc<sc_module::ModuleHost>, ModuleSet, ActionRegistry) {
+    ) -> (
+        Installer,
+        Arc<sc_module::ModuleHost>,
+        ModuleSet,
+        ActionRegistry,
+    ) {
         let entry = BundledModules::discover(None);
         let entry = entry.get("imap").expect("the mail module ships");
         let root = temp_root(tag);
@@ -250,8 +279,12 @@ pub(crate) mod deno {
             ..ModulePermissions::closed()
         };
         let ca = std::fs::read_to_string(servers().join("run/certs/ca.crt")).unwrap();
-        module.configuration.insert("trusted_servers".into(), json!(trusted.join("\n")));
-        module.configuration.insert("ca_certificates".into(), json!(ca));
+        module
+            .configuration
+            .insert("trusted_servers".into(), json!(trusted.join("\n")));
+        module
+            .configuration
+            .insert("ca_certificates".into(), json!(ca));
         save_module(cat, &module).await.unwrap();
         let mut registry = sc_core_actions::builtin_actions().unwrap();
         let set = ModuleSet::load(cat, &host, &installer, &surfaces(), &mut registry)
@@ -280,20 +313,30 @@ pub(crate) mod deno {
         let db = TestDb::new().await.unwrap();
         let cat = catalog(&db).await;
         // As the server does at boot: the declared defaults (`mode`, `enabled`, …) are formulas.
-        cat.set_formula_evaluator(Arc::new(DenoEvaluator::new())).unwrap();
+        cat.set_formula_evaluator(Arc::new(DenoEvaluator::new()))
+            .unwrap();
         let files_dir = store(&cat).await;
 
-        let (installer, host, set, registry) = load_module(&cat, "imap-ingest", &["127.0.0.1:11993"]).await;
+        let (installer, host, set, registry) =
+            load_module(&cat, "imap-ingest", &["127.0.0.1:11993"]).await;
         let registry = Arc::new(registry);
 
         // Users: staff (40) may read the shared mailbox, bob (80) may not, ann
         // (80) has a personal account of her own.
         for (role, name) in [(40, "Staff"), (80, "User")] {
-            sc_auth::save_role(&cat, &sc_auth::Role::new(role, name)).await.unwrap();
+            sc_auth::save_role(&cat, &sc_auth::Role::new(role, name))
+                .await
+                .unwrap();
         }
-        let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", 40).await.unwrap();
-        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80).await.unwrap();
-        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80).await.unwrap();
+        let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", 40)
+            .await
+            .unwrap();
+        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80)
+            .await
+            .unwrap();
+        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80)
+            .await
+            .unwrap();
 
         // The accounts, as the admin saves them.
         let admin = TableHost::new(&cat)
@@ -332,7 +375,7 @@ pub(crate) mod deno {
         // trigger fires first and sees the mail without them.
         let order_from_mail = Trigger::new("order_from_mail", EventKind::Update, "run_js_code")
             .on("mail_messages")
-            .only_if(&format!(r#"old.body_state === "importing" && account === {shared_id} && subject.startsWith("Order")"#))
+            .only_if(format!(r#"old.body_state === "importing" && account === {shared_id} && subject.startsWith("Order")"#))
             .config(
                 "code",
                 r#"
@@ -349,7 +392,7 @@ await db.orders.insert({
             );
         let mail_log = Trigger::new("mail_log", EventKind::Insert, "run_js_code")
             .on("mail_messages")
-            .only_if(&format!("account === {shared_id}"))
+            .only_if(format!("account === {shared_id}"))
             .config(
                 "code",
                 r#"
@@ -365,20 +408,28 @@ await db.mail_log.insert({
             save_trigger(&cat, &registry, &trigger).await.unwrap();
         }
         let dispatcher = Arc::new(
-            TriggerDispatcher::new(Arc::clone(&registry)).with_evaluator(Arc::new(DenoEvaluator::new())),
+            TriggerDispatcher::new(Arc::clone(&registry))
+                .with_evaluator(Arc::new(DenoEvaluator::new())),
         );
         dispatcher.reload(&cat).await.unwrap();
-        cat.add_table_events(sc_catalog::TRIGGER_EVENTS, Arc::clone(&dispatcher) as Arc<dyn TableEvents>)
-            .unwrap();
+        cat.add_table_events(
+            sc_catalog::TRIGGER_EVENTS,
+            Arc::clone(&dispatcher) as Arc<dyn TableEvents>,
+        )
+        .unwrap();
 
         // --- The service ---------------------------------------------------------
         let supervisor = ServiceSupervisor::new(&cat, &host, Backoff::default()).unwrap();
         supervisor.start(&set).await;
         let messages = "SELECT m.id, m.subject, m.account, m.uid, m.seen, m.body_state, m.import_error, m.from_addr \
                         FROM mail_messages m ORDER BY m.id";
-        until(&db, "the four mails", Duration::from_secs(30), messages, |rows| {
-            rows.len() == 4 && rows.iter().all(|r| r["body_state"] == json!("full"))
-        })
+        until(
+            &db,
+            "the four mails",
+            Duration::from_secs(30),
+            messages,
+            |rows| rows.len() == 4 && rows.iter().all(|r| r["body_state"] == json!("full")),
+        )
         .await;
         let accounts = until(&db, "both accounts idle", Duration::from_secs(10),
             "SELECT id, status, last_error, last_sync_at, imap_password FROM mail_accounts ORDER BY id",
@@ -387,134 +438,348 @@ await db.mail_log.insert({
         for account in &accounts {
             assert!(account["last_sync_at"].is_string());
             let column = account["imap_password"].as_str().unwrap();
-            assert!(sc_catalog::secrets::is_envelope(column), "stored sealed: {column}");
+            assert!(
+                sc_catalog::secrets::is_envelope(column),
+                "stored sealed: {column}"
+            );
         }
 
         // --- Ownership (§3) ------------------------------------------------------------
-        assert_eq!(subjects(&cat, &staff).await, ["A note", "Order 1", "Order 2"], "staff reads the shared mailbox");
-        assert!(subjects(&cat, &bob).await.is_empty(), "bob is below its min_role");
-        assert_eq!(subjects(&cat, &ann).await, ["Private to ann"], "ann reads her own account only");
+        assert_eq!(
+            subjects(&cat, &staff).await,
+            ["A note", "Order 1", "Order 2"],
+            "staff reads the shared mailbox"
+        );
+        assert!(
+            subjects(&cat, &bob).await.is_empty(),
+            "bob is below its min_role"
+        );
+        assert_eq!(
+            subjects(&cat, &ann).await,
+            ["Private to ann"],
+            "ann reads her own account only"
+        );
         // Through REST, as each of them: the same rows, and never a password.
         let tables: Vec<_> = ["mail_accounts", "mail_messages", "mail_attachments"]
             .iter()
             .map(|t| cat.require(t).unwrap())
             .collect();
-        let rest = RestProvider::project("/api", &tables).with_evaluator(Arc::new(DenoEvaluator::new()));
+        let rest =
+            RestProvider::project("/api", &tables).with_evaluator(Arc::new(DenoEvaluator::new()));
         for (user, accounts_seen, messages_seen) in [(&staff, 1, 3), (&bob, 0, 0), (&ann, 1, 1)] {
-            let listed = rest.handle(ApiRequest::get("/api/mail_accounts"), &cat, Some(user)).await.unwrap();
+            let listed = rest
+                .handle(ApiRequest::get("/api/mail_accounts"), &cat, Some(user))
+                .await
+                .unwrap();
             assert_eq!(listed.status, 200, "{}", listed.body);
-            assert_eq!(listed.body.as_array().unwrap().len(), accounts_seen, "{}", listed.body);
+            assert_eq!(
+                listed.body.as_array().unwrap().len(),
+                accounts_seen,
+                "{}",
+                listed.body
+            );
             for row in listed.body.as_array().unwrap() {
                 assert_eq!(row["imap_password"], json!(SECRET_SENTINEL));
             }
             let selected = rest
-                .handle(ApiRequest::get("/api/mail_accounts").query("select", "id,imap_password"), &cat, Some(user))
+                .handle(
+                    ApiRequest::get("/api/mail_accounts").query("select", "id,imap_password"),
+                    &cat,
+                    Some(user),
+                )
                 .await
                 .unwrap();
-            let messages = rest.handle(ApiRequest::get("/api/mail_messages"), &cat, Some(user)).await.unwrap();
-            assert_eq!(messages.body.as_array().unwrap().len(), messages_seen, "{}", messages.body);
+            let messages = rest
+                .handle(ApiRequest::get("/api/mail_messages"), &cat, Some(user))
+                .await
+                .unwrap();
+            assert_eq!(
+                messages.body.as_array().unwrap().len(),
+                messages_seen,
+                "{}",
+                messages.body
+            );
             for output in [&listed.body, &selected.body, &messages.body] {
-                assert!(!output.to_string().contains(PASSWORD), "REST carried the password: {output}");
+                assert!(
+                    !output.to_string().contains(PASSWORD),
+                    "REST carried the password: {output}"
+                );
             }
         }
 
         // --- M8.8: the orders -----------------------------------------------------------
-        let orders = query(&db, "SELECT message, customer, title, pdf, attachments FROM orders ORDER BY title").await;
-        assert_eq!(orders.len(), 2, "one order per order mail, none for the note or ann's mail: {orders:?}");
+        let orders = query(
+            &db,
+            "SELECT message, customer, title, pdf, attachments FROM orders ORDER BY title",
+        )
+        .await;
+        assert_eq!(
+            orders.len(),
+            2,
+            "one order per order mail, none for the note or ann's mail: {orders:?}"
+        );
         assert_eq!(orders[0]["title"], json!("Order 1"));
         assert_eq!(orders[0]["customer"], json!("customer1@example.com"));
         assert_eq!(orders[0]["attachments"], json!(1));
         let pdf = orders[0]["pdf"].as_str().unwrap().to_owned();
         let store = cat.require_file_store("mail_files").unwrap();
-        assert_eq!(store.read(&pdf).await.unwrap().as_ref(), b"%PDF-1.4 order 1");
-        let log = query(&db, "SELECT subject, attachments_seen, who FROM mail_log ORDER BY subject").await;
-        assert_eq!(log.len(), 3, "the Insert trigger fires once per shared mail: {log:?}");
-        assert!(log.iter().all(|r| r["attachments_seen"] == json!(0)), "at insert, no attachment rows yet: {log:?}");
-        assert!(log[0]["who"].as_str().unwrap().contains(MODULE), "written as the module: {log:?}");
+        assert_eq!(
+            store.read(&pdf).await.unwrap().as_ref(),
+            b"%PDF-1.4 order 1"
+        );
+        let log = query(
+            &db,
+            "SELECT subject, attachments_seen, who FROM mail_log ORDER BY subject",
+        )
+        .await;
+        assert_eq!(
+            log.len(),
+            3,
+            "the Insert trigger fires once per shared mail: {log:?}"
+        );
+        assert!(
+            log.iter().all(|r| r["attachments_seen"] == json!(0)),
+            "at insert, no attachment rows yet: {log:?}"
+        );
+        assert!(
+            log[0]["who"].as_str().unwrap().contains(MODULE),
+            "written as the module: {log:?}"
+        );
 
         // --- New mail during IDLE, from inside the worker -----------------------------------
         tokio::time::sleep(Duration::from_secs(1)).await;
         let sent = Instant::now();
         deliver(&mails, "ingest", "5.eml", &order_mail(3));
-        until(&db, "order 3", Duration::from_secs(5), "SELECT title FROM orders", |rows| {
-            rows.iter().any(|r| r["title"] == json!("Order 3"))
-        })
+        until(
+            &db,
+            "order 3",
+            Duration::from_secs(5),
+            "SELECT title FROM orders",
+            |rows| rows.iter().any(|r| r["title"] == json!("Order 3")),
+        )
         .await;
-        println!("order 3 became an order {} ms after delivery", sent.elapsed().as_millis());
+        println!(
+            "order 3 became an order {} ms after delivery",
+            sent.elapsed().as_millis()
+        );
 
         // --- The actions (M8.6) --------------------------------------------------------------
         let rows = query(&db, messages).await;
-        let order1 = rows.iter().find(|r| r["subject"] == json!("Order 1")).unwrap()["id"].as_i64().unwrap();
-        let private = rows.iter().find(|r| r["subject"] == json!("Private to ann")).unwrap()["id"].as_i64().unwrap();
+        let order1 = rows
+            .iter()
+            .find(|r| r["subject"] == json!("Order 1"))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let private = rows
+            .iter()
+            .find(|r| r["subject"] == json!("Private to ann"))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
 
         // mail_set_flags: bob and staff on ann's mail find nothing; staff on the
         // shared mail sets it on the server and on the row.
-        let refused = act(&cat, &registry, "mail_set_flags", &bob, json!({ "message_ids": [order1], "seen": true })).await.unwrap();
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_set_flags",
+            &bob,
+            json!({ "message_ids": [order1], "seen": true }),
+        )
+        .await
+        .unwrap();
         assert_eq!(refused["missing"], json!([order1]), "{refused}");
-        let refused = act(&cat, &registry, "mail_set_flags", &staff, json!({ "message_ids": [private], "seen": true })).await.unwrap();
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_set_flags",
+            &staff,
+            json!({ "message_ids": [private], "seen": true }),
+        )
+        .await
+        .unwrap();
         assert_eq!(refused["missing"], json!([private]), "{refused}");
-        let done = act(&cat, &registry, "mail_set_flags", &staff, json!({ "message_ids": [order1], "seen": true })).await.unwrap();
+        let done = act(
+            &cat,
+            &registry,
+            "mail_set_flags",
+            &staff,
+            json!({ "message_ids": [order1], "seen": true }),
+        )
+        .await
+        .unwrap();
         assert_eq!(done["updated"], json!([order1]), "{done}");
-        let seen = |rows: &[Json]| rows.iter().any(|r| r["id"] == json!(order1) && r["seen"] == json!(true));
+        let seen = |rows: &[Json]| {
+            rows.iter()
+                .any(|r| r["id"] == json!(order1) && r["seen"] == json!(true))
+        };
         assert!(seen(&query(&db, messages).await));
         // On the server too: the row made stale by hand comes back from the
         // server's flags at the next sync.
-        db.client().await.unwrap()
-            .execute(&format!("UPDATE mail_messages SET seen = false WHERE id = {order1}"), &[])
+        db.client()
+            .await
+            .unwrap()
+            .execute(
+                &format!("UPDATE mail_messages SET seen = false WHERE id = {order1}"),
+                &[],
+            )
             .await
             .unwrap();
-        let synced = act(&cat, &registry, "mail_sync_now", &staff, json!({ "account_id": shared_id, "wait": true })).await.unwrap();
+        let synced = act(
+            &cat,
+            &registry,
+            "mail_sync_now",
+            &staff,
+            json!({ "account_id": shared_id, "wait": true }),
+        )
+        .await
+        .unwrap();
         assert_eq!(synced["queued"], json!(true), "{synced}");
-        until(&db, "the server's \\Seen", Duration::from_secs(10), messages, seen).await;
-        let refused = act(&cat, &registry, "mail_sync_now", &bob, json!({ "account_id": shared_id })).await;
-        assert!(refused.is_err_and(|e| e.to_string().contains("not found")), "bob may not sync the shared account");
+        until(
+            &db,
+            "the server's \\Seen",
+            Duration::from_secs(10),
+            messages,
+            seen,
+        )
+        .await;
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_sync_now",
+            &bob,
+            json!({ "account_id": shared_id }),
+        )
+        .await;
+        assert!(
+            refused.is_err_and(|e| e.to_string().contains("not found")),
+            "bob may not sync the shared account"
+        );
 
         // mail_attachment: stored already, so a no-op; stored again from the
         // server when its file is gone.
-        let attachment = query(&db, &format!("SELECT id, file FROM mail_attachments WHERE message = {order1}")).await;
+        let attachment = query(
+            &db,
+            &format!("SELECT id, file FROM mail_attachments WHERE message = {order1}"),
+        )
+        .await;
         let att = attachment[0]["id"].as_i64().unwrap();
-        let again = act(&cat, &registry, "mail_attachment", &staff, json!({ "attachment_id": att })).await.unwrap();
+        let again = act(
+            &cat,
+            &registry,
+            "mail_attachment",
+            &staff,
+            json!({ "attachment_id": att }),
+        )
+        .await
+        .unwrap();
         assert_eq!(again, json!({ "file": pdf, "stored": false }));
-        let refused = act(&cat, &registry, "mail_attachment", &bob, json!({ "attachment_id": att })).await;
-        assert!(refused.is_err(), "bob may not open the shared mail's attachment");
-        db.client().await.unwrap()
-            .execute(&format!("UPDATE mail_attachments SET file = NULL WHERE id = {att}"), &[])
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_attachment",
+            &bob,
+            json!({ "attachment_id": att }),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "bob may not open the shared mail's attachment"
+        );
+        db.client()
+            .await
+            .unwrap()
+            .execute(
+                &format!("UPDATE mail_attachments SET file = NULL WHERE id = {att}"),
+                &[],
+            )
             .await
             .unwrap();
-        let fetched = act(&cat, &registry, "mail_attachment", &staff, json!({ "attachment_id": att })).await.unwrap();
+        let fetched = act(
+            &cat,
+            &registry,
+            "mail_attachment",
+            &staff,
+            json!({ "attachment_id": att }),
+        )
+        .await
+        .unwrap();
         assert_eq!(fetched["stored"], json!(true), "{fetched}");
         let path = fetched["file"].as_str().unwrap();
-        assert_eq!(store.read(path).await.unwrap().as_ref(), b"%PDF-1.4 order 1");
+        assert_eq!(
+            store.read(path).await.unwrap().as_ref(),
+            b"%PDF-1.4 order 1"
+        );
 
         // mail_test_account: the saved password, without the caller seeing it;
         // then the rate limit.
-        let tested = act(&cat, &registry, "mail_test_account", &staff,
-            json!({ "account_id": shared_id, "imap_password": SECRET_SENTINEL })).await.unwrap();
+        let tested = act(
+            &cat,
+            &registry,
+            "mail_test_account",
+            &staff,
+            json!({ "account_id": shared_id, "imap_password": SECRET_SENTINEL }),
+        )
+        .await
+        .unwrap();
         assert_eq!(tested["imap"], json!(true), "{tested}");
-        let wrong = act(&cat, &registry, "mail_test_account", &ann,
+        let wrong = act(
+            &cat,
+            &registry,
+            "mail_test_account",
+            &ann,
             json!({ "imap_host": "127.0.0.1", "imap_port": 11993, "imap_security": "tls",
-                    "imap_user": "other", "imap_password": "wrong-Pässwort" })).await.unwrap();
+                    "imap_user": "other", "imap_password": "wrong-Pässwort" }),
+        )
+        .await
+        .unwrap();
         assert_eq!(wrong["imap"], json!(false));
-        assert!(!wrong["error"].as_str().unwrap().contains("wrong-Pässwort"), "{wrong}");
-        let refused = act(&cat, &registry, "mail_test_account", &bob, json!({ "account_id": shared_id })).await;
+        assert!(
+            !wrong["error"].as_str().unwrap().contains("wrong-Pässwort"),
+            "{wrong}"
+        );
+        let refused = act(
+            &cat,
+            &registry,
+            "mail_test_account",
+            &bob,
+            json!({ "account_id": shared_id }),
+        )
+        .await;
         assert!(refused.is_err_and(|e| e.to_string().contains("not found")));
         let mut limited = None;
         for _ in 0..6 {
-            if let Err(e) = act(&cat, &registry, "mail_test_account", &staff, json!({ "account_id": shared_id })).await {
+            if let Err(e) = act(
+                &cat,
+                &registry,
+                "mail_test_account",
+                &staff,
+                json!({ "account_id": shared_id }),
+            )
+            .await
+            {
                 limited = Some(e.to_string());
                 break;
             }
         }
-        assert!(limited.is_some_and(|e| e.contains("at most 5")), "the per-user limit applies");
+        assert!(
+            limited.is_some_and(|e| e.contains("at most 5")),
+            "the per-user limit applies"
+        );
 
         // Disabled: the service stops the account and says so.
         admin
             .call(json!({ "op": "update", "table": "mail_accounts", "where": { "id": shared_id }, "values": { "enabled": false } }))
             .await
             .unwrap();
-        until(&db, "disabled", Duration::from_secs(10),
+        until(
+            &db,
+            "disabled",
+            Duration::from_secs(10),
             &format!("SELECT status FROM mail_accounts WHERE id = {shared_id}"),
-            |rows| rows[0]["status"] == json!("disabled"))
+            |rows| rows[0]["status"] == json!("disabled"),
+        )
         .await;
 
         supervisor.stop_all().await;

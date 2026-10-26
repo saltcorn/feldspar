@@ -29,8 +29,8 @@ use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Map, Value as Json, json};
 
 use crate::files::{
-    ARG_PATH, FileScope, check_scope, check_tool_name, config_count, file_caller,
-    scope_as_written, scope_fields, string_arg,
+    ARG_PATH, FileScope, check_scope, check_tool_name, config_count, file_caller, scope_as_written,
+    scope_fields, string_arg,
 };
 use crate::table::config_str;
 
@@ -289,8 +289,14 @@ mod tests {
     #[test]
     fn a_path_is_relative_to_the_skill_files_directory() {
         assert_eq!(relative_to_skill("SKILL.md", "./a.md"), "a.md");
-        assert_eq!(relative_to_skill("pdf/SKILL.md", "forms.md"), "pdf/forms.md");
-        assert_eq!(relative_to_skill("pdf/SKILL.md", "pdf/forms.md"), "pdf/forms.md");
+        assert_eq!(
+            relative_to_skill("pdf/SKILL.md", "forms.md"),
+            "pdf/forms.md"
+        );
+        assert_eq!(
+            relative_to_skill("pdf/SKILL.md", "pdf/forms.md"),
+            "pdf/forms.md"
+        );
     }
 
     #[test]

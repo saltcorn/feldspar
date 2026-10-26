@@ -56,7 +56,9 @@ mod deno {
 
     async fn catalog(db: &TestDb) -> Arc<Catalog> {
         let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-        let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await.unwrap();
+        let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>)
+            .await
+            .unwrap();
         sc_auth::bootstrap(&cat).await.unwrap();
         sc_auth::bootstrap_roles(&cat).await.unwrap();
         bootstrap_table_meta(&cat).await.unwrap();
@@ -70,7 +72,10 @@ mod deno {
         db.client()
             .await
             .unwrap()
-            .query("SELECT n::int4, instance, note FROM svc_ticks ORDER BY id", &[])
+            .query(
+                "SELECT n::int4, instance, note FROM svc_ticks ORDER BY id",
+                &[],
+            )
             .await
             .unwrap()
             .iter()
@@ -98,7 +103,9 @@ mod deno {
     /// `onTableChange` hears.
     async fn command(cat: &Catalog, command: &str) {
         TableHost::new(cat)
-            .call(json!({ "op": "insert", "table": "svc_control", "values": { "command": command } }))
+            .call(
+                json!({ "op": "insert", "table": "svc_control", "values": { "command": command } }),
+            )
             .await
             .unwrap();
     }
@@ -121,9 +128,15 @@ mod deno {
                 .await
                 .unwrap();
         }
-        let set = ModuleSet::load(&cat, &host, &installer, &surfaces(), &mut ActionRegistry::new())
-            .await
-            .unwrap();
+        let set = ModuleSet::load(
+            &cat,
+            &host,
+            &installer,
+            &surfaces(),
+            &mut ActionRegistry::new(),
+        )
+        .await
+        .unwrap();
         assert!(set.issues().is_empty(), "{:?}", set.issues());
         assert_eq!(set.get(MODULE).unwrap().service_names(), ["ticker"]);
 
@@ -192,14 +205,18 @@ mod deno {
             "{status:?}"
         );
         assert!(
-            ticks(&db).await.iter().all(|(_, instance, _)| *instance == first),
+            ticks(&db)
+                .await
+                .iter()
+                .all(|(_, instance, _)| *instance == first),
             "a restarted service keeps its module's state"
         );
 
         // Its worker dies: restarted on a fresh one, loaded afresh.
         command(&cat, "exit").await;
         let rows = until(&db, "ticks from a new worker", |rows| {
-            rows.iter().any(|(n, instance, _)| *n > 0 && *instance != first)
+            rows.iter()
+                .any(|(n, instance, _)| *n > 0 && *instance != first)
         })
         .await;
         assert!(rows.len() > 5);
@@ -229,7 +246,10 @@ mod deno {
             ticks(&db).await.len() <= stopped + 1,
             "no ticks after the stop"
         );
-        assert_eq!(supervisor.statuses_of(MODULE)[0].state, ServiceState::Stopped);
+        assert_eq!(
+            supervisor.statuses_of(MODULE)[0].state,
+            ServiceState::Stopped
+        );
 
         supervisor.stop_all().await;
         host.shutdown().await;
@@ -244,12 +264,21 @@ mod deno {
         let db = TestDb::new().await.unwrap();
         let cat = catalog(&db).await;
         let (installer, host, names) = installed("module-services-stop", &["service-module"]).await;
-        save_module(&cat, &Module::new(&names[0], ModuleSource::Local, &names[0]))
-            .await
-            .unwrap();
-        let set = ModuleSet::load(&cat, &host, &installer, &surfaces(), &mut ActionRegistry::new())
-            .await
-            .unwrap();
+        save_module(
+            &cat,
+            &Module::new(&names[0], ModuleSource::Local, &names[0]),
+        )
+        .await
+        .unwrap();
+        let set = ModuleSet::load(
+            &cat,
+            &host,
+            &installer,
+            &surfaces(),
+            &mut ActionRegistry::new(),
+        )
+        .await
+        .unwrap();
         let supervisor = ServiceSupervisor::new(&cat, &host, Backoff::default()).unwrap();
         supervisor.start(&set).await;
         until(&db, "two ticks", |rows| rows.len() >= 2).await;

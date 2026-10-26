@@ -133,7 +133,10 @@ fn picker() -> Agent {
             EnabledTrait::new("prompt_picker")
                 .config("name", "starter")
                 .config("send", true)
-                .config("prompts", json!([{ "label": "Hello", "prompt": "Say hello to me." }])),
+                .config(
+                    "prompts",
+                    json!([{ "label": "Hello", "prompt": "Say hello to me." }]),
+                ),
         )
         .attribute(
             sc_agent::ATTR_PICKABLE_MODELS,
@@ -333,7 +336,12 @@ impl Browser {
         browser
     }
 
-    async fn send(&mut self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Vec<u8>) {
+    async fn send(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Vec<u8>) {
         let mut builder = Request::builder()
             .method(method)
             .uri(path)
@@ -424,7 +432,10 @@ fn run_of(events: &[Value]) -> String {
 
 /// Everything the model was sent, as one string, to look for text in.
 fn sent(provider: &FakeProvider) -> String {
-    format!("{:?}", provider.last_request().expect("the model was called"))
+    format!(
+        "{:?}",
+        provider.last_request().expect("the model was called")
+    )
 }
 
 // --- the admin socket ------------------------------------------------------------
@@ -447,13 +458,12 @@ async fn admin_socket(server: &Server, agent: &str) -> (Socket, Option<Value>) {
     let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
     socket_send(&mut socket, json!({ "type": "start", "agent": agent })).await;
     // An agent with controls says so straight after `start`.
-    let controls = match tokio::time::timeout(Duration::from_millis(1500), next_frame(&mut socket))
-        .await
-    {
-        Ok(event) if event["type"] == "controls" => Some(event["controls"].clone()),
-        Ok(other) => panic!("expected controls, got {other}"),
-        Err(_) => None,
-    };
+    let controls =
+        match tokio::time::timeout(Duration::from_millis(1500), next_frame(&mut socket)).await {
+            Ok(event) if event["type"] == "controls" => Some(event["controls"].clone()),
+            Ok(other) => panic!("expected controls, got {other}"),
+            Err(_) => None,
+        };
     (socket, controls)
 }
 
@@ -503,9 +513,15 @@ fn asker_script() -> Vec<Reply> {
             }),
         ),
         Reply::says("Let's talk about it."),
-        Reply::calls("ask_user_question", json!({ "question": "Which shelf now?", "type": "single_select", "options": [{ "label": "Top" }, { "label": "Bottom" }] })),
+        Reply::calls(
+            "ask_user_question",
+            json!({ "question": "Which shelf now?", "type": "single_select", "options": [{ "label": "Top" }, { "label": "Bottom" }] }),
+        ),
         Reply::says("Bottom first, then."),
-        Reply::calls("submit_plan_for_approval", json!({ "plan": "1. Dust\n2. Sort" })),
+        Reply::calls(
+            "submit_plan_for_approval",
+            json!({ "plan": "1. Dust\n2. Sort" }),
+        ),
         Reply::says("Dusting now."),
     ]
 }
@@ -540,24 +556,35 @@ async fn ask_user_and_plan_approval_through_the_application_chat() -> Result<()>
     );
 
     // An answer reaches it as the answer prompt.
-    let asked = alice.chat("asker", json!({ "message": "Ask again", "run": run })).await;
+    let asked = alice
+        .chat("asker", json!({ "message": "Ask again", "run": run }))
+        .await;
     let id = done(&asked)["request"]["id"].clone();
     alice
-        .chat("asker", json!({ "answers_request": id, "value": "Bottom", "run": run }))
+        .chat(
+            "asker",
+            json!({ "answers_request": id, "value": "Bottom", "run": run }),
+        )
         .await;
     assert!(
-        sent(&server.own).contains("In answer to the question \\\"Which shelf now?\\\", I choose: Bottom"),
+        sent(&server.own)
+            .contains("In answer to the question \\\"Which shelf now?\\\", I choose: Bottom"),
         "{}",
         sent(&server.own)
     );
 
     // A plan waits for approval, and approving sends the approval prompt.
-    let planned = alice.chat("asker", json!({ "message": "Plan it", "run": run })).await;
+    let planned = alice
+        .chat("asker", json!({ "message": "Plan it", "run": run }))
+        .await;
     let plan = &done(&planned)["request"];
     assert_eq!(plan["kind"], "approve", "{planned:#?}");
     assert_eq!(plan["prompt"], "1. Dust\n2. Sort");
     let approved = alice
-        .chat("asker", json!({ "answers_request": plan["id"], "value": true, "run": run }))
+        .chat(
+            "asker",
+            json!({ "answers_request": plan["id"], "value": true, "run": run }),
+        )
         .await;
     assert_eq!(done(&approved)["answer"], "Dusting now.");
     assert!(sent(&server.own).contains("Approved: go ahead."));
@@ -580,7 +607,11 @@ async fn ask_user_and_plan_approval_through_the_admin_chat() -> Result<()> {
     assert_eq!(done(&discussed)["answer"], "Let's talk about it.");
     assert!(sent(&server.own).contains("Let's discuss the question"));
 
-    let asked = socket_turn(&mut socket, json!({ "type": "message", "text": "Ask again" })).await;
+    let asked = socket_turn(
+        &mut socket,
+        json!({ "type": "message", "text": "Ask again" }),
+    )
+    .await;
     let id = done(&asked)["request"]["id"].clone();
     socket_turn(
         &mut socket,
@@ -632,11 +663,18 @@ async fn a_code_button_answers_without_the_model_on_both_surfaces() -> Result<()
         )
         .await;
     let answer = done(&pressed)["answer"].as_str().unwrap().to_owned();
-    assert_eq!(answer, "Button ran; row is null, user is known", "{pressed:#?}");
+    assert_eq!(
+        answer, "Button ran; row is null, user is known",
+        "{pressed:#?}"
+    );
     assert_eq!(done(&pressed)["conclusion"], "answered");
     assert!(server.own.requests().is_empty(), "the model was not called");
     // The answer streamed as text, as a model's would.
-    assert!(pressed.iter().any(|e| e["type"] == "text" && e["delta"] == answer.as_str()));
+    assert!(
+        pressed
+            .iter()
+            .any(|e| e["type"] == "text" && e["delta"] == answer.as_str())
+    );
 
     // The conversation goes on, and the model reads what the button said.
     let run = run_of(&pressed);
@@ -645,7 +683,10 @@ async fn a_code_button_answers_without_the_model_on_both_surfaces() -> Result<()
         .await;
     assert_eq!(server.own.requests().len(), 1);
     assert!(sent(&server.own).contains("Button ran"));
-    assert!(server.own.last_request().unwrap().tools.is_empty(), "a button offers no tool");
+    assert!(
+        server.own.last_request().unwrap().tools.is_empty(),
+        "a button offers no tool"
+    );
 
     // The admin chat: the same button, the same answer.
     let (mut socket, controls) = admin_socket(&server, "buttons").await;
@@ -681,16 +722,33 @@ async fn prompt_and_model_pickers_through_the_application_chat() -> Result<()> {
         .iter()
         .map(|c| c["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["model", "prompt", "persona", "starter"], "{controls}");
+    assert_eq!(
+        names,
+        ["model", "prompt", "persona", "starter"],
+        "{controls}"
+    );
     // The model picker: the agent's own first, then the pickable one.
     assert_eq!(controls[0]["options"][0]["value"], "");
-    assert_eq!(controls[0]["options"][1], json!({ "value": format!("house/{FAST}"), "label": "Fast" }));
+    assert_eq!(
+        controls[0]["options"][1],
+        json!({ "value": format!("house/{FAST}"), "label": "Fast" })
+    );
     // Predefined prompts go by position; the prompt stays on the server.
-    assert_eq!(controls[1]["options"][1], json!({ "value": "0", "label": "Pirate" }));
+    assert_eq!(
+        controls[1]["options"][1],
+        json!({ "value": "0", "label": "Pirate" })
+    );
     assert!(!controls.to_string().contains("pirate."), "{controls}");
     // A table's rows, as the caller reads them and through the filter.
-    assert_eq!(controls[2]["options"].as_array().unwrap().len(), 2, "{controls}");
-    assert_eq!(controls[2]["options"][1], json!({ "value": "1", "label": "Librarian" }));
+    assert_eq!(
+        controls[2]["options"].as_array().unwrap().len(),
+        2,
+        "{controls}"
+    );
+    assert_eq!(
+        controls[2]["options"][1],
+        json!({ "value": "1", "label": "Librarian" })
+    );
     // A picker that sends: its options are the messages.
     assert_eq!(controls[3]["kind"], "send");
     assert_eq!(controls[3]["options"][0]["value"], "Say hello to me.");
@@ -703,7 +761,12 @@ async fn prompt_and_model_pickers_through_the_application_chat() -> Result<()> {
         )
         .await;
     assert_eq!(done(&first)["answer"], "Arr.", "{first:#?}");
-    let system = server.own.last_request().unwrap().system.unwrap_or_default();
+    let system = server
+        .own
+        .last_request()
+        .unwrap()
+        .system
+        .unwrap_or_default();
     assert!(system.contains("Speak like a pirate."), "{system}");
     assert!(system.contains("Answer as a librarian would."), "{system}");
     assert!(!system.contains("Answer in verse."));
@@ -718,14 +781,25 @@ async fn prompt_and_model_pickers_through_the_application_chat() -> Result<()> {
         )
         .await;
     assert_eq!(done(&picked)["answer"], "Quick verse.", "{picked:#?}");
-    let system = server.fast.last_request().unwrap().system.unwrap_or_default();
+    let system = server
+        .fast
+        .last_request()
+        .unwrap()
+        .system
+        .unwrap_or_default();
     assert!(system.contains("Answer in verse."), "{system}");
-    assert!(!system.contains("pirate"), "only the prompt sent with this message");
+    assert!(
+        !system.contains("pirate"),
+        "only the prompt sent with this message"
+    );
     assert_eq!(server.own.requests().len(), 1);
 
     // The sending picker's message is an ordinary message.
     let hello = alice
-        .chat("picker", json!({ "message": "Say hello to me.", "run": run }))
+        .chat(
+            "picker",
+            json!({ "message": "Say hello to me.", "run": run }),
+        )
         .await;
     assert_eq!(done(&hello)["answer"], "Hello to you.");
 
@@ -735,11 +809,17 @@ async fn prompt_and_model_pickers_through_the_application_chat() -> Result<()> {
         json!({ "persona": "2" }),
     ] {
         let refused = alice
-            .chat("picker", json!({ "message": "Hm", "run": run, "controls": controls }))
+            .chat(
+                "picker",
+                json!({ "message": "Hm", "run": run, "controls": controls }),
+            )
             .await;
         assert!(
             refused.iter().any(|e| e["type"] == "error"
-                && e["message"].as_str().unwrap_or("").contains("is not a value control")),
+                && e["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("is not a value control")),
             "{refused:#?}"
         );
     }
@@ -748,7 +828,11 @@ async fn prompt_and_model_pickers_through_the_application_chat() -> Result<()> {
 
 #[tokio::test]
 async fn prompt_and_model_pickers_through_the_admin_chat() -> Result<()> {
-    let server = serve(vec![Reply::says("Plain.")], vec![Reply::says("Fast pirate.")]).await?;
+    let server = serve(
+        vec![Reply::says("Plain.")],
+        vec![Reply::says("Fast pirate.")],
+    )
+    .await?;
     let (mut socket, controls) = admin_socket(&server, "picker").await;
     let controls = controls.expect("the picker's controls");
     assert_eq!(controls[0]["name"], "model");
@@ -820,7 +904,10 @@ async fn a_pickable_model_that_does_not_resolve_is_refused_on_save() -> Result<(
         .await
         .unwrap_err()
         .to_string();
-    assert!(err.contains("pickable model `house/no-such-model`"), "{err}");
+    assert!(
+        err.contains("pickable model `house/no-such-model`"),
+        "{err}"
+    );
     let agent = Agent::new("p", "house").attribute(
         sc_agent::ATTR_PICKABLE_MODELS,
         json!([{ "provider": "elsewhere" }]),

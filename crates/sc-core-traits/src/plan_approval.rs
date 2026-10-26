@@ -89,8 +89,7 @@ impl AgentTrait for PlanApproval {
             FormField::new(CFG_DECLINE_PROMPT, BasicType::Text)
                 .label("Prompt on decline")
                 .multiline(),
-            FormField::new(CFG_APPROVE_LABEL, BasicType::Text)
-                .label("Approve button label"),
+            FormField::new(CFG_APPROVE_LABEL, BasicType::Text).label("Approve button label"),
         ]
     }
 

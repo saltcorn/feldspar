@@ -1064,7 +1064,10 @@ mod tests {
             })
         );
         assert_eq!(run.step(), 0, "no model call is counted");
-        assert!(matches!(run.messages().last(), Some(LlmMessage::Assistant { .. })));
+        assert!(matches!(
+            run.messages().last(),
+            Some(LlmMessage::Assistant { .. })
+        ));
         // Only straight after the person spoke.
         assert!(run.answered_without_model("again").is_err());
         run.push_user("Next").unwrap();

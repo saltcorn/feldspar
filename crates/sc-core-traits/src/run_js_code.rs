@@ -420,7 +420,11 @@ mod tests {
         assert_eq!(controls[0].label, "Count books!");
         assert!(matches!(controls[0].kind, ControlKind::Button));
         // A tool has no control; a mode that is neither is refused.
-        assert!(RunJsCode.controls(&config(json!({ "tool_name": "t" }))).is_empty());
+        assert!(
+            RunJsCode
+                .controls(&config(json!({ "tool_name": "t" })))
+                .is_empty()
+        );
         assert!(is_button(&config(json!({ "mode": "menu" }))).is_err());
         assert!(button_label(&config(json!({ "mode": "button" }))).is_err());
     }

@@ -2,6 +2,25 @@
 
 Changes in reverse chronological order.
 
+## `npm test` in the astro and imap plugins runs on Node 24
+
+- `plugins/astro` and `plugins/imap` ran `node --test test/`. Node 24 reads a directory argument
+  as a module to load, so `npm test` failed with "Cannot find module …/test" before running a
+  test. Both now name the files, `test/*.test.mjs`. That also keeps imap's helper modules in
+  `test/` (`corpus.mjs`, `dovecot.mjs`, …) from being run as tests.
+- `repo_hygiene::the_design_records_what_the_agents_milestone_actually_built` still looked for
+  "triggered run is given no trigger dispatcher". §11 now says the run is given the dispatcher
+  (the Paddi field report, below), and the test checks for that wording.
+- `cargo fmt --all` over the 27 files the recent agent, trait and imap work left unformatted, so
+  CI's `fmt` step (`cargo fmt --all --check`) passes again. No code changes.
+- CI's `clippy` step (`cargo clippy --workspace --all-targets -- -D warnings`) passes again.
+  `app_agents::admit_turn` returns its refusal as `Box<Response>`, as the router's other
+  request guards do (`result_large_err`). The rest are in tests: an unused `AgentTrait` import
+  (`sc-core-traits/tests/retrieval.rs`), a needless borrow of `format!` passed to `only_if`
+  (`imap_ingest.rs`), `&Path` for `&PathBuf` (`imap_spike.rs`), `std::slice::from_ref` for
+  `&[x.clone()]` (`module_tables.rs`), and an `allow(clippy::type_complexity)` on a six-column
+  row tuple (`sc-api/tests/history_capture.rs`).
+
 ## Agents as an in-app assistant: the Paddi field report
 
 A team building an assistant into their application on Feldspar agents (an OpenAI-compatible

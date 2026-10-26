@@ -519,13 +519,12 @@ impl Agent {
             None | Some(Json::Null) => return Ok(Vec::new()),
             Some(value) => value,
         };
-        let models: Vec<PickableModel> =
-            serde_json::from_value(entries.clone()).map_err(|e| {
-                sc_error::Error::invalid(format!(
-                    "`{ATTR_PICKABLE_MODELS}` should be a list of \
+        let models: Vec<PickableModel> = serde_json::from_value(entries.clone()).map_err(|e| {
+            sc_error::Error::invalid(format!(
+                "`{ATTR_PICKABLE_MODELS}` should be a list of \
                      {{\"provider\", \"model\", \"label\"}}: {e}"
-                ))
-            })?;
+            ))
+        })?;
         let mut seen = std::collections::BTreeSet::new();
         for model in &models {
             if model.provider.trim().is_empty() {
@@ -608,7 +607,10 @@ mod tests {
         assert_eq!(models[1].value(), "other");
         assert_eq!(models[1].shown(), "other");
         assert_eq!(
-            a.picked_model(Some(&json!("other"))).unwrap().unwrap().provider,
+            a.picked_model(Some(&json!("other")))
+                .unwrap()
+                .unwrap()
+                .provider,
             "other"
         );
         assert!(a.picked_model(Some(&json!(""))).unwrap().is_none());
@@ -619,8 +621,8 @@ mod tests {
             json!([{ "provider": "x" }, { "provider": "x" }]),
         );
         assert!(twice.pickable_models().is_err());
-        let blank = Agent::new("a", "house")
-            .attribute(ATTR_PICKABLE_MODELS, json!([{ "provider": " " }]));
+        let blank =
+            Agent::new("a", "house").attribute(ATTR_PICKABLE_MODELS, json!([{ "provider": " " }]));
         assert!(blank.pickable_models().is_err());
     }
 

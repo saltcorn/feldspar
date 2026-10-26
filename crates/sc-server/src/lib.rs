@@ -42,11 +42,11 @@ mod i18n;
 mod live;
 // An application's own strings: the Translations screen's server half
 // (§16.1, 4.4).
+mod agent_memory;
 mod logging;
 mod lsp;
 mod mcp;
 mod mcp_servers;
-mod agent_memory;
 mod models;
 mod modules;
 mod oauth;

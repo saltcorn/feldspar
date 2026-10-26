@@ -209,7 +209,9 @@ impl AgentTrait for PreloadRows {
         _args: &Json,
         _ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
-        Err(Error::invalid(format!("`preload_rows` offers no tool `{tool}`")))
+        Err(Error::invalid(format!(
+            "`preload_rows` offers no tool `{tool}`"
+        )))
     }
 
     async fn session_header(
@@ -457,7 +459,9 @@ impl AgentTrait for PreloadCode {
         _args: &Json,
         _ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
-        Err(Error::invalid(format!("`preload_code` offers no tool `{tool}`")))
+        Err(Error::invalid(format!(
+            "`preload_code` offers no tool `{tool}`"
+        )))
     }
 
     async fn session_header(

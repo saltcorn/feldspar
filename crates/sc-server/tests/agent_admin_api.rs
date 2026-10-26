@@ -835,7 +835,11 @@ async fn the_admin_lists_searches_and_deletes_agent_memories() {
     assert_eq!(other, json!([]));
 
     let (_, found) = client
-        .send("GET", "/api/agent-memories?agent=librarian&search=tea", None)
+        .send(
+            "GET",
+            "/api/agent-memories?agent=librarian&search=tea",
+            None,
+        )
         .await;
     let found = found.as_array().unwrap().clone();
     assert_eq!(found.len(), 1);

@@ -160,16 +160,16 @@ fn too_many(message: &str, retry_after: Option<u64>) -> Response {
 /// Whether this caller may start a turn now: within the rate limits for its
 /// address and for itself, and with a place among the turns running. The
 /// place is held until the returned slot is dropped.
-fn admit_turn(ctx: &AgentCtx) -> std::result::Result<TurnSlot, Response> {
+fn admit_turn(ctx: &AgentCtx) -> std::result::Result<TurnSlot, Box<Response>> {
     let app = ctx.app.app.id.0.to_string();
     let limiter = sc_ratelimit::global();
     if let Some(ip) = ctx.client_ip
         && let Err(limited) = limiter.hit(&format!("agent-turn:{app}:ip:{ip}"), TURNS_PER_IP)
     {
-        return Err(too_many(
+        return Err(Box::new(too_many(
             "too many messages from this address; wait a little and try again",
             Some(limited.retry_after_secs()),
-        ));
+        )));
     }
     // Who is asking, for the per-asker counts: the run owner, else (a prompt
     // with no cookie) the address.
@@ -181,20 +181,20 @@ fn admit_turn(ctx: &AgentCtx) -> std::result::Result<TurnSlot, Response> {
     if let Some(who) = &who
         && let Err(limited) = limiter.hit(&format!("agent-turn:{app}:{who}"), TURNS_PER_ASKER)
     {
-        return Err(too_many(
+        return Err(Box::new(too_many(
             "too many messages; wait a little and try again",
             Some(limited.retry_after_secs()),
-        ));
+        )));
     }
     let mut limits = vec![(format!("app:{app}"), MAX_TURNS_PER_APP)];
     if let Some(who) = who {
         limits.push((format!("asker:{app}:{who}"), MAX_TURNS_PER_ASKER));
     }
     TurnSlots::global().take(&limits).ok_or_else(|| {
-        too_many(
+        Box::new(too_many(
             "the agent is answering too many messages at once; try again in a moment",
             Some(5),
-        )
+        ))
     })
 }
 
@@ -504,7 +504,7 @@ async fn chat(ctx: AgentCtx, body: &Bytes) -> Result<Response> {
     };
     let slot = match admit_turn(&ctx) {
         Ok(slot) => slot,
-        Err(refused) => return Ok(refused),
+        Err(refused) => return Ok(*refused),
     };
     Ok(sse(start_turn(ctx, slot, existing, input, "chat")))
 }
@@ -525,7 +525,7 @@ async fn prompt(ctx: AgentCtx, body: &Bytes, stream: bool) -> Result<Response> {
     let text = ctx.exposure.prompt_text(prompt, obj.get("input"))?;
     let slot = match admit_turn(&ctx) {
         Ok(slot) => slot,
-        Err(refused) => return Ok(refused),
+        Err(refused) => return Ok(*refused),
     };
     let input = TurnInput {
         text,

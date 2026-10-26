@@ -874,8 +874,8 @@ pub async fn fire_trigger_with(
         event.origin(),
         sc_catalog::changeset::scope_if(event.changeset.clone(), action.run(&mut ctx)),
     )
-        .await
-        .map(Some)
+    .await
+    .map(Some)
 }
 
 /// What every action run is handed by the dispatcher running it: the
