@@ -287,22 +287,8 @@ export function ModulesTab() {
         </div>
         <div className="card-body">
           <p className="text-secondary">
-            <T text="A module is a Saltcorn plugin: a package that supplies actions your triggers can run, functions your formulas and code bodies can call, and tables Saltcorn can read." />{" "}
-            <T
-              text="A {javascript} module is an npm package and runs on a worker that reaches only what you grant it under {permissions} — nothing, until you do."
-              values={{
-                javascript: (
-                  <strong>
-                    <T text="JavaScript" />
-                  </strong>
-                ),
-                permissions: (
-                  <strong>
-                    <T text="Permissions" />
-                  </strong>
-                ),
-              }}
-            />{" "}
+            <T text="A module is a Javascript npm or Python pypi package that supplies actions, tables, functions and/or frameworks." />{" "}
+            {" "}
             <T
               text="A {python} module is a distribution installed into this server’s Python environment and runs in the server’s own interpreter, with the server’s own privileges: there is no sandbox for one and nothing to grant."
               values={{
@@ -313,32 +299,6 @@ export function ModulesTab() {
                 ),
               }}
             />{" "}
-            <T
-              text="{installing} either is not sandboxed: {npm} and {pip} run the package’s own install scripts with this server’s privileges, so install only modules you trust."
-              values={{
-                installing: (
-                  <strong>
-                    <T text="Installing" />
-                  </strong>
-                ),
-                npm: <code>npm install</code>,
-                pip: <code>pip install</code>,
-              }}
-            />{" "}
-            {pythonDir ? (
-              <T
-                text="npm packages are installed under {root}, and Python distributions into {pythonDir}."
-                values={{
-                  root: <code>{root}</code>,
-                  pythonDir: <code>{pythonDir}</code>,
-                }}
-              />
-            ) : (
-              <T
-                text="npm packages are installed under {root}."
-                values={{ root: <code>{root}</code> }}
-              />
-            )}
           </p>
           <div className="row g-2 align-items-end">
             <div className="col-md-3">
@@ -394,11 +354,11 @@ export function ModulesTab() {
       {bundled.length > 0 && (
         <div className="card mb-3">
           <div className="card-header">
-            <h3 className="card-title"><T text="Modules that ship with Saltcorn" /></h3>
+            <h3 className="card-title"><T text="Bundled modules" /></h3>
           </div>
           <div className="card-body">
             <p className="text-secondary">
-              <T text="These are written and maintained here and travel inside Saltcorn itself, so there is no package name to look up and nothing to trust beyond what you already run. They are still modules: nothing below does anything until you install it." />{" "}
+              <T text="These modules are maintained and bundled within the core Saltcorn instancem but still need to be activated before they can be used." />{" "}
               <T
                 text="What is {not_} shipped is what each one depends on — installing fetches that from {npm} or {pypi}, which is the one part of the click that reaches the network."
                 values={{
