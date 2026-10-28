@@ -13,7 +13,7 @@
 // column centred in the viewport, used by the login and first-user screens.
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { useT } from "./i18n";
+import { T, useT } from "./i18n";
 
 /** The page header: pre-title, title, and the screen's primary actions.
  *
@@ -93,13 +93,14 @@ export function StatusBadge({
  * may call it, signed in or not. Shown wherever min_role 100 is, because a
  * number is easy to read past. */
 export function PublicBadge({ className }: { className?: string }) {
+  const { t } = useT();
   return (
     <StatusBadge
       tone="yellow"
       className={className}
-      title="Minimum role 100: anyone may call this, signed in or not"
+      title={t("Minimum role 100: anyone may call this, signed in or not")}
     >
-      Public
+      <T text="Public" />
     </StatusBadge>
   );
 }

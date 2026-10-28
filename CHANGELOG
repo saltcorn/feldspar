@@ -2,6 +2,17 @@
 
 Changes in reverse chronological order.
 
+## i18n: wrap the strings the lint found, and fill the core, admin and builder catalogues
+
+Reworded strings had left the catalogues behind. `feldspar i18n lint` found six unwrapped
+literals in the admin SPA: `PublicBadge`'s title and label (`layout.tsx`), the Changesets
+page title, the table picker's aria-label and its "All tables" option (`Changesets.tsx`), and
+the entity diagram's "PK" marker (`EntityDiagram.tsx`). All six are now wrapped. Then
+`feldspar i18n translate` filled every missing key of the `core`, `admin` and `builder` domains
+for fr, de, es, zh-Hans and ar. Keys that the source no longer uses (the old wordings) are kept,
+because `check` reports them but never deletes them. The `analytics` domain still has no
+catalogues.
+
 ## Fix: add `sc-help` to the design's crate graph
 
 The new `sc-help` crate was not in §2 of `docs/TECHNICAL_DESIGN.md`, so

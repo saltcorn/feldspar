@@ -172,7 +172,7 @@ function EntityNode({ data }: NodeProps) {
           <Handle type="target" id={field.name} position={Position.Left} />
           <span className={field.primaryKey ? "fw-bold" : undefined}>
             {field.name}
-            {field.primaryKey && <span className="erd-pk"> PK</span>}
+            {field.primaryKey && <span className="erd-pk"> <T text="PK" /></span>}
           </span>
           <span className="erd-type">{field.keyTo ? `→ ${field.keyTo}` : field.type}</span>
           <Handle type="source" id={field.name} position={Position.Right} />

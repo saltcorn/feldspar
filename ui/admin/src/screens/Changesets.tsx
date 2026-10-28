@@ -33,13 +33,14 @@ import {
 } from "../history";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader } from "../layout";
-import { T } from "../i18n";
+import { T, useT } from "../i18n";
 import { ChangesetLine, EntryBlock } from "./RowHistory";
 
 const PAGE = 50;
 
 /** The list, filtered; opened with `?table=` from a table's data screen. */
 export function Changesets({ initialTable }: { initialTable?: string }) {
+  const { t } = useT();
   const [form, setForm] = useState<ChangesetFilterForm>({
     ...EMPTY_CHANGESET_FILTER,
     table: initialTable ?? "",
@@ -76,7 +77,7 @@ export function Changesets({ initialTable }: { initialTable?: string }) {
     <>
       <PageHeader
         pretitle="Row history"
-        title="Changesets"
+        title={t("Changesets")}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/tables")}>
             <IconArrowLeft className="icon-2" />
@@ -280,6 +281,7 @@ export function ChangesetDetail({ id }: { id: string }) {
  * changed since, and offers to overwrite it. A done undo opens the undo's own
  * changeset, which can be undone in turn. */
 function UndoPanel({ changeset }: { changeset: GetChangesetResponse }) {
+  const { t } = useT();
   const tables = [...new Set(changeset.entries.map((entry) => entry.table))];
   const [table, setTable] = useState("");
   const [busy, setBusy] = useState(false);
@@ -318,14 +320,14 @@ function UndoPanel({ changeset }: { changeset: GetChangesetResponse }) {
             <Form.Select
               size="sm"
               className="w-auto"
-              aria-label="Which table's changes to undo"
+              aria-label={t("Which table's changes to undo")}
               value={table}
               onChange={(e) => {
                 setTable(e.target.value);
                 setConflicts(null);
               }}
             >
-              <option value="">All tables</option>
+              <option value="">{t("All tables")}</option>
               {tables.map((name) => (
                 <option key={name} value={name}>
                   {name}
