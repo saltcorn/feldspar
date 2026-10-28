@@ -687,7 +687,7 @@ mod tests {
             ]
         );
         // `admin_copilot`'s names are fixed rather than derived, and say the
-        // same twenty-one things every deployment's do — two over the schema,
+        // same twenty-seven things every deployment's do — two over the schema,
         // four over the triggers, one reference for a code body, six over
         // applications (reading, creating one and its store, changing one —
         // its tables, static directories and CSP — and its custom SQL

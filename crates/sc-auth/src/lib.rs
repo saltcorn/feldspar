@@ -134,7 +134,7 @@ pub use user::User;
 static CREATING_TABLES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub use users::{
-    COL_ATTRIBUTES, COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
-    ROLE_ADMIN, ROLE_PUBLIC, SYSTEM_USER_COLUMNS, USERS_TABLE, bootstrap, is_api_hidden_column,
-    is_system_user_column, role_in_range,
+    COL_ATTRIBUTES, COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE,
+    COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, ROLE_PUBLIC, SYSTEM_USER_COLUMNS, USERS_TABLE,
+    bootstrap, is_api_hidden_column, is_system_user_column, role_in_range,
 };

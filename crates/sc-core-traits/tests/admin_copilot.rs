@@ -736,7 +736,10 @@ async fn the_two_callers_of_one_tool_set_are_offered_identical_tools() -> Result
                 .and_then(Json::as_bool)
                 .unwrap_or(false),
         };
-        let from_token = sc_app::mcp::tool_set(grants, areas).specs(&env.catalog);
+        // The server lists `sc-check`'s checklist tools after the token's set,
+        // as the copilot does after its own.
+        let mut from_token = sc_app::mcp::tool_set(grants, areas).specs(&env.catalog);
+        from_token.extend(sc_check::tools::tool_specs());
 
         let left = serde_json::to_string(&from_agent).unwrap();
         let right = serde_json::to_string(&from_token).unwrap();

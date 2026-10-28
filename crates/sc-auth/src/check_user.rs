@@ -41,8 +41,11 @@ pub async fn set_check_user(catalog: &Catalog, id: Uuid, on: bool) -> Result<Use
     } else {
         Value::Json(Json::Object(attrs))
     };
-    let update = Update::new(USERS_TABLE, vec![Assignment::new(COL_ATTRIBUTES, Expr::Lit(value))])
-        .filter(Expr::col(COL_ID).eq(Expr::lit(id)));
+    let update = Update::new(
+        USERS_TABLE,
+        vec![Assignment::new(COL_ATTRIBUTES, Expr::Lit(value))],
+    )
+    .filter(Expr::col(COL_ID).eq(Expr::lit(id)));
     catalog
         .primary()
         .query(&Statement::from(update))

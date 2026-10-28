@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use sc_auth::{
-    COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
-    USERS_TABLE, bootstrap,
+    COL_ATTRIBUTES, COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE,
+    COL_PASSWORD_HASH, COL_ROLE, USERS_TABLE, bootstrap,
 };
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -75,6 +75,11 @@ async fn bootstrap_creates_users_table() -> sc_error::Result<()> {
     assert!(!language.required);
     assert_eq!(language.base.type_, TypeRef::Basic(BasicType::Text));
 
+    // The system's sparse per-user settings (the check-user flag): nullable JSON.
+    let attributes = users.field(COL_ATTRIBUTES).expect("attributes field");
+    assert!(!attributes.required);
+    assert_eq!(attributes.base.type_, TypeRef::Basic(BasicType::Json));
+
     // The table is reflected in a fresh driver introspection.
     let introspected = driver.introspect().await?;
     let physical = introspected
@@ -91,7 +96,8 @@ async fn bootstrap_creates_users_table() -> sc_error::Result<()> {
             COL_PASSWORD_HASH,
             COL_DISABLED,
             COL_LANGUAGE,
-            COL_EMAIL_VERIFIED
+            COL_EMAIL_VERIFIED,
+            COL_ATTRIBUTES
         ]
     );
     assert_eq!(physical.primary_key, vec![COL_ID.to_string()]);

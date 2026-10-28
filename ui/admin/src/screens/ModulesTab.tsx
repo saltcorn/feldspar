@@ -78,11 +78,9 @@ export function ModulesTab() {
   const { t } = useT();
   const [modules, setModules] = useState<Module[] | null>(null);
   const [bundled, setBundled] = useState<BundledModule[]>([]);
-  const [root, setRoot] = useState("");
   // Everything present until the server has answered, so the form is not
   // briefly and wrongly disabled on the way in.
   const [tools, setTools] = useState<Toolchains>(ALL_TOOLCHAINS);
-  const [pythonDir, setPythonDir] = useState<string | null>(null);
   const [form, setForm] = useState<InstallForm>(EMPTY_INSTALL);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +91,6 @@ export function ModulesTab() {
       const response = await api.listModules();
       setModules(response.modules);
       setBundled(catalogOrder(response.bundled));
-      setRoot(response.root);
       setTools({
         npm: response.npm,
         npmTooOld: response.npm_too_old ?? null,
@@ -101,7 +98,6 @@ export function ModulesTab() {
         python: response.python,
         pip: response.pip,
       });
-      setPythonDir(response.python_dir ?? null);
     } catch (e) {
       setError(errorMessage(e, "Could not read the installed modules."));
       setModules([]);
@@ -288,7 +284,6 @@ export function ModulesTab() {
         <div className="card-body">
           <p className="text-secondary">
             <T text="A module is a Javascript npm or Python pypi package that supplies actions, tables, functions and/or frameworks." />{" "}
-            {" "}
             <T
               text="A {python} module is a distribution installed into this server’s Python environment and runs in the server’s own interpreter, with the server’s own privileges: there is no sandbox for one and nothing to grant."
               values={{
@@ -358,7 +353,7 @@ export function ModulesTab() {
           </div>
           <div className="card-body">
             <p className="text-secondary">
-              <T text="These modules are maintained and bundled within the core Saltcorn instancem but still need to be activated before they can be used." />{" "}
+              <T text="These modules are maintained and bundled within the core Saltcorn instance, but still need to be activated before they can be used." />{" "}
               <T
                 text="What is {not_} shipped is what each one depends on — installing fetches that from {npm} or {pypi}, which is the one part of the click that reaches the network."
                 values={{
