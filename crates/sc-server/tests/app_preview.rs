@@ -95,6 +95,7 @@ async fn setup(tmp: &TempDir, idle: Duration) -> sc_error::Result<Env> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     bootstrap(&catalog).await?;
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;

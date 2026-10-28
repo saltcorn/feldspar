@@ -182,6 +182,7 @@ async fn setup(config: &ServerConfig) -> sc_error::Result<Server> {
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     // One runtime, handed to the dispatcher as an adapter and to the mounts as
@@ -453,6 +454,7 @@ async fn a_server_with_no_runtime_attached_says_that_rather_than_guessing() -> s
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     let apps = Arc::new(AppMounts::new(catalog.clone()));
     let router = build_router_with_apps(

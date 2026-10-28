@@ -130,6 +130,11 @@ pub trait TableEvents: Send + Sync {
     /// [`TableWrite::tx`] is how a listener joins it, so what it does about the
     /// write shares the write's fate.
     async fn emit(&self, catalog: &Catalog, write: TableWrite<'_>) -> Result<()>;
+
+    /// Let go of whatever this listener holds that holds it back — called by
+    /// [`Catalog::teardown`] on each listener before it is taken off the seam.
+    /// Nothing by default.
+    fn teardown(&self) {}
 }
 
 #[cfg(test)]

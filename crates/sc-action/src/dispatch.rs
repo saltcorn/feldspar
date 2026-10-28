@@ -301,6 +301,21 @@ impl TriggerDispatcher {
         }
     }
 
+    /// Let go of the workflow engine and the observer, both of which hold this
+    /// dispatcher (or its catalog) back — what a test's `Catalog::teardown`
+    /// reaches through [`TableEvents::teardown`].
+    pub fn teardown(&self) {
+        let engine = match self.engine.write() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        let observer = match self.observer.write() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        drop((engine, observer));
+    }
+
     /// The workflow engine, if this process has one.
     pub fn workflow_engine(&self) -> Option<Arc<dyn crate::WorkflowEngine>> {
         match self.engine.read() {
@@ -715,6 +730,10 @@ impl TableEvents for TriggerDispatcher {
         reveal_secrets(catalog, write.table, &mut event);
         self.fire_in(catalog, &event, write.tx.as_ref()).await;
         Ok(())
+    }
+
+    fn teardown(&self) {
+        TriggerDispatcher::teardown(self);
     }
 }
 

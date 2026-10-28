@@ -19,6 +19,20 @@ Standard working mode:
 7. Mark the item as complete
 8. Do not commit to git. A human will review the work and commit.
 
+## Tests: tear the catalog down
+
+Services installed on a `Catalog` (triggers, models, mounts, …) hold it back, so a test that
+builds a catalog must register its teardown, or everything it built — JS isolate threads,
+runtimes, sockets — leaks for the rest of the test binary, which then fails with "Too many open
+files" at the common soft limit of 1024. Right after `Catalog::init`:
+
+    db.on_teardown(catalog.teardown_hook());   // db: the test's TestDb
+
+A test with no `TestDb` (SQLite) holds a `sc_test_harness::Teardown` and calls `.add(...)` on it.
+`crates/sc-server/tests/catalog_teardown.rs` checks that a full server stack is freed; extend it if
+you add a service that holds the catalog in a new way. To reproduce a leak, run the tests after
+`ulimit -Sn 1024`.
+
 ## Status
 
 The system is in prototype status. Do not add any code to handle backwards compatibility with 

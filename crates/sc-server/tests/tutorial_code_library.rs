@@ -26,6 +26,7 @@ use sc_server::{
     AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
     build_router_with_apps, default_js_evaluator, install_triggers,
 };
+use sc_test_harness::Teardown;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -138,9 +139,12 @@ fn app(name: &str, subdomain: &str, query: CustomQuery) -> Application {
         .with_api(api)
 }
 
-async fn setup(dir: &std::path::Path) -> sc_error::Result<Router> {
+/// The server, and the guard that tears its catalog down when the test ends.
+async fn setup(dir: &std::path::Path) -> sc_error::Result<(Router, Teardown)> {
     let driver = Arc::new(SqliteDriver::open(dir.join("tutorial.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let teardown = Teardown::new();
+    teardown.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -197,7 +201,7 @@ async fn setup(dir: &std::path::Path) -> sc_error::Result<Router> {
             apps.triggers(),
         )?)?;
     }
-    build_router_with_apps(
+    let router = build_router_with_apps(
         &sc_api::admin_endpoints(),
         admin_handlers(catalog.clone(), apps.clone()),
         Arc::new(SessionStore::default()),
@@ -206,7 +210,8 @@ async fn setup(dir: &std::path::Path) -> sc_error::Result<Router> {
             ..ServerConfig::default()
         },
         apps,
-    )
+    )?;
+    Ok((router, teardown))
 }
 
 /// Step 2's call on `host`, signed out.
@@ -229,7 +234,7 @@ async fn the_code_library_tutorial_runs_as_printed() -> sc_error::Result<()> {
     let dir = std::env::temp_dir().join(format!("sc-tutorial-code-library-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).map_err(sc_error::Error::from)?;
-    let router = setup(&dir).await?;
+    let (router, _teardown) = setup(&dir).await?;
 
     // Step 1: the library, saved as the screen saves it.
     let library = blocks("Step 1").remove(0);

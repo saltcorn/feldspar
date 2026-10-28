@@ -138,6 +138,8 @@ pub struct TestDb {
     /// The resolved base connection, kept so [`url`](TestDb::url) can render a
     /// connection string for the code paths that take one.
     base: Config,
+    /// What [`on_teardown`](TestDb::on_teardown) registered, run first on drop.
+    teardown: Teardown,
 }
 
 impl TestDb {
@@ -256,12 +258,28 @@ impl TestDb {
             pool,
             admin_config,
             base,
+            teardown: Teardown::new(),
         })
     }
 
     /// The name of the per-test database.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Run `teardown` when this database is dropped — at the end of the test,
+    /// including one that panicked — before the database itself goes.
+    /// Teardowns run latest-registered first.
+    ///
+    /// What a server test registers here is `Catalog::teardown` — see
+    /// [`Teardown`]:
+    ///
+    /// ```ignore
+    /// let catalog = Arc::new(Catalog::init(driver).await?);
+    /// db.on_teardown(catalog.teardown_hook());
+    /// ```
+    pub fn on_teardown(&self, teardown: impl FnOnce() + Send + 'static) {
+        self.teardown.add(teardown);
     }
 
     /// The connection pool for the per-test database.
@@ -340,6 +358,10 @@ pub struct ConnectionParts {
 
 impl Drop for TestDb {
     fn drop(&mut self) {
+        // The test's own teardowns first, while the database they were built
+        // over still exists.
+        self.teardown.run();
+
         // Close pooled connections so nothing blocks `DROP DATABASE`.
         self.pool.close();
 
@@ -746,5 +768,50 @@ mod tests {
             DEFAULT_TEST_ENVIRONMENT,
             sc_config_file::DEFAULT_ENVIRONMENT
         );
+    }
+}
+
+/// Closures run when a test ends — when this guard is dropped, including by a
+/// test that panicked — latest added first.
+///
+/// What a server test adds is `Catalog::teardown_hook()`. The services a server
+/// installs on its catalog hold the catalog back, so without it nothing a test
+/// built over the catalog is ever freed, and a binary of a few hundred such tests
+/// accumulates their formula isolates' threads, the runtimes those anchor to and
+/// their pools' sockets until it runs out of file descriptors. A [`TestDb`]
+/// carries one ([`TestDb::on_teardown`]); a test over SQLite, which has no
+/// `TestDb`, holds one of these beside its temporary directory.
+#[derive(Default)]
+pub struct Teardown(std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+
+impl Teardown {
+    /// An empty guard.
+    pub fn new() -> Teardown {
+        Teardown::default()
+    }
+
+    /// Run `teardown` when this guard is dropped.
+    pub fn add(&self, teardown: impl FnOnce() + Send + 'static) {
+        match self.0.lock() {
+            Ok(mut teardowns) => teardowns.push(Box::new(teardown)),
+            Err(poisoned) => poisoned.into_inner().push(Box::new(teardown)),
+        }
+    }
+
+    /// Run and forget everything added so far.
+    fn run(&self) {
+        let teardowns = match self.0.lock() {
+            Ok(mut teardowns) => std::mem::take(&mut *teardowns),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        for teardown in teardowns.into_iter().rev() {
+            teardown();
+        }
+    }
+}
+
+impl Drop for Teardown {
+    fn drop(&mut self) {
+        self.run();
     }
 }

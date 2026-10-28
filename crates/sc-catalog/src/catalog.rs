@@ -1729,6 +1729,69 @@ impl Catalog {
         guard.len() != before
     }
 
+    /// Empty every slot a layer above fills with a service — the table-event
+    /// listeners, the observer and rename hook, the module, live, model and
+    /// admin hosts, the formula evaluator, the table providers, the host LLM
+    /// provider, the stream registry and the file stores.
+    ///
+    /// Those services hold an `Arc<Catalog>` of their own (the trigger
+    /// dispatcher through its mailer, `ModelServices`, `AppMounts` …), so a
+    /// catalog with any of them installed is in a reference cycle and is never
+    /// dropped. A server lives as long as its process and does not care; a test
+    /// binary builds a catalog per test, and without this every one of them —
+    /// with its formula isolate's threads, the runtime handle that isolate
+    /// anchors to and its pool's sockets — outlived its test. Tests register it
+    /// on their `TestDb` (`db.on_teardown(catalog.teardown_hook())`), which runs
+    /// it when the test ends.
+    ///
+    /// Each table-event listener's own [`teardown`](crate::TableEvents::teardown)
+    /// runs first, for the cycles that do not pass through the catalog (the
+    /// trigger dispatcher and the workflow engine hold each other).
+    ///
+    /// The catalog still answers schema questions afterwards; it just has
+    /// nothing installed, as if freshly [`init`](Catalog::init)ed.
+    pub fn teardown(&self) {
+        fn clear<T>(slot: &RwLock<Option<T>>) {
+            let taken = match slot.write() {
+                Ok(mut guard) => guard.take(),
+                Err(poisoned) => poisoned.into_inner().take(),
+            };
+            // Dropped outside the lock: a service's own drop may reach back in.
+            drop(taken);
+        }
+        let events = match self.table_events.write() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        for (_, listener) in &events {
+            listener.teardown();
+        }
+        drop(events);
+        let stores = match self.file_stores.write() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        drop(stores);
+        clear(&self.schema_observer);
+        clear(&self.rename_hook);
+        clear(&self.module_functions);
+        clear(&self.live_host);
+        clear(&self.model_host);
+        clear(&self.admin_host);
+        clear(&self.formula_evaluator);
+        clear(&self.table_providers);
+        clear(&self.host_llm_provider);
+        clear(&self.stream_registry);
+    }
+
+    /// [`teardown`](Catalog::teardown) as a closure that owns a handle to this
+    /// catalog — what a test hands its harness guard:
+    /// `db.on_teardown(catalog.teardown_hook())`.
+    pub fn teardown_hook(self: &Arc<Self>) -> impl FnOnce() + Send + 'static {
+        let catalog = Arc::clone(self);
+        move || catalog.teardown()
+    }
+
     /// Install the module functions — `sc-server`'s `ModuleServices`, at boot
     /// and again after every module change (install, configure, delete, Reload).
     ///

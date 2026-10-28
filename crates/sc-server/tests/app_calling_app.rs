@@ -54,6 +54,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, sc_app::AppId, TestD
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     let evaluator = default_js_evaluator();

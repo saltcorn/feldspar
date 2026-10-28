@@ -38,6 +38,7 @@ use sc_server::{
     SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
     install_triggers,
 };
+use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
@@ -147,7 +148,7 @@ fn picker() -> Agent {
 
 // --- the server -----------------------------------------------------------------
 
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl TempDir {
     fn new() -> TempDir {
@@ -157,7 +158,7 @@ impl TempDir {
             Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(dir, Teardown::new())
     }
 
     fn path(&self) -> &Path {
@@ -187,6 +188,7 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
     let tmp = TempDir::new();
     let driver = Arc::new(SqliteDriver::open(tmp.path().join("shelf.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
@@ -881,6 +883,7 @@ async fn a_pickable_model_that_does_not_resolve_is_refused_on_save() -> Result<(
     let tmp = TempDir::new();
     let driver = Arc::new(SqliteDriver::open(tmp.path().join("v.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_llm::bootstrap_llm_providers(&catalog).await?;
     sc_llm::save_llm_provider(

@@ -160,6 +160,7 @@ async fn setup(tag: &str, executable: PathBuf) -> Result<Env> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
@@ -776,13 +777,7 @@ async fn check_runs_the_applications_checklists_against_its_preview() -> Result<
             .as_object()
             .cloned()
             .unwrap_or_default();
-        sc_check::edit::create_checklist(
-            &env.catalog,
-            &registry,
-            &editor,
-            input,
-            steps,
-        )
+        sc_check::edit::create_checklist(&env.catalog, &registry, &editor, input, steps)
     };
     let notes = checklist(
         "Alice sees her notes",

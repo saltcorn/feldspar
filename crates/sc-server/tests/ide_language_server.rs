@@ -266,6 +266,7 @@ async fn serve_with_stores(
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     for store in stores {
         catalog.connect_file_store(store)?;
     }

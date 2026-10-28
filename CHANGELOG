@@ -2,6 +2,39 @@
 
 Changes in reverse chronological order.
 
+## Server tests tear their catalog down
+
+`cargo test --workspace` from a desktop terminal failed `sc-server`'s `it` binary with "Too many
+open files" (220 of 668 tests, wherever the next `open` happened: npm, V8, Postgres). Terminals here
+start at systemd's soft limit of 1024, and the binary climbed steadily to ~1000 descriptors and ~600
+threads because nothing a server test built was ever freed. It now peaks around 120 descriptors and
+passes at 1024 with no limit raised.
+
+- **Cause — reference cycles.** The services a server installs on its `Catalog` hold the catalog
+  back: `ModelServices` in `set_model_host`, the trigger dispatcher in `add_table_events` (its
+  `SettingsMailer` holds the catalog), `AppMounts` as the schema observer, and so on. The dispatcher
+  and the workflow engine also hold each other, and every running stream held its own sink, which
+  held the stream and the trigger bridge (catalog and dispatcher). So each test's catalog outlived it
+  together with its formula evaluator, whose isolate threads (`sc-expr-js-eval`, `sc-code-*`) each
+  anchor that test's tokio runtime handle (an epoll and an eventfd), and its pool's sockets. In
+  production there is one catalog per process, so none of this grew there.
+- **`Catalog::teardown`** empties every slot a layer above fills with a service (table-event
+  listeners, schema observer, rename hook, module/live/model/admin hosts, formula evaluator, table
+  providers, host LLM provider, stream registry, file stores), calling each table-event listener's
+  new **`TableEvents::teardown`** (default: nothing) first. **`TriggerDispatcher::teardown`**
+  (its `TableEvents::teardown`) lets go of the workflow engine and the observer.
+  `Catalog::teardown_hook()` is the same as a closure for a test guard.
+- **`StreamSupervisor` stops its streams on drop** (`Drop` calls `shutdown`), which breaks the
+  running stream / sink cycle. There is one supervisor per server, built at boot.
+- **`sc-test-harness`**: a `Teardown` guard (closures run on drop, latest first, also when a test
+  panics), and `TestDb::on_teardown`, which runs them before the database is dropped. New test
+  `teardowns_run_when_the_test_ends_latest_first`.
+- **Tests**: every `sc-server`/`sc-cli` setup that builds a catalog registers
+  `db.on_teardown(catalog.teardown_hook())` (117 sites). The SQLite ones, which have no `TestDb`, carry
+  a `Teardown` in their scratch-directory struct; `tutorial_code_library`'s `setup` returns one. New
+  `sc-server` test `catalog_teardown`: a full server stack's catalog and evaluator are freed when its
+  runtime ends, and (the control) are not without the teardown.
+
 ## Checklists C3: framework and module step types, starter checklists
 
 Frameworks and modules now add their own checklist step types, and a framework can offer a new

@@ -41,6 +41,7 @@ use sc_server::{
     AppMounts, CSRF_COOKIE, MountedApp, ServerConfig, VISITOR_COOKIE, admin_handlers,
     build_router_with_apps, default_js_evaluator, install_triggers,
 };
+use sc_test_harness::Teardown;
 use sc_types::{Attrs, BasicType, TypeRef};
 use tower::ServiceExt;
 
@@ -101,7 +102,7 @@ return html("<h1>not found</h1>", 404);
 "#;
 
 /// A scratch directory removed when the guard drops.
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
@@ -112,7 +113,7 @@ impl TempDir {
         ));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(dir, Teardown::new())
     }
 
     fn path(&self) -> &Path {
@@ -162,6 +163,7 @@ struct Server {
 async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
     let driver = Arc::new(SqliteDriver::open(tmp.path().join("site.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;

@@ -48,6 +48,7 @@ use sc_live::{CollabDoc, DocShape, LiveLimits, RootKind};
 use sc_stream::{
     Document, Internal, Stream, StreamConfig, StreamProvider, StreamRegistry, save_stream,
 };
+use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
@@ -165,7 +166,7 @@ struct Server {
 }
 
 /// A directory removed when the test ends.
-struct Scratch(std::path::PathBuf);
+struct Scratch(std::path::PathBuf, Teardown);
 
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -297,10 +298,14 @@ fn limits() -> LiveLimits {
 }
 
 async fn setup() -> Result<Server> {
-    let dir = Scratch(std::env::temp_dir().join(format!("sc-live-query-{}", Uuid::new_v4())));
+    let dir = Scratch(
+        std::env::temp_dir().join(format!("sc-live-query-{}", Uuid::new_v4())),
+        Teardown::new(),
+    );
     std::fs::create_dir_all(&dir.0).unwrap();
     let driver = Arc::new(SqliteDriver::open(dir.0.join("notes.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    dir.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;

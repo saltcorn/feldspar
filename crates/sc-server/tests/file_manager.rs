@@ -126,6 +126,7 @@ async fn setup() -> sc_error::Result<(Client, Arc<dyn FileStore>, TestDb)> {
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     // `listFileStores` reads the stored definitions as well as the connected
     // registry (§1.4), so the table has to exist — the real boot path bootstraps

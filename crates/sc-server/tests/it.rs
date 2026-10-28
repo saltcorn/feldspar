@@ -239,6 +239,8 @@ mod app_none_framework;
 mod app_preview;
 #[path = "app_public_endpoints.rs"]
 mod app_public_endpoints;
+#[path = "catalog_teardown.rs"]
+mod catalog_teardown;
 #[path = "oauth_sign_in.rs"]
 mod oauth_sign_in;
 #[path = "saltcorn_ui_admin_api.rs"]
