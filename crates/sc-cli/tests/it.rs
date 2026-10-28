@@ -29,6 +29,8 @@ mod build_script;
 mod build_static_deploy;
 #[path = "build_static_release.rs"]
 mod build_static_release;
+#[path = "check.rs"]
+mod check;
 #[path = "cmdstan.rs"]
 mod cmdstan;
 #[path = "config_file.rs"]

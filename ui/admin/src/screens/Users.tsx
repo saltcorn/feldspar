@@ -148,6 +148,14 @@ export function Users() {
       () => api.setUserDisabled(user.id, { disabled }),
     );
 
+  /** A check user is one a checklist may run as on an agent's say-so
+   * (CHECKLISTS.md §4): an account kept for checking, not a person's. */
+  const setCheckUser = (user: UserRow, on: boolean) =>
+    void act(
+      on ? "Could not make the user a check user." : "Could not unmark the check user.",
+      () => api.setCheckUser(user.id, { check_user: on }),
+    );
+
   const forceLogout = (user: UserRow) =>
     void act("Could not end the sessions.", () => api.forceLogoutUser(user.id));
 
@@ -252,6 +260,15 @@ export function Users() {
                       ) : (
                         <StatusBadge tone="green"><T text="Active" /></StatusBadge>
                       )}
+                      {u.check_user && (
+                        <StatusBadge
+                          tone="blue"
+                          className="ms-1"
+                          title={t("An account checklists may run as")}
+                        >
+                          <T text="Check user" />
+                        </StatusBadge>
+                      )}
                     </td>
                     {columns.map((f) => (
                       <td key={f.name}>{displayValue(bag[f.name])}</td>
@@ -294,6 +311,9 @@ export function Users() {
                             </Dropdown.Item>
                             <Dropdown.Item onClick={() => setCrediting(u)}>
                               <T text="LLM credits" />
+                            </Dropdown.Item>
+                            <Dropdown.Item onClick={() => setCheckUser(u, !u.check_user)}>
+                              {u.check_user ? t("Not a check user") : t("Make check user")}
                             </Dropdown.Item>
                             <Dropdown.Divider />
                             <Dropdown.Item onClick={() => setDisabled(u, !u.disabled)}>

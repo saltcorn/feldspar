@@ -72,6 +72,14 @@ pub const COL_LANGUAGE: &str = "language";
 /// sessions go before the provider's user is signed in to it.
 pub const COL_EMAIL_VERIFIED: &str = "email_verified";
 
+/// Sparse per-user settings the **system** keeps — a JSON object, or `NULL`.
+///
+/// Its one key so far is [`ATTR_CHECK_USER`](crate::ATTR_CHECK_USER): the
+/// account a checklist runs as (TODO-checklists C1.5). A system column, so no
+/// user form edits it as a field and no API returns it; only an admin sets
+/// what is in it, through [`set_check_user`](crate::set_check_user).
+pub const COL_ATTRIBUTES: &str = "attributes";
+
 /// The most-privileged role: full access.
 pub const ROLE_ADMIN: u8 = 1;
 /// The least-privileged role: public / not logged in.
@@ -102,6 +110,7 @@ fn users_fields() -> Vec<DataField> {
         DataField::plain(COL_DISABLED, bool_()),
         DataField::plain(COL_LANGUAGE, text()),
         DataField::plain(COL_EMAIL_VERIFIED, bool_()),
+        DataField::plain(COL_ATTRIBUTES, TypeRef::Basic(BasicType::Json)),
     ]
 }
 
@@ -113,7 +122,7 @@ fn users_fields() -> Vec<DataField> {
 /// know which of them are not theirs to type into: the generated id, the role
 /// (its own select), the identifier, the hash (never shown), and the disabled
 /// flag (an action on the users screen, not a text box).
-pub const SYSTEM_USER_COLUMNS: [&str; 7] = [
+pub const SYSTEM_USER_COLUMNS: [&str; 8] = [
     COL_ID,
     COL_ROLE,
     COL_EMAIL,
@@ -121,6 +130,7 @@ pub const SYSTEM_USER_COLUMNS: [&str; 7] = [
     COL_DISABLED,
     COL_LANGUAGE,
     COL_EMAIL_VERIFIED,
+    COL_ATTRIBUTES,
 ];
 
 /// Whether `column` is one of the columns the system owns
@@ -191,7 +201,8 @@ mod tests {
                 COL_PASSWORD_HASH,
                 COL_DISABLED,
                 COL_LANGUAGE,
-                COL_EMAIL_VERIFIED
+                COL_EMAIL_VERIFIED,
+                COL_ATTRIBUTES
             ]
         );
 

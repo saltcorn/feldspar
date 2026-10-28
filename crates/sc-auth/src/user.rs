@@ -175,6 +175,21 @@ impl User {
         )
     }
 
+    /// Whether this account is a **check user**: one a checklist may run as,
+    /// signed in by the runner without a password (TODO-checklists C1.5). Set
+    /// by an admin ([`set_check_user`](crate::set_check_user)) and never by an
+    /// agent, which may only point a checklist at an account that already is
+    /// one.
+    pub fn is_check_user(&self) -> bool {
+        match self.get(crate::users::COL_ATTRIBUTES) {
+            Some(Value::Json(attrs)) => attrs
+                .get(crate::ATTR_CHECK_USER)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
     /// Whether this user meets a `min_role` gate. Roles run 1–100 with **lower =
     /// more privileged** (matching [`AccessRules`](sc_catalog::AccessRules)), so a
     /// user passes when `role <= min_role`.

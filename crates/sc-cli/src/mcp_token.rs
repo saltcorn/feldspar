@@ -94,6 +94,23 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
             }
             continue 'args;
         }
+        // The checklists grant takes a value rather than an on/off pair
+        // (TODO-checklists C1.13): `none`, `append` (the default) or `full`.
+        if arg == "--checklists" {
+            let value = it
+                .next()
+                .ok_or_else(|| Error::config("--checklists needs a value: none, append or full"))?;
+            if !sc_api::mcp::CHECKLISTS_GRANT_VALUES.contains(&value.as_str()) {
+                return Err(Error::config(format!(
+                    "--checklists takes none, append or full, not `{value}`"
+                )));
+            }
+            grants.insert(
+                sc_api::mcp::CHECKLISTS_GRANT.to_owned(),
+                Json::String(value.clone()),
+            );
+            continue;
+        }
         let slot = match arg.as_str() {
             "--label" => &mut label,
             "--email" => &mut email,
@@ -180,10 +197,20 @@ pub fn describe_grants(grants: &Attrs) -> String {
         .chain(sc_api::mcp::FLAG_KEYS)
         .filter(|key| flags.get(*key).and_then(Json::as_bool) == Some(true))
         .collect();
-    match held.is_empty() {
+    let mut out = match held.is_empty() {
         true => "(none)".to_owned(),
         false => held.join(" "),
+    };
+    // The checklists grant is a value, not a flag: say it when it is not the
+    // default, so `full` is never a surprise in the list.
+    if let Some(grant) = flags
+        .get(sc_api::mcp::CHECKLISTS_GRANT)
+        .and_then(Json::as_str)
+        .filter(|g| *g != "append")
+    {
+        out.push_str(&format!(" checklists:{grant}"));
     }
+    out
 }
 
 /// The line that registers the server with Claude Code. The same line the

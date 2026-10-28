@@ -41,6 +41,7 @@
 //! — the payments module does), and the first write made without them creates
 //! them; until then every read answers as if they were empty.
 
+mod check_user;
 mod create;
 mod credits;
 mod first_user;
@@ -57,6 +58,7 @@ mod tokens;
 mod user;
 mod users;
 
+pub use check_user::{ATTR_CHECK_USER, set_check_user};
 pub use create::{CreatedUser, NewUser, create_user, create_user_with, sign_up_user};
 pub use credits::{
     COL_ACCOUNT_DEBT, COL_ACCOUNT_THRESHOLD, COL_ACCOUNT_UPDATED_AT, COL_CREDIT_AMOUNT,
@@ -132,7 +134,7 @@ pub use user::User;
 static CREATING_TABLES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub use users::{
-    COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
+    COL_ATTRIBUTES, COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
     ROLE_ADMIN, ROLE_PUBLIC, SYSTEM_USER_COLUMNS, USERS_TABLE, bootstrap, is_api_hidden_column,
     is_system_user_column, role_in_range,
 };

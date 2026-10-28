@@ -165,6 +165,10 @@ feldspar/
 │  ├─ sc-core-traits/             # 9. the built-in agent traits (table, trigger and coding
 │  │                              #    traits) + the `run_agent` action — same layer, same
 │  │                              #    reason: their writes go through the row layer (§11.3)
+│  ├─ sc-check/                   # 9. checklists (docs/CHECKLISTS.md): `_fd_checklist*`, the
+│  │                              #    step-type registry, the core step types, the runner, the
+│  │                              #    agent policy and the agent tools the copilot and the MCP
+│  │                              #    server share
 │  ├─ sc-copilot/                 # 9. copilot agent + AppConstructor stages
 │  ├─ sc-server/                  # 9. HTTP server: admin routes, user routes, auth, CSP, sockets
 │  └─ sc-cli/                     # 10. `feldspar` binary (serve, user/app mgmt, backup/restore)
@@ -210,6 +214,9 @@ graph TD
   coretraits --> app["sc-app"]
   coretraits --> repomap["sc-repomap"]
   coretraits --> mcp["sc-mcp"]
+  coretraits --> check["sc-check"]
+  check --> agent
+  check --> app
   mcp --> email
   coreact --> api["sc-api"]
   server --> module["sc-module"]
@@ -318,9 +325,10 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-viewpattern` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
 | `sc-module` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
-| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-check` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
+| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
+| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -1762,6 +1770,7 @@ erDiagram
     text email UK
     text password_hash "argon2; nullable"
     bool disabled
+    json attributes "system: check_user marks one a checklist may run as"
   }
   SESSIONS["_fd_sessions"] {
     text token_hash PK "SHA-256 of the cookie token"
@@ -1850,6 +1859,48 @@ erDiagram
     bool personal "only its own user may read it back"
     text topic "full-text indexed with contents"
     text contents
+  }
+  CHECKLISTS["_fd_checklists"] {
+    uuid id PK
+    text name UK "what the CLI and the agent tools name it by"
+    text description
+    uuid application "nullable: a data-only checklist checks no application"
+    uuid run_as "nullable, by value: null runs as an anonymous visitor"
+    bool enabled "only a person changes it"
+    bool mutates "derived from the current steps' types"
+    json attributes "stop_on_failure, timeout, allow_on_production, tags"
+  }
+  CHECKLISTSTEPS["_fd_checklist_steps"] {
+    uuid id PK "one version of one step"
+    uuid checklist "-> _fd_checklists.id"
+    float position "a float, so an insert renumbers nothing"
+    text type "a registered step type: data.insert, http.expect_status"
+    json params "validated against the type's config_spec"
+    text label
+    text capture "the step's as"
+    text author "human:<user id> | agent:<run id>"
+    bool accepted
+    uuid superseded_by "the version that replaced it; never updated otherwise"
+    bool deleted "a tombstone"
+  }
+  CHECKLISTRUNS["_fd_checklist_runs"] {
+    uuid id PK "also run.id inside the run"
+    uuid checklist "-> _fd_checklists.id; kept when it is deleted"
+    text trigger "manual | cli | agent:<run id> | build | schedule"
+    text target "live | a preview label"
+    text status "passed | failed | error | incomplete"
+    json step_versions
+    json steps "each step's result"
+    json cleanup_errors
+  }
+  CHECKLISTPROPOSALS["_fd_checklist_proposals"] {
+    uuid id PK
+    uuid checklist "-> _fd_checklists.id"
+    text kind "edit | insert_before | reorder | run_as"
+    uuid step "the step it would change"
+    json change
+    text reason
+    text author "agent:<run id>"
   }
   MODELS["_fd_models"] {
     uuid id PK
@@ -2216,6 +2267,10 @@ erDiagram
   LLMMODELS }o--o{ AGENTS : "attributes.strong/cheap -- a role's model, by name"
   AGENTS ||--o{ RUNS : "subject -- by name, when kind = agent"
   AGENTS ||--o{ AGENTMEMORY : "agent -- by name"
+  CHECKLISTS ||--o{ CHECKLISTSTEPS : "checklist"
+  CHECKLISTS ||--o{ CHECKLISTRUNS : "checklist -- by value"
+  CHECKLISTS ||--o{ CHECKLISTPROPOSALS : "checklist"
+  USERS |o--o{ CHECKLISTS : "run_as -- by value, nullable"
   USERS |o--o{ AGENTMEMORY : "user_id -- by value, nullable"
   RUNS |o--o{ AGENTMEMORY : "run_id -- by value, nullable"
   RUNS ||--o{ RUNPARTS : "run_id -- by value, deleted with the run"

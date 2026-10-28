@@ -9,54 +9,54 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## C1 — Entities, runner, data and HTTP steps, agent policy
 
-- [ ] C1.1 Tables `_fd_checklists`, `_fd_checklist_steps` and `_fd_checklist_runs` (§1), created
+- [x] C1.1 Tables `_fd_checklists`, `_fd_checklist_steps` and `_fd_checklist_runs` (§1), created
       in the initial setup and idempotently in `TABLES_RENAME.sql`. Steps are never updated in
       place: an edit inserts a new row and sets `superseded_by` on the old one, and a deletion
       supersedes it with a tombstone. `Checklist::mutates` is derived on save from the step types.
-- [ ] C1.2 The step-type registry: the `StepType` trait (`name`, `config_spec`, `needs`,
+- [x] C1.2 The step-type registry: the `StepType` trait (`name`, `config_spec`, `needs`,
       `mutates`, `run`), `StepContext` (the capabilities the type declared, `run_as`, the run's
       variables) and `StepOutcome` (pass / fail / error / skipped, message, captured values).
       Step `params` are validated against `config_spec` on save. Names are namespaced
       (`core.*`, `data.*`, …); a duplicate registration is an error.
-- [ ] C1.3 Variables: a step's `as` captures a value; later steps' string params are `sc-expr`
+- [x] C1.3 Variables: a step's `as` captures a value; later steps' string params are `sc-expr`
       templates over the variables, with `run.id` always in scope.
-- [ ] C1.4 The runner: load the checklist's current steps, mint a session for `run_as` (`NULL` is
+- [x] C1.4 The runner: load the checklist's current steps, mint a session for `run_as` (`NULL` is
       anonymous), run the steps in order, stop on the first failure unless `stop_on_failure` is
       false, and write the run row (trigger, target, status, per-step results, step versions).
       A step whose capability the host lacks is `skipped` and the run is `incomplete`, never
       `passed`. Rows written by `data.insert` are deleted at the end, in reverse order, best
       effort, and a failed clean-up is reported on the run.
-- [ ] C1.5 Check users (§3): a flag in a user's attributes. The runner signs one in without a
+- [x] C1.5 Check users (§3): a flag in a user's attributes. The runner signs one in without a
       password. Only an admin can set the flag.
-- [ ] C1.6 Production guard: an environment in the config file can be marked `production`
+- [x] C1.6 Production guard: an environment in the config file can be marked `production`
       (the environment named `production` is by default). A checklist that `mutates` is refused
       there unless its `attributes.allow_on_production` is set, which only a human can set.
-- [ ] C1.7 Step types `core.wait` and `core.manual` (skipped in automated runs, listed as such).
-- [ ] C1.8 Step types `data.insert`, `data.update`, `data.delete`, `data.expect_rows`,
+- [x] C1.7 Step types `core.wait` and `core.manual` (skipped in automated runs, listed as such).
+- [x] C1.8 Step types `data.insert`, `data.update`, `data.delete`, `data.expect_rows`,
       `data.expect_denied`, `data.run_trigger` and `data.expect_calculated` (§2), through the
       `Catalog` and authorization as `run_as`.
-- [ ] C1.9 Step types `http.request`, `http.expect_status` and `http.expect_json`, through the
+- [x] C1.9 Step types `http.request`, `http.expect_status` and `http.expect_json`, through the
       existing `AppRequester` as `run_as`.
-- [ ] C1.10 Step type `app.builds`.
-- [ ] C1.11 Admin API: list, create, edit and delete checklists and steps, run one checklist or
+- [x] C1.10 Step type `app.builds`.
+- [x] C1.11 Admin API: list, create, edit and delete checklists and steps, run one checklist or
       every checklist of an application, list runs, read a run. Humans may do anything.
-- [ ] C1.12 CLI `feldspar check run [--app SUB] [--checklist NAME]`: prints each step's result,
+- [x] C1.12 CLI `feldspar check run [--app SUB] [--checklist NAME]`: prints each step's result,
       exits non-zero when any checklist fails, errors or is incomplete. `feldspar check list`.
-- [ ] C1.13 The agent grant `checklists: none | append | full` (§4), default `append` for the
+- [x] C1.13 The agent grant `checklists: none | append | full` (§4), default `append` for the
       internal agent and for MCP. Under `append`: create checklists, append steps, edit or remove
       steps the same run wrote that are not yet accepted. Never delete a checklist or an accepted
       step, disable a checklist, or set `run_as` to a user who is not a check user.
-- [ ] C1.14 Proposals: an agent's change to an existing step (edit, insert before, reorder,
+- [x] C1.14 Proposals: an agent's change to an existing step (edit, insert before, reorder,
       `run_as`) is stored with its reason and does not take effect until a human accepts it.
       Accepting supersedes the old step; rejecting discards the proposal.
-- [ ] C1.15 Agent / MCP tools: `describe_step_types`, `describe_checklists`, `save_checklist`,
+- [x] C1.15 Agent / MCP tools: `describe_step_types`, `describe_checklists`, `save_checklist`,
       `append_steps`, `propose_step_change`, `run_checklists`. Same tools for the internal agent
       and the MCP server; refusals name the grant that is missing.
-- [ ] C1.16 Admin UI: a Checklists tab per application, and one for checklists with no
+- [x] C1.16 Admin UI: a Checklists tab per application, and one for checklists with no
       application. List with last result and time; step list with label, author and accepted
       state, step form rendered from `config_spec`; Run button; run detail; a queue of
       proposals and unaccepted agent steps with Accept/Reject.
-- [ ] C1.17 Tests:
+- [x] C1.17 Tests:
       - a data checklist that inserts a row, runs a trigger and asserts the trigger's effect
         passes, and its inserted row is gone afterwards;
       - `data.expect_denied` fails after the table's role is loosened;

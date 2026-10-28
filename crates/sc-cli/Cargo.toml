@@ -28,6 +28,8 @@ path = "src/main.rs"
 sc-error.workspace = true
 sc-log.workspace = true
 sc-server.workspace = true
+# `feldspar check` (TODO-checklists C1.12), and the checklist tables at bootstrap.
+sc-check.workspace = true
 sc-api.workspace = true
 sc-auth.workspace = true
 sc-app.workspace = true

@@ -109,6 +109,9 @@ pub fn user_row_schema() -> TypeSchema {
         // its own select on the form, so it is a named field rather than one of
         // `extra`'s (§16.1). Optional: most accounts have never stated one.
         StructField::new("language", TypeSchema::optional(TypeSchema::text())),
+        // Whether a checklist may run as this account (TODO-checklists C1.5).
+        // Set with `setCheckUser`, never through the form's fields.
+        StructField::new("check_user", TypeSchema::bool()),
         // Keyed by column name, since only the admin's own schema knows what is
         // in here — `listFields` on the users table is what names them.
         StructField::new("extra", TypeSchema::json()),
@@ -279,6 +282,7 @@ pub fn user_row_json(user: &User) -> Json {
         "role": i64::from(user.role),
         "disabled": user.is_disabled(),
         "language": user.language(),
+        "check_user": user.is_check_user(),
         "extra": Json::Object(extra),
     })
 }

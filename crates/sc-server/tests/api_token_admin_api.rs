@@ -165,8 +165,10 @@ async fn a_token_is_minted_once_listed_without_its_secret_and_revoked_in_place()
     // records what was agreed to; a sparse one would re-read itself against
     // tomorrow's defaults.
     let grants = minted["token"]["grants"].as_object().unwrap();
-    // Eight flags and `allow_all`, which the body did not ask for.
-    assert_eq!(grants.len(), 9, "{grants:?}");
+    // Eight flags, `allow_all`, and the checklists grant, which the body did
+    // not ask for either — written down as `append`, never `full`.
+    assert_eq!(grants.len(), 10, "{grants:?}");
+    assert_eq!(grants["checklists"], json!("append"));
     assert_eq!(grants["allow_all"], json!(false));
     assert_eq!(grants["allow_create"], json!(true)); // the default, written down
     assert_eq!(grants["allow_drop"], json!(false));

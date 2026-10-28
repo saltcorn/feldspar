@@ -30,6 +30,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconFolder,
+  IconListCheck,
   IconLogout,
   IconMoon,
   IconRobot,
@@ -53,6 +54,9 @@ import { ApplicationForm } from "./screens/ApplicationForm";
 import { ApplicationLibrary } from "./screens/ApplicationLibrary";
 import { ApplicationTranslations } from "./screens/Translations";
 import { ApplicationViews } from "./screens/ApplicationViews";
+import { ChecklistDetail } from "./screens/ChecklistDetail";
+import { ChecklistRun } from "./screens/ChecklistRun";
+import { Checklists } from "./screens/Checklists";
 import { PageProperties } from "./screens/PageProperties";
 import { ViewEditor } from "./screens/ViewEditor";
 import { DbConnections } from "./screens/DbConnections";
@@ -245,6 +249,15 @@ export const NAV: NavItem[] = [
     // rest — a table has rows, a file has bytes — and a stream is the one entry
     // that moves on its own.
     matches: ["/streams"],
+  },
+  {
+    href: "#/checklists",
+    label: "Checklists",
+    icon: <IconListCheck />,
+    // The data-only checklists (TODO-checklists C1.16): the ones with no
+    // application to drive, which check rows, triggers and the API. An
+    // application's checklists are under that application instead.
+    matches: ["/checklists", "/checklist-runs"],
   },
   {
     href: "#/users",
@@ -646,6 +659,34 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       <ApplicationTranslations appId={decodeURIComponent(translationsMatch[1])} />
     );
   }
+  // An application's checklists (TODO-checklists C1.16) live under its own
+  // route, so the sidebar keeps it current; the data-only ones are below.
+  const appChecklistRunMatch = path.match(
+    /^\/applications\/([^/]+)\/checklists\/runs\/([^/]+)$/,
+  );
+  if (appChecklistRunMatch) {
+    return (
+      <ChecklistRun
+        key={path}
+        appId={decodeURIComponent(appChecklistRunMatch[1])}
+        runId={decodeURIComponent(appChecklistRunMatch[2])}
+      />
+    );
+  }
+  const appChecklistMatch = path.match(/^\/applications\/([^/]+)\/checklists\/([^/]+)$/);
+  if (appChecklistMatch) {
+    return (
+      <ChecklistDetail
+        key={path}
+        appId={decodeURIComponent(appChecklistMatch[1])}
+        checklistId={decodeURIComponent(appChecklistMatch[2])}
+      />
+    );
+  }
+  const appChecklistsMatch = path.match(/^\/applications\/([^/]+)\/checklists$/);
+  if (appChecklistsMatch) {
+    return <Checklists key={path} appId={decodeURIComponent(appChecklistsMatch[1])} />;
+  }
   const libraryMatch = path.match(/^\/applications\/([^/]+)\/library$/);
   if (libraryMatch) {
     return <ApplicationLibrary appId={decodeURIComponent(libraryMatch[1])} />;
@@ -801,6 +842,25 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   const runMatch = path.match(/^\/runs\/([^/]+)$/);
   if (runMatch) {
     return <RunDetail runId={decodeURIComponent(runMatch[1])} />;
+  }
+  const checklistRunMatch = path.match(/^\/checklist-runs\/([^/]+)$/);
+  if (checklistRunMatch) {
+    return (
+      <ChecklistRun key={path} appId={null} runId={decodeURIComponent(checklistRunMatch[1])} />
+    );
+  }
+  const checklistMatch = path.match(/^\/checklists\/([^/]+)$/);
+  if (checklistMatch) {
+    return (
+      <ChecklistDetail
+        key={path}
+        appId={null}
+        checklistId={decodeURIComponent(checklistMatch[1])}
+      />
+    );
+  }
+  if (path === "/checklists") {
+    return <Checklists key={path} appId={null} />;
   }
   if (path.startsWith("/users")) {
     return <Users />;

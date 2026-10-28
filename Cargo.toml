@@ -121,6 +121,11 @@ members = [
     # them write rows through it), the core built-in agent traits (above it for
     # exactly the same reason) and the server
     "crates/sc-core-actions",
+    # Checklists (TODO-checklists): what "working" means for an application,
+    # as ordered steps run as one user. Above `sc-app` and `sc-agent` (it
+    # builds an application and sends requests through `AppRequester`), below
+    # the copilot and the server, which both offer its tools.
+    "crates/sc-check",
     "crates/sc-core-traits",
     "crates/sc-server",
     # Layer 10 — CLI binary
@@ -189,6 +194,7 @@ sc-live = { path = "crates/sc-live" }
 sc-api = { path = "crates/sc-api" }
 sc-app = { path = "crates/sc-app" }
 sc-viewpattern = { path = "crates/sc-viewpattern" }
+sc-check = { path = "crates/sc-check" }
 sc-core-actions = { path = "crates/sc-core-actions" }
 sc-core-traits = { path = "crates/sc-core-traits" }
 sc-server = { path = "crates/sc-server" }

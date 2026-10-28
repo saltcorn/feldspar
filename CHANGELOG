@@ -2,6 +2,125 @@
 
 Changes in reverse chronological order.
 
+## Checklists C1: entities, runner, data and HTTP steps, agent policy
+
+What "working" means for an application, written down so every change — a person's or an
+agent's — can be checked against it (docs/CHECKLISTS.md, TODO-checklists C1).
+
+- **New crate `sc-check`** (layer 9, between `sc-app`/`sc-agent` and the copilot and server).
+  - Tables `_fd_checklists`, `_fd_checklist_steps`, `_fd_checklist_runs` and
+    `_fd_checklist_proposals`, created at bootstrap and in `TABLES_RENAME.sql`. Steps are never
+    updated in place: an edit writes a new version and sets `superseded_by` on the old one, and a
+    delete supersedes it with a tombstone row (`deleted`), so every check's history is kept. Only
+    `superseded_by` and `accepted` are ever updated. A step's `position` is a float, so
+    inserting before a step never renumbers others. `Checklist::mutates` is recomputed from the
+    current steps' types after every change (a type this server no longer has counts as
+    mutating).
+  - The step-type registry: `StepType` (`name`, `description`, `config_spec`, `needs`,
+    `mutates`, `min_timeout`, `run`), `Needs` (data/http/browser/build), `StepContext`, which
+    hands a step only the capabilities its type declared, and `StepOutcome`
+    (pass/fail/error/skipped, a message, the value an `as` captures). Names must be
+    `namespace.name`, and a duplicate registration is an error. A step's params are checked
+    against its `config_spec` on save, its templates must parse, its `as` must be an identifier
+    other than `run`, and a step that reaches the application is refused on a checklist without
+    one.
+  - Variables: every string anywhere in a step's params is an `sc-expr` template over earlier
+    captures and `run.id`. A string that is exactly one `{{ x }}` keeps the value's JSON type, so
+    `"{{ order.id }}"` is a number when the id is one. To support this, `sc-expr`'s `Template`
+    gained `render_paths` and `sole_path`, which render name and member-chain tokens
+    (`{{ run.id }}`, `{{ order.lines[0].sku }}`) against a JSON scope without an evaluator.
+  - The runner: loads the current steps, runs them in order as `run_as` (`NULL` is an anonymous
+    visitor), stops at the first fail or error unless `stop_on_failure` is false (the steps not
+    reached are still listed), and records the run with its trigger, target, status, per-step
+    results and step versions. A step whose capability the host lacks is `skipped` and makes the
+    run `incomplete`, never `passed`. A `core.manual` step is skipped too, but does not make the
+    run incomplete, because otherwise such a checklist could never pass. Rows written by
+    `data.insert` are deleted at the end, newest first, as the system and best effort. A row a
+    later step already deleted is fine; any other failure is listed in the run's
+    `cleanup_errors`. Each step has a timeout (`attributes.timeout`, default 60 s, at least the
+    type's `min_timeout`: 10 minutes for `app.builds`).
+  - Step types: `core.wait`, `core.manual`; `data.insert`, `data.update`, `data.delete`,
+    `data.expect_rows` (a `where` filter object, an exact `count`, `fields` every row must
+    hold), `data.expect_denied`, `data.run_trigger` (`run_as` must meet the trigger's
+    `min_role`; expect `success`, or `error` with an optional pattern), and
+    `data.expect_calculated`. All of them go through `sc_api::read_rows_as` and its siblings as
+    `run_as`, so they test permissions as well as data. Also `http.request`,
+    `http.expect_status` (it sends its own request when given a `path`, else checks the last
+    response) and `http.expect_json` (`equals`/`contains`/`matches`/`exists` at a path like
+    `items[0].name`), all through the server's `AppRequester` with a session for `run_as`; and
+    `app.builds` (an application with nothing to build passes).
+  - `data.expect_denied` writes nothing. It asks for the access rules' verdict instead of
+    attempting the write, so it is not a mutating step and can run on production. For this,
+    `sc-api` gained `row_insertable_as` and `row_deletable_as` beside `row_updatable_as`, which
+    now shares one implementation with the delete check.
+  - The agent policy (`sc_check::edit`, §4). Every change goes through it, the admin API's as
+    `Editor::Human`. The grant is `checklists: none | append | full`, default `append`. Under
+    `append` an agent may create checklists, append steps, and edit, remove or insert before the
+    unaccepted steps its own run wrote. Every other change (an edit of another step, an insert
+    before one, a reorder, a `run_as` change) is stored as a proposal with its reason, and the
+    old step keeps running until a person accepts it. Accepting writes the new version, recorded
+    as the agent's and marked accepted; rejecting discards the proposal. Deleting a checklist or
+    an accepted step needs `full`. Under every grant, only a person may disable a checklist, set
+    `allow_on_production`, or point `run_as` at a user who is not a check user. Refusals name the
+    missing grant.
+  - The agent tools `describe_step_types`, `describe_checklists`, `save_checklist`,
+    `append_steps`, `propose_step_change` (it applies directly where the rules allow, and stores
+    a proposal otherwise) and `run_checklists`. They are offered by `admin_copilot` under a new
+    `checklists` setting (`none`/`append`/`full`) and by the MCP server under the token's
+    `checklists` grant. `sc_api::mcp::CHECKLISTS_GRANT` names the key, `validate_flags` checks
+    its value, and a token mint writes it explicitly, as `append` unless the mint asked
+    otherwise. `allow_all` does not make it `full`. An MCP token is its own "run": the steps it
+    may still edit are the ones that token wrote.
+- **Check users (C1.5).** The users table gains a nullable `attributes` JSON system column, and
+  `{"check_user": true}` in it marks an account a checklist may run as. `User::is_check_user`
+  reads the flag and `sc_auth::set_check_user` sets it. It is set only through the admin API's
+  `setCheckUser`, and user rows now report `check_user`. The runner needs no password: it signs
+  `run_as` in through the application router's per-request session.
+- **Production guard (C1.6).** An environment in `feldspar.toml` may say `production = true`,
+  and the one named `production` is production unless it says `production = false`. The CLI
+  records the selected environment's answer on the catalog (`Catalog::set_production`).
+  There, a checklist that mutates is refused unless its `attributes.allow_on_production` is set,
+  which only a person can set. The refusal is recorded as a run with status `error` and the
+  reason, so the admin UI shows why it did not run.
+- **Admin API (C1.11):** `listChecklists` (by application, `none`, or all, with the last run
+  and the count waiting for a person), `createChecklist`, `getChecklist` (steps, proposals,
+  recent runs), `updateChecklist`, `deleteChecklist`, `addChecklistStep` (at the end, or
+  `before` a step), `updateChecklistStep`, `deleteChecklistStep`, `acceptChecklistStep`,
+  `reorderChecklistSteps`, `acceptChecklistProposal`, `rejectChecklistProposal`, `runChecklist`,
+  `runChecklists`, `listChecklistRuns`, `getChecklistRun`, `listChecklistStepTypes`,
+  `setCheckUser` and `listChecklistUsers`. These are served by `sc-server/src/checklists.rs`,
+  with the server's application router for the `http.*` steps.
+- **Admin UI (C1.16):** each application has a Checklists link
+  (`/applications/:app/checklists`), and the Data Layer has a Checklists entry for checklists with
+  no application (`/checklists`).
+  - The list shows each checklist's last result and when it ran, how many items wait for a
+    person, and a "Writes data" badge, with Run, Run all and New checklist buttons.
+  - A checklist's page puts what waits for review first: each proposal with its reason, the
+    current and proposed step side by side, and the last run's result for that step;
+    unaccepted agent steps are listed there too. Each has Accept/Reject.
+  - The steps table shows label, type, `as`, author and whether a person accepted it, with
+    move up/down, edit and remove. The step form is drawn from the type's `config_spec`.
+  - The settings cover run-as (check users are marked), enabled, stop at first failure,
+    timeout and allow on production, and the page lists recent runs.
+  - A run's page shows every step's outcome, message, captured value and duration, and any
+    clean-up errors.
+  - The Users screen gets a "Check user" badge and a menu item that sets the flag. The pure
+    logic is in `ui/admin/src/checklists.ts`, with its tests. The admin client and its ide,
+    builder and analytics copies were regenerated.
+- **CLI (C1.12):** `feldspar mcp-token create` takes `--checklists none|append|full`, and
+  `feldspar check run [--app SUB] [--checklist NAME]` brings up the triggers and
+  the mounted applications as `serve` does, without listening, so `http.*` steps run. It prints
+  each step's result and exits non-zero when any checklist fails, errors or is incomplete, or
+  when nothing matched. `feldspar check list` lists the checklists with their last result.
+- Tests: `sc-check`'s `tests/checklists.rs` covers a data checklist that inserts a row, runs a
+  trigger and asserts its effect, and leaves its row gone; `data.expect_denied` going red after
+  the table's role is loosened; the `append` policy (append yes; deleting or directly editing an
+  accepted step no; the edit becomes a proposal while the old step keeps running; accepting
+  it); `run_as` limited to check users for an agent; the production refusal; and an HTTP step
+  on a host without the router making the run `incomplete`. `sc-cli`'s `tests/check.rs` checks
+  that `feldspar check run` exits non-zero on a failing checklist. There are unit tests for the
+  run status, the registry, the variables and the JSON paths.
+
 ## i18n: wrap the strings the lint found, and fill the core, admin and builder catalogues
 
 Reworded strings had left the catalogues behind. `feldspar i18n lint` found six unwrapped

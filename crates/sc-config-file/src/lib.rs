@@ -287,6 +287,11 @@ pub struct Environment {
     /// Unset means the server default (`template1`), which is what a clean CI
     /// Postgres wants.
     pub test_template: Option<String>,
+    /// Whether this environment is **production** (TODO-checklists C1.6): a
+    /// checklist that writes data is refused there unless the checklist itself
+    /// is allowed on production. Unset, the environment *named* `production`
+    /// is one and every other is not ([`Environment::is_production`]).
+    pub production: Option<bool>,
     /// An LLM provider this host supplies — `[environments.NAME.llm_provider]`.
     ///
     /// Like the TLS keys, it **wins over the database** and the admin cannot
@@ -436,6 +441,12 @@ impl Environment {
         .collect()
     }
 
+    /// Whether the environment called `name` with this section is production:
+    /// its `production` key, or else whether it is called `production`.
+    pub fn is_production(&self, name: &str) -> bool {
+        self.production.unwrap_or(name == DEFAULT_ENVIRONMENT)
+    }
+
     /// Whether this section says nothing at all. An empty section is treated as
     /// no configuration rather than as "connect to the defaults", so a
     /// placeholder `[environments.staging]` with the parameters still to be
@@ -515,6 +526,12 @@ pub struct SelectedEnvironment {
 }
 
 impl SelectedEnvironment {
+    /// Whether the selected environment is production
+    /// ([`Environment::is_production`]).
+    pub fn is_production(&self) -> bool {
+        self.section.is_production(&self.name)
+    }
+
     /// A one-line description for the startup log: which environment, from where.
     pub fn describe(&self) -> String {
         format!("the `{}` environment of {}", self.name, self.path.display())
@@ -771,6 +788,25 @@ test_template = "saltcorn_template"
             file.environments["test"].database.as_deref(),
             Some("saltcorn_test")
         );
+    }
+
+    #[test]
+    fn the_production_environment_is_marked_by_name_or_by_key() {
+        let file = parse(
+            "[environments.production]\nhost = \"db\"\n\
+             [environments.live]\nhost = \"db\"\nproduction = true\n\
+             [environments.staging]\nhost = \"db\"\n\
+             [environments.demo]\nhost = \"db\"\n",
+        )
+        .expect("parses");
+        let prod = |name: &str| file.environments[name].is_production(name);
+        assert!(prod("production"));
+        assert!(prod("live"));
+        assert!(!prod("staging"));
+        // And `production = false` unmarks the one named production.
+        let file = parse("[environments.production]\nhost = \"db\"\nproduction = false\n")
+            .expect("parses");
+        assert!(!file.environments["production"].is_production("production"));
     }
 
     #[test]

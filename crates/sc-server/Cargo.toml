@@ -96,6 +96,9 @@ sc-stream.workspace = true
 # connection through them.
 sc-live.workspace = true
 sc-core-traits.workspace = true
+# Checklists (TODO-checklists C1): the admin API, the MCP tools and the runner
+# with this server's application router.
+sc-check.workspace = true
 sc-db.workspace = true
 sc-db-postgres.workspace = true
 sc-query.workspace = true

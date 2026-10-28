@@ -311,6 +311,47 @@ impl Template {
         Ok(out)
     }
 
+    /// Render with every token replaced by the value its **path** names in
+    /// `scope` — a name (`{{ order_id }}`) or a chain of static members on one
+    /// (`{{ run.id }}`, `{{ order.customer.name }}`) — and no evaluator.
+    ///
+    /// [`render_static`](Template::render_static) for a scope that is a JSON
+    /// object rather than a flat map: a checklist's variables are what earlier
+    /// steps captured, and a captured row or response is an object a later step
+    /// reaches into. A string is copied as it stands, `null` is the empty
+    /// string, and any other value is written as JSON. A template that is one
+    /// token and nothing else is better served by [`sole_path`](Template::
+    /// sole_path), which keeps the value's type.
+    ///
+    /// The refusals are `render_static`'s: a token that is anything but a path,
+    /// `{{= }}`, and a name the scope does not have — and a member the value
+    /// does not have, which is the same mistake one level down.
+    pub fn render_paths(&self, scope: &Json) -> Result<String> {
+        let mut out = String::new();
+        for part in &self.parts {
+            match part {
+                Part::Literal(text) => out.push_str(text),
+                Part::Token(token) => match self::path_value(token, scope)? {
+                    Json::String(s) => out.push_str(&s),
+                    Json::Null => {}
+                    other => out.push_str(&other.to_string()),
+                },
+            }
+        }
+        Ok(out)
+    }
+
+    /// The value of the one path this template is, when it is exactly one
+    /// token with nothing around it (`"{{ order_id }}"`), with its JSON type
+    /// kept — so a captured id that is a number is substituted as a number.
+    /// `None` for any other template.
+    pub fn sole_path(&self, scope: &Json) -> Option<Result<Json>> {
+        match self.parts.as_slice() {
+            [Part::Token(token)] => Some(path_value(token, scope)),
+            _ => None,
+        }
+    }
+
     /// Render in `mode`, evaluating each token through `evaluator`.
     ///
     /// `call` builds the evaluation request for one token's formula — the
@@ -504,6 +545,78 @@ fn fragment(s: &str) -> String {
     }
 }
 
+/// The value a path token names in `scope` (see [`Template::render_paths`]).
+fn path_value(token: &Token, scope: &Json) -> Result<Json> {
+    if token.escape == Escape::Reinterpolate {
+        return Err(Error::invalid(format!(
+            "`{}`: `{{{{= }}}}` re-interpolates its own result, which this template is \
+             not rendered often enough to do",
+            token.source
+        )));
+    }
+    let mut names = Vec::new();
+    let mut ast = token.formula.ast();
+    loop {
+        match ast {
+            Ast::Ident(name) => {
+                names.push(name.clone());
+                break;
+            }
+            Ast::Member { obj, prop, .. } => {
+                let name = match prop {
+                    crate::ast::MemberProp::Static(prop) => prop.clone(),
+                    crate::ast::MemberProp::Computed(index) => match index.as_ref() {
+                        Ast::Str(key) => key.clone(),
+                        Ast::Num(n) if n.fract() == 0.0 && *n >= 0.0 => format!("{n}"),
+                        _ => {
+                            return Err(Error::invalid(format!(
+                                "`{}`: an index here is a number or a quoted name",
+                                token.source
+                            )));
+                        }
+                    },
+                };
+                names.push(name);
+                ast = obj;
+            }
+            _ => {
+                return Err(Error::invalid(format!(
+                    "`{}`: this template interpolates names only (`x`, `x.y`), so a token \
+                     has to be one of those and nothing else",
+                    token.source
+                )));
+            }
+        }
+    }
+    names.reverse();
+    let mut value = scope;
+    for (depth, name) in names.iter().enumerate() {
+        let next = match value {
+            Json::Object(map) => map.get(name.as_str()),
+            Json::Array(items) => name.parse::<usize>().ok().and_then(|i| items.get(i)),
+            _ => None,
+        };
+        value = next.ok_or_else(|| {
+            let what = if depth == 0 {
+                "here".to_owned()
+            } else {
+                format!("in `{}`", names[..depth].join("."))
+            };
+            let known = match value {
+                Json::Object(map) if !map.is_empty() => {
+                    map.keys().cloned().collect::<Vec<_>>().join(", ")
+                }
+                _ => "none".to_owned(),
+            };
+            Error::invalid(format!(
+                "`{}`: there is no `{name}` {what}; the names there are {known}",
+                token.source
+            ))
+        })?;
+    }
+    Ok(value.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +684,43 @@ mod tests {
         let msg = Template::parse(&long).unwrap_err().to_string();
         assert!(msg.contains('…'), "{msg}");
         assert!(msg.len() < 120, "{msg}");
+    }
+
+    #[test]
+    fn a_path_render_reaches_into_the_scope_and_keeps_a_sole_tokens_type() {
+        let scope = serde_json::json!({
+            "run": { "id": "r1" },
+            "order": { "id": 42, "lines": [{ "sku": "A" }] },
+            "note": null,
+        });
+        let t = Template::parse("/orders/{{ order.id }}?run={{ run.id }}{{ note }}").unwrap();
+        assert_eq!(t.render_paths(&scope).unwrap(), "/orders/42?run=r1");
+        assert_eq!(
+            Template::parse("{{ order.lines[0].sku }}")
+                .unwrap()
+                .render_paths(&scope)
+                .unwrap(),
+            "A"
+        );
+        // One token alone keeps its JSON type; anything around it does not.
+        let sole = Template::parse("{{ order.id }}").unwrap();
+        assert_eq!(sole.sole_path(&scope).unwrap().unwrap(), serde_json::json!(42));
+        assert!(t.sole_path(&scope).is_none());
+        // A missing name or member is named, with what is there.
+        let msg = Template::parse("{{ order.total }}")
+            .unwrap()
+            .render_paths(&scope)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("no `total` in `order`"), "{msg}");
+        assert!(msg.contains("id, lines"), "{msg}");
+        // A formula is not a path.
+        let msg = Template::parse("{{ order.id + 1 }}")
+            .unwrap()
+            .render_paths(&scope)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("names only"), "{msg}");
     }
 
     #[test]

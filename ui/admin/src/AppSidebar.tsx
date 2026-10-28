@@ -45,6 +45,7 @@ import {
   IconHammer,
   IconLanguage,
   IconLayoutDashboard,
+  IconListCheck,
   IconMessagePlus,
   IconSettings,
 } from "./icons";
@@ -65,6 +66,7 @@ const LINK_ICONS: Record<AppNavLink["id"], ReactNode> = {
   pages: <IconFile />,
   library: <IconBooks />,
   translations: <IconLanguage />,
+  checklists: <IconListCheck />,
   settings: <IconSettings />,
 };
 

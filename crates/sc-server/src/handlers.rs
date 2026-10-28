@@ -7526,6 +7526,8 @@ pub fn admin_handlers_with(
     crate::mcp_servers::register(&mut reg, catalog.clone());
     // --- what agents remember (TODO-agent-skills AS8.3) ----------------------
     crate::agent_memory::register(&mut reg, catalog.clone());
+    // --- checklists (TODO-checklists C1.11) ----------------------------------
+    crate::checklists::register(&mut reg, catalog.clone(), apps.clone());
 
     reg
 }

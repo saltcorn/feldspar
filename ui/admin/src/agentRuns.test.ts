@@ -15,7 +15,7 @@ const run = (user: string | null): ListRunsResponse[number] => ({
 });
 
 const users: ListUsersResponse = [
-  { id: "u1", email: "ann@example.com", role: 1, disabled: false, extra: {} },
+  { id: "u1", email: "ann@example.com", role: 1, disabled: false, check_user: false, extra: {} },
 ];
 
 describe("runUserLabel", () => {

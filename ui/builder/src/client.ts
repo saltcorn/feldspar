@@ -126,6 +126,35 @@ export type ListMcpServerToolsResponse = { ok: boolean; message: string; server?
 export type ListAgentMemoriesQuery = { agent?: string; user?: string; kind?: string; search?: string; limit?: number };
 export type ListAgentMemoriesResponse = Array<{ id: number; agent: string; user_id?: string | null; run_id?: string | null; written_at: string; kind: string; personal: boolean; topic: string; contents: string }>;
 export type DeleteAgentMemoryResponse = { deleted: boolean };
+export type ListChecklistsQuery = { application?: string };
+export type ListChecklistsResponse = Array<{ id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: number; pending: number; last_run?: { id: string; status: string; finished_at: string } | null }>;
+export type CreateChecklistRequest = { name: string; description?: string | null; application?: string | null; run_as?: string | null; enabled?: boolean | null; attributes?: unknown | null; steps?: Array<{ type: string; params?: unknown | null; label?: string | null; as?: string | null }> | null };
+export type CreateChecklistResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
+export type GetChecklistResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
+export type UpdateChecklistRequest = { name: string; description?: string | null; application?: string | null; run_as?: string | null; enabled?: boolean | null; attributes?: unknown | null };
+export type UpdateChecklistResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
+export type DeleteChecklistResponse = { deleted: boolean };
+export type AddChecklistStepRequest = { type: string; params?: unknown | null; label?: string | null; as?: string | null; before?: string | null };
+export type AddChecklistStepResponse = { id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string };
+export type ReorderChecklistStepsRequest = { order: Array<string> };
+export type ReorderChecklistStepsResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
+export type RunChecklistResponse = { id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null };
+export type ListChecklistRunsQuery = { limit?: number };
+export type ListChecklistRunsResponse = Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }>;
+export type RunChecklistsRequest = { application?: string | null };
+export type RunChecklistsResponse = Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }>;
+export type GetChecklistRunResponse = { id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null };
+export type UpdateChecklistStepRequest = { type: string; params?: unknown | null; label?: string | null; as?: string | null };
+export type UpdateChecklistStepResponse = { id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string };
+export type DeleteChecklistStepResponse = { deleted: boolean };
+export type AcceptChecklistStepResponse = { id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string };
+export type AcceptChecklistProposalResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
+export type RejectChecklistProposalResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string> }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
+export type ListChecklistStepTypesQuery = { application?: string };
+export type ListChecklistStepTypesResponse = Array<{ name: string; description: string; needs: Array<string>; mutates: boolean; params: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; sublabel?: string | null }> }>;
+export type SetCheckUserRequest = { check_user: boolean };
+export type SetCheckUserResponse = { id: string; check_user: boolean };
+export type ListChecklistUsersResponse = Array<{ id: string; email: string; role: number; check_user: boolean }>;
 export type ListModulesResponse = { modules: Array<{ id: string; name: string; language: string; source: string; location: string; version?: string | null; configuration: unknown; permissions: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; actions: Array<{ name: string; description: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }> }>; functions: Array<{ name: string; description: string; is_async: boolean; arguments: Array<{ name: string; type?: string | null }> }>; table_providers: Array<string>; tables: Array<string>; reads: Array<string>; services: Array<{ name: string; description: string; state: string; restarts: number; last_error?: string | null }>; webhooks: Array<{ name: string; description: string; path: string }>; routes: Array<{ method: string; url: string; path: string }>; model_providers: Array<string>; stream_providers: Array<string>; view_patterns: Array<string>; csp_sources: Array<{ key: string; name: string; description: string; sources: unknown }>; unsupported: Array<{ key: string; count?: number | null }>; issues: Array<string>; loaded: boolean; api_version?: number | null }>; root: string; npm: boolean; npm_too_old?: { version: string; minimum: string } | null; node: boolean; python: boolean; pip: boolean; python_dir?: string | null; bundled: Array<{ id: string; name: string; language: string; title: string; description: string; supplies: Array<string>; installs: Array<string>; tables: Array<string>; services: Array<string>; webhooks: Array<{ name: string; path: string }>; permissions: unknown; installed: boolean }> };
 export type InstallModuleRequest = { source: string; location: string; language?: string | null };
 export type InstallModuleResponse = { id: string; name: string; language: string; source: string; location: string; version?: string | null; configuration: unknown; permissions: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; actions: Array<{ name: string; description: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }> }>; functions: Array<{ name: string; description: string; is_async: boolean; arguments: Array<{ name: string; type?: string | null }> }>; table_providers: Array<string>; tables: Array<string>; reads: Array<string>; services: Array<{ name: string; description: string; state: string; restarts: number; last_error?: string | null }>; webhooks: Array<{ name: string; description: string; path: string }>; routes: Array<{ method: string; url: string; path: string }>; model_providers: Array<string>; stream_providers: Array<string>; view_patterns: Array<string>; csp_sources: Array<{ key: string; name: string; description: string; sources: unknown }>; unsupported: Array<{ key: string; count?: number | null }>; issues: Array<string>; loaded: boolean; api_version?: number | null };
@@ -246,14 +275,14 @@ export type ListFrameworksResponse = Array<{ name: string; label: string; descri
 export type ListApiProvidersResponse = Array<{ name: string; label: string; description: string; default_mount: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; supports_custom_queries: boolean }>;
 export type DescribeCustomQueryRequest = { name: string; description?: string | null; method: string; path: string; language?: string | null; code: string; params: Array<{ name: string; type: string; required?: boolean | null }>; min_role?: number | null; body_type?: string | null; response_type?: string | null; returns?: unknown | null; rate_limit?: { per_ip?: string | null; per_user?: string | null } | null; tables?: Array<string> | null };
 export type DescribeCustomQueryResponse = { columns: Array<{ name: string; type: string }> };
-export type ListUsersResponse = Array<{ id: string; email: string; role: number; disabled: boolean; language?: string | null; extra: unknown }>;
+export type ListUsersResponse = Array<{ id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown }>;
 export type CreateUserRequest = { email: string; password?: string | null; role: number; language?: string | null; extra?: unknown | null };
-export type CreateUserResponse = { user: { id: string; email: string; role: number; disabled: boolean; language?: string | null; extra: unknown }; generated_password?: string | null };
+export type CreateUserResponse = { user: { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown }; generated_password?: string | null };
 export type UpdateUserRequest = { email: string; password?: string | null; role: number; language?: string | null; extra?: unknown | null };
-export type UpdateUserResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; extra: unknown };
+export type UpdateUserResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown };
 export type DeleteUserResponse = { deleted: boolean };
 export type SetUserDisabledRequest = { disabled: boolean };
-export type SetUserDisabledResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; extra: unknown };
+export type SetUserDisabledResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown };
 export type ForceLogoutUserResponse = { ok: boolean };
 export type BecomeUserResponse = { id: string; email: string; role: number };
 export type SetRandomPasswordResponse = { email: string; password: string };
@@ -538,6 +567,25 @@ export interface ApiClient {
   listMcpServerTools(id: string, query?: ListMcpServerToolsQuery): Promise<ListMcpServerToolsResponse>;
   listAgentMemories(query?: ListAgentMemoriesQuery): Promise<ListAgentMemoriesResponse>;
   deleteAgentMemory(id: number): Promise<DeleteAgentMemoryResponse>;
+  listChecklists(query?: ListChecklistsQuery): Promise<ListChecklistsResponse>;
+  createChecklist(body: CreateChecklistRequest): Promise<CreateChecklistResponse>;
+  getChecklist(id: string): Promise<GetChecklistResponse>;
+  updateChecklist(id: string, body: UpdateChecklistRequest): Promise<UpdateChecklistResponse>;
+  deleteChecklist(id: string): Promise<DeleteChecklistResponse>;
+  addChecklistStep(id: string, body: AddChecklistStepRequest): Promise<AddChecklistStepResponse>;
+  reorderChecklistSteps(id: string, body: ReorderChecklistStepsRequest): Promise<ReorderChecklistStepsResponse>;
+  runChecklist(id: string): Promise<RunChecklistResponse>;
+  listChecklistRuns(id: string, query?: ListChecklistRunsQuery): Promise<ListChecklistRunsResponse>;
+  runChecklists(body: RunChecklistsRequest): Promise<RunChecklistsResponse>;
+  getChecklistRun(id: string): Promise<GetChecklistRunResponse>;
+  updateChecklistStep(id: string, body: UpdateChecklistStepRequest): Promise<UpdateChecklistStepResponse>;
+  deleteChecklistStep(id: string): Promise<DeleteChecklistStepResponse>;
+  acceptChecklistStep(id: string): Promise<AcceptChecklistStepResponse>;
+  acceptChecklistProposal(id: string): Promise<AcceptChecklistProposalResponse>;
+  rejectChecklistProposal(id: string): Promise<RejectChecklistProposalResponse>;
+  listChecklistStepTypes(query?: ListChecklistStepTypesQuery): Promise<ListChecklistStepTypesResponse>;
+  setCheckUser(id: string, body: SetCheckUserRequest): Promise<SetCheckUserResponse>;
+  listChecklistUsers(): Promise<ListChecklistUsersResponse>;
   listModules(): Promise<ListModulesResponse>;
   installModule(body: InstallModuleRequest): Promise<InstallModuleResponse>;
   updateModule(id: string, body: UpdateModuleRequest): Promise<UpdateModuleResponse>;
@@ -1479,6 +1527,174 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("deleteAgentMemory", res);
       return (await res.json()) as DeleteAgentMemoryResponse;
+    },
+    async listChecklists(query) {
+      const search = new URLSearchParams();
+      if (query?.application !== undefined && query?.application !== null) search.append("application", String(query?.application));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/checklists${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listChecklists", res);
+      return (await res.json()) as ListChecklistsResponse;
+    },
+    async createChecklist(body) {
+      const res = await doFetch(`${baseUrl}/api/checklists`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createChecklist", res);
+      return (await res.json()) as CreateChecklistResponse;
+    },
+    async getChecklist(id) {
+      const res = await doFetch(`${baseUrl}/api/checklists/${encodeURIComponent(id)}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getChecklist", res);
+      return (await res.json()) as GetChecklistResponse;
+    },
+    async updateChecklist(id, body) {
+      const res = await doFetch(`${baseUrl}/api/checklists/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateChecklist", res);
+      return (await res.json()) as UpdateChecklistResponse;
+    },
+    async deleteChecklist(id) {
+      const res = await doFetch(`${baseUrl}/api/checklists/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteChecklist", res);
+      return (await res.json()) as DeleteChecklistResponse;
+    },
+    async addChecklistStep(id, body) {
+      const res = await doFetch(`${baseUrl}/api/checklists/${encodeURIComponent(id)}/steps`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("addChecklistStep", res);
+      return (await res.json()) as AddChecklistStepResponse;
+    },
+    async reorderChecklistSteps(id, body) {
+      const res = await doFetch(`${baseUrl}/api/checklists/${encodeURIComponent(id)}/order`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("reorderChecklistSteps", res);
+      return (await res.json()) as ReorderChecklistStepsResponse;
+    },
+    async runChecklist(id) {
+      const res = await doFetch(`${baseUrl}/api/checklists/${encodeURIComponent(id)}/run`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("runChecklist", res);
+      return (await res.json()) as RunChecklistResponse;
+    },
+    async listChecklistRuns(id, query) {
+      const search = new URLSearchParams();
+      if (query?.limit !== undefined && query?.limit !== null) search.append("limit", String(query?.limit));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/checklists/${encodeURIComponent(id)}/runs${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listChecklistRuns", res);
+      return (await res.json()) as ListChecklistRunsResponse;
+    },
+    async runChecklists(body) {
+      const res = await doFetch(`${baseUrl}/api/checklist-runs`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("runChecklists", res);
+      return (await res.json()) as RunChecklistsResponse;
+    },
+    async getChecklistRun(id) {
+      const res = await doFetch(`${baseUrl}/api/checklist-runs/${encodeURIComponent(id)}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getChecklistRun", res);
+      return (await res.json()) as GetChecklistRunResponse;
+    },
+    async updateChecklistStep(id, body) {
+      const res = await doFetch(`${baseUrl}/api/checklist-steps/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateChecklistStep", res);
+      return (await res.json()) as UpdateChecklistStepResponse;
+    },
+    async deleteChecklistStep(id) {
+      const res = await doFetch(`${baseUrl}/api/checklist-steps/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteChecklistStep", res);
+      return (await res.json()) as DeleteChecklistStepResponse;
+    },
+    async acceptChecklistStep(id) {
+      const res = await doFetch(`${baseUrl}/api/checklist-steps/${encodeURIComponent(id)}/accept`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("acceptChecklistStep", res);
+      return (await res.json()) as AcceptChecklistStepResponse;
+    },
+    async acceptChecklistProposal(id) {
+      const res = await doFetch(`${baseUrl}/api/checklist-proposals/${encodeURIComponent(id)}/accept`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("acceptChecklistProposal", res);
+      return (await res.json()) as AcceptChecklistProposalResponse;
+    },
+    async rejectChecklistProposal(id) {
+      const res = await doFetch(`${baseUrl}/api/checklist-proposals/${encodeURIComponent(id)}/reject`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("rejectChecklistProposal", res);
+      return (await res.json()) as RejectChecklistProposalResponse;
+    },
+    async listChecklistStepTypes(query) {
+      const search = new URLSearchParams();
+      if (query?.application !== undefined && query?.application !== null) search.append("application", String(query?.application));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/checklist-step-types${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listChecklistStepTypes", res);
+      return (await res.json()) as ListChecklistStepTypesResponse;
+    },
+    async setCheckUser(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/check-user`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("setCheckUser", res);
+      return (await res.json()) as SetCheckUserResponse;
+    },
+    async listChecklistUsers() {
+      const res = await doFetch(`${baseUrl}/api/checklist-users`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listChecklistUsers", res);
+      return (await res.json()) as ListChecklistUsersResponse;
     },
     async listModules() {
       const res = await doFetch(`${baseUrl}/api/modules`, {

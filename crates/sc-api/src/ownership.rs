@@ -374,6 +374,68 @@ pub async fn row_updatable_as(
     user: Option<&User>,
     evaluator: Option<&Arc<dyn JsEvaluator>>,
 ) -> Result<bool> {
+    row_writable_as(cat, table, key, Operation::Update, role, user, evaluator).await
+}
+
+/// Whether the caller may **delete** the one row of `table` whose key is `key`:
+/// [`row_updatable_as`]'s rule for `_delete`. Nothing is written — what a
+/// checklist's `data.expect_denied` asks, which must not delete the row it is
+/// asking about.
+pub async fn row_deletable_as(
+    cat: &Catalog,
+    table: &Table,
+    key: &str,
+    role: u8,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+) -> Result<bool> {
+    row_writable_as(cat, table, key, Operation::Delete, role, user, evaluator).await
+}
+
+/// Whether the caller may **insert** `body` into `table`: *meets
+/// `min_role_write` OR the ownership formula grants `_insert` on the row as it
+/// would be written* (defaults filled in first, as [`insert_row_as`] does).
+/// Nothing is written. An RLS table is decided by the same formula its policies
+/// were generated from, as [`row_updatable_as`] decides one.
+pub async fn row_insertable_as(
+    cat: &Catalog,
+    table: &Table,
+    body: &Json,
+    role: u8,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+) -> Result<bool> {
+    if role <= table.access.min_role_write {
+        return Ok(true);
+    }
+    let Some(formula) = &table.ownership else {
+        return Ok(false);
+    };
+    let caller = caller_context_at(role, user);
+    let body = rows::fill_defaults(cat, table, body, caller.user.as_ref()).await?;
+    let proposed = proposed_insert_row(table, &body)?;
+    row_allowed(
+        cat,
+        table,
+        formula,
+        Operation::Insert,
+        user,
+        evaluator,
+        &proposed,
+    )
+    .await
+}
+
+/// [`row_updatable_as`] and [`row_deletable_as`], for `op`.
+async fn row_writable_as(
+    cat: &Catalog,
+    table: &Table,
+    key: &str,
+    op: Operation,
+    role: u8,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+) -> Result<bool> {
     let pk = rows::single_pk(table)?;
     let Ok(filter) = rows::pk_filter(table, &pk, key) else {
         return Ok(false);
@@ -416,16 +478,7 @@ pub async fn row_updatable_as(
     let Some(formula) = &table.ownership else {
         return Ok(false);
     };
-    row_allowed(
-        cat,
-        table,
-        formula,
-        Operation::Update,
-        user,
-        evaluator,
-        &existing,
-    )
-    .await
+    row_allowed(cat, table, formula, op, user, evaluator, &existing).await
 }
 
 /// One image of a row — as a write left it, or as it was before — held so its

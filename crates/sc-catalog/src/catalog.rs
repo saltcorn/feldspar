@@ -186,6 +186,11 @@ pub struct Catalog {
     /// `feldspar.toml` environment. `None` where nobody said, which is a normal
     /// state: a server with no base domain serves no applications.
     public_origin: RwLock<Option<crate::PublicOrigin>>,
+    /// Whether this process serves an environment marked `production` in
+    /// `feldspar.toml` (TODO-checklists C1.6): a checklist that writes data is
+    /// refused here unless it is allowed on production. Set once at boot by the
+    /// process that read the file; `false` where nobody said.
+    production: std::sync::atomic::AtomicBool,
     /// Configuration values this **host** pins over `_fd_config` — the TLS keys
     /// an `[environments.*]` section of `feldspar.toml` may give. Set once at
     /// boot by the process that read the file, and read by `sc-config`, which
@@ -330,6 +335,7 @@ impl Catalog {
             module_tables: RwLock::new(Arc::new(crate::module_tables::ModuleTables::new())),
             provided_table_issues: RwLock::new(Vec::new()),
             public_origin: RwLock::new(None),
+            production: std::sync::atomic::AtomicBool::new(false),
             host_config: RwLock::new(sc_types::Attrs::new()),
             host_llm_provider: RwLock::new(None),
             stream_registry: RwLock::new(None),
@@ -1103,6 +1109,20 @@ impl Catalog {
             .read()
             .ok()
             .and_then(|guard| guard.clone())
+    }
+
+    /// Record whether this process serves a **production** environment (see
+    /// [`is_production`](Catalog::is_production)). Called once at boot by the
+    /// process that read `feldspar.toml`.
+    pub fn set_production(&self, production: bool) {
+        self.production
+            .store(production, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether this process serves an environment marked `production` — where
+    /// a checklist that writes data is refused unless it is allowed there.
+    pub fn is_production(&self) -> bool {
+        self.production.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Replace the configuration values this host pins over `_fd_config`.

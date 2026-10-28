@@ -59,6 +59,7 @@ const user: ListUsersResponse[number] = {
   role: 40,
   disabled: false,
   language: null,
+  check_user: false,
   extra: { nickname: "Sam" },
 };
 

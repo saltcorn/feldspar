@@ -92,6 +92,17 @@ pub const GRANT_DROP: &str = schema_edit::GRANT_DROP;
 /// May write the access rules of §7.3, a trigger's `min_role` and a query's.
 pub const GRANT_ACCESS_CHANGES: &str = schema_edit::GRANT_ACCESS_CHANGES;
 
+/// The key the **checklists grant** is stored under (TODO-checklists C1.13):
+/// `none`, `append` (the default) or `full`. Not one of the boolean
+/// [`FLAG_KEYS`] — it has three values — but stored beside them, on an
+/// `admin_copilot` agent's configuration and on a token's grants alike, so the
+/// two callers of the checklist tools read the same answer. `sc-check` gives
+/// the values their meaning.
+pub const CHECKLISTS_GRANT: &str = "checklists";
+
+/// The values [`CHECKLISTS_GRANT`] may take.
+pub const CHECKLISTS_GRANT_VALUES: [&str; 3] = ["none", "append", "full"];
+
 /// The half of the surface a tool belongs to, where it belongs to one.
 ///
 /// An area is not a grant: a grant says what this caller may *do*, an area says
@@ -345,6 +356,14 @@ pub fn token_flags_from_submitted(submitted: &Attrs) -> Attrs {
         .and_then(Json::as_bool)
         .unwrap_or(false);
     out.insert(ALLOW_ALL.to_owned(), Json::Bool(all));
+    // The checklists grant is written explicitly too, `append` when the mint
+    // said nothing: `full` is never anybody's default, `allow_all` included.
+    let checklists = submitted
+        .get(CHECKLISTS_GRANT)
+        .and_then(Json::as_str)
+        .filter(|v| CHECKLISTS_GRANT_VALUES.contains(v))
+        .unwrap_or("append");
+    out.insert(CHECKLISTS_GRANT.to_owned(), Json::from(checklists));
     out
 }
 
@@ -379,6 +398,15 @@ pub fn validate_token_flags(submitted: &Attrs) -> Result<()> {
 /// The validation both writers share: an agent's `validate_config` and a token
 /// mint ask the same question of the same six keys.
 pub fn validate_flags(config: &Attrs) -> Result<()> {
+    match config.get(CHECKLISTS_GRANT) {
+        None | Some(Json::Null) => {}
+        Some(Json::String(s)) if CHECKLISTS_GRANT_VALUES.contains(&s.as_str()) => {}
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "`{CHECKLISTS_GRANT}` should be one of none, append or full, got {other}"
+            )));
+        }
+    }
     for key in FLAG_KEYS {
         match config.get(key) {
             None | Some(Json::Null) | Some(Json::Bool(_)) => {}
@@ -791,8 +819,10 @@ mod tests {
     #[test]
     fn a_token_minted_with_nothing_said_is_granted_everything() {
         let stored = token_flags_from_submitted(&Attrs::new());
-        // The eight, and `allow_all` written down as off.
-        assert_eq!(stored.len(), FLAG_KEYS.len() + 1);
+        // The eight, `allow_all` written down as off, and the checklists grant
+        // written down as `append` — never `full` by default.
+        assert_eq!(stored.len(), FLAG_KEYS.len() + 2);
+        assert_eq!(stored[CHECKLISTS_GRANT], Json::from("append"));
         assert_eq!(grants_from_attrs(&stored), Grants::all());
         let areas = areas_from_attrs(&stored);
         assert!(areas.triggers && areas.applications && areas.modules && areas.history);
@@ -805,6 +835,12 @@ mod tests {
         assert_eq!(stored[GRANT_ACCESS_CHANGES], Json::Bool(true));
         assert_eq!(stored[Area::Modules.key()], Json::Bool(true));
         assert_eq!(stored[ALLOW_ALL], Json::Bool(false));
+
+        // A checklists grant that was said is kept, and a bad one refused.
+        said.insert(CHECKLISTS_GRANT.to_owned(), Json::from("full"));
+        assert_eq!(token_flags_from_submitted(&said)[CHECKLISTS_GRANT], Json::from("full"));
+        said.insert(CHECKLISTS_GRANT.to_owned(), Json::from("all"));
+        assert!(validate_token_flags(&said).is_err());
     }
 
     #[test]

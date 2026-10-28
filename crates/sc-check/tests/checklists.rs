@@ -1,0 +1,554 @@
+//! Checklists against a real Postgres (TODO-checklists C1.17): a data
+//! checklist that inserts a row, runs a trigger and asserts its effect, and
+//! leaves nothing behind; `data.expect_denied` turning red when a role is
+//! loosened; the agent policy of §4; the production guard; and a step the host
+//! cannot run making the run incomplete.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use sc_action::{
+    Action, ActionContext, ActionRegistry, EventKind, Trigger, TriggerDispatcher,
+    bootstrap_triggers, save_trigger,
+};
+use sc_app::{Application, FrameworkRef, save_application};
+use sc_auth::{ROLE_ADMIN, Role, User, create_user, save_role, set_check_user};
+use sc_catalog::{Catalog, FileStoreId, TableMeta, save_table_meta};
+use sc_check::{
+    Change, CheckEnv, ChecklistGrant, ChecklistInput, Editor, Outcome, ProposalChange, RunStatus,
+    SkipReason, StepDraft, StepRegistry, edit, run_checklist, store,
+};
+use sc_db::DatabaseDriver;
+use sc_db_postgres::PgDriver;
+use sc_error::{Repr, Result};
+use sc_test_harness::TestDb;
+use sc_types::FormField;
+use serde_json::{Value as Json, json};
+
+/// A trigger action that records the order it was run for in `audit`.
+struct Stamp;
+
+#[async_trait::async_trait]
+impl Action for Stamp {
+    fn name(&self) -> &str {
+        "stamp"
+    }
+    fn description(&self) -> &str {
+        "Write an audit row for the payload's order (test only)"
+    }
+    fn config_spec(&self) -> Vec<FormField> {
+        Vec::new()
+    }
+    async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {
+        let order = ctx.event.payload["order_id"].clone();
+        let audit = ctx.catalog.get("audit")?.expect("the audit table");
+        sc_api::rows::create_row(
+            ctx.catalog,
+            &audit,
+            &json!({ "order_id": order, "note": "stamped" }),
+        )
+        .await
+    }
+}
+
+struct Env {
+    catalog: Arc<Catalog>,
+    triggers: Arc<TriggerDispatcher>,
+    registry: StepRegistry,
+    admin: User,
+    member: User,
+    _db: TestDb,
+    _dir: TempDir,
+}
+
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+async fn setup(tag: &str) -> Result<Env> {
+    let db = TestDb::new().await?;
+    db.client()
+        .await?
+        .batch_execute(
+            "CREATE TABLE orders (id serial primary key, customer text not null, status text); \
+             CREATE TABLE audit (id serial primary key, order_id int, note text);",
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
+    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    sc_auth::bootstrap(&catalog).await?;
+    sc_catalog::bootstrap_table_meta(&catalog).await?;
+    sc_catalog::bootstrap_field_meta(&catalog).await?;
+    sc_catalog::bootstrap_file_stores(&catalog).await?;
+    sc_app::bootstrap(&catalog).await?;
+    bootstrap_triggers(&catalog).await?;
+    sc_check::bootstrap_checklists(&catalog).await?;
+
+    let dir = std::env::temp_dir().join(format!("sc-check-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("site")).unwrap();
+    catalog.connect_file_store(Arc::new(sc_files::LocalFileStore::new("files", &dir)?))?;
+
+    save_role(&catalog, &Role::new(80, "Member")).await?;
+    let admin = create_user(&catalog, "admin@example.com", "pw-admin", ROLE_ADMIN).await?;
+    let member = create_user(&catalog, "check-member@example.com", "pw-member", 80).await?;
+    // Members may read and write orders, and only read the audit trail.
+    save_table_meta(&catalog, &TableMeta::new("orders").access(80, 80)).await?;
+    save_table_meta(&catalog, &TableMeta::new("audit").access(80, 1)).await?;
+
+    let mut actions = ActionRegistry::new();
+    actions.register(Arc::new(Stamp))?;
+    let actions = Arc::new(actions);
+    let trigger = Trigger::new("stamp_order", EventKind::None, "stamp").min_role(80);
+    save_trigger(&catalog, &actions, &trigger).await?;
+    let triggers = Arc::new(TriggerDispatcher::new(actions));
+    triggers.reload(&catalog).await?;
+
+    Ok(Env {
+        catalog,
+        triggers,
+        registry: StepRegistry::builtin(),
+        admin,
+        member,
+        _db: db,
+        _dir: TempDir(dir),
+    })
+}
+
+impl Env {
+    fn env(&self) -> CheckEnv<'_> {
+        CheckEnv::new(&self.catalog, &self.registry).with_triggers(Some(&self.triggers))
+    }
+
+    fn human(&self) -> Editor {
+        Editor::Human(self.admin.id)
+    }
+
+    async fn count(&self, table: &str) -> i64 {
+        self._db
+            .client()
+            .await
+            .unwrap()
+            .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+}
+
+fn agent(run: &str, grant: ChecklistGrant) -> Editor {
+    Editor::Agent {
+        run: run.to_owned(),
+        grant,
+    }
+}
+
+#[tokio::test]
+async fn a_data_checklist_inserts_runs_a_trigger_asserts_and_cleans_up() -> Result<()> {
+    let env = setup("data").await?;
+    let mut input = ChecklistInput::new("Orders are stamped");
+    input.run_as = Some(env.member.id);
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        input,
+        vec![
+            StepDraft::new("data.insert")
+                .param("table", "orders")
+                .param("row", json!({ "customer": "Test customer {{ run.id }}" }))
+                .capture("order")
+                .label("Create an order"),
+            StepDraft::new("data.run_trigger")
+                .param("trigger", "stamp_order")
+                .param("payload", json!({ "order_id": "{{ order.id }}" }))
+                .label("Stamp it"),
+            StepDraft::new("data.expect_rows")
+                .param("table", "audit")
+                .param("where", json!({ "order_id": "{{ order.id }}" }))
+                .param("count", 1)
+                .param("fields", json!({ "note": "stamped" }))
+                .label("The stamp is there"),
+            StepDraft::new("data.expect_rows")
+                .param("table", "orders")
+                .param("where", json!({ "customer": "Test customer {{ run.id }}" }))
+                .param("count", 1),
+            StepDraft::new("core.manual")
+                .param("instruction", "The order email looks right"),
+        ],
+    )
+    .await?;
+    assert!(checklist.mutates, "data.insert writes, so the checklist mutates");
+
+    let run = run_checklist(&env.env(), &checklist, "manual").await?;
+    assert_eq!(run.status, RunStatus::Passed, "{:#?}", run.steps);
+    assert_eq!(run.steps.len(), 5);
+    assert_eq!(run.steps[4].outcome, Outcome::Skipped);
+    assert_eq!(run.steps[4].skip, Some(SkipReason::Manual));
+    assert!(run.cleanup_errors.is_empty(), "{:?}", run.cleanup_errors);
+    // The inserted order is gone again; the trigger's audit row is the
+    // application's, found by the run's id convention, and stays.
+    assert_eq!(env.count("orders").await, 0);
+    assert_eq!(env.count("audit").await, 1);
+
+    // The run is recorded with the step versions it ran.
+    let stored = store::load_run(&env.catalog, run.id).await?.expect("stored");
+    assert_eq!(stored.status, RunStatus::Passed);
+    let current: Vec<_> = store::current_steps(&env.catalog, checklist.id)
+        .await?
+        .iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(stored.step_versions(), current);
+    assert_eq!(stored.trigger, "manual");
+    Ok(())
+}
+
+#[tokio::test]
+async fn expect_denied_fails_once_the_tables_role_is_loosened() -> Result<()> {
+    let env = setup("denied").await?;
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        ChecklistInput::new("Visitors cannot write orders"),
+        vec![
+            StepDraft::new("data.expect_denied")
+                .param("table", "orders")
+                .param("operation", "insert")
+                .param("row", json!({ "customer": "x" })),
+            StepDraft::new("data.expect_denied")
+                .param("table", "orders")
+                .param("operation", "read"),
+        ],
+    )
+    .await?;
+    // It only asks: nothing is written, so it may run on production.
+    assert!(!checklist.mutates);
+
+    let run = run_checklist(&env.env(), &checklist, "manual").await?;
+    assert_eq!(run.status, RunStatus::Passed, "{:#?}", run.steps);
+
+    // Somebody opens the table to the public.
+    let meta = sc_catalog::load_table_meta_by_name(&env.catalog, "orders")
+        .await?
+        .expect("an overlay")
+        .access(100, 100);
+    save_table_meta(&env.catalog, &meta).await?;
+    let run = run_checklist(&env.env(), &checklist, "manual").await?;
+    assert_eq!(run.status, RunStatus::Failed);
+    assert_eq!(run.steps[0].outcome, Outcome::Fail);
+    assert!(
+        run.steps[0].message.contains("may insert"),
+        "{}",
+        run.steps[0].message
+    );
+    assert_eq!(env.count("orders").await, 0, "expect_denied writes nothing");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_agent_appends_freely_and_proposes_everything_else() -> Result<()> {
+    let env = setup("policy").await?;
+    let mut as_member = ChecklistInput::new("Orders");
+    as_member.run_as = Some(env.member.id);
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        as_member,
+        vec![
+            StepDraft::new("data.expect_rows")
+                .param("table", "orders")
+                .param("count", 0)
+                .label("No orders yet"),
+        ],
+    )
+    .await?;
+    let accepted = store::current_steps(&env.catalog, checklist.id).await?[0].clone();
+    assert!(accepted.accepted, "a person's step is accepted as written");
+
+    let me = agent("run-1", ChecklistGrant::Append);
+    // Appending is always allowed, and the step waits for a person to see it.
+    let appended = edit::append_steps(
+        &env.catalog,
+        &env.registry,
+        &me,
+        checklist.id,
+        vec![StepDraft::new("data.expect_rows").param("table", "audit").param("count", 0)],
+    )
+    .await?;
+    assert!(!appended[0].accepted);
+    assert_eq!(appended[0].author.to_text(), "agent:run-1");
+
+    // Its own unaccepted step it edits directly...
+    let change = edit::request_change(
+        &env.catalog,
+        &env.registry,
+        &me,
+        checklist.id,
+        ProposalChange::Edit {
+            step: appended[0].id,
+            draft: StepDraft::new("data.expect_rows").param("table", "audit").param("count", 0).label("No audit rows"),
+        },
+        "",
+    )
+    .await?;
+    assert_eq!(change, Change::Applied);
+    // ...but not another run's.
+    let other = agent("run-2", ChecklistGrant::Append);
+    let own = store::current_steps(&env.catalog, checklist.id).await?[1].clone();
+    let err = edit::remove_step(&env.catalog, &env.registry, &other, own.id)
+        .await
+        .unwrap_err();
+    assert!(matches!(err.repr(), Repr::Auth(_)), "{err}");
+
+    // It cannot delete an accepted step, nor the checklist; the refusal names
+    // the grant that would allow it.
+    let err = edit::remove_step(&env.catalog, &env.registry, &me, accepted.id)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("checklists: full"), "{err}");
+    let err = edit::delete_checklist(&env.catalog, &me, checklist.id)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("checklists: full"), "{err}");
+    // Nor edit an accepted step directly.
+    assert!(
+        edit::edit_step(
+            &env.catalog,
+            &env.registry,
+            &me,
+            accepted.id,
+            StepDraft::new("data.expect_rows").param("table", "orders").param("count", 5),
+        )
+        .await
+        .is_err()
+    );
+
+    // Its edit of the accepted step becomes a proposal, and the old step keeps
+    // running until a person accepts it.
+    let weaker = StepDraft::new("data.expect_rows")
+        .param("table", "orders")
+        .param("count", 1)
+        .label("One order");
+    let Change::Proposed(proposal) = edit::request_change(
+        &env.catalog,
+        &env.registry,
+        &me,
+        checklist.id,
+        ProposalChange::Edit {
+            step: accepted.id,
+            draft: weaker,
+        },
+        "the fixture now creates an order",
+    )
+    .await?
+    else {
+        panic!("an agent's edit of an accepted step is a proposal");
+    };
+    let steps = store::current_steps(&env.catalog, checklist.id).await?;
+    assert_eq!(steps[0].id, accepted.id, "the old step is still the current one");
+    let run = run_checklist(&env.env(), &checklist, "agent:run-1").await?;
+    assert_eq!(run.steps[0].step, accepted.id);
+    assert_eq!(run.status, RunStatus::Passed);
+
+    // An agent cannot accept its own proposal; a person can.
+    assert!(
+        edit::accept_proposal(&env.catalog, &env.registry, &me, proposal.id)
+            .await
+            .is_err()
+    );
+    edit::accept_proposal(&env.catalog, &env.registry, &env.human(), proposal.id).await?;
+    let steps = store::current_steps(&env.catalog, checklist.id).await?;
+    assert_ne!(steps[0].id, accepted.id);
+    assert_eq!(steps[0].draft.label, "One order");
+    assert!(steps[0].accepted);
+    assert_eq!(steps[0].author.to_text(), "agent:run-1");
+    assert!(store::proposals_of(&env.catalog, checklist.id).await?.is_empty());
+    // The history is kept: the old version points at the new one.
+    let old = store::require_step(&env.catalog, accepted.id).await?;
+    assert_eq!(old.superseded_by, Some(steps[0].id));
+
+    // Under `none` it may not even append.
+    let err = edit::append_steps(
+        &env.catalog,
+        &env.registry,
+        &agent("run-3", ChecklistGrant::None),
+        checklist.id,
+        vec![StepDraft::new("core.wait").param("ms", 1)],
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("checklists: append"), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_agent_may_only_run_a_checklist_as_a_check_user() -> Result<()> {
+    let env = setup("runas").await?;
+    let me = agent("run-1", ChecklistGrant::Full);
+    let mut input = ChecklistInput::new("As the admin");
+    input.run_as = Some(env.admin.id);
+    let err = edit::create_checklist(&env.catalog, &env.registry, &me, input.clone(), vec![])
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("check user"), "{err}");
+
+    // Once an admin makes the member a check user, the agent may use it.
+    assert!(!env.member.is_check_user());
+    let member = set_check_user(&env.catalog, env.member.id, true).await?;
+    assert!(member.is_check_user());
+    input.run_as = Some(member.id);
+    input.name = "As a member".to_owned();
+    let checklist = edit::create_checklist(&env.catalog, &env.registry, &me, input, vec![]).await?;
+
+    // And a proposal to switch it to the admin is refused, not stored.
+    let err = edit::request_change(
+        &env.catalog,
+        &env.registry,
+        &agent("run-1", ChecklistGrant::Append),
+        checklist.id,
+        ProposalChange::RunAs {
+            user: Some(env.admin.id),
+        },
+        "needs more rights",
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("check user"), "{err}");
+    assert!(store::proposals_of(&env.catalog, checklist.id).await?.is_empty());
+    // A person may point a checklist at anybody.
+    let mut by_hand = ChecklistInput::new("As the admin");
+    by_hand.run_as = Some(env.admin.id);
+    edit::create_checklist(&env.catalog, &env.registry, &env.human(), by_hand, vec![]).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_mutating_checklist_is_refused_on_production() -> Result<()> {
+    let env = setup("prod").await?;
+    env.catalog.set_production(true);
+    let insert = || {
+        vec![
+            StepDraft::new("data.insert")
+                .param("table", "orders")
+                .param("row", json!({ "customer": "x" })),
+        ]
+    };
+    let mut writes = ChecklistInput::new("Writes");
+    writes.run_as = Some(env.member.id);
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        writes,
+        insert(),
+    )
+    .await?;
+    let run = run_checklist(&env.env(), &checklist, "manual").await?;
+    assert_eq!(run.status, RunStatus::Error);
+    assert!(run.steps.is_empty());
+    let message = run.message.unwrap_or_default();
+    assert!(message.contains("production"), "{message}");
+    assert_eq!(env.count("orders").await, 0);
+
+    // Allowed there by a person, it runs.
+    let mut allowed = ChecklistInput::new("Writes, allowed");
+    allowed.run_as = Some(env.member.id);
+    allowed
+        .attributes
+        .insert("allow_on_production".to_owned(), json!(true));
+    // An agent may not allow one.
+    assert!(
+        edit::create_checklist(
+            &env.catalog,
+            &env.registry,
+            &agent("r", ChecklistGrant::Full),
+            allowed.clone(),
+            insert(),
+        )
+        .await
+        .is_err()
+    );
+    let checklist =
+        edit::create_checklist(&env.catalog, &env.registry, &env.human(), allowed, insert())
+            .await?;
+    let run = run_checklist(&env.env(), &checklist, "manual").await?;
+    assert_eq!(run.status, RunStatus::Passed, "{:#?}", run.steps);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_the_host_cannot_run_makes_the_run_incomplete() -> Result<()> {
+    let env = setup("incomplete").await?;
+    let app = Application::new(
+        "Shop",
+        "shop",
+        FrameworkRef::new("none")
+            .with("store", "files")
+            .with("source", "site"),
+    )
+    .with_file_store(FileStoreId("files".to_owned()));
+    save_application(&env.catalog, &app).await?;
+    let mut input = ChecklistInput::new("Shop answers");
+    input.application = Some(app.id.0);
+    input.run_as = Some(env.member.id);
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        input,
+        vec![
+            StepDraft::new("data.expect_rows")
+                .param("table", "orders")
+                .param("count", 0),
+            StepDraft::new("http.expect_status")
+                .param("path", "/")
+                .param("status", 200),
+        ],
+    )
+    .await?;
+    // No application router on this host: the data step runs, the HTTP one is
+    // skipped, and the run is not green.
+    let run = run_checklist(&env.env(), &checklist, "cli").await?;
+    assert_eq!(run.status, RunStatus::Incomplete, "{:#?}", run.steps);
+    assert_eq!(run.steps[0].outcome, Outcome::Pass);
+    assert_eq!(run.steps[1].outcome, Outcome::Skipped);
+    assert_eq!(run.steps[1].skip, Some(SkipReason::Unavailable));
+
+    // And an HTTP step on a checklist with no application is refused on save.
+    let err = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        ChecklistInput::new("No app"),
+        vec![StepDraft::new("http.request").param("path", "/")],
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("has none"), "{err}");
+    // As is a parameter the type does not take.
+    let err = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        ChecklistInput::new("Typo"),
+        vec![StepDraft::new("core.wait").param("msec", 1)],
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("unknown setting `msec`"), "{err}");
+    Ok(())
+}
