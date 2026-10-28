@@ -104,6 +104,13 @@ async-trait.workspace = true
 # downloading and building one (TODO "Bayesian models with Stan" §20).
 sc-stan.workspace = true
 
+# `feldspar module …`: the `_fd_modules` row a module command edits, and the
+# permission set it grants entries on.
+sc-module.workspace = true
+# `feldspar send-email`: the stored SMTP settings and the transport the server
+# sends with, so a test message tests exactly what feldspar would do.
+sc-email.workspace = true
+
 # `add-user` / `modify-user` turn terminal echo off while a password is typed.
 libc.workspace = true
 

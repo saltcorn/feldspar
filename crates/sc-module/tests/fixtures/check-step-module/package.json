@@ -1,0 +1,8 @@
+{
+  "name": "@saltcorn-test/check-steps",
+  "version": "0.1.0",
+  "description": "A module that declares checklist step types, for the checklist tests.",
+  "main": "index.js",
+  "private": true,
+  "license": "MIT"
+}

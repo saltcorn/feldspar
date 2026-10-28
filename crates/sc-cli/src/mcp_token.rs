@@ -50,6 +50,9 @@ pub struct CreateArgs {
     pub url: Option<String>,
     /// `--name`: what the server is registered as in Claude Code.
     pub name: String,
+    /// `--routes-only`: a token for module routes and nothing else
+    /// ([`sc_auth::GRANT_ROUTES_ONLY`]), which may run as a user of any role.
+    pub routes_only: bool,
 }
 
 /// Parse `mcp-token create`'s flags. Unknown ones are refused by name.
@@ -61,10 +64,15 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
     let mut url = None;
     let mut name = None;
     let mut grants = Attrs::new();
+    let mut routes_only = false;
     let mut it = args.iter();
     'args: while let Some(arg) = it.next() {
         if arg == "--admin" {
             admin = true;
+            continue;
+        }
+        if arg == "--routes-only" {
+            routes_only = true;
             continue;
         }
         // Every grant this binary knows and every one a later version adds,
@@ -165,6 +173,11 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
             ))),
         })
         .transpose()?;
+    if routes_only && !grants.is_empty() {
+        return Err(Error::config(
+            "--routes-only takes no MCP grants: the token does not reach the MCP server",
+        ));
+    }
     Ok(CreateArgs {
         label,
         user,
@@ -172,7 +185,22 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
         grants,
         url,
         name: name.unwrap_or_else(|| "feldspar".to_owned()),
+        routes_only,
     })
+}
+
+/// The grants a routes-only token stores: every MCP grant **off**, written
+/// explicitly so that nothing reads one as a default, and
+/// [`sc_auth::GRANT_ROUTES_ONLY`] on.
+pub fn routes_only_grants() -> Attrs {
+    let mut grants = sc_api::mcp::token_flags_from_submitted(
+        &sc_api::mcp::FLAG_KEYS
+            .iter()
+            .map(|key| ((*key).to_owned(), Json::Bool(false)))
+            .collect(),
+    );
+    grants.insert(sc_auth::GRANT_ROUTES_ONLY.to_owned(), Json::Bool(true));
+    grants
 }
 
 /// The grants as they will be stored: every key explicit, a flag not given
@@ -192,6 +220,13 @@ pub fn expiry(days: Option<i64>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
 /// allow_edit` and so on, with the ones it does not hold left out — and
 /// `allow_all` first when the token also holds every grant added later.
 pub fn describe_grants(grants: &Attrs) -> String {
+    if grants
+        .get(sc_auth::GRANT_ROUTES_ONLY)
+        .and_then(Json::as_bool)
+        == Some(true)
+    {
+        return "routes_only (module routes only, no MCP)".to_owned();
+    }
     let flags = sc_api::mcp::token_flags(grants);
     let held: Vec<&str> = std::iter::once(sc_api::mcp::ALLOW_ALL)
         .chain(sc_api::mcp::FLAG_KEYS)
@@ -365,6 +400,37 @@ mod tests {
         assert!(
             err.contains("--allow-delete") && err.contains("--allow-drop"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn a_routes_only_token_holds_no_mcp_grant() {
+        let parsed = parse_create(&args(&[
+            "--label",
+            "monitors",
+            "--email",
+            "monitor@example.com",
+            "--routes-only",
+        ]))
+        .unwrap();
+        assert!(parsed.routes_only);
+        let grants = routes_only_grants();
+        assert_eq!(grants[sc_auth::GRANT_ROUTES_ONLY], Json::Bool(true));
+        assert_eq!(grants["allow_all"], Json::Bool(false));
+        for key in sc_api::mcp::FLAG_KEYS {
+            assert_eq!(grants[key], Json::Bool(false), "{key}");
+        }
+        assert!(describe_grants(&grants).starts_with("routes_only"));
+        // An MCP grant beside it is a contradiction, and refused.
+        assert!(
+            parse_create(&args(&[
+                "--label",
+                "x",
+                "--admin",
+                "--routes-only",
+                "--allow-drop"
+            ]))
+            .is_err()
         );
     }
 

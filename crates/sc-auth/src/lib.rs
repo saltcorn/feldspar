@@ -122,10 +122,10 @@ pub use tokens::{
     COL_EXPIRES_AT as COL_TOKEN_EXPIRES_AT, COL_GRANTS as COL_TOKEN_GRANTS, COL_ID as COL_TOKEN_ID,
     COL_LABEL as COL_TOKEN_LABEL, COL_LAST_USED_AT as COL_TOKEN_LAST_USED_AT,
     COL_REVOKED_AT as COL_TOKEN_REVOKED_AT, COL_TOKEN_HASH as COL_API_TOKEN_HASH,
-    COL_USER as COL_TOKEN_USER, LAST_USED_THROTTLE_SECONDS, MintedApiToken, NewApiToken,
-    TOKEN_BYTES, TOKEN_PREFIX, authenticate_api_token, bearer_secret_hash, bootstrap_api_tokens,
-    list_api_tokens, load_api_token, mint_api_token, new_bearer_secret, revoke_api_token,
-    sweep_expired_api_tokens,
+    COL_USER as COL_TOKEN_USER, GRANT_ROUTES_ONLY, LAST_USED_THROTTLE_SECONDS, MintedApiToken,
+    NewApiToken, TOKEN_BYTES, TOKEN_PREFIX, authenticate_api_token, authenticate_route_token,
+    bearer_secret_hash, bootstrap_api_tokens, list_api_tokens, load_api_token, mint_api_token,
+    new_bearer_secret, revoke_api_token, sweep_expired_api_tokens,
 };
 pub use user::User;
 

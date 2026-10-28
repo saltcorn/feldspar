@@ -112,6 +112,17 @@ pub const TOKEN_PREFIX: &str = "fspk_";
 /// token has.
 pub const TOKEN_BYTES: usize = 32;
 
+/// The grant that limits a token to **module routes** (`/_feldspar/routes/…`).
+///
+/// A monitor polling a module's heartbeat route needs a credential, and an
+/// ordinary token is an administrator's: the MCP server accepts it with that
+/// administrator's authority. A routes-only token is refused by the MCP server
+/// ([`authenticate_api_token`]) and accepted by module routes alone
+/// ([`authenticate_route_token`]) — and, because it can do nothing else, it may
+/// run as a user of **any** role. The route then sees that user's role, so a
+/// module's own minimum-role setting decides, as it does for a session.
+pub const GRANT_ROUTES_ONLY: &str = "routes_only";
+
 /// The floor on how often `last_used_at` is rewritten for one token.
 pub const LAST_USED_THROTTLE_SECONDS: i64 = 60;
 
@@ -188,6 +199,11 @@ pub struct ApiToken {
 }
 
 impl ApiToken {
+    /// Whether this token reaches module routes only ([`GRANT_ROUTES_ONLY`]).
+    pub fn routes_only(&self) -> bool {
+        self.grants.get(GRANT_ROUTES_ONLY).and_then(Json::as_bool) == Some(true)
+    }
+
     /// Whether this token would be refused for a reason the row itself knows —
     /// revoked, or lapsed. Says nothing about the user, which only a lookup can.
     pub fn is_live(&self, now: DateTime<Utc>) -> bool {
@@ -374,7 +390,9 @@ pub async fn sweep_expired_api_tokens(catalog: &Catalog) -> Result<usize> {
 /// 3. revoked,
 /// 4. expired,
 /// 5. the user is gone or disabled,
-/// 6. the user is no longer an administrator.
+/// 6. the user is no longer an administrator,
+/// 7. it is a routes-only token ([`GRANT_ROUTES_ONLY`]), which reaches module
+///    routes and not the MCP server.
 ///
 /// The last two are why the row names the user rather than copying them: a
 /// demotion takes effect at the next call, not at the token's expiry.
@@ -384,6 +402,27 @@ pub async fn sweep_expired_api_tokens(catalog: &Catalog) -> Result<usize> {
 /// above, so an attacker replaying a stolen-but-revoked token cannot make this
 /// table grow or churn.
 pub async fn authenticate_api_token(catalog: &Catalog, presented: &str) -> Result<ApiCaller> {
+    authenticate(catalog, presented, Reach::Mcp).await
+}
+
+/// Resolve a credential presented to a **module route**: any token
+/// [`authenticate_api_token`] accepts, and also a routes-only one
+/// ([`GRANT_ROUTES_ONLY`]) — whose user may have any role, because a module
+/// route is all it reaches and the route checks the role itself.
+pub async fn authenticate_route_token(catalog: &Catalog, presented: &str) -> Result<ApiCaller> {
+    authenticate(catalog, presented, Reach::ModuleRoute).await
+}
+
+/// What a credential is being presented to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// The administration MCP server.
+    Mcp,
+    /// A module's route.
+    ModuleRoute,
+}
+
+async fn authenticate(catalog: &Catalog, presented: &str, reach: Reach) -> Result<ApiCaller> {
     if !presented.starts_with(TOKEN_PREFIX) {
         return Err(Error::auth(format!(
             "this is not a Feldspar API token: one begins with `{TOKEN_PREFIX}`"
@@ -428,12 +467,25 @@ pub async fn authenticate_api_token(catalog: &Catalog, presented: &str) -> Resul
             token.label
         )));
     }
-    if user.role > ROLE_ADMIN {
-        return Err(Error::auth(format!(
-            "the user the API token `{}` was minted for is no longer an \
-             administrator, and this token only ever had their authority",
-            token.label
-        )));
+    match (token.routes_only(), reach) {
+        (true, Reach::Mcp) => {
+            return Err(Error::auth(format!(
+                "the API token `{}` reaches module routes (/_feldspar/routes/…) only, \
+                 not the MCP server",
+                token.label
+            )));
+        }
+        // A routes-only token runs as whoever it names; the route checks the
+        // role, exactly as it checks a session's.
+        (true, Reach::ModuleRoute) => {}
+        (false, _) if user.role > ROLE_ADMIN => {
+            return Err(Error::auth(format!(
+                "the user the API token `{}` was minted for is no longer an \
+                 administrator, and this token only ever had their authority",
+                token.label
+            )));
+        }
+        (false, _) => {}
     }
 
     let token = touch_last_used(catalog, &hash, token, now).await?;

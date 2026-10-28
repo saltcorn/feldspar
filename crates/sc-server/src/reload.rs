@@ -37,6 +37,13 @@
 //! A **Saltcorn UI** application has no bundle: its views and pages are rows,
 //! and a reload re-reads them under a new generation (TODO "Saltcorn UI" 5.7).
 //!
+//! The **modules** are reloaded too, but only when `_fd_modules` changed since
+//! they were loaded — a module installed, configured, granted something or
+//! removed by `feldspar module …` in another process. So
+//! `feldspar module install --local DIR && pkill -HUP feldspar` is the way to
+//! change a running server's modules from a shell, and a signal after a mere
+//! build restarts no module's services.
+//!
 //! What it does *not* reload, and still wants a restart: the trigger set, the
 //! agents, the LLM providers, the file-store *connections* (a store's contents
 //! are read live, but a store definition added since boot is not connected
@@ -100,6 +107,15 @@ pub struct ReloadReport {
     pub streams_changed: bool,
     /// Why the stream set could not be reloaded, if it could not.
     pub streams_error: Option<String>,
+    /// How long checking — and, when they changed, reloading — the modules
+    /// took.
+    pub modules: Duration,
+    /// Whether `_fd_modules` had changed, so the module set was reloaded.
+    /// `false` is the ordinary case: a reload that touched no module leaves
+    /// every module's services running.
+    pub modules_reloaded: bool,
+    /// Why the modules could not be reloaded, if they could not.
+    pub modules_error: Option<String>,
 }
 
 impl ReloadReport {
@@ -109,6 +125,7 @@ impl ReloadReport {
             && self.catalog_error.is_none()
             && self.applications_error.is_none()
             && self.streams_error.is_none()
+            && self.modules_error.is_none()
     }
 
     /// Write the reload to the operator's console — one line per thing that
@@ -119,6 +136,14 @@ impl ReloadReport {
     /// answer is *how long do I wait*, and the only honest answer is what it
     /// just took.
     pub fn log(&self) {
+        if let Some(e) = &self.modules_error {
+            eprintln!("feldspar: the modules could not be reloaded: {e}");
+        } else if self.modules_reloaded {
+            eprintln!(
+                "feldspar: reloaded the modules in {} — the installed set changed",
+                ms(self.modules)
+            );
+        }
         if let Some(e) = &self.catalog_error {
             eprintln!("feldspar: the catalog could not be reloaded: {e}");
         } else {
@@ -190,6 +215,19 @@ pub async fn reload_all(apps: &AppMounts) -> ReloadReport {
         report.total = started.elapsed();
         return report;
     };
+
+    // The modules first (when another process changed `_fd_modules` —
+    // `feldspar module install`, say): a module can supply tables, frameworks
+    // and stream providers, so what the catalog, the applications and the
+    // streams reload against below is the set it leaves.
+    let phase = Instant::now();
+    if let Some(modules) = apps.modules() {
+        match modules.reload_if_changed().await {
+            Ok(reloaded) => report.modules_reloaded = reloaded,
+            Err(e) => report.modules_error = Some(sc_error::format_chain(&e)),
+        }
+    }
+    report.modules = phase.elapsed();
 
     let phase = Instant::now();
     match catalog.reload().await {
@@ -294,8 +332,8 @@ pub fn spawn_sighup_reload(apps: Arc<AppMounts>) {
     // one: the operator (or the agent reading this terminal) now knows there is
     // something between "edit" and "restart".
     eprintln!(
-        "feldspar: SIGHUP reloads the catalog and the applications in place — \
-         `pkill -HUP feldspar` after a build, no restart needed"
+        "feldspar: SIGHUP reloads the catalog, the applications and changed modules in \
+         place — `pkill -HUP feldspar` after a build, no restart needed"
     );
     tokio::spawn(async move {
         while hangup.recv().await.is_some() {

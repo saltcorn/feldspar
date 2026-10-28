@@ -86,7 +86,22 @@ pub struct TriggersArgs {
 /// Parse `app triggers`'s arguments. `add` and `remove` need at least one name,
 /// `list` takes none.
 pub fn parse_triggers(args: &[String]) -> Result<TriggersArgs> {
-    let usage = "app triggers (add|remove|list) --app SUBDOMAIN [NAME…] [--json]";
+    parse_names("triggers", "trigger", args)
+}
+
+/// `app tables (add|remove|list) --app SUBDOMAIN [TABLE…] [--json]`: the same
+/// shape as `app triggers`, over the tables the application reaches.
+pub type TablesArgs = TriggersArgs;
+
+/// Parse `app tables`'s arguments, which are `app triggers`'s with table
+/// names.
+pub fn parse_tables(args: &[String]) -> Result<TablesArgs> {
+    parse_names("tables", "table", args)
+}
+
+/// `app <section> (add|remove|list) --app SUBDOMAIN [NAME…] [--json]`.
+fn parse_names(section: &str, noun: &str, args: &[String]) -> Result<TriggersArgs> {
+    let usage = format!("app {section} (add|remove|list) --app SUBDOMAIN [NAME…] [--json]");
     let (verb, rest) = args
         .split_first()
         .ok_or_else(|| Error::config(format!("usage: {usage}")))?;
@@ -106,7 +121,7 @@ pub fn parse_triggers(args: &[String]) -> Result<TriggersArgs> {
             "--json" => json = true,
             flag if flag.starts_with("--") => {
                 return Err(Error::config(format!(
-                    "unknown app triggers argument `{flag}`; usage: {usage}"
+                    "unknown app {section} argument `{flag}`; usage: {usage}"
                 )));
             }
             name => names.push(name.to_owned()),
@@ -116,18 +131,20 @@ pub fn parse_triggers(args: &[String]) -> Result<TriggersArgs> {
     let action = match (verb.as_str(), names.is_empty()) {
         ("list", true) => TriggersAction::List,
         ("list", false) => {
-            return Err(Error::config("app triggers list takes no trigger names"));
+            return Err(Error::config(format!(
+                "app {section} list takes no {noun} names"
+            )));
         }
         ("add" | "remove", true) => {
             return Err(Error::config(format!(
-                "app triggers {verb} needs at least one trigger name"
+                "app {section} {verb} needs at least one {noun} name"
             )));
         }
         ("add", false) => TriggersAction::Add(names),
         ("remove", false) => TriggersAction::Remove(names),
         (other, _) => {
             return Err(Error::config(format!(
-                "unknown app triggers subcommand `{other}`; there are add, remove and list"
+                "unknown app {section} subcommand `{other}`; there are add, remove and list"
             )));
         }
     };
@@ -160,6 +177,21 @@ mod tests {
                 .action,
             TriggersAction::Remove(vec!["mail_send".into()])
         );
+        assert_eq!(
+            parse_tables(&args(
+                "add --app managed user_settings backup_status --json"
+            ))
+            .unwrap(),
+            TriggersArgs {
+                app: "managed".into(),
+                action: TriggersAction::Add(vec!["user_settings".into(), "backup_status".into()]),
+                json: true,
+            }
+        );
+        let msg = parse_tables(&args("remove --app managed"))
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("table name"), "{msg}");
         for bad in [
             "",
             "add --app shop",

@@ -41,6 +41,8 @@ mod config_values;
 mod core_deps;
 #[path = "demo.rs"]
 mod demo;
+#[path = "hosted_setup.rs"]
+mod hosted_setup;
 #[path = "i18n.rs"]
 mod i18n;
 #[path = "mcp_token.rs"]

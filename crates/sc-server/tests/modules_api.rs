@@ -1118,3 +1118,61 @@ async fn a_modules_service_waits_for_start_services() -> sc_error::Result<()> {
     assert_eq!(server.modules.service_statuses(module).len(), 1);
     Ok(())
 }
+
+/// A module changed by **another process** — `feldspar module grant`, which
+/// writes the row through the same `ModuleServices` in its own process — is
+/// picked up by the running server's `SIGHUP` reload, and only when the row
+/// did change: a reload after a mere build leaves the module set (and its
+/// services) alone.
+#[tokio::test]
+async fn a_sighup_reload_picks_up_a_module_changed_elsewhere() -> sc_error::Result<()> {
+    skip_without_npm!();
+    let mut server = setup("sighup").await?;
+    install_echo(&mut server.client).await;
+    let apps = AppMounts::new(server.catalog.clone()).with_modules(server.modules.clone());
+
+    // Nothing changed since the install loaded it.
+    let report = sc_server::reload_all(&apps).await;
+    assert!(report.is_ok(), "{report:?}");
+    assert!(!report.modules_reloaded);
+
+    // The other process's write: a grant, straight into `_fd_modules`.
+    let mut row = sc_module::load_module_by_name(&server.catalog, "@saltcorn-test/echo")
+        .await?
+        .unwrap();
+    row.permissions.read.push("/run/feldspar-health".to_owned());
+    sc_module::save_module(&server.catalog, &row).await?;
+    let loaded = |modules: &ModuleServices| {
+        modules
+            .modules()
+            .get("@saltcorn-test/echo")
+            .unwrap()
+            .module
+            .permissions
+            .read
+            .clone()
+    };
+    assert!(loaded(&server.modules).is_empty(), "not before the signal");
+
+    let report = sc_server::reload_all(&apps).await;
+    assert!(report.is_ok(), "{report:?}");
+    assert!(report.modules_reloaded);
+    assert_eq!(loaded(&server.modules), vec!["/run/feldspar-health"]);
+    assert!(
+        server
+            .modules
+            .modules()
+            .get("@saltcorn-test/echo")
+            .unwrap()
+            .is_loaded()
+    );
+
+    // And again with nothing changed: no second module reload.
+    assert!(!sc_server::reload_all(&apps).await.modules_reloaded);
+
+    // A module removed elsewhere is dropped by the next signal too.
+    sc_module::delete_module(&server.catalog, row.id).await?;
+    assert!(sc_server::reload_all(&apps).await.modules_reloaded);
+    assert!(server.modules.modules().get("@saltcorn-test/echo").is_none());
+    Ok(())
+}

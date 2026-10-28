@@ -74,7 +74,7 @@ use sc_llm::{
     load_llm_model, load_llm_provider, model_config_spec, provider_config_spec, save_llm_model,
     save_llm_provider,
 };
-use sc_module::{load_module, load_module_by_name, save_module};
+use sc_module::load_module;
 use sc_query::{Expr, OrderBy, Projection, Select, Source, Statement, Value};
 use sc_types::{
     FormField, Operation, OperationScope, SECRET_SENTINEL, registered_rich_types,
@@ -2143,15 +2143,12 @@ pub fn admin_handlers_with(
     });
 
     reg.register("installModule", {
-        let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
-            let catalog = catalog.clone();
             let apps = apps.clone();
             async move {
                 let services = modules_of(&apps)?;
-                let installed =
-                    install_module_json(&catalog, &services, &ctx.body, &ctx.locale).await?;
+                let installed = install_module_json(&services, &ctx.body, &ctx.locale).await?;
                 Ok(HandlerResponse::ok(installed).with_status(201))
             }
         }
@@ -2202,13 +2199,11 @@ pub fn admin_handlers_with(
                     // not discovered as a module that stopped working.
                     module.permissions = sc_module::ModulePermissions::from_json(submitted)?;
                 }
-                save_module(&catalog, &module).await?;
-
                 // The configuration is what v1's `actions(cfg)` is called with,
                 // so it only takes effect when the module is loaded again — and
                 // a permission change moves the module onto a worker built with
                 // the new set, which the same reload does.
-                services.reload().await?;
+                services.update_module(&module).await?;
                 let set = services.modules();
                 let loaded = set
                     .get(&module.name)
@@ -2235,36 +2230,7 @@ pub fn admin_handlers_with(
                 let Some(module) = load_module(&catalog, id).await? else {
                     return Ok(HandlerResponse::ok(json!({ "deleted": false })));
                 };
-                // The host first, so a restarted one does not reload a package
-                // that is about to go; then npm; then the row, which is what
-                // makes the module exist at all. npm failing must not leave a
-                // module nobody can delete, so its complaint is logged rather
-                // than returned.
-                //
-                // Whichever host has it: a module is loaded by the host its
-                // language names, and unloading is what stops this server
-                // answering for a package that is about to leave the disk. Both
-                // are best effort — Python's cannot unload at all in the sense
-                // the word implies (§11), which is why it returns nothing to
-                // check.
-                match module.language {
-                    sc_module::ModuleLanguage::JavaScript => {
-                        services.host().unload(&module.name).await;
-                    }
-                    sc_module::ModuleLanguage::Python => {
-                        services.python_host().unload(&module.name).await;
-                    }
-                }
-                if let Err(e) = services.uninstall_package(&module).await {
-                    sc_log::log_error!(
-                        "feldspar: the module `{}` was removed but its package could not be \
-                         uninstalled: {}",
-                        module.name,
-                        sc_error::format_chain(&e)
-                    );
-                }
-                let deleted = sc_module::delete_module(&catalog, id).await?;
-                services.reload().await?;
+                let deleted = services.remove_module(&module).await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
         }
@@ -9919,7 +9885,6 @@ pub(crate) async fn list_modules_json(services: &crate::ModuleServices, locale: 
 /// Shared by the admin handler (and so its MCP tool) and the agents'
 /// [`sc_agent::ModuleManager`], so an install from any of them is the same act.
 pub(crate) async fn install_module_json(
-    catalog: &Catalog,
     services: &crate::ModuleServices,
     body: &Json,
     locale: &Locale,
@@ -9937,62 +9902,12 @@ pub(crate) async fn install_module_json(
         )?,
         None => sc_module::ModuleLanguage::JavaScript,
     };
-    // A **bundled** module is described by the catalog and not by
-    // the request: the id is the only thing the button had to send,
-    // and the language and the permissions are the server's own
-    // answer. Resolved before the install so a wrong id costs
-    // nothing, and so the permission set is on the row the first
-    // time it is written — a module that has to be reloaded to be
-    // allowed to work is not one click.
-    let bundled = match source {
-        sc_module::ModuleSource::Bundled => Some(services.bundled().require(&location)?),
-        _ => None,
-    };
-    let language = bundled.map_or(language, |entry| entry.language);
-    if !language.allows(source) {
-        return Err(Error::invalid(format!(
-            "a {} module cannot be installed from `{}`",
-            language.as_str(),
-            source.as_str()
-        )));
-    }
-
-    let package = services
-        .install_package(language, source, &location)
+    // A **bundled** module's language and permissions are the catalog's,
+    // not the request's — see `ModuleServices::install_module`, which is
+    // also what `feldspar module install` runs.
+    let module = services
+        .install_module(language, source, &location, |_| Ok(()))
         .await?;
-    // A package name that is already installed is an **upgrade**,
-    // not a collision: reinstalling is how a module is upgraded
-    // (TODO, out of scope: an upgrade UI), and the admin who typed
-    // `@saltcorn/mqtt@0.3.0` over a 0.2.0 install means exactly
-    // that. The row keeps its id and its configuration.
-    let stored = load_module_by_name(catalog, &package.name).await?;
-    let first_install = stored.is_none();
-    let mut module = match stored {
-        Some(existing) => existing,
-        None => sc_module::Module::new(&package.name, source, &location),
-    };
-    module.language = language;
-    module.source = source;
-    module.location = location;
-    module.version = Some(package.version);
-    // The catalog card's permissions, granted by the click that
-    // installed it — the card printed them, which is what makes
-    // this an admin granting a permission rather than a package
-    // granting itself one (`sc_module::bundled`).
-    //
-    // **Only on a first install.** A reinstall is how a bundled
-    // module is upgraded after a new release, and an admin who has
-    // since narrowed what it may reach — to a list of feed hosts,
-    // or to nothing at all — must not have that quietly undone by
-    // an upgrade. From the second install on, the row's set wins.
-    if let Some(entry) = bundled
-        && first_install
-    {
-        module.permissions = entry.permissions.clone();
-    }
-    save_module(catalog, &module).await?;
-
-    services.reload().await?;
     let set = services.modules();
     let loaded = set
         .get(&module.name)

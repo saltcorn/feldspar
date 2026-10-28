@@ -15,7 +15,7 @@
 //! failure this whole arrangement exists to prevent. [`delete_config`] is the
 //! way out.
 
-use sc_catalog::{Catalog, DataField, Table};
+use sc_catalog::{Catalog, DataField, SharedTx, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Update, Value};
@@ -163,10 +163,9 @@ pub async fn set_config(catalog: &Catalog, key: &str, value: Json) -> Result<()>
 ///
 /// Checking first is what makes a settings form's Save an all-or-nothing act: a
 /// bad private key does not leave the mode switched to `custom` with nothing to
-/// serve. (The writes are separate statements, so this is not atomic against a
-/// concurrent save of the same keys — the database's row locks decide that, and
-/// two admins saving the same screen at once is the same race as two saving any
-/// other record.)
+/// serve. And the writes are **one transaction**, so a write that fails half
+/// way (a lost connection, a constraint) leaves every key as it was rather than
+/// half the SMTP settings changed — `feldspar set-cfg --json` relies on that.
 ///
 /// A key this host pins is treated as [`set_config`] treats it: the pinned
 /// value is skipped (a settings form sends back what it was shown), any other
@@ -183,17 +182,39 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
             }
         }
     }
-    for (key, value) in values {
-        if skip.contains(&key.as_str()) {
-            continue;
+    let tx = SharedTx::begin_primary(catalog)?;
+    let written = async {
+        for (key, value) in values {
+            if skip.contains(&key.as_str()) {
+                continue;
+            }
+            // Delete-then-insert rather than an existence check and an update:
+            // inside one transaction it is the same write, and it needs no read.
+            let delete =
+                Delete::from(CONFIG_TABLE).filter(Expr::col(COL_KEY).eq(Expr::lit(key.as_str())));
+            tx.run(None, &Statement::from(delete)).await?;
+            if !value.is_null() {
+                let insert = Insert::row(
+                    CONFIG_TABLE,
+                    vec![COL_KEY.to_owned(), COL_VALUE.to_owned()],
+                    vec![
+                        Expr::lit(key.as_str()),
+                        Expr::Lit(Value::Json(value.clone())),
+                    ],
+                );
+                tx.run(None, &Statement::from(insert)).await?;
+            }
         }
-        if value.is_null() {
-            delete_config(catalog, key).await?;
-        } else {
-            write_value(catalog, key, value).await?;
+        Ok::<(), Error>(())
+    }
+    .await;
+    match written {
+        Ok(()) => tx.commit().await,
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
         }
     }
-    Ok(())
 }
 
 /// Pin `values` over `_fd_config` for as long as this process runs — the TLS

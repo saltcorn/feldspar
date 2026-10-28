@@ -40,6 +40,7 @@ use sc_module::{
 use sc_python::pymodule::{
     PyModuleFunctions, PyModuleHost, PyModuleModelProviders, PyModuleSet, PyModuleTableProviders,
 };
+use serde_json::{Value as Json, json};
 
 use crate::agents::AgentServices;
 
@@ -55,6 +56,10 @@ pub enum RouteLookup {
     /// This route.
     Found(sc_module::RouteManifest),
 }
+
+/// The row attribute [`ModuleServices::install_module`] stamps with the time
+/// of the install.
+pub const INSTALLED_AT: &str = "installed_at";
 
 pub struct ModuleServices {
     catalog: Arc<Catalog>,
@@ -443,6 +448,34 @@ impl ModuleServices {
         Ok(())
     }
 
+    /// [`reload`](Self::reload), but only when `_fd_modules` no longer says
+    /// what the loaded set was loaded from — a row added, deleted or changed by
+    /// another process (`feldspar module …`). Returns whether it reloaded.
+    ///
+    /// What `SIGHUP` runs. Conditional because a reload stops and restarts
+    /// every module's background services, and the usual signal is a developer's
+    /// `npm run build && pkill -HUP feldspar`, which has not touched a module
+    /// and must not hang up a module's IMAP connection every time.
+    pub async fn reload_if_changed(&self) -> Result<bool> {
+        let stored: std::collections::BTreeMap<String, Json> =
+            sc_module::list_modules(&self.catalog)
+                .await?
+                .iter()
+                .map(|m| (m.name.clone(), row_fingerprint(m)))
+                .collect();
+        let loaded: std::collections::BTreeMap<String, Json> = self
+            .modules()
+            .modules()
+            .iter()
+            .map(|m| (m.module.name.clone(), row_fingerprint(&m.module)))
+            .collect();
+        if stored == loaded {
+            return Ok(false);
+        }
+        self.reload().await?;
+        Ok(true)
+    }
+
     /// The stream provider registry as the modules now stand: the built-ins
     /// plus every JavaScript module's polled providers (TODO "Streams" §12).
     ///
@@ -729,6 +762,122 @@ impl ModuleServices {
             }
         }
     }
+
+    /// Install a module and load it: the package, its `_fd_modules` row, and a
+    /// reload of the set — what the Modules tab's Install does, and what
+    /// `feldspar module install` does, one path for both.
+    ///
+    /// A package name already installed is an **upgrade**: the row keeps its
+    /// id, its configuration and its permissions. A **bundled** module's
+    /// catalog permissions are granted on its first install only — an admin who
+    /// has since narrowed them must not have that undone by an upgrade.
+    ///
+    /// `adjust` sees the row just before it is saved, so a caller that also
+    /// grants something (the CLI's `--grant-read`) writes it in the same save
+    /// and the module loads with it the first time rather than after a second
+    /// reload.
+    pub async fn install_module(
+        &self,
+        language: sc_module::ModuleLanguage,
+        source: sc_module::ModuleSource,
+        location: &str,
+        adjust: impl FnOnce(&mut sc_module::Module) -> Result<()>,
+    ) -> Result<sc_module::Module> {
+        // A bundled module is described by the catalog and not by the request:
+        // the language and the permissions are the server's own answer.
+        let bundled = match source {
+            sc_module::ModuleSource::Bundled => Some(self.bundled.require(location)?),
+            _ => None,
+        };
+        let language = bundled.map_or(language, |entry| entry.language);
+        if !language.allows(source) {
+            return Err(Error::invalid(format!(
+                "a {} module cannot be installed from `{}`",
+                language.as_str(),
+                source.as_str()
+            )));
+        }
+
+        let package = self.install_package(language, source, location).await?;
+        let stored = sc_module::load_module_by_name(&self.catalog, &package.name).await?;
+        let first_install = stored.is_none();
+        let mut module = match stored {
+            Some(existing) => existing,
+            None => sc_module::Module::new(&package.name, source, location),
+        };
+        module.language = language;
+        module.source = source;
+        module.location = location.to_owned();
+        module.version = Some(package.version);
+        // When the package was last put on the disk. A reinstall of the same
+        // version (an edited checkout) changes nothing else in the row, and a
+        // server in another process tells that this happened — and that its
+        // `SIGHUP` must reload — by the row having changed.
+        module.attributes.insert(
+            INSTALLED_AT.to_owned(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
+        if let Some(entry) = bundled
+            && first_install
+        {
+            module.permissions = entry.permissions.clone();
+        }
+        adjust(&mut module)?;
+        sc_module::save_module(&self.catalog, &module).await?;
+        self.reload().await?;
+        Ok(module)
+    }
+
+    /// Save a changed row — settings, permissions — and reload, which is what
+    /// makes the change reach the module: its settings are what it is loaded
+    /// with, and a permission change moves it onto a worker built with the new
+    /// set.
+    pub async fn update_module(&self, module: &sc_module::Module) -> Result<()> {
+        sc_module::save_module(&self.catalog, module).await?;
+        self.reload().await
+    }
+
+    /// Take a module off this server: unload it, uninstall its package, delete
+    /// its row, reload. Returns whether there was a row to delete.
+    ///
+    /// The host first, so a reload does not pick up a package that is about to
+    /// go; then the package manager, **best effort** — a package it declines to
+    /// remove must not leave a module nobody can delete, so its complaint is
+    /// logged rather than returned; then the row, which is what makes the
+    /// module exist at all.
+    pub async fn remove_module(&self, module: &sc_module::Module) -> Result<bool> {
+        match module.language {
+            sc_module::ModuleLanguage::JavaScript => self.host.unload(&module.name).await,
+            sc_module::ModuleLanguage::Python => self.python_host.unload(&module.name).await,
+        }
+        if let Err(e) = self.uninstall_package(module).await {
+            sc_log::log_error!(
+                "feldspar: the module `{}` was removed but its package could not be \
+                 uninstalled: {}",
+                module.name,
+                sc_error::format_chain(&e)
+            );
+        }
+        let deleted = sc_module::delete_module(&self.catalog, module.id).await?;
+        self.reload().await?;
+        Ok(deleted)
+    }
+}
+
+/// Everything a module is loaded from, as one comparable value — what
+/// [`ModuleServices::reload_if_changed`] compares the table against the loaded
+/// set with.
+fn row_fingerprint(module: &sc_module::Module) -> Json {
+    json!({
+        "id": module.id.0,
+        "language": module.language.as_str(),
+        "source": module.source.as_str(),
+        "location": module.location,
+        "version": module.version,
+        "configuration": Json::Object(module.configuration.clone()),
+        "permissions": Json::Object(module.permissions.to_json()),
+        "attributes": Json::Object(module.attributes.clone()),
+    })
 }
 
 /// A module source as the Python environment names it.
@@ -767,16 +916,12 @@ impl sc_agent::ModuleManager for crate::AppMounts {
 
     async fn install(&self, request: sc_agent::ModuleInstall) -> Result<serde_json::Value> {
         let services = crate::handlers::modules_of(self)?;
-        let catalog = self
-            .catalog()
-            .ok_or_else(|| Error::config("this server has no catalog to record a module in"))?;
         let body = serde_json::json!({
             "language": request.language,
             "source": request.source,
             "location": request.location,
         });
-        crate::handlers::install_module_json(catalog, &services, &body, &sc_i18n::Locale::source())
-            .await
+        crate::handlers::install_module_json(&services, &body, &sc_i18n::Locale::source()).await
     }
 }
 

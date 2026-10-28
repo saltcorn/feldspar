@@ -55,7 +55,7 @@ use std::sync::Arc;
 
 use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, optional_string, require_grant};
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_EDIT, Grants};
-use sc_catalog::{AdminCall, Catalog, FileStoreId, TableId};
+use sc_catalog::{AdminCall, Catalog, FileStoreId};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
@@ -818,26 +818,15 @@ fn change_tables(
     app: &mut Application,
     section: &Map<String, Json>,
 ) -> Result<()> {
-    let mut tables: Vec<String> = match section.contains_key(ARG_SET) {
-        true => names(section, ARG_SET)?,
-        false => app.tables.iter().map(|t| t.0.clone()).collect(),
+    let change = crate::TableChange {
+        add: names(section, ARG_ADD)?,
+        remove: names(section, ARG_REMOVE)?,
+        set: match section.contains_key(ARG_SET) {
+            true => Some(names(section, ARG_SET)?),
+            false => None,
+        },
     };
-    for add in names(section, ARG_ADD)? {
-        if !tables.contains(&add) {
-            tables.push(add);
-        }
-    }
-    let remove = names(section, ARG_REMOVE)?;
-    tables.retain(|t| !remove.contains(t));
-    for table in &tables {
-        if catalog.get(table)?.is_none() {
-            return Err(Error::invalid(format!(
-                "there is no table `{table}`; create it with `edit_schema` first. \
-                 Nothing was changed."
-            )));
-        }
-    }
-    app.tables = tables.into_iter().map(TableId).collect();
+    crate::change_app_tables(catalog, app, &change)?;
     Ok(())
 }
 

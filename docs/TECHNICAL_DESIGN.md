@@ -5983,6 +5983,14 @@ is the boot rule: an app whose output directory is missing is reported and keeps
 it was serving, and the timings are logged, because the question a reload has to answer is
 how long the caller waits before looking.
 
+It reloads the **modules** as well, but only when `_fd_modules` no longer matches the rows the
+loaded set was loaded from (`ModuleServices::reload_if_changed`): `feldspar module install|
+grant|configure|remove` runs the Modules tab's own `ModuleServices` methods in its own process,
+and the signal is how the server learns of it. Conditional, because a module reload restarts
+every module's background services, and a developer's `npm run build && pkill -HUP` must not
+hang up a module's IMAP connection each time. An install stamps `installed_at` on the row, so a
+reinstall of the same version is still a changed row.
+
 A signal rather than an endpoint because of who sends it: a shell in the application's
 project directory, belonging to a developer or to a coding agent, with no session and no
 reason to acquire one. It is not a replacement for the Build button — that still builds — but

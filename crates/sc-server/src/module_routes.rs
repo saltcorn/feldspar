@@ -204,7 +204,7 @@ async fn route_caller(
                 "this server has no API tokens",
             )));
         };
-        return match sc_auth::authenticate_api_token(catalog, &token).await {
+        return match sc_auth::authenticate_route_token(catalog, &token).await {
             Ok(caller) => Ok(caller_of(&caller.user)),
             Err(e) => Err(Box::new(json_error(
                 StatusCode::UNAUTHORIZED,

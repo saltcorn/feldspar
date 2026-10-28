@@ -32,6 +32,22 @@ use serde_json::Value as Json;
 pub struct GetArgs {
     /// The key to print, or `None` to print every declared key.
     pub key: Option<String>,
+    /// `--json`: print JSON — the value itself for one key, and an object of
+    /// every declared key for a listing (secrets redacted, unset keys `null`).
+    pub json: bool,
+}
+
+/// What `set-cfg` was asked to do.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetCommand {
+    /// `set-cfg KEY [VALUE]`: one key.
+    One(SetArgs),
+    /// `set-cfg --json`: a JSON object of keys on stdin, checked together and
+    /// written in one transaction.
+    Many,
+    /// `set-cfg --unset KEY`: delete the stored value, so the key returns to
+    /// its declared default.
+    Unset(String),
 }
 
 /// The arguments of `set-cfg`: which key, and the value if it was given on the
@@ -52,7 +68,9 @@ pub struct SetArgs {
 /// (or a shell that split a value), and printing `a` while dropping `b` would
 /// answer a question nobody asked.
 pub fn parse_get(args: &[String]) -> Result<GetArgs> {
-    let positional = positional("get-cfg", args)?;
+    let json = args.iter().any(|a| a == "--json");
+    let args: Vec<String> = args.iter().filter(|a| *a != "--json").cloned().collect();
+    let positional = positional("get-cfg", &args)?;
     let mut it = positional.into_iter();
     let key = it.next();
     if let Some(extra) = it.next() {
@@ -61,7 +79,64 @@ pub fn parse_get(args: &[String]) -> Result<GetArgs> {
              run it with no key to print every value"
         )));
     }
-    Ok(GetArgs { key })
+    Ok(GetArgs { key, json })
+}
+
+/// Parse `set-cfg`'s three forms: `--json` alone, `--unset KEY`, or
+/// `KEY [VALUE]` ([`parse_set`]).
+pub fn parse_set_command(args: &[String]) -> Result<SetCommand> {
+    match args {
+        [flag] if flag == "--json" => Ok(SetCommand::Many),
+        [flag, ..] if flag == "--json" => Err(Error::config(
+            "set-cfg --json takes no other arguments: the keys and values are a JSON object \
+             on stdin",
+        )),
+        [flag, key] if flag == "--unset" => Ok(SetCommand::Unset(key.clone())),
+        [flag, ..] if flag == "--unset" => Err(Error::config(
+            "set-cfg --unset takes exactly one configuration key",
+        )),
+        _ => parse_set(args).map(SetCommand::One),
+    }
+}
+
+/// The values of a `set-cfg --json` document, each one in the type its key
+/// is declared to hold.
+///
+/// A value already of the right JSON type is kept; a **string** for a key that
+/// is not text is read as a terminal argument would be ([`value_for`]), so
+/// `{"smtp_port": "587"}` — the shape a shell script tends to produce — is the
+/// number 587. `null` unsets the key. An undeclared key, or the redaction
+/// sentinel as a value, is refused naming the key, before anything is written.
+pub fn values_from_json(document: &Json) -> Result<sc_types::Attrs> {
+    let Json::Object(object) = document else {
+        return Err(Error::invalid(
+            "set-cfg --json reads a JSON object of configuration keys and values",
+        ));
+    };
+    let mut out = sc_types::Attrs::new();
+    for (key, value) in object {
+        let field = sc_config::definition(key).ok_or_else(|| {
+            Error::invalid(format!(
+                "no configuration key `{key}`; known keys are {}",
+                sc_config::known_keys().join(", ")
+            ))
+        })?;
+        let value = match value {
+            Json::String(raw)
+                if field
+                    .base
+                    .type_
+                    .as_basic()
+                    .is_some_and(|b| !matches!(b, BasicType::Text)) =>
+            {
+                value_for(&field, raw)?
+            }
+            other => other.clone(),
+        };
+        refuse_sentinel(key, &value)?;
+        out.insert(key.clone(), value);
+    }
+    Ok(out)
 }
 
 /// Parse `set-cfg KEY [VALUE]` — whatever the database flags left behind.
@@ -231,6 +306,8 @@ mod tests {
     #[test]
     fn get_takes_one_key_or_none() {
         assert_eq!(parse_get(&args(&[])).unwrap().key, None);
+        let json = parse_get(&args(&["--json", "smtp_port"])).unwrap();
+        assert_eq!((json.key.as_deref(), json.json), (Some("smtp_port"), true));
         assert_eq!(
             parse_get(&args(&["ssl_mode"])).unwrap().key,
             Some("ssl_mode".to_owned())
@@ -327,6 +404,48 @@ mod tests {
         assert_eq!(render_inline(&json!("a\nb")), r#""a\nb""#);
         assert_eq!(render_inline(&json!(" padded ")), r#"" padded ""#);
         assert_eq!(render_inline(&json!("")), r#""""#);
+    }
+
+    #[test]
+    fn set_has_a_json_form_and_an_unset_form() {
+        assert_eq!(
+            parse_set_command(&args(&["--json"])).unwrap(),
+            SetCommand::Many
+        );
+        assert_eq!(
+            parse_set_command(&args(&["--unset", "smtp_host"])).unwrap(),
+            SetCommand::Unset("smtp_host".into())
+        );
+        assert!(matches!(
+            parse_set_command(&args(&["smtp_port", "587"])).unwrap(),
+            SetCommand::One(_)
+        ));
+        for bad in [&["--json", "x"][..], &["--unset"], &["--unset", "a", "b"]] {
+            assert!(parse_set_command(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_json_document_is_typed_by_the_declarations() {
+        let values = values_from_json(&json!({
+            "smtp_host": "mail.example",
+            "smtp_port": "587",
+            "log_sql": "yes",
+            "smtp_username": null,
+        }))
+        .unwrap();
+        assert_eq!(values["smtp_host"], json!("mail.example"));
+        assert_eq!(values["smtp_port"], json!(587));
+        assert_eq!(values["log_sql"], json!(true));
+        assert_eq!(values["smtp_username"], Json::Null);
+        // An undeclared key is named, and nothing is returned to write.
+        let msg = values_from_json(&json!({"smtp_host": "x", "smtp_hots": "y"}))
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("smtp_hots"), "{msg}");
+        assert!(values_from_json(&json!({"smtp_port": "many"})).is_err());
+        assert!(values_from_json(&json!({"smtp_password": SECRET_SENTINEL})).is_err());
+        assert!(values_from_json(&json!(["smtp_host"])).is_err());
     }
 
     #[test]

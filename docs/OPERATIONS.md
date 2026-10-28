@@ -915,6 +915,11 @@ what rebuilds the API providers. A table added, a column added or a custom SQL
 query saved by another process is being served by the time the signal returns.
 Applications whose row has gone are unmounted.
 
+It **reloads the modules** too, but only when `_fd_modules` changed since they
+were loaded — a module installed, upgraded, granted something, configured or
+removed by `feldspar module …` in another process (§8.2). A signal after a mere
+build reloads no module and restarts no module's background services.
+
 It **runs no bundler and no installer.** That is the point: the caller has just
 built, and re-running `npm install && npm run build` would duplicate the work that
 prompted the signal. An application that has never been built has nothing to load
@@ -997,7 +1002,7 @@ is installed synchronously, before the listeners are bound, and says so once at
 boot:
 
 ```
-feldspar: SIGHUP reloads the catalog and the applications in place — `pkill -HUP feldspar` after a build, no restart needed
+feldspar: SIGHUP reloads the catalog, the applications and changed modules in place — `pkill -HUP feldspar` after a build, no restart needed
 ```
 
 If that line is not in the journal, do not send the signal to production — either
@@ -1469,7 +1474,84 @@ feldspar set-cfg ssl_certificate < fullchain.pem   # multi-line values on stdin
 The value's type comes from the key and is checked before anything is written, so
 `set-cfg smtp_port yes` is a message and not a stored string. Secrets are redacted
 in the listing (`smtp_password=••••••••`) because a listing ends up in scrollback
-and in CI logs; naming the key prints it in full. **Nothing is restarted** — when a
+and in CI logs; naming the key prints it in full.
+
+A script that owns a whole section writes it in one go, and reads it back as JSON:
+
+```bash
+echo '{"smtp_host": "smtp.example.com", "smtp_port": 587, "smtp_security": "starttls",
+       "smtp_username": "alerts", "smtp_password": "…", "email_from": "alerts@example.com"}' \
+  | feldspar set-cfg --json
+feldspar set-cfg --unset smtp_certificate_name     # back to its default
+feldspar get-cfg --json                            # every key; secrets redacted, unset keys null
+feldspar get-cfg smtp_port --json                  # one value, as JSON
+```
+
+`set-cfg --json` checks **every** value before writing any, and writes them in one
+transaction, so a refused port leaves the old settings as they were. A string is
+accepted for a number or a yes/no key (`"587"`, `"yes"`), and `null` unsets a key.
+
+`send-email` sends one message through the stored SMTP settings, with the code the
+server sends mail with — so it tests exactly what a trigger's `send_email` would
+do. It needs the database and outbound SMTP and nothing else:
+
+```bash
+echo "All backups ran." | feldspar send-email --to ops@example.com --subject "Backup check"
+```
+
+#### Modules from a terminal
+
+The **Settings → Modules** tab's install, permissions, settings and delete, without
+a session. Each command runs the tab's own code in this process — `npm install`
+into the modules root, the `_fd_modules` row, a load to check it — so pass the
+same `--modules-dir` the server was started with (or none, if it uses the
+default), and run it as the user the server runs as. A running server picks the
+change up on `SIGHUP` (§6.1); no restart, no sessions lost:
+
+```bash
+feldspar module install --local /usr/local/lib/feldspar-hosted/modules/hosted-health \
+    --grant-read /run/feldspar-health --setting min_role=staff \
+  && pkill -HUP feldspar
+feldspar module grant hosted-health --net api.example.com       # or --read/--write/--env
+feldspar module grant hosted-health --net api.example.com --revoke
+feldspar module configure hosted-health min_role=admin
+feldspar module list [--json]
+feldspar module remove hosted-health
+```
+
+Every command is **idempotent**: installing the version already installed from
+that directory changes nothing (`--force` reinstalls anyway), a newer version is
+installed over it keeping its settings and grants, and granting what is granted
+or removing what is not installed is no error. A command fails if the module does
+not load afterwards, naming why.
+
+#### A token for module routes only
+
+An ordinary API token is an administrator's credential: the MCP server accepts it
+with that administrator's authority. A monitor that polls a module's route needs
+less. `--routes-only` mints a token that module routes (`/_feldspar/routes/…`)
+accept and the MCP server refuses, for a user of **any** role — so the module's
+own minimum-role setting decides, as it does for a signed-in user:
+
+```bash
+feldspar add-user monitor@example.com --role 80
+feldspar mcp-token create --label monitors --email monitor@example.com --routes-only
+```
+
+Only the MCP server and module routes accept API tokens; the admin HTTP API
+authenticates by session only.
+
+#### Tables of an application
+
+```bash
+feldspar app tables add --app managed user_settings backup_status
+feldspar app tables remove --app managed backup_status
+feldspar app tables list --app managed [--json]
+```
+
+The rule `update_application`'s `tables` section uses: a table that does not exist
+is refused, and adding a connected table changes nothing. A running server serves
+the change after `SIGHUP`. **Nothing is restarted** — when a
 setting takes effect is the setting's own business: the logging switches are
 immediate, the SMTP transport is read per message, and the TLS settings are read
 at boot.

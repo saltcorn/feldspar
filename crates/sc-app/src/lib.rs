@@ -57,6 +57,7 @@ mod code_libraries;
 mod declared;
 mod diagnostics;
 // The agents an application exposes to its client (§11.7).
+mod app_tables;
 mod exposed_agents;
 mod exposed_triggers;
 // Frameworks written in Rust above this crate (Saltcorn UI): named constructors.
@@ -87,6 +88,7 @@ pub use api::{
     app_schema_sql, app_tables, app_triggers, registered_api_provider_info, select_api,
     serves_custom_queries, validate_api_config, validate_api_mounts, validate_static_dirs,
 };
+pub use app_tables::{TableChange, change_app_tables};
 pub use application::{
     ApiConfig, AppFileUrls, AppId, Application, CSP_SOURCES_ATTRIBUTE, CspPolicy, FRAME_ANCESTORS,
     FrameworkRef, GUEST_SESSION_DAYS_ATTRIBUTE, GUEST_SESSIONS_ATTRIBUTE, StaticDir, StreamRef,

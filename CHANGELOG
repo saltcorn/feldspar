@@ -2,6 +2,55 @@
 
 Changes in reverse chronological order.
 
+## CLI: set up a hosted server without the admin UI (modules, routes-only tokens, settings, mail, app tables)
+
+feldspar-hosted's root daemon can only use the `feldspar` CLI, so it could not do two setup jobs
+that took clicks in main's admin UI: installing and granting the `hosted-health` module, and the
+backup-alert mail settings (`~/feldspar-hosted/FELDSPAR-CLI-ISSUE.md`). This adds:
+
+- **`feldspar module install|grant|configure|list|remove`** (`sc_cli::module`). The Modules tab's
+  install, update and delete steps moved out of the handlers into `ModuleServices::install_module`,
+  `update_module` and `remove_module`. The tab, the agents' module manager and the CLI now all
+  call those. The CLI brings the module services up in its own process (as `restore` and
+  `app triggers` do) over the same database and `--modules-dir`. `install --local DIR` takes
+  `--grant-read/-write/-net/-env`, `--setting KEY=VALUE` (typed by the module's own settings form; not `--config`, as the issue
+  proposed, because every command already reads `--config` as the path of `feldspar.toml`),
+  `--force` and `--json`, and detects npm or pip from the directory. It is idempotent: if the same
+  version is already installed from the same directory, npm is not run and the row is untouched.
+  A newer version is installed over the old one and keeps its id, settings and grants. Grants are
+  checked the way the tab checks them. A command fails if the module does not load afterwards.
+- **`SIGHUP` reloads modules** when `_fd_modules` changed (`ModuleServices::reload_if_changed`,
+  called first in `reload_all`; `ReloadReport` gained `modules`, `modules_reloaded` and
+  `modules_error`). It compares each row with the row the loaded set came from, so a signal sent
+  after a build does not restart module services. `install_module` stamps
+  `attributes.installed_at`, so a same-version reinstall still counts as a changed row. So
+  `feldspar module … && pkill -HUP feldspar` works without a restart.
+- **Routes-only API tokens**: `feldspar mcp-token create --email E --routes-only`. A token with
+  the `routes_only` grant (`sc_auth::GRANT_ROUTES_ONLY`; every MCP grant stored off) is refused by
+  the MCP server (`authenticate_api_token`). Module routes accept it through the new
+  `authenticate_route_token`, for a user of any role, so a role-80 monitor account works and the
+  module's `min_role` applies again. Ordinary tokens still need an admin user, as before. Only MCP
+  and module routes accept API tokens; the admin HTTP API takes sessions only.
+- **`set-cfg --json`** (a JSON object on stdin; strings accepted for numbers and booleans, `null`
+  unsets) and **`set-cfg --unset KEY`**. `sc_config::set_config_many` now writes in **one
+  transaction** (`SharedTx`) after checking every value, so the settings screen's Save gets that
+  too. **`get-cfg --json`** prints every declared key (secrets redacted, unset keys `null`), or
+  one value as JSON.
+- **`feldspar send-email --to ADDR --subject TEXT [--html] < body`**: `SmtpMailer` over the
+  stored `EmailSettings`, the same pair *Send test message* uses. It needs only the database and
+  outbound SMTP.
+- **`feldspar app tables add|remove|list --app SUBDOMAIN TABLE… [--json]`**. The rule moved out
+  of `update_application` into `sc_app::change_app_tables`, which both use. A table already
+  connected can now always be removed, even if it was dropped since.
+
+Docs: OPERATIONS.md §6.1 and §8.2, and TECHNICAL_DESIGN.md's `SIGHUP` paragraph. Tests:
+`sc-cli/tests/hosted_setup.rs` runs each command through the real binary against Postgres. It
+covers install, idempotent reinstall, upgrade, grant/revoke, configure and remove with npm; the
+routes-only token against both authenticators; a refused `set-cfg --json` writing nothing;
+`send-email` against `TestSmtp`; and `app tables`. Also
+`modules_api::a_sighup_reload_picks_up_a_module_changed_elsewhere`, plus parser unit tests in
+`sc_cli::{module, email, config, app, mcp_token}`.
+
 ## Server tests tear their catalog down
 
 `cargo test --workspace` from a desktop terminal failed `sc-server`'s `it` binary with "Too many

@@ -9203,6 +9203,7 @@ dependencies = [
  "sc-db-postgres",
  "sc-db-sqlite",
  "sc-dns",
+ "sc-email",
  "sc-error",
  "sc-expr",
  "sc-files",
@@ -9210,6 +9211,7 @@ dependencies = [
  "sc-llm",
  "sc-log",
  "sc-mcp",
+ "sc-module",
  "sc-query",
  "sc-server",
  "sc-stan",
@@ -9421,6 +9423,7 @@ dependencies = [
  "sc-config",
  "sc-error",
  "sc-test-harness",
+ "serde_json",
  "tokio",
  "tokio-rustls",
 ]
