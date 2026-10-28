@@ -44,6 +44,7 @@ mod model_host;
 mod module_tables;
 mod observer;
 mod origin;
+pub mod outbox;
 mod prefetch;
 mod projection;
 mod provider;

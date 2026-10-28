@@ -17,6 +17,7 @@
 //! error naming it.
 
 use chrono::{DateTime, Utc};
+use sc_catalog::outbox::Sent;
 use sc_catalog::{Catalog, DataField};
 use sc_db::Row;
 use sc_error::{Error, Result};
@@ -102,6 +103,8 @@ fn run_fields() -> Vec<DataField> {
         DataField::plain("steps", json()).required(),
         DataField::plain("cleanup_errors", json()).required(),
         DataField::plain("message", text()),
+        // What the run kept instead of sending (C4.1). NULL reads as nothing.
+        DataField::plain("outbox", json()),
     ]
 }
 
@@ -507,6 +510,7 @@ pub(crate) async fn insert_run(catalog: &Catalog, run: &ChecklistRun) -> Result<
             "steps",
             "cleanup_errors",
             "message",
+            "outbox",
         ],
         vec![
             Value::Uuid(run.id),
@@ -527,6 +531,7 @@ pub(crate) async fn insert_run(catalog: &Catalog, run: &ChecklistRun) -> Result<
             Value::Json(Json::Array(run.steps.iter().map(StepResult::to_json).collect())),
             Value::Json(Json::from(run.cleanup_errors.clone())),
             run.message.clone().map_or(Value::Null, Value::Text),
+            Value::Json(Json::Array(run.outbox.iter().map(Sent::to_json).collect())),
         ],
     )
     .await
@@ -567,6 +572,11 @@ fn run_from_row(row: &Row) -> Result<ChecklistRun> {
             .collect(),
         other => return Err(bad(t, "cleanup_errors", "a json array", other)),
     };
+    let outbox = match row.get("outbox") {
+        Some(Value::Json(Json::Array(items))) => items.iter().filter_map(Sent::from_json).collect(),
+        Some(Value::Null) | None => Vec::new(),
+        other => return Err(bad(t, "outbox", "a json array", other)),
+    };
     Ok(ChecklistRun {
         id: req_uuid(row, t, "id")?,
         checklist: req_uuid(row, t, "checklist")?,
@@ -580,6 +590,7 @@ fn run_from_row(row: &Row) -> Result<ChecklistRun> {
         steps,
         cleanup_errors,
         message: opt_text(row, t, "message")?,
+        outbox,
     })
 }
 

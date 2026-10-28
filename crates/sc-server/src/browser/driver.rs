@@ -426,6 +426,15 @@ impl ChromiumDriver {
             if let (false, Some(session)) = (signed_out, &page.session) {
                 cookies.push((SESSION_COOKIE, session.clone()));
             }
+            // A checklist run's context names its run, so what its pages send
+            // is kept on the run's outbox (TODO-checklists C4.1). An agent's
+            // context names no open run, and carries none.
+            if sc_catalog::outbox::open_run(request.context).is_some() {
+                cookies.push((
+                    sc_catalog::outbox::CHECK_RUN_COOKIE,
+                    request.context.to_string(),
+                ));
+            }
             for (name, value) in cookies {
                 let cookie = CookieParam::builder()
                     .name(name)

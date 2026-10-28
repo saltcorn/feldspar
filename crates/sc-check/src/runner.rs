@@ -49,6 +49,21 @@ use crate::vars;
 /// The target of a run against the live mount.
 pub const TARGET_LIVE: &str = "live";
 
+/// What a run after an application's build is triggered as (C4.3).
+pub const TRIGGER_BUILD: &str = "build";
+
+/// The application attribute that runs its checklists after each build of it
+/// (C4.3). Off unless set.
+pub const CHECK_AFTER_BUILD: &str = "check_after_build";
+
+/// Whether `app`'s checklists run after each build of it ([`CHECK_AFTER_BUILD`]).
+pub fn checks_after_build(app: &Application) -> bool {
+    app.attributes
+        .get(CHECK_AFTER_BUILD)
+        .and_then(Json::as_bool)
+        .unwrap_or(false)
+}
+
 /// What a run runs with: the catalog, the step types, and what this host can
 /// offer them.
 #[derive(Clone, Copy)]
@@ -183,10 +198,22 @@ pub async fn run_checklist(
         steps: Vec::new(),
         cleanup_errors: Vec::new(),
         message: None,
+        outbox: Vec::new(),
     };
     match prepare(env, checklist).await {
         Err(e) => run.message = Some(sc_error::format_chain(&e)),
-        Ok(prepared) => execute(env, checklist, &prepared, &mut run).await,
+        Ok(prepared) => {
+            // Everything the run does — its steps, the triggers they fire, its
+            // browser's requests, its clean-up — is on its behalf: what it
+            // would send is kept here instead (C4.1).
+            let opened = sc_catalog::outbox::open(run.id);
+            sc_catalog::outbox::scope(
+                Arc::clone(opened.outbox()),
+                execute(env, checklist, &prepared, &mut run),
+            )
+            .await;
+            run.outbox = opened.outbox().sent();
+        }
     }
     run.finished_at = Utc::now();
     store::insert_run(env.catalog, &run).await?;

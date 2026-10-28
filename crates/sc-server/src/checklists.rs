@@ -362,6 +362,56 @@ where
     f(env).await
 }
 
+/// Run `app`'s enabled checklists after a build of it, when its
+/// [`CHECK_AFTER_BUILD`](sc_check::CHECK_AFTER_BUILD) setting asks for it
+/// (C4.3): `None` when it does not. Triggered `build`, against the live mount
+/// the build was just mounted on.
+pub(crate) async fn run_after_build(
+    catalog: &Catalog,
+    apps: &AppMounts,
+    app: sc_app::AppId,
+) -> Result<Option<Vec<sc_check::ChecklistRun>>> {
+    // Read afresh: the setting is the stored record's, whatever the build was
+    // handed.
+    let Some(app) = sc_app::load_application(catalog, app).await? else {
+        return Ok(None);
+    };
+    if !sc_check::checks_after_build(&app) {
+        return Ok(None);
+    }
+    let registry = StepRegistry::installed();
+    let scope = ChecklistScope::Application(app.id.0);
+    let runs = with_env(catalog, &registry, apps, |env| async move {
+        sc_check::run_checklists(&env, scope, sc_check::TRIGGER_BUILD).await
+    })
+    .await?;
+    Ok(Some(runs))
+}
+
+/// The lines a build log ends with when checklists ran after it.
+pub(crate) fn after_build_log(runs: &[sc_check::ChecklistRun]) -> String {
+    let passed = runs
+        .iter()
+        .filter(|r| r.status == sc_check::RunStatus::Passed)
+        .count();
+    let mut log = format!(
+        "\nchecklists after build: {passed} of {} passed\n",
+        runs.len()
+    );
+    for run in runs {
+        log.push_str(&format!("  {}: {}", run.checklist_name, run.status.as_str()));
+        if let Some(step) = run.steps.iter().find(|s| {
+            matches!(s.outcome, sc_check::Outcome::Fail | sc_check::Outcome::Error)
+        }) {
+            log.push_str(&format!(" — {}: {}", step.type_, step.message));
+        } else if let Some(message) = &run.message {
+            log.push_str(&format!(" — {message}"));
+        }
+        log.push('\n');
+    }
+    log
+}
+
 /// A checklist with its steps, proposals and recent runs.
 async fn detail(catalog: &Catalog, id: Uuid) -> Result<Json> {
     let checklist = store::require_checklist(catalog, id).await?;

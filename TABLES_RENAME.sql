@@ -935,3 +935,8 @@ CREATE TABLE IF NOT EXISTS "_fd_checklist_proposals" (
 -- lives (`{"check_user": true}`). NULL reads as none. (Bootstrap adds it too.)
 -- On SQLite use `ADD COLUMN "attributes" TEXT` without `IF NOT EXISTS`.
 ALTER TABLE IF EXISTS "users" ADD COLUMN IF NOT EXISTS "attributes" jsonb;
+
+-- TODO-checklists C4.1: what a checklist run kept instead of sending (its
+-- outbox), as a JSON array. NULL reads as nothing. (Bootstrap adds it too.)
+-- On SQLite use `ADD COLUMN "outbox" TEXT` without `IF NOT EXISTS`.
+ALTER TABLE IF EXISTS "_fd_checklist_runs" ADD COLUMN IF NOT EXISTS "outbox" jsonb;

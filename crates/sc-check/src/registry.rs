@@ -738,6 +738,7 @@ mod tests {
             "data.expect_denied",
             "data.run_trigger",
             "data.expect_calculated",
+            "data.expect_sent",
             "http.request",
             "http.expect_status",
             "http.expect_json",

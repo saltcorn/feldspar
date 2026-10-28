@@ -58,6 +58,11 @@ pub struct ModuleAction {
     /// ([`Action::payload_type`], [`Action::returns_type`]).
     payload: Option<Json>,
     returns: Option<Json>,
+    /// Whether its module may reach the network: a call on behalf of a
+    /// checklist run is then kept on the run's outbox and not made
+    /// (TODO-checklists C4.1) — a payment provider's API is called this way,
+    /// from the module's own worker, past every hook the host has.
+    network: bool,
 }
 
 impl ModuleAction {
@@ -89,7 +94,16 @@ impl ModuleAction {
             roles: None,
             payload: None,
             returns: None,
+            network: false,
         }
+    }
+
+    /// The same action, from a module that may reach the network
+    /// ([`ModulePermissions::net`](crate::ModulePermissions::net)).
+    #[must_use]
+    pub fn with_network(mut self, network: bool) -> ModuleAction {
+        self.network = network;
+        self
     }
 
     /// The same action, typed: what its payload carries and what it answers,
@@ -147,6 +161,17 @@ impl Action for ModuleAction {
 
     async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {
         let args = v1_arguments(ctx.event, ctx.config, ctx.trigger);
+        if self.network
+            && let Some(outbox) = sc_catalog::outbox::current()
+        {
+            outbox.capture(sc_catalog::outbox::Sent::new(
+                sc_catalog::outbox::SentKind::Module,
+                vec![format!("{}/{}", self.module, self.name)],
+                "",
+                args,
+            ));
+            return Ok(Json::Null);
+        }
         // Held for the length of the call: the surfaces borrow from it, and the
         // borrow lives exactly as long as the run — which is also what lets the
         // host serve the module's asks while it waits for the answer.

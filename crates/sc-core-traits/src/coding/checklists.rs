@@ -229,6 +229,7 @@ mod tests {
             steps,
             cleanup_errors: Vec::new(),
             message: None,
+            outbox: Vec::new(),
         }
     }
 

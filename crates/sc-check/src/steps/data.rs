@@ -13,6 +13,7 @@
 
 use sc_api::rows::{self, Executor, RowQuery};
 use sc_catalog::Table;
+use sc_catalog::outbox::{Sent, SentKind};
 use sc_error::{Error, Repr, Result};
 use sc_types::{BasicType, FormField};
 use serde_json::{Map, Value as Json, json};
@@ -723,6 +724,128 @@ impl StepType for ExpectCalculated {
         }
         .await;
         outcome.unwrap_or_else(StepOutcome::from)
+    }
+}
+
+/// `data.expect_sent`: what the run would have sent so far — e-mail, webhooks,
+/// payment calls — read from its outbox (C4.2). A run sends nothing: the
+/// mailer, the `fetch` action and a networked module action keep it on the
+/// run instead ([`sc_catalog::outbox`]).
+pub struct ExpectSent;
+
+/// The kinds of message, as `data.expect_sent`'s `kind` names them.
+const SENT_KINDS: [&str; 3] = ["email", "webhook", "module"];
+
+/// Whether `haystack` contains `needle`, ignoring case.
+fn contains(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+/// An optional, non-empty string parameter.
+fn opt_text(params: &Json, key: &str) -> Option<String> {
+    params
+        .get(key)
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+#[async_trait::async_trait]
+impl StepType for ExpectSent {
+    fn name(&self) -> &str {
+        "data.expect_sent"
+    }
+
+    fn description(&self) -> &str {
+        "Assert on what this run has sent so far. A checklist run sends nothing: e-mail, \
+         webhooks and payment calls made on its behalf are kept on the run instead, and this \
+         reads them. Matches messages of `kind` with a recipient containing `to`, a subject \
+         containing `subject` and a body containing `body` (all ignoring case); expects \
+         exactly `count` of them (at least one when `count` is not given; 0 asserts that \
+         nothing was sent). Its value is the matching messages."
+    }
+
+    fn config_spec(&self) -> Vec<FormField> {
+        vec![
+            FormField::new("kind", BasicType::Text)
+                .label("Kind")
+                .options(SENT_KINDS)
+                .default_value("email"),
+            FormField::new("to", BasicType::Text)
+                .label("A recipient contains")
+                .sublabel("An address, a URL, or `module/action`, e.g. `{{ email }}`"),
+            FormField::new("subject", BasicType::Text)
+                .label("The subject contains")
+                .sublabel("For a request, its method"),
+            FormField::new("body", BasicType::Text).label("The body contains"),
+            FormField::new("count", BasicType::Int).label("Exactly this many"),
+        ]
+    }
+
+    fn needs(&self) -> Needs {
+        Needs::NONE
+    }
+
+    fn mutates(&self) -> bool {
+        false
+    }
+
+    async fn run(&self, _cx: &mut StepContext<'_>, params: &Json) -> StepOutcome {
+        let kind_name = opt_text(params, "kind").unwrap_or_else(|| "email".to_owned());
+        let Some(kind) = SentKind::parse(&kind_name) else {
+            return StepOutcome::error(format!(
+                "`kind` is `{kind_name}`; it is one of {}",
+                SENT_KINDS.join(", ")
+            ));
+        };
+        let Some(outbox) = sc_catalog::outbox::current() else {
+            return StepOutcome::error("this step only runs inside a checklist run");
+        };
+        let to = opt_text(params, "to");
+        let subject = opt_text(params, "subject");
+        let body = opt_text(params, "body");
+        let all = outbox.sent();
+        let of_kind = all.iter().filter(|s| s.kind == kind).count();
+        let found: Vec<Json> = all
+            .iter()
+            .filter(|s| s.kind == kind)
+            .filter(|s| to.as_ref().is_none_or(|t| s.to.iter().any(|r| contains(r, t))))
+            .filter(|s| subject.as_ref().is_none_or(|t| contains(&s.subject, t)))
+            .filter(|s| {
+                body.as_ref().is_none_or(|t| match &s.body {
+                    Json::String(text) => contains(text, t),
+                    other => contains(&other.to_string(), t),
+                })
+            })
+            .map(Sent::to_json)
+            .collect();
+        let n = found.len();
+        let what = |n: usize| match (kind, n) {
+            (SentKind::Email, 1) => "e-mail".to_owned(),
+            (SentKind::Email, _) => "e-mails".to_owned(),
+            (SentKind::Webhook, 1) => "request".to_owned(),
+            (SentKind::Webhook, _) => "requests".to_owned(),
+            (SentKind::Module, 1) => "module call".to_owned(),
+            (SentKind::Module, _) => "module calls".to_owned(),
+        };
+        let matching = if to.is_some() || subject.is_some() || body.is_some() {
+            format!(" matching (of {of_kind} sent)")
+        } else {
+            String::new()
+        };
+        let outcome = match params.get("count").and_then(Json::as_u64) {
+            Some(count) if n as u64 != count => StepOutcome::fail(format!(
+                "expected {count} {}, found {n}{matching}",
+                what(count as usize)
+            )),
+            None if n == 0 => StepOutcome::fail(format!(
+                "expected at least one {} to have been sent, found none{matching}",
+                what(1)
+            )),
+            _ => StepOutcome::pass(format!("{n} {}{matching} as expected", what(n))),
+        };
+        outcome.with_value(Json::Array(found))
     }
 }
 

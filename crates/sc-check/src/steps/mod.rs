@@ -28,6 +28,7 @@ pub fn builtin() -> Vec<Arc<dyn StepType>> {
         Arc::new(data::ExpectDenied),
         Arc::new(data::RunTrigger),
         Arc::new(data::ExpectCalculated),
+        Arc::new(data::ExpectSent),
         Arc::new(http::Request),
         Arc::new(http::ExpectStatus),
         Arc::new(http::ExpectJson),

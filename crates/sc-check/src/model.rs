@@ -1,6 +1,7 @@
 //! What a checklist, a step, a proposal and a run are (docs/CHECKLISTS.md §1).
 
 use chrono::{DateTime, Utc};
+use sc_catalog::outbox::Sent;
 use sc_error::{Error, Result};
 use sc_types::Attrs;
 use serde_json::{Value as Json, json};
@@ -674,6 +675,9 @@ pub struct ChecklistRun {
     pub cleanup_errors: Vec<String>,
     /// Why the run could not start, or anything else worth saying about it.
     pub message: Option<String>,
+    /// What the run would have sent — e-mail, webhooks, payment calls — and
+    /// kept instead (C4.1), in order.
+    pub outbox: Vec<Sent>,
 }
 
 impl ChecklistRun {
@@ -698,6 +702,7 @@ impl ChecklistRun {
             "step_versions": self.step_versions().iter().map(Uuid::to_string).collect::<Vec<_>>(),
             "cleanup_errors": self.cleanup_errors,
             "message": self.message,
+            "outbox": self.outbox.iter().map(Sent::to_json).collect::<Vec<_>>(),
         })
     }
 }

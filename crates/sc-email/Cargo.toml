@@ -32,6 +32,8 @@ lettre = { workspace = true }
 # is what the Email section's own help text promises. Layer 4, so this stays a
 # downward dependency.
 sc-catalog.workspace = true
+# What a withheld message is kept as on a checklist run's outbox.
+serde_json.workspace = true
 # The MJML compiler behind `render_mjml`: an HTML body written as MJML is
 # compiled here, in process, with no Node sidecar (§18.2).
 mrml = { workspace = true }

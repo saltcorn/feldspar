@@ -6265,6 +6265,19 @@ fn checklist_run_schema() -> TypeSchema {
         StructField::new("step_versions", TypeSchema::array(TypeSchema::uuid())),
         StructField::new("cleanup_errors", TypeSchema::array(TypeSchema::text())),
         StructField::new("message", TypeSchema::optional(TypeSchema::text())),
+        // What the run would have sent and kept instead (C4.1): `kind` is
+        // `email`, `webhook` or `module`; `to` the addresses, the URL, or
+        // `module/action`; `subject` an e-mail's subject or a request's method.
+        StructField::new(
+            "outbox",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("kind", TypeSchema::text()),
+                StructField::new("to", TypeSchema::array(TypeSchema::text())),
+                StructField::new("subject", TypeSchema::text()),
+                StructField::new("body", TypeSchema::json()),
+                StructField::new("at", TypeSchema::text()),
+            ])),
+        ),
     ])
 }
 
@@ -7608,6 +7621,18 @@ fn build_result_schema() -> TypeSchema {
         StructField::new("built", TypeSchema::bool()),
         StructField::new("git_repo", TypeSchema::bool()),
         StructField::new("log", TypeSchema::text()),
+        // The application's checklists, run after the build when its
+        // `check_after_build` setting asks for it (TODO-checklists C4.3); null
+        // when they were not run.
+        StructField::new(
+            "checks",
+            TypeSchema::optional(TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("id", TypeSchema::uuid()),
+                StructField::new("checklist", TypeSchema::uuid()),
+                StructField::new("checklist_name", TypeSchema::text()),
+                StructField::new("status", TypeSchema::text()),
+            ]))),
+        ),
     ])
 }
 

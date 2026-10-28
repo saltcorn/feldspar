@@ -11220,6 +11220,7 @@ async fn build_now(
     // Build and mount live. A build failure propagates as an
     // Application error (§16) whose message is the bundler's own
     // diagnostics, and leaves any previously mounted version serving.
+    let app_id = app.id;
     let report = crate::apps::build_and_mount_with(apps, app, quick).await?;
     if let Some(update @ sc_app::ClientUpdate::Scaffolded(_)) = &update {
         // Only a scaffold is news: a regeneration is part of every
@@ -11229,10 +11230,42 @@ async fn build_now(
         log.push('\n');
     }
     log.push_str(&build_log(&report));
+    // The application's checklists, when it asks for them after each build
+    // (TODO-checklists C4.3) — not after the dev loop's save, which is many a
+    // minute. The build has succeeded and is mounted whatever they say; a
+    // failure to run them is a line in the log, not a failed build.
+    let mut checks = Json::Null;
+    if !quick {
+        match crate::checklists::run_after_build(catalog, apps, app_id).await {
+            Ok(None) => {}
+            Ok(Some(runs)) => {
+                log.push_str(&crate::checklists::after_build_log(&runs));
+                checks = Json::Array(
+                    runs.iter()
+                        .map(|run| {
+                            json!({
+                                "id": run.id.to_string(),
+                                "checklist": run.checklist.to_string(),
+                                "checklist_name": run.checklist_name,
+                                "status": run.status.as_str(),
+                            })
+                        })
+                        .collect(),
+                );
+            }
+            Err(e) => {
+                log.push_str(&format!(
+                    "\nthe checklists could not be run after the build: {}\n",
+                    e.chain()
+                ));
+            }
+        }
+    }
     Ok(HandlerResponse::ok(json!({
         "built": true,
         "git_repo": report.git_repo,
         "log": log,
+        "checks": checks,
     })))
 }
 
